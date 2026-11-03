@@ -71,6 +71,7 @@ from .history import (
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
 )
+from .history_semantics import SemanticHistory, decode_history_semantics
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
     CleaningModeResult,
@@ -114,7 +115,9 @@ from .wire import (
     WireFieldBudget,
     WireFieldBudgetExceeded,
     WireFieldLimitExceeded,
+    bytes_fields,
     decode_fields,
+    first_bytes,
     uuid_string,
 )
 
@@ -182,7 +185,11 @@ _WIFI_STATUS_MAX_BYTES = 256 * 1024
 _WIFI_NETWORK_MAX_COUNT = 256
 _SCHEDULE_MAX_BYTES = 64 * 1024
 _SCHEDULE_MAX_FIELDS = 1024
+_SCHEDULE_ROOM_MAX_FIELDS = 16 * 1024
 _SCHEDULE_MAX_UUIDS = 256
+# Inside one per-room schedule block: target (7) > region (3) > region ID (3),
+# where the ID has the coverage plan's nested UUID form (``Room.id_wire``).
+_SCHEDULE_BLOCK_ROOM_PATH = (7, 3, 3)
 _SCHEDULE_MAX_DEPTH = 4
 _CLEANING_SESSION_MAX_BYTES = 256 * 1024
 _CLEANING_SESSION_MAX_FIELDS = 1024
@@ -279,14 +286,17 @@ _BINARY_SETTING_CHANNELS = {
     "voice": "voice_enabled_command",
 }
 
+# Schedule day fields 1-7 run Monday to Sunday. Checked on a robot: a schedule
+# with Monday off in the Matic app had field 1 clear, and turning Thursday off
+# as well cleared field 4.
 _WEEKDAYS = (
-    "sunday",
     "monday",
     "tuesday",
     "wednesday",
     "thursday",
     "friday",
     "saturday",
+    "sunday",
 )
 
 
@@ -813,6 +823,15 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 matching[0],
                 floor_label=active_floor.label,
                 mapped_floors=mission_state.mapped_floors,
+                history_floor_plans=tuple(
+                    plan
+                    for plan in floor_plans
+                    if sum(
+                        mapped.mission_id == plan.mission_id
+                        for mapped in mission_state.mapped_floors
+                    )
+                    == 1
+                ),
             )
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed floor plan") from err
@@ -955,18 +974,37 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         strict: bool = False,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
+        records, _revision = await self.async_get_cleaning_session_snapshot(
+            strict=strict
+        )
+        return records
+
+    async def async_get_cleaning_session_snapshot(
+        self,
+        *,
+        strict: bool = False,
+    ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
+        """Return decoded records and their opaque revision from one collection read."""
         entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
-        records = tuple(
-            CleaningSessionRecord(entry.key, session)
-            for entry in entries
-            if entry.key
-            and (session := _decode_cleaning_session(entry.value)) is not None
-        )
-        if strict and len(records) != len(entries):
+        records_list: list[CleaningSessionRecord] = []
+        invalid = False
+        for entry in entries:
+            session = _decode_cleaning_session(entry.value)
+            if not entry.key or session is None:
+                invalid = True
+                if not entry.key or native_session_hash(entry.key) is None:
+                    continue
+                # Keep a rejected record's exact identity as a tombstone. Its
+                # disappearance from retention is different from a correction
+                # that no longer supports an earlier completion credit.
+                session = CleaningSession(None, None, None, (), (), None)
+            records_list.append(CleaningSessionRecord(entry.key, session))
+        if strict and invalid:
             raise MaticError("Native history is incomplete or undecodable")
-        return records
+        records = tuple(records_list)
+        return records, _native_history_collection_revision(entries)
 
     async def async_get_cleaning_session_images(
         self,
@@ -1059,6 +1097,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 sessions,
                 key=lambda item: item.started_at or "",
                 default=None,
+            ),
+            native_history_revision=(
+                _native_history_collection_revision(session_entries)
+                if isinstance(session_entries, tuple)
+                else None
             ),
             child_lock_enabled=_decode_binary_state(values["child_lock_enabled_state"]),
             pet_waste_enabled=_decode_binary_state(values["petwaste_enabled_state"]),
@@ -1497,9 +1540,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
     ) -> CoverageReceipt | None:
-        """Start an exact normal-coverage command for local room IDs."""
-        if not require_settings_readback and session_id is not None:
-            raise MaticError("An untracked coverage command cannot own a session ID")
+        """Start normal coverage; a supplied ID does not imply setting proof.
+
+        HA callers may reserve a session ID solely to exclude their commands
+        from external-history credit. Managed setting proof still requires
+        the separate readback path and its native ownership guards.
+        """
         if require_settings_readback and session_id is None:
             session_id = uuid4()
         payload = encode_coverage_command(
@@ -2789,33 +2835,7 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
     except DecodeError:
         timezone = None
     try:
-        ordered = bool(
-            _telemetry_varint(
-                payload,
-                3,
-                max_bytes=_SCHEDULE_MAX_BYTES,
-                max_fields=_SCHEDULE_MAX_FIELDS,
-            )
-        )
-    except DecodeError:
-        ordered = False
-
-    enabled: bool | None = None
-    try:
-        enabled_payload = _telemetry_bytes(
-            payload, 9, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
-        )
-        if not enabled_payload:
-            enabled = True
-        else:
-            enabled_fields = _telemetry_fields(enabled_payload)
-            if enabled_fields:
-                enabled = enabled_fields[0].number == 1
-    except DecodeError:
-        pass
-
-    try:
-        room_ids = _uuid_candidates(payload)
+        room_ids = _schedule_room_ids(payload) or _uuid_candidates(payload)
         name_fields = _bounded_fields(
             payload, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
         )
@@ -2826,10 +2846,91 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
         weekdays=tuple(weekdays),
         minute_of_day=minute_of_day if 0 <= minute_of_day < 1440 else None,
         timezone=timezone,
-        ordered=ordered,
-        enabled=enabled,
+        ordered=_schedule_ordered(name_fields),
+        enabled=_schedule_enabled(name_fields),
         room_ids=room_ids,
     )
+
+
+def _schedule_enabled(fields: tuple[WireField, ...]) -> bool | None:
+    """Read the native enabled-state oneof, with the legacy bool as fallback."""
+    markers = [field for field in fields if field.number in (8, 9, 10)]
+    if markers:
+        # Native EnabledState encodes empty messages: enabled=8, disabled=9,
+        # suggested=10. Conflicting, malformed and suggested states are unknown.
+        if len(markers) != 1 or markers[0].wire_type != 2 or markers[0].value != b"":
+            return None
+        return {8: True, 9: False, 10: None}[markers[0].number]
+    legacy = [field for field in fields if field.number == 3]
+    if len(legacy) == 1 and legacy[0].wire_type == 0 and legacy[0].value in (0, 1):
+        return bool(legacy[0].value)
+    return None
+
+
+def _schedule_ordered(fields: tuple[WireField, ...]) -> bool | None:
+    """Identify ordered or unordered goal lists without using the enabled bool."""
+    kinds: set[int] = set()
+    for field in fields:
+        if field.number != 7:
+            continue
+        if field.wire_type != 2 or not isinstance(field.value, bytes):
+            return None
+        try:
+            goals = _bounded_fields(
+                field.value,
+                max_bytes=_SCHEDULE_MAX_BYTES,
+                max_fields=_SCHEDULE_MAX_FIELDS,
+            )
+        except DecodeError:
+            return None
+        for goal in goals:
+            if goal.number in (1, 2):
+                if goal.wire_type != 2:
+                    return None
+                kinds.add(goal.number)
+    return True if kinds == {1} else False if kinds == {2} else None
+
+
+def _schedule_room_ids(payload: bytes) -> tuple[str, ...]:
+    """Return floor-plan room IDs from a schedule's per-room blocks.
+
+    Field 7 holds ordered (field 1) or unordered (field 2) blocks, several per room,
+    each carrying its floor-plan ID at ``_SCHEDULE_BLOCK_ROOM_PATH`` relative
+    to the block. That is deeper than the generic scan in ``_uuid_candidates``
+    reaches. Layout observed on firmware v181.10 (protocol 28). IDs keep their
+    first-seen order; blocks that do not decode are skipped.
+    """
+    found: dict[str, None] = {}
+    # Each room can have eight deeply nested blocks. Keep the aggregate bound
+    # separate from the per-message limit so whole-floor schedules fit.
+    field_budget = WireFieldBudget(_SCHEDULE_ROOM_MAX_FIELDS)
+    for container in bytes_fields(payload, 7, field_budget=field_budget):
+        try:
+            blocks = decode_fields(
+                container,
+                max_fields=_SCHEDULE_MAX_FIELDS,
+                field_budget=field_budget,
+            )
+        except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+            raise
+        except DecodeError:
+            continue
+        for block in blocks:
+            if block.number not in (1, 2) or block.wire_type != 2:
+                continue
+            try:
+                room = cast(bytes, block.value)
+                for number in _SCHEDULE_BLOCK_ROOM_PATH:
+                    room = first_bytes(room, number, field_budget=field_budget)
+                room_id = uuid_string(room, field_budget=field_budget)
+            except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+                raise
+            except DecodeError:
+                continue
+            found[room_id] = None
+            if len(found) > _SCHEDULE_MAX_UUIDS:
+                raise DecodeError("schedule has too many room identifiers")
+    return tuple(found)
 
 
 def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
@@ -2868,6 +2969,98 @@ def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _native_history_collection_revision(
+    entries: tuple[HermesCollectionEntry, ...],
+) -> str:
+    """Hash ended records in a complete history snapshot without exposing them."""
+    digest = hashlib.sha256(b"matic-native-history-v1\0")
+    for entry in sorted(entries, key=lambda item: item.key):
+        session = _decode_cleaning_session(entry.value)
+        if session is not None and session.ended_at is None:
+            continue
+        digest.update(len(entry.key).to_bytes(4, "big"))
+        digest.update(entry.key)
+        digest.update(len(entry.value).to_bytes(8, "big"))
+        digest.update(entry.value)
+    return digest.hexdigest()
+
+
+def _canonical_cleaning_session(
+    semantics: SemanticHistory, started_at: str | None, ended_at: str | None
+) -> CleaningSession:
+    """Project one verified modern summary without conflating stop and completion."""
+    results = semantics.mode_results
+    rooms = tuple(dict.fromkeys(result.room for result in results))
+    by_room: dict[str, list[CleaningModeResult]] = {}
+    identities_by_name: dict[str, set[str | None]] = {}
+    for result in results:
+        identities_by_name.setdefault(result.room, set()).add(result.room_id)
+    unambiguous = tuple(
+        result for result in results if len(identities_by_name[result.room]) == 1
+    )
+    durations: dict[str, int] = {}
+    for result in unambiguous:
+        by_room.setdefault(result.room, []).append(result)
+        if result.duration_seconds is not None:
+            durations[result.room] = (
+                durations.get(result.room, 0) + result.duration_seconds
+            )
+    successful_stop = semantics.stop_reason == "finished"
+    vacuum = tuple(
+        result.room
+        for result in unambiguous
+        if successful_stop
+        and result.cleaning_mode == "vacuum"
+        and result.status == "completed"
+    )
+    mop = tuple(
+        result.room
+        for result in unambiguous
+        if successful_stop
+        and result.cleaning_mode == "mop"
+        and result.status == "completed"
+    )
+    completed_rooms = tuple(
+        name
+        for name, values in by_room.items()
+        if successful_stop and all(item.status == "completed" for item in values)
+    )
+    duration = None
+    if started_at is not None and ended_at is not None:
+        duration = max(
+            0,
+            round(
+                (
+                    datetime.fromisoformat(ended_at)
+                    - datetime.fromisoformat(started_at)
+                ).total_seconds()
+            ),
+        )
+    completed = (
+        successful_stop and semantics.completion_kind == "completed"
+        if semantics.completion_kind is not None
+        else None
+    )
+    return CleaningSession(
+        started_at=started_at,
+        ended_at=ended_at,
+        duration_seconds=duration,
+        rooms=rooms,
+        room_durations=tuple(durations.items()),
+        completed=completed,
+        completed_rooms=completed_rooms,
+        vacuum_completed_rooms=vacuum,
+        mop_completed_rooms=mop,
+        combined_completed_rooms=tuple(name for name in vacuum if name in mop),
+        mode_results=results,
+        mission_id=semantics.mission_id,
+        partition_id=semantics.partition_id,
+        initiator=semantics.initiator,
+        stop_reason=semantics.stop_reason,
+        completion_kind=semantics.completion_kind,
+    )
+
+
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     """Decode native history without treating its global default as room proof."""
     if len(payload) > _CLEANING_SESSION_MAX_BYTES:
@@ -2883,11 +3076,12 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         return None
     started_at = _decode_nested_timestamp(summary, 3)
     ended_at = _decode_nested_timestamp(summary, 4)
-    rooms: list[str] = []
-    seen_rooms: set[str] = set()
-    statuses: dict[tuple[int, str], int | None] = {}
-    durations: dict[tuple[int, str], int | None] = {}
-    modes: set[int] = set()
+    semantics = decode_history_semantics(payload)
+    if semantics is not None:
+        return _canonical_cleaning_session(semantics, started_at, ended_at)
+    # A malformed modern record cannot fall back to legacy fields ignored by
+    # the OEM decoder. Parse the summary once for both format admission and the
+    # legacy projection below.
     try:
         fields = _bounded_fields(
             summary,
@@ -2896,6 +3090,20 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         )
     except DecodeError:
         return None
+    modern = tuple(field for field in fields if field.number == 11)
+    if modern:
+        if len(modern) != 1 or modern[0].wire_type != 2:
+            return None
+        # Session identity and page completeness are independent of room proof.
+        # Non-room cleans and unsupported modern summaries must remain visible
+        # to managed dispatch baselines. Omit all positive room evidence; this
+        # also retracts earlier canonical statistics/cadence on a bad revision.
+        return CleaningSession(started_at, ended_at, None, (), (), None)
+    rooms: list[str] = []
+    seen_rooms: set[str] = set()
+    statuses: dict[tuple[int, str], int | None] = {}
+    durations: dict[tuple[int, str], int | None] = {}
+    modes: set[int] = set()
     for group in fields:
         if group.number not in (6, 7) or not isinstance(group.value, bytes):
             continue

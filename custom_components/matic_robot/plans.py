@@ -78,6 +78,7 @@ from .client.coverage_receipts import (
     native_session_hash,
 )
 from .client.models import CleaningSessionRecord, FloorPlan, Room
+from .completion_ledger import reset_progress as reset_completion_progress
 from .const import (
     DATA_PLAN_MANAGER,
     DOMAIN,
@@ -91,8 +92,15 @@ from .coverage_accounting import (
     coverage_evidence_from_storage,
     verified_room_coverage,
 )
+from .native_cadence import import_native_cadence
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
+from .room_identity import room_cadence_identity as room_cadence_identity
+from .room_statistics import (
+    NativeRoomStatistic,
+    native_room_statistics_by_session,
+    native_statistics_have_ambiguous_floor,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _MetadataResult = TypeVar("_MetadataResult")
@@ -120,7 +128,7 @@ class _MetadataLockLease:
 
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 12
+STORAGE_MINOR_VERSION = 13
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
@@ -642,32 +650,6 @@ def plan_floor_token(floor_plan: FloorPlan) -> str:
         add(id_wire)
         add(protocol_id)
         add(room_id)
-    return digest.hexdigest()
-
-
-def room_cadence_identity(floor_plan: FloorPlan, room_id: str) -> str:
-    """Bind cadence to robot-owned floor and room IDs, excluding room labels.
-
-    Mission, partition, and native room identity prevent a reused room ID on
-    another mapped floor from inheriting progress. Geometry and names remain
-    free to change without affecting the schedule identity.
-    """
-    room = next(
-        (candidate for candidate in floor_plan.rooms if candidate.id == room_id), None
-    )
-    if room is None:
-        raise ValueError("room is not present on the current map")
-    digest = hashlib.sha256(b"matic-room-cadence-identity-v1\0")
-    digest.update(struct.pack(">q", floor_plan.mission_id))
-    for value in (
-        floor_plan.partition_id_wire,
-        floor_plan.partition_protocol_id.encode(),
-        room.id_wire,
-        room.protocol_id.encode(),
-        room.id.encode(),
-    ):
-        digest.update(struct.pack(">I", len(value)))
-        digest.update(value)
     return digest.hexdigest()
 
 
@@ -2331,6 +2313,29 @@ class CleaningPlanManager:
         )
         return deepcopy(pending) if pending is not None else None
 
+    async def async_set_native_cleanings_enabled(
+        self, serial_number: str, enabled: bool
+    ) -> None:
+        """Persist activation before importing history; never backfill old runs."""
+        if not isinstance(enabled, bool):
+            raise ValueError("native cleanings option must be boolean")
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                state = robot.get("native_cleanings")
+                if isinstance(state, dict) and state.get("enabled") is enabled:
+                    return False
+                before = deepcopy(robot)
+                robot["native_cleanings"] = {
+                    "enabled": enabled,
+                    "since": dt_util.utcnow().isoformat(),
+                }
+                await self._async_save_with_rollback(serial_number, before)
+                return True
+
+        await self._async_run_owned_metadata(serial_number, commit, notify=True)
+
     async def async_import_native_history(
         self,
         serial_number: str,
@@ -2341,9 +2346,31 @@ class CleaningPlanManager:
         coverage_verifier: CoverageVerifier | None = None,
         current_floor_plan: Callable[[], FloorPlan | None] | None = None,
     ) -> bool:
-        """Import native activity and reconcile only the matching pending room."""
+        """Import history through the legacy boolean result interface."""
+        return bool(
+            await self.async_process_native_history(
+                serial_number,
+                floor_plan,
+                records,
+                generation=generation,
+                coverage_verifier=coverage_verifier,
+                current_floor_plan=current_floor_plan,
+            )
+        )
+
+    async def async_process_native_history(
+        self,
+        serial_number: str,
+        floor_plan: FloorPlan | None,
+        records: Iterable[CleaningSessionRecord],
+        *,
+        generation: int | None = None,
+        coverage_verifier: CoverageVerifier | None = None,
+        current_floor_plan: Callable[[], FloorPlan | None] | None = None,
+    ) -> bool | None:
+        """Process history; return None when admission or floor identity rejects it."""
         if floor_plan is None:
-            return False
+            return None
         entry_generation = self.robot_generation(serial_number)
         proof_generation = self.motion_generation(serial_number)
         records = tuple(records)
@@ -2372,7 +2399,7 @@ class CleaningPlanManager:
                     )
         reconciled: list[dict[str, Any]] = []
 
-        async def commit(lease: _MetadataLockLease) -> bool:
+        async def commit(lease: _MetadataLockLease) -> bool | None:
             motion_generation = self.motion_generation(serial_number)
             lease.release(self.command_lock(serial_number))
             async with self._store_lock:
@@ -2385,7 +2412,13 @@ class CleaningPlanManager:
                         and generation != self.robot_generation(serial_number)
                     )
                 ):
-                    return False
+                    return None
+                if current_floor_plan is not None:
+                    current_floor = current_floor_plan()
+                    if current_floor is None or plan_floor_token(
+                        current_floor
+                    ) != plan_floor_token(floor_plan):
+                        return None
                 return await self._async_import_native_history(
                     serial_number,
                     floor_plan,
@@ -2402,7 +2435,7 @@ class CleaningPlanManager:
                     else None,
                 )
 
-        def after_commit(changed: bool) -> None:
+        def after_commit(changed: bool | None) -> None:
             if not changed:
                 return
             self._notify_listeners(serial_number)
@@ -2436,7 +2469,7 @@ class CleaningPlanManager:
             ),
             after_commit=after_commit,
         )
-        return bool(result)
+        return result
 
     async def _async_import_native_history(
         self,
@@ -2453,6 +2486,7 @@ class CleaningPlanManager:
         before = deepcopy(robot)
         records = tuple(records)
         changed = _import_native_room_activity(robot, floor_plan, records)
+        changed = import_native_cadence(robot, floor_plan, records) or changed
         changed = (
             _reconcile_pending_native_history(
                 robot,
@@ -3095,6 +3129,7 @@ class CleaningPlanManager:
                 schedule = {
                     "progress": {"mop": 0, "coverage": 0},
                     "identity": room_identity,
+                    "native_since": dt_util.utcnow().isoformat(),
                 }
                 schedules[room_id] = schedule
             elif (
@@ -3103,11 +3138,19 @@ class CleaningPlanManager:
                 # A reused room ID on a different native floor identity starts
                 # a new shared schedule and cannot inherit ambiguous progress.
                 schedule["progress"] = {"mop": 0, "coverage": 0}
+                schedule.pop("accounting", None)
+                schedule.pop("native_events", None)
+                schedule.pop("native_binding", None)
+                schedule["native_since"] = dt_util.utcnow().isoformat()
                 schedule["identity"] = room_identity
             elif floor_token is not None and schedule.get("floor_token") != floor_token:
                 # A verified floor rebind must not carry progress from an
                 # older map whose room identity happened to remain stable.
                 schedule["progress"] = {"mop": 0, "coverage": 0}
+                schedule.pop("accounting", None)
+                schedule.pop("native_events", None)
+                schedule.pop("native_binding", None)
+                schedule["native_since"] = dt_util.utcnow().isoformat()
             schedule["policy"] = {
                 key: value for key, value in policy.items() if key != "scope"
             }
@@ -4066,9 +4109,9 @@ class CleaningPlanManager:
                 if isinstance(schedule, dict):
                     # _robot() has already normalized each persisted progress
                     # record before this policy mutation begins.
-                    progress = schedule["progress"]
-                    for mode in reset_modes:
-                        progress[mode] = 0
+                    reset_completion_progress(
+                        schedule, reset_modes, at=dt_util.utcnow().timestamp()
+                    )
                     policy = schedule.get("policy")
                     if isinstance(policy, dict):
                         for mode in reset_modes:
@@ -4385,6 +4428,35 @@ class CleaningPlanManager:
                 await self._store.async_save(self._data)
 
         await self._async_run_owned_metadata(serial_number, commit, notify=True)
+
+    async def async_claim_native_session(
+        self, serial_number: str, session_id: str, *, run_id: str | None = None
+    ) -> None:
+        """Durably reserve our exact command UUID before sending it to the robot."""
+        canonical_id = str(UUID(session_id))
+        claim = hashlib.sha256(canonical_id.encode("ascii")).hexdigest()
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                last_run = robot.get("last_run")
+                if run_id is not None and (
+                    not isinstance(last_run, dict)
+                    or last_run.get("run_id") != run_id
+                    or last_run.get("outcome") != "running"
+                ):
+                    raise ValueError("managed run no longer owns this dispatch")
+                claims = robot.setdefault("managed_native_sessions", {})
+                if claim in claims:
+                    return False
+                before = deepcopy(robot)
+                claims[claim] = {"at": dt_util.utcnow().isoformat(), "run_id": run_id}
+                await self._async_save_with_rollback(serial_number, before)
+                return True
+
+        await self._async_run_owned_metadata(
+            serial_number, commit, reject_on_admission_close=True
+        )
 
     async def async_set_recovery_checkpoint(
         self,
@@ -5367,6 +5439,10 @@ class CleaningPlanManager:
             plan_id,
             room,
             cadence_state,
+            completion_id=hashlib.sha256(
+                f"{run_id or now}:{room.room_id}".encode()
+            ).hexdigest(),
+            completed_at=cast(datetime, dt_util.parse_datetime(now)).timestamp(),
             verified_coverage=verified_room_coverage(
                 checkpoint.get("coverage_evidence")
                 if isinstance(checkpoint, dict)
@@ -5565,6 +5641,15 @@ class CleaningPlanManager:
                 plan_id,
                 room_settings,
                 pending.get("cadence_state"),
+                completion_id=hashlib.sha256(
+                    (
+                        f"{pending.get('run_id') or pending['dispatched_at']}:"
+                        f"{room.room_id}"
+                    ).encode()
+                ).hexdigest(),
+                completed_at=cast(
+                    datetime, dt_util.parse_datetime(completed_value)
+                ).timestamp(),
                 current_identity=room_identity,
                 validate_current_identity=True,
                 verified_coverage=verified_room_coverage(
@@ -5892,6 +5977,36 @@ class CleaningPlanManager:
                 }
                 for room_id, room in robot["rooms"].items()
             },
+            "robot_reported_completed_by_room": {
+                room_id: {
+                    "name": room.get("name"),
+                    "at": room.get("robot_last_completed"),
+                    "duration_seconds": room.get("robot_last_duration_seconds"),
+                    "started_at": room.get("robot_last_session_started_at"),
+                    "floor_mission_id": room.get(
+                        "robot_last_floor_id", room.get("robot_last_invalid_floor_id")
+                    ),
+                    **(
+                        {"floor_partition_hash": room["robot_last_partition_hash"]}
+                        if isinstance(room.get("robot_last_partition_hash"), str)
+                        else {}
+                    ),
+                    "source": (
+                        "robot_native_mode_result_identity_match"
+                        if isinstance(room.get("robot_last_completed"), str)
+                        and isinstance(room.get("robot_last_partition_hash"), str)
+                        else "robot_native_mode_result_room_name_match"
+                        if isinstance(room.get("robot_last_completed"), str)
+                        else "robot_native_mode_result_managed_session"
+                        if room.get("robot_last_invalid_source") == "managed_session"
+                        else "robot_native_mode_result_ambiguous"
+                    ),
+                    "excluded_modes": room.get("robot_last_conflicted_modes", []),
+                }
+                for room_id, room in robot["rooms"].items()
+                if isinstance(room.get("robot_last_completed"), str)
+                or isinstance(room.get("robot_last_invalidated_at"), str)
+            },
             "native_reconciliation_pending": isinstance(
                 robot.get("pending_native_reconciliation"), dict
             ),
@@ -5968,6 +6083,7 @@ class CleaningPlanManager:
             "rotation_resets",
             "shared_room_cadence",
             "plan_room_cadence",
+            "managed_native_sessions",
         ):
             if not isinstance(robot.get(key), dict):
                 robot[key] = {}
@@ -6988,6 +7104,14 @@ def _reconcile_pending_native_history(
             pending["plan_id"],
             room_settings,
             cadence_state,
+            completion_id=hashlib.sha256(
+                (
+                    f"{pending.get('run_id') or pending['dispatched_at']}:{room.id}"
+                ).encode()
+            ).hexdigest(),
+            completed_at=cast(
+                datetime, dt_util.parse_datetime(matches[0].ended_at)
+            ).timestamp(),
             current_identity=current_identity,
             validate_current_identity=True,
             verified_coverage=verified_room_coverage(
@@ -7145,11 +7269,36 @@ def _import_native_room_activity(
         timestamp = _latest_timestamp(session.ended_at)
         if timestamp is None or not isinstance(session.ended_at, str):
             continue
-        worked_rooms = (
-            session.visited_rooms if session.mode_results else session.completed_rooms
-        )
-        for worked_name in worked_rooms:
-            mapped_room = room_lookup.get(_native_room_key(worked_name))
+        canonical = session.mission_id is not None or session.partition_id is not None
+        if canonical:
+            if (
+                session.mission_id != floor_plan.mission_id
+                or session.partition_id != floor_plan.partition_protocol_id
+            ):
+                continue
+            active_rooms = {room.protocol_id: room for room in floor_plan.rooms}
+            worked = {
+                result.room_id
+                for result in session.mode_results
+                if result.status in {"partial", "completed"}
+            }
+            mapped_rooms: list[tuple[str, str] | None] = [
+                (mapped.id, mapped.name)
+                for room_id in worked
+                if (mapped := active_rooms.get(room_id or "")) is not None
+            ]
+        else:
+            if native_statistics_have_ambiguous_floor(floor_plan):
+                continue
+            worked_rooms = (
+                session.visited_rooms
+                if session.mode_results
+                else session.completed_rooms
+            )
+            mapped_rooms = [
+                room_lookup.get(_native_room_key(name)) for name in worked_rooms
+            ]
+        for mapped_room in mapped_rooms:
             if mapped_room is None:
                 continue
             room_id, room_name = mapped_room
@@ -7170,7 +7319,533 @@ def _import_native_room_activity(
         if any(global_room.get(key) != value for key, value in updates.items()):
             global_room.update(updates)
             changed = True
+
+    # Keep robot-reported statistics separate from verified managed outcomes.
+    # The decoded history does not establish a managed dispatch or verify the
+    # floor on which its room name was recorded.
+    now = dt_util.utcnow()
+    current_floor_id = floor_plan.mission_id
+    previous_floor_id = robot.get("robot_room_statistics_floor_id")
+    if (
+        isinstance(previous_floor_id, int)
+        and not isinstance(previous_floor_id, bool)
+        and previous_floor_id != current_floor_id
+    ):
+        robot["robot_room_statistics_floor_changed_at"] = now.isoformat()
+        # Retain the old source marker so room sensors can clear a restored
+        # value whose floor no longer matches the active map.
+        changed = True
+    if previous_floor_id != current_floor_id:
+        robot["robot_room_statistics_floor_id"] = current_floor_id
+        changed = True
+    changed_at = _latest_timestamp(robot.get("robot_room_statistics_floor_changed_at"))
+    statistics = native_room_statistics_by_session(
+        records,
+        floor_plan.rooms,
+        now=now,
+        future_tolerance_seconds=ROTATION_FUTURE_TOLERANCE_SECONDS,
+        multiple_floors_known=native_statistics_have_ambiguous_floor(floor_plan),
+        floor_plan=floor_plan,
+        minimum_timestamp=changed_at,
+    )
+    # A present but rejected revision is not history retention loss. Retract
+    # the cached canonical session even if its floor is currently inactive.
+    by_hash = {hashlib.sha256(record.key).hexdigest(): record for record in records}
+    for room_id, stored in robot["rooms"].items():
+        if not isinstance(stored, dict) or not isinstance(
+            stored.get("robot_last_session_hash"), str
+        ):
+            continue
+        prior = by_hash.get(stored["robot_last_session_hash"])
+        partition_hash = stored.get("robot_last_partition_hash")
+        ended = stored.get("robot_last_completed")
+        timestamp = _latest_timestamp(ended)
+        stored_floor = stored.get("robot_last_floor_id")
+        if (
+            prior is None
+            or not isinstance(partition_hash, str)
+            or not isinstance(ended, str)
+            or timestamp is None
+            or not isinstance(stored_floor, int)
+        ):
+            continue
+        session = prior.session
+        if (
+            _latest_timestamp(session.ended_at) is not None
+            and session.mission_id == stored_floor
+            and isinstance(session.partition_id, str)
+            and hashlib.sha256(session.partition_id.encode()).hexdigest()
+            == partition_hash
+        ):
+            continue
+        rejected = NativeRoomStatistic(
+            room_id,
+            stored.get("name", ""),
+            ended,
+            0,
+            timestamp,
+            stored.get("robot_last_session_started_at"),
+            hashlib.sha256(prior.key).hexdigest(),
+            {},
+            frozenset(),
+            frozenset({"vacuum", "mop"}),
+            frozenset(),
+            partition_hash,
+        )
+        changed = (
+            _apply_native_room_statistics(robot, stored_floor, {room_id: (rejected,)})
+            or changed
+        )
+    statistics_changed = _apply_native_room_statistics(
+        robot, current_floor_id, statistics
+    )
+    return changed or statistics_changed
+
+
+def _apply_native_room_statistics(
+    robot: dict[str, Any],
+    floor_id: int,
+    histories: Mapping[str, tuple[NativeRoomStatistic, ...]],
+) -> bool:
+    """Apply per-session evidence, retaining bounded mode tombstones."""
+    changed = False
+    # Upgrade legacy negative evidence independently of this refresh's page.
+    # Native history can omit an older session or even the entire room, but a
+    # later page must not erase the rejection before that session reappears.
+    for room in robot["rooms"].values():
+        if not isinstance(room, dict):
+            continue
+        tombstones = _native_mode_tombstones(room.get("robot_native_mode_tombstones"))
+        old_tombstones = room.get("robot_native_mode_tombstones", [])
+        legacy_tombstones = (
+            (
+                room.get("robot_last_invalid_floor_id"),
+                room.get("robot_last_invalid_session_hash"),
+                room.get("robot_last_invalid_session_started_at"),
+                room.get("robot_last_invalidated_at"),
+                room.get("robot_last_invalid_modes"),
+            ),
+            (
+                room.get("robot_last_floor_id"),
+                room.get("robot_last_session_hash"),
+                room.get("robot_last_session_started_at"),
+                room.get("robot_last_completed"),
+                room.get("robot_last_conflicted_modes"),
+            ),
+        )
+        for (
+            legacy_floor,
+            legacy_hash,
+            legacy_start,
+            legacy_end,
+            legacy_modes,
+        ) in legacy_tombstones:
+            if room.get(
+                "robot_last_invalid_source"
+            ) == "managed_session" and legacy_hash == room.get(
+                "robot_last_invalid_session_hash"
+            ):
+                continue
+            if (
+                not isinstance(legacy_floor, int)
+                or isinstance(legacy_floor, bool)
+                or not isinstance(legacy_hash, str)
+                or not isinstance(legacy_end, str)
+                or not isinstance(legacy_modes, list)
+            ):
+                continue
+            valid_modes = {mode for mode in legacy_modes if mode in {"vacuum", "mop"}}
+            if valid_modes:
+                changed = (
+                    _remember_native_mode_tombstone_identity(
+                        tombstones,
+                        legacy_floor,
+                        legacy_hash,
+                        legacy_start,
+                        legacy_end,
+                        valid_modes,
+                    )
+                    or changed
+                )
+        if old_tombstones != tombstones:
+            room["robot_native_mode_tombstones"] = tombstones
+            changed = True
+
+    for room_id, history in histories.items():
+        room = robot["rooms"].setdefault(room_id, {})
+        prior_modes = _positive_native_mode_durations(
+            room.get("robot_last_completed_mode_durations")
+        )
+        stored_hash = room.get("robot_last_session_hash")
+        stored_end = room.get("robot_last_completed")
+        if room.get("robot_last_invalid_source") != "managed_session":
+            stored_hash = stored_hash or room.get("robot_last_invalid_session_hash")
+            stored_end = stored_end or room.get("robot_last_invalidated_at")
+        same_stored = (
+            isinstance(stored_hash, str)
+            and isinstance(stored_end, str)
+            and room.get("robot_last_floor_id", room.get("robot_last_invalid_floor_id"))
+            == floor_id
+        )
+        tombstones = _native_mode_tombstones(room.get("robot_native_mode_tombstones"))
+
+        candidates: list[tuple[NativeRoomStatistic, dict[str, int], set[str]]] = []
+        retracted: NativeRoomStatistic | None = None
+        touched_tombstones = False
+        for statistic in history:
+            same_session = same_stored and stored_hash == statistic.session_hash
+            session_modes = prior_modes if same_session else {}
+            conflicting = set(statistic.conflicting_modes)
+            if same_session:
+                stored_conflicts = room.get("robot_last_conflicted_modes", [])
+                if isinstance(stored_conflicts, list):
+                    conflicting.update(
+                        mode for mode in stored_conflicts if mode in {"vacuum", "mop"}
+                    )
+                stored_invalid_modes = room.get("robot_last_invalid_modes", [])
+                if isinstance(stored_invalid_modes, list):
+                    conflicting.update(
+                        mode
+                        for mode in stored_invalid_modes
+                        if mode in {"vacuum", "mop"}
+                    )
+                conflicting.update(
+                    mode
+                    for mode, duration in statistic.mode_durations.items()
+                    if mode in session_modes and session_modes[mode] != duration
+                )
+            tombstoned = _native_tombstone_modes(tombstones, floor_id, statistic)
+            explicit = set(statistic.invalidated_modes)
+            persistent = set(conflicting)
+            persistent.update(explicit & statistic.reported_completed_modes)
+            if same_session:
+                persistent.update(explicit & session_modes.keys())
+            if persistent:
+                touched_tombstones = (
+                    _remember_native_mode_tombstone(
+                        tombstones, floor_id, statistic, persistent
+                    )
+                    or touched_tombstones
+                )
+                tombstoned.update(persistent)
+
+            modes = {
+                mode: duration
+                for mode, duration in statistic.mode_durations.items()
+                if mode not in tombstoned
+            }
+            if same_session:
+                modes = {
+                    **{
+                        mode: duration
+                        for mode, duration in session_modes.items()
+                        if mode not in tombstoned
+                    },
+                    **modes,
+                }
+            if modes:
+                candidates.append((statistic, modes, conflicting | tombstoned))
+            elif same_session and persistent & session_modes.keys():
+                retracted = statistic
+
+        old_tombstones = room.get("robot_native_mode_tombstones", [])
+        if touched_tombstones or old_tombstones != tombstones:
+            room["robot_native_mode_tombstones"] = tombstones[-64:]
+            changed = True
+
+        positive_timestamp = _latest_timestamp(room.get("robot_last_completed"))
+        existing_timestamp = _latest_timestamp(
+            room.get("robot_last_completed"), room.get("robot_last_invalidated_at")
+        )
+        managed = next(
+            (
+                statistic
+                for statistic in history
+                if (
+                    room.get("robot_last_invalid_source") == "managed_session"
+                    and room.get("robot_last_managed_session_hash")
+                    == statistic.session_hash
+                    and room.get("robot_last_invalid_floor_id") == floor_id
+                )
+            ),
+            None,
+        )
+        if managed is None:
+            managed = next(
+                (
+                    statistic
+                    for statistic in history
+                    if (
+                        existing_timestamp is None
+                        or statistic.timestamp >= existing_timestamp
+                    )
+                    and (
+                        room.get("robot_last_managed_session_hash")
+                        == statistic.session_hash
+                        or _native_room_statistic_matches_managed_history(
+                            robot, statistic
+                        )
+                    )
+                ),
+                None,
+            )
+        selected = max(candidates, key=lambda item: item[0].timestamp, default=None)
+        if managed is not None and (
+            selected is None or managed.timestamp >= selected[0].timestamp
+        ):
+            updates: dict[str, Any] = {
+                "robot_last_invalidated_at": managed.ended_at,
+                "robot_last_invalid_session_hash": managed.session_hash,
+                "robot_last_invalid_session_started_at": managed.started_at,
+                "robot_last_invalid_floor_id": floor_id,
+                "robot_last_invalid_source": "managed_session",
+                "robot_last_managed_session_hash": managed.session_hash,
+                "robot_last_managed_session_started_at": managed.started_at,
+            }
+            for key in (
+                "robot_last_completed",
+                "robot_last_duration_seconds",
+                "robot_last_completed_mode_durations",
+                "robot_last_session_hash",
+                "robot_last_session_started_at",
+                "robot_last_floor_id",
+                "robot_last_partition_hash",
+            ):
+                if key in room:
+                    room.pop(key)
+                    changed = True
+            if any(room.get(key) != value for key, value in updates.items()):
+                changed = True
+                room.update(updates)
+            continue
+
+        if retracted is not None:
+            invalidation = {
+                "robot_last_invalidated_at": retracted.ended_at,
+                "robot_last_invalid_session_hash": retracted.session_hash,
+                "robot_last_invalid_session_started_at": retracted.started_at,
+                "robot_last_invalid_floor_id": floor_id,
+                "robot_last_invalid_source": "mode_retracted",
+            }
+            if any(room.get(key) != value for key, value in invalidation.items()):
+                changed = True
+                room.update(invalidation)
+
+        if selected is None:
+            if retracted is not None:
+                for key in (
+                    "robot_last_completed",
+                    "robot_last_duration_seconds",
+                    "robot_last_completed_mode_durations",
+                    "robot_last_session_hash",
+                    "robot_last_session_started_at",
+                    "robot_last_floor_id",
+                    "robot_last_partition_hash",
+                    "robot_last_conflicted_modes",
+                ):
+                    if key in room:
+                        room.pop(key)
+                        changed = True
+                room["robot_last_invalid_modes"] = sorted(
+                    _native_tombstone_modes(tombstones, floor_id, retracted)
+                )
+            continue
+
+        statistic, modes, excluded = selected
+        if (
+            positive_timestamp is not None
+            and statistic.timestamp < positive_timestamp
+            and retracted is None
+        ):
+            continue
+        if (
+            positive_timestamp is not None
+            and statistic.timestamp == positive_timestamp
+            and stored_hash != statistic.session_hash
+            and retracted is None
+        ):
+            continue
+        updates = {
+            "name": statistic.room_name,
+            "robot_last_completed": statistic.ended_at,
+            "robot_last_duration_seconds": sum(modes.values()),
+            "robot_last_completed_mode_durations": modes,
+            "robot_last_session_hash": statistic.session_hash,
+            "robot_last_session_started_at": statistic.started_at,
+            "robot_last_floor_id": floor_id,
+            "robot_last_partition_hash": statistic.partition_hash,
+            "robot_last_conflicted_modes": sorted(excluded),
+        }
+        if any(room.get(key) != value for key, value in updates.items()):
+            changed = True
+            room.update(updates)
+        invalid_at = _latest_timestamp(room.get("robot_last_invalidated_at"))
+        if invalid_at is None or statistic.timestamp > invalid_at:
+            for key in (
+                "robot_last_invalidated_at",
+                "robot_last_invalid_session_hash",
+                "robot_last_invalid_session_started_at",
+                "robot_last_invalid_floor_id",
+                "robot_last_invalid_modes",
+                "robot_last_invalid_source",
+                "robot_last_managed_session_hash",
+                "robot_last_managed_session_started_at",
+            ):
+                room.pop(key, None)
     return changed
+
+
+def _positive_native_mode_durations(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        mode: duration
+        for mode, duration in value.items()
+        if mode in {"vacuum", "mop"}
+        and isinstance(duration, int)
+        and not isinstance(duration, bool)
+        and duration > 0
+    }
+
+
+def _native_mode_tombstones(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        session_hash = item.get("session_hash")
+        ended_at = item.get("ended_at")
+        floor_id = item.get("floor_id")
+        modes = item.get("modes")
+        if (
+            not isinstance(session_hash, str)
+            or not isinstance(ended_at, str)
+            or not isinstance(floor_id, int)
+            or isinstance(floor_id, bool)
+            or not isinstance(modes, list)
+        ):
+            continue
+        normalized.append(
+            {
+                "session_hash": session_hash,
+                "started_at": item.get("started_at"),
+                "ended_at": ended_at,
+                "floor_id": floor_id,
+                "modes": sorted({mode for mode in modes if mode in {"vacuum", "mop"}}),
+            }
+        )
+    return normalized[-64:]
+
+
+def _native_tombstone_modes(
+    tombstones: list[dict[str, Any]], floor_id: int, statistic: NativeRoomStatistic
+) -> set[str]:
+    return {
+        mode
+        for item in tombstones
+        if item["floor_id"] == floor_id
+        and item["session_hash"] == statistic.session_hash
+        for mode in item["modes"]
+    }
+
+
+def _remember_native_mode_tombstone(
+    tombstones: list[dict[str, Any]],
+    floor_id: int,
+    statistic: NativeRoomStatistic,
+    modes: set[str],
+) -> bool:
+    return _remember_native_mode_tombstone_identity(
+        tombstones,
+        floor_id,
+        statistic.session_hash,
+        statistic.started_at,
+        statistic.ended_at,
+        modes,
+    )
+
+
+def _remember_native_mode_tombstone_identity(
+    tombstones: list[dict[str, Any]],
+    floor_id: int,
+    session_hash: str,
+    started_at: str | None,
+    ended_at: str,
+    modes: set[str],
+) -> bool:
+    existing = {
+        mode
+        for item in tombstones
+        if item["floor_id"] == floor_id and item["session_hash"] == session_hash
+        for mode in item["modes"]
+    }
+    merged = existing | modes
+    if merged == existing:
+        return False
+    tombstones[:] = [
+        item
+        for item in tombstones
+        if not (item["floor_id"] == floor_id and item["session_hash"] == session_hash)
+    ]
+    tombstones.append(
+        {
+            "session_hash": session_hash,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "floor_id": floor_id,
+            "modes": sorted(merged),
+        }
+    )
+    del tombstones[:-64]
+    return True
+
+
+def _native_room_statistic_matches_managed_history(
+    robot: Mapping[str, Any], statistic: NativeRoomStatistic
+) -> bool:
+    """Match a native session to any room start recorded for a managed run."""
+    native_start = (
+        dt_util.parse_datetime(statistic.started_at)
+        if isinstance(statistic.started_at, str)
+        else None
+    )
+    native_end = dt_util.parse_datetime(statistic.ended_at)
+    if (
+        native_start is None
+        or native_start.tzinfo is None
+        or native_end is None
+        or native_end.tzinfo is None
+    ):
+        return False
+    rotations = robot.get("rotations")
+    if not isinstance(rotations, Mapping):
+        return False
+    for rotation in rotations.values():
+        if not isinstance(rotation, Mapping):
+            continue
+        rooms = rotation.get("rooms")
+        if not isinstance(rooms, Mapping):
+            continue
+        for record in rooms.values():
+            if not isinstance(record, Mapping):
+                continue
+            raw_managed_start = record.get("last_started")
+            managed_start = (
+                dt_util.parse_datetime(raw_managed_start)
+                if isinstance(raw_managed_start, str)
+                else None
+            )
+            if managed_start is None or managed_start.tzinfo is None:
+                continue
+            if (
+                native_start - timedelta(seconds=120)
+                <= managed_start
+                <= native_end + timedelta(seconds=120)
+            ):
+                return True
+    return False
 
 
 def _rotation_sort_key(candidate: _RotationCandidate) -> tuple[bool, float, int]:

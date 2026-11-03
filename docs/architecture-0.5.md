@@ -1,6 +1,6 @@
 # Matic 0.5 authority contract
 
-Status: implementation contract; evidence: `acceptance-0.5.md`. Baseline: public stable `v0.4.7`. Binding inputs: the Matic Map Studio Roadmap, architecture
+Status: implementation contract; evidence: `acceptance-0.5.md`. Original baseline: public stable `v0.4.7`. Binding inputs: the Matic Map Studio Roadmap, architecture
 authority, and full 2026-08-29 independent review; historical status and release counts are refreshed in the evidence matrix. Scope: integration ownership and lifecycle,
 map-first operation, reliable live updates, explainable cleaning, independent room cadence. Owner refinement (2026-09-27): Map Studio v4 is the sole workspace UI. Remove
 Classic, its switch and saved frontend choice; preserve HA-native configuration forms and safe map/view preferences.
@@ -102,7 +102,7 @@ Workflows and diagnostics are lazy-loaded. An unrelated HA state update must tri
 
 Mopping and coverage cadence are independent per-room rules. Each may be plan-scoped or explicitly joined to a shared `{robot, verified floor, stable room}` schedule.
 Plan-scoped progress advances only from that plan's verified managed completion. Shared progress is consulted and advanced by opted-in saved plans and Map Studio one-off
-managed runs by default; existing untracked service calls never change it. Existing plans remain unchanged until cadence is edited on. A newly enabled schedule starts at zero;
+managed runs by default; existing untracked service calls never change it. Verified app-started and scheduled cleans also advance shared progress under the default-on integration option, from activation onward; see [cleaning results](native-cleaning-results.md). Existing plans remain unchanged until cadence is edited on. A newly enabled schedule starts at zero;
 joining adopts existing shared progress; leaving shared scope starts plan-scoped progress at zero; interval changes preserve count; disable pauses; reset is explicit; new or
 newly private progress starts at zero. Each interval is an integer from 1 through 100. **Do on next clean** requests that rule on the next qualifying run. Due work stays due
 until its modes and settings are verified. Mopping requires native mode evidence; vacuum coverage additionally requires a dispatch receipt and matching retained goals after
@@ -114,15 +114,15 @@ identity change.
 The storage minor-10 migration isolates a legacy tracked-room rotation row only when its run ID matches the manual run being migrated. Because older private cadence aggregates
 do not retain per-run provenance, active private cadence modes on a colliding legacy plan ID keep their stored counts but become unverified. Preview and dispatch stay blocked
 until the owner explicitly resets each affected mode. Shared schedules and unrelated plans are left intact; the migration never reconstructs cadence from aggregate cleaning
-history. Minor 11 stamps each plan's rooms as ordered room `entries`; saved custom areas join that one list (with no cadence), and earlier builds refuse the store. Minor 12 keeps each room's learned durations separately for each mode and coverage combination.
+history. Minor 11 stamps each plan's rooms as ordered room `entries`; saved custom areas join that one list (with no cadence), and earlier builds refuse the store. Minor 12 keeps each room's learned durations separately for each mode and coverage combination. Minor 13 adds native-cleaning activation and correction-safe shared completion accounting.
 
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy identity and cadence snapshot, before dispatch. Manual and saved-plan
 starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the
-frozen run. Only a unique, verified managed room completion advances progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to
+frozen run. Managed completion credit requires a unique, verified managed room result. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to
 match before comparing goals. A bounded receipt requires the echoed generated session and every vacuum-goal UUID plus its setting; the manager binds it to the owned leg and
 floor/room identities. Credit also requires the uniquely matched native history session, inactive state, the same floor, and matching vacuum goals in two fresh completion samples; when firmware has cleared the live goals, the goals retained in that session's unique history record must match in both samples instead.
 This proves observed dispatch/completion consistency, not an atomic snapshot or unchanged settings between observations. Legacy flags and malformed receipts never grant credit. Partial,
-interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate, or ambiguous floor/name evidence does not. Keep the bounded 64-key completion
+interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate, or ambiguous floor/name evidence does not grant managed completion credit. Keep the bounded 64-key completion
 receipt dedupe independent of the Activity journal. Dispatch markers freeze the requested mode/coverage; live and startup reconciliation share one recorder. Completion proof is independent of settings-qualified duration estimates; changed or unknown settings invalidate prior samples. A due rule stays due until
 its own evidence passes. A Map Studio one-off room run is ephemeral and never creates a saved plan. It applies existing shared schedules by default; an explicit settings
 override still counts compatible verified work. Existing service behavior remains compatible, with tracked schedule use explicit at that boundary. Explicit room lists and

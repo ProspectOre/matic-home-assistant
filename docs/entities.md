@@ -115,15 +115,16 @@ the software and hardware versions.
 If **Problem** turns on, `sensor.matic_activity` names the reported conditions
 in `errors` and `primary_error` and keeps their numeric codes in
 `hermes_error_codes`; a code with no known meaning appears as `error_code_<n>`.
-An error must persist across two normal polls before it appears, which filters
-brief firmware pulses. Recorded activity can help diagnose an error after it clears.
+Each new error needs two normal polls; existing errors stay visible while others change.
+Code 207's lid meaning is physically confirmed. Matic app 1.182.1 maps
+220 to mopping water unavailable; broader firmware coverage remains unqualified. Recorded activity keeps their numeric codes after clearing.
 
 ## Room statistics and the recorder
 
-Each room's **Last cleaned** and **Last clean duration** sensors are disabled
-by default. Enable them to retain room-specific history and duration statistics.
-The robot-wide **Last clean duration** is recorded by default. Room sensors
-show the latest confirmed result, whatever its cleaning mode and coverage.
+Enable each room's **Last cleaned** and **Last clean duration** for completed app-started cleans.
+Check `native_statistics_blocked_reason` for withheld app results and `statistics_source` for displayed evidence.
+See [cleaning results](native-cleaning-results.md) for floor limits. Robot-wide duration is recorded by default.
+For missing **Scheduled cleanings** records or on/off details, see [schedule diagnostics](native-schedule-diagnostics.md).
 
 Room lists, SSID, schedules, detailed run results, and plan history remain
 available to templates through `state_attr()` but are excluded from Recorder
@@ -142,7 +143,6 @@ The one-time 0.2 migration renamed older numbered IDs where possible. 0.5
 removed four duplicate entities once, on its first start; see the
 [release notes](release-notes-0.5.0.md#before-you-update) for replacements.
 User-assigned names and IDs are preserved.
-
 ## Assistant tools
 
 See [Assistant and MCP tools](assistant-tools.md) for administrator access,

@@ -1,12 +1,12 @@
 # 0.5 UX spec (Phase B of the human-interface overhaul)
 
-Status: signed off. The owner accepted all 24 recommendations on 2026-10-11 (recorded in each file's section 10); nothing in product code changed yet, and Phase C starts with UX0. Follows [`ux-audit-0.5.md`](ux-audit-0.5.md) (Phase A, 167 structural findings and 462 scored copy rows) and precedes the Phase C build PRs. Owner decision (2026-10-11): 0.5.0 stable is blocked until these specs are built, reviewed and re-qualified; see the dated refinement in [`architecture-0.5.md`](architecture-0.5.md).
+The owner accepted all 24 recommendations on 2026-10-11 (recorded in each file's section 10). At sign-off, product code was unchanged and Phase C was next. This spec follows [`ux-audit-0.5.md`](ux-audit-0.5.md) and precedes the build PRs. The owner's then-current 0.5.0 release hold required implementation, review and requalification; later evidence and publication are recorded in [0.5.0 qualification](verification-0.5-stable.md).
 
-Binding and unchanged: the shell invariants (one canvas, one status strip, one contextual primary action, fail-closed selectors, room/list parity, reversible Full map, read-only history), the 2026-08-29 responsive table and accessibility rules, `selectPrimaryAction` branch order and enable policy (labels and reasons change, policy does not, except the four selector-affecting changes declared below), service names, entity unique_ids, storage schema, cadence normalization, certificate pinning.
+At sign-off, the binding boundaries included the shell invariants (one canvas, one status strip, one contextual primary action, fail-closed selectors, room/list parity, reversible Full map, read-only history), the 2026-08-29 responsive table and accessibility rules, `selectPrimaryAction` branch order and enable policy (labels and reasons change, policy does not, except the four selector-affecting changes declared below), service names, entity unique_ids, storage compatibility, cadence normalization and certificate pinning.
 
 ## Spec files
 
-Every file follows the same twelve sections (scope, user goal, hierarchy, states, interaction, final copy, responsive, accessibility, backend needs, decisions, resolves, invariants) and is at most 150 lines. Every state maps to an existing `selectPrimaryAction` branch by `state.ts` line; every `file:line` cite was checked against `origin/main` (`c00f878`).
+At sign-off, each file used twelve sections (scope, user goal, hierarchy, states, interaction, final copy, responsive, accessibility, backend needs, decisions, resolves, invariants). The counts and `file:line` citations below refer to the `c00f878` snapshot; later document splits and source edits may differ.
 
 | File | Lines | Scope | Audit IDs owned | Decisions |
 |---|---:|---|---:|---:|

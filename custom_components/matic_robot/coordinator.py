@@ -21,7 +21,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .client.api import MaticHermesClient
+from .client.api import _BAG_FULL_ERROR, _BAG_MISSING_ERROR, MaticHermesClient
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import (
     AuthenticationRequiredError,
@@ -46,6 +46,7 @@ from .const import (
     DOMAIN,
     EVENT_CLEANING_FINISHED,
     EVENT_CUES,
+    EVENT_NATIVE_HISTORY_UPDATED,
     MAP_UPDATE_INTERVAL_SECONDS,
     SLOW_UPDATE_INTERVAL_SECONDS,
     UPDATE_INTERVAL_SECONDS,
@@ -143,11 +144,12 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_retry_after: dict[tuple[str, int | None], float] = {}
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
+        self._latest_native_history_revision: str | None = None
+        self._acknowledged_native_history_revision: str | None = None
         self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
-        self._pending_error_codes: tuple[int, ...] = ()
-        self._pending_error_polls = 0
+        self._error_code_polls: dict[int, int] = {}
         self._bag_previous_full: bool | None = None
         self._bag_errors_observed = False
         self._bag_pending_clear = False
@@ -409,6 +411,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._async_update_device_software(version, info.serial_number)
             self._async_clear_identity_issue()
             # Events require native evidence; local estimates are display-only.
+            self._async_fire_native_history_updated(state)
             self._async_fire_session_finished(state, version)
             state = await self._async_track_cleaning_session(state)
             if self.firmware_tracker is not None:
@@ -562,27 +565,30 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     def _async_confirm_robot_errors(
         self, state: RobotOperationalState
     ) -> RobotOperationalState:
-        """Suppress one-poll firmware error pulses while preserving real faults."""
+        """Confirm new error codes individually and preserve active faults."""
         codes = state.error_codes
-        if not codes:
-            self._pending_error_codes = ()
-            self._pending_error_polls = 0
+        polls = {code: self._error_code_polls.get(code, 0) + 1 for code in codes}
+        self._error_code_polls = polls
+        exposed = tuple(
+            code for code in codes if polls[code] >= ERROR_CONFIRMATION_POLLS
+        )
+        if exposed == codes:
             return state
-        if codes != self._pending_error_codes:
-            self._pending_error_codes = codes
-            self._pending_error_polls = 1
-        else:
-            self._pending_error_polls += 1
-        if self._pending_error_polls < ERROR_CONFIRMATION_POLLS:
-            _LOGGER.debug(
-                "Waiting for a second poll before exposing robot error codes %s",
-                codes,
-            )
-            # Bag flags are derived from the same error list and must obey the
-            # same confirmation window; otherwise a one-poll firmware pulse
-            # could create a false full-bag statistic.
+        _LOGGER.debug(
+            "Waiting for a second poll before exposing robot error codes %s",
+            tuple(code for code in codes if code not in exposed),
+        )
+        # Bag flags use the same per-code confirmation as the error list. When
+        # no code has been confirmed, retain unknown flags rather than claiming
+        # the bag is clear.
+        if not exposed:
             return replace(state, error_codes=(), bag_full=None, bag_missing=None)
-        return state
+        return replace(
+            state,
+            error_codes=exposed,
+            bag_full=_BAG_FULL_ERROR in exposed,
+            bag_missing=_BAG_MISSING_ERROR in exposed,
+        )
 
     async def _async_track_cleaning_session(self, state: RobotState) -> RobotState:
         """Merge fresh HA-side run tracking with robot-native session history."""
@@ -866,6 +872,41 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._snapshot_retry_after.pop(snapshot_identity, None)
         finally:
             self._snapshot_versions_in_progress.discard(snapshot_identity)
+
+    @callback
+    def _async_fire_native_history_updated(self, state: RobotState) -> None:
+        """Request a refresh until the full native history revision is imported."""
+        revision = state.telemetry.native_history_revision
+        if not isinstance(revision, str):
+            return
+        self._latest_native_history_revision = revision
+        if revision == self._acknowledged_native_history_revision:
+            return
+        # This internal refresh has no completion semantics. The public
+        # cleaning-finished event below still announces a session only once.
+        self.hass.bus.async_fire(
+            EVENT_NATIVE_HISTORY_UPDATED,
+            {"entry_id": self.config_entry.entry_id, "revision": revision},
+        )
+
+    @callback
+    def async_ack_native_history_revision(self, revision: str | None) -> None:
+        """Acknowledge one successfully imported native history snapshot."""
+        if (
+            isinstance(revision, str)
+            and revision == self._latest_native_history_revision
+        ):
+            self._acknowledged_native_history_revision = revision
+
+    @callback
+    def native_history_revision_acknowledged(self, revision: str) -> bool:
+        """Return whether a full native history snapshot was already imported."""
+        return revision == self._acknowledged_native_history_revision
+
+    @callback
+    def native_history_revision_is_current(self, revision: str) -> bool:
+        """Return whether a refresh request still matches the latest poll."""
+        return revision == self._latest_native_history_revision
 
     @callback
     def _async_fire_session_finished(

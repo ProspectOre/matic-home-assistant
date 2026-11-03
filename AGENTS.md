@@ -10,6 +10,18 @@ Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Eve
 - Before substantive work, at material milestones and at handoff, follow the canonical [Linear work-tracking workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/linear-work-tracking.md). When local ancestor or wiki files are absent, read the linked canonical sources through existing authorized session connectors as that workflow requires; report unavailable routes separately.
 - Write commits, PR text, reviews, comments and docs as plain, specific, human-quality prose: no AI slop such as filler, hype, restated summaries or decorative emoji. Attribution trailers and tool footers are tolerated here, overriding the shared rule, and nothing checks for them. Commit as the account owner; name branches by purpose.
 
+## OEM app and protocol research
+
+Learn from the installed Matic OEM app on the Samsung tablet or an equivalent
+authorized device before declaring a capability or protocol field unavailable.
+Decompilation and reverse engineering are authorized research techniques. Follow
+the [OEM research workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/oem-protocol-research.md)
+(`/Users/alec/Dev/wiki/workflows/oem-protocol-research.md` locally): verify installed
+app and artifact identity, trace wire fields through the OEM decoder and UI, and
+distinguish parser omissions from absent protocol evidence. Keep private captures
+and vendor binaries out of the public tree; device changes and physical acceptance
+remain separate from read-only research and synthetic tests.
+
 ## Release candidate cleanup
 
 After publishing a new RC, keep only its RC GitHub release and remote/local tag.
