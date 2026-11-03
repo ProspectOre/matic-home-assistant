@@ -368,6 +368,30 @@ try {
       document.body.append(gallery);
       await gallery.updateComplete;
 
+      // Optional map UI (including raised surfaces) is admitted asynchronously
+      // after the real map shell is ready. Wait for production to open that gate
+      // before replacing the scene with this synthetic benchmark fixture.
+      // Never force optionalUiReady in the fixture state: doing so would bypass
+      // the lifecycle behavior this harness is meant to measure.
+      const admissionStarted = performance.now();
+      let admittedState = gallery.getWorkspaceSnapshot();
+      let admissionWaitFrames = 0;
+      while (admittedState.optionalUiReady !== true && performance.now() - admissionStarted < timeoutMs) {
+        await waitFrame();
+        admissionWaitFrames += 1;
+        admittedState = gallery.getWorkspaceSnapshot();
+      }
+      if (admittedState.optionalUiReady !== true) {
+        throw new Error(`production optional-UI admission did not become ready in ${timeoutMs}ms: ${JSON.stringify({
+          optionalUiReady: admittedState.optionalUiReady,
+          mapAvailable: admittedState.map?.available,
+          dataMode: admittedState.dataMode,
+          coherence: admittedState.coherence,
+          admissionWaitFrames,
+        })}`);
+      }
+      const admissionWaitMs = performance.now() - admissionStarted;
+
       const parser = window.__surfaceCapacityParser;
       const response = await fetch("/__harness/fixture.matic3d", { cache: "no-store" });
       if (!response.ok) throw new Error(`fixture request failed: ${response.status}`);
@@ -388,7 +412,7 @@ try {
       }
       if (expectedStart !== expectedPoints) throw new Error("tile index did not cover all fixture points");
 
-      const old = gallery.getWorkspaceSnapshot();
+      const old = admittedState;
       const oldScene = old.resources.scene.value;
       const targetRevision = (oldScene?.revision ?? 0) + cycleIndex + 1;
       const nextScene = {
@@ -441,6 +465,9 @@ try {
         sceneRevision: current.sceneRevision,
         sourcePoints: current.sourcePoints,
         renderedPoints: current.renderedPoints,
+        optionalUiReady: admittedState.optionalUiReady,
+        admissionWaitMs,
+        admissionWaitFrames,
         allAdmittedPointsRendered: current.renderedPoints === expectedPoints,
       };
       const sceneCanvas = mapCanvas.canvasIdentity().scene;

@@ -34,7 +34,8 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
   custom area that overlaps one says so.
 - **Wi-Fi signal.** Turn on **Wi-Fi survey**, and the robot scans Wi-Fi every
   30 seconds while it's away from the dock. Open **Map options** and turn on
-  **Wi-Fi signal** to see weak spots, from green for strong to red for weak.
+  **Wi-Fi signal** to see sampled locations, from green for strong to red for
+  weak. Rings mark older, coarser readings; blank areas are unmeasured.
   **Clear Wi-Fi survey** starts over, for example after you move your router.
 - **Carpet and vents.** Open **Map options** and turn on **Carpet and vents** to
   see the rugs and floor vents the robot has found, carpet in brown and vents in
@@ -139,6 +140,10 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
   [upgrade and rollback drill](upgrade-drill.md) checks synthetic plans, areas,
   schedules and history; the owner's snapshot and host restore remain
   unqualified. The [installed check](installed-check.md) needs the owner's go.
+- The finer Wi-Fi survey upgrades its storage to version 2 while retaining
+  older one-metre readings. Older integration versions cannot read that store;
+  rolling back requires the matching pre-upgrade backup. A restore also returns
+  the survey to the readings captured in that backup.
 
 ## Checks still needed
 

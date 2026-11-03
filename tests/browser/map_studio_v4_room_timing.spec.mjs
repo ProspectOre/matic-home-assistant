@@ -151,7 +151,7 @@ test("timing projection reads the canonical entity and rejects ambiguous or stal
     duplicate: null, changed: true, percent: 36 });
 });
 
-test("an already-open Home Assistant page with the old progress translation shows the new estimate", async ({ page }) => {
+test("an already-open Home Assistant page with old translations shows the new estimate and confirmed count", async ({ page }) => {
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", sceneRooms: [
     { id: "room-kitchen", name: "Kitchen", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] },
   ], initialRobotStates: {
@@ -162,6 +162,7 @@ test("an already-open Home Assistant page with the old progress translation show
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
     panel.hass = { ...panel.hass, localize: (key, values) => {
+      if (key.endsWith(".v4_last_run_rooms")) return `${values.completed} of ${values.total} rooms completed`;
       if (key.endsWith(".v4_room_estimated_progress")) {
         if (!values?.room) return 'Translation [formats Error: MISSING_VALUE] The intl string context variable "room" was not provided';
         return `Estimated ${values.percent}% · ${values.room}`;
@@ -172,6 +173,7 @@ test("an already-open Home Assistant page with the old progress translation show
   });
   const panel = page.locator(fixture.panelTag);
   await expect(panel.locator("matic-map-shell-v4 .room-estimate")).toHaveText("Estimated room progress: 35% (based on time)");
+  await expect(panel.locator("matic-map-shell-v4 .status-copy small:not(.room-estimate)")).toContainText("0 of 3 rooms confirmed");
 });
 
 for (const viewport of [{ width: 320, height: 700 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
@@ -329,7 +331,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       }, fields);
       await update({ percent: "100" });
       await expect(estimate).toHaveText("Estimated room progress: 100% (based on time)");
-      await expect(shell.locator(viewport.width < 1000 ? ".sheet-status" : ".status-copy")).toContainText("0 of 3 rooms completed");
+      await expect(shell.locator(viewport.width < 1000 ? ".sheet-status" : ".status-copy")).toContainText("0 of 3 rooms confirmed");
       await expect(stop).toBeVisible();
       await shell.getByRole("button", { name: "Full map", exact: true }).click();
       await expect(shell.locator(".full-map-hud .room-estimate")).toHaveText("Estimated room progress: 100% (based on time)");

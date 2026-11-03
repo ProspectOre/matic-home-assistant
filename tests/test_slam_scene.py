@@ -921,7 +921,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     with (
         patch(
             "custom_components.matic_robot.slam_pose_view.monotonic",
-            side_effect=(10.0, 10.0, 10.0, 10.0, 10.25, 10.25),
+            side_effect=(10.0, 10.0, 10.0, 10.0, 10.0, 10.25, 10.25, 10.25),
         ),
         patch(
             "custom_components.matic_robot.slam_pose_view.time",
@@ -941,6 +941,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "map_floor_coherent": True,
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
+        "pose_processing_seconds": 0.0,
         "pose_fetch_age_seconds": 0.0,
         "pose_observation_current": True,
         "pose_freshness": "live",
@@ -988,6 +989,38 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "pose_freshness": "coordinator_fallback",
         "map_session_key": None,
     }
+
+
+async def test_pose_processing_time_excludes_wait_after_age_measurement() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    clock = [10.0]
+
+    async def delayed_pose(**_kwargs):
+        clock[0] += 4.25
+        return runtime.coordinator.data.pose
+
+    def wall_time():
+        # Time spent after the age reference must remain in the client budget.
+        clock[0] += 3.0
+        return runtime.coordinator.data.pose.observed_at
+
+    runtime.client.async_get_pose.side_effect = delayed_pose
+    with (
+        patch(
+            "custom_components.matic_robot.slam_pose_view.monotonic",
+            side_effect=lambda: clock[0],
+        ),
+        patch(
+            "custom_components.matic_robot.slam_pose_view.time",
+            side_effect=wall_time,
+        ),
+    ):
+        response = await MaticSlamPoseView().get(_request(hass), "entry")
+    payload = json.loads(response.body)
+    assert payload["pose_processing_seconds"] == 4.25
+    assert payload["pose_age_seconds"] == 0.0
+    assert payload["pose_observation_current"] is True
 
 
 @pytest.mark.parametrize(

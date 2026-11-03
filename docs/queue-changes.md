@@ -36,8 +36,9 @@ during a plan run, its `run_id`.
 While the robot is cleaning a room, Matic Map's home view shows **Change this
 clean**: pick a room (it starts on the room being cleaned) and choose Skip,
 Clean next or Clean again. The buttons wait while the robot confirms, and the
-notice under the heading says what changed or why the robot refused. Clean
-again there always keeps the room's modes and coverage.
+notice under the heading says what changed or why the robot refused. The room
+list contains all mapped rooms; Skip and Clean next are limited to the current
+mission. Clean again there always keeps the room's modes and coverage.
 
 ## Plan runs
 

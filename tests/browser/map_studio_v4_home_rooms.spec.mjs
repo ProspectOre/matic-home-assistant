@@ -942,7 +942,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     await expect(menu).toHaveId("map-options");
     await expect.poll(() => focusedText(page)).toBe("button Photo");
     expect(await rowNames(menu)).toEqual([
-      "Photo", "Room colors", "Room names", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom",
+      "Photo", "Room colors", "Room names", "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom",
       "Map diagnostics",
     ]);
     await expect(menu.getByRole("group", { name: "Map display" })).toBeVisible();
@@ -971,7 +971,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
         expect((await snapshot(page)).followMode).toBe("off");
       }
     }
-    expect(names).toEqual(["Room colors", "Room names", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics", "Photo"]);
+    expect(names).toEqual(["Room colors", "Room names", "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics", "Photo"]);
     await page.keyboard.press("ArrowUp");
     await expect.poll(() => focusedText(page)).toBe("button Map diagnostics");
     await page.keyboard.press("Home");
@@ -1025,17 +1025,17 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "three" });
     const menu = await openOptions(gallery);
-    expect(await rowNames(menu)).toEqual(["Room names", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
+    expect(await rowNames(menu)).toEqual(["Room names", "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics"]);
     await page.keyboard.press("Escape");
 
     const wide = await loadGallery(page, { scenario: "ready", viewport: { width: 1180, height: 760 } });
     await patchState(wide, { view: "top" });
     const wideMenu = await openOptions(wide);
     expect(await rowNames(wideMenu)).toEqual([
-      "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics",
+      "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics",
     ]);
     await expect(wideMenu.getByRole("group", { name: "Map display" })).toHaveCount(0);
-    await expect.poll(() => focusedText(page)).toBe("button Follow the robot");
+    await expect.poll(() => focusedText(page)).toBe("button Robot trail");
     await page.keyboard.press("Escape");
     const style = wide.getByRole("group", { name: "Map style" });
     await expect(style.getByRole("button")).toHaveText(["Photo", "Room colors"]);
@@ -2083,6 +2083,7 @@ test.describe("change this clean", () => {
       document.addEventListener("matic-workspace-action", (event) => window.__queueActions.push(event.detail));
     });
     const queue = gallery.getByRole("region", { name: "Change this clean" });
+    await expect(queue).toContainText("All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.");
     const room = queue.getByRole("combobox", { name: "Room" });
     await expect(room.locator("option:checked")).toHaveText("Kitchen");
     const actions = queue.getByRole("group", { name: "Change Kitchen" }).getByRole("button");

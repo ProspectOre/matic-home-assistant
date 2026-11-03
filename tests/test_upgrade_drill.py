@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from scripts.upgrade_drill import DrillFailed, compare, plan_state
+from scripts.upgrade_drill import (
+    PHASE_OUTPUT_LIMIT,
+    DrillFailed,
+    _phase_failure_output,
+    compare,
+    plan_state,
+    run_phase,
+)
 
 
 def _state(runs: int, cadence: int = 3) -> dict[str, Any]:
@@ -120,6 +128,90 @@ def test_rollback_must_keep_the_plan_and_room_history() -> None:
         compare({"seed": _state(1), "downgrade": _state(2, cadence=4)})
     with pytest.raises(DrillFailed, match="restore lost completed runs"):
         compare({"seed": _state(2), "restore": _state(1)})
+
+
+def test_phase_failure_keeps_assertion_and_stderr_with_noisy_tails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stdout = (
+        "AssertionError: expected coverage\n"
+        + ("stdout teardown noise\n" * 500)
+        + "FAILED tests/e2e/test_upgrade.py::test_coverage\n"
+    )
+    stderr = "simulator stderr diagnostic\n" + ("stderr teardown noise\n" * 500)
+
+    result = SimpleNamespace(returncode=1, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(
+        "scripts.upgrade_drill.subprocess.run", lambda *args, **kwargs: result
+    )
+
+    with pytest.raises(DrillFailed) as error:
+        run_phase(tmp_path, "upgrade", tmp_path / "config")
+
+    message = str(error.value)
+    assert "AssertionError: expected coverage" in message
+    assert "simulator stderr diagnostic" in message
+    assert message.count("stdout teardown noise") < 500
+    assert message.count("stderr teardown noise") < 500
+    assert len(message.partition("\n")[2]) <= PHASE_OUTPUT_LIMIT
+
+
+def test_phase_failure_includes_captured_pytest_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    fixture = tmp_path / "test_failure_fixture.py"
+    fixture.write_text(
+        "import sys\n"
+        "def test_upgrade():\n"
+        "    print('simulator captured stdout diagnostic')\n"
+        "    print('simulator captured stderr diagnostic', file=sys.stderr)\n"
+        "    print('teardown noise ' * 1200)\n"
+        "    assert False, 'expected coverage assertion'\n"
+    )
+    monkeypatch.setattr("scripts.upgrade_drill.DRILL", fixture.name)
+
+    with pytest.raises(DrillFailed) as error:
+        run_phase(tmp_path, "upgrade", tmp_path / "config")
+
+    message = str(error.value)
+    assert "expected coverage assertion" in message
+    assert "simulator captured stdout diagnostic" in message
+    assert "simulator captured stderr diagnostic" in message
+    assert len(message.partition("\n")[2]) <= PHASE_OUTPUT_LIMIT
+
+
+def test_phase_failure_prefers_earliest_traceback_over_later_assertion() -> None:
+    stdout = (
+        "Traceback (most recent call last):\n"
+        + ("teardown noise\n" * 500)
+        + "AssertionError: late summary\n"
+        + ("summary noise\n" * 500)
+        + "FAILED test_example.py::test_failure\n"
+    )
+
+    excerpt = _phase_failure_output(stdout, "stderr diagnostic")
+
+    assert excerpt.startswith("Traceback (most recent call last):")
+    assert "stderr diagnostic" in excerpt
+    assert len(excerpt) <= PHASE_OUTPUT_LIMIT
+
+
+def test_phase_failure_with_small_capture_budget_keeps_bounded_prefix() -> None:
+    stdout = (
+        "traceback context\n"
+        + ("diagnostic noise\n" * 70)
+        + "---------------- Captured stdout call ----------------\n"
+        + ("stdout captured noise\n" * 10)
+        + "---------------- Captured stderr call ----------------\n"
+        + "stderr captured diagnostic\n"
+    )
+    stdout = stdout[:2350].ljust(2360, "x")
+
+    excerpt = _phase_failure_output(stdout, "subprocess stderr\n" + ("s" * 2100))
+
+    assert excerpt.startswith("traceback context")
+    assert len(excerpt) <= PHASE_OUTPUT_LIMIT
 
 
 def test_rollback_must_keep_custom_area_identity_geometry_and_history() -> None:

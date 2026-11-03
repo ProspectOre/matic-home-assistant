@@ -1,10 +1,9 @@
 import { notice, type ResourceStamp } from "./contracts";
-import type { AreasCatalog } from "./backend-contracts";
+import { entryBoundaryKey, type AreasCatalog } from "./backend-contracts";
 import { BackendError, type MaticBackend } from "./backend";
 import { type CoherenceMachine, type WorkspaceStore, areaSelection, canReadFloorResources } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, cancelLoading, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
-import { entryBoundaryKey } from "./workspace-projection";
+import { resource, cancelLoading, isAbort, problemCode, sameCoherenceGeneration } from "./shared-primitives";
 
 const areaRemovedNotice = notice("warning", "v4_notice_area_removed", "This saved area was removed elsewhere. Your edits are kept as a new draft; saving will create a new area.");
 

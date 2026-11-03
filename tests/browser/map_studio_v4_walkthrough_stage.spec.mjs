@@ -24,9 +24,11 @@ const stageFrame = async (page) => {
 
 test("readouts include the plan heading actions through display:contents", async ({ page }) => {
   await openFrame(page, "steps=plan-saved-intelligent");
+  await expect(page.getByRole("button", { name: "Edit Daily clean", exact: true })).toBeVisible();
   expect(await accessibilityReadout(page)).toContain('button "Edit Daily clean"');
   await page.goto("about:blank");
   await openFrame(page, "steps=plan-edit-areas");
+  await expect(page.getByRole("button", { name: "More actions", exact: true })).toBeVisible();
   expect(await accessibilityReadout(page)).toContain('button "More actions"');
 });
 

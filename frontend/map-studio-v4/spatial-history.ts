@@ -3,7 +3,7 @@ import { notice, type ResourceStamp, type WorkspaceState, type WorkspaceNotice }
 import type { MaticBackend } from "./backend";
 import { floorSelectionAllowed, historySelectionAllowed, type CoherenceMachine, type WorkspaceStore } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
+import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./shared-primitives";
 
 const savedMapNotice = (createdAt: string): WorkspaceNotice =>
   notice("warning", "v4_notice_saved_map", "Showing the saved map from {date} without the robot's position.", { date: { date: createdAt } });

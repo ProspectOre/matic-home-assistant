@@ -25,7 +25,7 @@ test.beforeEach(async ({ page }) => {
     const { EffectController, WorkspaceStore, syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans, MAP_CANVAS_TAG } = window.archiveHarness;
     const id = (n) => n.toString(16).padStart(32, "0");
     const entry = { ...syntheticEntry(), deltaUrl: null };
-    const rows = [1, 2].map((n) => ({ id: id(n), content_id: "a".repeat(64), created_at: "2026-10-31T10:00:00Z",
+    const rows = [1, 2].map((n) => ({ id: id(n), content_id: "a".repeat(24), created_at: "2026-10-31T10:00:00Z",
       revision: 7, point_count: 5300, scene_url: `/saved/${id(n)}`, name: `Saved ${n}`, retention: "automatic",
       deleted_until: null, imported: false, comparison_group: null, frame: null, compressed_bytes: 50 }));
     const wireCatalog = () => ({ generation: control.generation, capture_paused: control.capturePaused,
@@ -99,6 +99,26 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.afterEach(async ({ page }) => { await page.evaluate(() => window.archiveRun?.cleanup()); });
+
+test("backend-shaped content IDs render storage management, while malformed catalog metadata prompts refresh", async ({ page }) => {
+  await expect(page.locator("article.record")).toHaveCount(2);
+  await expect(page.getByRole("heading", { name: "Maps & storage", exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const backend = window.archiveRun.backend;
+    const original = backend.archiveRequest;
+    backend.archiveRequest = async (...args) => {
+      if (args[1] === "manage" && args[2] === undefined) {
+        const value = await original(...args);
+        value.records[0].content_id = "a".repeat(23);
+        return value;
+      }
+      return original(...args);
+    };
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Saved-map information could not be read. Refresh to try again.");
+  await expect(page.getByRole("alert")).not.toContainText("can’t read this archive");
+});
 
 test("@safety revoked archive authorization clears catalog and main-scene resources", async ({ page }) => {
   await page.evaluate(() => { window.archiveRun.control.deny = true; });
@@ -189,7 +209,7 @@ test("history invalidation immediately reads back simultaneous saved-map metadat
         generation: control.generation,
         capture_paused: control.capturePaused,
         capacity_blocked: control.capacityBlocked,
-        records: [{ id: "1".padStart(32, "0"), content_id: "a".repeat(64), created_at: "2026-10-31T10:00:00Z",
+        records: [{ id: "1".padStart(32, "0"), content_id: "a".repeat(24), created_at: "2026-10-31T10:00:00Z",
           revision: 7, point_count: 5300, scene_url: "/saved/one", name: "Renamed map", retention: "kept",
           deleted_until: null, imported: false, comparison_group: null, frame: null, compressed_bytes: 50 }],
         usage: { record_count: 1, automatic_count: 0, kept_count: 1, trash_count: 0, compressed_bytes: 50,
@@ -216,7 +236,7 @@ test("a pending invalidation readback is cancelled and cannot replace a new owne
     let oldStarted = false;
     const oldCatalog = {
       generation: 8, capture_paused: false, capacity_blocked: false,
-      records: [{ id: "1".padStart(32, "0"), content_id: "a".repeat(64), created_at: "2026-10-31T10:00:00Z",
+      records: [{ id: "1".padStart(32, "0"), content_id: "a".repeat(24), created_at: "2026-10-31T10:00:00Z",
         revision: 7, point_count: 5300, scene_url: "/saved/one", name: "Stale owner row", retention: "automatic",
         deleted_until: null, imported: false, comparison_group: null, frame: null, compressed_bytes: 50 }],
       usage: { record_count: 1, automatic_count: 1, kept_count: 0, trash_count: 0, compressed_bytes: 50,
@@ -267,7 +287,7 @@ test("an external history change superseding the archive's own refresh still get
         archiveReads += 1;
         return Promise.resolve({
           generation: 10, capture_paused: false, capacity_blocked: false,
-          records: [{ id: "1".padStart(32, "0"), content_id: "a".repeat(64), created_at: "2026-10-31T10:00:00Z",
+          records: [{ id: "1".padStart(32, "0"), content_id: "a".repeat(24), created_at: "2026-10-31T10:00:00Z",
             revision: 7, point_count: 5300, scene_url: "/saved/one", name: "External rename", retention: "automatic",
             deleted_until: null, imported: false, comparison_group: null, frame: null, compressed_bytes: 50 }],
           usage: { record_count: 1, automatic_count: 1, kept_count: 0, trash_count: 0, compressed_bytes: 50,

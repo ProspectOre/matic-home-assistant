@@ -189,6 +189,13 @@ export interface WorkspaceResources {
   readonly runs: ResourceState<RunHistory>;
 }
 
+/** A historical trail endpoint only; never a live pose or movement authority. */
+export interface LastSeenDuringRun {
+  readonly entryId: string;
+  readonly mapSessionKey: string;
+  readonly position: readonly [number, number];
+}
+
 export interface AdmittedManualRoomPreview {
   readonly key: string;
   readonly generation: number;
@@ -198,11 +205,14 @@ export interface AdmittedManualRoomPreview {
 }
 
 export type PlanView = "run" | "edit";
+export type WifiScale = "absolute" | "relative";
 /** One surveyed map cell: its centre in metres and mean signal in dBm. */
 export interface WifiSignalCell {
   readonly x: number;
   readonly y: number;
   readonly dbm: number;
+  /** Grid resolution when this reading was collected, in metres. */
+  readonly size: number;
 }
 
 export interface WifiSignalLayer {
@@ -365,6 +375,7 @@ export interface WorkspaceState {
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
+  readonly seen?: LastSeenDuringRun | undefined;
   /** Object URLs of robot map pictures by history id. */
   readonly runThumbnails: Readonly<Record<string, string>>;
   readonly pageActive: boolean;
@@ -408,6 +419,7 @@ export interface WorkspaceState {
   readonly labelsVisible: boolean;
   /** The Wi-Fi signal layer; null while hidden. */
   readonly wifiSignal: WifiSignalLayer | null;
+  readonly wifiScale: WifiScale;
   /** The carpet and vent layer; null while hidden. */
   readonly floorTypes: FloorTypesLayer | null;
   readonly followMode: FollowMode;
@@ -471,6 +483,7 @@ export type WorkspaceIntent =
     }
   | { readonly type: "toggle-labels" }
   | { readonly type: "toggle-wifi-signal" }
+  | { readonly type: "set-wifi-scale"; readonly scale: WifiScale }
   | { readonly type: "toggle-floor-types" }
   | { readonly type: "set-follow-mode"; readonly mode: FollowMode }
   | { readonly type: "show-room-candidates"; readonly roomIds: readonly string[] }
@@ -726,6 +739,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-camera": true,
   "toggle-labels": true,
   "toggle-wifi-signal": true,
+  "set-wifi-scale": true,
   "toggle-floor-types": true,
   "set-follow-mode": true,
   "show-room-candidates": true,

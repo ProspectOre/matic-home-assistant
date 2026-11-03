@@ -23,7 +23,7 @@ Restart polling also has a ten-minute deadline; physical waits allow up to an ho
 | `install` | Downloads the tag through HACS, restarts Home Assistant and waits until it is running again. |
 | `served_assets` | The loaded manifest version matches the tag. The icon and Matic Map URLs are content-addressed, so a 200 with the tag's exact bytes shows the running process loaded these files. |
 | `installed_files` | With `--ssh`, hashes every installed file on the host and compares the set with the tag (missing, extra and changed files). |
-| `entities` | Exactly one Matic vacuum, and no enabled Matic entity is missing or unavailable. |
+| `entities` | Exactly one Matic vacuum, and no enabled Matic entity is missing or unavailable, except Stop while the same robot's history confirms no plan is running. Expected idle unavailability is recorded in the receipt. |
 | `actions` | The registered `matic_robot` actions are exactly the ones in `services.yaml` at the tag. |
 | `assistant_tools` | With `--aspenos`, calls each home-mcp `matic_get_*` tool through its stdio bridge. |
 | `physical` | With `--physical --room NAME`, vacuums one room on Quick, waits for the dock, then makes one sink trip. |

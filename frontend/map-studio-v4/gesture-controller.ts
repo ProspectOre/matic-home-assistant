@@ -1,4 +1,4 @@
-import { clamp } from "./numeric";
+import { clamp } from "./shared-primitives";
 import type { AreaCircle } from "./backend-contracts";
 import type { CoordinateEditCapture, WorkspaceIntent, WorkspaceState } from "./contracts";
 import { canEditCoordinates, captureCoordinateEdit, hasCoordinateEditAdmission } from "./state";

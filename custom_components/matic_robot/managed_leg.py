@@ -297,19 +297,20 @@ async def _async_run_leg(
                 stop_sent = True
             first_observation = changed_room.room_id not in observed_ids
             observed_ids.add(changed_room.room_id)
-            if first_observation:
-                first_start = await manager.ledger.async_mark_started(
-                    serial_number,
-                    call.data["plan_id"],
-                    changed_room,
-                    run_id=run_id,
+            # A robot can revisit a room within the same native mission. Keep
+            # the active room current even though its start event is deduped.
+            first_start = await manager.ledger.async_mark_started(
+                serial_number,
+                call.data["plan_id"],
+                changed_room,
+                run_id=run_id,
+            )
+            if first_observation and first_start:
+                hass.bus.async_fire(
+                    f"{DOMAIN}_room_started",
+                    event_data(changed_room),
+                    context=call.context,
                 )
-                if first_start:
-                    hass.bus.async_fire(
-                        f"{DOMAIN}_room_started",
-                        event_data(changed_room),
-                        context=call.context,
-                    )
             active_room = changed_room
             await manager.ledger.async_mark_resumed(
                 serial_number, call.data["plan_id"], active_room

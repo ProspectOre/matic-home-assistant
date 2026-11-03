@@ -1,6 +1,6 @@
 import type { RoomPreviewController, RoomPreviewHelpers } from "./room-preview-controller";
 import { CatalogResources } from "./catalog-resources";
-import { resource, cancelLoading, isAbort, problemCode } from "./resource-state";
+import { resource, cancelLoading, isAbort, problemCode } from "./shared-primitives";
 import {
   notice,
   type HassProjection,
@@ -32,6 +32,7 @@ import {
   canEditCoordinates,
   canChangeRobotSetting,
   canStartMotion,
+  canShowExactPose,
   canReadFloorResources,
   CoherenceMachine,
   initialWorkspaceState,
@@ -255,6 +256,8 @@ export class EffectController {
     this.#optionalScope = this.#pinScope(store.value) + `:${store.value.selection.floorId}`;
     this.#storeUnsubscribe = store.subscribe((state) => {
       this.#observePreferences(state);
+      if (state.map.available && state.dataMode === "live" && state.activity === "docked"
+        && !canShowExactPose(state)) void this.#runResources();
       const optionalScope = this.#pinScope(state) + `:${state.selection.floorId}`;
       if (optionalScope !== this.#optionalScope) {
         this.#optionalScope = optionalScope;

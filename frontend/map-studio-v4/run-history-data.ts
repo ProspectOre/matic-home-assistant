@@ -6,6 +6,7 @@ import type { MaticBackend } from "./backend";
 import type { MapEntry, PoseModel } from "./backend-contracts";
 import type { RobotActivity, WorkspaceNotice } from "./contracts";
 import type { WorkspaceStore } from "./state";
+import type { LastSeenDuringRun } from "./contracts";
 
 export type RunOutcome = "running" | "finished" | "not_finished" | "unknown";
 export type RunEnding =
@@ -138,6 +139,26 @@ export const parseRunTrail = (value: unknown): RunTrail => {
       });
     }),
   };
+};
+
+/** Return a historical point only for the latest record when it finished cleanly. */
+export const lastSeenDuringLatestRun = (
+  history: RunHistory,
+  trail: RunTrail,
+  entryId: string,
+  mapSessionKey: string | null,
+): LastSeenDuringRun | null => {
+  if (!history.robotHistory || !mapSessionKey || history.entryId !== entryId || history.mapSessionKey !== mapSessionKey
+    || trail.mapSessionKey !== mapSessionKey
+    || history.runs.some((run) => !run.startedAt)
+    || new Set(history.runs.map((run) => run.startedAt)).size !== history.runs.length) return null;
+  const latest = history.runs[0];
+  if (!latest || latest.outcome !== "finished" || latest.ending !== "finished"
+    || !latest.startedAt || !latest.endedAt || !latest.trail || latest.trail !== trail.id) return null;
+  const segment = [...trail.segments].reverse().find((points) => points.length > 0);
+  const point = segment?.at(-1);
+  if (!point) return null;
+  return { entryId, mapSessionKey, position: point };
 };
 
 const resource = <T>(status: "loading" | "ready" | "error", value: T | null, problem: string | null = null) =>

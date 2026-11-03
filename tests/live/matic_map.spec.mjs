@@ -382,7 +382,7 @@ test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ shar
   expect(started.current_area).toBe("Kitchen");
   expect(started.commands.filter(({ channel }) => channel === "user_command")).toHaveLength(1);
   await captureNativeOwnership(page, robot, testInfo, "first-command-cleaning");
-  await expect(page.getByText("0 of 2 rooms completed · In Kitchen")).toBeVisible();
+  await expect(page.getByText("0 of 2 rooms confirmed · In Kitchen")).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
 
   await step(robot, "finish_room");
@@ -475,7 +475,7 @@ test("Skip in Change this clean drops a room from a clean started in Matic Map",
   await page.getByRole("button", { name: "Clean 2 rooms" }).click();
   await expect.poll(async () => (await robotState(robot)).phase).toBe("cleaning");
   expect((await robotState(robot)).plan).toEqual(["Kitchen", "Study"]);
-  await expect(page.getByText("0 of 2 rooms completed · In Kitchen")).toBeVisible();
+  await expect(page.getByText("0 of 2 rooms confirmed · In Kitchen")).toBeVisible();
 
   // Queue changes live on Home, the all-tasks view.
   await page.getByRole("button", { name: "Back to all tasks" }).click();
@@ -614,7 +614,7 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
   await updatedWifi.click();
   await updatedWifi.click();
   await expect(updatedWifi).toHaveAttribute("aria-checked", "true");
-  await expect(updatedWifi).toContainText("Green is strong, red is weak");
+  await expect(updatedWifi).toContainText("Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured.");
   expect((await workspaceState(page)).wifiSignal.cells.length).toBeGreaterThan(0);
 
   await step(robot, "finish_room");
@@ -624,6 +624,37 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
   await expectReadyToClean(page, robot);
   const disabled = await callWifiSurveyService(page, "turn_off");
   expect(disabled.status).toBe(200);
+  // Display and collection are independent; toggling either while docked keeps the survey.
+  await expect.poll(async () => (await robotState(robot)).phase).toBe("docked");
+  await page.getByRole("button", { name: "Map options" }).click();
+  const dockedWifi = page.getByRole("menu", { name: "Map options" }).getByRole("menuitemcheckbox", { name: /Wi-Fi signal/ });
+  await expect(dockedWifi).toHaveAttribute("aria-checked", "true");
+  await dockedWifi.click();
+  await expect(dockedWifi).toHaveAttribute("aria-checked", "false");
+  await expect.poll(async () => (await workspaceState(page)).wifiSignal).toBeNull();
+  await dockedWifi.click();
+  await expect(dockedWifi).toHaveAttribute("aria-checked", "true");
+  await expect.poll(async () => {
+    const state = await workspaceState(page);
+    return { activity: state.activity, mode: state.dataMode, readOnly: state.floor.readOnly,
+      status: state.wifiSignal?.status, surveying: state.wifiSignal?.surveying, cells: state.wifiSignal?.cells.length };
+  }).toMatchObject({ activity: "docked", mode: "live", readOnly: false, status: "ready", surveying: false, cells: expect.any(Number) });
+  const savedCells = (await workspaceState(page)).wifiSignal.cells;
+  expect(savedCells.length).toBeGreaterThan(0);
+  expect((await callWifiSurveyService(page, "turn_on")).status).toBe(200);
+  await dockedWifi.click();
+  await dockedWifi.click();
+  await expect.poll(async () => (await workspaceState(page)).wifiSignal?.surveying).toBe(true);
+  expect((await workspaceState(page)).wifiSignal.cells).toEqual(savedCells);
+  expect((await callWifiSurveyService(page, "turn_off")).status).toBe(200);
+  await dockedWifi.click();
+  await dockedWifi.click();
+  await expect.poll(async () => {
+    const layer = (await workspaceState(page)).wifiSignal;
+    return layer?.status === "ready" && layer.surveying === false && layer.cells.length > 0;
+  }).toBe(true);
+  expect((await workspaceState(page)).wifiSignal.cells).toEqual(savedCells);
+  await expect.poll(async () => (await robotState(robot)).phase).toBe("docked");
 });
 
 test("Home Assistant reconnect restores fresh robot state without replaying commands", async ({ sharedPage: page, workspacePush: robot }) => {

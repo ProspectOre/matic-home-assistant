@@ -5,6 +5,7 @@ import { MenuController } from "./menu-controller";
 import { canFollowRobot, topView } from "./state";
 import { switchStyles } from "./switch-styles";
 import { MapZoom } from "./map-zoom";
+import { wifiSampleBounds, wifiScaleBounds } from "./wifi-scale";
 
 // The row's second line explains an empty or failed layer and reads the colours.
 const wifiNote = (layer: WorkspaceState["wifiSignal"], t: MapOptionsContext["t"]) => {
@@ -12,7 +13,7 @@ const wifiNote = (layer: WorkspaceState["wifiSignal"], t: MapOptionsContext["t"]
   const note = layer.status === "failed"
     ? t("v4_wifi_signal_failed", "Couldn't load the survey")
     : layer.cells.length
-      ? t("v4_wifi_signal_legend", "Green is strong, red is weak")
+      ? t("v4_wifi_samples_note", "Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured.")
       : layer.surveying
         ? t("v4_wifi_signal_waiting", "No samples yet · they arrive during cleaning")
         : t("v4_wifi_signal_off", "Turn on Wi-Fi survey in the robot's settings");
@@ -72,6 +73,11 @@ export class MapOptions {
     `;
     const detail = (quality: WorkspaceState["quality"], label: string) =>
       radio(state.quality === quality, label, () => intent({ type: "set-quality", quality }));
+    const wifi = state.wifiSignal;
+    const wifiBounds = wifi?.status === "ready" && wifi.cells.length
+      ? wifiScaleBounds(wifi.cells, state.wifiScale) : null;
+    const sampledBounds = wifiBounds && wifi ? wifiSampleBounds(wifi.cells) : null;
+    const dbm = (value: number): string => `${Math.round(value * 10) / 10} dBm`;
     return html`
       <style>
         ${switchStyles.cssText}
@@ -89,15 +95,19 @@ export class MapOptions {
       padding: var(--ms-space-1);
     }
     .overflow-menu .ms-row { justify-content: flex-start; }
+    .overflow-menu[data-wifi-scale] { inline-size: min(19rem, calc(100vw - 2rem)); }
     .overflow-menu [role="menuitemcheckbox"] { justify-content: space-between; gap: var(--ms-space-3); }
     .overflow-menu [role="group"] { display: grid; gap: var(--ms-space-1); }
     .overflow-menu [role="group"] + * { border-block-start: 1px solid var(--ms-line); padding-block-start: var(--ms-space-1); }
-    .overflow-menu :is([data-wifi-signal], [data-floor-types]) > span:first-child { display: grid; text-align: start; }
+    .overflow-menu :is([data-wifi-signal], [data-floor-types], [data-robot-trail]) > span:first-child { display: grid; text-align: start; }
     .menu-note { color: var(--ms-text-quiet); font-size: var(--ms-t-sm); }
     .menu-heading { margin: 0; padding: var(--ms-space-2) var(--ms-space-3) var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
+    .wifi-scale-legend { display: grid; gap: var(--ms-space-1); padding: var(--ms-space-1) var(--ms-space-3); }
+    .wifi-scale-ramp { block-size: .5rem; border-radius: 1rem; background: linear-gradient(to right, hsl(0 75% 45%), hsl(60 75% 45%), hsl(120 75% 45%)); }
+    .wifi-scale-labels { display: flex; justify-content: space-between; gap: var(--ms-space-2); }
 
       </style>
-      ${this.#zoom.open ? this.#zoom.render(t) : html`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" role="menu" aria-label=${t("v4_map_options", "Map options")}>
+      ${this.#zoom.open ? this.#zoom.render(t) : html`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" data-wifi-scale=${wifiBounds ? "" : nothing} role="menu" tabindex="0" aria-label=${t("v4_map_options", "Map options")}>
         ${narrow ? html`
           <div role="group" aria-labelledby="menu-display">
             <p class="menu-heading" id="menu-display" role="presentation">${t("v4_map_display", "Map display")}</p>
@@ -115,6 +125,16 @@ export class MapOptions {
             ><span>${t("v4_room_names", "Room names")}</span><span class="ms-switch" aria-checked=${String(state.labelsVisible)} aria-hidden="true"></span></button>
           </div>
         ` : nothing}
+        <p class="menu-heading" role="presentation">${t("v4_map_layers_button", "Layers")}</p>
+        ${state.dataMode === "live" ? html`<button
+          class="ms-row ms-row--menu"
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked=${String(state.trail?.id === "live")}
+          data-robot-trail
+          tabindex="-1"
+          @click=${() => intent({ type: "show-trail", trail: state.trail?.id === "live" ? null : "live" })}
+        ><span>${t("v4_robot_trail", "Robot trail")}${state.trail?.id === "live" ? html`<small class="menu-note">${t("v4_robot_trail_hint", "The sampled path can have gaps.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
         ${state.resources.entry?.wifiHeatmapUrl ? html`
           <button
             class="ms-row ms-row--menu"
@@ -125,6 +145,21 @@ export class MapOptions {
             data-wifi-signal
             @click=${() => intent({ type: "toggle-wifi-signal" })}
           ><span>${t("v4_wifi_signal", "Wi-Fi signal")}${wifiNote(state.wifiSignal, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.wifiSignal))} aria-hidden="true"></span></button>
+        ` : nothing}
+        ${wifiBounds ? html`
+          <div role="group" aria-labelledby="menu-wifi-scale">
+            <p class="menu-heading" id="menu-wifi-scale" role="presentation">${t("v4_wifi_scale_heading", "Wi-Fi colors")}</p>
+            ${radio(state.wifiScale === "absolute", t("v4_wifi_scale_absolute", "Signal strength"), () => intent({ type: "set-wifi-scale", scale: "absolute" }))}
+            ${radio(state.wifiScale === "relative", t("v4_wifi_scale_relative", "Compare sampled spots"), () => intent({ type: "set-wifi-scale", scale: "relative" }))}
+            <div class="wifi-scale-legend">
+              <small class="menu-note">${state.wifiScale === "relative"
+                ? t("v4_wifi_relative_note", "Colors compare sampled spots, not absolute quality.")
+                : t("v4_wifi_absolute_note", "Colors show signal strength.")}</small>
+              ${sampledBounds ? html`<small class="menu-note">${t("v4_wifi_sampled_range", "Sampled range")}: ${dbm(sampledBounds.min)} – ${dbm(sampledBounds.max)}</small>` : nothing}
+              <span class="wifi-scale-ramp" role="img" aria-label=${`${t("v4_wifi_scale_legend", "Color scale")}: ${dbm(wifiBounds.min)} – ${dbm(wifiBounds.max)}`}></span>
+              <small class="menu-note wifi-scale-labels"><span>${dbm(wifiBounds.min)}</span><span>${dbm(wifiBounds.max)}</span></small>
+            </div>
+          </div>
         ` : nothing}
         ${state.resources.entry?.floorTypesUrl ? html`
           <button
@@ -162,14 +197,6 @@ export class MapOptions {
           ${detail("balanced", t("map_quality_balanced", "Balanced"))}
           ${detail("maximum", t("map_quality_maximum", "Maximum"))}
         </div>
-        ${state.dataMode === "live" ? html`<button
-          class="ms-row ms-row--menu"
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked=${String(state.trail?.id === "live")}
-          tabindex="-1"
-          @click=${() => intent({ type: "show-trail", trail: state.trail?.id === "live" ? null : "live" })}
-        ><span>${t("v4_robot_trail", "Robot trail")}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
         ${this.#zoom.available() ? html`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${() => this.#zoom.show()}>${t("v4_map_zoom", "Map zoom")}</button>` : nothing}
         <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${() => { this.menu.close(false); diagnostics(); }}>${t("v4_map_diagnostics", "Map diagnostics")}</button>
       </div>`}

@@ -1,8 +1,10 @@
 import type { FloorTypeOutline, WifiSignalCell, WorkspaceState } from "./contracts";
+import { wifiScaleBounds, wifiSignalHue } from "./wifi-scale";
 import type { SceneRoom } from "./backend-contracts";
 import type { CanvasPalette } from "./theme-probe";
 import { rgba } from "./theme-probe";
-import { clamp } from "./numeric";
+import { clamp } from "./shared-primitives";
+import { canShowExactPose } from "./state";
 
 export interface MapPoint {
   readonly x: number;
@@ -165,7 +167,7 @@ export function drawMapLayers(
       drawFloorType(context, state.floorTypes.vent, "hsl(205 80% 50%)", project);
     }
     if (state.wifiSignal?.status === "ready") {
-      drawWifiSignal(context, state.wifiSignal.cells, state.wifiSignal.cellSize / 2, project);
+      drawWifiSignal(context, state.wifiSignal.cells, state.wifiScale, project);
     }
   }
 }
@@ -182,42 +184,119 @@ export function drawRunTrail(
   if (!trail || state.dataMode !== "live"
     || (trail.id !== "live" && state.workflow !== "runs")
     || trail.mapSessionKey !== state.resources.entry?.mapSessionKey) return;
+  const isolated: MapPoint[] = [];
   context.beginPath();
   for (const segment of trail.segments) {
-    segment.forEach(([x, y], index) => {
+    let previous: { x: number; y: number; point: MapPoint; linked: boolean } | null = null;
+    const finishPoint = () => { if (previous && !previous.linked) isolated.push(previous.point); };
+    segment.forEach(([x, y]) => {
       const point = project(x, y, 0, false);
-      if (point) {
-        if (index === 0) context.moveTo(point.x, point.y);
-        else context.lineTo(point.x, point.y);
-      }
+      if (!point) { finishPoint(); previous = null; return; }
+      // A long gap contains no evidence of the path between observations.
+      const linked = previous !== null && Math.hypot(x - previous.x, y - previous.y) <= 1;
+      if (linked) context.lineTo(point.x, point.y);
+      else { finishPoint(); context.moveTo(point.x, point.y); }
+      previous = { x, y, point, linked };
     });
+    finishPoint();
   }
+  context.save();
   context.lineJoin = context.lineCap = "round";
-  context.strokeStyle = rgba(palette.accent, .7);
-  context.lineWidth = 3;
+  context.strokeStyle = rgba(palette.onAccent, 1);
+  context.lineWidth = 4;
   context.stroke();
+  context.strokeStyle = rgba(palette.accent, 1);
+  context.lineWidth = 2;
+  context.stroke();
+  // A lone observation would otherwise have no stroked line at all.
+  for (const [radius, colour] of [[2, palette.onAccent], [1, palette.accent]] as const) {
+    context.beginPath();
+    for (const point of isolated) {
+      context.moveTo(point.x + radius, point.y);
+      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    }
+    context.fillStyle = rgba(colour, 1);
+    context.fill();
+  }
+  context.restore();
 }
 
-// Strong signal (-50 dBm or better) is green, weak (-85 or worse) is red.
+export function drawLastSeenDuringRun(
+  context: CanvasRenderingContext2D,
+  state: WorkspaceState,
+  palette: CanvasPalette,
+  project: ProjectMeters,
+): void {
+  if (!canShowLastSeenDuringRun(state) || !state.seen) return;
+  const marker = project(state.seen.position[0], state.seen.position[1], 3, false);
+  if (!marker) return;
+  context.save();
+  context.beginPath();
+  context.moveTo(marker.x, marker.y - 10);
+  context.lineTo(marker.x + 10, marker.y);
+  context.lineTo(marker.x, marker.y + 10);
+  context.lineTo(marker.x - 10, marker.y);
+  context.closePath();
+  context.setLineDash([3, 2]);
+  context.strokeStyle = rgba(palette.text, .95);
+  context.lineWidth = 2;
+  context.stroke();
+  context.setLineDash([]);
+  context.font = "600 12px sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.lineJoin = "round";
+  context.lineWidth = 4;
+  context.strokeStyle = rgba(palette.onAccent, .95);
+  context.strokeText("Last seen during last clean", marker.x + 14, marker.y);
+  context.fillStyle = rgba(palette.text, 1);
+  context.fillText("Last seen during last clean", marker.x + 14, marker.y);
+  context.restore();
+}
+
+/** Historical marker eligibility is kept with its lazy drawing code. */
+export const canShowLastSeenDuringRun = (state: WorkspaceState): boolean => {
+  const marker = state.seen;
+  const entry = state.resources.entry;
+  return !!marker && state.pageActive && state.dataMode === "live" && state.map.available
+    && state.selection.floorId === "current" && !state.floor.readOnly
+    && !state.managedLock && state.activity === "docked" && !canShowExactPose(state)
+    && marker.entryId === state.selection.entryId && marker.entryId === entry?.entryId
+    && !!entry?.mapFloorCoherent && !!entry.mapSessionVerified
+    && marker.mapSessionKey === entry.mapSessionKey
+    && marker.mapSessionKey === state.resources.pose.value?.mapSessionKey;
+};
+
 function drawWifiSignal(
   context: CanvasRenderingContext2D,
   cells: readonly WifiSignalCell[],
-  half: number,
+  scale: WorkspaceState["wifiScale"],
   project: ProjectMeters,
 ): void {
   context.save();
+  const bounds = wifiScaleBounds(cells, scale);
   for (const cell of cells) {
-    const corners = ([[-half, -half], [half, -half], [half, half], [-half, half]] as const)
-      .map(([dx, dy]) => project(cell.x + dx, cell.y + dy, 0.1, false));
-    if (corners.some((corner) => !corner)) continue;
-    const strength = Math.min(1, Math.max(0, (cell.dbm + 85) / 35));
-    context.fillStyle = `hsl(${Math.round(strength * 120)} 75% 45% / .45)`;
-    context.beginPath();
-    corners.forEach((corner, index) => index
-      ? context.lineTo(corner!.x, corner!.y)
-      : context.moveTo(corner!.x, corner!.y));
-    context.closePath();
-    context.fill();
+    // Bound smoothing to at most 0.6 m from a sample. Older, coarse readings
+    // retain a wider footprint; space beyond the estimate stays transparent.
+    const radius = Math.max(0.45, Math.min(0.6, cell.size / 2 + 0.1));
+    const centre = project(cell.x, cell.y, 0.1, false);
+    // Derive the local projection near the sample. Projecting the full
+    // footprint can cross behind the camera at close zoom and hide it.
+    const step = 0.01;
+    const east = project(cell.x + step, cell.y, 0.1, false);
+    const north = project(cell.x, cell.y + step, 0.1, false);
+    if (!centre || !east || !north) continue;
+    const hue = wifiSignalHue(cell.dbm, bounds);
+    context.save();
+    context.transform((east.x - centre.x) * radius / step, (east.y - centre.y) * radius / step,
+      (north.x - centre.x) * radius / step, (north.y - centre.y) * radius / step, centre.x, centre.y);
+    const gradient = context.createRadialGradient(0, 0, 0, 0, 0, 1);
+    gradient.addColorStop(0, `hsl(${hue} 75% 45% / .65)`);
+    gradient.addColorStop(0.65, `hsl(${hue} 75% 45% / .4)`);
+    gradient.addColorStop(1, `hsl(${hue} 75% 45% / 0)`);
+    context.fillStyle = gradient;
+    context.fillRect(-1, -1, 2, 2);
+    context.restore();
   }
   context.restore();
 }

@@ -93,6 +93,11 @@ test("three robot identities keep floor and saved-map selection isolated across 
     const state = element.getWorkspaceSnapshot();
     return [state.selection.entryId, state.resources.entry?.entryId ?? null, state.selection.floorId, state.selection.historyId];
   })).toEqual(["synthetic-entry", "synthetic-entry", "current", null]);
-  const sceneRoomCount = await panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.value?.metadata.rooms.length ?? 0);
-  expect(sceneRoomCount).toBe(250);
+  // Entry selection and the scene request settle independently. Require the
+  // selected robot's scene to finish loading before asserting its room count.
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return [state.selection.entryId, state.resources.entry?.entryId ?? null,
+      state.resources.scene.status, state.resources.scene.value?.metadata.rooms.length ?? 0];
+  })).toEqual(["synthetic-entry", "synthetic-entry", "ready", 250]);
 });

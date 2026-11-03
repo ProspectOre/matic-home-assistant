@@ -31,7 +31,7 @@ export const MAP_HELP_EVENT = "matic-map-help";
 
 const NAVIGATION_HELP_ID = "navigation-help";
 
-const describeMap = (state: WorkspaceState, localize?: Localize): string => {
+export const describeMap = (state: WorkspaceState, localize?: Localize): string => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
     translate(localize, key, fallback, placeholders);
   if (state.dataMode === "history" || state.floor.readOnly) {
@@ -49,7 +49,9 @@ const describeMap = (state: WorkspaceState, localize?: Localize): string => {
   if (!canShowLiveMap(state)) return t("v4_private_map_unavailable", "The current private map is not available.");
   const pose = canShowExactPose(state)
     ? t("v4_robot_position_verified", "The robot's position is confirmed.")
-    : t("v4_robot_position_hidden", "The robot position is not shown.");
+    : state.seen
+      ? t("v4_robot_last_seen", "Last clean: last seen")
+      : t("v4_robot_position_hidden", "The robot position is not shown.");
   return t("v4_live_map_description", "Live map for {floor}. {pose}", {
     floor: state.floor.displayName,
     pose,
@@ -768,6 +770,7 @@ export class MaticMapCanvasV4 extends LitElement {
     const showScene = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
     const message = this.#message(showScene);
     const showDraw = state.workflow === "draw" && showScene;
+    const description = describeMap(state, this.localize);
     return html`
       <section
         class="map-root"
@@ -789,7 +792,7 @@ export class MaticMapCanvasV4 extends LitElement {
           data-renderer-key="persistent-canvas-v4"
           ?hidden=${!showScene}
           role=${showDraw ? "group" : "img"}
-          aria-label=${describeMap(state, this.localize)}
+          aria-label=${description}
         >
           ${showDraw ? html`<span class="keyboard-aim" aria-hidden="true"></span>` : nothing}
           <canvas class="scene-canvas"></canvas>
@@ -812,7 +815,7 @@ export class MaticMapCanvasV4 extends LitElement {
         ` : nothing}
         ${this.#rendererStatus(showScene)}
         <div class="sr-only" aria-live="polite" aria-atomic="true">
-          ${describeMap(state, this.localize)}
+          ${description}
         </div>
       </section>
     `;

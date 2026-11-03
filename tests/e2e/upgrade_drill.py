@@ -153,8 +153,8 @@ async def _run_plan(plan: PlanRun, robot: SimulatedRobot) -> None:
     await plan.poll()
     robot.finish_room()
     robot.finish_session()
-    await plan.poll()
     robot.arrive_at_dock()
+    await plan.poll()
     expect_finished(
         await plan.outcome(), "completed", "all_rooms_verified", 2, "docked"
     )
@@ -170,8 +170,8 @@ async def _run_area_plan(plan: PlanRun, robot: SimulatedRobot) -> None:
     assert robot.session.current_visit.custom_area
     robot.finish_room()
     robot.finish_session()
-    await plan.poll()
     robot.arrive_at_dock()
+    await plan.poll()
     assert plan.task is not None
     async with asyncio.timeout(30):
         while not plan.task.done() or not plan.finished:

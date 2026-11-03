@@ -297,7 +297,7 @@ export class MaticMapComparisonV4 extends LitElement {
       historyCameras: {},
       cameraKey: null,
       taskCameraKey: null,
-      floor: { ...state.floor, readOnly: true },
+      floor: { ...state.floor, displayName: this.#t("v4_comparison_unspecified_floor", "an unspecified floor"), readOnly: true },
       map: { ...state.map, available: true, exactPose: false },
       resources: {
         ...state.resources,

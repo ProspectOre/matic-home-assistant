@@ -45,7 +45,6 @@ export const shellStyles = [tokens, base, controls, css`
       background: var(--ms-surface-app);
     }
     .app[inert] { filter: none; }
-
     .app-bar {
       color: var(--ms-bar-text);
       --ms-local: var(--ms-surface-bar);
@@ -87,6 +86,7 @@ export const shellStyles = [tokens, base, controls, css`
     .spacer { flex: 1; }
 
     .overflow-wrap { position: relative; }
+    .narrow .overflow { padding-inline: 4px; font-size: .75rem; }
 
     .workspace {
       position: relative;
@@ -350,7 +350,6 @@ export const shellStyles = [tokens, base, controls, css`
     }
     .narrow .sheet-tools { display: block; padding-block: var(--ms-space-1) var(--ms-space-2); }
     .sheet-tools > :is(.loading, .problem) { margin-block-end: var(--ms-space-2); }
-    .sr-only { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; clip-path: inset(50%); white-space: nowrap; }
     .narrow .sheet-panel { display: flex; flex: 1; flex-direction: column; min-block-size: 0; }
     /* On a short sheet the pinned heading and notice give the body at least half. */
     .narrow .panel-top { max-block-size: 50%; padding-block-start: var(--ms-space-1); overflow: auto; overscroll-behavior: contain; }

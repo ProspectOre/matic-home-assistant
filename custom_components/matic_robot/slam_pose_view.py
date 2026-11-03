@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from http import HTTPStatus
 from time import monotonic, time
@@ -63,6 +64,7 @@ class MaticSlamPoseView(HomeAssistantView):
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return the current position without exposing it to Recorder."""
+        request_started = monotonic()
         hass = request.app[KEY_HASS]
         runtime = runtime_for_entry(hass, entry_id)
         if runtime is None:
@@ -75,7 +77,7 @@ class MaticSlamPoseView(HomeAssistantView):
         if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
             return self._unavailable_frame(entry_id, runtime)
         cached = self._cache.get(entry_id)
-        now = monotonic()
+        now = request_started
         if (
             cached is None
             or cached.runtime_id != id(runtime)
@@ -134,6 +136,10 @@ class MaticSlamPoseView(HomeAssistantView):
                     self._cache[entry_id] = cached
         data = runtime.coordinator.data
         floor_plan_coherent = runtime.slam_map.floor_plan_is_current(data.floor_plan)
+        # The age below is measured after any robot/lock wait. Report only the
+        # server time before that measurement; everything after it remains in
+        # the client's conservative transit budget.
+        age_measured_at = monotonic()
         pose_now = time()
         native_age = pose_observation_age_seconds(cached.pose, now=pose_now)
         # Transport fallback cannot certify a current position. Keep room-only
@@ -188,6 +194,10 @@ class MaticSlamPoseView(HomeAssistantView):
                 "pose_age_seconds": (
                     round(native_age, 3) if native_age is not None else None
                 ),
+                "pose_processing_seconds": math.floor(
+                    max(0.0, age_measured_at - request_started) * 1000
+                )
+                / 1000,
                 "pose_fetch_age_seconds": round(
                     max(0.0, monotonic() - cached.fetched_at), 3
                 ),

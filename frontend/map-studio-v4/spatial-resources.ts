@@ -1,7 +1,7 @@
 import { SpatialScene } from "./spatial-scene";
 import { SpatialPose } from "./spatial-pose";
 import { notice, type HassProjection, type ResourceStamp, type WorkspaceState } from "./contracts";
-import { entryFloorKey, entryMissionKey, type MapEntry } from "./backend-contracts";
+import { entryFloorKey, entryMissionKey, entryBoundaryKey, entryCoherenceIdentity, entryManagedLock, entryIdentity, type MapEntry } from "./backend-contracts";
 import type { MaticBackend } from "./backend";
 import {
   type CoherenceMachine,
@@ -13,8 +13,7 @@ import {
   needsPlanCatalog,
 } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort } from "./resource-state";
-import { entryBoundaryKey, entryCoherenceIdentity, entryManagedLock, entryIdentity } from "./workspace-projection";
+import { resource, isAbort } from "./shared-primitives";
 import type { CatalogRecoveryLease } from "./catalog-recovery-lease";
 
 interface SpatialResourceCallbacks {

@@ -1,4 +1,4 @@
-import { type MapEntry } from "./backend-contracts";
+import { entryCoherenceIdentity, entryManagedLock, type MapEntry } from "./backend-contracts";
 import { type ResourceStamp, type HassProjection } from "./contracts";
 import {
   CoherenceMachine,
@@ -9,10 +9,6 @@ import type {
   WorkspaceConnection,
   WorkspaceInvalidation,
 } from "./workspace-transport";
-import {
-  entryCoherenceIdentity,
-  entryManagedLock,
-} from "./workspace-projection";
 import { scheduleAfterMapAdmission } from "./map-admission-gate";
 
 interface WorkspaceSynchronizationCallbacks {

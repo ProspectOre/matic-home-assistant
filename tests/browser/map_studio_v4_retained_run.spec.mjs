@@ -93,7 +93,7 @@ for (const narrow of [false, true]) {
         if (detail) await expect(shell.locator(".status-copy small")).toHaveText(detail);
       }
     };
-    await expectStatus("Cleaning", "0 of 3 rooms completed");
+    await expectStatus("Cleaning", "0 of 3 rooms confirmed");
     await expect(shell.getByRole("button", { name: "Stop cleaning", exact: true })).toBeVisible();
     const update = (fields) => page.evaluate((fields) => {
       const panel = document.querySelector(window.__panelFixture.panelTag);
@@ -105,15 +105,15 @@ for (const narrow of [false, true]) {
       panel.hass = { ...panel.hass, states };
     }, fields);
     await update({ lastRun: { completed_room_count: 1 } });
-    await expectStatus("Cleaning", "1 of 3 rooms completed");
+    await expectStatus("Cleaning", "1 of 3 rooms confirmed");
     await update({ activeRunId: "replacement" });
     await expectStatus("Cleaning", "70% battery");
     await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().lastRun)).toBeNull();
     await update({ lastRun: { run_id: "replacement", completed_room_count: 2 } });
-    await expectStatus("Cleaning", "2 of 3 rooms completed");
+    await expectStatus("Cleaning", "2 of 3 rooms confirmed");
     await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
     await update({ currentArea: "Kitchen" });
-    await expectStatus("Cleaning", "2 of 3 rooms completed · In Kitchen");
+    await expectStatus("Cleaning", "2 of 3 rooms confirmed · In Kitchen");
     await update({ activity: "docked", currentArea: null });
     await expectStatus("Docked", "70% battery");
     await update({ activity: "cleaning", lastRun: { outcome: "failed" } });
@@ -179,6 +179,32 @@ test("a retained result preserves current map warning and active-run priority an
   await expect(shell.locator(".status-copy strong")).toHaveText("Run in progress");
 });
 
+test("comparison keeps active robot status visible in the packaged shell", async ({ page }) => {
+  const { installPanelFixture } = await import("./map_studio_v4_panel_fixture.mjs");
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
+  await panel.evaluate(element => {
+    const state = element.getWorkspaceSnapshot();
+    element.remove();
+    const shell = document.createElement("matic-map-shell-v4");
+    shell.id = "comparison-status-shell";
+    shell.state = { ...state, comparisonActive: true, dataMode: "history", activity: "cleaning",
+      lastRun: { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 3 } };
+    document.body.append(shell);
+  });
+  const shell = page.locator("#comparison-status-shell");
+  await expect(shell.locator(".status-copy strong")).toHaveText("Cleaning");
+  await expect(shell.locator(".status-copy small")).toHaveText("0 of 3 rooms confirmed");
+  for (const [activity, title] of [["paused", "Paused"], ["returning", "Returning"], ["recharging", "Charging to resume"]]) {
+    await shell.evaluate((element, activity) => element.state = { ...element.state, activity }, activity);
+    await expect(shell.locator(".status-copy strong")).toHaveText(title);
+  }
+  await shell.evaluate(element => element.state = { ...element.state, activity: "idle" });
+  await expect(shell.locator(".status-copy strong")).toHaveText("Comparing saved maps");
+});
+
 test("Home panel keeps a partial result after dock and refresh, hides it for a new run and successful completion", async ({ page }) => {
   const { installPanelFixture } = await import("./map_studio_v4_panel_fixture.mjs");
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialRobotStates: {
@@ -189,7 +215,7 @@ test("Home panel keeps a partial result after dock and refresh, hides it for a n
   const panel = page.locator(fixture.panelTag);
   const shell = panel.locator("matic-map-shell-v4");
   await expect(shell.locator(".status-copy strong")).toHaveText("Last run did not finish");
-  await expect(shell.locator(".status-copy small")).toHaveText("1 of 3 rooms completed");
+  await expect(shell.locator(".status-copy small")).toHaveText("1 of 3 rooms confirmed");
   await page.reload();
   await fixture.remount();
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
@@ -234,7 +260,7 @@ test("low-charge suspension stays visible when settled and yields to live chargi
     panel.hass = { ...panel.hass, states };
   }, { state, charging });
   await expect(status.locator("strong")).toHaveText("Last run did not finish");
-  await expect(status.locator("small")).toHaveText("1 of 3 rooms completed");
+  await expect(status.locator("small")).toHaveText("1 of 3 rooms confirmed");
   await updateActivity("idle");
   await expect(status.locator("strong")).toHaveText("Last run did not finish");
   await updateActivity("docked", true);

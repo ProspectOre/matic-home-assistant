@@ -1599,10 +1599,17 @@ class PlanLedger:
                     global_room = native_history._global_room(robot, room)
                     # A room skipped later in this run gets these back.
                     for target in (record, global_room):
-                        target["opportunity_before_run"] = {
-                            "run_id": active.get("run_id"),
-                            "value": target.get("last_opportunity"),
-                        }
+                        prior = target.get("opportunity_before_run")
+                        run_id = active.get("run_id")
+                        if (
+                            run_id is None
+                            or not isinstance(prior, dict)
+                            or prior.get("run_id") != run_id
+                        ):
+                            target["opportunity_before_run"] = {
+                                "run_id": run_id,
+                                "value": target.get("last_opportunity"),
+                            }
                     record["last_opportunity"] = now
                     global_room["name"] = room.name
                     global_room["last_opportunity"] = now

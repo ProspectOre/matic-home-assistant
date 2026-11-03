@@ -78,6 +78,7 @@ const integer = (value: unknown, maximum = Number.MAX_SAFE_INTEGER): number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : fail();
 const flag = (value: unknown): boolean => typeof value === "boolean" ? value : fail();
 const digest = (value: unknown): string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value) ? value : fail();
+const contentId = (value: unknown): string => typeof value === "string" && /^[a-f0-9]{24}$/.test(value) ? value : fail();
 const recordId = (value: unknown): string => typeof value === "string" && /^[a-f0-9]{32}$/.test(value) ? value : fail();
 const timestamp = (value: unknown): string => typeof value === "string" && value.length <= 64 && Number.isFinite(Date.parse(value)) ? value : fail();
 const name = (value: unknown): string | null => value === null ? null : typeof value === "string" && value.length <= 128 ? value : fail();
@@ -100,7 +101,7 @@ export const parseArchiveCatalog = (value: unknown): ArchiveCatalog => {
     const sceneUrl = row.scene_url === null ? null : typeof row.scene_url === "string" && isPrivatePath(row.scene_url) ? row.scene_url : fail();
     if ((retention === "trash") !== (sceneUrl === null)) return fail();
     return {
-      id: recordId(row.id), contentId: digest(row.content_id), createdAt: timestamp(row.created_at),
+      id: recordId(row.id), contentId: contentId(row.content_id), createdAt: timestamp(row.created_at),
       revision: integer(row.revision), pointCount: integer(row.point_count, 1_500_000), sceneUrl,
       name: name(row.name), retention, deletedUntil: row.deleted_until === null ? null : timestamp(row.deleted_until),
       imported: flag(row.imported), comparisonGroup: row.comparison_group === null ? null : digest(row.comparison_group),

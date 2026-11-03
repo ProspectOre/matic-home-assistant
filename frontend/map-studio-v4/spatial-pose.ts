@@ -1,10 +1,9 @@
-import { entryCoherenceIdentity } from "./workspace-projection";
-import type { MapEntry } from "./backend-contracts";
+import { entryCoherenceIdentity, type MapEntry } from "./backend-contracts";
 import type { HassProjection, ResourceStamp, WorkspaceState } from "./contracts";
 import type { MaticBackend } from "./backend";
 import type { CoherenceMachine, WorkspaceStore } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
+import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./shared-primitives";
 
 interface SpatialPoseCallbacks {
   readonly disposed: () => boolean;
@@ -102,7 +101,12 @@ export class SpatialPose {
       const requestElapsedMs = Math.max(0, performance.now() - requestStartedAt);
       const ageKnown = pose.nativeObservationAgeSeconds === undefined
         || typeof pose.nativeObservationAgeSeconds === "number";
-      const remainingFreshMs = (5_000 - (pose.nativeObservationAgeSeconds ?? 0) * 1_000) - requestElapsedMs;
+      // The server measures native age after waiting for the robot. Do not
+      // count that wait twice, but keep all unaccounted transit and local
+      // processing inside the freshness budget. Older servers stay conservative.
+      const serverMs = Math.min(requestElapsedMs, (pose.poseProcessingSeconds ?? 0) * 1_000);
+      const remainingFreshMs = 5_000 - Math.max(0, pose.nativeObservationAgeSeconds ?? 0) * 1_000
+        - (requestElapsedMs - serverMs);
       const exactLivePose = pose.position !== null && pose.freshness === "live"
         && ageKnown && remainingFreshMs > 0;
       this.clearExpiry();

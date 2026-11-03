@@ -1,5 +1,5 @@
 import { notice } from "./contracts";
-import type { PlansCatalog } from "./backend-contracts";
+import { entryBoundaryKey, type PlansCatalog } from "./backend-contracts";
 import { BackendError, type MaticBackend } from "./backend";
 import {
   type CoherenceMachine,
@@ -9,8 +9,7 @@ import {
   draftForPlan,
 } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort, problemCode } from "./resource-state";
-import { entryBoundaryKey } from "./workspace-projection";
+import { resource, isAbort, problemCode } from "./shared-primitives";
 
 interface PlanCatalogCallbacks {
   readonly disposed: () => boolean;

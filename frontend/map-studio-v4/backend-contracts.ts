@@ -69,6 +69,31 @@ export const entryMissionKey = (entry: MapEntry): string => [
   entry.mapSessionKey ?? "",
 ].join(":");
 
+export const entryCoherenceIdentity = (entry: MapEntry): string => [
+  entry.entryId,
+  entryFloorKey(entry),
+  entryMissionKey(entry),
+  entry.mapSceneEpoch ?? "",
+].join("|");
+
+export const entryManagedLock = (entry: MapEntry): boolean =>
+  entry.runnerLocked
+  || entry.stopSettlePending
+  || entry.activePlan
+  || entry.nativeReconciliationPending
+  || entry.nativeSessionActive === true;
+
+export const entryBoundaryKey = (entry: MapEntry): string => [
+  entry.entryId,
+  entry.selectedFloorOrdinal ?? 0,
+  entry.mapFloorOrdinal ?? 0,
+].join("|");
+
+export const entryIdentity = (entry: MapEntry): string => [
+  entryCoherenceIdentity(entry),
+  entry.mapRevision,
+].join("|");
+
 export interface SceneRoom {
   readonly id: string;
   readonly name: string;
@@ -142,6 +167,8 @@ export interface PoseModel {
   readonly freshness: "live" | "coordinator_fallback" | "unavailable";
   /** Native observation age; undefined only for pre-age-field responses. */
   readonly nativeObservationAgeSeconds?: number | null;
+  /** Server processing time before it measured that age. */
+  readonly poseProcessingSeconds?: number;
   /** Map-frame yaw in radians when the pose carried a rotation. */
   readonly heading?: number | null;
 }
@@ -618,12 +645,15 @@ export const parsePose = (value: unknown): PoseModel => {
   if (freshness !== "live" && freshness !== "coordinator_fallback") {
     throw new ContractError("invalid-pose-freshness");
   }
+  // The finite bounds reject NaN and infinities as well as out-of-range ages.
+  const age = payload.pose_age_seconds;
   const nativeObservationAgeSeconds = Object.hasOwn(payload, "pose_age_seconds")
-    ? typeof payload.pose_age_seconds === "number" && Number.isFinite(payload.pose_age_seconds)
-      && payload.pose_age_seconds >= -2 && payload.pose_age_seconds <= 5
-      ? payload.pose_age_seconds
+    ? typeof age === "number" && age >= -2 && age <= 5
+      ? age
       : null
     : undefined;
+  const processing = payload.pose_processing_seconds;
+  const poseProcessingSeconds = typeof processing === "number" && processing >= 0 && processing <= 60 ? processing : undefined;
   return {
     position,
     source: boundedString(payload.source, 64, "invalid-pose-source"),
@@ -636,10 +666,11 @@ export const parsePose = (value: unknown): PoseModel => {
     mapSessionKey: mapSessionKey(payload.map_session_key),
     freshness,
     ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
+    ...(poseProcessingSeconds === undefined ? {} : { poseProcessingSeconds }),
     // An unreadable heading falls back to the plain dot instead of dropping
     // an otherwise valid position.
     heading: position !== null && typeof payload.heading === "number"
-      && Number.isFinite(payload.heading) && Math.abs(payload.heading) <= Math.PI + 1e-3
+      && Math.abs(payload.heading) <= Math.PI + 1e-3
       ? payload.heading
       : null,
   };

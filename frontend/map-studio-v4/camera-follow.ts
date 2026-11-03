@@ -1,6 +1,6 @@
 import type { PoseModel } from "./backend-contracts";
 import type { WorkspaceState } from "./contracts";
-import { clamp } from "./numeric";
+import { clamp } from "./shared-primitives";
 
 interface CameraState {
   readonly yaw: number;
