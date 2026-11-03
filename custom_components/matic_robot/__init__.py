@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
@@ -84,6 +85,25 @@ class MaticRuntimeData:
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def _entry_update_listener(
+    entry: ConfigEntry, plans: CleaningPlanManager, serial_number: str
+) -> Callable[[HomeAssistant, ConfigEntry], Coroutine[Any, Any, None]]:
+    """Apply options in place and reload when connection data changes."""
+    loaded_entry_data = dict(entry.data)
+
+    async def update(hass: HomeAssistant, updated: ConfigEntry) -> None:
+        nonlocal loaded_entry_data
+        if updated.data != loaded_entry_data:
+            loaded_entry_data = dict(updated.data)
+            hass.config_entries.async_schedule_reload(updated.entry_id)
+            return
+        await plans.async_set_native_cleanings_enabled(
+            serial_number, updated.options.get(CONF_INCLUDE_NATIVE_CLEANINGS, True)
+        )
+
+    return update
 
 
 async def _async_recover_after_failed_unload(
@@ -206,14 +226,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             serial_number, entry.options.get(CONF_INCLUDE_NATIVE_CLEANINGS, True)
         )
 
-        async def update_native_cleanings(
-            hass: HomeAssistant, updated: ConfigEntry
-        ) -> None:
-            await plans.async_set_native_cleanings_enabled(
-                serial_number, updated.options.get(CONF_INCLUDE_NATIVE_CLEANINGS, True)
+        entry.async_on_unload(
+            entry.add_update_listener(
+                _entry_update_listener(entry, plans, serial_number)
             )
-
-        entry.async_on_unload(entry.add_update_listener(update_native_cleanings))
+        )
         area_binding_upgrade = await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )

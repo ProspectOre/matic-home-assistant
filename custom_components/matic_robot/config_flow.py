@@ -438,6 +438,42 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._import_mode: str | None = None
 
     @callback
+    def _abort_if_configured_with_updates(self, updates: dict[str, Any]) -> None:
+        """Let the loaded entry's listener reload after discovery updates."""
+        entry = (
+            self.hass.config_entries.async_entry_for_domain_unique_id(
+                DOMAIN, self.unique_id
+            )
+            if self.unique_id is not None
+            else None
+        )
+        if entry is not None and entry.update_listeners:
+            self._abort_if_unique_id_configured(updates=updates, reload_on_update=False)
+        else:
+            self._abort_if_unique_id_configured(updates=updates)
+
+    @callback
+    def _update_reload_and_abort(
+        self,
+        entry: config_entries.ConfigEntry,
+        *,
+        data_updates: Mapping[str, Any],
+        reason: str,
+    ) -> config_entries.ConfigFlowResult:
+        """Update connection data and schedule exactly one entry reload."""
+        if not getattr(entry, "update_listeners", ()):
+            return self.async_update_reload_and_abort(
+                entry, data_updates=data_updates, reason=reason
+            )
+        changed = self.hass.config_entries.async_update_entry(
+            entry, data={**entry.data, **data_updates}
+        )
+        if not changed:
+            # Reauthentication must also retry an unchanged credential.
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        return self.async_abort(reason=reason)
+
+    @callback
     def async_remove(self) -> None:
         """Cancel pending flow-owned work when Home Assistant removes it."""
         self._flow_removed = True
@@ -569,8 +605,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {"name": _robot_label(discovery_info)}
         if self._discovered_serial:
             await self.async_set_unique_id(self._discovered_serial)
-            self._abort_if_unique_id_configured(
-                updates={CONF_HOST: host, CONF_PORT: discovery_info.port}
+            self._abort_if_configured_with_updates(
+                {CONF_HOST: host, CONF_PORT: discovery_info.port}
             )
         self._pairing_data = dict(self._discovered)
         return self._show_pairing_form("pair")
@@ -1030,7 +1066,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(entry.unique_id)
         self._raise_if_flow_removed()
         self._abort_if_unique_id_mismatch()
-        return self.async_update_reload_and_abort(
+        return self._update_reload_and_abort(
             entry,
             data_updates=_imported_credential_data(credential),
             reason="reauth_successful",
@@ -1095,7 +1131,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Save the verified pin and credential once, then clear the Repair."""
         self._raise_if_flow_removed()
-        result = self.async_update_reload_and_abort(
+        result = self._update_reload_and_abort(
             entry,
             data_updates={
                 CONF_HOST: host,
@@ -1313,7 +1349,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         else:
             await self.async_set_unique_id(entry.unique_id)
             self._abort_if_unique_id_mismatch()
-            self._pairing_result = self.async_update_reload_and_abort(
+            self._pairing_result = self._update_reload_and_abort(
                 entry,
                 data_updates=_bluetooth_credential_data(grant),
                 reason="reauth_successful",
@@ -1364,7 +1400,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 await self.async_set_unique_id(entry.unique_id)
                 self._abort_if_unique_id_mismatch()
-                return self.async_update_reload_and_abort(
+                return self._update_reload_and_abort(
                     entry,
                     data_updates={
                         CONF_HOST: user_input[CONF_HOST],
@@ -1747,7 +1783,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Saved only after the credential this robot issued authenticated
             # above, so the address is bound to this robot's serial number.
             configured_updates[CONF_BLUETOOTH_ADDRESS] = bluetooth_address
-        self._abort_if_unique_id_configured(updates=configured_updates)
+        self._abort_if_configured_with_updates(configured_updates)
         entry_data = {
             CONF_HOST: host,
             CONF_PORT: port,
