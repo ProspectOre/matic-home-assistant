@@ -37,10 +37,83 @@ HARNESS = ("tests/__init__.py", "tests/conftest.py", "tests/e2e")
 PLAN = "evening"
 AREA_PLAN = "entry-area"
 ENTRY_ID = "matic-upgrade-drill"
+PHASE_OUTPUT_LIMIT = 4000
 
 
 class DrillFailed(RuntimeError):
     """A phase failed or the stores lost something across phases."""
+
+
+def _phase_failure_output(stdout: str, stderr: str) -> str:
+    """Keep pytest's useful failure and stderr diagnostics within a safe bound."""
+    stdout = stdout.strip()
+    stderr = stderr.strip()
+    output = "\n".join(part for part in (stdout, stderr) if part)
+    if len(output) <= PHASE_OUTPUT_LIMIT:
+        return output
+
+    # Keep pytest's assertion even when teardown noise follows it, and retain
+    # captured per-test diagnostics and stderr independently.
+    traceback_markers = (
+        "AssertionError",
+        "Traceback (most recent call last)",
+        "E   ",
+        "Error:",
+    )
+    marker_positions = [
+        position
+        for marker in traceback_markers
+        if (position := stdout.find(marker)) >= 0
+    ]
+    marker_position = min(marker_positions, default=stdout.find("FAILED "))
+    stdout_limit = PHASE_OUTPUT_LIMIT * 3 // 5
+    stderr_limit = PHASE_OUTPUT_LIMIT - stdout_limit - 64
+    if marker_position >= 0:
+        trace_limit = stdout_limit * 3 // 5
+        start = max(0, marker_position - trace_limit // 3)
+        trace_excerpt = stdout[start : start + trace_limit]
+    else:
+        trace_excerpt = stdout[-stdout_limit:]
+
+    capture_headings = []
+    offset = 0
+    for line in stdout.splitlines(keepends=True):
+        if "Captured " in line and line.lstrip().startswith("-"):
+            capture_headings.append((offset, line))
+        offset += len(line)
+    capture_excerpt = ""
+    capture_budget = stdout_limit - len(trace_excerpt) - 32
+    for index, (offset, _heading) in enumerate(capture_headings):
+        end = (
+            capture_headings[index + 1][0]
+            if index + 1 < len(capture_headings)
+            else stdout.find("=== short test summary", offset)
+        )
+        if end < 0:
+            end = len(stdout)
+        section = stdout[offset:end].strip()
+        section_limit = min(400, capture_budget)
+        if section_limit <= 0:
+            break
+        if len(section) > section_limit:
+            suffix = " … captured output truncated …"
+            if section_limit > len(suffix):
+                section = f"{section[: section_limit - len(suffix)]}{suffix}"
+            else:
+                section = section[:section_limit]
+        capture_excerpt += f"\n{section}"
+        capture_budget -= len(section) + 1
+    stdout_excerpt = f"{trace_excerpt}{capture_excerpt}"
+    if len(stderr) > stderr_limit:
+        head_size = stderr_limit // 2
+        tail_size = stderr_limit - head_size - 24
+        stderr_excerpt = (
+            f"{stderr[:head_size]}\n… stderr truncated …\n{stderr[-tail_size:]}"
+        )
+    else:
+        stderr_excerpt = stderr
+    excerpt = "\n".join(part for part in (stdout_excerpt, stderr_excerpt) if part)
+    return excerpt[-PHASE_OUTPUT_LIMIT:]
 
 
 def plan_state(config: Path) -> dict[str, Any]:
@@ -183,6 +256,7 @@ def run_phase(checkout: Path, phase: str, config: Path) -> None:
             "pytest",
             f"{DRILL}::test_{phase}",
             "-q",
+            "--tb=short",
             "-p",
             "no:cacheprovider",
         ],
@@ -193,7 +267,8 @@ def run_phase(checkout: Path, phase: str, config: Path) -> None:
         check=False,
     )
     if result.returncode:
-        raise DrillFailed(f"{phase} failed:\n{result.stdout[-4000:]}")
+        details = _phase_failure_output(result.stdout, result.stderr)
+        raise DrillFailed(f"{phase} failed:\n{details}")
 
 
 def prepare_older(tag: str, worktree: Path) -> None:
