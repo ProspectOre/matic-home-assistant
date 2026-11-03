@@ -1275,7 +1275,8 @@ async def test_setup_refreshes_before_forwarding_platforms(
     )
     update_options = entry.add_update_listener.call_args.args[0]
     await update_options(
-        hass, SimpleNamespace(options={"include_native_cleanings": False})
+        hass,
+        SimpleNamespace(data=entry.data, options={"include_native_cleanings": False}),
     )
     plans.async_set_native_cleanings_enabled.assert_awaited_with(
         "synthetic-serial", False
