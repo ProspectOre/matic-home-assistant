@@ -835,6 +835,7 @@
     "v4_archive_loading": "Saved-map information is not available yet. Refresh to try again.",
     "v4_archive_retry_access": "Retry access",
     "v4_follow_needs_live_pose": "Following needs a live position; Ride along also needs the robot's heading.",
+    "v4_tracking_waiting": "Waiting for a current robot position.",
     "v4_room_candidates_identity_unresolved": "Matic can't tell these rooms apart. Rename them in the robot app and wait for the updated room names to appear.",
     "v4_daily_limit_reason_invalid_policy": "Home Assistant can't confirm this room's limit.",
     "v4_daily_limit_reason_room_identity_unconfirmed": "Home Assistant can't match this room on the map.",
