@@ -4021,3 +4021,49 @@ def test_history_record_trash_metadata_omits_scene_url_and_errors_map_statuses()
         response = _history_error(ValueError(error))
         assert response.status == expected
         assert json.loads(response.body) == {"error": error}
+
+
+async def test_live_tracker_serves_fresh_pose_without_waiting_for_robot():
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    runtime.live_pose = SimpleNamespace(current=lambda: pose, revision=8)
+    hass = _hass(_entry(runtime))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at,
+    ):
+        response = await MaticSlamPoseView().get(_request(hass), "entry")
+    payload = json.loads(response.body)
+    assert payload["position"] == [0.1, 0.2]
+    assert payload["pose_revision"] == 8
+    runtime.client.async_get_pose.assert_not_awaited()
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at + 6,
+    ):
+        response = await MaticSlamPoseView().get(_request(hass), "entry")
+    assert json.loads(response.body)["position"] is None
+
+
+def test_stream_trail_records_only_fresh_coherent_positions():
+    from custom_components.matic_robot.slam_view_data import observe_live_pose_trail
+
+    runtime = _runtime()
+    runtime.run_trails = SimpleNamespace(observe=MagicMock())
+    runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value="run")
+    pose = runtime.coordinator.data.pose
+    with patch(
+        "custom_components.matic_robot.client.floor_plan.time.time",
+        return_value=pose.observed_at,
+    ):
+        observe_live_pose_trail(runtime, pose)
+    assert runtime.run_trails.observe.call_args.kwargs["point"] == (0.1, 0.2)
+    with patch(
+        "custom_components.matic_robot.client.floor_plan.time.time",
+        return_value=pose.observed_at + 6,
+    ):
+        observe_live_pose_trail(runtime, pose)
+    assert runtime.run_trails.observe.call_args.kwargs["point"] is None
+    runtime.slam_map.floor_plan_is_current = MagicMock(return_value=False)
+    observe_live_pose_trail(runtime, pose)
+    assert runtime.run_trails.observe.call_args.kwargs["point"] is None

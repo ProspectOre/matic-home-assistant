@@ -269,6 +269,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             async for value in values:
                 yield value
 
+    async def async_subscribe_poses(
+        self, mission: Callable[[], int | None]
+    ) -> AsyncGenerator[RobotPose]:
+        """Yield bounded, mission-keyed robot pose observations."""
+        async with aclosing(self._reads.async_subscribe_poses(mission)) as values:
+            async for value in values:
+                yield value
+
     async def async_get_tracked_collection_entries(
         self,
         collection_name: str,

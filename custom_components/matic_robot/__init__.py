@@ -47,6 +47,7 @@ from .const import (
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
 from .frontend import async_register_frontend, clear_slam_scene_cache
+from .live_pose import LivePose
 from .llm import async_register_matic_llm_api
 from .maintenance import async_delete_maintenance_issues
 from .managed_reconciliation import OEM_STOP_RECONCILIATION_POLL_SECONDS
@@ -62,7 +63,11 @@ from .services import async_register_services
 from .slam_history import SlamHistoryStore
 from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapIdentity, SlamMapStore
-from .slam_view_data import observe_coordinator_trail
+from .slam_view_data import (
+    _pose_frame_key,
+    observe_coordinator_trail,
+    observe_live_pose_trail,
+)
 from .wifi_survey import WifiSurveyStore
 
 __all__ = ["async_migrate_entry"]
@@ -91,6 +96,7 @@ class MaticRuntimeData:
     run_trails: RunTrails
     wifi_survey: WifiSurveyStore
     photos: RobotPhotoStore
+    live_pose: LivePose | None = None
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -321,6 +327,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             RobotPhotoStore(client),
         )
         entry.runtime_data = runtime_data
+        runtime_data.live_pose = LivePose(
+            client,
+            lambda: (
+                coordinator.data.floor_plan.mission_id
+                if coordinator.data.floor_plan is not None
+                else None
+            ),
+            lambda: _pose_frame_key(runtime_data),
+            partial(observe_live_pose_trail, runtime_data),
+        )
+        entry.async_create_background_task(
+            hass, runtime_data.live_pose.watch(), f"{DOMAIN} live pose collector"
+        )
         entry.async_on_unload(
             coordinator.async_add_listener(
                 partial(observe_coordinator_trail, runtime_data)

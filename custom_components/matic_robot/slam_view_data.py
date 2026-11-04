@@ -21,6 +21,7 @@ from .slam_map_store import SlamMapIdentity
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
+    from .client.models import RobotPose
     from .slam_scene import MaticSlamSceneView
 
 _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
@@ -68,6 +69,17 @@ def observe_coordinator_trail(runtime: MaticRuntimeData) -> None:
     data = runtime.coordinator.data
     position = (
         resolve_robot_map_position(data.floor_plan, data.pose, None)
+        if runtime.slam_map.floor_plan_is_current(data.floor_plan)
+        else None
+    )
+    observe_run_trail(runtime, position[:2] if position is not None else None)
+
+
+def observe_live_pose_trail(runtime: MaticRuntimeData, pose: RobotPose) -> None:
+    """Record fresh stream poses even when no browser is open."""
+    data = runtime.coordinator.data
+    position = (
+        resolve_robot_map_position(data.floor_plan, pose, None)
         if runtime.slam_map.floor_plan_is_current(data.floor_plan)
         else None
     )

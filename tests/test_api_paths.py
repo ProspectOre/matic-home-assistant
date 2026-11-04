@@ -1585,6 +1585,38 @@ async def test_pose_selects_active_mission_without_first_record_guessing() -> No
     assert closed == [True]
 
 
+async def test_live_pose_stream_skips_bad_foreign_values_and_closes() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    closed = []
+
+    async def entries():
+        try:
+            yield HermesCollectionEntry(_pose_key(84), b"invalid")
+            yield HermesCollectionEntry(_pose_key(42), _pose_payload())
+            await asyncio.Event().wait()
+        finally:
+            closed.append(True)
+
+    client._collections.async_subscribe_collection_entries = lambda _name: entries()
+    stream = client.async_subscribe_poses(lambda: 42)
+    pose = await anext(stream)
+    assert pose.mission_id == 42
+    await stream.aclose()
+    assert closed == [True]
+
+
+async def test_live_pose_stream_rejects_bad_active_values() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+
+    async def entries():
+        yield HermesCollectionEntry(_pose_key(42), b"invalid")
+
+    client._collections.async_subscribe_collection_entries = lambda _name: entries()
+    stream = client.async_subscribe_poses(lambda: 42)
+    with pytest.raises(CannotConnectError):
+        await anext(stream)
+
+
 async def test_pose_acknowledges_foreign_before_selecting_active_record(
     monkeypatch,
 ) -> None:
