@@ -225,7 +225,7 @@ test("cleaning startup keeps Stop in the first-map budget and loads queue contro
   await page.goto("/");
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialPlanCatalog: QUEUE_CATALOG,
     initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA,
-    cleaningCoverage: { active: true, cell_size: 0.015, runs: [[1, 1, 2, 1]], truncated: false } });
+    cleaningCoverage: { active: true, map_session_key: "a".repeat(64), cell_size: 0.015, runs: [[1, 1, 2, 1]], truncated: false } });
   await page.evaluate(() => import("/matic_icons.js"));
   await armFirstMapOpportunity(page, fixture.panelTag);
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));

@@ -50,7 +50,8 @@ export class CoverageResources {
     };
     try {
       const layer = parseCleaningCoverage(await this.backend.mapLayer("coverage", entry.coverageUrl, controller.signal));
-      if (current()) this.store.patch({ liveCoverage: layer.active ? { ...layer, frameKey: identity } : null });
+      if (current()) this.store.patch({ liveCoverage: layer.active && layer.mapSessionKey === entry.mapSessionKey
+        ? { ...layer, frameKey: identity } : null });
     } catch (error) {
       if (!isAbort(error) && !(error instanceof BackendError && error.status === 409)
         && current()) this.store.patch({ liveCoverage: null });

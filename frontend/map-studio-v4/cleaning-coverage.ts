@@ -9,6 +9,10 @@ export function parseCleaningCoverage(value: unknown): CleaningCoverageLayer {
     || typeof root.cell_size !== "number" || !Number.isFinite(root.cell_size)
     || root.cell_size <= 0 || root.cell_size > 1 || !Array.isArray(root.runs)
     || root.runs.length > 20_000) throw new ContractError("invalid-cleaning-coverage");
+  const mapSessionKey = root.map_session_key;
+  if (root.active && (typeof mapSessionKey !== "string" || !/^[a-f0-9]{64}$/u.test(mapSessionKey))) {
+    throw new ContractError("invalid-cleaning-coverage");
+  }
   const runs = root.runs.map((run): readonly [number, number, number, number] => {
     if (!Array.isArray(run) || run.length !== 4
       || !run.every((part) => typeof part === "number" && Number.isSafeInteger(part))
@@ -18,5 +22,6 @@ export function parseCleaningCoverage(value: unknown): CleaningCoverageLayer {
     }
     return [run[0], run[1], run[2], run[3]];
   });
-  return { active: root.active, frameKey: "", cellSize: root.cell_size, runs, truncated: root.truncated };
+  return { active: root.active, mapSessionKey: root.active ? mapSessionKey as string : null,
+    frameKey: "", cellSize: root.cell_size, runs, truncated: root.truncated };
 }

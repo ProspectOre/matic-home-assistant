@@ -11,6 +11,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from .client.exceptions import MaticError
 from .client.slam_tiles import TILE_SIDE, VOXEL_SCALE_METERS, SlamSemanticTile
 from .http import COVERAGE_API_URL, PRIVATE_NO_STORE_HEADERS, runtime_for_entry
+from .slam_view_data import _map_session_key
 
 _MAX_RUNS = 20_000
 
@@ -45,6 +46,11 @@ class MaticLiveCoverageView(HomeAssistantView):
                 },
                 headers=PRIVATE_NO_STORE_HEADERS,
             )
+        map_session_key = _map_session_key(runtime)
+        if map_session_key is None:
+            return web.Response(
+                status=HTTPStatus.SERVICE_UNAVAILABLE, headers=PRIVATE_NO_STORE_HEADERS
+            )
         revision = runtime.live_coverage.revision
         generation = runtime.live_coverage.generation
         runs, truncated = await hass.async_add_executor_job(_coverage_runs, pages or ())
@@ -62,6 +68,7 @@ class MaticLiveCoverageView(HomeAssistantView):
             runtime_for_entry(hass, entry_id) is not runtime
             or current is None
             or runtime.live_coverage.generation != generation
+            or _map_session_key(runtime) != map_session_key
         ):
             return web.Response(
                 status=HTTPStatus.SERVICE_UNAVAILABLE, headers=PRIVATE_NO_STORE_HEADERS
@@ -73,6 +80,7 @@ class MaticLiveCoverageView(HomeAssistantView):
         return self.json(
             {
                 "active": True,
+                "map_session_key": map_session_key,
                 "cell_size": VOXEL_SCALE_METERS,
                 "runs": runs,
                 "truncated": truncated,

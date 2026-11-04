@@ -26,6 +26,14 @@ from .test_slam_map import synthetic_semantic_entry
 MISSION = 0x1234ABCD
 
 
+@pytest.fixture(autouse=True)
+def _view_map_key(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coverage_view._map_session_key",
+        lambda runtime: getattr(runtime, "test_map_key", "a" * 64),
+    )
+
+
 def test_coverage_requires_active_session_and_verified_current_frame() -> None:
     floor = SimpleNamespace(mission_id=MISSION)
     data = SimpleNamespace(
@@ -149,6 +157,7 @@ async def test_view_requires_admin_and_revalidates_entry() -> None:
     assert response.status == 200
     assert response.headers["Cache-Control"].startswith("private, no-store")
     assert json.loads(response.body)["active"] is True
+    assert json.loads(response.body)["map_session_key"] == "a" * 64
     request["hass_user"] = SimpleNamespace(is_admin=False)
     with pytest.raises(Unauthorized):
         await view.get(request, "entry")
@@ -179,6 +188,26 @@ async def test_view_discards_coverage_changed_during_encoding() -> None:
 
     hass.async_add_executor_job.side_effect = change_during_encoding
     assert (await MaticLiveCoverageView().get(request, "entry")).status == 409
+
+
+async def test_view_requires_and_revalidates_map_session() -> None:
+    runtime = SimpleNamespace(
+        live_coverage=SimpleNamespace(
+            async_current=AsyncMock(return_value=()), revision=1, generation=1
+        ),
+        test_map_key=None,
+    )
+    request = _request(runtime)
+    view = MaticLiveCoverageView()
+    assert (await view.get(request, "entry")).status == 503
+    runtime.test_map_key = "a" * 64
+
+    async def change_map(target, *args):
+        runtime.test_map_key = "b" * 64
+        return target(*args)
+
+    request.app[KEY_HASS].async_add_executor_job.side_effect = change_map
+    assert (await view.get(request, "entry")).status == 503
 
 
 async def test_view_discards_session_changed_during_encoding() -> None:

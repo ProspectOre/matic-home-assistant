@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
-const coverage = { active: true, cell_size: 0.015, truncated: false, runs: [[2, 3, 4, 1], [7, 5, 2, 2]] };
+const coverage = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015, truncated: false, runs: [[2, 3, 4, 1], [7, 5, 2, 2]] };
 
 const inShadow = (panel, selector, click = false) => panel.evaluate((element, { selector, click }) => {
   const find = (root) => {
@@ -46,9 +46,31 @@ test("coverage parser rejects malformed and unbounded runs", async ({ page }) =>
     const { parseCleaningCoverage } = await import("/coverage-parser.js");
     return [null, { ...valid, cell_size: 0 }, { ...valid, runs: [[0, 0, 33, 1]] },
       { ...valid, runs: [[0, 0, 1, 4]] }, { ...valid, runs: Array(20_001).fill([0, 0, 1, 1]) },
+      { ...valid, map_session_key: null }, { ...valid, map_session_key: "not-a-session" },
     ].map((value) => { try { parseCleaningCoverage(value); return false; } catch { return true; } });
   }, coverage);
-  expect(rejected).toEqual([true, true, true, true, true]);
+  expect(rejected).toEqual([true, true, true, true, true, true, true]);
+});
+
+test("coverage from a different map session is cleared until the matching frame returns", async ({ page }) => {
+  await page.clock.install();
+  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
+  await page.evaluate(async (tag) => {
+    const panel = window.__panelFixture.createPanel();
+    document.body.append(panel);
+    await customElements.whenDefined(tag);
+    await panel.updateComplete;
+  }, panelTag);
+  const panel = page.locator(panelTag);
+  const layer = () => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage);
+  await expect.poll(async () => (await layer())?.runs.length).toBe(2);
+  await page.evaluate(() => { window.__cleaningCoverageReply = { ...window.__cleaningCoverageReply, active: true,
+    map_session_key: "b".repeat(64), cell_size: 0.015, truncated: false, runs: [[1, 1, 1, 2]] }; });
+  await page.clock.fastForward(5_000);
+  await expect.poll(layer).toBeNull();
+  await page.evaluate(() => { delete window.__cleaningCoverageReply; });
+  await page.clock.fastForward(5_000);
+  await expect.poll(async () => (await layer())?.runs.length).toBe(2);
 });
 
 test("coverage stays visible during page churn but clears when the session is unavailable", async ({ page }) => {
@@ -109,7 +131,7 @@ test("a late coverage response cannot revive an ended session", async ({ page })
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
   await page.evaluate(() => {
     window.__holdCleaningCoverage = true;
-    window.__cleaningCoverageReply = { active: true, cell_size: 0.015, runs: [[8, 8, 1, 2]], truncated: false };
+    window.__cleaningCoverageReply = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015, runs: [[8, 8, 1, 2]], truncated: false };
   });
   await page.clock.fastForward(5_000);
   await expect.poll(() => page.evaluate(() => typeof window.__releaseCleaningCoverage)).toBe("function");

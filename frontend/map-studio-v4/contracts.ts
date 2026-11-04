@@ -233,6 +233,7 @@ export interface FloorTypesLayer {
 
 export interface CleaningCoverageLayer {
   readonly active: boolean;
+  readonly mapSessionKey: string | null;
   readonly frameKey: string;
   readonly cellSize: number;
   readonly runs: readonly (readonly [number, number, number, number])[];
