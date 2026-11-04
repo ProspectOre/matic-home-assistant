@@ -77,11 +77,12 @@ class MaticSlamPoseView(HomeAssistantView):
         if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
             return self._unavailable_frame(entry_id, runtime)
         tracker = getattr(runtime, "live_pose", None)
+        tracked_pose = tracker.current() if tracker is not None else None
         cached = self._cache.get(entry_id)
         now = request_started
-        if tracker is not None:
+        if tracker is not None and tracked_pose is not None:
             cached = _CachedPose(
-                id(runtime), tracker.current(), now, tracker.revision, "live", frame_key
+                id(runtime), tracked_pose, now, tracker.revision, "live", frame_key
             )
         elif (
             cached is None

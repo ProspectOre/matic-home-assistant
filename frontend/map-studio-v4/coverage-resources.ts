@@ -32,8 +32,9 @@ export class CoverageResources {
     const entry = state.resources.entry;
     if (!this.callbacks.pageActive() || state.dataMode !== "live" || state.floor.readOnly
       || state.selection.floorId !== "current" || !entry?.coverageUrl
-      || !entry.mapFloorCoherent || !entry.mapSessionVerified) {
+      || entry.nativeSessionActive !== true || !entry.mapFloorCoherent || !entry.mapSessionVerified) {
       if (state.liveCoverage) this.store.patch({ liveCoverage: null });
+      this.stop();
       return;
     }
     if (this.requests.has("cleaning-coverage")) return;
@@ -44,10 +45,11 @@ export class CoverageResources {
       return !controller.signal.aborted && !this.callbacks.disposed() && this.callbacks.pageActive()
         && currentState.dataMode === "live" && currentState.selection.floorId === "current"
         && !currentState.floor.readOnly && Boolean(currentState.resources.entry
+          && currentState.resources.entry.nativeSessionActive === true
           && entryCoherenceIdentity(currentState.resources.entry) === identity);
     };
     try {
-      const layer = parseCleaningCoverage(await this.backend.coverage(entry.coverageUrl, controller.signal));
+      const layer = parseCleaningCoverage(await this.backend.mapLayer("coverage", entry.coverageUrl, controller.signal));
       if (current()) this.store.patch({ liveCoverage: layer.active ? { ...layer, frameKey: identity } : null });
     } catch (error) {
       if (!isAbort(error) && !(error instanceof BackendError && error.status === 409)

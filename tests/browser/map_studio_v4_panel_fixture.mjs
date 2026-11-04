@@ -273,6 +273,9 @@ export async function installPanelFixture(page, {
       if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
       if (cleaningCoverage && path.endsWith("live_coverage/synthetic")) {
         if (window.__cleaningCoverageStatus) return new Response(null, { status: window.__cleaningCoverageStatus });
+        if (window.__holdCleaningCoverage) return new Promise((resolve) => {
+          window.__releaseCleaningCoverage = () => resolve(json(window.__cleaningCoverageReply ?? cleaningCoverage));
+        });
         return json(window.__cleaningCoverageReply ?? cleaningCoverage);
       }
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);

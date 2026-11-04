@@ -289,6 +289,7 @@ export class EffectController {
       (state) => this.#pinContextActive(state),
       () => {
         this.#store.patch({ optionalUiReady: true });
+        this.#spatialResources.startPolling();
         void this.#pinResources(false, true);
         if (this.#store.value.activity === "cleaning" && this.#store.value.resources.plans.status === "idle"
           && canReadFloorResources(this.#store.value)) {

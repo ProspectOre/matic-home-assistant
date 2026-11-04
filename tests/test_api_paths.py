@@ -1645,11 +1645,12 @@ async def test_live_pose_stream_skips_bad_foreign_values_and_closes() -> None:
     assert closed == [True]
 
 
-async def test_live_pose_stream_rejects_bad_active_values() -> None:
+@pytest.mark.parametrize("value", [b"invalid", b"x" * (16 * 1024 + 1)])
+async def test_live_pose_stream_rejects_bad_active_values(value: bytes) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
 
     async def entries():
-        yield HermesCollectionEntry(_pose_key(42), b"invalid")
+        yield HermesCollectionEntry(_pose_key(42), value)
 
     client._collections.async_subscribe_collection_entries = lambda _name: entries()
     stream = client.async_subscribe_poses(lambda: 42)

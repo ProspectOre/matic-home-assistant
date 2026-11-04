@@ -1155,8 +1155,13 @@ async def test_pose_frame_revocation_uses_current_scene_revision_after_await() -
     assert payload["scene_revision"] > initial_revision
 
 
-async def test_pose_view_coalesces_concurrent_live_reads_and_rechecks_runtime() -> None:
+@pytest.mark.parametrize("empty_tracker", [False, True])
+async def test_pose_view_coalesces_concurrent_live_reads_and_rechecks_runtime(
+    empty_tracker: bool,
+) -> None:
     runtime = _runtime()
+    if empty_tracker:
+        runtime.live_pose = SimpleNamespace(current=lambda: None, revision=0)
     entry = _entry(runtime)
     hass = _hass(entry)
     view = MaticSlamPoseView()
@@ -4044,6 +4049,27 @@ async def test_live_tracker_serves_fresh_pose_without_waiting_for_robot():
     ):
         response = await MaticSlamPoseView().get(_request(hass), "entry")
     assert json.loads(response.body)["position"] is None
+
+
+async def test_empty_live_tracker_refreshes_pose_after_floor_becomes_available():
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    floor_plan = runtime.coordinator.data.floor_plan
+    runtime.live_pose = SimpleNamespace(current=lambda: None, revision=0)
+    hass = _hass(_entry(runtime))
+    view = MaticSlamPoseView()
+    runtime.coordinator.data.floor_plan = None
+    unavailable = await view.get(_request(hass), "entry")
+    assert json.loads(unavailable.body)["position"] is None
+    runtime.client.async_get_pose.assert_not_awaited()
+    runtime.coordinator.data.floor_plan = floor_plan
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at,
+    ):
+        response = await view.get(_request(hass), "entry")
+    assert json.loads(response.body)["position"] == [0.1, 0.2]
+    runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
 
 
 def test_stream_trail_records_only_fresh_coherent_positions():

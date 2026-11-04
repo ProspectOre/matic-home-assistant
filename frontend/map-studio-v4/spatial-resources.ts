@@ -13,7 +13,7 @@ import {
   needsPlanCatalog,
 } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort } from "./shared-primitives";
+import { resource } from "./shared-primitives";
 import type { CatalogRecoveryLease } from "./catalog-recovery-lease";
 
 interface SpatialResourceCallbacks {
@@ -66,9 +66,7 @@ export class SpatialResources {
   readonly #pose: SpatialPose;
   #history: InstanceType<typeof import("./spatial-history").SpatialHistory> | null = null;
   #historyLoad: Promise<InstanceType<typeof import("./spatial-history").SpatialHistory> | null> | null = null;
-  #wifiSignalTimer: number | null = null;
-  #floorTypesTimer: number | null = null;
-  #coverage: InstanceType<typeof import("./coverage-resources").CoverageResources> | null = null;
+  #optionalLayers: InstanceType<typeof import("./map-layer-resources").MapLayerResources> | null = null;
   #entryIdentity = "";
   #spatialRecovery: SpatialReadRecoveryState | null = null;
 
@@ -200,22 +198,22 @@ export class SpatialResources {
 
   startPolling(): void {
     if (!this.#callbacks.pageActive()) return;
-    void this.#startCoverage();
-    if (this.#store.value.wifiSignal && this.#startWifiSignal()) void this.#loadWifiSignal();
-    if (this.#store.value.floorTypes && this.#startFloorTypes()) void this.#loadFloorTypes();
+    this.#startOptionalLayers();
     this.#pose.startPolling();
   }
 
   stopPolling(): void {
     this.#pose.stopPolling();
-    this.#coverage?.stop();
+    this.#optionalLayers?.stopCoverage();
+    this.#optionalLayers?.stopWifi();
+    this.#optionalLayers?.stop();
     this.clearRecovery();
   }
 
   dispose(): void {
     this.stopPolling();
-    this.#stopWifiSignal();
-    this.#stopFloorTypes();
+    this.#optionalLayers?.stopWifi();
+    this.#optionalLayers?.stop();
     this.#pose.clearExpiry();
   }
 
@@ -226,7 +224,7 @@ export class SpatialResources {
     const generation = this.#coherence.invalidate();
     this.#scene.stop();
     const state = this.#store.value;
-    this.#coverage?.stop();
+    this.#optionalLayers?.stopCoverage();
     this.#store.patch({ generation, pageActive, liveCoverage: null, coherence: state.resources.scene.value ? "verifying" : "unavailable",
       floor: { ...state.floor, readOnly: state.floor.readOnly || state.resources.scene.value !== null },
       map: { ...state.map, exactPose: false } });
@@ -590,7 +588,7 @@ export class SpatialResources {
         void this.#callbacks.loadPlans();
       }
       this.#callbacks.resumeAreaCatalog();
-      void this.#startCoverage();
+      this.#startOptionalLayers();
       // Transient scene failures do not necessarily advance map identity.
       // Retry on the next verified catalog poll, without interrupting a
       // request that is still building the scene.
@@ -625,110 +623,67 @@ export class SpatialResources {
     }
     this.#entryIdentity = identity;
     this.#beginLiveGeneration(selected, previousEntry);
-    void this.#startCoverage();
+    this.#startOptionalLayers();
   }
 
   async toggleWifiSignal(): Promise<void> {
     this.#store.dispatch({ type: "toggle-wifi-signal" });
-    this.#startWifiSignal();
-    await this.#loadWifiSignal();
-  }
-
-  #startWifiSignal(): boolean {
-    if (this.#wifiSignalTimer !== null) return false;
-    this.#wifiSignalTimer = window.setInterval(() => {
-      if (this.#callbacks.pageActive()) void this.#loadWifiSignal();
-    }, 30_000);
-    return true;
+    if (this.#store.value.wifiSignal) await this.#startOptionalLayer("wifi");
+    else this.#optionalLayers?.stopWifi();
   }
 
   #reloadWifiSignalForNewFloor(): void {
     const wifiSignal = this.#store.value.wifiSignal;
     if (!wifiSignal) return;
     this.#store.patch({ wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
-    void this.#loadWifiSignal();
-  }
-
-  #stopWifiSignal(): void {
-    this.#requests.current("wifi-signal")?.abort();
-    if (this.#wifiSignalTimer !== null) window.clearInterval(this.#wifiSignalTimer);
-    this.#wifiSignalTimer = null;
-  }
-
-  async #loadWifiSignal(): Promise<void> {
-    const entry = this.#store.value.resources.entry;
-    if (!this.#store.value.wifiSignal || !entry?.wifiHeatmapUrl) {
-      this.#stopWifiSignal();
-      return;
-    }
-    const controller = this.#requests.begin("wifi-signal");
-    const current = (): boolean => !controller.signal.aborted && !this.#callbacks.disposed()
-      && Boolean(this.#store.value.wifiSignal) && this.#store.value.resources.entry?.entryId === entry.entryId;
-    try {
-      const layer = await this.#backend.wifiSignal(entry.wifiHeatmapUrl, controller.signal);
-      if (current()) this.#store.patch({ wifiSignal: layer });
-    } catch (error) {
-      const shown = this.#store.value.wifiSignal;
-      if (!isAbort(error) && current() && shown) this.#store.patch({ wifiSignal: { ...shown, status: "failed" } });
-    } finally {
-      this.#requests.release("wifi-signal", controller);
-    }
+    if (this.#optionalLayers) void this.#optionalLayers.reloadWifi();
+    else void this.#startOptionalLayer("wifi");
   }
 
   async toggleFloorTypes(): Promise<void> {
     this.#store.dispatch({ type: "toggle-floor-types" });
-    this.#startFloorTypes();
-    await this.#loadFloorTypes();
+    if (this.#store.value.floorTypes) await this.#startOptionalLayer("floor");
+    else this.#optionalLayers?.stop();
   }
 
-  async #startCoverage(): Promise<void> {
-    if (!this.#store.value.resources.entry?.coverageUrl) return;
-    const module = await import("./coverage-resources").catch(() => null);
-    if (!module || this.#callbacks.disposed() || !this.#callbacks.pageActive()) return;
-    this.#coverage ??= new module.CoverageResources(this.#store, this.#backend, this.#requests, this.#callbacks);
-    this.#coverage.start();
+  #startOptionalLayers(): void {
+    if (this.#store.value.wifiSignal) void this.#startOptionalLayer("wifi");
+    if (this.#store.value.floorTypes) void this.#startOptionalLayer("floor");
+    void this.#startOptionalLayer("coverage");
   }
 
-  #startFloorTypes(): boolean {
-    if (this.#floorTypesTimer !== null) return false;
-    this.#floorTypesTimer = window.setInterval(() => {
-      if (this.#callbacks.pageActive()) void this.#loadFloorTypes();
-    }, 60_000);
-    return true;
+  async #startOptionalLayer(kind: "wifi" | "floor" | "coverage"): Promise<void> {
+    if (kind === "coverage" && (!this.#store.value.optionalUiReady
+      || !this.#store.value.resources.entry?.coverageUrl
+      || this.#store.value.resources.entry.nativeSessionActive !== true)) return;
+    const generation = this.#store.value.generation;
+    const module = await import("./map-layer-resources").catch(() => null);
+    if (this.#callbacks.disposed() || !this.#callbacks.pageActive()
+      || generation !== this.#store.value.generation
+      || this.#store.value.dataMode !== "live" || this.#store.value.selection.floorId !== "current"
+      || (kind === "wifi" && !this.#store.value.wifiSignal)
+      || (kind === "floor" && !this.#store.value.floorTypes)
+      || (kind === "coverage" && (!this.#store.value.optionalUiReady
+        || !this.#store.value.resources.entry?.coverageUrl
+        || this.#store.value.resources.entry.nativeSessionActive !== true))) return;
+    if (!module) {
+      if (kind !== "coverage") {
+        const key = kind === "wifi" ? "wifiSignal" : "floorTypes";
+        this.#store.patch({ [key]: { ...this.#store.value[key], status: "failed" } });
+      }
+      return;
+    }
+    this.#optionalLayers ??= new module.MapLayerResources(this.#store, this.#backend, this.#requests, this.#callbacks);
+    if (kind === "wifi") await this.#optionalLayers.startWifi();
+    else if (kind === "floor") await this.#optionalLayers.start();
+    else this.#optionalLayers.startCoverage();
   }
 
   #reloadFloorTypesForNewFloor(): void {
     const floorTypes = this.#store.value.floorTypes;
     if (!floorTypes) return;
     this.#store.patch({ floorTypes: { status: "loading", carpet: [], vent: [] } });
-    void this.#loadFloorTypes();
-  }
-
-  #stopFloorTypes(): void {
-    this.#requests.current("floor-types")?.abort();
-    if (this.#floorTypesTimer !== null) window.clearInterval(this.#floorTypesTimer);
-    this.#floorTypesTimer = null;
-  }
-
-  async #loadFloorTypes(): Promise<void> {
-    const entry = this.#store.value.resources.entry;
-    if (!this.#store.value.floorTypes || !entry?.floorTypesUrl) {
-      this.#stopFloorTypes();
-      return;
-    }
-    const controller = this.#requests.begin("floor-types");
-    const current = (): boolean => !controller.signal.aborted && !this.#callbacks.disposed()
-      && Boolean(this.#store.value.floorTypes) && this.#store.value.resources.entry?.entryId === entry.entryId;
-    try {
-      const layer = await this.#backend.floorTypes(entry.floorTypesUrl, controller.signal);
-      if (current()) this.#store.patch({ floorTypes: layer });
-    } catch (error) {
-      const shown = this.#store.value.floorTypes;
-      if (!isAbort(error) && current() && shown?.status === "loading") {
-        this.#store.patch({ floorTypes: { ...shown, status: "failed" } });
-      }
-    } finally {
-      this.#requests.release("floor-types", controller);
-    }
+    if (this.#optionalLayers) void this.#optionalLayers.reload();
+    else void this.#startOptionalLayer("floor");
   }
 }

@@ -71,6 +71,61 @@ test("coverage stays visible during page churn but clears when the session is un
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
 });
 
+test("coverage clears when the robot stops its native session", async ({ page }) => {
+  await page.clock.install();
+  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
+  await page.evaluate(async (tag) => {
+    const panel = window.__panelFixture.createPanel();
+    panel.dataset.testPanel = "true";
+    document.body.append(panel);
+    await customElements.whenDefined(tag);
+    await panel.updateComplete;
+  }, panelTag);
+  const panel = page.locator(`${panelTag}[data-test-panel=true]`);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
+  await panel.evaluate(async (element) => {
+    const { entries } = await (await element.hass.fetchWithAuth("/api/matic_robot/slam_entries")).json();
+    window.__panelFixture.setCatalogEntries(entries.map((entry) => ({ ...entry, native_session_active: false })));
+    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-action", {
+      detail: { id: "recheck-status" }, bubbles: true, composed: true,
+    }));
+  });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(false);
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+});
+
+test("a late coverage response cannot revive an ended session", async ({ page }) => {
+  await page.clock.install();
+  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
+  await page.evaluate(async (tag) => {
+    const panel = window.__panelFixture.createPanel();
+    panel.dataset.testPanel = "true";
+    document.body.append(panel);
+    await customElements.whenDefined(tag);
+    await panel.updateComplete;
+  }, panelTag);
+  const panel = page.locator(`${panelTag}[data-test-panel=true]`);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
+  await page.evaluate(() => {
+    window.__holdCleaningCoverage = true;
+    window.__cleaningCoverageReply = { active: true, cell_size: 0.015, runs: [[8, 8, 1, 2]], truncated: false };
+  });
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => page.evaluate(() => typeof window.__releaseCleaningCoverage)).toBe("function");
+  await panel.evaluate(async (element) => {
+    const { entries } = await (await element.hass.fetchWithAuth("/api/matic_robot/slam_entries")).json();
+    window.__panelFixture.setCatalogEntries(entries.map((entry) => ({ ...entry, native_session_active: false })));
+    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-action", {
+      detail: { id: "recheck-status" }, bubbles: true, composed: true,
+    }));
+  });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(false);
+  await page.evaluate(() => window.__releaseCleaningCoverage());
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+});
+
 test("coverage renders its selected modes only on the matching live frame", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { drawMapLayers } from "./frontend/map-studio-v4/renderer-layers"; export { entryCoherenceIdentity } from "./frontend/map-studio-v4/backend-contracts";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/coverage-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

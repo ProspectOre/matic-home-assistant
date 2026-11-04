@@ -74,6 +74,13 @@ def test_pages_replace_and_delete_by_mission_and_key() -> None:
         coverage._update(HermesCollectionEntry(b"bad", b"", deleted=True), MISSION)
 
 
+@pytest.mark.parametrize("key", [b"", b"x" * 65])
+def test_deleted_coverage_page_requires_a_bounded_key(key: bytes) -> None:
+    coverage = LiveCoverage(MagicMock(), lambda: (MISSION, "floor"))
+    with pytest.raises(DecodeError, match="key is empty or oversized"):
+        coverage._update(HermesCollectionEntry(key, b"", deleted=True), MISSION)
+
+
 async def test_session_change_discards_pages_and_closes_stream(monkeypatch) -> None:
     context = [(MISSION, "floor")]
     first_page = asyncio.Event()

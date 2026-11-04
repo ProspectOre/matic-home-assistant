@@ -224,7 +224,8 @@ test("supported servers automatically load workspace push within the first-map g
 test("cleaning startup keeps Stop in the first-map budget and loads queue controls after the first frame", async ({ page }) => {
   await page.goto("/");
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialPlanCatalog: QUEUE_CATALOG,
-    initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
+    initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA,
+    cleaningCoverage: { active: true, cell_size: 0.015, runs: [[1, 1, 2, 1]], truncated: false } });
   await page.evaluate(() => import("/matic_icons.js"));
   await armFirstMapOpportunity(page, fixture.panelTag);
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
@@ -235,6 +236,8 @@ test("cleaning startup keeps Stop in the first-map budget and loads queue contro
   const firstFrameBytes = firstFramePaths.reduce((total, path) =>
     total + gzipSync(readFileSync(join(COMPONENT_ASSETS, path.slice(1))), { level: 9 }).byteLength, 0);
   expect(firstFrameBytes, JSON.stringify(graph)).toBeLessThanOrEqual(STARTUP_BUDGET_BYTES);
+  await expect.poll(() => page.evaluate(() => performance.getEntriesByType("resource")
+    .some(({ name }) => /\/chunks\/map-layer-resources-[^/]+\.js$/u.test(new URL(name).pathname)))).toBe(true);
   await expect(panel.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Stop cleaning" })).toBeEnabled();
   await expect(panel.getByRole("region", { name: "Change this clean" })).toBeVisible();
