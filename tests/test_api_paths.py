@@ -1044,6 +1044,46 @@ async def test_subscribe_collection_entries_yields_snapshot_and_updates(
     assert stream.requests[3].sequence_id == second_sequence
 
 
+async def test_subscribe_collection_entries_can_report_keyed_deletions(
+    monkeypatch,
+) -> None:
+    checkpoint = SequenceId(start_ts_nanos=10, sequence_no=1)
+    deletion = SequenceId(start_ts_nanos=10, sequence_no=2)
+    stream = _BidirectionalSequenceStream(
+        [
+            SimpleNamespace(
+                HasField=lambda field: field == "sequence_id", sequence_id=checkpoint
+            ),
+            SimpleNamespace(
+                HasField=lambda field: field == "sequence_id",
+                key_bytes=b"page",
+                sequence_id=deletion,
+            ),
+            None,
+        ]
+    )
+    method = _OpenMethod(stream)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.hermes_collections.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._connection._channel = object()
+
+    entries = [
+        entry
+        async for entry in client.async_subscribe_collection_entries(
+            "coverage", include_deletions=True
+        )
+    ]
+
+    assert len(entries) == 1
+    assert entries[0].key == b"page"
+    assert entries[0].deleted is True
+    assert stream.requests[1].sequence_id == checkpoint
+    assert stream.requests[2].sequence_id == deletion
+
+
 async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
     monkeypatch,
 ) -> None:

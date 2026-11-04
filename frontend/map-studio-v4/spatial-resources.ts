@@ -68,6 +68,7 @@ export class SpatialResources {
   #historyLoad: Promise<InstanceType<typeof import("./spatial-history").SpatialHistory> | null> | null = null;
   #wifiSignalTimer: number | null = null;
   #floorTypesTimer: number | null = null;
+  #coverage: InstanceType<typeof import("./coverage-resources").CoverageResources> | null = null;
   #entryIdentity = "";
   #spatialRecovery: SpatialReadRecoveryState | null = null;
 
@@ -199,6 +200,7 @@ export class SpatialResources {
 
   startPolling(): void {
     if (!this.#callbacks.pageActive()) return;
+    void this.#startCoverage();
     if (this.#store.value.wifiSignal && this.#startWifiSignal()) void this.#loadWifiSignal();
     if (this.#store.value.floorTypes && this.#startFloorTypes()) void this.#loadFloorTypes();
     this.#pose.startPolling();
@@ -206,6 +208,7 @@ export class SpatialResources {
 
   stopPolling(): void {
     this.#pose.stopPolling();
+    this.#coverage?.stop();
     this.clearRecovery();
   }
 
@@ -223,7 +226,8 @@ export class SpatialResources {
     const generation = this.#coherence.invalidate();
     this.#scene.stop();
     const state = this.#store.value;
-    this.#store.patch({ generation, pageActive, coherence: state.resources.scene.value ? "verifying" : "unavailable",
+    this.#coverage?.stop();
+    this.#store.patch({ generation, pageActive, liveCoverage: null, coherence: state.resources.scene.value ? "verifying" : "unavailable",
       floor: { ...state.floor, readOnly: state.floor.readOnly || state.resources.scene.value !== null },
       map: { ...state.map, exactPose: false } });
     // A pose/session mismatch can revoke the generation while a recovery
@@ -586,6 +590,7 @@ export class SpatialResources {
         void this.#callbacks.loadPlans();
       }
       this.#callbacks.resumeAreaCatalog();
+      void this.#startCoverage();
       // Transient scene failures do not necessarily advance map identity.
       // Retry on the next verified catalog poll, without interrupting a
       // request that is still building the scene.
@@ -620,6 +625,7 @@ export class SpatialResources {
     }
     this.#entryIdentity = identity;
     this.#beginLiveGeneration(selected, previousEntry);
+    void this.#startCoverage();
   }
 
   async toggleWifiSignal(): Promise<void> {
@@ -673,6 +679,14 @@ export class SpatialResources {
     this.#store.dispatch({ type: "toggle-floor-types" });
     this.#startFloorTypes();
     await this.#loadFloorTypes();
+  }
+
+  async #startCoverage(): Promise<void> {
+    if (!this.#store.value.resources.entry?.coverageUrl) return;
+    const module = await import("./coverage-resources").catch(() => null);
+    if (!module || this.#callbacks.disposed() || !this.#callbacks.pageActive()) return;
+    this.#coverage ??= new module.CoverageResources(this.#store, this.#backend, this.#requests, this.#callbacks);
+    this.#coverage.start();
   }
 
   #startFloorTypes(): boolean {

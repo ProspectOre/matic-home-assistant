@@ -499,6 +499,10 @@ export class MaticBackend {
     return parseFloorTypes(value);
   }
 
+  coverage(path: string, signal?: AbortSignal): Promise<unknown> {
+    return this.#json("coverage", path, REQUEST_TIMEOUTS.workflow, signal);
+  }
+
   async previewRoomSequence(
     entityId: string,
     rooms: readonly {

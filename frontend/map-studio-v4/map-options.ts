@@ -172,6 +172,16 @@ export class MapOptions {
             @click=${() => intent({ type: "toggle-floor-types" })}
           ><span>${t("v4_floor_types", "Carpet and vents")}${floorTypesNote(state.floorTypes, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.floorTypes))} aria-hidden="true"></span></button>
         ` : nothing}
+        ${state.resources.entry?.coverageUrl ? html`
+          <button class="ms-row ms-row--menu" type="button" role="menuitemcheckbox"
+            aria-checked=${String(Boolean(state.coverageModes & 1))} tabindex="-1"
+            data-vacuum-coverage @click=${() => intent({ type: "toggle-cleaning-coverage", mode: "vacuum" })}
+          ><span>${t("v4_vacuum_coverage", "Vacuum coverage")}</span><span class="ms-switch" aria-checked=${String(Boolean(state.coverageModes & 1))} aria-hidden="true"></span></button>
+          <button class="ms-row ms-row--menu" type="button" role="menuitemcheckbox"
+            aria-checked=${String(Boolean(state.coverageModes & 2))} tabindex="-1"
+            data-mop-coverage @click=${() => intent({ type: "toggle-cleaning-coverage", mode: "mop" })}
+          ><span>${t("v4_mop_coverage", "Mop coverage")}${state.liveCoverage?.truncated ? html`<small class="menu-note">${t("v4_coverage_partial", "Coverage is partial.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(Boolean(state.coverageModes & 2))} aria-hidden="true"></span></button>
+        ` : nothing}
         ${state.dataMode === "live" ? html`
           <button
             class="ms-row ms-row--menu"

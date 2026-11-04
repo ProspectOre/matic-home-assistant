@@ -58,6 +58,7 @@ export async function installPanelFixture(page, {
   workspacePush = false,
   // The carpet and vent response. Null leaves the URL out of the catalog.
   floorTypes = null,
+  cleaningCoverage = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -117,7 +118,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, workspacePush }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, cleaningCoverage, workspacePush }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -132,6 +133,7 @@ export async function installPanelFixture(page, {
       plans_url: "/api/matic_robot/plans/synthetic",
       ...(wifiSignal ? { wifi_heatmap_url: "/api/matic_robot/wifi_heatmap/synthetic" } : {}),
       ...(floorTypes ? { floor_layers_url: "/api/matic_robot/floor_layers/synthetic" } : {}),
+      ...(cleaningCoverage ? { coverage_url: "/api/matic_robot/live_coverage/synthetic" } : {}),
       map_revision: 7,
       map_floor_coherent: true,
       map_session_verified: true,
@@ -153,7 +155,7 @@ export async function installPanelFixture(page, {
       stop_settle_pending: false,
       active_plan: false,
       native_reconciliation_pending: false,
-      native_session_active: false,
+      native_session_active: Boolean(cleaningCoverage),
     }] };
     let catalogEntries = initialCatalogEntries || catalog.entries;
     let robotStates = initialRobotStates || { "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } } };
@@ -269,6 +271,10 @@ export async function installPanelFixture(page, {
       }
       if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
       if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
+      if (cleaningCoverage && path.endsWith("live_coverage/synthetic")) {
+        if (window.__cleaningCoverageStatus) return new Response(null, { status: window.__cleaningCoverageStatus });
+        return json(window.__cleaningCoverageReply ?? cleaningCoverage);
+      }
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
       if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
         position: posePosition,
@@ -553,6 +559,7 @@ export async function installPanelFixture(page, {
     userData,
     wifiSignal,
     floorTypes,
+    cleaningCoverage,
     workspacePush,
   });
   await remount();

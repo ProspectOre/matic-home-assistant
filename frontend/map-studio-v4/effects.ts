@@ -650,7 +650,7 @@ export class EffectController {
   }
 
   #abortResources(except: readonly string[] = []): void {
-    const mutationCancelled = this.#requests.abort([...except, "wifi-signal", "floor-types"]);
+    const mutationCancelled = this.#requests.abort([...except, "wifi-signal", "floor-types", "cleaning-coverage"]);
     if (mutationCancelled && this.#store.value.command === "pending") {
       this.#store.patch({ command: "idle", notice: null });
     }

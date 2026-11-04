@@ -1018,7 +1018,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 18
+    assert hass.http.register_view.call_count == 19
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -1356,7 +1356,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.run_trails is run_trails.return_value
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 9 + (
+    assert entry.async_create_background_task.call_count == 10 + (
         recovering_run or recovering_stop
     )
     assert isinstance(entry.runtime_data.photos, RobotPhotoStore)
@@ -1457,7 +1457,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.repository.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 12 + (
+    assert entry.async_create_background_task.call_count == 13 + (
         recovering_run or recovering_stop
     )
     assert plans.catalog.async_upgrade_area_bindings.await_count == 5

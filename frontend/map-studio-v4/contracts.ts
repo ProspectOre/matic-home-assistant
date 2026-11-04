@@ -231,6 +231,14 @@ export interface FloorTypesLayer {
   readonly vent: readonly FloorTypeOutline[];
 }
 
+export interface CleaningCoverageLayer {
+  readonly active: boolean;
+  readonly frameKey: string;
+  readonly cellSize: number;
+  readonly runs: readonly (readonly [number, number, number, number])[];
+  readonly truncated: boolean;
+}
+
 export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";
 
 export interface PlanDraft {
@@ -422,6 +430,8 @@ export interface WorkspaceState {
   readonly wifiScale: WifiScale;
   /** The carpet and vent layer; null while hidden. */
   readonly floorTypes: FloorTypesLayer | null;
+  readonly liveCoverage: CleaningCoverageLayer | null;
+  readonly coverageModes: number;
   readonly followMode: FollowMode;
   readonly comparisonActive: boolean;
   readonly homePresentation: { readonly view: MapView; readonly appearance: MapAppearance } | null;
@@ -485,6 +495,7 @@ export type WorkspaceIntent =
   | { readonly type: "toggle-wifi-signal" }
   | { readonly type: "set-wifi-scale"; readonly scale: WifiScale }
   | { readonly type: "toggle-floor-types" }
+  | { readonly type: "toggle-cleaning-coverage"; readonly mode: "vacuum" | "mop" }
   | { readonly type: "set-follow-mode"; readonly mode: FollowMode }
   | { readonly type: "show-room-candidates"; readonly roomIds: readonly string[] }
   | { readonly type: "set-room-daily-limit"; readonly roomId: string; readonly limit: number | null }
@@ -741,6 +752,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "toggle-wifi-signal": true,
   "set-wifi-scale": true,
   "toggle-floor-types": true,
+  "toggle-cleaning-coverage": true,
   "set-follow-mode": true,
   "show-room-candidates": true,
   "set-room-daily-limit": true,

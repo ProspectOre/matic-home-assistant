@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from .client.floor_plan import resolve_robot_map_position
 from .http import (
+    COVERAGE_API_URL,
     FLOOR_LAYERS_API_URL,
     WIFI_HEATMAP_API_URL,
     areas_api_url,
@@ -158,6 +159,7 @@ def catalog_entry_projection(
         "plans_url": plans_api_url(entry_id),
         "wifi_heatmap_url": WIFI_HEATMAP_API_URL.format(entry_id=entry_id),
         "floor_layers_url": FLOOR_LAYERS_API_URL.format(entry_id=entry_id),
+        "coverage_url": COVERAGE_API_URL.format(entry_id=entry_id),
         "history_count": len(
             runtime.slam_history.catalog_for_mission(map_identity.mission_token)
             if map_identity is not None

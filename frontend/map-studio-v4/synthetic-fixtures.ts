@@ -109,6 +109,7 @@ export const syntheticEntry = (): MapEntry => ({
   // The gallery has no survey, so Map options leaves out the Wi-Fi row.
   wifiHeatmapUrl: null,
   floorTypesUrl: null,
+  coverageUrl: null,
   mapRevision: 7,
   mapSceneEpoch: "synthetic-scene-epoch",
   mapFloorCoherent: true,

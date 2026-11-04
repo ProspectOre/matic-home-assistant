@@ -47,6 +47,7 @@ from .const import (
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
 from .frontend import async_register_frontend, clear_slam_scene_cache
+from .live_coverage import LiveCoverage
 from .live_pose import LivePose
 from .llm import async_register_matic_llm_api
 from .maintenance import async_delete_maintenance_issues
@@ -97,10 +98,27 @@ class MaticRuntimeData:
     wifi_survey: WifiSurveyStore
     photos: RobotPhotoStore
     live_pose: LivePose | None = None
+    live_coverage: LiveCoverage | None = None
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def _coverage_context(runtime: MaticRuntimeData) -> tuple[int, object] | None:
+    """Admit a cleaning session only on the verified current map frame."""
+    data = runtime.coordinator.data
+    floor = data.floor_plan
+    frame = _pose_frame_key(runtime)
+    if (
+        data.telemetry.active_cleaning_session is not True
+        or floor is None
+        or floor.mission_id is None
+        or frame[1] is None
+        or not runtime.slam_map.floor_plan_is_current(floor)
+    ):
+        return None
+    return floor.mission_id, frame
 
 
 def _entry_update_listener(
@@ -339,6 +357,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         entry.async_create_background_task(
             hass, runtime_data.live_pose.watch(), f"{DOMAIN} live pose collector"
+        )
+
+        runtime_data.live_coverage = LiveCoverage(
+            client, partial(_coverage_context, runtime_data)
+        )
+        entry.async_create_background_task(
+            hass,
+            runtime_data.live_coverage.watch(),
+            f"{DOMAIN} live coverage collector",
         )
         entry.async_on_unload(
             coordinator.async_add_listener(

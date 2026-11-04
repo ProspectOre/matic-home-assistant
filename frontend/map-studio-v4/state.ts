@@ -96,6 +96,8 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   wifiSignal: null,
   wifiScale: "absolute",
   floorTypes: null,
+  liveCoverage: null,
+  coverageModes: 3,
   followMode: "off",
   comparisonActive: false,
   homePresentation: null,
@@ -449,6 +451,8 @@ export const reduceWorkspace = (
       return state;
     case "toggle-floor-types":
       return { ...state, floorTypes: state.floorTypes ? null : { status: "loading", carpet: [], vent: [] } };
+    case "toggle-cleaning-coverage":
+      return { ...state, coverageModes: state.coverageModes ^ (intent.mode === "vacuum" ? 1 : 2) };
     case "open-workflow":
       if (isReadOnlyWorkspace(state) && readOnlyWorkflows.has(intent.workflow)) return state;
       return {

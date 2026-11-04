@@ -1,6 +1,7 @@
 import type { FloorTypeOutline, WifiSignalCell, WorkspaceState } from "./contracts";
 import { wifiScaleBounds, wifiSignalHue } from "./wifi-scale";
 import type { SceneRoom } from "./backend-contracts";
+import { entryCoherenceIdentity } from "./backend-contracts";
 import type { CanvasPalette } from "./theme-probe";
 import { rgba } from "./theme-probe";
 import { clamp } from "./shared-primitives";
@@ -162,6 +163,11 @@ export function drawMapLayers(
   const currentFloor = state.dataMode === "live" && !state.floor.readOnly
     && state.selection.floorId === "current";
   if (currentFloor) {
+    if (state.liveCoverage?.active && state.resources.entry
+      && state.resources.entry.nativeSessionActive === true
+      && state.liveCoverage.frameKey === entryCoherenceIdentity(state.resources.entry)) {
+      drawCleaningCoverage(context, state, project);
+    }
     if (state.floorTypes?.status === "ready") {
       drawFloorType(context, state.floorTypes.carpet, "hsl(28 55% 42%)", project);
       drawFloorType(context, state.floorTypes.vent, "hsl(205 80% 50%)", project);
@@ -170,6 +176,43 @@ export function drawMapLayers(
       drawWifiSignal(context, state.wifiSignal.cells, state.wifiScale, project);
     }
   }
+}
+
+function drawCleaningCoverage(
+  context: CanvasRenderingContext2D,
+  state: WorkspaceState,
+  project: ProjectMeters,
+): void {
+  const layer = state.liveCoverage;
+  if (!layer) return;
+  context.save();
+  for (const [bit, enabled, colour] of [
+    [1, Boolean(state.coverageModes & 1), "rgba(41, 142, 239, 0.35)"],
+    [2, Boolean(state.coverageModes & 2), "rgba(29, 192, 157, 0.38)"],
+  ] as const) {
+    if (!enabled) continue;
+    context.beginPath();
+    for (const [cellX, cellY, length, mask] of layer.runs) {
+      if (!(mask & bit)) continue;
+      const x = cellX * layer.cellSize;
+      const y = cellY * layer.cellSize;
+      const right = (cellX + length) * layer.cellSize;
+      const bottom = (cellY + 1) * layer.cellSize;
+      const a = project(x, y, 0, false);
+      const b = project(right, y, 0, false);
+      const c = project(right, bottom, 0, false);
+      const d = project(x, bottom, 0, false);
+      if (!a || !b || !c || !d) continue;
+      context.moveTo(a.x, a.y);
+      context.lineTo(b.x, b.y);
+      context.lineTo(c.x, c.y);
+      context.lineTo(d.x, d.y);
+      context.closePath();
+    }
+    context.fillStyle = colour;
+    context.fill();
+  }
+  context.restore();
 }
 
 export function drawRunTrail(

@@ -30,6 +30,7 @@ export interface MapEntry {
   readonly wifiHeatmapUrl: string | null;
   /** Absent on integrations without the carpet and vent layer. */
   readonly floorTypesUrl: string | null;
+  readonly coverageUrl: string | null;
   readonly mapRevision: number;
   readonly mapSceneEpoch: string | null;
   readonly mapFloorCoherent: boolean;
@@ -536,6 +537,9 @@ export const privatePath = (value: unknown, code: string): string => {
   return path;
 };
 
+const optionalPrivatePath = (value: unknown): string | null =>
+  value == null ? null : privatePath(value, "invalid-private-path");
+
 const healthValue = (entry: Record<string, unknown>): MapHealth => {
   const state = typeof entry.map_health === "string" ? entry.map_health.toLowerCase() : "";
   const stream = typeof entry.stream_state === "string" ? entry.stream_state.toLowerCase() : "";
@@ -568,19 +572,14 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
         "invalid-live-workspace-transport",
       ),
       sceneUrl: privatePath(entry.scene_url, "invalid-scene-url"),
-      deltaUrl: entry.delta_url === undefined || entry.delta_url === null
-        ? null
-        : privatePath(entry.delta_url, "invalid-delta-url"),
+      deltaUrl: optionalPrivatePath(entry.delta_url),
       poseUrl: privatePath(entry.pose_url, "invalid-pose-url"),
       historyUrl: privatePath(entry.history_url, "invalid-history-url"),
       areasUrl: privatePath(entry.areas_url, "invalid-areas-url"),
       plansUrl: privatePath(entry.plans_url, "invalid-plans-url"),
-      wifiHeatmapUrl: entry.wifi_heatmap_url === undefined || entry.wifi_heatmap_url === null
-        ? null
-        : privatePath(entry.wifi_heatmap_url, "invalid-wifi-heatmap-url"),
-      floorTypesUrl: entry.floor_layers_url === undefined || entry.floor_layers_url === null
-        ? null
-        : privatePath(entry.floor_layers_url, "invalid-floor-layers-url"),
+      wifiHeatmapUrl: optionalPrivatePath(entry.wifi_heatmap_url),
+      floorTypesUrl: optionalPrivatePath(entry.floor_layers_url),
+      coverageUrl: optionalPrivatePath(entry.coverage_url),
       mapRevision,
       mapSceneEpoch: selectedId(entry.map_scene_epoch, "invalid-scene-epoch"),
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),

@@ -454,6 +454,7 @@ class HermesCollectionEntry:
     value: bytes
     sequence_start_ns: int | None = field(default=None, compare=False)
     sequence_no: int | None = field(default=None, compare=False)
+    deleted: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -28,6 +28,7 @@ DAILY_LIMIT_API_URL = "/api/matic_robot/plans/{entry_id}/daily_limit"
 RUNS_API_URL = "/api/matic_robot/runs/{entry_id}"
 WIFI_HEATMAP_API_URL = "/api/matic_robot/wifi_heatmap/{entry_id}"
 FLOOR_LAYERS_API_URL = "/api/matic_robot/floor_layers/{entry_id}"
+COVERAGE_API_URL = "/api/matic_robot/live_coverage/{entry_id}"
 
 PRIVATE_NO_STORE_HEADERS = {
     "Cache-Control": "private, no-store, max-age=0",

@@ -1667,7 +1667,7 @@ export class RendererController {
     const trailVisible = Boolean(trail && state.dataMode === "live"
       && (trail.id === "live" || state.workflow === "runs")
       && trail.mapSessionKey === state.resources.entry?.mapSessionKey);
-    if (state.seen || trailVisible || (currentFloor && (state.wifiSignal || state.floorTypes))) {
+    if (state.seen || trailVisible || (currentFloor && (state.wifiSignal || state.floorTypes || state.liveCoverage))) {
       this.#loadRendererLayers();
     }
     if (state.optionalUiReady && state.map.available && state.labelsVisible && scene.metadata.rooms.length > 0) {
