@@ -78,4 +78,7 @@ class LivePose:
             finally:
                 self._pose = None
                 self._pose_frame = None
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
             await asyncio.sleep(_RETRY_SECONDS)

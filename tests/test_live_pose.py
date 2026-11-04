@@ -152,3 +152,24 @@ async def test_future_observation_allowance_is_bounded(monkeypatch):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+async def test_cancel_during_subscription_does_not_restart_if_stream_swallows_it():
+    ready = asyncio.Event()
+
+    async def subscribe(_mission):
+        ready.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return
+        yield  # pragma: no cover
+
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe), lambda: 1, lambda: "frame"
+    )
+    task = asyncio.create_task(tracker.watch())
+    await ready.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 0.5)
