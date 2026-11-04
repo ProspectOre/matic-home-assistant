@@ -23,7 +23,7 @@ import {
   type WorkspaceState,
 } from "./contracts";
 import type { AreaCircle, SavedPlan } from "./backend-contracts";
-import { entryFloorKey, entryMissionKey } from "./backend-contracts";
+import { entryCoherenceIdentity, entryFloorKey, entryMissionKey } from "./backend-contracts";
 import { notice, readWorkspaceNotice } from "./contracts";
 
 /** Task geometry stays top-down; the live overview keeps its own presentation. */
@@ -939,9 +939,12 @@ export class WorkspaceStore {
       ? !noticed.scheduleDeleteRequest || !sharedCadenceDeleteRequestIsCurrent(noticed, noticed.scheduleDeleteRequest)
       : noticed.dialog?.startsWith("confirmDelete") && !deleteSubject(noticed);
     const presented = taskPresentation(this.#state, missingSubject ? { ...noticed, dialog: null, scheduleDeleteRequest: null } : noticed);
+    const before = this.#state.resources.entry;
     const entry = presented.resources.entry;
     const waitingForPose = presented.followMode !== "off" && presented.followMode === this.#state.followMode
-      && canFollowRobot(presented, presented.followMode, true) && entry && entry === this.#state.resources.entry;
+      && presented.pageActive && !forcesTop(presented) && canShowPoseFrame(presented)
+      && presented.resources.scene.value?.source === "live" && before && entry && entry.mapSessionKey
+      && entryCoherenceIdentity(before) === entryCoherenceIdentity(entry);
     const committed = presented.followMode !== "off" && !canFollowRobot(presented, presented.followMode) && !waitingForPose
       ? { ...presented, followMode: "off" as const } : presented;
     this.#state = committed;
@@ -1059,13 +1062,13 @@ const canShowPoseFrame = (state: WorkspaceState): boolean =>
 export const canShowExactPose = (state: WorkspaceState): boolean =>
   canShowPoseFrame(state) && state.map.exactPose;
 
-export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride", waiting = false): boolean => {
+export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride"): boolean => {
   const pose = state.resources.pose.value;
-  return state.pageActive && !forcesTop(state) && canShowPoseFrame(state)
-    && state.resources.scene.value?.source === "live" && (waiting || (state.map.exactPose && pose?.freshness === "live"
+  return state.pageActive && !forcesTop(state) && canShowExactPose(state)
+    && state.resources.scene.value?.source === "live" && pose?.freshness === "live"
     && pose.position !== null && pose.floorCoherent && pose.mapSessionKey !== null
     && pose.mapSessionKey === state.resources.entry?.mapSessionKey
-    && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading)))));
+    && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading)));
 };
 
 /** Robot-wide settings do not depend on the selected map or floor. */

@@ -89,6 +89,8 @@ test("following waits for a fresh pose but ends when the map frame changes", () 
   store.patch({ map: { ...store.value.map, exactPose: false },
     resources: { ...store.value.resources, pose: { status: "idle", value: null, problem: null } } });
   assert.equal(store.value.followMode, "ride");
+  store.patch({ resources: { ...store.value.resources, entry: { ...entry } } });
+  assert.equal(store.value.followMode, "ride");
   store.patch({ map: { ...store.value.map, exactPose: true },
     resources: { ...store.value.resources, pose: { status: "ready", value: pose, problem: null } } });
   assert.equal(store.value.followMode, "ride");
