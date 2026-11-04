@@ -941,6 +941,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "map_floor_coherent": True,
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
+        "pose_measured_at": runtime.coordinator.data.pose.observed_at,
         "pose_processing_seconds": 0.0,
         "pose_fetch_age_seconds": 0.0,
         "pose_observation_current": True,

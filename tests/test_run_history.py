@@ -482,6 +482,37 @@ async def test_trail_records_verified_points_per_run(hass: HomeAssistant) -> Non
     assert trails.trail_id(None, run_id="run-1") is None
 
 
+async def test_trail_rejects_out_of_order_pose_sources(hass: HomeAssistant) -> None:
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    for timestamp in (float("nan"), float("inf"), 0.0, -1.0):
+        trails.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=(8.0, 0.0),
+            observed_at=timestamp,
+        )
+    assert trails.live(MAP) is None
+    for timestamp, point in (
+        (100.0, (0.0, 0.0)),
+        (102.0, (1.0, 0.0)),
+        (101.0, (8.0, 0.0)),
+        (102.0, (9.0, 0.0)),
+        (105.0, (1.0, 0.0)),  # A stationary newer observation still advances time.
+        (104.0, (7.0, 0.0)),
+        (106.0, (2.0, 0.0)),
+    ):
+        trails.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=point,
+            observed_at=timestamp,
+        )
+    assert trails.live(MAP) == [[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]]
+
+
 async def test_trail_splits_on_map_change_and_merges_a_runs_segments(
     hass: HomeAssistant,
 ) -> None:

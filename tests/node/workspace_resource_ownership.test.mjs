@@ -35,6 +35,7 @@ const { outputFiles } = await build({
       export { CatalogResources } from "./catalog-resources";
       export { SpatialScene } from "./spatial-scene";
       export { SpatialPose } from "./spatial-pose";
+      export { PoseClock } from "./pose-clock";
       export { SpatialHistory } from "./spatial-history";
       export { SpatialResources } from "./spatial-resources";
       export { RoomPreviewController } from "./room-preview-controller";
@@ -55,7 +56,7 @@ const { outputFiles } = await build({
   target: "es2022",
 });
 const {
-  CatalogResources, SpatialScene, SpatialPose, SpatialHistory, SpatialResources,
+  CatalogResources, SpatialScene, SpatialPose, PoseClock, SpatialHistory, SpatialResources,
   RoomPreviewController, HomePinResources, RunHistoryResources, previewHelpers,
   WorkspaceStore, CoherenceMachine, ResourceRequests, BackendError,
   entryFloorKey, entryMissionKey,
@@ -444,6 +445,14 @@ const livePose = (overrides = {}) => ({
   freshness: "live", nativeObservationAgeSeconds: 0, ...overrides,
 });
 
+test("invalid server timestamps cannot establish or poison clock calibration", () => {
+  const clock = new PoseClock();
+  for (const value of [null, 0, -1, NaN, Infinity, 1e308, "1000"]) {
+    assert.equal(clock.transit(value, 0, 1_000, 100), 900);
+  }
+  assert.ok(clock.transit(1000.05, 0, 100, 0) <= 102);
+});
+
 test("slow server work does not consume fresh-pose lifetime twice", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let now = 0;
@@ -471,6 +480,51 @@ test("slow server work does not consume fresh-pose lifetime twice", async (t) =>
   now += 6_000;
   oldServer.resolve(livePose({ nativeObservationAgeSeconds: 0.75 }));
   await pending;
+  assert.equal(f.store.value.map.exactPose, false);
+});
+
+test("a calibrated server timestamp separates queueing from a delayed response", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const f = fixture();
+  f.store.patch({ optionalUiReady: true });
+  const replies = [deferred(), deferred(), deferred(), deferred(), deferred()];
+  let index = 0;
+  const owner = new SpatialPose(f.store, { pose: () => replies[index++].promise }, f.coherence, f.requests, {
+    ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {},
+  });
+  const warmup = owner.load(f.entry, f.stamp);
+  now = 10;
+  replies[0].resolve(livePose({ poseMeasuredAt: 1000.005 }));
+  await warmup;
+  await flush();
+  now = 100;
+  const first = owner.load(f.entry, f.stamp);
+  now = 200;
+  replies[1].resolve(livePose({ poseMeasuredAt: 1000.15 }));
+  await first;
+  assert.equal(f.store.value.map.exactPose, true);
+
+  now = 1_000;
+  const queued = owner.load(f.entry, f.stamp);
+  now = 5_000;
+  replies[2].resolve(livePose({ nativeObservationAgeSeconds: 2, poseMeasuredAt: 1004.9 }));
+  await queued;
+  assert.equal(f.store.value.map.exactPose, true);
+
+  now = 6_000;
+  const delayed = owner.load(f.entry, f.stamp);
+  now = 12_000;
+  replies[3].resolve(livePose({ poseMeasuredAt: 1006.1 }));
+  await delayed;
+  assert.equal(f.store.value.map.exactPose, false);
+
+  now = 13_000;
+  const jumped = owner.load(f.entry, f.stamp);
+  now = 17_000;
+  replies[4].resolve(livePose({ nativeObservationAgeSeconds: 2, poseMeasuredAt: 2016.9 }));
+  await jumped;
   assert.equal(f.store.value.map.exactPose, false);
 });
 

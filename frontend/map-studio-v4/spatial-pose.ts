@@ -26,6 +26,7 @@ export class SpatialPose {
   #observation: object | null = null;
   #poseLoading = false;
   #poseQueued = false;
+  #clock: import("./pose-clock").PoseClock | null | false = null;
 
   constructor(store: WorkspaceStore, backend: Pick<MaticBackend, "pose">, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialPoseCallbacks) {
     this.#store = store;
@@ -98,15 +99,26 @@ export class SpatialPose {
       }
       this.#callbacks.recovered(currentEntry);
       const state = this.#store.value;
-      const requestElapsedMs = Math.max(0, performance.now() - requestStartedAt);
+      const receivedAt = performance.now();
+      const requestElapsedMs = Math.max(0, receivedAt - requestStartedAt);
       const ageKnown = pose.nativeObservationAgeSeconds === undefined
         || typeof pose.nativeObservationAgeSeconds === "number";
       // The server measures native age after waiting for the robot. Do not
       // count that wait twice, but keep all unaccounted transit and local
       // processing inside the freshness budget. Older servers stay conservative.
       const serverMs = Math.min(requestElapsedMs, (pose.poseProcessingSeconds ?? 0) * 1_000);
-      const remainingFreshMs = 5_000 - Math.max(0, pose.nativeObservationAgeSeconds ?? 0) * 1_000
-        - (requestElapsedMs - serverMs);
+      let transitMs = requestElapsedMs - serverMs;
+      if (pose.poseMeasuredAt != null && state.optionalUiReady) {
+        if (this.#clock === null) {
+          this.#clock = false;
+          void import("./map-layer-resources").then(({ PoseClock }) => { this.#clock = new PoseClock(); }).catch(() => {});
+        }
+        // A timestamp and a previous quick response bound clock offset, so a
+        // request queued before reaching the server is not counted twice.
+        // Intersect bounds, allow clock drift, and reset after a clock jump.
+        if (this.#clock) transitMs = this.#clock.transit(pose.poseMeasuredAt, requestStartedAt, receivedAt, serverMs);
+      }
+      const remainingFreshMs = 5_000 - Math.max(0, pose.nativeObservationAgeSeconds ?? 0) * 1_000 - transitMs;
       const exactLivePose = pose.position !== null && pose.freshness === "live"
         && ageKnown && remainingFreshMs > 0;
       this.clearExpiry();

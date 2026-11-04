@@ -48,7 +48,9 @@ def _map_session_key(runtime: MaticRuntimeData) -> str | None:
 
 
 def observe_run_trail(
-    runtime: MaticRuntimeData, position: tuple[float, float] | None
+    runtime: MaticRuntimeData,
+    position: tuple[float, float] | None,
+    observed_at: float | None = None,
 ) -> None:
     """Give the trail recorder one verified position, or only the run state."""
     trails: RunTrails | None = getattr(runtime, "run_trails", None)
@@ -62,6 +64,7 @@ def observe_run_trail(
         native_active=data.telemetry.active_cleaning_session,
         map_key=_map_session_key(runtime),
         point=position,
+        observed_at=observed_at,
     )
 
 
@@ -73,7 +76,11 @@ def observe_coordinator_trail(runtime: MaticRuntimeData) -> None:
         if runtime.slam_map.floor_plan_is_current(data.floor_plan)
         else None
     )
-    observe_run_trail(runtime, position[:2] if position is not None else None)
+    observe_run_trail(
+        runtime,
+        position[:2] if position is not None else None,
+        data.pose.observed_at if data.pose is not None else None,
+    )
 
 
 def observe_live_pose_trail(runtime: MaticRuntimeData, pose: RobotPose) -> None:
@@ -84,7 +91,9 @@ def observe_live_pose_trail(runtime: MaticRuntimeData, pose: RobotPose) -> None:
         if runtime.slam_map.floor_plan_is_current(data.floor_plan)
         else None
     )
-    observe_run_trail(runtime, position[:2] if position is not None else None)
+    observe_run_trail(
+        runtime, position[:2] if position is not None else None, pose.observed_at
+    )
 
 
 def _pose_frame_key(

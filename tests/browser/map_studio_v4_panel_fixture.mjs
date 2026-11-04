@@ -280,7 +280,7 @@ export async function installPanelFixture(page, {
       }
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
       if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
-        position: posePosition,
+        position: Object.hasOwn(window, "__posePosition") ? window.__posePosition : posePosition,
         source: "latest_pose",
         revision: 7,
         pose_revision: 1,

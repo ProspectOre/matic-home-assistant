@@ -172,7 +172,11 @@ class MaticSlamPoseView(HomeAssistantView):
             else "unavailable"
         )
         if cached.freshness == "live":
-            observe_run_trail(runtime, position[:2] if position is not None else None)
+            observe_run_trail(
+                runtime,
+                position[:2] if position is not None else None,
+                visible_pose.observed_at if visible_pose is not None else None,
+            )
         return self.json(
             {
                 "position": list(position[:2]) if position is not None else None,
@@ -200,6 +204,7 @@ class MaticSlamPoseView(HomeAssistantView):
                 "pose_age_seconds": (
                     round(native_age, 3) if native_age is not None else None
                 ),
+                "pose_measured_at": pose_now,
                 "pose_processing_seconds": math.floor(
                     max(0.0, age_measured_at - request_started) * 1000
                 )

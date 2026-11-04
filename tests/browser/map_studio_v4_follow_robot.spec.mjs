@@ -31,7 +31,7 @@ const openFollowing = async (page) => {
 
   const map = panel.locator("matic-map-shell-v4").locator(".map-root");
   const bounds = await map.boundingBox();
-  return { following, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  return { panel, following, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
 };
 
 test("Map options turns following on and a drag turns it off", async ({ page }) => {
@@ -61,4 +61,14 @@ test("Fit map turns following off", async ({ page }) => {
   const { following } = await openFollowing(page);
   await page.locator("matic-map-canvas-v4").getByRole("button", { name: "Fit the whole map on screen" }).click();
   await expect.poll(following).toBe(false);
+});
+
+test("following pauses during a missing pose and resumes when it returns", async ({ page }) => {
+  const { panel, following } = await openFollowing(page);
+  await page.evaluate(() => { window.__posePosition = null; });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(false);
+  expect(await following()).toBe(true);
+  await page.evaluate(() => { delete window.__posePosition; });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
+  expect(await following()).toBe(true);
 });

@@ -170,6 +170,8 @@ export interface PoseModel {
   readonly nativeObservationAgeSeconds?: number | null;
   /** Server processing time before it measured that age. */
   readonly poseProcessingSeconds?: number;
+  /** Server wall-clock time, validated by the optional clock calibration. */
+  readonly poseMeasuredAt?: unknown;
   /** Map-frame yaw in radians when the pose carried a rotation. */
   readonly heading?: number | null;
 }
@@ -666,6 +668,7 @@ export const parsePose = (value: unknown): PoseModel => {
     freshness,
     ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
     ...(poseProcessingSeconds === undefined ? {} : { poseProcessingSeconds }),
+    poseMeasuredAt: payload.pose_measured_at,
     // An unreadable heading falls back to the plain dot instead of dropping
     // an otherwise valid position.
     heading: position !== null && typeof payload.heading === "number"

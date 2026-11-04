@@ -161,6 +161,7 @@ async def test_live_pose_reads_feed_the_trail_recorder() -> None:
         native_active=False,
         map_key=_browser_session_key(runtime),
         point=(0.1, 0.2),
+        observed_at=runtime.coordinator.data.pose.observed_at,
     )
 
     fallback = _runtime(pose=False)
@@ -184,6 +185,7 @@ def test_coordinator_updates_record_exact_poses_and_close_runs() -> None:
         "native_active": False,
         "map_key": None,
         "point": None,
+        "observed_at": runtime.coordinator.data.pose.observed_at,
     }
     observe_coordinator_trail(_runtime())
 

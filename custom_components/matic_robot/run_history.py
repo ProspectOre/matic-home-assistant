@@ -441,6 +441,7 @@ class _LiveTrail:
     map_key: str
     started_at: str
     points: list[TrailPoint] = field(default_factory=list)
+    last_observed_at: float | None = None
 
 
 class RunTrails:
@@ -506,6 +507,7 @@ class RunTrails:
         native_active: bool | None,
         map_key: str | None,
         point: TrailPoint | None,
+        observed_at: float | None = None,
     ) -> None:
         """Track run boundaries and add one verified position."""
         key = f"run:{run_id}" if run_id else "robot" if native_active else None
@@ -519,8 +521,17 @@ class RunTrails:
             self._finish(live)
         if key is None or map_key is None or point is None or not _valid_point(point):
             return
+        if observed_at is not None and (
+            not math.isfinite(observed_at) or observed_at <= 0
+        ):
+            return
         if self._live is None:
             self._live = _LiveTrail(key, run_id, map_key, dt_util.utcnow().isoformat())
+        if observed_at is not None:
+            previous = self._live.last_observed_at
+            if previous is not None and observed_at <= previous:
+                return
+            self._live.last_observed_at = observed_at
         points = self._live.points
         if points and math.dist(points[-1], point) < TRAIL_STEP_METERS:
             return

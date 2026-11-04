@@ -192,12 +192,12 @@ export class MapOptions {
             data-follow-robot
             aria-disabled=${String(!followReady && state.followMode !== "follow")}
             @click=${() => intent({ type: "set-follow-mode", mode: state.followMode === "follow" ? "off" : "follow" })}
-          ><span>${t("v4_follow_robot", "Follow the robot")}</span><span class="ms-switch" aria-checked=${String(state.followMode === "follow")} aria-hidden="true"></span></button>
+          ><span>${t("v4_follow_robot", "Follow the robot")}${state.followMode === "follow" && !followReady ? html`<small class="menu-note">${t("v4_tracking_waiting", "Waiting for a current robot position.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.followMode === "follow")} aria-hidden="true"></span></button>
           <button class="ms-row ms-row--menu" type="button" role="menuitemcheckbox"
             aria-checked=${String(state.followMode === "ride")} tabindex="-1" data-ride-along
             aria-disabled=${String(!rideReady && state.followMode !== "ride")}
             @click=${() => intent({ type: "set-follow-mode", mode: state.followMode === "ride" ? "off" : "ride" })}
-          ><span>${t("v4_ride_along", "Ride along in 3D")}</span><span class="ms-switch" aria-checked=${String(state.followMode === "ride")} aria-hidden="true"></span></button>
+          ><span>${t("v4_ride_along", "Ride along in 3D")}${state.followMode === "ride" && !rideReady ? html`<small class="menu-note">${t("v4_tracking_waiting", "Waiting for a current robot position.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.followMode === "ride")} aria-hidden="true"></span></button>
           ${!followReady || !rideReady ? html`<small class="menu-note">${t("v4_follow_needs_live_pose", "Following needs a live position; Ride along also needs the robot's heading.")}</small>` : nothing}
         ` : nothing}
         <div role="group" aria-labelledby="menu-detail">

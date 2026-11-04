@@ -939,7 +939,10 @@ export class WorkspaceStore {
       ? !noticed.scheduleDeleteRequest || !sharedCadenceDeleteRequestIsCurrent(noticed, noticed.scheduleDeleteRequest)
       : noticed.dialog?.startsWith("confirmDelete") && !deleteSubject(noticed);
     const presented = taskPresentation(this.#state, missingSubject ? { ...noticed, dialog: null, scheduleDeleteRequest: null } : noticed);
-    const committed = presented.followMode !== "off" && !canFollowRobot(presented, presented.followMode)
+    const entry = presented.resources.entry;
+    const waitingForPose = presented.followMode !== "off" && presented.followMode === this.#state.followMode
+      && canFollowRobot(presented, presented.followMode, true) && entry && entry === this.#state.resources.entry;
+    const committed = presented.followMode !== "off" && !canFollowRobot(presented, presented.followMode) && !waitingForPose
       ? { ...presented, followMode: "off" as const } : presented;
     this.#state = committed;
     this.#publish();
@@ -1040,7 +1043,7 @@ export const isSelectedRobotUnavailable = (state: WorkspaceState): boolean =>
   state.selection.entryId !== null && state.robots.length > 0
   && !state.robots.some((robot) => robot.entryId === state.selection.entryId);
 
-export const canShowExactPose = (state: WorkspaceState): boolean =>
+const canShowPoseFrame = (state: WorkspaceState): boolean =>
   canShowLiveMap(state)
   && !state.floor.readOnly
   // A degraded map stream can still have an independently verified floor,
@@ -1050,17 +1053,19 @@ export const canShowExactPose = (state: WorkspaceState): boolean =>
   && (state.coherence === "current" || state.coherence === "degraded")
   && state.map.floorCoherent
   && state.map.sessionVerified
-  && state.map.exactPose
   && state.host.connected
   && state.host.robotConnected;
 
-export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride"): boolean => {
+export const canShowExactPose = (state: WorkspaceState): boolean =>
+  canShowPoseFrame(state) && state.map.exactPose;
+
+export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride", waiting = false): boolean => {
   const pose = state.resources.pose.value;
-  return state.pageActive && !forcesTop(state) && canShowExactPose(state)
-    && state.resources.scene.value?.source === "live" && pose?.freshness === "live"
+  return state.pageActive && !forcesTop(state) && canShowPoseFrame(state)
+    && state.resources.scene.value?.source === "live" && (waiting || (state.map.exactPose && pose?.freshness === "live"
     && pose.position !== null && pose.floorCoherent && pose.mapSessionKey !== null
     && pose.mapSessionKey === state.resources.entry?.mapSessionKey
-    && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading)));
+    && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading)))));
 };
 
 /** Robot-wide settings do not depend on the selected map or floor. */
