@@ -44,6 +44,7 @@
       "plans_url": "/api/matic_robot/plans/synthetic-entry",
       "wifi_heatmap_url": "/api/matic_robot/wifi_heatmap/synthetic-entry",
       "floor_layers_url": "/api/matic_robot/floor_layers/synthetic-entry",
+      "coverage_url": "/api/matic_robot/live_coverage/synthetic-entry",
       "history_count": 0,
       "history_floor_count": 0,
       "map_revision": 7,
