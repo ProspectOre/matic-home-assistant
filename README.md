@@ -40,10 +40,13 @@ Requires **Home Assistant 2026.10+**. Pair through a Bluetooth adapter built int
 or attached to the host; Bluetooth proxies cannot complete pairing. Hosts without
 an adapter can use [experimental pairing import](docs/hermes-pairing.md#pair-on-another-device).
 
-1. In HACS, add [this repository](https://github.com/ProspectOre/matic-home-assistant) as a custom **Integration** repository.
-2. Download **Matic (Unofficial)** and restart Home Assistant.
+1. In HACS, search for **Matic (Unofficial)** and download it.
+2. Restart Home Assistant.
 3. Open **Settings > Devices & services** and add the discovered Matic. Setup
    shows its progress and asks you to turn on Pairing mode.
+
+If Matic does not appear in HACS, add [this repository](https://github.com/ProspectOre/matic-home-assistant)
+as a custom **Integration** repository, then download it.
 
 If no robot is found, add the integration manually; setup then asks for the
 robot's address (IP address or hostname, and port).
