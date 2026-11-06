@@ -40,6 +40,7 @@ class LiveCoverage:
         self._bound_context: tuple[int, object] | None = None
         self._session: bytes | None = None
         self._pages: dict[tuple[int, int], SlamSemanticTile] = {}
+        self.partial = False
         self.revision = 0
         self.generation = 0
 
@@ -53,6 +54,7 @@ class LiveCoverage:
         self._bound_context = None
         self._session = None
         self._pages.clear()
+        self.partial = False
         self.revision += 1
         self.generation += 1
 
@@ -103,9 +105,26 @@ class LiveCoverage:
             await asyncio.sleep(_RETRY_SECONDS)
 
     async def _watch_session(self, context: tuple[int, object], session: bytes) -> None:
+        # A tracked snapshot can include retained pages omitted by a later
+        # subscription. Bind it only after checking that the run and frame
+        # remained the same throughout the read.
+        entries = await self._client.async_get_tracked_collection_entries(
+            "map_combined_coverage", limit=MAX_SLAM_TILES
+        )
+        if (
+            self._context() != context
+            or await self._client.async_get_cleaning_session_identity() != session
+            or self._context() != context
+        ):
+            return
         self._bound_context = context
         self._session = session
+        # Hermes provides no completion marker for the bounded snapshot, so
+        # missing retained pages cannot be ruled out even when it succeeds.
+        self.partial = True
         self.generation += 1
+        for entry in entries:
+            self._accept_entry(entry, context[0])
         stream = self._client.async_subscribe_collection_entries(
             "map_combined_coverage", include_deletions=True
         )
@@ -124,7 +143,7 @@ class LiveCoverage:
                             return
                         if self._context() != context:
                             return
-                        self._update(entry, context[0])
+                        self._accept_entry(entry, context[0])
                         pending = asyncio.create_task(anext(stream))
                     if monotonic() >= next_check:
                         current_session = (
@@ -137,3 +156,10 @@ class LiveCoverage:
                 pending.cancel()
                 with suppress(asyncio.CancelledError, StopAsyncIteration):
                     await pending
+
+    def _accept_entry(self, entry: HermesCollectionEntry, mission: int) -> None:
+        """Ignore a bad page without losing the other validated pages."""
+        try:
+            self._update(entry, mission)
+        except DecodeError:
+            _LOGGER.debug("Ignoring invalid live coverage page", exc_info=True)

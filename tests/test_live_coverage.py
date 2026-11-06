@@ -94,7 +94,10 @@ async def test_session_change_discards_pages_and_closes_stream(monkeypatch) -> N
     first_page = asyncio.Event()
     closed = asyncio.Event()
     client = MagicMock()
-    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"one", b"two"])
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"one", b"one", b"two"]
+    )
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
 
     async def stream(*_args, **_kwargs):
         try:
@@ -131,6 +134,66 @@ async def test_changed_frame_hides_pages_immediately() -> None:
     assert coverage.current() is None
 
 
+async def test_snapshot_seeds_omitted_pages_and_bad_stream_entry_is_isolated() -> None:
+    client = MagicMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"session")
+    retained = synthetic_semantic_entry(page_x=3)
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"bad", b"bad"), retained)
+    )
+    observed = asyncio.Event()
+
+    async def stream(*_args, **_kwargs):
+        yield HermesCollectionEntry(b"bad", b"bad")
+        yield synthetic_semantic_entry()
+        observed.set()
+        await asyncio.Event().wait()
+
+    client.async_subscribe_collection_entries = stream
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    task = asyncio.create_task(coverage._watch_session((MISSION, "floor"), b"session"))
+    try:
+        await asyncio.wait_for(observed.wait(), 2)
+        assert len(coverage.current()) == 2
+        assert coverage.partial is True
+        assert not task.done()
+        client.async_get_tracked_collection_entries.assert_awaited_once_with(
+            "map_combined_coverage", limit=4096
+        )
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_snapshot_is_discarded_when_session_changes_during_read() -> None:
+    client = MagicMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"other")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(synthetic_semantic_entry(),)
+    )
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    await coverage._watch_session((MISSION, "floor"), b"session")
+    assert coverage.current() is None
+    client.async_subscribe_collection_entries.assert_not_called()
+
+
+async def test_snapshot_is_discarded_when_frame_changes_during_read() -> None:
+    context = [(MISSION, "floor")]
+    client = MagicMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"session")
+
+    async def snapshot(*_args, **_kwargs):
+        context[0] = (MISSION, "other")
+        return (synthetic_semantic_entry(),)
+
+    client.async_get_tracked_collection_entries = snapshot
+    coverage = LiveCoverage(client, lambda: context[0])
+    await coverage._watch_session((MISSION, "floor"), b"session")
+    assert coverage.current() is None
+    client.async_subscribe_collection_entries.assert_not_called()
+
+
 def test_coverage_runs_keep_modes_and_column_major_cell_positions() -> None:
     cells = bytearray(1024)
     cells[2 * 32 + 3] = 1
@@ -158,6 +221,8 @@ async def test_view_requires_admin_and_revalidates_entry() -> None:
     assert response.headers["Cache-Control"].startswith("private, no-store")
     assert json.loads(response.body)["active"] is True
     assert json.loads(response.body)["map_session_key"] == "a" * 64
+    runtime.live_coverage.partial = True
+    assert json.loads((await view.get(request, "entry")).body)["truncated"] is True
     request["hass_user"] = SimpleNamespace(is_admin=False)
     with pytest.raises(Unauthorized):
         await view.get(request, "entry")
@@ -296,6 +361,7 @@ def test_page_and_output_limits_fail_bounded(monkeypatch) -> None:
 async def test_stream_end_and_failures_discard_pages(monkeypatch) -> None:
     client = MagicMock()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=b"session")
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
     closed = asyncio.Event()
 
     async def stream(*_args, **_kwargs):
@@ -326,6 +392,7 @@ async def test_stream_rechecks_session_and_frame_while_waiting(monkeypatch) -> N
     context = [(MISSION, "floor")]
     client = MagicMock()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=b"session")
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
     ready = asyncio.Event()
     queue = asyncio.Queue()
 
@@ -350,6 +417,7 @@ async def test_stream_rechecks_session_and_frame_while_waiting(monkeypatch) -> N
 async def test_cancelling_active_collector_closes_subscription() -> None:
     client = MagicMock()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=b"session")
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
     ready = asyncio.Event()
     closed = asyncio.Event()
 
@@ -374,6 +442,8 @@ async def test_cancelling_active_collector_closes_subscription() -> None:
 async def test_stream_discards_an_update_that_arrives_after_frame_change() -> None:
     context = [(MISSION, "floor")]
     client = MagicMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"session")
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
 
     async def stream(*_args, **_kwargs):
         context[0] = (MISSION, "other")

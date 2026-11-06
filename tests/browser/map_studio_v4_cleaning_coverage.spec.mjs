@@ -38,6 +38,20 @@ test("live coverage loads and vacuum and mop controls are independent", async ({
   await expect.poll(() => inShadow(panel, "[data-mop-coverage]")).toBe("true");
 });
 
+test("incomplete live coverage is labeled for both cleaning modes", async ({ page }) => {
+  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: { ...coverage, truncated: true } });
+  await page.evaluate(async (tag) => {
+    const panel = window.__panelFixture.createPanel();
+    document.body.append(panel);
+    await customElements.whenDefined(tag);
+    await panel.updateComplete;
+  }, panelTag);
+  const panel = page.locator(panelTag);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.truncated)).toBe(true);
+  await inShadow(panel, "[aria-controls=map-options]", true);
+  await expect(panel.getByText("Coverage may be incomplete.")).toBeVisible();
+});
+
 test("coverage parser rejects malformed and unbounded runs", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { parseCleaningCoverage } from "./frontend/map-studio-v4/cleaning-coverage";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/coverage-parser.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

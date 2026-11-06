@@ -83,7 +83,8 @@ class MaticLiveCoverageView(HomeAssistantView):
                 "map_session_key": map_session_key,
                 "cell_size": VOXEL_SCALE_METERS,
                 "runs": runs,
-                "truncated": truncated,
+                "truncated": truncated
+                or getattr(runtime.live_coverage, "partial", False),
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )
