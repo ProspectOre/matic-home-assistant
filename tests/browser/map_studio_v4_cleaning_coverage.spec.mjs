@@ -17,7 +17,7 @@ const inShadow = (panel, selector, click = false) => panel.evaluate((element, { 
   };
   const match = find(element.shadowRoot);
   if (click) match?.click();
-  return match?.getAttribute("aria-checked") ?? null;
+  return match?.getAttribute("aria-pressed") ?? null;
 }, { selector, click });
 
 test("live coverage loads and vacuum and mop controls are independent", async ({ page }) => {
@@ -31,12 +31,14 @@ test("live coverage loads and vacuum and mop controls are independent", async ({
   }, panelTag);
   const panel = page.locator(`${panelTag}[data-test-panel=true]`);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
-  await inShadow(panel, "[aria-controls=map-options]", true);
-  await expect.poll(() => inShadow(panel, "[data-vacuum-coverage]")).toBe("true");
-  await expect.poll(() => inShadow(panel, "[data-mop-coverage]")).toBe("true");
-  await inShadow(panel, "[data-vacuum-coverage]", true);
-  await expect.poll(() => inShadow(panel, "[data-vacuum-coverage]")).toBe("false");
-  await expect.poll(() => inShadow(panel, "[data-mop-coverage]")).toBe("true");
+  const vacuum = panel.locator('button[data-map-layer="vacuum"]');
+  await expect(vacuum).toHaveCount(1);
+  await expect(vacuum).toHaveAttribute("aria-disabled", "false");
+  await expect.poll(() => inShadow(panel, '[data-map-layer="vacuum"]')).toBe("true");
+  await expect.poll(() => inShadow(panel, '[data-map-layer="mop"]')).toBe("true");
+  await vacuum.click();
+  await expect.poll(() => inShadow(panel, '[data-map-layer="vacuum"]')).toBe("false");
+  await expect.poll(() => inShadow(panel, '[data-map-layer="mop"]')).toBe("true");
 });
 
 test("incomplete live coverage is labeled for both cleaning modes", async ({ page }) => {
@@ -49,7 +51,7 @@ test("incomplete live coverage is labeled for both cleaning modes", async ({ pag
   }, panelTag);
   const panel = page.locator(panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.truncated)).toBe(true);
-  await inShadow(panel, "[aria-controls=map-options]", true);
+  await expect.poll(() => inShadow(panel, '[data-map-layer="mop"]')).toBe("true");
   await expect(panel.getByText("Partial coverage. Showing changes observed since live tracking began.")).toBeVisible();
 });
 
@@ -66,7 +68,7 @@ test("active coverage identifies its observed changes basis", async ({ page }) =
   const panel = page.locator(panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.coverageBasis))
     .toBe("observed_changes");
-  await inShadow(panel, "[aria-controls=map-options]", true);
+  await expect.poll(() => inShadow(panel, '[data-map-layer="vacuum"]')).toBe("true");
   await expect(panel.getByText("Partial coverage. Showing changes observed since live tracking began.")).toBeVisible();
 });
 
@@ -83,8 +85,16 @@ test("unverified live coverage is hidden with an explanation", async ({ page }) 
   }, panelTag);
   const panel = page.locator(panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.ownershipUnverified)).toBe(true);
-  await inShadow(panel, "[aria-controls=map-options]", true);
+  const mop = panel.locator('button[data-map-layer="mop"]');
+  await expect(mop).toHaveAttribute("aria-disabled", "false");
+  await expect(mop).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(0);
   await expect(panel.getByText("Live coverage is hidden until tracking can identify this clean.")).toBeVisible();
+  await mop.click();
+  await expect(mop).toHaveAttribute("aria-pressed", "false");
+  await mop.click();
+  await expect(mop).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(0);
 });
 
 test("coverage parser rejects malformed and unbounded runs", async ({ page }) => {
@@ -233,7 +243,7 @@ test("coverage renders its selected modes only on the matching live frame", asyn
     const entry = { entryId: "robot", mapSessionKey: "a", mapFloorCoherent: true,
       mapSessionVerified: true, nativeSessionActive: true };
     const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" },
-      resources: { entry }, floorTypes: null, wifiSignal: null, coverageModes: 3,
+      resources: { entry, scene: { value: null } }, floorTypes: null, wifiSignal: null, coverageModes: 3,
       liveCoverage: { active: true, frameKey: entryCoherenceIdentity(entry), cellSize: .015,
         truncated: true, coverageBasis: "observed_changes", runs: [[2, 3, 4, 1], [7, 5, 2, 2]] } };
     const fills = [];
@@ -241,8 +251,9 @@ test("coverage renders its selected modes only on the matching live frame", asyn
       fill() { fills.push(this.fillStyle); } };
     const draw = (candidate) => { drawMapLayers(context, candidate, (x, y) => ({ x, y })); return fills.splice(0); };
     return [draw(state), draw({ ...state, coverageModes: 1 }), draw({ ...state, dataMode: "history" }),
-      draw({ ...state, resources: { entry: { ...entry, mapSessionKey: "b" } } })];
+      draw({ ...state, resources: { ...state.resources, entry: { ...entry, mapSessionKey: "b" } } }),
+      draw({ ...state, liveCoverage: { ...state.liveCoverage, ownershipUnverified: true } })];
   });
   expect(result).toEqual([["rgba(41, 142, 239, 0.35)", "rgba(29, 192, 157, 0.38)"],
-    ["rgba(41, 142, 239, 0.35)"], [], []]);
+    ["rgba(41, 142, 239, 0.35)"], [], [], []]);
 });

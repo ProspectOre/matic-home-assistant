@@ -34,9 +34,9 @@ const patchState = (gallery, patch) => gallery.evaluate((element, applied) => {
 
 const canvasOf = (gallery) => gallery.locator(CANVAS_TAG);
 const panelOf = (gallery) => gallery.getByRole("complementary", { name: "Cleaning panel" });
-const helpButton = (gallery) => canvasOf(gallery).getByRole("button", { name: "How to move the map", exact: true });
-const helpDialog = (gallery) => canvasOf(gallery).getByRole("dialog", { name: "How to move the map" });
-const optionsButton = (gallery) => gallery.getByRole("button", { name: "Map options", exact: true });
+const helpButton = (gallery) => gallery.getByRole("button", { name: "How to move the map", exact: true });
+const helpDialog = (gallery) => gallery.getByRole("dialog", { name: "How to move the map" });
+const optionsButton = (gallery) => gallery.getByRole("button", { name: "Tools", exact: true });
 const optionsMenu = (gallery) => gallery.getByRole("menu", { name: "Map options" });
 
 const rows = async (dialog) => {
@@ -142,7 +142,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     await expect(launcher).toBeFocused();
   });
 
-  test("empty Home Map options stays styled when workflow downloads are blocked", async ({ page }) => {
+  test("empty Home Map options stays styled and everyday layer controls are on the toolbar", async ({ page }) => {
     const workflowRequests = [];
     await page.route("**/chunks/workflow-panel-*", (route) => {
       workflowRequests.push(route.request().url());
@@ -156,23 +156,15 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     await expect(menu).toBeVisible();
     await expect(menu).toHaveCSS("position", "absolute");
     await expect(menu).toHaveCSS("display", "grid");
-    const names = menu.getByRole("menuitemcheckbox", { name: "Room names" });
-    await expect(names).toBeVisible();
-    expect(await names.locator(".ms-switch").evaluate((element) => ({
-      before: getComputedStyle(element, "::before").height,
-      after: getComputedStyle(element, "::after").width,
-    }))).toEqual({ before: "24px", after: "18px" });
-    const checked = await names.getAttribute("aria-checked");
-    const thumb = names.locator(".ms-switch");
-    const inlineStart = () => thumb.evaluate((element) => Number.parseFloat(getComputedStyle(element, "::after").insetInlineStart));
-    const before = await inlineStart();
-    await names.click();
-    await expect(names).toHaveAttribute("aria-checked", String(checked !== "true"));
-    if (checked === "true") await expect.poll(inlineStart).toBeLessThan(before);
-    else await expect.poll(inlineStart).toBeGreaterThan(before);
-    await names.click();
-    await expect(names).toHaveAttribute("aria-checked", checked);
-    await expect.poll(inlineStart).toBe(before);
+    await expect(menu.getByRole("menuitem", { name: "Map diagnostics" })).toBeVisible();
+    await expect(menu.getByRole("menuitemcheckbox")).toHaveCount(0);
+    const toolbar = gallery.locator("[data-map-toolbar]");
+    await expect(toolbar.locator('[data-map-layer="labels"]')).toBeVisible();
+    await expect(toolbar.locator('[data-map-layer="labels"]')).toHaveAttribute("aria-pressed", /^(true|false)$/);
+    const wifi = toolbar.locator('[data-map-layer="wifi"]');
+    await expect(wifi).toHaveAttribute("aria-disabled", "true");
+    await expect(wifi).toHaveAttribute("aria-describedby", "map-layer-wifi-hint");
+    await expect(wifi.locator(".map-layer-toolbar__hint")).not.toBeEmpty();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
     await expect(launcher).toBeFocused();
@@ -224,7 +216,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     await expect(canvas.locator(".map-message")).toHaveCount(0);
     await expect(retained.locator(".status-copy strong")).toHaveText("Locating");
     await expect(canvas.getByRole("button", { name: "Fit the whole map on screen" })).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Room names" })).toBeVisible();
+    await expect(retained.locator("[data-map-toolbar]").locator('[data-map-layer="labels"]')).toBeVisible();
     await expect(helpButton(retained)).toBeVisible();
   });
 
@@ -281,7 +273,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     await expect(help).toBeFocused();
   });
 
-  test("short narrow Help stays between the floor/view controls and Fit", async ({ page }) => {
+  test("short narrow Help stays clear of toolbar controls and Fit", async ({ page }) => {
     const gallery = await loadGallery(page, {
       scenario: "ready",
       narrow: true,
@@ -293,13 +285,15 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     const canvas = canvasOf(gallery);
     await expect(canvas).toHaveAttribute("data-short", "");
     const helpBounds = await helpButton(gallery).boundingBox();
-    const contextBounds = await canvas.locator(".map-context").boundingBox();
+    const contextBounds = await gallery.locator("[data-map-toolbar] .toolbar-context").boundingBox();
+    const viewBounds = await gallery.locator("[data-map-toolbar] .toolbar-view").boundingBox();
     const fitBounds = await canvas.getByRole("button", { name: "Fit the whole map on screen" }).boundingBox();
     expect(helpBounds).not.toBeNull();
     expect(contextBounds).not.toBeNull();
     expect(fitBounds).not.toBeNull();
-    expect(helpBounds.x).toBeGreaterThanOrEqual(contextBounds.x + contextBounds.width);
-    expect(helpBounds.x + helpBounds.width).toBeLessThanOrEqual(fitBounds.x);
+    expect(intersects(helpBounds, contextBounds)).toBe(false);
+    if (viewBounds) expect(intersects(helpBounds, viewBounds)).toBe(false);
+    expect(intersects(helpBounds, fitBounds)).toBe(false);
   });
 
   test("a fine pointer reads Trackpad, Mouse and Keyboard rows for the one gesture model", async ({ page }) => {
@@ -895,8 +889,9 @@ test.describe("Precision", () => {
     const hint = panel.locator(".draw-hint");
     expect((await hint.boundingBox()).y).toBeLessThan(groupBox.y);
     await expect(group).toContainText("Strokes follow the map's resolution. Zooming changes the view, not the area.");
-    // Docked settings are a section, not a layer: the app bar keeps its menu.
-    await expect(gallery.getByRole("button", { name: "Open Home Assistant sidebar", exact: true })).toBeVisible();
+    // Host navigation has a Tools menu entry on narrow screens, not a duplicate beside the title.
+    await expect(gallery.getByRole("button", { name: "Open Home Assistant sidebar", exact: true })).toHaveCount(0);
+    await expect(gallery.locator(".app-bar .nav--menu")).toHaveCount(0);
     await brushField(group).press("Escape");
     await expect.poll(async () => (await snapshot(page)).precisionOpen).toBe(false);
     await expect(group).toHaveCount(0);
@@ -1590,8 +1585,8 @@ test.describe("Final review", () => {
   test("the area review hides the 3D/2D and map style switches it cannot honour", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "area-review-saved", viewport: { width: 1024, height: 768 } });
     await expect(helpButton(gallery)).toBeVisible();
-    await expect(gallery.getByRole("group", { name: "Map view" })).toHaveCount(0);
-    await expect(gallery.getByRole("group", { name: "Map style" })).toHaveCount(0);
+    await expect(gallery.locator("[data-map-toolbar]").getByRole("group", { name: "Map view" })).toHaveCount(0);
+    await expect(gallery.locator("[data-map-toolbar]").getByRole("group", { name: "Map style" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "3D", exact: true })).toHaveCount(0);
   });
 
@@ -1713,7 +1708,7 @@ test.describe("Final review", () => {
     const gallery = await loadGallery(page, { scenario: "history", viewport: { width: 1024, height: 768 } });
     await patchState(gallery, { view: "top" });
     const chip = chipOf(gallery);
-    const style = gallery.getByRole("group", { name: "Map style" });
+    const style = gallery.locator("[data-map-toolbar]").getByRole("group", { name: "Map style" });
     await expect(style).toBeVisible();
     expect(intersects(await chip.boundingBox(), await style.boundingBox())).toBe(false);
     const fit = gallery.getByRole("button", { name: "Fit the whole map on screen", exact: true });
@@ -1868,8 +1863,7 @@ test.describe("Codex review", () => {
     await expect.poll(points, "room colours replace the photo").toBe(0);
     const phone = await loadGallery(page, { scenario: "draw", narrow: true });
     await patchState(phone, { view: "three" });
-    await optionsButton(phone).click();
-    await expect(optionsMenu(phone).getByRole("menuitemradio", { name: "Room colors" })).toBeVisible();
+    await expect(phone.locator("[data-map-toolbar]").getByRole("button", { name: "Room colors" })).toBeVisible();
   });
   test("in browser full screen the discard dialog and the toast show and take the pointer", async ({ page, browserName }) => {
     const gallery = await loadGallery(page, { scenario: "draw-saved", viewport: { width: 1024, height: 768 } });

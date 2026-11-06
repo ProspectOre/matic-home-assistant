@@ -1090,12 +1090,25 @@ for (const width of [320, 390, 820, 1280]) {
           plans: { ...state.resources.plans, value: { ...state.resources.plans.value,
             plans: [plan, { ...plan, id: "second", name: "Evening routine", enabled: false }] } } } });
       });
-      const menu = gallery.getByRole("button", { name: "Open Home Assistant sidebar" });
+      const tools = gallery.getByRole("button", { name: "Tools", exact: true });
       const title = gallery.getByRole("heading", { name: "Matic Map", exact: true });
       const toggle = gallery.getByRole("button", { name: "Full map", exact: true });
-      const [m, t, w] = await Promise.all([menu.boundingBox(), title.boundingBox(), toggle.boundingBox()]);
-      expect(m.x + m.width).toBeLessThanOrEqual(t.x);
+      const [t, w] = await Promise.all([title.boundingBox(), toggle.boundingBox()]);
       expect(w.x).toBeGreaterThan(t.x);
+      if (width <= 390) {
+        await gallery.evaluate((element) => {
+          window.__navigationToggles = 0;
+          element.addEventListener("hass-toggle-menu", () => { window.__navigationToggles += 1; });
+        });
+        await tools.click();
+        const menu = gallery.getByRole("menu", { name: "Map options" });
+        const navigation = menu.getByRole("menuitem", { name: "Open Home Assistant sidebar", exact: true });
+        await expect(navigation).toBeVisible();
+        await navigation.click();
+        expect(await page.evaluate(() => window.__navigationToggles)).toBe(1);
+      } else {
+        await expect(gallery.getByRole("button", { name: "Open Home Assistant sidebar", exact: true })).toHaveCount(0);
+      }
       await openPlanPicker(gallery);
       await expect(gallery.getByRole("heading", { name: "Your plans", exact: true })).toBeVisible();
       await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveCount(0);
@@ -1123,7 +1136,7 @@ for (const width of [320, 390, 820, 1280]) {
       else expect(appearance.background).toBeGreaterThan(.7);
       expect(appearance.contrast.length).toBeGreaterThanOrEqual(2);
       for (const contrast of appearance.contrast) expect(contrast).toBeGreaterThanOrEqual(4.5);
-      for (const control of [menu, create, choice]) {
+      for (const control of [tools, create, choice]) {
         const box = await control.boundingBox();
         expect(box.width).toBeGreaterThanOrEqual(44);
         expect(box.height).toBeGreaterThanOrEqual(44);

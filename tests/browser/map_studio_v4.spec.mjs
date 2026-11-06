@@ -4886,7 +4886,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
     await gallery.getByRole("button", { name: "2D", exact: true }).click();
     await gallery.getByRole("button", { name: "Room colors", exact: true }).click();
-    await gallery.getByRole("button", { name: "Room names", exact: true }).click();
+    await gallery.locator('[data-map-layer="labels"]').click();
     // Double-click the scene itself: the map root now also hosts the control
     // rail and dock, so its centre is not guaranteed to be bare map.
     const scene = gallery.locator("matic-map-canvas-v4 .scene-window");
@@ -6245,7 +6245,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
     await expect(appearance.getByRole("button", { name: "Room colors" })).toHaveAttribute("aria-pressed", "true");
 
-    const options = gallery.getByRole("button", { name: "Map options" });
+    const options = gallery.getByRole("button", { name: "Tools" });
     await expect(options).toHaveAttribute("aria-controls", "map-options");
     await options.click();
     await expect(options).toHaveAttribute("aria-expanded", "true");
@@ -6270,9 +6270,13 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("makes the first cleaning decision explicit without a phantom Run plan action", async ({ page }) => {
-    const gallery = await loadGallery(page, { scenario: "ready" });
-
-    const navigation = gallery.getByRole("button", { name: "Open Home Assistant sidebar" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
+    const tools = gallery.getByRole("button", { name: "Tools", exact: true });
+    await expect(tools).toBeVisible();
+    await tools.click();
+    const navigation = gallery.getByRole("menu", { name: "Map options" })
+      .getByRole("menuitem", { name: "Open Home Assistant sidebar", exact: true });
     await expect(navigation).toBeVisible();
     await page.evaluate((tag) => {
       window.__navigationToggles = 0;
@@ -8741,8 +8745,11 @@ for (const width of [1024, 1100]) {
     await expect(gallery.getByRole("button", { name: "3D", exact: true })).toBeDisabled();
     await expect(gallery.getByRole("toolbar", { name: "Map camera controls" })).toHaveCount(0);
     const chipBox = await chip.boundingBox();
-    for (const selector of [".map-context", ".map-tools", ".appearance-switch", ".map-extras"]) {
-      const box = await gallery.locator(selector).boundingBox();
+    for (const selector of ["[data-map-toolbar] .toolbar-context", "[data-map-toolbar] .toolbar-view",
+      "[data-map-toolbar] .map-layer-toolbar", ".map-tools"]) {
+      const control = gallery.locator(selector);
+      if (!await control.count()) continue;
+      const box = await control.boundingBox();
       expect(box.x < chipBox.x + chipBox.width && box.x + box.width > chipBox.x
         && box.y < chipBox.y + chipBox.height && box.y + box.height > chipBox.y, selector).toBe(false);
     }
@@ -8774,7 +8781,9 @@ for (const width of [1024, 1100]) {
           const help = gallery.getByRole("dialog", { name: "How to move the map", exact: true });
           await expect(help).toBeVisible();
           const helpBox = await help.boundingBox();
-          for (const selector of [".map-context", ".map-tools", ".appearance-switch", ".camera-steps", ".map-extras", ".selection-chip"]) {
+          for (const selector of ["[data-map-toolbar] .toolbar-context", "[data-map-toolbar] .toolbar-view",
+            "[data-map-toolbar] .tracking-switch", "[data-map-toolbar] .toolbar-actions",
+            "[data-map-toolbar] .map-layer-toolbar", ".map-tools", ".camera-steps", ".selection-chip"]) {
             const controls = gallery.locator(selector);
             if (!await controls.count()) continue;
             const box = await controls.boundingBox();
@@ -9629,9 +9638,13 @@ test("companion safe areas keep navigation and drawing actions clear of system U
     element.style.setProperty("--safe-area-inset-top", "62px");
     element.style.setProperty("--safe-area-inset-bottom", "34px");
   });
-  const navigation = gallery.getByRole("button", { name: "Open Home Assistant sidebar", exact: true });
   const bar = gallery.locator(".app-bar");
+  const tools = gallery.getByRole("button", { name: "Tools", exact: true });
+  await tools.click();
+  const navigation = gallery.getByRole("menu", { name: "Map options" })
+    .getByRole("menuitem", { name: "Open Home Assistant sidebar", exact: true });
   await expect.poll(async () => (await navigation.boundingBox())?.y).toBeGreaterThanOrEqual(62);
+  await navigation.click();
   const initialHeight = (await bar.boundingBox()).height;
   await gallery.getByRole("button", { name: /Clean custom area/ }).click();
   await gallery.getByRole("button", { name: "New area", exact: true }).click();
@@ -9651,14 +9664,14 @@ test("companion safe areas keep navigation and drawing actions clear of system U
   expect(floor.x).toBeGreaterThanOrEqual(62);
   const fit = await gallery.getByRole("button", { name: "Fit the whole map on screen" }).boundingBox();
   expect(fit.x + fit.width).toBeLessThanOrEqual(844 - 62);
-  const overflow = gallery.getByRole("button", { name: "Map options", exact: true });
+  const overflow = gallery.getByRole("button", { name: "Tools", exact: true });
   const overflowBox = await overflow.boundingBox();
   expect(overflowBox.x + overflowBox.width).toBeLessThanOrEqual(844 - 62);
   await page.setViewportSize({ width: 390, height: 844 });
   await gallery.evaluate((element) => {
     for (const edge of ["top", "right", "bottom", "left"]) element.style.setProperty(`--safe-area-inset-${edge}`, "0px");
   });
-  await expect.poll(async () => (await navigation.boundingBox())?.y).toBeLessThan(20);
+  await expect.poll(async () => (await tools.boundingBox())?.y).toBeLessThan(20);
 });
 
 test("plan catalog refresh preserves explicit selection and reconciles a saved new plan", async ({ page }) => {
@@ -11211,7 +11224,7 @@ test.describe("Map Studio accessibility baselines", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     const gallery = await loadGallery(page, { scenario: "rooms-ready", narrow: true });
     await settleWorkspace(gallery);
-    await gallery.getByRole("button", { name: "Map options" }).click();
+    await gallery.getByRole("button", { name: "Tools" }).click();
     await expect(gallery.getByRole("menu", { name: "Map options" })).toBeVisible();
     await expect(gallery.getByRole("menu", { name: "Map options" })).toHaveAttribute("tabindex", "0");
     const { violations, incomplete } = await new AxeBuilder({ page }).analyze();
@@ -11657,14 +11670,13 @@ test.describe("Map Studio resolved theme colours", () => {
     const saved = gallery.getByRole("group", { name: "Cleaning order" }).locator('[aria-pressed="true"]');
     await expect.poll(() => style(saved, "borderTopColor"), "pressed order").toBe(indicator);
 
-    // The Room names switch row sits in the phone's Map options menu
-    // (home-rooms.md §5 Display).
+    // Room names remains a first-class, pressed toolbar control on phones.
     await page.setViewportSize({ width: 390, height: 844 });
     const phone = await loadGallery(page, { scenario: "ready", narrow: true });
     await settleWorkspace(phone);
     await theme(page, HA_LIGHT);
-    await phone.getByRole("button", { name: "Map options", exact: true }).click();
-    const names = phone.getByRole("menuitemcheckbox", { name: "Room names" }).locator(".ms-switch");
+    const names = phone.locator('[data-map-toolbar] [data-map-layer="labels"]');
+    await expect(names).toBeVisible();
     await expect.poll(() => names.evaluate((element) => getComputedStyle(element, "::before").backgroundColor), "Room names").toBe(indicator);
   });
 

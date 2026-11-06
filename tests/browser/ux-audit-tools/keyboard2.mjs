@@ -32,7 +32,7 @@ console.log("== P1 Overflow menu: Escape while focus is on the auto-focused <sel
 for (const [w, h] of [[1440, 900], [390, 844]]) {
   await openScenario(page, "ready", { width: w, height: h });
   await inject(page);
-  await tabTo(/Map options/);
+  await tabTo(/Tools/);
   await page.keyboard.press("Enter"); await go();
   const f0 = await active(); const open0 = await dom("#map-options");
   await page.keyboard.press("Escape"); await go();

@@ -1,7 +1,7 @@
 // UX4 Home and rooms (docs/ux-spec-0.5/home-rooms.md; D1-D5 accepted
 // 2026-10-11). Home gets one heading per state and three task cards, Rooms a
 // settings disclosure, check lines and `.ms-check` rows, and the narrow
-// Display group moves into Map options.
+// Display controls live in the main map toolbar.
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
@@ -869,7 +869,7 @@ test.describe("the plan card", () => {
     await back();
     await expect.poll(() => focusedText(page)).toMatch(/^button Map diagnostics/);
 
-    await gallery.getByRole("button", { name: "Map options" }).click();
+    await gallery.getByRole("button", { name: "Tools" }).click();
     await gallery.getByRole("menu", { name: "Map options" }).getByRole("menuitem", { name: "Map diagnostics" }).click();
     await expect(gallery.getByRole("heading", { level: 2, name: "Map diagnostics" })).toBeVisible();
     await back();
@@ -878,7 +878,7 @@ test.describe("the plan card", () => {
     // R18: a workflow opened another way after a card press drops the card.
     await cards(gallery).nth(0).click();
     await expect(gallery.getByRole("heading", { level: 2, name: "Choose rooms" })).toBeVisible();
-    await gallery.getByRole("button", { name: "Map options" }).click();
+    await gallery.getByRole("button", { name: "Tools" }).click();
     await gallery.getByRole("menu", { name: "Map options" }).getByRole("menuitem", { name: "Map diagnostics" }).click();
     await expect(gallery.getByRole("heading", { level: 2, name: "Map diagnostics" })).toBeVisible();
     await back();
@@ -917,98 +917,131 @@ test.describe("the plan card", () => {
   });
 });
 
-// Map options is an ARIA menu (design-system.md §5 Menus, MS-KEY-02) that
-// holds the phone's Map display rows (home-rooms.md §5 Display); help lives
-// in the map rail on every width (MS-HOME-04).
-const optionsButton = (gallery) => gallery.getByRole("button", { name: "Map options", exact: true });
+// Map options is for the advanced map tools. Everyday display layers live in
+// the map toolbar at every width.
+const optionsButton = (gallery) => gallery.getByRole("button", { name: "Tools", exact: true });
 const optionsMenu = (gallery) => gallery.getByRole("menu", { name: "Map options" });
 const openOptions = async (gallery) => {
   await optionsButton(gallery).click();
   await expect(optionsMenu(gallery)).toBeVisible();
   return optionsMenu(gallery);
 };
-const rowNames = (menu) => menu.locator("[role^=menuitem]").evaluateAll((rows) => rows.map((row) => row.textContent.replace(/\s+/g, " ").trim()));
+const toolbar = (gallery) => gallery.locator("[data-map-toolbar]");
 
-test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME-04, MS-RESP-05)", () => {
-  test("opens as a menu named Map options with its first row focused @mobile", async ({ page }) => {
+test.describe("main map toolbar (home-rooms.md §5 Display, §11 MS-HOME-04, MS-RESP-05)", () => {
+  test("puts everyday map controls beside the title and keeps advanced tools separate @mobile", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
+    await patchState(gallery, { view: "top", dataMode: "live" });
+    const bar = toolbar(gallery);
+    await expect(bar).toBeVisible();
+    const layerNames = ["Wi-Fi", "Trail", "Vacuum", "Mop", "Carpet", "Vents", "Room names"];
+    for (const [index, name] of layerNames.entries()) {
+      const selector = ["wifi", "trail", "vacuum", "mop", "carpet", "vents", "labels"][index];
+      const control = bar.locator(`[data-map-layer="${selector}"]`);
+      await expect(control).toHaveRole("button");
+      await expect(control).toHaveAccessibleName(name);
+      await expect(control).toHaveAttribute("aria-pressed", /^(true|false)$/);
+      expect(await control.evaluate((element) => Math.min(element.getBoundingClientRect().width, element.getBoundingClientRect().height))).toBeGreaterThanOrEqual(44);
+    }
+    await expect(bar.getByRole("group", { name: "Map view" })).toBeVisible();
+    await expect(bar.getByRole("group", { name: "Map style" })).toBeVisible();
+    await expect(bar.getByRole("button", { name: "Full map" })).toBeVisible();
+    await expect(bar.getByRole("button", { name: "How to move the map" })).toBeVisible();
+    const title = bar.getByRole("heading", { level: 1, name: "Matic Map" });
+    const floor = bar.getByRole("combobox", { name: "Choose floor" });
+    const view = bar.getByRole("group", { name: "Map view" });
+    await expect(floor).toBeVisible();
+    expect((await floor.boundingBox()).x).toBeGreaterThan((await title.boundingBox()).x);
+    const layersBox = await bar.locator(".map-layer-toolbar").boundingBox();
+    const viewBox = await view.boundingBox();
+    expect(layersBox.y).toBeGreaterThanOrEqual(viewBox.y + viewBox.height);
+
+    const layerRow = await bar.locator("[data-map-layer] .map-layer-toolbar__label").evaluateAll((labels) => labels.map((label) => label.textContent.trim()));
+    expect(layerRow).toEqual(layerNames);
+    const menu = await openOptions(gallery);
+    await expect(menu.getByRole("menuitem", { name: "Map diagnostics" })).toBeVisible();
+    await expect(menu.getByRole("menuitemcheckbox")).toHaveCount(0);
+    for (const name of layerNames) await expect(menu.getByText(name, { exact: true })).toHaveCount(0);
+  });
+
+  test("layer buttons stay keyboard reachable and explain unavailable detections", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "top" });
-    const button = optionsButton(gallery);
-    await expect(button).toHaveAttribute("aria-haspopup", "menu");
-    await expect(button).toHaveAttribute("aria-expanded", "false");
-    await expect(button).toHaveAttribute("aria-controls", "map-options");
-    const menu = await openOptions(gallery);
-    await expect(button).toHaveAttribute("aria-expanded", "true");
-    await expect(menu).toHaveId("map-options");
-    await expect.poll(() => focusedText(page)).toBe("button Photo");
-    expect(await rowNames(menu)).toEqual([
-      "Photo", "Room colors", "Room names", "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom",
-      "Map diagnostics",
-    ]);
-    await expect(menu.getByRole("group", { name: "Map display" })).toBeVisible();
-    await expect(menu.getByRole("group", { name: "Map detail" })).toBeVisible();
-    await expect(menu.getByRole("menuitemradio", { name: "Photo" })).toHaveAttribute("aria-checked", "true");
-    await expect(menu.getByRole("menuitemradio", { name: "Auto detail" })).toHaveAttribute("aria-checked", "true");
-    await expect(menu.getByRole("menuitemcheckbox", { name: "Room names" })).toHaveAttribute("aria-checked", "true");
-    await expect(menu.getByRole("menuitemcheckbox", { name: "Room names" }).locator(".ms-switch")).toHaveCount(1);
-    for (const tabindex of await menu.locator("[role^=menuitem]").evaluateAll((rows) => rows.map((row) => row.getAttribute("tabindex")))) {
-      expect(tabindex).toBe("-1");
+    const layers = toolbar(gallery);
+    const names = layers.locator('[data-map-layer="labels"]');
+    const before = await names.getAttribute("aria-pressed");
+    await names.focus();
+    await expect(names).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(names).toHaveAttribute("aria-pressed", before === "true" ? "false" : "true");
+    for (const layer of ["carpet", "vents"]) {
+      const button = layers.locator(`[data-map-layer="${layer}"]`);
+      await expect(button).toHaveAttribute("aria-disabled", "true");
+      await expect(button.locator(".map-layer-toolbar__hint")).not.toBeEmpty();
     }
   });
 
-  test("Up, Down, Home and End move over every row, wrapping", async ({ page }) => {
+  test("display switches update appearance and room names without a menu", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "top" });
-    const menu = await openOptions(gallery);
-    await expect(menu.getByRole("menuitemcheckbox", { name: "Ride along in 3D" })).toHaveAttribute("aria-disabled", "true");
-    const names = [];
-    for (let step = 0; step < 12; step += 1) {
-      await page.keyboard.press("ArrowDown");
-      const name = (await focusedText(page)).replace(/^button /, "");
-      names.push(name);
-      if (name === "Ride along in 3D") {
-        await page.keyboard.press("Enter");
-        expect((await snapshot(page)).followMode).toBe("off");
+    const bar = toolbar(gallery);
+    const roomColors = bar.getByRole("button", { name: "Room colors", exact: true });
+    await roomColors.click();
+    await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
+    await expect(roomColors).toHaveAttribute("aria-pressed", "true");
+    const photo = bar.getByRole("button", { name: "Photo", exact: true });
+    await expect(photo).toHaveAttribute("aria-pressed", "false");
+    await photo.click();
+    await expect.poll(async () => (await snapshot(page)).appearance).toBe("photo");
+    await expect(photo).toHaveAttribute("aria-pressed", "true");
+
+    const names = bar.locator('[data-map-layer="labels"]');
+    await names.click();
+    await expect.poll(async () => (await snapshot(page)).labelsVisible).toBe(false);
+    await expect(names).toHaveAttribute("aria-pressed", "false");
+    await names.click();
+    await expect.poll(async () => (await snapshot(page)).labelsVisible).toBe(true);
+    await expect(names).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("keeps the complete layer row visible without overlap on phone and tablet widths @mobile", async ({ page }) => {
+    for (const viewport of [
+      { width: 320, height: 844 }, { width: 390, height: 844 },
+      { width: 667, height: 375 }, { width: 768, height: 1024 },
+    ]) {
+      const gallery = await loadGallery(page, { scenario: "ready", narrow: viewport.width < 600, viewport });
+      await patchState(gallery, { view: "top" });
+      const bar = toolbar(gallery);
+      await expect(bar.getByRole("group", { name: "Map view" }).getByRole("button", { name: "2D" })).toHaveAttribute("aria-pressed", "true");
+      await expect(bar.getByRole("group", { name: "Map style" }).getByRole("button", { name: "Photo" })).toBeVisible();
+      const buttons = bar.locator("[data-map-layer]");
+      await expect(buttons).toHaveCount(7);
+      const boxes = await bar.locator("button:visible").evaluateAll((elements) => elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+      }));
+      const barBox = await bar.boundingBox();
+      for (const box of boxes) {
+        expect(box.left).toBeGreaterThanOrEqual(0);
+        expect(box.right).toBeLessThanOrEqual(viewport.width);
+        expect(box.top).toBeGreaterThanOrEqual(0);
+        expect(box.bottom).toBeLessThanOrEqual(viewport.height);
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        expect(box.left).toBeGreaterThanOrEqual(barBox.x);
+        expect(box.right).toBeLessThanOrEqual(barBox.x + barBox.width);
+      }
+      for (let left = 0; left < boxes.length; left += 1) for (let right = left + 1; right < boxes.length; right += 1) {
+        const a = boxes[left], b = boxes[right];
+        expect(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top).toBe(true);
       }
     }
-    expect(names).toEqual(["Room colors", "Room names", "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics", "Photo"]);
-    await page.keyboard.press("ArrowUp");
-    await expect.poll(() => focusedText(page)).toBe("button Map diagnostics");
-    await page.keyboard.press("Home");
-    await expect.poll(() => focusedText(page)).toBe("button Photo");
-    await page.keyboard.press("End");
-    await expect.poll(() => focusedText(page)).toBe("button Map diagnostics");
-  });
-
-  test("display and detail rows change the map and keep the menu open; action rows close it", async ({ page }) => {
-    const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
-    await patchState(gallery, { view: "top" });
-    const menu = await openOptions(gallery);
-    await menu.getByRole("menuitemradio", { name: "Room colors" }).click();
-    await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
-    await expect(menu.getByRole("menuitemradio", { name: "Room colors" })).toHaveAttribute("aria-checked", "true");
-    await expect(menu.getByRole("menuitemradio", { name: "Photo" })).toHaveAttribute("aria-checked", "false");
-    await expect(menu).toBeVisible();
-    // The chosen row shows it: the selected tint and a check glyph (walkthrough finding 1).
-    await expect(menu.getByRole("menuitemradio", { name: "Room colors" })).toHaveAttribute("data-selected", "true");
-    await expect(menu.getByRole("menuitemradio", { name: "Room colors" }).locator("svg")).toHaveCount(1);
-    await expect(menu.getByRole("menuitemradio", { name: "Photo" })).not.toHaveAttribute("data-selected", "true");
-    await expect(menu.getByRole("menuitemradio", { name: "Photo" }).locator("svg")).toHaveCount(0);
-
-    await menu.getByRole("menuitemcheckbox", { name: "Room names" }).click();
-    await expect.poll(async () => (await snapshot(page)).labelsVisible).toBe(false);
-    await expect(menu.getByRole("menuitemcheckbox", { name: "Room names" })).toHaveAttribute("aria-checked", "false");
-    await expect(menu.getByRole("menuitemcheckbox", { name: "Room names" }).locator(".ms-switch")).toHaveAttribute("aria-checked", "false");
-    await expect(menu).toBeVisible();
-
-    await menu.getByRole("menuitemradio", { name: "Maximum" }).click();
-    await expect.poll(async () => (await snapshot(page)).quality).toBe("maximum");
-    await expect(menu.getByRole("menuitemradio", { name: "Maximum" })).toHaveAttribute("aria-checked", "true");
-    await expect(menu).toBeVisible();
-
-    await menu.getByRole("menuitem", { name: "Map diagnostics" }).click();
-    await expect(menu).toHaveCount(0);
-    await expect(gallery.getByRole("heading", { level: 2, name: "Map diagnostics" })).toBeVisible();
+    const fullMap = await loadGallery(page, { scenario: "ready", viewport: { width: 1024, height: 768 } });
+    await patchState(fullMap, { fullMap: true });
+    await expect(toolbar(fullMap)).toBeVisible();
+    await expect(toolbar(fullMap).locator("[data-map-layer]")).toHaveCount(7);
+    expect(await toolbar(fullMap).locator("[data-map-layer]").evaluateAll((buttons) =>
+      buttons.map((button) => button.querySelector(".map-layer-toolbar__label")?.textContent.trim()))).toEqual(["Wi-Fi", "Trail", "Vacuum", "Mop", "Carpet", "Vents", "Room names"]);
   });
 
   test("Escape closes the menu and returns focus to its button", async ({ page }) => {
@@ -1021,35 +1054,30 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     expect((await snapshot(page)).workflow).toBe("none");
   });
 
-  test("3D drops the Photo and Room colors rows; a desk keeps them in the rail and has no Map display group", async ({ page }) => {
+  test("3D keeps its view and layer controls directly accessible", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "three" });
-    const menu = await openOptions(gallery);
-    expect(await rowNames(menu)).toEqual(["Room names", "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics"]);
-    await page.keyboard.press("Escape");
+    const bar = toolbar(gallery);
+    await expect(bar.getByRole("group", { name: "Map view" }).getByRole("button", { name: "3D" })).toHaveAttribute("aria-pressed", "true");
+    await expect(bar.locator('[data-map-layer="wifi"]')).toBeVisible();
+    await expect(bar.locator('[data-map-layer="trail"]')).toBeVisible();
+    await expect(bar.locator('[data-map-layer="labels"]')).toBeVisible();
 
     const wide = await loadGallery(page, { scenario: "ready", viewport: { width: 1180, height: 760 } });
     await patchState(wide, { view: "top" });
-    const wideMenu = await openOptions(wide);
-    expect(await rowNames(wideMenu)).toEqual([
-      "Robot trail", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics",
-    ]);
-    await expect(wideMenu.getByRole("group", { name: "Map display" })).toHaveCount(0);
-    await expect.poll(() => focusedText(page)).toBe("button Robot trail");
-    await page.keyboard.press("Escape");
-    const style = wide.getByRole("group", { name: "Map style" });
+    const style = toolbar(wide).getByRole("group", { name: "Map style" });
     await expect(style.getByRole("button")).toHaveText(["Photo", "Room colors"]);
-    await expect(wide.getByRole("button", { name: "Room names", exact: true })).toBeVisible();
+    await expect(toolbar(wide).locator('[data-map-layer="labels"]')).toBeVisible();
   });
 
-  test("a phone keeps help in the rail with a Touch row first and no help button on home @mobile", async ({ page }) => {
+  test("a phone keeps help in the toolbar with a Touch row first and no help button on home @mobile", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
-    const help = gallery.locator("matic-map-canvas-v4").getByRole("button", { name: "How to move the map" });
+    const help = toolbar(gallery).getByRole("button", { name: "How to move the map" });
     await expect(help).toBeVisible();
     await expect(panelOf(gallery).getByRole("button", { name: "How to move the map" })).toHaveCount(0);
     await expect(panelOf(gallery).getByRole("group", { name: "Map display" })).toHaveCount(0);
     await expect(panelOf(gallery).locator("h3")).toHaveText(["Shortcuts", "More ways to clean", "Maps"]);
-    await expect(gallery.locator("matic-map-canvas-v4").getByRole("button", { name: "Room names" })).toHaveCount(0);
+    await expect(toolbar(gallery).locator('[data-map-layer="labels"]')).toBeVisible();
     await help.click();
     const popover = gallery.getByRole("dialog", { name: "How to move the map" });
     // A coarse pointer reads the Touch row alone (map-surfaces.md §5 Help).
@@ -1095,6 +1123,8 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     expect(await title.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     const bar = gallery.locator(".app-bar");
     expect(await bar.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expect(bar.locator(".nav--menu")).toHaveCount(0);
+    await expect(bar).toHaveAttribute("data-map-toolbar", "");
     await expect(robot).toHaveCSS("text-overflow", "ellipsis");
   });
 });
@@ -1285,11 +1315,11 @@ for (const narrow of [true, false]) {
       const kitchen = gallery.getByRole("button", { name: "Settings for Kitchen" });
       await kitchen.click();
       await expect(kitchen).toHaveAttribute("aria-expanded", "true");
-      await gallery.getByRole("button", { name: "Map options", exact: true }).click();
+      await gallery.getByRole("button", { name: "Tools", exact: true }).click();
       await expect(gallery.getByRole("menu", { name: "Map options" })).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(gallery.getByRole("menu", { name: "Map options" })).toHaveCount(0);
-      await expect.poll(() => focusedText(page)).toBe("button Map options");
+      await expect.poll(() => focusedText(page)).toBe("button Tools");
       await expect(kitchen).toHaveAttribute("aria-expanded", "true");
       await page.keyboard.press("Escape");
       await expect(kitchen).toHaveAttribute("aria-expanded", "false");
@@ -2068,8 +2098,7 @@ test.describe("cleaning history", () => {
   test("a saved map offers no Robot trail, which only draws on the live map @mobile", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "history", narrow: true });
     await patchState(gallery, { workflow: "none" });
-    const menu = await openOptions(gallery);
-    await expect(menu.getByRole("menuitemcheckbox", { name: "Robot trail" })).toHaveCount(0);
+    await expect(toolbar(gallery).locator('[data-map-layer="trail"]')).toHaveCount(0);
   });
 });
 

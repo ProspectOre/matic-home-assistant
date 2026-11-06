@@ -97,7 +97,7 @@ test("map options remain usable when the robot starts cleaning @mobile", async (
   const panel = page.locator(fixture.panelTag);
   const shell = panel.locator("matic-map-shell-v4");
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().coherence)).toBe("current");
-  await shell.getByRole("button", { name: "Map options", exact: true }).click();
+  await shell.getByRole("button", { name: "Tools", exact: true }).click();
   const menu = shell.getByRole("menu", { name: "Map options" });
   await expect(menu).toBeVisible();
   await panel.evaluate((element) => {

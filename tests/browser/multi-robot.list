@@ -1,0 +1,4 @@
+# Paths are relative to the Playwright test directory. Include every configured browser project.
+map_studio_v4_multi_robot_scale.spec.mjs
+map_studio_v4_entry_selection.spec.mjs
+map_studio_v4_stop_identity.spec.mjs

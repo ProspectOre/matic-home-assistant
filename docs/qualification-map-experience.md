@@ -8,7 +8,8 @@ certification. Name the minimum supported phone and host profile before acceptin
 
 ## Multi-robot compatibility
 
-Run this matrix on every candidate. The normal Browser UI workflow exercises the
+Run this matrix on every candidate. The **Multi-robot households** step in
+Browser UI runs `npm run test:browser:multi-robot`. It exercises the
 [entry selection tests](../tests/browser/map_studio_v4_entry_selection.spec.mjs)
 and [household scenarios](../tests/browser/map_studio_v4_multi_robot_scale.spec.mjs)
 in Chromium and WebKit. Keep the one-robot case and run the two-robot case even

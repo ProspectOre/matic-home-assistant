@@ -181,7 +181,8 @@ test.describe("compact sheet at 844×390 (MS-RESP-01, -02, -03)", () => {
     const canvas = gallery.locator("matic-map-canvas-v4");
     await expect(canvas).not.toHaveAttribute("data-short", /.*/u);
     await expect(canvas.locator(".camera-steps")).toBeVisible();
-    await expect(canvas.locator(".map-extras")).toBeVisible();
+    await expect(gallery.locator("[data-map-toolbar]")).toBeVisible();
+    await expect(canvas.locator(".map-tools")).toBeVisible();
   });
 
   test("a disabled primary keeps its reason under the grip row", async ({ page }) => {
