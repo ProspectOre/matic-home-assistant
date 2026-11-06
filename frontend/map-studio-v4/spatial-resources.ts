@@ -422,6 +422,24 @@ export class SpatialResources {
       && Boolean(host?.connected && host.administrator && host.robotConnected && host.robotCount > 0);
   }
 
+  #loadLiveScene(entry: MapEntry, stamp: ResourceStamp): void {
+    void this.#scene.load(entry, stamp).then(() => {
+      if (entry.historyFloorCount <= 1 || this.#callbacks.disposed() || !this.#callbacks.pageActive()) return;
+      const state = this.#store.value;
+      const currentStamp = this.#coherence.current();
+      const currentEntry = state.resources.entry;
+      if (!currentStamp || currentStamp.generation !== stamp.generation
+        || state.generation !== stamp.generation || state.dataMode !== "live" || state.floor.readOnly
+        || state.resources.scene.status !== "ready" || !currentEntry
+        || currentEntry.entryId !== entry.entryId || currentEntry.mapSessionKey !== entry.mapSessionKey
+        || state.resources.history.status === "loading" || state.resources.history.status === "ready") return;
+      // Keep first paint independent of saved-floor metadata. Once the live
+      // frame is admitted, load the floor/snapshot catalog so a
+      // multi-floor home can use the toolbar selector without opening History.
+      void this.loadHistory(currentEntry, currentStamp);
+    });
+  }
+
   #beginLiveGeneration(entry: MapEntry, previousEntry: MapEntry | null): void {
     if (this.#spatialRecovery !== null
       && this.#spatialRecovery.key !== entryCoherenceIdentity(entry)) {
@@ -556,7 +574,7 @@ export class SpatialResources {
       this.#reloadFloorTypesForNewFloor();
     }
     if (coherent) {
-      void this.#scene.load(entry, stamp);
+      this.#loadLiveScene(entry, stamp);
       if (this.#store.value.optionalUiReady) void this.#pose.load(entry, stamp);
     }
   }
@@ -610,7 +628,7 @@ export class SpatialResources {
           this.#scene.stop();
           const resources = this.#store.value.resources;
           this.#store.patch({ resources: { ...resources, scene: resource("loading", resources.scene.value) } });
-          void this.#scene.load(selected, stamp);
+          this.#loadLiveScene(selected, stamp);
         }
       }
       if (stamp && !state.resources.scene.value
@@ -624,7 +642,7 @@ export class SpatialResources {
       if (coherent && stamp
         && (state.resources.scene.status === "error" || state.floor.readOnly)
         && !this.#requests.has("scene")) {
-        void this.#scene.load(selected, stamp);
+        this.#loadLiveScene(selected, stamp);
       }
       return;
     }

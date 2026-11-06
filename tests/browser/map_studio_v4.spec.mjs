@@ -2583,10 +2583,12 @@ test.describe("Map Studio v0.4 foundation", () => {
     const reads = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
       const initial = createGalleryState("ready");
-      const store = new WorkspaceStore(initial);
+      const singleFloorEntry = { ...initial.resources.entry, historyFloorCount: 1 };
+      const store = new WorkspaceStore({ ...initial,
+        resources: { ...initial.resources, entry: singleFloorEntry } });
       let historyReads = 0;
       const effects = new EffectController(store, {
-        catalog: async () => [initial.resources.entry],
+        catalog: async () => [singleFloorEntry],
         history: async () => { historyReads++; return initial.resources.history.value; },
         scene: async (_url, revision, floorCoherent) => ({ revision, floorCoherent, scene: initial.resources.scene.value }),
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },

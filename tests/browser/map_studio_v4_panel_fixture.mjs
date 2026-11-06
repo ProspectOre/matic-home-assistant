@@ -65,6 +65,7 @@ export async function installPanelFixture(page, {
   cleaningCoverageB = null,
   runTrail = null,
   runTrailB = null,
+  historySceneStatus = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -124,7 +125,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, posePositionB, initialCatalogEntries, initialRobotStates, userData, wifiSignal, wifiSignalB, floorTypes, floorTypesB, cleaningCoverage, cleaningCoverageB, runTrail, runTrailB, workspacePush }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, posePositionB, initialCatalogEntries, initialRobotStates, userData, wifiSignal, wifiSignalB, floorTypes, floorTypesB, cleaningCoverage, cleaningCoverageB, runTrail, runTrailB, historySceneStatus, workspacePush }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -358,6 +359,7 @@ export async function installPanelFixture(page, {
         return result;
       }
       if (/slam_scene\/history(?:-b)?$/.test(path)) {
+        if (historySceneStatus !== null) return new Response(null, { status: historySceneStatus });
         return new Promise((resolve) => pendingHistoryScenes.push(() => resolve(new Response(new Uint8Array(scenes), {
           headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "6" },
         }))));
@@ -613,6 +615,7 @@ export async function installPanelFixture(page, {
     cleaningCoverageB,
     runTrail,
     runTrailB,
+    historySceneStatus,
     workspacePush,
   });
   await remount();
