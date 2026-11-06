@@ -11685,7 +11685,7 @@ test.describe("Map Studio resolved theme colours", () => {
     await theme(page, HA_LIGHT);
     const names = phone.locator('[data-map-toolbar] [data-map-layer="labels"]');
     await expect(names).toBeVisible();
-    await expect.poll(() => names.evaluate((element) => getComputedStyle(element, "::before").backgroundColor), "Room names").toBe(indicator);
+    await expect.poll(() => names.evaluate((element) => getComputedStyle(element, "::before").borderTopColor), "Room names").toBe(indicator);
   });
 
   // One ordering rule: a press always shows over hover, for every variant.

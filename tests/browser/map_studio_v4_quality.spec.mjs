@@ -33,23 +33,34 @@ for (const [colorScheme, header] of [["light", false], ["dark", false], ["light"
       element.style.setProperty("--app-header-background-color", "#075985");
       element.style.setProperty("--app-header-text-color", "#ffffff");
     });
-    if (header) await expect(gallery.locator(".app-bar > .ms-btn").first()).toHaveCSS("color", "rgb(255, 255, 255)");
+    if (header) await expect(gallery.getByRole("button", { name: "Tools", exact: true })).toHaveCSS("color", "rgb(255, 255, 255)");
     const ratios = await gallery.locator(".app-bar").evaluate((bar) => {
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = 1;
       const context = canvas.getContext("2d");
-      const luminance = (color) => {
+      const paint = (color) => {
         context.fillStyle = color;
         context.fillRect(0, 0, 1, 1);
+      };
+      const luminance = () => {
         const channels = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3).map((channel) => {
           const value = channel / 255;
           return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
         });
         return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
       };
-      const background = luminance(getComputedStyle(bar).backgroundColor);
-      return [...bar.querySelectorAll("h1, button")].map((element) => {
-        const foreground = luminance(getComputedStyle(element).color);
+      return [...bar.querySelectorAll("h1, select, button")].filter((element) => element.getClientRects().length).map((element) => {
+        const stack = [];
+        for (let node = element; node && bar.contains(node); node = node.parentElement) stack.unshift(node);
+        context.clearRect(0, 0, 1, 1);
+        for (const node of stack) {
+          paint(getComputedStyle(node).backgroundColor);
+          const plate = getComputedStyle(node, "::before");
+          if (plate.content !== "none") paint(plate.backgroundColor);
+        }
+        const background = luminance();
+        paint(getComputedStyle(element).color);
+        const foreground = luminance();
         return { name: element.getAttribute("aria-label") || element.textContent.trim(),
           ratio: (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) };
       });

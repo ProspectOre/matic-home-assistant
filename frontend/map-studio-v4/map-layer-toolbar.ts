@@ -14,16 +14,18 @@ export const layerToolbarStyles = css`
     .toolbar-row .ms-segment .ms-btn::before { position: absolute; inset: 5px 0; z-index: -1; content: ""; border-radius: 6px; }
     .toolbar-row .ms-segment .ms-btn[aria-pressed="true"]::before { background: var(--ms-surface-card); box-shadow: 0 1px 3px color-mix(in srgb, var(--ms-text) 22%, transparent); }
     .toolbar-row .ms-segment .ms-btn[aria-pressed="true"] { color: var(--ms-text); font-weight: 650; }
-    .toolbar-row .ms-segment .ms-btn:disabled { border: none; }
+    .toolbar-row .ms-segment .ms-btn:disabled { border: none; color: var(--ms-text-quiet); }
     .toolbar-row .tracking-switch .ms-btn { gap: 5px; }
+    .toolbar-row .tracking-switch .ms-btn:not([aria-pressed="true"]) { color: var(--ms-bar-text); }
+    .toolbar-row .tracking-switch .ms-btn:disabled .ms-icon { opacity: .55; }
     .toolbar-row .tracking-switch .ms-icon { width: 17px; height: 17px; }
     .toolbar-row .tracking-switch .ms-btn[aria-pressed="true"]::before { background: var(--ms-surface-sunken); }
     @media (forced-colors: active) { .toolbar-row .ms-segment .ms-btn[aria-pressed="true"]::before { border: 2px solid Highlight; } }
 
     .toolbar-row :is(.ms-btn,select) { min-block-size: 44px; min-inline-size: 44px; }
-    .toolbar-row .ms-segment { display: inline-flex; gap: 1px; padding: 0 3px; background: linear-gradient(to bottom, transparent 3px, var(--ms-surface-sunken) 3px calc(100% - 3px), transparent calc(100% - 3px)); border-radius: var(--ms-radius-sm); }
+    .toolbar-row .ms-segment { display: inline-flex; gap: 1px; padding: 0 3px; background-color: var(--ms-surface-sunken); border-radius: var(--ms-radius-sm); }
     .toolbar-row .ms-segment .ms-btn { padding-inline: var(--ms-space-2); }
-    .toolbar-row .tracking-switch { background: transparent; }
+    .toolbar-row .tracking-switch { background-color: transparent; }
     .toolbar-actions { margin-inline-start: auto; }
     .tracking-switch { margin-inline-start: auto; }
     .tracking-switch + .toolbar-actions { margin-inline-start: 0; }
@@ -59,6 +61,7 @@ export const layerToolbarStyles = css`
   .map-layer-toolbar {
     display: flex; flex-wrap: wrap; align-items: center; gap: 0 2px;
     min-inline-size: 0; padding-block: 2px; border-block-start: 1px solid var(--ms-line);
+    background-color: var(--ms-surface-card); color: var(--ms-text);
   }
   .map-layer-toolbar__button, .map-layer-toolbar__scale {
     position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -76,15 +79,16 @@ export const layerToolbarStyles = css`
     color: var(--ms-text); font-weight: 650;
   }
   .map-layer-toolbar__button[aria-pressed="true"]:not([aria-disabled="true"])::before {
-    background: color-mix(in srgb, var(--layer-ink, var(--ms-accent)) 12%, var(--ms-surface-bar));
-    border-color: color-mix(in srgb, var(--layer-ink, var(--ms-accent)) 18%, transparent);
+    background: color-mix(in srgb, var(--layer-ink, var(--ms-resolved-indicator, var(--ms-accent))) 12%, var(--ms-surface-card));
+    border-color: var(--layer-ink, var(--ms-resolved-indicator, var(--ms-accent)));
   }
-  .map-layer-toolbar__button[aria-pressed="true"]:not([aria-disabled="true"]) svg { color: var(--layer-ink, var(--ms-accent)); }
+  .map-layer-toolbar__button[aria-pressed="true"]:not([aria-disabled="true"]) svg { color: var(--layer-ink, var(--ms-resolved-indicator, var(--ms-accent))); }
   [data-map-layer="vacuum"] { --layer-ink: light-dark(#1168a6, #7bbefa); }
   [data-map-layer="mop"] { --layer-ink: light-dark(#087766, #7bdaca); }
   [data-map-layer="carpet"] { --layer-ink: light-dark(#925a26, #e2b286); }
   [data-map-layer="vents"] { --layer-ink: light-dark(#39758d, #93cde1); }
-  .map-layer-toolbar__button[aria-disabled="true"] { color: var(--ms-text-disabled); cursor: default; }
+  .map-layer-toolbar__button[aria-disabled="true"] { color: var(--ms-text-quiet); cursor: default; }
+  .map-layer-toolbar__button[aria-disabled="true"] .ms-icon { opacity: .55; }
   .map-layer-toolbar__button:not([aria-disabled="true"]):hover::before,
   .map-layer-toolbar__scale:hover::before { background: color-mix(in srgb, currentColor 8%, transparent); }
   .map-layer-toolbar :is(button:focus-visible) { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: -2px; border-radius: var(--ms-radius-sm); }

@@ -66,9 +66,10 @@ export const shellStyles = [tokens, base, controls, css`
     .toolbar-context { flex-wrap: wrap; }
     .toolbar-context .title { font-size: 1.08rem; font-weight: 650; letter-spacing: -.025em; margin-inline-end: var(--ms-space-1); }
     .toolbar-context .floor-switcher { border-width: 0; border-inline-start: 1px solid var(--ms-line); border-radius: 0; background-color: transparent; font-weight: var(--ms-w-medium); }
-    .toolbar-context .floor-switcher:disabled { color: var(--ms-text-quiet); opacity: 1; }
-    .toolbar-actions .ms-btn { border: 0; color: var(--ms-text-quiet); }
-    .toolbar-actions .ms-btn:hover { color: var(--ms-text); }
+    .toolbar-context .floor-switcher, .toolbar-context .floor-switcher:disabled { color: var(--ms-bar-text); opacity: 1; }
+    .floor-switcher option { color: var(--ms-text); background-color: var(--ms-surface-card); }
+    .toolbar-actions .ms-btn { border: 0; color: var(--ms-bar-text); }
+    .toolbar-actions .ms-btn:hover { color: var(--ms-bar-text); }
     .toolbar-actions .ms-icon { width: 19px; height: 19px; }
     .toolbar-actions { margin-inline-start: auto; }
     .toolbar-row :is(.ms-btn,select) { min-block-size: 44px; min-inline-size: 44px; }
