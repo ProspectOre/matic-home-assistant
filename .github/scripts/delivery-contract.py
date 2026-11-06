@@ -20,11 +20,17 @@ KINDS = {"ci", "dispatch", "nightly"}
 DISPATCH_EVENTS = {"workflow_dispatch", "workflow_call", "repository_dispatch"}
 KEY = re.compile(r"""^\s*(?:-\s*)?(['"]?)([A-Za-z_]+)\1\s*(?::.*)?$""")
 RUNS_ON = re.compile(r"""^(\s*)(['"]?)runs-on\2\s*:\s*(.*)$""")
-# A double-quoted scalar holding a backslash that is a key, or runs on past the
-# line end, can decode to runs-on (for example "runs-\x6fn": or "runs-\ + on":).
-ESCAPED_KEY = re.compile(r'''"(?=(?:[^"\\]|\\.)*\\)(?:[^"\\]|\\.)*(?:"\s*:|\\?$)''')
+# Keys a line scan cannot read as written, any of which YAML may decode to
+# runs-on: a double-quoted key holding an escape ("runs-\x6fn":), a double-quoted
+# scalar left open on an escaped line break ("runs-\ then on":), an explicit key
+# (? KEY, then : VALUE) and an alias used as a key (*name :).
+HIDDEN_KEY = re.compile(
+    r""""(?=(?:[^"\\]|\\.)*\\)(?:[^"\\]|\\.)*(?:"\s*:|\\?$)"""
+    r"""|(?:^\s*(?:-\s+)*|[{,\[]\s*)(?:\?(?:\s|$)|\*[^\s,\[\]{}]+\s*:)"""
+)
 BLOCK_START = re.compile(
-    r"""^(\s*)((?:-\s+)*)(?:("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"][^#]*?)\s*:\s+)?"""
+    r"""^(\s*)((?:-\s+)*)"""
+    r"""(?:("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"][^#]*?)\s*:\s+)?"""
     r"""[|>][0-9+-]*\s*(?:#.*)?$"""
 )
 
@@ -110,8 +116,9 @@ def block_scalar_body(lines):
             parent = len(indent) + len(dashes.rstrip()) - 1
         else:
             parent = len(indent)
-        while i < len(lines) and (not lines[i].strip()
-                                  or len(lines[i]) - len(lines[i].lstrip(" ")) > parent):
+        while i < len(lines) and (
+            not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip(" ")) > parent
+        ):
             body.add(i)
             i += 1
     return body
@@ -123,7 +130,7 @@ def runs_on_violations(text):
     body = block_scalar_body(lines)
     bad = []
     for i, line in enumerate(lines):
-        if i not in body and ESCAPED_KEY.search(line):
+        if i not in body and HIDDEN_KEY.search(line):
             bad.append(line.strip())
             continue
         if "runs-on" not in line:

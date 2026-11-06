@@ -28,14 +28,21 @@ def check(kind, job):
     with tempfile.TemporaryDirectory() as root:
         workflows = Path(root, ".github", "workflows")
         workflows.mkdir(parents=True)
-        Path(root, ".github", "delivery-contract.json").write_text(json.dumps(
-            {"workflows": {"w.yml": kind}, "hosted": False, "dependabot": False}
-        ))
-        (workflows / "w.yml").write_text(f"name: w\n{HEADERS[kind]}jobs:\n  build:\n{job}")
+        Path(root, ".github", "delivery-contract.json").write_text(
+            json.dumps(
+                {"workflows": {"w.yml": kind}, "hosted": False, "dependabot": False}
+            )
+        )
+        text = f"name: w\n{HEADERS[kind]}jobs:\n  build:\n{job}"
+        (workflows / "w.yml").write_text(text)
         return contract.check(root)
 
 
 class RunsOnTest(unittest.TestCase):
+    def assert_refused(self, job):
+        for kind in HEADERS:
+            self.assertIn(REFUSED, check(kind, job), kind)
+
     def test_pool_runner_passes(self):
         for kind in HEADERS:
             self.assertEqual(check(kind, POOL + STEPS), [], kind)
@@ -46,28 +53,41 @@ class RunsOnTest(unittest.TestCase):
             "hex escape": '    "runs-\\x6fn": ubuntu-latest\n',
             "escaped line break": '    "runs-\\\n    on": ubuntu-latest\n',
             "unicode escape": '    "runs-\\u006fn": ubuntu-latest\n',
+            "explicit key": '    ? "runs-\\x6fn"\n    : ubuntu-latest\n',
+            "explicit key on its own line": (
+                '    ?\n      "runs-\\x6fn"\n    : ubuntu-latest\n'
+            ),
         }
-        for kind in HEADERS:
-            for name, key in keys.items():
-                self.assertIn(REFUSED, check(kind, key + STEPS), f"{kind}: {name}")
+        for name, key in keys.items():
+            with self.subTest(name):
+                self.assert_refused(key + STEPS)
+
+    def test_alias_key_is_refused(self):
+        self.assert_refused(
+            '    env: {K: &k "runs-\\x6fn"}\n    *k : ubuntu-latest\n' + STEPS
+        )
 
     def test_escaped_key_in_a_flow_mapping_is_refused(self):
-        for kind in HEADERS:
-            job = '    steps: [{run: true}]\n    x: {a: b \'c, "runs-\\x6fn": ubuntu-latest}\n'
-            self.assertIn(REFUSED, check(kind, POOL + job), kind)
+        flow = '    x: {a: b \'c, "runs-\\x6fn": ubuntu-latest}\n'
+        self.assert_refused(POOL + STEPS + flow)
 
     def test_escaped_key_after_a_run_block_is_refused(self):
-        job = POOL + STEPS + '      - run: |\n          echo "$x" \\\n    "runs-\\x6fn": ubuntu-latest\n'
-        for kind in HEADERS:
-            self.assertIn(REFUSED, check(kind, job), kind)
+        after = (
+            '      - run: |\n          echo "$x" \\\n    "runs-\\x6fn": ubuntu-latest\n'
+        )
+        self.assert_refused(POOL + STEPS + after)
 
     def test_backslashes_inside_run_blocks_pass(self):
-        job = POOL + STEPS + (
-            '      - run: |\n'
-            '          printf "%s\\n" "$x" \\\n'
-            '            "$y"\n'
-            '      - run: >-\n'
-            '          echo "a\\": b"\n'
+        job = (
+            POOL
+            + STEPS
+            + (
+                "      - run: |\n"
+                '          printf "%s\\n" "$x" \\\n'
+                '            "$y"\n'
+                "      - run: >-\n"
+                '          echo "a\\": b ? c"\n'
+            )
         )
         for kind in HEADERS:
             self.assertEqual(check(kind, job), [], kind)
