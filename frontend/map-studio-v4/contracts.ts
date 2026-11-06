@@ -189,13 +189,6 @@ export interface WorkspaceResources {
   readonly runs: ResourceState<RunHistory>;
 }
 
-/** A historical trail endpoint only; never a live pose or movement authority. */
-export interface LastSeenDuringRun {
-  readonly entryId: string;
-  readonly mapSessionKey: string;
-  readonly position: readonly [number, number];
-}
-
 export interface AdmittedManualRoomPreview {
   readonly key: string;
   readonly generation: number;
@@ -229,6 +222,10 @@ export interface FloorTypesLayer {
   readonly status: "loading" | "ready" | "failed";
   readonly carpet: readonly FloorTypeOutline[];
   readonly vent: readonly FloorTypeOutline[];
+  /** True when native detections are known to be incomplete for the floor. */
+  readonly partial?: boolean;
+  /** True when the backend omitted outlines to stay within its map budget. */
+  readonly truncated?: boolean;
 }
 
 export interface CleaningCoverageLayer {
@@ -386,7 +383,6 @@ export interface WorkspaceState {
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
-  readonly seen?: LastSeenDuringRun | undefined;
   /** Object URLs of robot map pictures by history id. */
   readonly runThumbnails: Readonly<Record<string, string>>;
   readonly pageActive: boolean;
@@ -433,6 +429,8 @@ export interface WorkspaceState {
   readonly wifiScale: WifiScale;
   /** The carpet and vent layer; null while hidden. */
   readonly floorTypes: FloorTypesLayer | null;
+  /** Independent carpet and vent visibility. */
+  readonly floorTypeModes: number;
   readonly liveCoverage: CleaningCoverageLayer | null;
   readonly coverageModes: number;
   readonly followMode: FollowMode;
@@ -498,6 +496,7 @@ export type WorkspaceIntent =
   | { readonly type: "toggle-wifi-signal" }
   | { readonly type: "set-wifi-scale"; readonly scale: WifiScale }
   | { readonly type: "toggle-floor-types" }
+  | { readonly type: "toggle-floor-type"; readonly item: "carpet" | "vent" }
   | { readonly type: "toggle-cleaning-coverage"; readonly mode: "vacuum" | "mop" }
   | { readonly type: "set-follow-mode"; readonly mode: FollowMode }
   | { readonly type: "show-room-candidates"; readonly roomIds: readonly string[] }
@@ -755,6 +754,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "toggle-wifi-signal": true,
   "set-wifi-scale": true,
   "toggle-floor-types": true,
+  "toggle-floor-type": true,
   "toggle-cleaning-coverage": true,
   "set-follow-mode": true,
   "show-room-candidates": true,

@@ -10,6 +10,21 @@ Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Eve
 - Before substantive work, at material milestones and at handoff, follow the canonical [Linear work-tracking workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/linear-work-tracking.md). When local ancestor or wiki files are absent, read the linked canonical sources through existing authorized session connectors as that workflow requires; report unavailable routes separately.
 - Write commits, PR text, reviews, comments and docs as plain, specific, human-quality prose: no AI slop such as filler, hype, restated summaries or decorative emoji. Attribution trailers and tool footers are tolerated here, overriding the shared rule, and nothing checks for them. Commit as the account owner; name branches by purpose.
 
+## Multi-robot households
+
+Treat homes with more than one Matic as a supported configuration for every
+candidate. Run the multi-robot browser checks in required Browser UI, including
+for changes developed against a single robot. Extend the tests when adding a map
+layer, control, service, plan or stored preference that belongs to one robot.
+Use Home Assistant config entry IDs for ownership: robot, room and floor names
+need not be unique. A switch or disconnect must never send a command to another
+robot or display its map data.
+
+Follow the [multi-robot acceptance matrix](docs/qualification-map-experience.md#multi-robot-compatibility)
+for the selector, entry switching, delayed data and unavailable devices. Report
+simulated multi-robot checks separately from installed or physical evidence;
+one connected robot cannot qualify a physical multi-robot household.
+
 ## OEM app and protocol research
 
 Learn from the installed Matic OEM app on the Samsung tablet or an equivalent

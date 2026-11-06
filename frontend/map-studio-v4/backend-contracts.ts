@@ -115,6 +115,18 @@ export interface SceneComparisonCoverage {
   readonly diffEligible: boolean;
 }
 
+export interface SceneFloorSupport {
+  readonly version: 1;
+  readonly status: "verified";
+  readonly encoding: "bitset-little-v1";
+  readonly originCells: readonly [number, number];
+  readonly metersPerCell: number;
+  readonly spanCells: readonly [number, number];
+  readonly occupiedCells: number;
+  readonly maskSha256: string;
+  readonly mask: Uint8Array;
+}
+
 export interface SceneMetadata {
   readonly metersPerCell: number;
   readonly origin: readonly [number, number];
@@ -122,6 +134,7 @@ export interface SceneMetadata {
   readonly sampleStep: number;
   readonly rooms: readonly SceneRoom[];
   readonly coverage?: SceneComparisonCoverage;
+  readonly floorSupport?: SceneFloorSupport;
 }
 
 /** Bounded contiguous point ranges grouped by their 32-cell source tile. */

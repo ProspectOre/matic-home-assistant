@@ -8,6 +8,7 @@ import {
   SCENE_POINT_STRIDE,
   SCENE_DELTA_DIRTY_BLOCK_BYTES,
   type SceneDeltaHint,
+  type SceneFloorSupport,
   type SceneMetadata,
   type SceneModel,
   type SceneTileIndex,
@@ -82,6 +83,57 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
   const MAX_POINTS = limits.sceneMaxPoints;
   const MAX_BYTES = limits.sceneMaxBytes;
   const fail = (): never => { throw new Error("invalid-scene"); };
+  const parseFloorSupport = (
+    candidate: unknown,
+    origin: readonly [number, number],
+    span: readonly [number, number],
+    metersPerCell: number,
+  ): SceneFloorSupport | undefined => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
+    const value = candidate as Record<string, unknown>;
+    const dimensions = value.span_cells;
+    const maskOrigin = value.origin_cells;
+    if (value.version !== 1 || value.status !== "verified" || value.encoding !== "bitset-little-v1"
+      || value.meters_per_cell !== metersPerCell || !Array.isArray(dimensions) || dimensions.length !== 2
+      || !dimensions.every((part, index) => part === span[index])
+      || !Array.isArray(maskOrigin) || maskOrigin.length !== 2
+      || !maskOrigin.every((part, index) => part === origin[index])
+      || !Number.isInteger(value.occupied_cells) || (value.occupied_cells as number) < 0
+      || (value.occupied_cells as number) > span[0] * span[1]
+      || typeof value.mask_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(value.mask_sha256)
+      || typeof value.mask_base64 !== "string" || value.mask_base64.length > 700_000) return undefined;
+    const total = span[0] * span[1];
+    if (!Number.isSafeInteger(total) || total < 1 || total > 4 * 1024 * 1024) return undefined;
+    try {
+      const binary = atob(value.mask_base64);
+      if (binary.length !== Math.ceil(total / 8)) return undefined;
+      const mask = new Uint8Array(binary.length);
+      let count = 0;
+      for (let index = 0; index < binary.length; index += 1) {
+        const byte = binary.charCodeAt(index);
+        mask[index] = byte;
+        let remaining = byte;
+        while (remaining) {
+          count += remaining & 1;
+          remaining >>>= 1;
+        }
+      }
+      if (count !== value.occupied_cells) return undefined;
+      return {
+        version: 1,
+        status: "verified",
+        encoding: "bitset-little-v1",
+        originCells: origin,
+        metersPerCell,
+        spanCells: span,
+        occupiedCells: count,
+        maskSha256: value.mask_sha256,
+        mask,
+      };
+    } catch {
+      return undefined;
+    }
+  };
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < HEADER || buffer.byteLength > MAX_BYTES) fail();
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer, 0, 8);
@@ -165,6 +217,7 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
   const spanValues = span as number[];
   const sceneOrigin = [originValues[0] as number, originValues[1] as number] as const;
   const sceneSpan = [spanValues[0] as number, spanValues[1] as number] as const;
+  const floorSupport = parseFloorSupport(payload.floor_support, sceneOrigin, sceneSpan, meters as number);
   const tileIndex = buildTileIndex(buffer, pointOffset, floorCount, total, sceneSpan);
   return {
     buffer,
@@ -178,6 +231,7 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
       span: sceneSpan,
       sampleStep,
       rooms,
+      ...(floorSupport ? { floorSupport } : {}),
     },
     ...(tileIndex ? { tileIndex } : {}),
   };

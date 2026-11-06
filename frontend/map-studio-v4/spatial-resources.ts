@@ -651,6 +651,12 @@ export class SpatialResources {
     else this.#optionalLayers?.stop();
   }
 
+  async toggleFloorType(item: "carpet" | "vent"): Promise<void> {
+    this.#store.dispatch({ type: "toggle-floor-type", item });
+    if (this.#store.value.floorTypes) await this.#startOptionalLayer("floor");
+    else this.#optionalLayers?.stop();
+  }
+
   #startOptionalLayers(): void {
     if (this.#store.value.wifiSignal) void this.#startOptionalLayer("wifi");
     if (this.#store.value.floorTypes) void this.#startOptionalLayer("floor");

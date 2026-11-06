@@ -2,51 +2,19 @@ import { html, nothing, type ReactiveControllerHost } from "lit";
 import type { WorkspaceIntent, WorkspaceState } from "./contracts";
 import { icon, iconDone } from "./icons";
 import { MenuController } from "./menu-controller";
-import { canFollowRobot, topView } from "./state";
-import { switchStyles } from "./switch-styles";
 import { MapZoom } from "./map-zoom";
-import { wifiSampleBounds, wifiScaleBounds } from "./wifi-scale";
-
-// The row's second line explains an empty or failed layer and reads the colours.
-const wifiNote = (layer: WorkspaceState["wifiSignal"], t: MapOptionsContext["t"]) => {
-  if (!layer || layer.status === "loading") return nothing;
-  const note = layer.status === "failed"
-    ? t("v4_wifi_signal_failed", "Couldn't load the survey")
-    : layer.cells.length
-      ? t("v4_wifi_samples_note", "Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured.")
-      : layer.surveying
-        ? t("v4_wifi_signal_waiting", "No samples yet · they arrive during cleaning")
-        : t("v4_wifi_signal_off", "Turn on Wi-Fi survey in the robot's settings");
-  return html`<small class="menu-note">${note}</small>`;
-};
-
-const floorTypesNote = (layer: WorkspaceState["floorTypes"], t: MapOptionsContext["t"]) => {
-  if (!layer || layer.status === "loading") return nothing;
-  const note = layer.status === "failed"
-    ? t("v4_floor_types_failed", "Couldn't load carpet and vents")
-    : layer.carpet.length || layer.vent.length
-      ? t("v4_floor_types_legend", "Brown is carpet, blue is a vent")
-      : t("v4_floor_types_empty", "None mapped yet · the robot finds them while cleaning");
-  return html`<small class="menu-note">${note}</small>`;
-};
 
 type Host = ReactiveControllerHost & HTMLElement & { readonly renderRoot: ParentNode };
 
 export type MapOptionsContext = {
   state: WorkspaceState;
-  narrow: boolean;
   t: (key: string, fallback: string) => string;
   intent: (intent: WorkspaceIntent) => void;
   diagnostics: () => void;
+  navigation: (() => void) | undefined;
 };
 
-/**
- * The ⋮ Map options menu (home-rooms.md §5 Display; design-system.md §5
- * Menus): the phone's Map display rows, the map detail choice and the
- * diagnostics action. The shell loads it on the first press, since the menu is off the
- * startup path. A display or detail row keeps the menu open so
- * the change shows on the map behind it; an action row closes it.
- */
+/** Advanced map detail, numeric zoom and diagnostics. */
 export class MapOptions {
   readonly menu: MenuController;
   readonly #zoom: MapZoom;
@@ -65,22 +33,14 @@ export class MapOptions {
     this.menu.toggle();
   }
 
-  render({ state, narrow, t, intent, diagnostics }: MapOptionsContext) {
-    const followReady = canFollowRobot(state, "follow");
-    const rideReady = canFollowRobot(state, "ride");
+  render({ state, t, intent, diagnostics, navigation }: MapOptionsContext) {
     const radio = (checked: boolean, label: string, select: () => void) => html`
       <button class="ms-row ms-row--menu" type="button" role="menuitemradio" aria-checked=${String(checked)} data-selected=${checked ? "true" : nothing} tabindex="-1" @click=${select}><span>${label}</span>${checked ? icon(iconDone) : nothing}</button>
     `;
     const detail = (quality: WorkspaceState["quality"], label: string) =>
       radio(state.quality === quality, label, () => intent({ type: "set-quality", quality }));
-    const wifi = state.wifiSignal;
-    const wifiBounds = wifi?.status === "ready" && wifi.cells.length
-      ? wifiScaleBounds(wifi.cells, state.wifiScale) : null;
-    const sampledBounds = wifiBounds && wifi ? wifiSampleBounds(wifi.cells) : null;
-    const dbm = (value: number): string => `${Math.round(value * 10) / 10} dBm`;
     return html`
       <style>
-        ${switchStyles.cssText}
     .overflow-menu {
       position: absolute;
       z-index: 18;
@@ -95,114 +55,17 @@ export class MapOptions {
       padding: var(--ms-space-1);
     }
     .overflow-menu .ms-row { justify-content: flex-start; }
-    .overflow-menu[data-wifi-scale] { inline-size: min(19rem, calc(100vw - 2rem)); }
-    .overflow-menu [role="menuitemcheckbox"] { justify-content: space-between; gap: var(--ms-space-3); }
-    .overflow-menu [role="group"] { display: grid; gap: var(--ms-space-1); }
-    .overflow-menu [role="group"] + * { border-block-start: 1px solid var(--ms-line); padding-block-start: var(--ms-space-1); }
-    .overflow-menu :is([data-wifi-signal], [data-floor-types], [data-robot-trail]) > span:first-child { display: grid; text-align: start; }
-    .menu-note { color: var(--ms-text-quiet); font-size: var(--ms-t-sm); }
     .menu-heading { margin: 0; padding: var(--ms-space-2) var(--ms-space-3) var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
-    .wifi-scale-legend { display: grid; gap: var(--ms-space-1); padding: var(--ms-space-1) var(--ms-space-3); }
-    .wifi-scale-ramp { block-size: .5rem; border-radius: 1rem; background: linear-gradient(to right, hsl(0 75% 45%), hsl(60 75% 45%), hsl(120 75% 45%)); }
-    .wifi-scale-labels { display: flex; justify-content: space-between; gap: var(--ms-space-2); }
-
+    @container (max-width: 46rem) {
+      .toolbar-actions .overflow-wrap { position: static; }
+      .toolbar-actions .overflow-menu {
+        inset-block-start: calc(var(--ms-safe-top) + 44px);
+        inset-inline-end: 6px;
+        max-inline-size: calc(100% - 12px);
+      }
+    }
       </style>
-      ${this.#zoom.open ? this.#zoom.render(t) : html`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" data-wifi-scale=${wifiBounds ? "" : nothing} role="menu" tabindex="0" aria-label=${t("v4_map_options", "Map options")}>
-        ${narrow ? html`
-          <div role="group" aria-labelledby="menu-display">
-            <p class="menu-heading" id="menu-display" role="presentation">${t("v4_map_display", "Map display")}</p>
-            ${topView(state) === "top" ? html`
-              ${radio(state.appearance === "photo", t("map_style_photo", "Photo"), () => intent({ type: "set-appearance", appearance: "photo" }))}
-              ${radio(state.appearance === "rooms", t("v4_room_colours", "Room colors"), () => intent({ type: "set-appearance", appearance: "rooms" }))}
-            ` : nothing}
-            <button
-              class="ms-row ms-row--menu"
-              type="button"
-              role="menuitemcheckbox"
-              aria-checked=${String(state.labelsVisible)}
-              tabindex="-1"
-              @click=${() => intent({ type: "toggle-labels" })}
-            ><span>${t("v4_room_names", "Room names")}</span><span class="ms-switch" aria-checked=${String(state.labelsVisible)} aria-hidden="true"></span></button>
-          </div>
-        ` : nothing}
-        <p class="menu-heading" role="presentation">${t("v4_map_layers_button", "Layers")}</p>
-        ${state.dataMode === "live" ? html`<button
-          class="ms-row ms-row--menu"
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked=${String(state.trail?.id === "live")}
-          data-robot-trail
-          tabindex="-1"
-          @click=${() => intent({ type: "show-trail", trail: state.trail?.id === "live" ? null : "live" })}
-        ><span>${t("v4_robot_trail", "Robot trail")}${state.trail?.id === "live" ? html`<small class="menu-note">${t("v4_robot_trail_hint", "The sampled path can have gaps.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
-        ${state.resources.entry?.wifiHeatmapUrl ? html`
-          <button
-            class="ms-row ms-row--menu"
-            type="button"
-            role="menuitemcheckbox"
-            aria-checked=${String(Boolean(state.wifiSignal))}
-            tabindex="-1"
-            data-wifi-signal
-            @click=${() => intent({ type: "toggle-wifi-signal" })}
-          ><span>${t("v4_wifi_signal", "Wi-Fi signal")}${wifiNote(state.wifiSignal, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.wifiSignal))} aria-hidden="true"></span></button>
-        ` : nothing}
-        ${wifiBounds ? html`
-          <div role="group" aria-labelledby="menu-wifi-scale">
-            <p class="menu-heading" id="menu-wifi-scale" role="presentation">${t("v4_wifi_scale_heading", "Wi-Fi colors")}</p>
-            ${radio(state.wifiScale === "absolute", t("v4_wifi_scale_absolute", "Signal strength"), () => intent({ type: "set-wifi-scale", scale: "absolute" }))}
-            ${radio(state.wifiScale === "relative", t("v4_wifi_scale_relative", "Compare sampled spots"), () => intent({ type: "set-wifi-scale", scale: "relative" }))}
-            <div class="wifi-scale-legend">
-              <small class="menu-note">${state.wifiScale === "relative"
-                ? t("v4_wifi_relative_note", "Colors compare sampled spots, not absolute quality.")
-                : t("v4_wifi_absolute_note", "Colors show signal strength.")}</small>
-              ${sampledBounds ? html`<small class="menu-note">${t("v4_wifi_sampled_range", "Sampled range")}: ${dbm(sampledBounds.min)} – ${dbm(sampledBounds.max)}</small>` : nothing}
-              <span class="wifi-scale-ramp" role="img" aria-label=${`${t("v4_wifi_scale_legend", "Color scale")}: ${dbm(wifiBounds.min)} – ${dbm(wifiBounds.max)}`}></span>
-              <small class="menu-note wifi-scale-labels"><span>${dbm(wifiBounds.min)}</span><span>${dbm(wifiBounds.max)}</span></small>
-            </div>
-          </div>
-        ` : nothing}
-        ${state.resources.entry?.floorTypesUrl ? html`
-          <button
-            class="ms-row ms-row--menu"
-            type="button"
-            role="menuitemcheckbox"
-            aria-checked=${String(Boolean(state.floorTypes))}
-            tabindex="-1"
-            data-floor-types
-            @click=${() => intent({ type: "toggle-floor-types" })}
-          ><span>${t("v4_floor_types", "Carpet and vents")}${floorTypesNote(state.floorTypes, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.floorTypes))} aria-hidden="true"></span></button>
-        ` : nothing}
-        ${state.resources.entry?.coverageUrl ? html`
-          <button class="ms-row ms-row--menu" type="button" role="menuitemcheckbox"
-            aria-checked=${String(Boolean(state.coverageModes & 1))} tabindex="-1"
-            data-vacuum-coverage @click=${() => intent({ type: "toggle-cleaning-coverage", mode: "vacuum" })}
-          ><span>${t("v4_vacuum_coverage", "Vacuum coverage")}</span><span class="ms-switch" aria-checked=${String(Boolean(state.coverageModes & 1))} aria-hidden="true"></span></button>
-          <button class="ms-row ms-row--menu" type="button" role="menuitemcheckbox"
-            aria-checked=${String(Boolean(state.coverageModes & 2))} tabindex="-1"
-            data-mop-coverage @click=${() => intent({ type: "toggle-cleaning-coverage", mode: "mop" })}
-          ><span>${t("v4_mop_coverage", "Mop coverage")}</span><span class="ms-switch" aria-checked=${String(Boolean(state.coverageModes & 2))} aria-hidden="true"></span></button>
-          ${state.liveCoverage?.ownershipUnverified ? html`<small class="menu-note">${t("v4_coverage_unverified", "Live coverage is hidden until tracking can identify this clean.")}</small>`
-            : state.liveCoverage?.coverageBasis === "observed_changes" ? html`<small class="menu-note">${t("v4_coverage_observed_changes", "Partial coverage. Showing changes observed since live tracking began.")}</small>`
-            : state.liveCoverage?.truncated ? html`<small class="menu-note">${t("v4_coverage_partial", "Coverage may be incomplete.")}</small>` : nothing}
-        ` : nothing}
-        ${state.dataMode === "live" ? html`
-          <button
-            class="ms-row ms-row--menu"
-            type="button"
-            role="menuitemcheckbox"
-            aria-checked=${String(state.followMode === "follow")}
-            tabindex="-1"
-            data-follow-robot
-            aria-disabled=${String(!followReady && state.followMode !== "follow")}
-            @click=${() => intent({ type: "set-follow-mode", mode: state.followMode === "follow" ? "off" : "follow" })}
-          ><span>${t("v4_follow_robot", "Follow the robot")}${state.followMode === "follow" && !followReady ? html`<small class="menu-note">${t("v4_tracking_waiting", "Waiting for a current robot position.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.followMode === "follow")} aria-hidden="true"></span></button>
-          <button class="ms-row ms-row--menu" type="button" role="menuitemcheckbox"
-            aria-checked=${String(state.followMode === "ride")} tabindex="-1" data-ride-along
-            aria-disabled=${String(!rideReady && state.followMode !== "ride")}
-            @click=${() => intent({ type: "set-follow-mode", mode: state.followMode === "ride" ? "off" : "ride" })}
-          ><span>${t("v4_ride_along", "Ride along in 3D")}${state.followMode === "ride" && !rideReady ? html`<small class="menu-note">${t("v4_tracking_waiting", "Waiting for a current robot position.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.followMode === "ride")} aria-hidden="true"></span></button>
-          ${!followReady || !rideReady ? html`<small class="menu-note">${t("v4_follow_needs_live_pose", "Following needs a live position; Ride along also needs the robot's heading.")}</small>` : nothing}
-        ` : nothing}
+      ${this.#zoom.open ? this.#zoom.render(t) : html`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" role="menu" tabindex="0" aria-label=${t("v4_map_options", "Map options")}>
         <div role="group" aria-labelledby="menu-detail">
           <p class="menu-heading" id="menu-detail" role="presentation">${t("map_quality_label", "Map detail")}</p>
           ${detail("auto", t("map_quality_auto", "Auto detail"))}
@@ -211,6 +74,8 @@ export class MapOptions {
           ${detail("maximum", t("map_quality_maximum", "Maximum"))}
         </div>
         ${this.#zoom.available() ? html`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${() => this.#zoom.show()}>${t("v4_map_zoom", "Map zoom")}</button>` : nothing}
+        ${navigation ? html`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1"
+          @click=${() => { this.menu.close(false); navigation(); }}>${t("v4_open_navigation", "Open Home Assistant sidebar")}</button>` : nothing}
         <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${() => { this.menu.close(false); diagnostics(); }}>${t("v4_map_diagnostics", "Map diagnostics")}</button>
       </div>`}
     `;

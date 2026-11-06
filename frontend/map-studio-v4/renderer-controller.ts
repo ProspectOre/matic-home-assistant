@@ -1667,7 +1667,7 @@ export class RendererController {
     const trailVisible = Boolean(trail && state.dataMode === "live"
       && (trail.id === "live" || state.workflow === "runs")
       && trail.mapSessionKey === state.resources.entry?.mapSessionKey);
-    if (state.seen || trailVisible || (currentFloor && (state.wifiSignal || state.floorTypes || state.liveCoverage))) {
+    if (trailVisible || (currentFloor && (state.wifiSignal || state.floorTypes || state.liveCoverage))) {
       this.#loadRendererLayers();
     }
     if (state.optionalUiReady && state.map.available && state.labelsVisible && scene.metadata.rooms.length > 0) {
@@ -1773,10 +1773,6 @@ export class RendererController {
       (x, y, height, clip) => this.#projectMeters(x, y, height, clip),
     );
     const pose = state.resources.pose.value;
-    if (state.seen) {
-      this.#rendererLayers?.drawLastSeenDuringRun(context, state, palette,
-        (x, y, height, clip) => this.#projectMeters(x, y, height, clip));
-    }
     if (canShowExactPose(state) && pose?.position) {
       // Pose coordinates share the floor-plan's meter space. Scene geometry is
       // stored in origin-relative cells, so it must cross the same conversion

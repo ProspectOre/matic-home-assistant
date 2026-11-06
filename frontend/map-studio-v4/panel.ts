@@ -277,6 +277,10 @@ export class MaticMapPanelV4 extends LitElement {
       void this.#effects?.toggleFloorTypes();
       return;
     }
+    if (intent.type === "toggle-floor-type") {
+      void this.#effects?.toggleFloorType(intent.item);
+      return;
+    }
     if (intent.type === "set-history") {
       void this.#effects?.selectHistory(intent.historyId);
       return;

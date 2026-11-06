@@ -47,7 +47,7 @@ import {
   iconClose,
   iconDiagnostics,
   iconHistory,
-  iconMenu,
+  iconHelp,
   iconPlan,
   iconNewArea,
   iconNoticeError,
@@ -163,10 +163,7 @@ export class MaticMapShellV4 extends LitElement {
 
   readonly #t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
     translate(this.localize, key, fallback, placeholders, this.dates);
-  // The help popover (map-help.ts, in the views chunk) is the shell's: it
-  // opens from the rail "?" and closes from Close, Escape (after the menu,
-  // shell.md §5) or a change of workflow or Full map. The canvas renders it
-  // beside its "?".
+  // Keep the toolbar launcher for focus return after Escape or Close.
   protected _helpOpen = false;
   #helpLauncher: HTMLElement | null = null;
   #helpReturnsFull = false;
@@ -211,6 +208,12 @@ export class MaticMapShellV4 extends LitElement {
   readonly #options: LazyChunk<MapOptions> = new LazyChunk(this, async () => {
     const { MapOptions } = await import("./map-options");
     return new MapOptions(this);
+  });
+  readonly #layerToolbar = new LazyChunk(this, async () => {
+    const controls = await import("./map-layer-toolbar");
+    const root = this.renderRoot as ShadowRoot;
+    adoptStyles(root, [...root.adoptedStyleSheets, controls.layerToolbarStyles]);
+    return controls;
   });
   #optionsPending = false;
   // The workflow a Try again reload was pressed in (lazy-chunk.ts).
@@ -260,6 +263,7 @@ export class MaticMapShellV4 extends LitElement {
     if (!this.#workflowStyled) {
       this.#workflowStyled = true;
       adoptStyles(this.renderRoot as ShadowRoot, [...shellStyles, views.shellWorkflowStyles, views.formControls,
+        ...(this.#layerToolbar.value ? [this.#layerToolbar.value.layerToolbarStyles] : []),
         ...(this.#candidates.value ? [this.#candidates.value.roomCandidateStyles] : [])]);
     }
     return { ...views, ...actions };
@@ -486,7 +490,7 @@ export class MaticMapShellV4 extends LitElement {
         void this.updateComplete.then(() => {
           requestAnimationFrame(() => {
             const target = this.renderRoot.querySelector<HTMLElement>(".workspace-toggle")
-              ?? this.renderRoot.querySelector<HTMLElement>(".nav--menu")
+              ?? this.renderRoot.querySelector<HTMLElement>(".overflow")
               ?? (launcher?.isConnected ? launcher : null);
             target?.focus({ preventScroll: true });
           });
@@ -806,13 +810,6 @@ export class MaticMapShellV4 extends LitElement {
 
   // ---- App bar ------------------------------------------------------------
 
-  #toggleNavigation(): void {
-    this.dispatchEvent(new CustomEvent("hass-toggle-menu", {
-      bubbles: true,
-      composed: true,
-    }));
-  }
-
   #toggleWorkspace(event: Event): void {
     this.#workspaceLauncher = event.currentTarget as HTMLElement;
     if (this.state.fullMap) {
@@ -850,7 +847,7 @@ export class MaticMapShellV4 extends LitElement {
   // The rail "?" toggles; Escape in the canvas while help shows closes.
   readonly #mapHelp = (event: Event): void => {
     if (this._helpOpen) this.#closeHelp(true);
-    else this.#openHelp(event.composedPath()[0] as HTMLElement);
+    else this.#openHelp(event.currentTarget as HTMLElement);
   };
 
   // Help owns its small lazy chunk, so opening it never loads workflow views.
@@ -1055,40 +1052,6 @@ export class MaticMapShellV4 extends LitElement {
         <span class="ms-row__body"><strong>${label}</strong>${detail ? html`<small>${detail}</small>` : nothing}</span>
         <span class="ms-row__trail">${icon(iconChevronRight, { directional: true })}</span>
       </button>
-    `;
-  }
-
-  #floorSwitcher(state: WorkspaceState) {
-    const historyFloors = state.resources.history.value?.floors || [];
-    const floorChoices = historyFloors.length
-      ? historyFloors.map((floor, index) => ({
-        id: floor.active ? "current" : floor.id,
-        label: `${floor.label || (floor.active
-          ? this.#t("v4_current_floor", "Current floor")
-          : this.#t("v4_saved_floor", "Saved floor {number}", { number: floor.ordinal ?? index + 1 }))}${
-          !floor.active && floor.snapshots.length === 0
-            ? ` · ${this.#t("v4_floor_not_captured", "No saved map for this floor yet")}`
-            : ""
-        }`,
-        disabled: !floor.active && floor.snapshots.length === 0,
-      }))
-      : [{ id: state.selection.floorId, label: state.floor.displayName, disabled: false }];
-    return html`
-      <select
-        class="ms-select context-switcher floor-switcher"
-        slot="floor"
-        data-map-control
-        name="map-floor"
-        aria-label=${this.#t("v4_choose_floor", "Choose floor")}
-        ?disabled=${floorChoices.length <= 1}
-        .value=${state.selection.floorId}
-        @change=${(event: Event) => this.#intent({
-          type: "set-floor",
-          floorId: (event.currentTarget as HTMLSelectElement).value,
-        })}
-      >${floorChoices.map((floor) => html`
-        <option value=${floor.id} ?selected=${floor.id === state.selection.floorId} ?disabled=${floor.disabled}>${floor.label}</option>
-      `)}</select>
     `;
   }
 
@@ -1400,6 +1363,9 @@ export class MaticMapShellV4 extends LitElement {
     const state: WorkspaceState = this.#pinRun ? { ...this.state, workflow: "none" } : this.state;
     const narrow = this.#sheet.narrow ?? state.narrowHint;
     const compact = narrow && this.#sheet.compact;
+    const mapReady = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
+    if (mapReady || state.robots.length > 1 || isSelectedRobotUnavailable(state)) this.#layerToolbar.request();
+    const showView = mapReady && !state.comparisonActive;
     const options = this.#options.value;
     const status = statusCopy(state, this.localize, this.dates);
     const shortSmartStop = this.#homeSmartStopSummary(state);
@@ -1484,19 +1450,15 @@ export class MaticMapShellV4 extends LitElement {
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToMap}>${this.#t("v4_skip_to_map", "Skip to the map")}</button>
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToWorkspace}>${this.#t("v4_skip_to_workspace", "Skip to the panel")}</button>
         <div class="app" ?inert=${Boolean(dialog)}>
-          <header class="app-bar">
-            <button
-              class="nav nav--menu ms-btn ms-btn--icon"
-              type="button"
-              aria-label=${this.#t("v4_open_navigation", "Open Home Assistant sidebar")}
-              title=${this.#t("v4_open_navigation", "Open Home Assistant sidebar")}
-              @click=${this.#toggleNavigation}
-            >${icon(iconMenu)}</button>
+          <header class="app-bar" data-map-toolbar>
+            <div class="toolbar-row">
+            <div class="toolbar-context">
             <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
             ${state.robots.length > 1 || selectedRobotUnavailable ? html`
               <select
                 class="ms-select context-switcher robot-switcher"
                 name="matic-robot"
+                title=${selectedRobotUnavailable ? this.#t("v4_selected_robot_unavailable", "Selected robot unavailable") : state.robots.find((robot) => robot.entryId === state.selection.entryId)?.label}
                 aria-label=${this.#t("v4_choose_robot", "Choose robot")}
                 .value=${state.selection.entryId || ""}
                 @change=${(event: Event) => this.#intent({
@@ -1510,7 +1472,10 @@ export class MaticMapShellV4 extends LitElement {
               `)}</select>
             ` : nothing}
 
-            <span class="spacer"></span>
+            ${mapReady ? this.#layerToolbar.value?.renderFloorSwitcher(state, this.#intent, this.#t) : nothing}
+            </div>
+            ${showView ? this.#layerToolbar.value?.renderCameraToolbar(state, this.#intent, this.#t) : nothing}
+            <div class="toolbar-actions">
             ${canToggleWorkspace ? html`
               <button
                 class="workspace-toggle ms-btn ms-btn--icon"
@@ -1525,20 +1490,26 @@ export class MaticMapShellV4 extends LitElement {
               <button
                 class="overflow ms-btn"
                 type="button"
-                aria-label=${this.#t("v4_map_options", "Map options")}
                 aria-haspopup=${options?.popupRole ?? "menu"}
                 aria-expanded=${String(options?.menu.open ?? false)}
                 aria-controls="map-options"
                 @click=${this.#toggleOptions}
-              >${this.#t("v4_map_layers_button", "Layers")}</button>
+              >${this.#t("v4_map_toolbar_tools", "Tools")}</button>
               ${options?.menu.open ? options.render({
                 state,
-                narrow,
                 t: this.#t,
                 intent: this.#intent,
                 diagnostics: this.#openDiagnostics,
+                navigation: narrow ? () => this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true })) : undefined,
               }) : nothing}
             </div>
+            ${mapReady ? html`<button class="help ms-btn ms-btn--icon" type="button"
+              aria-label=${this.#t("v4_how_to_move", "How to move the map")} title=${this.#t("v4_how_to_move", "How to move the map")}
+              aria-expanded=${String(this._helpOpen)} aria-controls="navigation-help" @click=${this.#mapHelp}>${icon(iconHelp)}</button>` : nothing}
+            </div></div>
+            ${mapReady ? this.#layerToolbar.value?.renderLayerToolbar(state, this.#intent, this.#t)
+              ?? chunkStatus(this.#layerToolbar.status, this.localize, this.#retry) : nothing}
+            ${help}
           </header>
 
           <main class=${`workspace ${state.fullMap ? "full-map" : ""} ${state.comparisonActive ? "comparison" : ""}`} style=${sheetOffset}>
@@ -1547,7 +1518,6 @@ export class MaticMapShellV4 extends LitElement {
                 class="map-canvas"
                 style=${sheetOffset}
                 @matic-workspace-intent=${this.#mapIntent}
-                @matic-map-help=${this.#mapHelp}
                 .state=${state}
                 .scheme=${this.scheme}
                 .localize=${this.localize}
@@ -1559,9 +1529,8 @@ export class MaticMapShellV4 extends LitElement {
                 .retry=${this.#retry}
                 .narrow=${narrow}
                 ?data-short=${compact && !state.fullMap && this.#sheet.detent === "full"}
-                .help=${help}
                 .recipes=${state.workflow === "draw" ? this.#views.value?.drawRecipes(this.#t) ?? null : null}
-              >${this.#floorSwitcher(state)}
+              >
                 ${narrow && !state.fullMap && this.#sheet.detent === "full" ? html`
                   <button
                     class="sheet-scrim"

@@ -719,11 +719,15 @@ async def test_history_bounds_items_and_total_bytes(hass) -> None:
     assert [snapshot.revision for snapshot in store.catalog()] == [1, 2]
 
     latest_size = len(store.catalog()[-1].compressed)
+    candidate_size = len(zlib.compress(_scene(page_x=4), level=6))
+    # This cap admits either snapshot alone but is one byte short of retaining
+    # both the current newest record and the incoming candidate.
+    total_byte_limit = latest_size + candidate_size - 1
     with (
         patch.object(
             history_format,
             "MAX_HISTORY_COMPRESSED_BYTES",
-            latest_size * 2,
+            total_byte_limit,
         ),
         patch(
             "custom_components.matic_robot.slam_history._reservation_bytes",

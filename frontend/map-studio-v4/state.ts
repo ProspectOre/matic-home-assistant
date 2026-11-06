@@ -96,6 +96,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   wifiSignal: null,
   wifiScale: "absolute",
   floorTypes: null,
+  floorTypeModes: 0,
   liveCoverage: null,
   coverageModes: 3,
   followMode: "off",
@@ -449,8 +450,25 @@ export const reduceWorkspace = (
     case "archive-access-denied":
     case "set-comparison-active":
       return state;
-    case "toggle-floor-types":
-      return { ...state, floorTypes: state.floorTypes ? null : { status: "loading", carpet: [], vent: [] } };
+    case "toggle-floor-types": {
+      const enabled = state.floorTypeModes === 3 ? 0 : 3;
+      return {
+        ...state,
+        floorTypeModes: enabled,
+        floorTypes: enabled === 0 ? null
+          : state.floorTypes ?? { status: "loading", carpet: [], vent: [] },
+      };
+    }
+    case "toggle-floor-type": {
+      const bit = intent.item === "carpet" ? 1 : 2;
+      const enabled = state.floorTypeModes ^ bit;
+      return {
+        ...state,
+        floorTypeModes: enabled,
+        floorTypes: enabled === 0 ? null
+          : state.floorTypes ?? { status: "loading", carpet: [], vent: [] },
+      };
+    }
     case "toggle-cleaning-coverage":
       return { ...state, coverageModes: state.coverageModes ^ (intent.mode === "vacuum" ? 1 : 2) };
     case "open-workflow":

@@ -27,6 +27,7 @@ MAX_HISTORY_ROOMS = 64
 MAX_NAME_LENGTH = 128
 
 TRAIL_STORAGE_VERSION = 1
+TRAIL_PATH_FORMAT_VERSION = 2
 TRAIL_SAVE_DELAY_SECONDS = 30
 MAX_TRAILS = 20
 MAX_LIVE_TRAIL_POINTS = 4_000
@@ -34,6 +35,10 @@ MAX_SAVED_TRAIL_POINTS = 600
 MAX_TRAIL_SEGMENTS = 8
 MIN_SAVED_TRAIL_POINTS = 3
 TRAIL_STEP_METERS = 0.15
+TRAIL_GAP_SECONDS = 8.0
+TRAIL_MAX_STEP_METERS = 1.5
+TRAIL_SIMPLIFY_METERS = 0.04
+TRAIL_LIVE_COMPACT_AT = MAX_LIVE_TRAIL_POINTS + 1
 MAX_TRAIL_COORDINATE = 10_000.0
 LIVE_TRAIL_ID = "live"
 _OPEN_END = "9999-12-31T23:59:59+00:00"
@@ -440,7 +445,7 @@ class _LiveTrail:
     run_id: str | None
     map_key: str
     started_at: str
-    points: list[TrailPoint] = field(default_factory=list)
+    segments: list[list[TrailPoint]] = field(default_factory=list)
     last_observed_at: float | None = None
 
 
@@ -467,24 +472,46 @@ class RunTrails:
         """Load saved trails, dropping any that fail validation."""
         stored = await self._store.async_load() or {}
         trails = stored.get("trails")
-        self._trails = [
-            trail
-            for trail in (trails if isinstance(trails, list) else [])[-MAX_TRAILS:]
-            if _valid_trail(trail)
-        ]
+        self._trails = []
+        migrated = False
+        for trail in (trails if isinstance(trails, list) else [])[-MAX_TRAILS:]:
+            if not _valid_trail(trail):
+                continue
+            if trail.get("path_format") == TRAIL_PATH_FORMAT_VERSION:
+                self._trails.append(trail)
+                continue
+            normalized = {
+                **trail,
+                "segments": _split_legacy_segments(trail["segments"]),
+                "path_format": TRAIL_PATH_FORMAT_VERSION,
+            }
+            self._trails.append(normalized)
+            migrated = True
         live = stored.get("live")
         if (
             isinstance(live, dict)
             and _valid_trail(live)
             and isinstance(live.get("key"), str)
         ):
+            live_segments = live["segments"]
+            if live.get("path_format") != TRAIL_PATH_FORMAT_VERSION:
+                live_segments = _split_legacy_segments(live_segments)
+                migrated = True
             self._live = _LiveTrail(
                 live["key"],
                 live["run_id"],
                 live["map_key"],
                 live["started_at"],
-                [tuple(point) for point in live["segments"][0]],
+                [[tuple(point) for point in segment] for segment in live_segments],
+                live.get("last_observed_at")
+                if isinstance(live.get("last_observed_at"), int | float)
+                and not isinstance(live.get("last_observed_at"), bool)
+                and math.isfinite(live["last_observed_at"])
+                and live["last_observed_at"] > 0
+                else None,
             )
+        if migrated:
+            self._schedule_save()
 
     async def async_shutdown(self) -> None:
         """Write any delayed save now and stop saving before the entry unloads."""
@@ -527,17 +554,38 @@ class RunTrails:
             return
         if self._live is None:
             self._live = _LiveTrail(key, run_id, map_key, dt_util.utcnow().isoformat())
+        live = self._live
+        previous_timestamp = live.last_observed_at
         if observed_at is not None:
-            previous = self._live.last_observed_at
-            if previous is not None and observed_at <= previous:
+            if previous_timestamp is not None and observed_at <= previous_timestamp:
                 return
-            self._live.last_observed_at = observed_at
-        points = self._live.points
+        points = live.segments[-1] if live.segments else []
+        if (
+            points
+            and observed_at is not None
+            and (
+                previous_timestamp is None
+                or observed_at - previous_timestamp > TRAIL_GAP_SECONDS
+            )
+        ):
+            points = []
+        if points and math.dist(points[-1], point) > TRAIL_MAX_STEP_METERS:
+            points = []
         if points and math.dist(points[-1], point) < TRAIL_STEP_METERS:
+            if observed_at is not None:
+                live.last_observed_at = observed_at
+                self._schedule_save()
             return
+        if not points:
+            live.segments.append([])
+            points = live.segments[-1]
+            live.segments = live.segments[-MAX_TRAIL_SEGMENTS:]
+            points = live.segments[-1]
+        if observed_at is not None:
+            live.last_observed_at = observed_at
         points.append((round(point[0], 2), round(point[1], 2)))
-        if len(points) > MAX_LIVE_TRAIL_POINTS:
-            self._live.points = [*points[:-1:2], points[-1]]
+        if sum(map(len, live.segments)) >= TRAIL_LIVE_COMPACT_AT:
+            live.segments = _thin_segments(live.segments, MAX_LIVE_TRAIL_POINTS)
         self._schedule_save()
 
     def live(self, map_key: str | None) -> list[list[TrailPoint]] | None:
@@ -545,7 +593,7 @@ class RunTrails:
         live = self._live
         if live is None or map_key is None or live.map_key != map_key:
             return None
-        return [list(live.points)]
+        return [segment.copy() for segment in live.segments if segment]
 
     def trail_id(
         self,
@@ -605,10 +653,10 @@ class RunTrails:
 
     def _finish(self, live: _LiveTrail) -> None:
         """Save a finished trail; one too short to show is dropped."""
-        if len(live.points) < MIN_SAVED_TRAIL_POINTS:
+        segments = [segment for segment in live.segments if segment]
+        if sum(map(len, segments)) < MIN_SAVED_TRAIL_POINTS:
             self._schedule_save()
             return
-        segment = _thin(live.points, MAX_SAVED_TRAIL_POINTS)
         ended_at = dt_util.utcnow().isoformat()
         existing = next(
             (
@@ -622,15 +670,13 @@ class RunTrails:
         )
         if existing is not None:
             self._trails.remove(existing)
-            segments = [*existing["segments"], segment][-MAX_TRAIL_SEGMENTS:]
-            budget = MAX_SAVED_TRAIL_POINTS // len(segments)
-            existing.update(
-                {
-                    "ended_at": ended_at,
-                    "segments": [_thin(item, budget) for item in segments],
-                }
-            )
-            trail = existing
+            segments = [*existing["segments"], *segments][-MAX_TRAIL_SEGMENTS:]
+            trail = {
+                **existing,
+                "ended_at": ended_at,
+                "segments": _thin_segments(segments, MAX_SAVED_TRAIL_POINTS),
+                "path_format": TRAIL_PATH_FORMAT_VERSION,
+            }
         else:
             trail = {
                 "id": uuid4().hex,
@@ -638,7 +684,8 @@ class RunTrails:
                 "map_key": live.map_key,
                 "started_at": live.started_at,
                 "ended_at": ended_at,
-                "segments": [segment],
+                "segments": _thin_segments(segments, MAX_SAVED_TRAIL_POINTS),
+                "path_format": TRAIL_PATH_FORMAT_VERSION,
             }
         self._trails = [*self._trails, trail][-MAX_TRAILS:]
         self._schedule_save()
@@ -660,7 +707,9 @@ class RunTrails:
                     "map_key": live.map_key,
                     "started_at": live.started_at,
                     "ended_at": live.started_at,
-                    "segments": [live.points],
+                    "segments": live.segments,
+                    "path_format": TRAIL_PATH_FORMAT_VERSION,
+                    "last_observed_at": live.last_observed_at,
                 }
                 if live is not None
                 else None
@@ -704,9 +753,96 @@ def _valid_trail(value: object) -> bool:
     )
 
 
+def _split_legacy_segments(
+    segments: Sequence[Sequence[TrailPoint]],
+) -> list[list[TrailPoint]]:
+    """Preserve the old renderer's visible gaps before marking paths current."""
+    split: list[list[TrailPoint]] = []
+    for segment in segments:
+        current: list[TrailPoint] = []
+        for point in segment:
+            item = (point[0], point[1])
+            if current and math.dist(current[-1], item) > 1.0:
+                split.append(current)
+                current = []
+            current.append(item)
+        if current:
+            split.append(current)
+    return split[-MAX_TRAIL_SEGMENTS:]
+
+
 def _thin(points: Sequence[TrailPoint], limit: int) -> list[TrailPoint]:
-    """Keep evenly spaced points, always including both ends."""
+    """Simplify a path by geometric error while retaining its important turns."""
     if len(points) <= limit:
         return list(points)
-    step = (len(points) - 1) / (limit - 1)
-    return [points[round(index * step)] for index in range(limit)]
+    minimum = TRAIL_SIMPLIFY_METERS
+    selected = _simplify(points, minimum)
+    if len(selected) <= limit:
+        return selected
+    maximum = minimum
+    while len(selected) > limit:
+        maximum *= 2
+        selected = _simplify(points, maximum)
+    for _ in range(16):
+        tolerance = (minimum + maximum) / 2
+        candidate = _simplify(points, tolerance)
+        if len(candidate) > limit:
+            minimum = tolerance
+        else:
+            maximum = tolerance
+            selected = candidate
+    return selected
+
+
+def _simplify(points: Sequence[TrailPoint], tolerance: float) -> list[TrailPoint]:
+    """Return path endpoints and recursively important turns at one tolerance."""
+    selected = {0, len(points) - 1}
+    stack = [(0, len(points) - 1)]
+    while stack:
+        start, end = stack.pop()
+        first, last = points[start], points[end]
+        dx, dy = last[0] - first[0], last[1] - first[1]
+        length = math.hypot(dx, dy)
+        maximum, furthest = -1.0, -1
+        for index in range(start + 1, end):
+            point = points[index]
+            distance = (
+                math.dist(first, point)
+                if length == 0
+                else abs(
+                    dy * point[0]
+                    - dx * point[1]
+                    + last[0] * first[1]
+                    - last[1] * first[0]
+                )
+                / length
+            )
+            if distance > maximum:
+                maximum, furthest = distance, index
+        if maximum > tolerance:
+            selected.add(furthest)
+            stack.extend(((start, furthest), (furthest, end)))
+    return [points[index] for index in sorted(selected)]
+
+
+def _thin_segments(
+    segments: Sequence[Sequence[TrailPoint]], limit: int
+) -> list[list[TrailPoint]]:
+    """Simplify each observed path within one bounded total point budget."""
+    paths = [list(segment) for segment in segments if segment]
+    if sum(map(len, paths)) <= limit:
+        return paths
+    paths = paths[-(limit // 2) :] if len(paths) * 2 > limit else paths
+    budgets = [2] * len(paths)
+    remaining = limit - sum(budgets)
+    interior_counts = [max(0, len(path) - 2) for path in paths]
+    total = sum(interior_counts)
+    for index, extra in enumerate(interior_counts):
+        if index == len(paths) - 1:
+            allocation = remaining
+        else:
+            allocation = round(remaining * extra / total) if total else 0
+        budgets[index] = min(len(paths[index]), budgets[index] + allocation)
+        remaining -= budgets[index] - 2
+    result = [_thin(path, budget) for path, budget in zip(paths, budgets, strict=True)]
+    return result

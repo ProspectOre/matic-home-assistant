@@ -727,6 +727,8 @@ export class EffectController {
 
   toggleFloorTypes(): Promise<void> { return this.#spatialResources.toggleFloorTypes(); }
 
+  toggleFloorType(item: "carpet" | "vent"): Promise<void> { return this.#spatialResources.toggleFloorType(item); }
+
   async refreshHistory(historyId?: string): Promise<void> {
     const state = this.#store.value;
     const entry = state.resources.entry;
