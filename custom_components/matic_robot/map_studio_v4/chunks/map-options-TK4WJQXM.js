@@ -1,4 +1,4 @@
-import{a as e,b as a}from"./chunk-EF2SFLEJ.js";import{a as t}from"./chunk-CEDW6BZF.js";import{a as s,b as i,c as o,d as l,g as n}from"./chunk-MOXJVYLN.js";import{a as r}from"./chunk-JAHDUSSE.js";import{I as m,q as c}from"./chunk-XV4TIR54.js";import{c as p,f as u,g as d}from"./chunk-6UI3L3W5.js";import{A as h,D as v,g as b}from"./chunk-CSAA7BLK.js";import"./chunk-KELXOEJL.js";import{a as g,b as f}from"./chunk-KZFC5TVY.js";import"./chunk-ROGIIRGT.js";var w=i(class extends o{constructor(e){if(super(e),e.type!==s.PROPERTY&&e.type!==s.ATTRIBUTE&&e.type!==s.BOOLEAN_ATTRIBUTE)throw Error("The `live` directive is not allowed on child or event bindings");if(!l(e))throw Error("`live` bindings can only contain a single expression")}render(e){return e}update(e,[a]){if(a===u||a===d)return a;let t=e.element,i=e.name;if(e.type===s.PROPERTY){if(a===t[i])return u}else if(e.type===s.BOOLEAN_ATTRIBUTE){if(!!a===t.hasAttribute(i))return u}else if(e.type===s.ATTRIBUTE&&t.getAttribute(i)===a+"")return u;return n(e),a}}),_=class{constructor(e,a){this.host=e,this.menu=a,this.open=!1,this.#e="100",this.#a=!1,this.#t=null,this.#s=0,this.#i=new ResizeObserver(()=>{cancelAnimationFrame(this.#s),this.#s=requestAnimationFrame(()=>{this.#s=0,this.host.requestUpdate()})}),e.addController(this)}#e;#a;#t;#s;#i;hostConnected(){this.#o()}hostUpdated(){this.#o()}hostDisconnected(){this.#l()}#l(){this.#i.disconnect(),cancelAnimationFrame(this.#s),this.#s=0,this.#t=null}#o(){let e=this.open&&this.menu.open?this.#n()?.renderRoot.querySelector(".scene-canvas")??null:null;e!==this.#t&&(this.#l(),this.#t=e,e&&this.#i.observe(e))}#n(){return this.host.renderRoot.querySelector(".map-canvas")}available(){let e=this.#n();return!!e&&e.state.map.available&&(h(e.state)||"history"===e.state.dataMode)&&null!=e.rendererDiagnostics()?.sceneRevision}#r(){let e=this.#n()?.rendererDiagnostics();return e?Math.round(e.fitDistance/e.cameraDistance*100):100}show(){this.available()&&(this.open=!0,this.#a=!1,this.host.requestUpdate(),this.host.updateComplete.then(()=>this.host.renderRoot.querySelector("#map-zoom-value")?.focus()))}#m(e){if(!this.available()||!Number.isInteger(e)||e<100||e>1e3)return;let a=this.#n(),t=a?.rendererDiagnostics();!t||!a||(a.zoomBy(e*t.cameraDistance/(100*t.fitDistance)),this.#a=!1,this.host.requestUpdate())}render(e){let a=this.#r();return this.#a||(this.#e=a>=100&&a<=1e3?String(a):""),p`
+import{a as e,b as a}from"./chunk-EF2SFLEJ.js";import{a as t}from"./chunk-CEDW6BZF.js";import{a as s,b as i,c as o,d as l,g as n}from"./chunk-MOXJVYLN.js";import{a as r}from"./chunk-JAHDUSSE.js";import{I as m,q as c}from"./chunk-XV4TIR54.js";import{c as p,f as u,g as d}from"./chunk-6UI3L3W5.js";import{A as h,D as v,g}from"./chunk-CTIKSF2S.js";import"./chunk-KELXOEJL.js";import{a as b,b as f}from"./chunk-UZTG52PU.js";import"./chunk-ROGIIRGT.js";var w=i(class extends o{constructor(e){if(super(e),e.type!==s.PROPERTY&&e.type!==s.ATTRIBUTE&&e.type!==s.BOOLEAN_ATTRIBUTE)throw Error("The `live` directive is not allowed on child or event bindings");if(!l(e))throw Error("`live` bindings can only contain a single expression")}render(e){return e}update(e,[a]){if(a===u||a===d)return a;let t=e.element,i=e.name;if(e.type===s.PROPERTY){if(a===t[i])return u}else if(e.type===s.BOOLEAN_ATTRIBUTE){if(!!a===t.hasAttribute(i))return u}else if(e.type===s.ATTRIBUTE&&t.getAttribute(i)===a+"")return u;return n(e),a}}),_=class{constructor(e,a){this.host=e,this.menu=a,this.open=!1,this.#e="100",this.#a=!1,this.#t=null,this.#s=0,this.#i=new ResizeObserver(()=>{cancelAnimationFrame(this.#s),this.#s=requestAnimationFrame(()=>{this.#s=0,this.host.requestUpdate()})}),e.addController(this)}#e;#a;#t;#s;#i;hostConnected(){this.#o()}hostUpdated(){this.#o()}hostDisconnected(){this.#l()}#l(){this.#i.disconnect(),cancelAnimationFrame(this.#s),this.#s=0,this.#t=null}#o(){let e=this.open&&this.menu.open?this.#n()?.renderRoot.querySelector(".scene-canvas")??null:null;e!==this.#t&&(this.#l(),this.#t=e,e&&this.#i.observe(e))}#n(){return this.host.renderRoot.querySelector(".map-canvas")}available(){let e=this.#n();return!!e&&e.state.map.available&&(h(e.state)||"history"===e.state.dataMode)&&null!=e.rendererDiagnostics()?.sceneRevision}#r(){let e=this.#n()?.rendererDiagnostics();return e?Math.round(e.fitDistance/e.cameraDistance*100):100}show(){this.available()&&(this.open=!0,this.#a=!1,this.host.requestUpdate(),this.host.updateComplete.then(()=>this.host.renderRoot.querySelector("#map-zoom-value")?.focus()))}#m(e){if(!this.available()||!Number.isInteger(e)||e<100||e>1e3)return;let a=this.#n(),t=a?.rendererDiagnostics();!t||!a||(a.zoomBy(e*t.cameraDistance/(100*t.fitDistance)),this.#a=!1,this.host.requestUpdate())}render(e){let a=this.#r();return this.#a||(this.#e=a>=100&&a<=1e3?String(a):""),p`
 <style>
 .map-zoom { display: grid; gap: var(--ms-space-3); padding: var(--ms-space-3); inline-size: min(20rem, calc(100vw - 2rem)); min-inline-size: 0; box-sizing: border-box; }
 .map-zoom p { margin: 0; white-space: normal; }
@@ -22,7 +22,7 @@ ${[100,400,1e3].map(e=>p`<button class="ms-btn" type="button" ?disabled=${!this.
 <button class="ms-btn" type="button" @click=${()=>this.menu.close(!0)}>${e("v4_close","Close")}</button>
 </div>
 </form>
-`}},$=class{#e;constructor(e){this.menu=new t(e,".overflow-wrap",".overflow"),this.#e=new _(e,this.menu)}get popupRole(){return this.#e.open&&this.menu.open?"dialog":"menu"}toggle(){this.#e.open=!1,this.menu.toggle()}render({state:t,narrow:s,t:i,intent:o,diagnostics:l}){let n=v(t,"follow"),u=v(t,"ride"),h=(e,a,t)=>p` <button class="ms-row ms-row--menu" type="button" role="menuitemradio" aria-checked=${String(e)} data-selected=${e?"true":d} tabindex="-1" @click=${t}><span>${a}</span>${e?m(c):d}</button> `,g=(e,a)=>h(t.quality===e,a,()=>o({type:"set-quality",quality:e})),f=t.wifiSignal,w="ready"===f?.status&&f.cells.length?a(f.cells,t.wifiScale):null,_=w&&f?e(f.cells):null,$=e=>Math.round(10*e)/10+" dBm";return p`
+`}},$=class{#e;constructor(e){this.menu=new t(e,".overflow-wrap",".overflow"),this.#e=new _(e,this.menu)}get popupRole(){return this.#e.open&&this.menu.open?"dialog":"menu"}toggle(){this.#e.open=!1,this.menu.toggle()}render({state:t,narrow:s,t:i,intent:o,diagnostics:l}){let n=v(t,"follow"),u=v(t,"ride"),h=(e,a,t)=>p` <button class="ms-row ms-row--menu" type="button" role="menuitemradio" aria-checked=${String(e)} data-selected=${e?"true":d} tabindex="-1" @click=${t}><span>${a}</span>${e?m(c):d}</button> `,b=(e,a)=>h(t.quality===e,a,()=>o({type:"set-quality",quality:e})),f=t.wifiSignal,w="ready"===f?.status&&f.cells.length?a(f.cells,t.wifiScale):null,_=w&&f?e(f.cells):null,$=e=>Math.round(10*e)/10+" dBm";return p`
 <style>
 ${r.cssText}
 .overflow-menu {
@@ -55,7 +55,7 @@ ${this.#e.open?this.#e.render(i):p`<div id="map-options" class="overflow-menu ms
 ${s?p`
 <div role="group" aria-labelledby="menu-display">
 <p class="menu-heading" id="menu-display" role="presentation">${i("v4_map_display","Map display")}</p>
-${"top"===b(t)?p`
+${"top"===g(t)?p`
 ${h("photo"===t.appearance,i("map_style_photo","Photo"),()=>o({type:"set-appearance",appearance:"photo"}))}
 ${h("rooms"===t.appearance,i("v4_room_colours","Room colors"),()=>o({type:"set-appearance",appearance:"rooms"}))}
 `:d}
@@ -123,7 +123,7 @@ data-vacuum-coverage @click=${()=>o({type:"toggle-cleaning-coverage",mode:"vacuu
 aria-checked=${String(!!(2&t.coverageModes))} tabindex="-1"
 data-mop-coverage @click=${()=>o({type:"toggle-cleaning-coverage",mode:"mop"})}
 ><span>${i("v4_mop_coverage","Mop coverage")}</span><span class="ms-switch" aria-checked=${String(!!(2&t.coverageModes))} aria-hidden="true"></span></button>
-${t.liveCoverage?.ownershipUnverified?p`<small class="menu-note">${i("v4_coverage_unverified","Live coverage is hidden because its run cannot be verified.")}</small>`:t.liveCoverage?.truncated?p`<small class="menu-note">${i("v4_coverage_partial","Coverage may be incomplete.")}</small>`:d}
+${t.liveCoverage?.ownershipUnverified?p`<small class="menu-note">${i("v4_coverage_unverified","Live coverage is hidden until tracking can identify this clean.")}</small>`:"observed_changes"===t.liveCoverage?.coverageBasis?p`<small class="menu-note">${i("v4_coverage_observed_changes","Partial coverage. Showing changes observed since live tracking began.")}</small>`:t.liveCoverage?.truncated?p`<small class="menu-note">${i("v4_coverage_partial","Coverage may be incomplete.")}</small>`:d}
 `:d}
 ${"live"===t.dataMode?p`
 <button
@@ -145,13 +145,13 @@ ${n&&u?d:p`<small class="menu-note">${i("v4_follow_needs_live_pose","Following n
 `:d}
 <div role="group" aria-labelledby="menu-detail">
 <p class="menu-heading" id="menu-detail" role="presentation">${i("map_quality_label","Map detail")}</p>
-${g("auto",i("map_quality_auto","Auto detail"))}
-${g("efficient",i("map_quality_efficient","Efficient"))}
-${g("balanced",i("map_quality_balanced","Balanced"))}
-${g("maximum",i("map_quality_maximum","Maximum"))}
+${b("auto",i("map_quality_auto","Auto detail"))}
+${b("efficient",i("map_quality_efficient","Efficient"))}
+${b("balanced",i("map_quality_balanced","Balanced"))}
+${b("maximum",i("map_quality_maximum","Maximum"))}
 </div>
 ${this.#e.available()?p`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${()=>this.#e.show()}>${i("v4_map_zoom","Map zoom")}</button>`:d}
 <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${()=>{this.menu.close(!1),l()}}>${i("v4_map_diagnostics","Map diagnostics")}</button>
 </div>`}
 `}};export{$ as MapOptions};
-/*! Licenses: map-options-K7XCAZDH.js.LEGAL.txt */
+/*! Licenses: map-options-TK4WJQXM.js.LEGAL.txt */

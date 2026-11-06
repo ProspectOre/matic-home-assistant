@@ -239,6 +239,7 @@ export interface CleaningCoverageLayer {
   readonly runs: readonly (readonly [number, number, number, number])[];
   readonly truncated: boolean;
   readonly ownershipUnverified: boolean;
+  readonly coverageBasis: "observed_changes" | null;
 }
 
 export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";

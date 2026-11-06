@@ -83,8 +83,10 @@ class MaticLiveCoverageView(HomeAssistantView):
                 "map_session_key": map_session_key,
                 "cell_size": VOXEL_SCALE_METERS,
                 "runs": runs,
-                "ownership_unverified": getattr(
-                    runtime.live_coverage, "ownership_unverified", False
+                **(
+                    {"ownership_unverified": True}
+                    if runtime.live_coverage.ownership_unverified
+                    else {"coverage_basis": "observed_changes"}
                 ),
                 "truncated": truncated
                 or getattr(runtime.live_coverage, "partial", False),

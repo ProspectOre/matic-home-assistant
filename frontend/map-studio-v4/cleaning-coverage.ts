@@ -10,7 +10,13 @@ export function parseCleaningCoverage(value: unknown): CleaningCoverageLayer {
     || root.cell_size <= 0 || root.cell_size > 1 || !Array.isArray(root.runs)
     || root.runs.length > 20_000
     || (root.ownership_unverified !== undefined && typeof root.ownership_unverified !== "boolean")
-    || (root.ownership_unverified === true && root.runs.length !== 0)) throw new ContractError("invalid-cleaning-coverage");
+    || (root.ownership_unverified === true && root.runs.length !== 0)
+    || (root.coverage_basis !== undefined && root.coverage_basis !== "observed_changes")
+    || (root.ownership_unverified === true && root.coverage_basis !== undefined)
+    || (root.active === false && root.runs.length !== 0)
+    || (root.coverage_basis === "observed_changes" && (root.active !== true || root.truncated !== true))) {
+    throw new ContractError("invalid-cleaning-coverage");
+  }
   const mapSessionKey = root.map_session_key;
   if (root.active && (typeof mapSessionKey !== "string" || !/^[a-f0-9]{64}$/u.test(mapSessionKey))) {
     throw new ContractError("invalid-cleaning-coverage");
@@ -26,5 +32,6 @@ export function parseCleaningCoverage(value: unknown): CleaningCoverageLayer {
   });
   return { active: root.active, mapSessionKey: root.active ? mapSessionKey as string : null,
     frameKey: "", cellSize: root.cell_size, runs, truncated: root.truncated,
-    ownershipUnverified: root.ownership_unverified === true };
+    ownershipUnverified: root.ownership_unverified === true,
+    coverageBasis: root.coverage_basis === "observed_changes" ? "observed_changes" : null };
 }

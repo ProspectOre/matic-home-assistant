@@ -52,6 +52,23 @@ test("incomplete live coverage is labeled for both cleaning modes", async ({ pag
   await expect(panel.getByText("Coverage may be incomplete.")).toBeVisible();
 });
 
+test("active coverage identifies its observed changes basis", async ({ page }) => {
+  const { panelTag } = await installPanelFixture(page, {
+    cleaningCoverage: { ...coverage, truncated: true, coverage_basis: "observed_changes" },
+  });
+  await page.evaluate(async (tag) => {
+    const panel = window.__panelFixture.createPanel();
+    document.body.append(panel);
+    await customElements.whenDefined(tag);
+    await panel.updateComplete;
+  }, panelTag);
+  const panel = page.locator(panelTag);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.coverageBasis))
+    .toBe("observed_changes");
+  await inShadow(panel, "[aria-controls=map-options]", true);
+  await expect(panel.getByText("Partial coverage. Showing changes observed since live tracking began.")).toBeVisible();
+});
+
 test("unverified live coverage is hidden with an explanation", async ({ page }) => {
   const { panelTag } = await installPanelFixture(page, { cleaningCoverage: { ...coverage, runs: [], truncated: true, ownership_unverified: true } });
   await page.evaluate(async (tag) => {
@@ -63,7 +80,7 @@ test("unverified live coverage is hidden with an explanation", async ({ page }) 
   const panel = page.locator(panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.ownershipUnverified)).toBe(true);
   await inShadow(panel, "[aria-controls=map-options]", true);
-  await expect(panel.getByText("Live coverage is hidden because its run cannot be verified.")).toBeVisible();
+  await expect(panel.getByText("Live coverage is hidden until tracking can identify this clean.")).toBeVisible();
 });
 
 test("coverage parser rejects malformed and unbounded runs", async ({ page }) => {
@@ -76,9 +93,14 @@ test("coverage parser rejects malformed and unbounded runs", async ({ page }) =>
       { ...valid, runs: [[0, 0, 1, 4]] }, { ...valid, runs: Array(20_001).fill([0, 0, 1, 1]) },
       { ...valid, map_session_key: null }, { ...valid, map_session_key: "not-a-session" },
       { ...valid, ownership_unverified: true }, { ...valid, ownership_unverified: "yes" },
+      { ...valid, coverage_basis: "guess" },
+      { ...valid, ownership_unverified: true, coverage_basis: "observed_changes" },
+      { ...valid, coverage_basis: "observed_changes", truncated: false },
+      { ...valid, active: false, map_session_key: undefined, runs: [[1, 1, 1, 1]] },
+      { ...valid, active: false, map_session_key: undefined, truncated: true, runs: [], coverage_basis: "observed_changes" },
     ].map((value) => { try { parseCleaningCoverage(value); return false; } catch { return true; } });
   }, coverage);
-  expect(rejected).toEqual([true, true, true, true, true, true, true, true, true]);
+  expect(rejected).toEqual(Array(14).fill(true));
 });
 
 test("coverage from a different map session is cleared until the matching frame returns", async ({ page }) => {

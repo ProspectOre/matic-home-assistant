@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from homeassistant.exceptions import Unauthorized
@@ -11,16 +13,35 @@ from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot import _coverage_context
 from custom_components.matic_robot.client.exceptions import CannotConnectError
+from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.client.slam_tiles import SlamSemanticTile
+from custom_components.matic_robot.coverage_changes import CoverageChanges
 from custom_components.matic_robot.coverage_view import (
     MaticLiveCoverageView,
     _coverage_runs,
 )
 from custom_components.matic_robot.live_coverage import LiveCoverage
 
+from .test_coverage_receipts import active_key
 from .test_floor_types import _request
+from .test_slam_map import synthetic_semantic_entry
 
-MISSION = 0x1234ABCD
+MISSION = 42
+
+
+def _page_entry(
+    cells: bytes,
+    *,
+    sequence: int | None,
+    epoch: int = 10,
+    mission_id: int = MISSION,
+) -> HermesCollectionEntry:
+    entry = synthetic_semantic_entry(mission_id=mission_id, cells=cells)
+    return replace(entry, sequence_start_ns=epoch, sequence_no=sequence)
+
+
+def _marker(session: bytes, *, epoch: int = 10, sequence: int = 1):
+    return HermesCollectionEntry(b"active", session, epoch, sequence)
 
 
 @pytest.fixture(autouse=True)
@@ -62,14 +83,19 @@ def test_coverage_requires_active_session_and_verified_current_frame() -> None:
         assert _coverage_context(runtime) is None
 
 
-async def test_unverified_coverage_is_hidden_for_active_run() -> None:
+async def test_missing_marker_keeps_active_coverage_hidden(monkeypatch) -> None:
     client = MagicMock()
-    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"session")
+    session = active_key()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
     coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
-    await coverage._refresh_session()
-    assert await coverage.async_current() == ()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_coverage._RETRY_SECONDS", 0.001
+    )
+    await coverage._watch_session((MISSION, "floor"), session)
+    assert coverage.current() == ()
     assert coverage.partial is True
-    client.async_get_tracked_collection_entries.assert_not_called()
+    assert coverage.ownership_unverified is True
     client.async_subscribe_collection_entries.assert_not_called()
 
     runtime = SimpleNamespace(live_coverage=coverage)
@@ -84,16 +110,17 @@ async def test_unverified_coverage_is_hidden_for_active_run() -> None:
 async def test_session_or_frame_change_immediately_hides_coverage() -> None:
     context = [(MISSION, "floor")]
     client = MagicMock()
-    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"first")
+    session = active_key()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
     coverage = LiveCoverage(client, lambda: context[0])
-    await coverage._refresh_session()
+    coverage._bound_context = context[0]
+    coverage._session = session
+    coverage._changes = CoverageChanges(MISSION, 10, 1)
     old_generation = coverage.generation
-    client.async_get_cleaning_session_identity.return_value = b"second"
+    client.async_get_cleaning_session_identity.return_value = active_key(UUID(int=5))
     with pytest.raises(CannotConnectError):
         await coverage.async_current()
-    await coverage._refresh_session()
-    assert coverage.generation > old_generation
-    assert await coverage.async_current() == ()
+    assert coverage.generation == old_generation
     context[0] = (MISSION, "other")
     assert coverage.current() is None
 
@@ -104,11 +131,15 @@ async def test_frame_change_during_session_read_is_discarded() -> None:
 
     async def read_session():
         context[0] = (MISSION, "other")
-        return b"session"
+        return active_key()
 
     client.async_get_cleaning_session_identity = read_session
     coverage = LiveCoverage(client, lambda: context[0])
-    await coverage._refresh_session()
+    session = active_key()
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    coverage._changes = CoverageChanges(MISSION, 10, 1)
+    assert await coverage.async_current() is None
     assert coverage.current() is None
 
 
@@ -116,6 +147,7 @@ async def test_watcher_fails_closed_on_session_read_failure(monkeypatch) -> None
     client = MagicMock()
     failed = asyncio.Event()
     calls = 0
+    session = active_key()
 
     async def read_session():
         nonlocal calls
@@ -123,21 +155,114 @@ async def test_watcher_fails_closed_on_session_read_failure(monkeypatch) -> None
         if calls > 1:
             failed.set()
             raise CannotConnectError("offline")
-        return b"session"
+        return session
+
+    async def updates():
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
 
     client.async_get_cleaning_session_identity = read_session
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    client.async_subscribe_collection_entries = MagicMock(return_value=updates())
     coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
     monkeypatch.setattr(
-        "custom_components.matic_robot.live_coverage._CHECK_SECONDS", 0.01
+        "custom_components.matic_robot.live_coverage._CHECK_SECONDS", 0.001
     )
     task = asyncio.create_task(coverage.watch())
     try:
         await asyncio.wait_for(failed.wait(), 2)
-        assert coverage.current() is None
-    finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert coverage.current() is None
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+async def test_watcher_tracks_only_post_marker_changes(monkeypatch) -> None:
+    session = active_key()
+    baseline = bytearray(1024)
+    baseline[0] = 1
+    changed = bytearray(baseline)
+    changed[1] = 1
+
+    async def updates():
+        yield _page_entry(bytes(baseline), sequence=2)
+        yield _page_entry(bytes(changed), sequence=3)
+
+    client = MagicMock()
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    client.async_subscribe_collection_entries = MagicMock(return_value=updates())
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_coverage._CHECK_SECONDS", 60
+    )
+
+    await coverage._watch_session((MISSION, "floor"), session)
+
+    assert coverage.partial is True
+    assert coverage.ownership_unverified is False
+    assert coverage.current()[0].cells[0] == 0
+    assert coverage.current()[0].cells[1] == 1
+    client.async_subscribe_collection_entries.assert_called_once_with(
+        "map_combined_coverage", include_deletions=True
+    )
+
+
+async def test_marker_read_racing_frame_change_never_subscribes() -> None:
+    session = active_key()
+    context = [(MISSION, "floor")]
+    client = MagicMock()
+
+    async def read_marker(*args, **kwargs):
+        context[0] = (MISSION, "new-floor")
+        return [_marker(session)]
+
+    client.async_get_tracked_collection_entries = read_marker
+    client.async_subscribe_collection_entries = MagicMock()
+    coverage = LiveCoverage(client, lambda: context[0])
+
+    await coverage._watch_session((MISSION, "floor"), session)
+
+    assert coverage.current() is None
+    client.async_subscribe_collection_entries.assert_not_called()
+
+
+async def test_cancelled_watcher_clears_session_and_page_stream(monkeypatch) -> None:
+    session = active_key()
+    closed = asyncio.Event()
+    started = asyncio.Event()
+
+    async def updates():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+        finally:
+            closed.set()
+
+    client = MagicMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    client.async_subscribe_collection_entries = MagicMock(return_value=updates())
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    task = asyncio.create_task(coverage.watch())
+    await asyncio.wait_for(started.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set()
+    assert coverage.current() is None
 
 
 def test_coverage_runs_keep_modes_and_column_major_cell_positions() -> None:
@@ -157,7 +282,10 @@ def test_coverage_runs_keep_modes_and_column_major_cell_positions() -> None:
 async def test_view_requires_admin_and_revalidates_entry() -> None:
     runtime = SimpleNamespace(
         live_coverage=SimpleNamespace(
-            async_current=AsyncMock(return_value=()), revision=1, generation=1
+            async_current=AsyncMock(return_value=()),
+            revision=1,
+            generation=1,
+            ownership_unverified=False,
         )
     )
     request = _request(runtime)
@@ -187,7 +315,10 @@ async def test_view_requires_admin_and_revalidates_entry() -> None:
 async def test_view_discards_coverage_changed_during_encoding() -> None:
     runtime = SimpleNamespace(
         live_coverage=SimpleNamespace(
-            async_current=AsyncMock(return_value=()), revision=1, generation=1
+            async_current=AsyncMock(return_value=()),
+            revision=1,
+            generation=1,
+            ownership_unverified=False,
         )
     )
     request = _request(runtime)
@@ -204,7 +335,10 @@ async def test_view_discards_coverage_changed_during_encoding() -> None:
 async def test_view_requires_and_revalidates_map_session() -> None:
     runtime = SimpleNamespace(
         live_coverage=SimpleNamespace(
-            async_current=AsyncMock(return_value=()), revision=1, generation=1
+            async_current=AsyncMock(return_value=()),
+            revision=1,
+            generation=1,
+            ownership_unverified=False,
         ),
         test_map_key=None,
     )
@@ -224,7 +358,10 @@ async def test_view_requires_and_revalidates_map_session() -> None:
 async def test_view_discards_session_changed_during_encoding() -> None:
     runtime = SimpleNamespace(
         live_coverage=SimpleNamespace(
-            async_current=AsyncMock(side_effect=[(), None]), revision=1, generation=1
+            async_current=AsyncMock(side_effect=[(), None]),
+            revision=1,
+            generation=1,
+            ownership_unverified=False,
         )
     )
     assert (await MaticLiveCoverageView().get(_request(runtime), "entry")).status == 503
@@ -236,6 +373,7 @@ async def test_view_handles_revalidation_failure_after_encoding() -> None:
             async_current=AsyncMock(side_effect=[(), CannotConnectError("offline")]),
             revision=1,
             generation=1,
+            ownership_unverified=False,
         )
     )
     assert (await MaticLiveCoverageView().get(_request(runtime), "entry")).status == 503
@@ -261,7 +399,10 @@ async def test_async_current_rejects_a_changed_native_session() -> None:
 async def test_view_discards_new_valid_session_during_encoding() -> None:
     runtime = SimpleNamespace(
         live_coverage=SimpleNamespace(
-            async_current=AsyncMock(return_value=()), revision=1, generation=1
+            async_current=AsyncMock(return_value=()),
+            revision=1,
+            generation=1,
+            ownership_unverified=False,
         )
     )
     request = _request(runtime)
@@ -296,3 +437,91 @@ def test_coverage_output_limit_fails_bounded(monkeypatch) -> None:
     cells = bytearray(1024)
     cells[0] = cells[64] = 1
     assert _coverage_runs((SlamSemanticTile(0, 0, "mission", bytes(cells)),))[1]
+
+
+async def test_quiet_stream_rechecks_identity_until_run_changes(monkeypatch) -> None:
+    session = active_key()
+    client = MagicMock()
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[session, active_key(UUID(int=2))]
+    )
+
+    async def updates():
+        await asyncio.Event().wait()
+        yield
+
+    client.async_subscribe_collection_entries.return_value = updates()
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_coverage._CHECK_SECONDS", 0.005
+    )
+    await asyncio.wait_for(coverage._watch_session((MISSION, "floor"), session), 2)
+    assert client.async_get_cleaning_session_identity.await_count == 2
+
+
+async def test_frame_changes_while_next_page_is_in_flight() -> None:
+    session = active_key()
+    client = MagicMock()
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    context = [(MISSION, "floor")]
+
+    async def updates():
+        context[0] = (MISSION, "new-floor")
+        yield _page_entry(bytes(1024), sequence=2)
+
+    client.async_subscribe_collection_entries.return_value = updates()
+    coverage = LiveCoverage(client, lambda: context[0])
+    await asyncio.wait_for(coverage._watch_session(context[0], session), 2)
+    assert coverage.current() is None
+
+
+async def test_reconnect_establishes_new_baselines_after_sequence_failure(
+    monkeypatch,
+) -> None:
+    session = active_key()
+    client = MagicMock()
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    ready = asyncio.Event()
+    vacuum = b"\x01" + bytes(1023)
+
+    async def first_stream():
+        yield _page_entry(bytes(1024), sequence=2)
+        yield _page_entry(vacuum, sequence=3)
+        yield _page_entry(vacuum, sequence=4, epoch=9)
+
+    async def second_stream():
+        yield HermesCollectionEntry(b"invalid-key", b"", 10, 4)
+        yield _page_entry(vacuum, sequence=5)
+        yield _page_entry(b"\x11" + bytes(1023), sequence=6)
+        ready.set()
+        await asyncio.Event().wait()
+
+    client.async_subscribe_collection_entries.side_effect = [
+        first_stream(),
+        second_stream(),
+    ]
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_coverage._RETRY_SECONDS", 0.001
+    )
+    task = asyncio.create_task(coverage.watch())
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        runtime = SimpleNamespace(live_coverage=coverage)
+        response = await MaticLiveCoverageView().get(_request(runtime), "entry")
+        payload = json.loads(response.body)
+        assert payload["coverage_basis"] == "observed_changes"
+        assert payload["truncated"] is True
+        assert payload["runs"] == [[64, -32, 1, 2]]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)

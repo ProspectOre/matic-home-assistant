@@ -168,6 +168,7 @@ def synthetic_semantic_entry(
     page_y: int = -1,
     mission_id: int = 0x1234ABCD,
     malformed: str | None = None,
+    cells: bytes | None = None,
 ) -> HermesCollectionEntry:
     """Build a synthetic equivalent of an observed native semantic page."""
     page = _varint_field(3, _sint32(page_x)) + _varint_field(4, _sint32(page_y))
@@ -185,7 +186,8 @@ def synthetic_semantic_entry(
     )
     if malformed == "dimensions":
         dimensions += _varint_field(5, 1)
-    cells = bytes(index % 7 for index in range(SEMANTIC_BYTES))
+    if cells is None:
+        cells = bytes(index % 7 for index in range(SEMANTIC_BYTES))
     if malformed == "cells":
         cells = cells[:-1]
     cells_wrapper = _bytes_field(1, cells)
