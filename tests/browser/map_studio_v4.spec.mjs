@@ -2702,6 +2702,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         try {
           effects.sync(projection);
           await effects.refreshCatalog(true);
+          for (let i = 0; i < 120 && !store.value.optionalUiReady; i++) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          if (!store.value.optionalUiReady) throw new Error("Map admission did not complete");
           await effects.refreshPose();
           const connectedGeneration = store.value.generation;
           const retainedScene = store.value.resources.scene.value;
@@ -2720,6 +2724,10 @@ test.describe("Map Studio v0.4 foundation", () => {
           hold = false;
           effects.sync(projection);
           await effects.refreshCatalog(true);
+          for (let i = 0; i < 120 && !store.value.optionalUiReady; i++) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          if (!store.value.optionalUiReady) throw new Error("Map readmission did not complete");
           await effects.refreshPose();
           return {
             connectedGeneration, disconnectedGeneration, abortedGeneration, repeatedDisconnectGeneration,
@@ -7253,7 +7261,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       return route.fulfill({
         status: 204,
         headers: {
-          "X-Matic-Revision": "2",
+          "X-Matic-Revision": new URL(route.request().url()).searchParams.get("since"),
           "X-Matic-Floor-Coherent": "1",
         },
       });
@@ -7461,7 +7469,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     // frame-revoked response: it must clear the old verified marker.
     poseSessionKey = "a".repeat(64);
     posePosition = [11, 13];
-    await expect.poll(() => page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
+    // A second mismatch during the first revalidation uses the bounded
+    // five-second recovery retry before admitting a fresh pose.
+    await expect.poll(() => page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose),
+      { timeout: 12_000 }).toBe(true);
     poseFloorCoherent = false;
     poseSessionKey = null;
     posePosition = null;

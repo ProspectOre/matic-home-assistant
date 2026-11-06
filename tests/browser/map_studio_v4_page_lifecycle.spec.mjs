@@ -192,6 +192,8 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
     document.body.append(panel);
   });
   const panel = page.locator(fixture.panelTag);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await page.clock.runFor(100);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
     return state.resources.scene.status === "ready" && state.map.exactPose;
@@ -270,6 +272,8 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
   expect(whileCatalogHeld.map.exactPose).toBe(false);
   expect(whileCatalogHeld.coherence).not.toBe("current");
   await page.evaluate(() => window.__panelFixture.releaseCatalog());
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await page.clock.runFor(100);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
     return state.resources.scene.status === "ready" && state.map.exactPose;
@@ -388,6 +392,8 @@ test("@safety page suspension aborts saved-plan preflight and preserves its draf
   });
 
   const panel = page.locator(fixture.panelTag);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await page.clock.runFor(100);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
     return state.resources.scene.status === "ready" && state.map.exactPose;
