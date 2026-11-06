@@ -2,7 +2,8 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
-const coverage = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015, truncated: false, runs: [[2, 3, 4, 1], [7, 5, 2, 2]] };
+const coverage = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015, truncated: true,
+  coverage_basis: "observed_changes", runs: [[2, 3, 4, 1], [7, 5, 2, 2]] };
 
 const inShadow = (panel, selector, click = false) => panel.evaluate((element, { selector, click }) => {
   const find = (root) => {
@@ -49,7 +50,7 @@ test("incomplete live coverage is labeled for both cleaning modes", async ({ pag
   const panel = page.locator(panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.truncated)).toBe(true);
   await inShadow(panel, "[aria-controls=map-options]", true);
-  await expect(panel.getByText("Coverage may be incomplete.")).toBeVisible();
+  await expect(panel.getByText("Partial coverage. Showing changes observed since live tracking began.")).toBeVisible();
 });
 
 test("active coverage identifies its observed changes basis", async ({ page }) => {
@@ -70,7 +71,10 @@ test("active coverage identifies its observed changes basis", async ({ page }) =
 });
 
 test("unverified live coverage is hidden with an explanation", async ({ page }) => {
-  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: { ...coverage, runs: [], truncated: true, ownership_unverified: true } });
+  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: {
+    active: true, map_session_key: "a".repeat(64), cell_size: 0.015, runs: [], truncated: true,
+    ownership_unverified: true,
+  } });
   await page.evaluate(async (tag) => {
     const panel = window.__panelFixture.createPanel();
     document.body.append(panel);
@@ -96,11 +100,31 @@ test("coverage parser rejects malformed and unbounded runs", async ({ page }) =>
       { ...valid, coverage_basis: "guess" },
       { ...valid, ownership_unverified: true, coverage_basis: "observed_changes" },
       { ...valid, coverage_basis: "observed_changes", truncated: false },
+      { ...valid, coverage_basis: undefined },
+      { ...valid, coverage_basis: undefined, truncated: false },
       { ...valid, active: false, map_session_key: undefined, runs: [[1, 1, 1, 1]] },
       { ...valid, active: false, map_session_key: undefined, truncated: true, runs: [], coverage_basis: "observed_changes" },
     ].map((value) => { try { parseCleaningCoverage(value); return false; } catch { return true; } });
   }, coverage);
-  expect(rejected).toEqual(Array(14).fill(true));
+  expect(rejected).toEqual(Array(16).fill(true));
+});
+
+test("an unmarked legacy reply clears previously drawn coverage", async ({ page }) => {
+  await page.clock.install();
+  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
+  await page.evaluate(async (tag) => {
+    const panel = window.__panelFixture.createPanel();
+    document.body.append(panel);
+    await customElements.whenDefined(tag);
+    await panel.updateComplete;
+  }, panelTag);
+  const panel = page.locator(panelTag);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
+  await page.evaluate(() => { window.__cleaningCoverageReply = {
+    active: true, map_session_key: "a".repeat(64), cell_size: 0.015, truncated: false, runs: [[2, 3, 4, 1]],
+  }; });
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
 });
 
 test("coverage from a different map session is cleared until the matching frame returns", async ({ page }) => {
@@ -182,7 +206,8 @@ test("a late coverage response cannot revive an ended session", async ({ page })
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
   await page.evaluate(() => {
     window.__holdCleaningCoverage = true;
-    window.__cleaningCoverageReply = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015, runs: [[8, 8, 1, 2]], truncated: false };
+    window.__cleaningCoverageReply = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015,
+      runs: [[8, 8, 1, 2]], truncated: true, coverage_basis: "observed_changes" };
   });
   await page.clock.fastForward(5_000);
   await expect.poll(() => page.evaluate(() => typeof window.__releaseCleaningCoverage)).toBe("function");
@@ -210,7 +235,7 @@ test("coverage renders its selected modes only on the matching live frame", asyn
     const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" },
       resources: { entry }, floorTypes: null, wifiSignal: null, coverageModes: 3,
       liveCoverage: { active: true, frameKey: entryCoherenceIdentity(entry), cellSize: .015,
-        runs: [[2, 3, 4, 1], [7, 5, 2, 2]] } };
+        truncated: true, coverageBasis: "observed_changes", runs: [[2, 3, 4, 1], [7, 5, 2, 2]] } };
     const fills = [];
     const context = { save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
       fill() { fills.push(this.fillStyle); } };

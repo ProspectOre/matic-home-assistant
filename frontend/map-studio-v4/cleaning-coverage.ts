@@ -11,10 +11,9 @@ export function parseCleaningCoverage(value: unknown): CleaningCoverageLayer {
     || root.runs.length > 20_000
     || (root.ownership_unverified !== undefined && typeof root.ownership_unverified !== "boolean")
     || (root.ownership_unverified === true && root.runs.length !== 0)
-    || (root.coverage_basis !== undefined && root.coverage_basis !== "observed_changes")
-    || (root.ownership_unverified === true && root.coverage_basis !== undefined)
-    || (root.active === false && root.runs.length !== 0)
-    || (root.coverage_basis === "observed_changes" && (root.active !== true || root.truncated !== true))) {
+    || (root.runs.length > 0 && root.coverage_basis !== "observed_changes")
+    || (root.coverage_basis !== undefined && (root.coverage_basis !== "observed_changes"
+      || root.ownership_unverified === true || !root.active || !root.truncated))) {
     throw new ContractError("invalid-cleaning-coverage");
   }
   const mapSessionKey = root.map_session_key;

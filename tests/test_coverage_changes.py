@@ -148,12 +148,13 @@ def test_malformed_semantic_page_is_a_page_local_gap() -> None:
     assert changes.visible_pages() == ()
 
 
-def test_invalid_page_key_is_rejected_by_decoder() -> None:
+@pytest.mark.parametrize("key", [b"", b"bad", bytes(65)])
+def test_invalid_page_key_is_rejected_by_decoder(key: bytes) -> None:
     changes = CoverageChanges(MISSION, EPOCH, START)
     entry = _entry(START + 1, _cells(vacuum=(1,)))
     with pytest.raises(DecodeError):
         changes.update(
             HermesCollectionEntry(
-                b"bad", entry.value, sequence_start_ns=EPOCH, sequence_no=START + 1
+                key, entry.value, sequence_start_ns=EPOCH, sequence_no=START + 1
             )
         )
