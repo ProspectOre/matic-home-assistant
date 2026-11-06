@@ -20,6 +20,13 @@ KINDS = {"ci", "dispatch", "nightly"}
 DISPATCH_EVENTS = {"workflow_dispatch", "workflow_call", "repository_dispatch"}
 KEY = re.compile(r"""^\s*(?:-\s*)?(['"]?)([A-Za-z_]+)\1\s*(?::.*)?$""")
 RUNS_ON = re.compile(r"""^(\s*)(['"]?)runs-on\2\s*:\s*(.*)$""")
+# A double-quoted scalar holding a backslash that is a key, or runs on past the
+# line end, can decode to runs-on (for example "runs-\x6fn": or "runs-\ + on":).
+ESCAPED_KEY = re.compile(r'''"(?=(?:[^"\\]|\\.)*\\)(?:[^"\\]|\\.)*(?:"\s*:|\\?$)''')
+BLOCK_START = re.compile(
+    r"""^(\s*)((?:-\s+)*)(?:("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"][^#]*?)\s*:\s+)?"""
+    r"""[|>][0-9+-]*\s*(?:#.*)?$"""
+)
 
 
 def uncommented(text):
@@ -87,11 +94,38 @@ def triggers(text):
     return None
 
 
+def block_scalar_body(lines):
+    """Return the indexes of block scalar body lines (text that is never a key)."""
+    body = set()
+    i = 0
+    while i < len(lines):
+        m = BLOCK_START.match(lines[i])
+        i += 1
+        if not m:
+            continue
+        indent, dashes, key = m.groups()
+        if key is not None:
+            parent = len(indent) + len(dashes)
+        elif dashes:
+            parent = len(indent) + len(dashes.rstrip()) - 1
+        else:
+            parent = len(indent)
+        while i < len(lines) and (not lines[i].strip()
+                                  or len(lines[i]) - len(lines[i].lstrip(" ")) > parent):
+            body.add(i)
+            i += 1
+    return body
+
+
 def runs_on_violations(text):
     """Return runs-on lines whose value is not a list containing self-hosted."""
     lines = uncommented(text).splitlines()
+    body = block_scalar_body(lines)
     bad = []
     for i, line in enumerate(lines):
+        if i not in body and ESCAPED_KEY.search(line):
+            bad.append(line.strip())
+            continue
         if "runs-on" not in line:
             continue
         m = RUNS_ON.match(line)
