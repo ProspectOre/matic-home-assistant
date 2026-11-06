@@ -802,24 +802,20 @@ def _simplify(points: Sequence[TrailPoint], tolerance: float) -> list[TrailPoint
         start, end = stack.pop()
         first, last = points[start], points[end]
         dx, dy = last[0] - first[0], last[1] - first[1]
-        length = math.hypot(dx, dy)
-        maximum, furthest = -1.0, -1
+        length_squared = dx * dx + dy * dy
+        maximum_squared, furthest = -1.0, -1
         for index in range(start + 1, end):
-            point = points[index]
-            distance = (
-                math.dist(first, point)
-                if length == 0
-                else abs(
-                    dy * point[0]
-                    - dx * point[1]
-                    + last[0] * first[1]
-                    - last[1] * first[0]
-                )
-                / length
+            px, py = points[index][0] - first[0], points[index][1] - first[1]
+            # Clamp to the segment so a collinear turnaround beyond its end survives.
+            fraction = (
+                min(1.0, max(0.0, (px * dx + py * dy) / length_squared))
+                if length_squared
+                else 0.0
             )
-            if distance > maximum:
-                maximum, furthest = distance, index
-        if maximum > tolerance:
+            error_squared = (px - fraction * dx) ** 2 + (py - fraction * dy) ** 2
+            if error_squared > maximum_squared:
+                maximum_squared, furthest = error_squared, index
+        if maximum_squared > tolerance * tolerance:
             selected.add(furthest)
             stack.extend(((start, furthest), (furthest, end)))
     return [points[index] for index in sorted(selected)]

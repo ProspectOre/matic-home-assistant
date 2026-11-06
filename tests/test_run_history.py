@@ -702,6 +702,19 @@ def test_simplifier_keeps_endpoints_within_a_tight_point_budget() -> None:
     assert kept[-1] == points[-1]
 
 
+def test_trail_simplification_keeps_both_ends_of_a_retraced_pass() -> None:
+    path = [(distance / 10, 0.0) for distance in range(101)]
+    path.extend((distance / 10, 0.0) for distance in range(99, -51, -1))
+    path.extend((distance / 10, 0.0) for distance in range(-49, 2))
+
+    assert run_history._thin(path, 4) == [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (-5.0, 0.0),
+        (0.1, 0.0),
+    ]
+
+
 def test_segment_simplifier_bounds_many_short_and_truncated_paths() -> None:
     short = [[(float(index), 0.0)] for index in range(5)]
     assert run_history._thin_segments(short, 4) == short[-2:]
