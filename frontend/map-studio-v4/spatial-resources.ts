@@ -204,7 +204,6 @@ export class SpatialResources {
     this.#startOptionalLayers();
     if (this.#store.value.optionalUiReady) {
       this.#pose.startPolling();
-      void this.#pose.refreshPose();
     }
   }
 

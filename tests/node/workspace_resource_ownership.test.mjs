@@ -462,6 +462,9 @@ test("the first map is admitted before pose loading and polling resumes immediat
   await flush();
   assert.equal(reads, 1);
   assert.equal(f.store.value.map.exactPose, true);
+  owner.startPolling();
+  await flush();
+  assert.equal(reads, 1, "repeated lifecycle updates must not trigger extra pose reads");
   owner.dispose();
 });
 

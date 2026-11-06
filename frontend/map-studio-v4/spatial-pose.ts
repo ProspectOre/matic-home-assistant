@@ -37,7 +37,10 @@ export class SpatialPose {
   }
 
   startPolling(): void {
-    if (this.#poseTimer === null) this.#poseTimer = window.setInterval(() => { void this.refreshPose(); }, 1_000);
+    if (this.#poseTimer === null) {
+      this.#poseTimer = window.setInterval(() => { void this.refreshPose(); }, 1_000);
+      void this.refreshPose();
+    }
   }
 
   stopPolling(): void {
