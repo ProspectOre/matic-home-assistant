@@ -504,6 +504,8 @@ export class SpatialResources {
       draftFloorOrdinal: verifiedFloor ?? previousDraftFloor,
       draftMapSessionKey: verifiedSession ?? previousDraftSession,
       managedLock: entryManagedLock(entry),
+      liveCoverage: coherent && state.liveCoverage?.frameKey === entryCoherenceIdentity(entry)
+        ? state.liveCoverage : null,
       generation: stamp.generation,
       coherence: coherent ? (degraded ? "degraded" : retainedReadOnly ? "verifying" : "current") : "verifying",
       dataMode: "live",

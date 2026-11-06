@@ -22,7 +22,7 @@ export class CoverageResources {
   }
 
   stop(): void {
-    this.requests.current("cleaning-coverage")?.abort();
+    this.requests.cancel("cleaning-coverage");
     if (this.#timer !== null) window.clearInterval(this.#timer);
     this.#timer = null;
   }

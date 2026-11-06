@@ -658,7 +658,7 @@ export class EffectController {
   }
 
   #clearPrivate(problem: string, selectedEntryId: string | null = null): void {
-    this.#spatialResources.clearRecovery();
+    this.#spatialResources.stopPolling();
     this.#motion.invalidate();
     const generation = this.#coherence.invalidate();
     this.#spatialResources.stopDeltaStream();
@@ -684,6 +684,7 @@ export class EffectController {
       dialog: null,
       notice: null,
       draftFloorOrdinal: null,
+      draftMapSessionKey: null,
       draw: empty.draw,
       planDraft: empty.planDraft,
       areaDraft: empty.areaDraft,
@@ -692,6 +693,10 @@ export class EffectController {
       fullMap: false,
       precisionOpen: false,
       trail: null,
+      wifiSignal: null,
+      floorTypes: null,
+      floorTypeModes: 0,
+      liveCoverage: null,
       resources: { ...empty.resources, catalog: resource("error", null, problem) },
       manualRoomPreview: empty.manualRoomPreview,
       map: empty.map,
