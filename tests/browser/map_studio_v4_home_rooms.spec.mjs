@@ -897,7 +897,7 @@ test.describe("the plan card", () => {
   // top edge; the Your plans row is reached by a small scroll (accepted).
   // Shortcuts come first (owner, 2026-10-14): the pinned shortcut fits the
   // half sheet whole and Clean rooms starts inside it.
-  test("the shortcut and Clean rooms fit the half sheet at 390, and Your plans scrolls into reach; at 320 too @mobile", async ({ page }) => {
+  test("the shortcut and Clean rooms fit the half sheet at 390 and 320, and Your plans scrolls into reach @mobile", async ({ page }) => {
     for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 844 }]) {
       const gallery = await loadGallery(page, { scenario: "home-plan-due", viewport });
       const body = panelOf(gallery).locator(".sheet-body");
@@ -905,15 +905,33 @@ test.describe("the plan card", () => {
       const shortcut = await planCard(gallery).boundingBox();
       expect(shortcut.y).toBeGreaterThanOrEqual(box.y);
       expect(shortcut.y + shortcut.height).toBeLessThanOrEqual(box.y + box.height + 0.5);
+      await cards(gallery).nth(0).scrollIntoViewIfNeeded();
       const rooms = await cards(gallery).nth(0).boundingBox();
-      expect(rooms.y).toBeGreaterThanOrEqual(box.y);
-      expect(rooms.y).toBeLessThan(box.y + box.height);
+      const afterRoomsScroll = await body.boundingBox();
+      expect(rooms.y).toBeGreaterThanOrEqual(afterRoomsScroll.y);
+      expect(rooms.y + rooms.height).toBeLessThanOrEqual(afterRoomsScroll.y + afterRoomsScroll.height + 0.5);
       await plansRow(gallery).scrollIntoViewIfNeeded();
       const row = await plansRow(gallery).boundingBox();
       const after = await body.boundingBox();
       expect(row.y).toBeGreaterThanOrEqual(after.y);
       expect(row.y + row.height).toBeLessThanOrEqual(after.y + after.height + 0.5);
+      await cards(gallery).nth(0).click();
+      await expect(gallery.getByRole("heading", { level: 2, name: "Choose rooms" })).toBeVisible();
+      await gallery.evaluate((element) => element.remove());
     }
+  });
+
+  test("Clean rooms remains actionable on a short 320px phone @mobile", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "home-plan-due", viewport: { width: 320, height: 568 } });
+    const body = panelOf(gallery).locator(".sheet-body");
+    const cleanRooms = cards(gallery).nth(0);
+    await cleanRooms.scrollIntoViewIfNeeded();
+    const action = await cleanRooms.boundingBox();
+    const visibleSheet = await body.boundingBox();
+    expect(action.y).toBeGreaterThanOrEqual(visibleSheet.y);
+    expect(action.y + action.height).toBeLessThanOrEqual(visibleSheet.y + visibleSheet.height + 0.5);
+    await cleanRooms.click();
+    await expect(gallery.getByRole("heading", { level: 2, name: "Choose rooms" })).toBeVisible();
   });
 });
 
@@ -2095,10 +2113,21 @@ test.describe("cleaning history", () => {
     expect(reads).toEqual([1, 2]);
   });
 
-  test("a saved map offers no Robot trail, which only draws on the live map @mobile", async ({ page }) => {
+  test("a saved map leaves Robot trail disabled on the non-live floor @mobile", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "history", narrow: true });
     await patchState(gallery, { workflow: "none" });
-    await expect(toolbar(gallery).locator('[data-map-layer="trail"]')).toHaveCount(0);
+    const trail = toolbar(gallery).locator('[data-map-layer="trail"]');
+    await expect(trail).toBeVisible();
+    await expect(trail).toHaveAttribute("aria-disabled", "true");
+    await expect(trail).toHaveAttribute("aria-pressed", "false");
+    await expect(trail).toHaveAttribute("title", "Available on the current live floor.");
+    const before = await snapshot(page);
+    await recordActions(page);
+    const bounds = await trail.boundingBox();
+    expect(bounds).not.toBeNull();
+    await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    expect(await actions(page)).toEqual([]);
+    expect((await snapshot(page)).trail).toEqual(before.trail);
   });
 });
 

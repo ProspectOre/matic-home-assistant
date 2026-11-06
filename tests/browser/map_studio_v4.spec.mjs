@@ -132,6 +132,26 @@ function slowDrag(dy, x = 160, y = 20) {
   return points;
 }
 
+async function detentDragDistance(gallery, from, to) {
+  const heights = await gallery.locator(".mobile-sheet").evaluate((sheet, detents) => {
+    const original = sheet.getAttribute("data-detent");
+    const transition = sheet.style.transition;
+    sheet.style.transition = "none";
+    const measured = Object.fromEntries(detents.map((detent) => {
+      sheet.setAttribute("data-detent", detent);
+      return [detent, sheet.getBoundingClientRect().height];
+    }));
+    if (original === null) sheet.removeAttribute("data-detent");
+    else sheet.setAttribute("data-detent", original);
+    sheet.style.transition = transition;
+    return measured;
+  }, [from, to]);
+  return Math.round((() => {
+    const target = ((heights[from] ?? 0) + (heights[to] ?? 0)) / 2 + ((heights[to] ?? 0) > (heights[from] ?? 0) ? 8 : -8);
+    return (heights[from] ?? 0) - target;
+  })());
+}
+
 test.describe("Map Studio v0.4 foundation", () => {
   test("loads workflow tools on first open and diagnostics only when requested", async ({ page }) => {
     const workflowRequests = [];
@@ -8126,12 +8146,12 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
-    await touchDrag(page, grip, slowDrag(220), { stepMs: 40 });
+    await touchDrag(page, grip, slowDrag(await detentDragDistance(gallery, "full", "half")), { stepMs: 40 });
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
-    await touchDrag(page, grip, slowDrag(220), { stepMs: 40 });
+    await touchDrag(page, grip, slowDrag(await detentDragDistance(gallery, "half", "peek")), { stepMs: 40 });
     await expect(sheet).toHaveAttribute("data-detent", "peek");
     await settleSheet(gallery);
     await expect(gallery.locator("#sheet-panel")).toBeHidden();
@@ -8188,8 +8208,9 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
-    // Dragging the same 75px slowly snaps back to where it started.
-    await touchDrag(page, grip, slowDrag(-75), { stepMs: 40 });
+    // A slow movement below half the measured gap snaps back to its detent.
+    const halfGap = Math.abs(await detentDragDistance(gallery, "half", "full"));
+    await touchDrag(page, grip, slowDrag(-Math.max(7, Math.floor(halfGap * 0.4))), { stepMs: 40 });
     await expect(sheet).toHaveAttribute("data-detent", "half");
   });
 
@@ -9557,6 +9578,8 @@ for (const device of [
     }, GALLERY_TAG);
     await expect(gallery.getByRole("button", { name: "Points", exact: true })).toHaveAttribute("aria-pressed", "true");
     const first = gallery.getByRole("button", { name: "Point 1", exact: true });
+    const fit = gallery.locator("[data-map-toolbar]").getByRole("button", { name: "Fit the whole map on screen" });
+    await expect(fit).toBeVisible();
     if (device.touch) await first.tap(); else await first.click();
     await expect(gallery.getByRole("button", { name: "Insert point", exact: true })).toBeVisible();
     await expect(gallery.getByRole("button", {name:"Name and save",exact:true})).toBeEnabled();
@@ -9571,8 +9594,8 @@ for (const device of [
         const r = button.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
         let hit = document.elementFromPoint(x, y);
         for (let i = 0; hit?.shadowRoot && i < 12; i++) { const next = hit.shadowRoot.elementFromPoint(x,y); if (!next || next === hit) break; hit = next; }
-        return hit === button || button.contains(hit);
-      }), await target.getAttribute("aria-label") || await target.innerText()).toBe(true);
+        return hit === button || button.contains(hit) ? null : hit?.getAttribute("aria-label") || hit?.className || hit?.tagName || "outside the viewport";
+      }), await target.getAttribute("aria-label") || await target.innerText()).toBeNull();
     }
     const scale = await gallery.locator(".map-scale").boundingBox(), hint = await gallery.locator(".zone-help").boundingBox();
     expect(scale.x < hint.x + hint.width && scale.x + scale.width > hint.x && scale.y < hint.y + hint.height && scale.y + scale.height > hint.y).toBe(false);
@@ -9653,7 +9676,7 @@ test("companion safe areas keep navigation and drawing actions clear of system U
     .getByRole("menuitem", { name: "Open Home Assistant sidebar", exact: true });
   await expect.poll(async () => (await navigation.boundingBox())?.y).toBeGreaterThanOrEqual(62);
   await navigation.click();
-  const initialHeight = (await bar.boundingBox()).height;
+  await expect(bar).toHaveCSS("padding-top", "62px");
   await gallery.getByRole("button", { name: /Clean custom area/ }).click();
   await gallery.getByRole("button", { name: "New area", exact: true }).click();
   const clear = gallery.getByRole("button", { name: "Clear", exact: true });
@@ -9667,7 +9690,7 @@ test("companion safe areas keep navigation and drawing actions clear of system U
     element.style.setProperty("--safe-area-inset-right", "62px");
     element.style.setProperty("--safe-area-inset-bottom", "21px");
   });
-  await expect.poll(async () => Math.round(initialHeight - (await bar.boundingBox()).height)).toBe(62);
+  await expect(bar).toHaveCSS("padding-top", "0px");
   const floor = await gallery.getByRole("combobox", { name: "Choose floor" }).boundingBox();
   expect(floor.x).toBeGreaterThanOrEqual(62);
   const fit = await gallery.getByRole("button", { name: "Fit the whole map on screen" }).boundingBox();

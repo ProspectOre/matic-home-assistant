@@ -1,16 +1,18 @@
 import { html, nothing } from "lit";
 import { mdiCrosshairsGps, mdiVideoOutline } from "@mdi/js";
 import type { NoticePlaceholders, WorkspaceIntent, WorkspaceState } from "./contracts";
-import { icon } from "./icons";
+import { icon, iconFit } from "./icons";
 import { canFollowRobot, forcesTop, topView } from "./state";
 
 export function renderCameraToolbar(
   state: WorkspaceState,
   intent: (value: WorkspaceIntent) => void,
   t: (key: string, fallback: string) => string,
+  fitMap: () => void,
 ) {
   const view = topView(state);
-  const editing = state.workflow === "draw" || state.workflow === "areaReview";
+  const areaReview = state.workflow === "areaReview";
+  const editing = state.workflow === "draw" || areaReview;
   const following = (mode: "follow" | "ride") => {
     const active = state.followMode === mode;
     const ready = canFollowRobot(state, mode);
@@ -29,12 +31,15 @@ export function renderCameraToolbar(
         <button type="button" class="ms-btn" aria-pressed=${String(view === "three")} ?disabled=${forcesTop(state)}
           @click=${() => intent({type: "set-view", view: "three"})}>${t("map_view_3d", "3D")}</button>
       </div>` : nothing}
-      ${view === "top" ? html`<div class="appearance-switch ms-segment" role="group" aria-label=${t("map_style_label", "Map style")}>
+      ${!areaReview && view === "top" ? html`<div class="appearance-switch ms-segment" role="group" aria-label=${t("map_style_label", "Map style")}>
         <button type="button" class="ms-btn" aria-pressed=${String(state.appearance === "photo")}
           @click=${() => intent({type: "set-appearance", appearance: "photo"})}>${t("map_style_photo", "Photo")}</button>
         <button type="button" class="ms-btn" aria-pressed=${String(state.appearance === "rooms")}
           @click=${() => intent({type: "set-appearance", appearance: "rooms"})}>${t("v4_room_colours", "Room colors")}</button>
       </div>` : nothing}
+      ${state.workflow === "draw" ? html`<button class="ms-btn ms-btn--icon" type="button"
+        aria-label=${t("v4_fit_map_hint", "Fit the whole map on screen")} title=${t("v4_fit_map", "Fit map")}
+        @click=${fitMap}>${icon(iconFit)}</button>` : nothing}
     </div>
     ${!editing && state.dataMode === "live" ? html`<div class="tracking-switch ms-segment" role="group" aria-label=${t("v4_robot_tracking", "Robot tracking")}>
       ${following("follow")}${following("ride")}

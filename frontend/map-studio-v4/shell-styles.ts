@@ -316,7 +316,7 @@ export const shellStyles = [tokens, base, controls, css`
       transition: block-size var(--ms-base) var(--ms-ease);
       will-change: transform;
     }
-    .narrow .mobile-sheet[data-detent="half"] { block-size: min(48%, 26rem); }
+    .narrow .mobile-sheet[data-detent="half"] { block-size: min(52%, 26rem); }
     .narrow .mobile-sheet[data-detent="full"] { block-size: min(92%, calc(100% - 9rem)); }
     .narrow .mobile-sheet.dragging,
     .narrow .mobile-sheet.instant { transition: none; }

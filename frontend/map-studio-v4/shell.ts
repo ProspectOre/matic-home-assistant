@@ -58,6 +58,7 @@ import {
   iconFullMap,
 } from "./icons";
 import {
+  type MaticMapCanvasV4,
   WORKSPACE_ACTION_EVENT,
   WORKSPACE_INTENT_EVENT,
 } from "./map-canvas";
@@ -262,9 +263,11 @@ export class MaticMapShellV4 extends LitElement {
     ]);
     if (!this.#workflowStyled) {
       this.#workflowStyled = true;
-      adoptStyles(this.renderRoot as ShadowRoot, [...shellStyles, views.shellWorkflowStyles, views.formControls,
-        ...(this.#layerToolbar.value ? [this.#layerToolbar.value.layerToolbarStyles] : []),
-        ...(this.#candidates.value ? [this.#candidates.value.roomCandidateStyles] : [])]);
+      const root = this.renderRoot as ShadowRoot;
+      // Lazy loaders adopt their styles as soon as each module arrives. Keep
+      // those sheets when workflow styles load concurrently; replacing the
+      // full list here can drop the map toolbar sheet after it was adopted.
+      adoptStyles(root, [...root.adoptedStyleSheets, views.shellWorkflowStyles, views.formControls]);
     }
     return { ...views, ...actions };
   }
@@ -1480,7 +1483,9 @@ export class MaticMapShellV4 extends LitElement {
 
             ${showFloorSwitcher ? this.#layerToolbar.value?.renderFloorSwitcher(state, this.#intent, this.#t) : nothing}
             </div>
-            ${showView ? this.#layerToolbar.value?.renderCameraToolbar(state, this.#intent, this.#t) : nothing}
+            ${showView ? this.#layerToolbar.value?.renderCameraToolbar(
+              state, this.#intent, this.#t, () => this.renderRoot.querySelector<MaticMapCanvasV4>(MAP_CANVAS_TAG)?.fitMap(),
+            ) : nothing}
             <div class="toolbar-actions">
             ${canToggleWorkspace ? html`
               <button

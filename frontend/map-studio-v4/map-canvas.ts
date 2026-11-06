@@ -531,6 +531,12 @@ export class MaticMapCanvasV4 extends LitElement {
     return this.#renderer?.diagnostics() ?? null;
   }
 
+  fitMap(): void {
+    this.#unfollow();
+    this.#renderer?.fit();
+    this.#intent({ type: "fit-map" });
+  }
+
   zoomBy(factor: number): void {
     this.#unfollow();
     this.#renderer?.zoomAt(factor);
@@ -592,19 +598,14 @@ export class MaticMapCanvasV4 extends LitElement {
           </div>
         ` : nothing}
 
-        <div ?hidden=${this.comparisonMode} class="map-tools ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_tools", "Map tools")}>
-              <button
-                class="fit ms-btn"
-                type="button"
-                aria-label=${this.#t("v4_fit_map_hint", "Fit the whole map on screen")}
-                @click=${() => {
-                  this.#unfollow();
-                  this.#renderer?.fit();
-                  this.#intent({ type: "fit-map" });
-                }}
-                title=${this.#t("v4_fit_map", "Fit map")}
-              >${icon(iconFit)}<span class="ms-btn__label">${this.#t("v4_fit_map", "Fit map")}</span></button>
-          </div>
+        ${!this.comparisonMode && state.workflow !== "draw" ? html`
+          <div class="map-tools ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_tools", "Map tools")}>
+            <button class="fit ms-btn" type="button"
+              aria-label=${this.#t("v4_fit_map_hint", "Fit the whole map on screen")}
+              title=${this.#t("v4_fit_map", "Fit map")}
+              @click=${this.fitMap}
+            >${icon(iconFit)}<span class="ms-btn__label">${this.#t("v4_fit_map", "Fit map")}</span></button>
+          </div>` : nothing}
       </div>
     `;
   }

@@ -15,8 +15,9 @@ On a phone, Home Assistant navigation is also available there.
 Drag to move, scroll to zoom, and right-drag or Shift-drag to turn the 3D view.
 On a touch screen, drag with one finger to move, pinch to zoom, twist two
 fingers to rotate, or drag two fingers together to tilt. Lift your fingers to
-start a different gesture. **Fit map** recenters
-the floor. The **?** in the toolbar lists mouse, touch and keyboard controls,
+start a different gesture. **Fit map** recenters the floor. While drawing,
+find it beside **Photo** and **Room colors**. The **?** in the toolbar lists
+mouse, touch and keyboard controls,
 including drawing shortcuts. **Full map** hides the cleaning panel and keeps
 the toolbar, status and main action available.
 

@@ -115,7 +115,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await helpButton(gallery).tap();
     await expect(helpDialog(gallery)).toBeVisible();
-    const topView = canvasOf(gallery).getByRole("button", { name: "2D", exact: true });
+    const topView = gallery.locator("[data-map-toolbar]").getByRole("button", { name: "2D", exact: true });
     await topView.tap();
     await expect(helpDialog(gallery)).toHaveCount(0);
     await expect(topView).toHaveAttribute("aria-pressed", "true");
@@ -306,7 +306,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     await expect(dialog).toHaveAttribute("aria-modal", "false");
     await expect(help).toHaveAttribute("aria-expanded", "true");
     await expect(help).toHaveAttribute("aria-controls", "navigation-help");
-    expect(await canvasOf(gallery).evaluate((canvas) => Boolean(canvas.shadowRoot.getElementById("navigation-help")))).toBe(true);
+    expect(await gallery.locator("matic-map-shell-v4").evaluate((shell) => Boolean(shell.shadowRoot.getElementById("navigation-help")))).toBe(true);
     expect(await rows(dialog)).toEqual({
       Trackpad: "Scroll to move the map · pinch to zoom · twist to rotate",
       Mouse: "Drag to move the map · right-drag or Shift-drag to rotate · wheel to zoom",
@@ -1588,6 +1588,8 @@ test.describe("Final review", () => {
     await expect(gallery.locator("[data-map-toolbar]").getByRole("group", { name: "Map view" })).toHaveCount(0);
     await expect(gallery.locator("[data-map-toolbar]").getByRole("group", { name: "Map style" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "3D", exact: true })).toHaveCount(0);
+    const drawing = await loadGallery(page, { scenario: "draw", viewport: { width: 1024, height: 768 } });
+    await expect(drawing.locator("[data-map-toolbar]").getByRole("group", { name: "Map style" })).toBeVisible();
   });
 
   test("Points keeps one hint, in the panel, and its handles never cover the rail's ? on a phone @mobile", async ({ page }) => {
