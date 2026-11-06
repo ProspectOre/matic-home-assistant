@@ -501,7 +501,7 @@ const nullableBoolean = (value: unknown, code: string): boolean | null => {
   return booleanValue(value, code);
 };
 
-const mapSessionKey = (value: unknown): string | null => {
+export const mapSessionKey = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;
   const key = boundedString(value, 64, "invalid-map-session-key");
   if (!/^[0-9a-f]{64}$/u.test(key)) throw new ContractError("invalid-map-session-key");
@@ -621,61 +621,11 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
   });
 };
 
-const point = (value: unknown, code: string): readonly [number, number] => {
-  if (!Array.isArray(value) || value.length !== 2) throw new ContractError(code);
-  return [
-    boundedNumber(value[0], -1_000_000, 1_000_000, code),
-    boundedNumber(value[1], -1_000_000, 1_000_000, code),
-  ];
-};
-
 export const parseSavedPlanId = (value: unknown): string => {
   const result = objectValue(value, "invalid-plan-save-response");
   const response = objectValue(result.response, "invalid-plan-save-response");
   const plan = objectValue(response.plan, "invalid-plan-save-response");
   return boundedString(plan.id, 128, "invalid-plan-save-response");
-};
-
-export const parsePose = (value: unknown): PoseModel => {
-  const payload = objectValue(value, "invalid-pose");
-  const rawPosition = payload.position;
-  const position = rawPosition === null
-    ? null
-    : point(rawPosition, "invalid-pose-position");
-  const freshness = payload.pose_freshness;
-  if (freshness !== "live" && freshness !== "coordinator_fallback") {
-    throw new ContractError("invalid-pose-freshness");
-  }
-  // The finite bounds reject NaN and infinities as well as out-of-range ages.
-  const age = payload.pose_age_seconds;
-  const nativeObservationAgeSeconds = Object.hasOwn(payload, "pose_age_seconds")
-    ? typeof age === "number" && age >= -2 && age <= 5
-      ? age
-      : null
-    : undefined;
-  const processing = payload.pose_processing_seconds;
-  const poseProcessingSeconds = typeof processing === "number" && processing >= 0 && processing <= 60 ? processing : undefined;
-  return {
-    position,
-    source: boundedString(payload.source, 64, "invalid-pose-source"),
-    revision: boundedInteger(payload.revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-revision"),
-    sceneRevision: payload.scene_revision == null ? null
-      : boundedInteger(payload.scene_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-revision"),
-    sceneEpoch: selectedId(payload.scene_epoch, "invalid-scene-epoch"),
-    poseRevision: boundedInteger(payload.pose_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-sequence"),
-    floorCoherent: booleanValue(payload.map_floor_coherent, "invalid-pose-floor"),
-    mapSessionKey: mapSessionKey(payload.map_session_key),
-    freshness,
-    ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
-    ...(poseProcessingSeconds === undefined ? {} : { poseProcessingSeconds }),
-    poseMeasuredAt: payload.pose_measured_at,
-    // An unreadable heading falls back to the plain dot instead of dropping
-    // an otherwise valid position.
-    heading: position !== null && typeof payload.heading === "number"
-      && Math.abs(payload.heading) <= Math.PI + 1e-3
-      ? payload.heading
-      : null,
-  };
 };
 
 export const isPrivatePath = (value: unknown): value is string => {

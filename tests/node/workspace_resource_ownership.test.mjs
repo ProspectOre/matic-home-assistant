@@ -87,6 +87,7 @@ const fixture = () => {
   const stamp = coherence.begin(entry.entryId, entryFloorKey(entry), entryMissionKey(entry), entry.mapRevision);
   store.patch({
     generation: stamp.generation,
+    optionalUiReady: true,
     host: { ...store.value.host, ...host },
     coherence: "current",
     selection: { ...store.value.selection, entryId: entry.entryId },
@@ -443,6 +444,25 @@ const spatialOwner = (f, pose) => new SpatialResources(f.store, {
 const livePose = (overrides = {}) => ({
   floorCoherent: true, mapSessionKey: "session-a", position: [1, 2],
   freshness: "live", nativeObservationAgeSeconds: 0, ...overrides,
+});
+
+test("the first map is admitted before pose loading and polling resumes immediately", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture();
+  f.store.patch({ optionalUiReady: false });
+  let reads = 0;
+  const owner = spatialOwner(f, async () => { reads += 1; return livePose(); });
+  owner.admitCatalog(f.entry, null, true, false, false);
+  await flush();
+  assert.equal(reads, 0);
+  await owner.refreshPose();
+  assert.equal(reads, 0);
+  f.store.patch({ optionalUiReady: true });
+  owner.startPolling();
+  await flush();
+  assert.equal(reads, 1);
+  assert.equal(f.store.value.map.exactPose, true);
+  owner.dispose();
 });
 
 test("invalid server timestamps cannot establish or poison clock calibration", () => {

@@ -8,7 +8,6 @@ import {
   SCENE_MAX_BYTES,
   isPrivatePath,
   parseCatalog,
-  parsePose,
   type AreaCircle,
   type AreasCatalog,
   type CleaningMode,
@@ -417,7 +416,11 @@ export class MaticBackend {
   }
 
   async pose(path: string, signal?: AbortSignal): Promise<PoseModel> {
-    return parsePose(await this.#json("pose", path, REQUEST_TIMEOUTS.pose, signal));
+    const [{ parsePose }, value] = await Promise.all([
+      import("./map-layer-resources"),
+      this.#json("pose", path, REQUEST_TIMEOUTS.pose, signal),
+    ]);
+    return parsePose(value);
   }
 
   async history(path: string, signal?: AbortSignal): Promise<HistoryCatalog> {

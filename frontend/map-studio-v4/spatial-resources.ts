@@ -92,7 +92,8 @@ export class SpatialResources {
       replacementFinished: (entry) => this.#finishSpatialReplacementRead(entry),
       recovered: (entry) => this.#resolveSpatialReadFailure("delta", entry),
       failed: (entry) => this.#recordSpatialReadFailure("delta", entry),
-      loadPose: (entry, stamp) => this.#pose.load(entry, stamp),
+      loadPose: (entry, stamp) => this.#store.value.optionalUiReady
+        ? this.#pose.load(entry, stamp) : Promise.resolve(),
       loadFallback: (entry, stamp) => this.loadHistory(entry, stamp),
       loadPlans: () => {
         if (needsPlanCatalog(this.#store.value)) callbacks.loadPlans();
@@ -103,7 +104,9 @@ export class SpatialResources {
 
   clearPoseExpiry(): void { this.#pose.clearExpiry(); }
   cancelQueuedPose(): void { this.#pose.cancelQueued(); }
-  refreshPose(): Promise<void> { return this.#pose.refreshPose(); }
+  refreshPose(): Promise<void> {
+    return this.#store.value.optionalUiReady ? this.#pose.refreshPose() : Promise.resolve();
+  }
   stopDeltaStream(): void { this.#scene.stop(); }
   ownsLiveDelta(entry: MapEntry): boolean { return this.#scene.owns(entry); }
   async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
@@ -199,7 +202,10 @@ export class SpatialResources {
   startPolling(): void {
     if (!this.#callbacks.pageActive()) return;
     this.#startOptionalLayers();
-    this.#pose.startPolling();
+    if (this.#store.value.optionalUiReady) {
+      this.#pose.startPolling();
+      void this.#pose.refreshPose();
+    }
   }
 
   stopPolling(): void {
@@ -550,7 +556,7 @@ export class SpatialResources {
     }
     if (coherent) {
       void this.#scene.load(entry, stamp);
-      void this.#pose.load(entry, stamp);
+      if (this.#store.value.optionalUiReady) void this.#pose.load(entry, stamp);
     }
   }
 

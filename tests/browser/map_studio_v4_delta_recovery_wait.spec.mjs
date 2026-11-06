@@ -340,6 +340,10 @@ test("@safety a pose mismatch during replacement delta recovery releases the wai
   await loadRecoveryHarness(page);
   await startRecovery(page);
 
+  // Pose polling starts after the first map has been admitted. The frozen
+  // browser clock must advance through the admission frames before testing it.
+  await page.clock.runFor(100);
+  await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWaitRun.store.value.optionalUiReady)).toBe(true);
   const poseReadsBeforeMismatch = await page.evaluate(() => window.__deltaRecoveryWait.poseReads);
   await page.evaluate(() => {
     const run = window.__deltaRecoveryWaitRun;
@@ -359,6 +363,8 @@ test("@safety a pose mismatch during replacement delta recovery releases the wai
 
   await page.clock.fastForward(5_000);
   await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWait.deltaReads.a)).toBe(3);
+  await page.clock.runFor(100);
+  await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWait.poseReads)).toBe(invalidated.poseReads + 1);
   const retried = await page.evaluate(() => ({
     sceneReads: { ...window.__deltaRecoveryWait.sceneReads },
     deltaReads: { ...window.__deltaRecoveryWait.deltaReads },

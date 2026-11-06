@@ -7,6 +7,7 @@ import { parseWifiSignal } from "./wifi-signal";
 import { entryCoherenceIdentity } from "./backend-contracts";
 import { CoverageResources } from "./coverage-resources";
 export { PoseClock } from "./pose-clock";
+export { parsePose } from "./pose-contract";
 
 /** Load and refresh optional Wi-Fi and floor-type layers. */
 export class MapLayerResources {
