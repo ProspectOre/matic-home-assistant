@@ -4052,6 +4052,25 @@ async def test_live_tracker_serves_fresh_pose_without_waiting_for_robot():
     assert json.loads(response.body)["position"] is None
 
 
+async def test_quiet_pose_stream_recovers_through_a_fresh_on_demand_read():
+    runtime = _runtime()
+    stale = runtime.coordinator.data.pose
+    fresh = replace(stale, x=0.3, observed_at=stale.observed_at + 6)
+    runtime.live_pose = SimpleNamespace(current=lambda: stale, revision=8)
+    runtime.client.async_get_pose.return_value = fresh
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=fresh.observed_at,
+    ):
+        for _ in range(2):
+            payload = json.loads((await view.get(request, "entry")).body)
+            assert payload["position"] == [0.3, 0.2]
+            assert payload["pose_observation_current"]
+    runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
+
+
 async def test_empty_live_tracker_refreshes_pose_after_floor_becomes_available():
     runtime = _runtime()
     pose = runtime.coordinator.data.pose

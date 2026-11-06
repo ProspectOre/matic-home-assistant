@@ -16,6 +16,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from .client.exceptions import MaticError
 from .client.floor_plan import (
     pose_observation_age_seconds,
+    pose_observation_is_current,
     resolve_robot_map_position,
     robot_location_source,
 )
@@ -80,7 +81,9 @@ class MaticSlamPoseView(HomeAssistantView):
         tracked_pose = tracker.current() if tracker is not None else None
         cached = self._cache.get(entry_id)
         now = request_started
-        if tracker is not None and tracked_pose is not None:
+        if tracker is not None and pose_observation_is_current(
+            tracked_pose, floor_plan, now=time()
+        ):
             cached = _CachedPose(
                 id(runtime), tracked_pose, now, tracker.revision, "live", frame_key
             )
