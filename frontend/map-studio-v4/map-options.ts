@@ -181,7 +181,8 @@ export class MapOptions {
             aria-checked=${String(Boolean(state.coverageModes & 2))} tabindex="-1"
             data-mop-coverage @click=${() => intent({ type: "toggle-cleaning-coverage", mode: "mop" })}
           ><span>${t("v4_mop_coverage", "Mop coverage")}</span><span class="ms-switch" aria-checked=${String(Boolean(state.coverageModes & 2))} aria-hidden="true"></span></button>
-          ${state.liveCoverage?.truncated ? html`<small class="menu-note">${t("v4_coverage_partial", "Coverage may be incomplete.")}</small>` : nothing}
+          ${state.liveCoverage?.ownershipUnverified ? html`<small class="menu-note">${t("v4_coverage_unverified", "Live coverage is hidden because its run cannot be verified.")}</small>`
+            : state.liveCoverage?.truncated ? html`<small class="menu-note">${t("v4_coverage_partial", "Coverage may be incomplete.")}</small>` : nothing}
         ` : nothing}
         ${state.dataMode === "live" ? html`
           <button

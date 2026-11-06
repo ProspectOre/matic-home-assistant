@@ -238,6 +238,7 @@ export interface CleaningCoverageLayer {
   readonly cellSize: number;
   readonly runs: readonly (readonly [number, number, number, number])[];
   readonly truncated: boolean;
+  readonly ownershipUnverified: boolean;
 }
 
 export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";

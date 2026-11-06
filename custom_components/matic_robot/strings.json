@@ -249,6 +249,7 @@
     "v4_vacuum_coverage": "Vacuum coverage",
     "v4_mop_coverage": "Mop coverage",
     "v4_coverage_partial": "Coverage may be incomplete.",
+    "v4_coverage_unverified": "Live coverage is hidden because its run cannot be verified.",
     "v4_follow_robot": "Follow the robot",
     "v4_floor_types_failed": "Couldn't load carpet and vents",
     "v4_floor_types_legend": "Brown is carpet, blue is a vent",
