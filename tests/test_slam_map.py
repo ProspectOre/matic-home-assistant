@@ -458,7 +458,7 @@ def test_wifi_floor_support_excludes_persistent_vertical_surface_columns() -> No
     surfaces = np.unpackbits(
         np.frombuffer(source.surface_bits, dtype=np.uint8), bitorder="big"
     ).reshape(32, 32, 24)
-    surfaces[15, 15, 7:15] = True
+    surfaces[4, 19, 7:15] = True
     tile = SlamTile(
         source.page_x,
         source.page_y,
@@ -475,8 +475,9 @@ def test_wifi_floor_support_excludes_persistent_vertical_surface_columns() -> No
         bitorder="little",
     ).reshape(32, 32)
 
-    assert not mask[15, 15]
-    assert mask[15, 14]
+    assert not mask[19, 4]
+    assert mask[4, 19]
+    assert mask[19, 5]
     assert support["occupied_cells"] == 1023
 
 

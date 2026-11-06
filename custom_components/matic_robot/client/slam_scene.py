@@ -173,8 +173,9 @@ def encode_slam_scene(
         surfaces = np.unpackbits(
             np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
         ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
+        # Surface columns index x then y. The floor raster indexes rows then columns.
         vertical_obstruction = (
-            np.count_nonzero(surfaces[:, :, 7:], axis=2)
+            np.count_nonzero(surfaces[:, :, 7:], axis=2).T
             >= MIN_VERTICAL_PARTITION_LEVELS
         )
         floor_occupancy[
