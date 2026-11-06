@@ -201,6 +201,56 @@ test("the Wi-Fi layer explains when its endpoint is unavailable", async ({ page 
   await expect(wifi).toHaveAttribute("data-detail", "Wi-Fi survey data is unavailable for this map.");
 });
 
+test("mixed one-foot and legacy Wi-Fi samples keep the raster and strong/weak spots", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { buildWifiRaster } from "./frontend/map-studio-v4/wifi-raster"; export { parseWifiSignal } from "./frontend/map-studio-v4/wifi-signal";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/wifi-raster.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { buildWifiRaster, parseWifiSignal } = await import("/wifi-raster.js");
+    const width = 220, height = 220;
+    const mask = new Uint8Array(Math.ceil(width * height / 8));
+    for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+      const at = y * width + x;
+      mask[at >>> 3] |= 1 << (at & 7);
+    }
+    const support = { version: 1, status: "verified", encoding: "bitset-little-v1", originCells: [0, 0],
+      metersPerCell: 0.015, spanCells: [width, height], occupiedCells: width * height,
+      maskSha256: "b".repeat(64), mask };
+    const readings = [];
+    for (let y = 0; y < 8; y += 1) for (let x = 0; x < 8; x += 1) {
+      readings.push({ x: (10.5 + x * 20.32) * 0.015, y: (10.5 + y * 20.32) * 0.015,
+        dbm: x < 4 ? -42 : -84, size: 0.3048 });
+    }
+    const grid = parseWifiSignal({ enabled: true, cell_size: 0.3048, cells: readings });
+    const mixed = parseWifiSignal({ enabled: true, cell_size: 0.3048, cells: [
+      ...readings, { x: 160 * 0.015, y: 0.015, dbm: -60, size: 1.0 },
+    ] });
+    const gridRaster = buildWifiRaster(grid, support, "relative");
+    const mixedRaster = buildWifiRaster(mixed, support, "relative");
+    const samplePixel = (raster, x, y) => {
+      if (!raster || x < raster.left || x >= raster.left + raster.width || y < raster.top || y >= raster.top + raster.height) return null;
+      const pixels = raster.canvas.getContext("2d").getImageData(0, 0, raster.width, raster.height).data;
+      const offset = ((y - raster.top) * raster.width + x - raster.left) * 4;
+      return [...pixels.slice(offset, offset + 4)];
+    };
+    const alphaCount = (raster) => {
+      if (!raster) return 0;
+      const pixels = raster.canvas.getContext("2d").getImageData(0, 0, raster.width, raster.height).data;
+      let count = 0;
+      for (let index = 3; index < pixels.length; index += 4) if (pixels[index] > 0) count += 1;
+      return count;
+    };
+    return { gridAlpha: alphaCount(gridRaster), mixedAlpha: alphaCount(mixedRaster),
+      strong: samplePixel(mixedRaster, 51, 91), weak: samplePixel(mixedRaster, 152, 91) };
+  });
+  expect(result.gridAlpha).toBeGreaterThan(0);
+  expect(result.mixedAlpha).toBeGreaterThanOrEqual(result.gridAlpha);
+  expect(result.strong?.[3]).toBeGreaterThan(0);
+  expect(result.weak?.[3]).toBeGreaterThan(0);
+  expect(result.strong?.[0]).toBeLessThan(result.weak?.[0]);
+  expect(result.strong?.[2]).toBeGreaterThan(result.weak?.[2]);
+});
+
 test("Wi-Fi heatmap fills measured floor bins, clips walls, blends neighbors, and stays below coverage", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { buildWifiRaster, drawWifiRaster } from "./frontend/map-studio-v4/wifi-raster"; export { drawMapLayers } from "./frontend/map-studio-v4/renderer-layers"; export { entryCoherenceIdentity } from "./frontend/map-studio-v4/backend-contracts"; export { parseWifiSignal } from "./frontend/map-studio-v4/wifi-signal"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/wifi-raster.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

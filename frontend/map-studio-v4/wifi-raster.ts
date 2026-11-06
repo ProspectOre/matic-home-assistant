@@ -6,7 +6,9 @@ import { wifiScaleBounds, wifiSignalColor } from "./wifi-scale";
 const MAX_RASTER_CELLS = 4 * 1024 * 1024;
 const PATCH_SIDE = 64;
 const MAX_CELL_FOOTPRINT_METERS = 1.2;
-const MAX_SAMPLES_PER_NEIGHBOR_BIN = 64;
+const MIN_CELL_FOOTPRINT_METERS = 0.05;
+const NEIGHBOR_SUBDIVISIONS = 8;
+const MAX_NEIGHBOR_CANDIDATE_CHECKS = 6_000_000;
 const MAX_RASTER_WORK_CELLS = 6_000_000;
 
 export interface WifiRaster {
@@ -122,7 +124,9 @@ export const buildWifiRaster = (
   }
   // Collapse repeated observations in a floor bin before allocating neighbor
   // work. This bounds duplicate-heavy surveys by distinct map cells.
-  const samples = [...grouped.values()].map(({ x, y, size, dbmSum, count }) => ({ x, y, size, dbm: dbmSum / count }));
+  const samples = [...grouped.values()]
+    .map(({ x, y, size, dbmSum, count }) => ({ x, y, size, dbm: dbmSum / count }))
+    .sort((a, b) => a.y - b.y || a.x - b.x || a.size - b.size || a.dbm - b.dbm);
   if (!samples.length) {
     byScale.set(scale, null);
     return null;
@@ -197,25 +201,89 @@ export const buildWifiRaster = (
   const weightedSignal = new Float32Array(width * height);
   const weights = new Float32Array(width * height);
   const neighborBinSide = Math.max(1, Math.ceil((MAX_CELL_FOOTPRINT_METERS / metersPerCell) * 2 + 2));
-  const bins = new Map<string, number[]>();
+  // Keep a spatially distributed set of neighbor candidates for each footprint
+  // class. A legacy coarse reading therefore cannot evict a dense set of newer
+  // one-foot readings from the same large lookup bin.
+  const bins = new Map<string, Map<number, Map<number, number>>>();
+  const candidateDistanceToSlot = (index: number, binX: number, binY: number, slot: number): number => {
+    const sample = samples[index]!;
+    const slotX = slot % NEIGHBOR_SUBDIVISIONS;
+    const slotY = Math.floor(slot / NEIGHBOR_SUBDIVISIONS);
+    const targetX = binX * neighborBinSide
+      + (slotX + 0.5) * neighborBinSide / NEIGHBOR_SUBDIVISIONS;
+    const targetY = binY * neighborBinSide
+      + (slotY + 0.5) * neighborBinSide / NEIGHBOR_SUBDIVISIONS;
+    return (sample.x - targetX) ** 2 + (sample.y - targetY) ** 2;
+  };
+  const shouldReplaceRepresentative = (
+    candidateIndex: number,
+    existingIndex: number,
+    binX: number,
+    binY: number,
+    slot: number,
+  ): boolean => {
+    const candidateDistance = candidateDistanceToSlot(candidateIndex, binX, binY, slot);
+    const existingDistance = candidateDistanceToSlot(existingIndex, binX, binY, slot);
+    if (candidateDistance !== existingDistance) return candidateDistance < existingDistance;
+    const candidate = samples[candidateIndex]!;
+    const existing = samples[existingIndex]!;
+    return candidate.y < existing.y || (candidate.y === existing.y && candidate.x < existing.x);
+  };
   for (const [index, sample] of samples.entries()) {
     const bx = Math.floor(sample.x / neighborBinSide);
     const by = Math.floor(sample.y / neighborBinSide);
     const key = `${bx}:${by}`;
-    const bucket = bins.get(key);
-    if (bucket && bucket.length >= MAX_SAMPLES_PER_NEIGHBOR_BIN) {
-      byScale.set(scale, null);
-      return null;
+    let resolutionBins = bins.get(key);
+    if (!resolutionBins) {
+      resolutionBins = new Map();
+      bins.set(key, resolutionBins);
     }
-    if (bucket) bucket.push(index);
-    else bins.set(key, [index]);
+    const footprintMeters = sample.size * metersPerCell;
+    const resolutionClass = Math.min(
+      Math.floor(Math.log2(footprintMeters / MIN_CELL_FOOTPRINT_METERS)),
+      Math.ceil(Math.log2(MAX_CELL_FOOTPRINT_METERS / MIN_CELL_FOOTPRINT_METERS)),
+    );
+    let representatives = resolutionBins.get(resolutionClass);
+    if (!representatives) {
+      representatives = new Map();
+      resolutionBins.set(resolutionClass, representatives);
+    }
+    const localX = sample.x - bx * neighborBinSide;
+    const localY = sample.y - by * neighborBinSide;
+    const slotX = Math.min(
+      NEIGHBOR_SUBDIVISIONS - 1,
+      Math.floor(localX / neighborBinSide * NEIGHBOR_SUBDIVISIONS),
+    );
+    const slotY = Math.min(
+      NEIGHBOR_SUBDIVISIONS - 1,
+      Math.floor(localY / neighborBinSide * NEIGHBOR_SUBDIVISIONS),
+    );
+    const slot = slotY * NEIGHBOR_SUBDIVISIONS + slotX;
+    const existing = representatives.get(slot);
+    if (existing === undefined
+      || shouldReplaceRepresentative(index, existing, bx, by, slot)) {
+      representatives.set(slot, index);
+    }
   }
-  const neighbours = samples.map((sample, index) => {
+  const neighborCandidates = (key: string): Iterable<number> => {
+    const resolutionBins = bins.get(key);
+    return resolutionBins
+      ? [...resolutionBins.values()].flatMap((representatives) => [...representatives.values()])
+      : [];
+  };
+  const neighborLists: number[][] = [];
+  let candidateChecks = 0;
+  let candidateBudgetExceeded = false;
+  neighborSearch: for (const [index, sample] of samples.entries()) {
     const bx = Math.floor(sample.x / neighborBinSide);
     const by = Math.floor(sample.y / neighborBinSide);
     const candidates: { index: number; distance: number }[] = [];
     for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
-      for (const other of bins.get(`${bx + dx}:${by + dy}`) ?? []) {
+      for (const other of neighborCandidates(`${bx + dx}:${by + dy}`)) {
+        if (++candidateChecks > MAX_NEIGHBOR_CANDIDATE_CHECKS) {
+          candidateBudgetExceeded = true;
+          break neighborSearch;
+        }
         if (index === other) continue;
         const candidate = samples[other]!;
         const reach = (sample.size + candidate.size) / 2 + 1;
@@ -230,8 +298,11 @@ export const buildWifiRaster = (
         }
       }
     }
-    return candidates.sort((a, b) => a.distance - b.distance).map((item) => item.index);
-  });
+    neighborLists.push(candidates.sort((a, b) => a.distance - b.distance || a.index - b.index).map((item) => item.index));
+  }
+  // Extremely dense, large surveys still retain each sample's own coverage.
+  // Drop only neighbor blending once its bounded search budget is spent.
+  const neighbours = candidateBudgetExceeded ? samples.map(() => []) : neighborLists;
   const patches = new Set<number>();
   for (const [sampleIndex, sample] of rasterSamples.entries()) {
     const minX = sample.footprintLeft;
