@@ -483,8 +483,8 @@ test.describe("home by state", () => {
       await expect(map.locator(".scene-window")).toBeVisible();
       await expect(map.locator(".map-message")).toHaveCount(0);
       await expect(map.getByRole("button", { name: "Fit the whole map on screen" })).toBeVisible();
-      await expect(map.getByRole("button", { name: "How to move the map" })).toBeVisible();
-      await map.getByRole("button", { name: "2D", exact: true }).click();
+      await expect(toolbar(gallery).getByRole("button", { name: "How to move the map" })).toBeVisible();
+      await toolbar(gallery).getByRole("button", { name: "2D", exact: true }).click();
       expect((await snapshot(page)).view).toBe("top");
       expect(await actions(page)).toEqual([]);
       await gallery.evaluate(element => element.replaceWorkspaceState(element.__beforeRecovery));

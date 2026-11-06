@@ -17,8 +17,7 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 
 ## Matic Map
 
-- **3D robot.** The live robot is drawn as a 3D model that turns with the
-  robot's heading.
+- **3D robot.** The live map marker turns with the robot’s heading.
 - **Cleaning history.** Open **Cleaning history** to see recent cleans, newest
   first, with each room and custom area marked done, partly done, stopped or not
   started. Cleans started in the Matic app or by a robot schedule are listed
@@ -28,20 +27,14 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 - **How a clean ended.** A run says whether it finished, was stopped, ended
   after the current room with Smart Stop, ran low on battery, hit a robot
   problem or was taken over by another task.
-- **Robot trail.** **Show trail on map** draws the path the robot took during a
-  clean. The trail of a clean in progress grows as the robot moves.
-- **No-go zones.** Zones set in the Matic app show on the map, read only, and a
-  custom area that overlaps one says so.
-- **Wi-Fi signal.** Turn on **Wi-Fi survey**, and the robot scans Wi-Fi every
-  30 seconds while it's away from the dock. Open **Map options** and turn on
-  **Wi-Fi signal** to see sampled locations, from green for strong to red for
-  weak. Rings mark older, coarser readings; blank areas are unmeasured.
-  **Clear Wi-Fi survey** starts over, for example after you move your router.
-- **Carpet and vents.** Open **Map options** and turn on **Carpet and vents** to
-  see the rugs and floor vents the robot has found, carpet in brown and vents in
-  blue. Floor type changes made in the Matic app show up here too.
-- **Follow the robot.** Turn on **Follow the robot** in **Map options** to keep
-  the live robot centred. Moving the map yourself turns it off.
+- **Trail and cleaning coverage.** Use **Trail**, **Vacuum** and **Mop** to see the recorded path and observed cleaning coverage.
+  In a saved clean, choose **Show trail on map** to revisit its path.
+- **No-go zones.** See zones set in the Matic app and check whether a custom area overlaps one.
+- **Wi-Fi signal.** Turn on **Wi-Fi survey** to collect a reading every 30 seconds away from the dock.
+  Choose **Wi-Fi** to see surveyed floor, **Compare sampled spots** to highlight differences, or **Clear Wi-Fi survey** to start over.
+- **Carpet and vents.** Select **Carpet** or **Vents** to see the robot’s detections and floor edits from the Matic app.
+  A carpet outline can cover part of a rug.
+- **Follow the robot.** Select **Follow** to center the robot or **Ride along** to turn with it. Moving the map turns tracking off.
 - **Cleaning phase and time left.** While the robot cleans, the status says
   whether it is cleaning the interior, edges or toekicks, and shows the robot's
   own estimate of the time left for the whole clean. The same values are

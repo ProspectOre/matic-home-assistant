@@ -2,20 +2,26 @@
 
 [Cleaning and maps](cleaning.md) · [Entities](entities.md#maps)
 
-Choose **3D** for the photographic map or **2D** for a top-down view, which can
-show the photo or room colors. With a mouse, drag to move, scroll to zoom, and
-right-drag or Shift-drag to turn the 3D view. On a touch screen, drag with one
-finger to move, pinch to zoom, twist two fingers to rotate, and drag two fingers
-up or down together to tilt the 3D view. A two-finger gesture keeps doing what
-it started until you lift your fingers. **Map zoom** takes 100 to 1000% or a
-preset, and **Fit map** recenters the floor. The **?** on the map lists the
-mouse, touch or keyboard controls for the input you're using, plus the drawing
-controls while you draw. **Full map** hides the panel and keeps the status, the
-main action and **Exit full map** in a small bar over the map. **Map options**
-holds map detail and diagnostics; on a phone it also holds the 2D appearance
-and room names. Click a room on either view to select it; the map and room list
-stay in sync. The map panel requires a Home Assistant administrator; for a
-dashboard, add `camera.matic_map` with a Picture Entity card.
+Choose the floor beside **Matic Map**. In homes with multiple robots, choose
+the robot there too. Select **3D**
+for the photographic map or **2D** for **Photo** or **Room colors**. **Follow**
+centers the live robot. **Ride along** turns with its heading.
+
+The row below the view controls shows **Wi-Fi**, **Trail**, **Vacuum**, **Mop**,
+**Carpet**, **Vents** and **Room names**. Click a room in either view to select
+it in the cleaning panel. **Tools** opens map detail, zoom presets, a 100–1000% zoom field and diagnostics.
+On a phone, Home Assistant navigation is also available there.
+
+Drag to move, scroll to zoom, and right-drag or Shift-drag to turn the 3D view.
+On a touch screen, drag with one finger to move, pinch to zoom, twist two
+fingers to rotate, or drag two fingers together to tilt. Lift your fingers to
+start a different gesture. **Fit map** recenters
+the floor. The **?** in the toolbar lists mouse, touch and keyboard controls,
+including drawing shortcuts. **Full map** hides the cleaning panel and keeps
+the toolbar, status and main action available.
+
+Matic Map requires a Home Assistant administrator. For a dashboard, add
+`camera.matic_map` with a Picture Entity card.
 
 **Map history** lists saved maps by date. A saved map is read-only and shows no
 robot position; with three or more, a slider runs from **Oldest** to **Live**.
