@@ -2,3 +2,5 @@
 map_studio_v4_multi_robot_scale.spec.mjs
 map_studio_v4_entry_selection.spec.mjs
 map_studio_v4_stop_identity.spec.mjs
+map_studio_v4_floor_switcher_admission.spec.mjs
+map_studio_v4_deferred_assets.spec.mjs › two-robot startup keeps the native selector in the first-map budget on a 320px viewport

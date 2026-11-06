@@ -8662,7 +8662,7 @@ for (const ordered of [false, true]) {
 }
 
 for (const width of [320, 390, 820, 1280]) {
-  test(`map corner controls stay separate at ${width}px`, async ({ page }, testInfo) => {
+  test(`toolbar and map camera controls stay separate at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     const gallery = await loadGallery(page);
     const floor = gallery.getByRole("combobox", { name: "Choose floor" });
@@ -8675,10 +8675,17 @@ for (const width of [320, 390, 820, 1280]) {
     const check = async () => expect(async () => {
       const [f, v, fitBox, c, map] = await Promise.all([floor.boundingBox(), view.boundingBox(), fit.boundingBox(), camera.boundingBox(), gallery.locator(".map-root").boundingBox()]);
       for (const box of [f, v, fitBox, c]) expect(box).not.toBeNull();
-      expect(f.x + f.width).toBeLessThanOrEqual(v.x);
-      expect(v.x + v.width).toBeLessThanOrEqual(fitBox.x);
-      expect(Math.abs((f.y + f.height / 2) - (v.y + v.height / 2))).toBeLessThanOrEqual(2);
-      expect(Math.abs((f.y + f.height / 2) - (fitBox.y + fitBox.height / 2))).toBeLessThanOrEqual(2);
+      const controls = [f, v, fitBox];
+      for (const [index, box] of controls.entries()) {
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        for (const other of controls.slice(index + 1)) {
+          const overlapWidth = Math.min(box.x + box.width, other.x + other.width) - Math.max(box.x, other.x);
+          const overlapHeight = Math.min(box.y + box.height, other.y + other.height) - Math.max(box.y, other.y);
+          expect(Math.min(overlapWidth, overlapHeight)).toBeLessThanOrEqual(0);
+        }
+      }
       expect(c.x + c.width).toBeLessThanOrEqual(map.x + map.width);
       expect(c.y).toBeGreaterThan(fitBox.y + fitBox.height);
       const sheet = gallery.locator(".mobile-sheet");
@@ -8686,7 +8693,6 @@ for (const width of [320, 390, 820, 1280]) {
         const bounds = await sheet.boundingBox();
         expect(c.y + c.height).toBeLessThanOrEqual(bounds.y);
       }
-      expect(f.height).toBeGreaterThanOrEqual(44);
     }).toPass({ timeout: 2000 });
     await check();
     const more = gallery.getByRole("button", { name: "Expand panel" });
@@ -8702,10 +8708,10 @@ for (const width of [320, 390, 820, 1280]) {
     await expect(fit).toBeVisible();
     await expect(camera).toHaveCount(0);
     await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
-    // Locating shows no map, so the floor select leaves the rail with Fit
-    // (home-rooms.md §11 MS-HOME-04).
+    // A missing live scene leaves known floors available for recovery.
     await gallery.evaluate((element) => element.setScenario("transition"));
-    await expect(floor).toHaveCount(0);
+    await expect(floor).toBeEnabled();
+    await expect(floor.locator('option[value="saved-1"]')).toHaveCount(1);
     await expect(fit).toHaveCount(0);
   });
 }

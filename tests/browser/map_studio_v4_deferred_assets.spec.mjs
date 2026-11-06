@@ -24,6 +24,55 @@ const CLEANING_ROBOT = {
   "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry" } },
 };
 
+function twoRobotEntries() {
+  const entryA = {
+    entry_id: "synthetic-entry",
+    scene_url: "/api/matic_robot/slam_scene/synthetic",
+    delta_url: null,
+    pose_url: "/api/matic_robot/slam_pose/synthetic",
+    history_url: "/api/matic_robot/slam_history/synthetic",
+    areas_url: "/api/matic_robot/areas/synthetic",
+    plans_url: "/api/matic_robot/plans/synthetic",
+    map_revision: 7,
+    map_floor_coherent: true,
+    map_session_verified: true,
+    map_session_key: "a".repeat(64),
+    map_complete: true,
+    map_truncated: false,
+    selected_floor_ordinal: 1,
+    map_floor_ordinal: 1,
+    history_count: 1,
+    history_floor_count: 1,
+    map_health: "ready",
+    stream_failures: 0,
+    bootstrap_state: "complete",
+    bootstrap_photo_seen: true,
+    bootstrap_structure_seen: true,
+    bootstrap_failures: 0,
+    runner_locked: false,
+    stop_settle_pending: false,
+    active_plan: false,
+    native_reconciliation_pending: false,
+    native_session_active: false,
+  };
+  const entryB = {
+    ...entryA,
+    entry_id: "synthetic-entry-b",
+    scene_url: entryA.scene_url.replace("/synthetic", "/synthetic-b"),
+    pose_url: entryA.pose_url.replace("/synthetic", "/synthetic-b"),
+    history_url: entryA.history_url.replace("/synthetic", "/synthetic-b"),
+    areas_url: entryA.areas_url.replace("/synthetic", "/synthetic-b"),
+    plans_url: entryA.plans_url.replace("/synthetic", "/synthetic-b"),
+    map_session_key: "b".repeat(64),
+  };
+  return [entryA, entryB];
+}
+
+const TWO_ROBOT_STATES = {
+  "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } },
+  "vacuum.synthetic_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b" } },
+};
+
 async function armFirstMapOpportunity(page, panelTag) {
   const markerPath = `/__matic-first-map-${randomUUID()}`;
   const starts = [];
@@ -124,6 +173,37 @@ test("Map Studio loads exactly its startup graph within budget and no legacy edi
   expect(loaded).toEqual(Object.keys(graph).sort());
   const total = Object.values(graph).reduce((sum, size) => sum + size, 0);
   expect(total, JSON.stringify(graph)).toBeLessThanOrEqual(STARTUP_BUDGET_BYTES);
+});
+
+test("two-robot startup keeps the native selector in the first-map budget on a 320px viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto("/");
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "packaged",
+    initialCatalogEntries: twoRobotEntries(),
+    initialRobotStates: TWO_ROBOT_STATES,
+  });
+  await page.evaluate(async () => import("/matic_icons.js"));
+  await armFirstMapOpportunity(page, fixture.panelTag);
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const loaded = (await firstMapOpportunityPaths(page)).sort();
+  const graph = startupGraph();
+  expect(loaded).toEqual(Object.keys(graph).map((path) => `/${path}`).sort());
+  const total = Object.values(graph).reduce((sum, size) => sum + size, 0);
+  expect(total, JSON.stringify(graph)).toBeLessThanOrEqual(STARTUP_BUDGET_BYTES);
+
+  const panel = page.locator(fixture.panelTag);
+  const selector = panel.locator("select.robot-switcher");
+  await expect(selector).toBeVisible();
+  await expect(selector.locator("option")).toHaveCount(2);
+  expect(await selector.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await panel.evaluate((element) => {
+    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "enter-full-map" }, bubbles: true, composed: true,
+    }));
+  });
+  await expect(selector).toBeVisible();
+  expect(await selector.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
 });
 
 test("first-map capture includes a script request still in flight at the marker", async ({ page }) => {

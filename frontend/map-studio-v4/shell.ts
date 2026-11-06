@@ -1364,11 +1364,13 @@ export class MaticMapShellV4 extends LitElement {
     const narrow = this.#sheet.narrow ?? state.narrowHint;
     const compact = narrow && this.#sheet.compact;
     const mapReady = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
-    const hasFloorChoices = Boolean(state.resources.entry && (
-      (state.resources.history.value?.floors.length ?? 0) > 1 || state.selection.floorId !== "current"
-    ));
-    const showFloorSwitcher = mapReady || hasFloorChoices;
-    if (mapReady || hasFloorChoices || state.robots.length > 1 || isSelectedRobotUnavailable(state)) this.#layerToolbar.request();
+    const hasFloorChoices = Boolean(state.host.administrator && state.host.robotCount > 0
+      && state.selection.entryId
+      && state.resources.entry?.entryId === state.selection.entryId
+      && state.robots.some((robot) => robot.entryId === state.selection.entryId)
+      && ((state.resources.history.value?.floors.length ?? 0) > 1 || state.selection.floorId !== "current"));
+    const showFloorSwitcher = (mapReady && state.optionalUiReady) || (!mapReady && hasFloorChoices);
+    if (showFloorSwitcher || isSelectedRobotUnavailable(state)) this.#layerToolbar.request();
     const showView = mapReady && !state.comparisonActive;
     const options = this.#options.value;
     const status = statusCopy(state, this.localize, this.dates);

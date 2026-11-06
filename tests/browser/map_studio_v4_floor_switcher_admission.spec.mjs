@@ -84,3 +84,49 @@ test("the toolbar can return to Current after a saved floor scene fails", async 
   })).toEqual(["live", "current", "ready", true]);
   expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.value?.source)).toBe("live");
 });
+
+test("floor metadata follows each selected robot after first-map admission", async ({ page }) => {
+  const entryA = entry(2);
+  const entryB = {
+    ...entryA,
+    entry_id: "synthetic-entry-b",
+    scene_url: entryA.scene_url.replace("/synthetic", "/synthetic-b"),
+    pose_url: entryA.pose_url.replace("/synthetic", "/synthetic-b"),
+    history_url: entryA.history_url.replace("/synthetic", "/synthetic-b"),
+    areas_url: entryA.areas_url.replace("/synthetic", "/synthetic-b"),
+    plans_url: entryA.plans_url.replace("/synthetic", "/synthetic-b"),
+    map_session_key: "b".repeat(64),
+  };
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "packaged",
+    initialCatalogEntries: [entryA, entryB],
+    initialRobotStates: {
+      "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } },
+      "vacuum.synthetic_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b" } },
+    },
+  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  const robotSelector = panel.locator("select.robot-switcher");
+  const floorSelector = panel.locator("select.floor-switcher");
+
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return state.map.available && state.resources.history.value?.entryId;
+  })).toBe("synthetic-entry");
+  await expect(floorSelector.locator("option")).toHaveText(["Home", "Loft"]);
+
+  await robotSelector.selectOption("synthetic-entry-b");
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return state.map.available && state.resources.history.value?.entryId;
+  })).toBe("synthetic-entry-b");
+  await expect(floorSelector.locator("option")).toHaveText(["Home", "Loft"]);
+
+  await robotSelector.selectOption("synthetic-entry");
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return state.map.available && state.resources.history.value?.entryId;
+  })).toBe("synthetic-entry");
+  await expect(floorSelector.locator("option")).toHaveText(["Home", "Loft"]);
+});

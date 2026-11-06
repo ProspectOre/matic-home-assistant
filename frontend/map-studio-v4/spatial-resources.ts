@@ -201,6 +201,17 @@ export class SpatialResources {
 
   startPolling(): void {
     if (!this.#callbacks.pageActive()) return;
+    const state = this.#store.value;
+    const entry = state.resources.entry;
+    const stamp = this.#coherence.current();
+    if (state.optionalUiReady && state.map.available && state.dataMode === "live" && !state.floor.readOnly
+      && entry?.historyFloorCount && entry.historyFloorCount > 1 && stamp
+      && state.resources.history.status === "idle") {
+      // Saved-floor metadata is optional at first paint. The Effects
+      // controller calls startPolling after the two-frame map-admission gate,
+      // so multi-floor homes discover their floors without growing startup.
+      void this.loadHistory(entry, stamp);
+    }
     this.#startOptionalLayers();
     if (this.#store.value.optionalUiReady) {
       this.#pose.startPolling();
@@ -422,24 +433,6 @@ export class SpatialResources {
       && Boolean(host?.connected && host.administrator && host.robotConnected && host.robotCount > 0);
   }
 
-  #loadLiveScene(entry: MapEntry, stamp: ResourceStamp): void {
-    void this.#scene.load(entry, stamp).then(() => {
-      if (entry.historyFloorCount <= 1 || this.#callbacks.disposed() || !this.#callbacks.pageActive()) return;
-      const state = this.#store.value;
-      const currentStamp = this.#coherence.current();
-      const currentEntry = state.resources.entry;
-      if (!currentStamp || currentStamp.generation !== stamp.generation
-        || state.generation !== stamp.generation || state.dataMode !== "live" || state.floor.readOnly
-        || state.resources.scene.status !== "ready" || !currentEntry
-        || currentEntry.entryId !== entry.entryId || currentEntry.mapSessionKey !== entry.mapSessionKey
-        || state.resources.history.status === "loading" || state.resources.history.status === "ready") return;
-      // Keep first paint independent of saved-floor metadata. Once the live
-      // frame is admitted, load the floor/snapshot catalog so a
-      // multi-floor home can use the toolbar selector without opening History.
-      void this.loadHistory(currentEntry, currentStamp);
-    });
-  }
-
   #beginLiveGeneration(entry: MapEntry, previousEntry: MapEntry | null): void {
     if (this.#spatialRecovery !== null
       && this.#spatialRecovery.key !== entryCoherenceIdentity(entry)) {
@@ -574,7 +567,7 @@ export class SpatialResources {
       this.#reloadFloorTypesForNewFloor();
     }
     if (coherent) {
-      this.#loadLiveScene(entry, stamp);
+      void this.#scene.load(entry, stamp);
       if (this.#store.value.optionalUiReady) void this.#pose.load(entry, stamp);
     }
   }
@@ -628,7 +621,7 @@ export class SpatialResources {
           this.#scene.stop();
           const resources = this.#store.value.resources;
           this.#store.patch({ resources: { ...resources, scene: resource("loading", resources.scene.value) } });
-          this.#loadLiveScene(selected, stamp);
+          void this.#scene.load(selected, stamp);
         }
       }
       if (stamp && !state.resources.scene.value
@@ -642,7 +635,7 @@ export class SpatialResources {
       if (coherent && stamp
         && (state.resources.scene.status === "error" || state.floor.readOnly)
         && !this.#requests.has("scene")) {
-        this.#loadLiveScene(selected, stamp);
+        void this.#scene.load(selected, stamp);
       }
       return;
     }
