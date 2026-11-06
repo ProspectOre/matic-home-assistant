@@ -38,6 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 .github/scripts/delivery-contract.py .
+      - run: python3 -B -m unittest discover -s .github/scripts -p test_delivery_contract.py
       # The required check is this job, so an edit run reports the last code
       # run of it rather than skipping, which would read as passing.
       - if: ${{ fromJSON(env.RECHECK) }}
