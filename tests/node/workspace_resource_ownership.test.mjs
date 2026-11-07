@@ -595,23 +595,33 @@ test("a replacement observation keeps its own deadline when the retained pose wo
   assert.equal(f.store.value.map.exactPose, false);
 });
 
-test("live trail restore backfills the latest verified pose and rejects owner changes", async () => {
+test("live trail restore backfills only the latest verified pose for the same owner", async () => {
   const f = fixture();
   f.store.patch({ activity: "cleaning", owner: { entryKey: "robot-a", userKey: "user-a" },
-    trail: { id: "live", mapSessionKey: "session-a", segments: [[[0, 0]]], },
+    trail: { id: "live", mapSessionKey: "session-a", segments: [[[0, 0]]] },
     resources: { ...f.store.value.resources, pose: { status: "ready", problem: null, value: livePose({ position: [1, 1] }) } } });
-  const owner = new RunHistoryResources(f.store, {}, f.requests, { disposed: () => false, pageActive: () => true });
+  const callbacks = { disposed: () => false, pageActive: () => true };
+  const unverified = new RunHistoryResources(f.store, {}, f.requests, callbacks);
+  await unverified.restoreLiveTrail();
+  assert.deepEqual(f.store.value.trail.segments, [[[0, 0]]]);
+  unverified.dispose();
+
+  f.store.patch({ map: { ...f.store.value.map, exactPose: true } });
+  const owner = new RunHistoryResources(f.store, {}, f.requests, callbacks);
   const restore = owner.restoreLiveTrail();
   f.store.patch({ resources: { ...f.store.value.resources,
     pose: { status: "ready", problem: null, value: livePose({ position: [2, 2] }) } } });
   await restore;
-  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
-
-  const staleRestore = owner.restoreLiveTrail();
-  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" } });
-  await staleRestore;
-  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
+  assert.deepEqual(f.store.value.trail.segments, [[[0, 0]], [[2, 2]]]);
   owner.dispose();
+
+  const retiring = new RunHistoryResources(f.store, {}, f.requests, callbacks);
+  const staleRestore = retiring.restoreLiveTrail();
+  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" },
+    resources: { ...f.store.value.resources, pose: { status: "ready", problem: null, value: livePose({ position: [3, 3] }) } } });
+  await staleRestore;
+  assert.deepEqual(f.store.value.trail.segments, [[[0, 0]], [[2, 2]]]);
+  retiring.dispose();
 });
 
 test("a forced catalog refresh cannot promote fallback, unknown-age or stale poses to exact", async () => {
