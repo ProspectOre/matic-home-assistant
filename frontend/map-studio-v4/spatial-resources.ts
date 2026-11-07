@@ -679,7 +679,11 @@ export class SpatialResources {
   async #startOptionalLayer(kind: "wifi" | "floor" | "coverage"): Promise<void> {
     if (kind === "coverage" && (!this.#store.value.optionalUiReady
       || !this.#store.value.resources.entry?.coverageUrl
-      || this.#store.value.resources.entry.nativeSessionActive !== true)) return;
+      || this.#store.value.resources.entry.nativeSessionActive !== true)) {
+      this.#optionalLayers?.stopCoverage();
+      if (this.#store.value.liveCoverage) this.#store.patch({ liveCoverage: null });
+      return;
+    }
     const generation = this.#store.value.generation;
     const module = await import("./map-layer-resources").catch(() => null);
     if (this.#callbacks.disposed() || !this.#callbacks.pageActive()

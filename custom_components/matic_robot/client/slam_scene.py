@@ -160,6 +160,7 @@ def encode_slam_scene(
     floor_chunks: list[bytes] = []
     surface_chunks: list[bytes] = []
     floor_occupancy = np.zeros((span_y, span_x), dtype=bool)
+    wifi_occupancy = np.zeros((span_y, span_x), dtype=bool)
     floor_point_count = 0
     surface_point_count = 0
     global_ordinal = 0
@@ -179,6 +180,10 @@ def encode_slam_scene(
             >= MIN_VERTICAL_PARTITION_LEVELS
         )
         floor_occupancy[
+            offset_y : offset_y + TILE_SIDE,
+            offset_x : offset_x + TILE_SIDE,
+        ] |= floor[:, :, 3] != 0
+        wifi_occupancy[
             offset_y : offset_y + TILE_SIDE,
             offset_x : offset_x + TILE_SIDE,
         ] |= (floor[:, :, 3] != 0) & ~vertical_obstruction
@@ -275,7 +280,7 @@ def encode_slam_scene(
         if coverage is not None:
             metadata_value["coverage"] = coverage
     metadata_value["floor_support"] = _floor_support_metadata(
-        floor_occupancy, min_cell_x, min_cell_y
+        wifi_occupancy, min_cell_x, min_cell_y
     )
     metadata = json.dumps(
         metadata_value,

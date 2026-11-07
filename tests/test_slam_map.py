@@ -481,6 +481,45 @@ def test_wifi_floor_support_excludes_persistent_vertical_surface_columns() -> No
     assert support["occupied_cells"] == 1023
 
 
+def test_wifi_obstructions_do_not_clip_room_selection_geometry() -> None:
+    source = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    surfaces = np.zeros((32, 32, 24), dtype=np.uint8)
+    surfaces[12, :, 7:15] = 1
+    tile = SlamTile(
+        source.page_x,
+        source.page_y,
+        source.mission_token,
+        source.floor_rgba,
+        np.packbits(surfaces.reshape(-1), bitorder="big").tobytes(),
+        b"",
+    )
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "room",
+                "Synthetic room",
+                "room",
+                b"room",
+                ((0.0, 0.0), (0.48, 0.0), (0.48, 0.48), (0.0, 0.48)),
+            ),
+        ),
+    )
+    metadata = _scene_metadata(encode_slam_scene((tile,), floor_plan=floor_plan))
+    photographed = _scene_metadata(encode_slam_scene((source,), floor_plan=floor_plan))
+    assert metadata["rooms"] == photographed["rooms"]
+    assert metadata["rooms"][0]["boundary"] == [[0, 0], [32, 0], [32, 32], [0, 32]]
+    support = metadata["floor_support"]
+    mask = np.unpackbits(
+        np.frombuffer(base64.b64decode(support["mask_base64"]), dtype=np.uint8),
+        bitorder="little",
+    ).reshape(32, 32)
+    assert not mask[:, 12].any()
+    assert mask[:, :12].all() and mask[:, 13:].all()
+
+
 def test_scene_metadata_drops_floor_mask_before_compare_coverage(monkeypatch) -> None:
     from custom_components.matic_robot.client import slam_scene as slam_scene_module
 

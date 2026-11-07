@@ -198,11 +198,10 @@ test("coverage clears when the robot stops its native session", async ({ page })
     }));
   });
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(false);
-  await page.clock.fastForward(5_000);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
 });
 
-test("a late coverage response cannot revive an ended session", async ({ page }) => {
+test("a late coverage response cannot enter a new run on the same floor", async ({ page }) => {
   await page.clock.install();
   const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
   await page.evaluate(async (tag) => {
@@ -229,9 +228,28 @@ test("a late coverage response cannot revive an ended session", async ({ page })
     }));
   });
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(false);
-  await page.evaluate(() => window.__releaseCleaningCoverage());
-  await page.clock.fastForward(5_000);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+  await page.evaluate(() => {
+    window.__oldCoverageReply = window.__releaseCleaningCoverage;
+    window.__releaseCleaningCoverage = null;
+  });
+  await panel.evaluate(async (element) => {
+    const { entries } = await (await element.hass.fetchWithAuth("/api/matic_robot/slam_entries")).json();
+    window.__panelFixture.setCatalogEntries(entries.map((entry) => ({ ...entry, native_session_active: true })));
+    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-action", {
+      detail: { id: "recheck-status" }, bubbles: true, composed: true,
+    }));
+  });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(true);
+  await expect.poll(() => page.evaluate(() => typeof window.__releaseCleaningCoverage)).toBe("function");
+  await page.evaluate(() => window.__oldCoverageReply());
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+  await page.evaluate(() => {
+    window.__cleaningCoverageReply = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015,
+      runs: [[9, 9, 2, 1]], truncated: true, coverage_basis: "observed_changes" };
+    window.__releaseCleaningCoverage();
+  });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs)).toEqual([[9, 9, 2, 1]]);
 });
 
 test("coverage renders its selected modes only on the matching live frame", async ({ page }) => {
