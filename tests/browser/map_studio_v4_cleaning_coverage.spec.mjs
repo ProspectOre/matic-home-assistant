@@ -252,6 +252,44 @@ test("a late coverage response cannot enter a new run on the same floor", async 
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs)).toEqual([[9, 9, 2, 1]]);
 });
 
+test("an ended session revokes coverage during a spatial recovery cooldown @safety", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: `
+    export { CatalogResources } from "./frontend/map-studio-v4/catalog-resources";
+    export { WorkspaceStore, CoherenceMachine } from "./frontend/map-studio-v4/state";
+    export { ResourceRequests } from "./frontend/map-studio-v4/resource-requests";
+    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+  `, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/coverage-cooldown.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { CatalogResources, WorkspaceStore, CoherenceMachine, ResourceRequests, createGalleryState } = await import("/coverage-cooldown.js");
+    const initial = createGalleryState("ready");
+    const entry = { ...initial.resources.entry, nativeSessionActive: true };
+    const store = new WorkspaceStore();
+    store.replace({ ...initial, liveCoverage: { active: true, runs: [[1, 1, 1, 1]] },
+      resources: { ...initial.resources, entry } });
+    const requests = new ResourceRequests();
+    const oldRequest = requests.begin("cleaning-coverage");
+    let active = false;
+    let admissions = 0;
+    const catalog = new CatalogResources(store, { catalog: async () => [{ ...entry, nativeSessionActive: active }] },
+      new CoherenceMachine(), requests, {
+        disposed: () => false, pageActive: () => true, recoveryPending: () => true,
+        projection: () => ({ entryKey: entry.entryId, host: { administrator: true, connected: true, robotCount: 1 } }),
+        admitSpatial: () => { admissions += 1; }, syncWorkspace: () => {},
+      });
+    await catalog.refreshCatalog();
+    const stopped = { aborted: oldRequest.signal.aborted, layer: store.value.liveCoverage,
+      active: store.value.resources.entry.nativeSessionActive };
+    active = true;
+    await catalog.refreshCatalog();
+    return { stopped, admissions, afterRestart: store.value.liveCoverage,
+      scenePreserved: store.value.resources.scene.value === initial.resources.scene.value };
+  });
+  expect(result).toEqual({ stopped: { aborted: true, layer: null, active: false },
+    admissions: 0, afterRestart: null, scenePreserved: true });
+});
+
 test("coverage renders its selected modes only on the matching live frame", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { drawMapLayers } from "./frontend/map-studio-v4/renderer-layers"; export { entryCoherenceIdentity } from "./frontend/map-studio-v4/backend-contracts";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/coverage-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

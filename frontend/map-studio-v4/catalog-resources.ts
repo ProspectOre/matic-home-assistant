@@ -130,12 +130,16 @@ export class CatalogResources {
         && (!spatialRecoveryOwner || !spatialRecoveryOwner.isCurrent())) {
         // A fresh catalog may refresh the runner lock and entry list while a
         // spatial read is cooling down, but it cannot restart the same frame.
+        const ended = selected.nativeSessionActive !== true;
+        if (ended) this.#requests.cancel("cleaning-coverage");
         this.#store.patch({
           managedLock: entryManagedLock(selected),
+          liveCoverage: ended ? null : this.#store.value.liveCoverage,
           resources: {
             ...this.#store.value.resources,
             catalog: resource(entries.length ? "ready" : "empty", entries),
-            entry: currentEntry,
+            entry: currentEntry && ended
+              ? { ...currentEntry, nativeSessionActive: selected.nativeSessionActive } : currentEntry,
           },
         });
         return;
