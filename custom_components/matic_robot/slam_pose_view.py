@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http import HTTPStatus
 from time import monotonic, time
 from typing import TYPE_CHECKING
@@ -65,7 +65,9 @@ def _newest_pose(
         or not pose_observation_is_current(candidate.pose, floor_plan, now=now)
         or cached.pose.observed_at >= candidate_time
     ):
-        return cached
+        # Refresh only the read-attempt clock, not the native observation.
+        # Requests queued on the lock can then share this completed attempt.
+        return replace(cached, fetched_at=max(cached.fetched_at, candidate.fetched_at))
     return candidate
 
 

@@ -751,6 +751,26 @@ def test_trail_simplification_keeps_both_ends_of_a_retraced_pass() -> None:
     ]
 
 
+@pytest.mark.parametrize("short_length", [1, 2, 7])
+@pytest.mark.parametrize("short_index", [0, 1, 3])
+def test_segment_simplifier_uses_available_budget_across_uneven_paths(
+    short_length: int, short_index: int
+) -> None:
+    lengths = [300, 300, 300]
+    lengths.insert(short_index, short_length)
+    paths = [
+        [(float(index), float(row)) for index in range(length)]
+        for row, length in enumerate(lengths)
+    ]
+    kept = run_history._thin_segments(paths, MAX_SAVED_TRAIL_POINTS)
+    assert sum(map(len, kept)) == MAX_SAVED_TRAIL_POINTS
+    if short_length <= 2:
+        assert kept[short_index] == paths[short_index]
+    for original, simplified in zip(paths, kept, strict=True):
+        assert simplified[0] == original[0]
+        assert simplified[-1] == original[-1]
+
+
 def test_segment_simplifier_bounds_many_short_and_truncated_paths() -> None:
     short = [[(float(index), 0.0)] for index in range(5)]
     assert run_history._thin_segments(short, 4) == short[-2:]

@@ -4122,6 +4122,56 @@ async def test_empty_live_tracker_refreshes_pose_after_floor_becomes_available()
     runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
 
 
+@pytest.mark.parametrize("failed", [False, True])
+async def test_retained_pose_coalesces_reads_without_renewing_native_age(failed):
+    runtime = _runtime()
+    fresh = runtime.coordinator.data.pose
+    runtime.live_pose = SimpleNamespace(current=lambda: fresh, revision=8)
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read_pose(**_kwargs):
+        started.set()
+        await release.wait()
+        if failed:
+            raise CannotConnectError("read failed")
+        return replace(fresh, observed_at=fresh.observed_at - 1)
+
+    runtime.client.async_get_pose.side_effect = read_pose
+    with (
+        patch(
+            "custom_components.matic_robot.slam_pose_view.time",
+            return_value=fresh.observed_at,
+        ) as wall,
+        patch(
+            "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
+        ) as clock,
+    ):
+        await view.get(request, "entry")
+        runtime.live_pose.current = lambda: None
+        clock.return_value = 12.0
+        wall.return_value = fresh.observed_at + 2
+        first = asyncio.create_task(view.get(request, "entry"))
+        await started.wait()
+        waiting = [asyncio.create_task(view.get(request, "entry")) for _ in range(3)]
+        await asyncio.sleep(0)
+        release.set()
+        replies = await asyncio.gather(first, *waiting)
+        runtime.client.async_get_pose.assert_awaited_once()
+        for response in replies:
+            payload = json.loads(response.body)
+            assert payload["position"] == [0.1, 0.2]
+            assert payload["pose_age_seconds"] == 2.0
+            assert payload["pose_fetch_age_seconds"] == 0.0
+        clock.return_value = 18.0
+        wall.return_value = fresh.observed_at + 8
+        expired = json.loads((await view.get(request, "entry")).body)
+        assert expired["position"] is None
+        assert runtime.client.async_get_pose.await_count == 2
+
+
 @pytest.mark.parametrize("cache_stream", [False, True])
 @pytest.mark.parametrize(
     ("response_kind", "cache_age"),

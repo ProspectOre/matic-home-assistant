@@ -841,16 +841,14 @@ def _thin_segments(
     if sum(map(len, paths)) <= limit:
         return paths
     paths = paths[-(limit // 2) :] if len(paths) * 2 > limit else paths
-    budgets = [2] * len(paths)
+    budgets = [min(2, len(path)) for path in paths]
     remaining = limit - sum(budgets)
     interior_counts = [max(0, len(path) - 2) for path in paths]
     total = sum(interior_counts)
     for index, extra in enumerate(interior_counts):
-        if index == len(paths) - 1:
-            allocation = remaining
-        else:
-            allocation = round(remaining * extra / total) if total else 0
-        budgets[index] = min(len(paths[index]), budgets[index] + allocation)
-        remaining -= budgets[index] - 2
+        allocation = round(remaining * extra / total) if total else 0
+        budgets[index] += allocation
+        remaining -= allocation
+        total -= extra
     result = [_thin(path, budget) for path, budget in zip(paths, budgets, strict=True)]
     return result
