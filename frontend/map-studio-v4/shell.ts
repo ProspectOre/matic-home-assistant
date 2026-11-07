@@ -1068,6 +1068,7 @@ export class MaticMapShellV4 extends LitElement {
       return nothing;
     }
     if (!state.optionalUiReady) {
+      if (state.resources.scene.status === "error") return this.#queueHeld();
       return state.host.administrator && state.host.connected && state.pageActive
         ? this.#queueLoading() : nothing;
     }
@@ -1145,7 +1146,8 @@ export class MaticMapShellV4 extends LitElement {
         break;
     }
     const held = kind !== "ready";
-    const retry = kind === "map-unavailable" || kind === "map-limited" ? html`
+    const mapFailed = !state.map.available && state.resources.scene.status === "error";
+    const retry = mapFailed || kind === "map-unavailable" || kind === "map-limited" ? html`
       <div class="home-actions">
         <button class="ms-btn ms-btn--secondary" type="button"
           aria-disabled=${state.rechecking ? "true" : nothing}
@@ -1156,10 +1158,10 @@ export class MaticMapShellV4 extends LitElement {
     const queue = kind === "busy" ? this.#queueControls(state) : nothing;
     const pins = state.homePins.pins;
     const waiting = (status: string) => status === "idle" || status === "loading";
-    const pending = waiting(state.homePins.status) || state.homePins.status === "ready" && pins.some((pin) =>
+    const pending = !mapFailed && (waiting(state.homePins.status) || state.homePins.status === "ready" && pins.some((pin) =>
       pin.kind === "plan"
         ? waiting(state.resources.plans.status) && !state.resources.plans.value?.plans.some((plan) => plan.id === pin.id)
-        : waiting(state.resources.areas.status) && !state.resources.areas.value?.areas.some((area) => area.id === pin.id));
+        : waiting(state.resources.areas.status) && !state.resources.areas.value?.areas.some((area) => area.id === pin.id)));
     const plans = readyPlans(state);
     const noRooms = plans !== null && plans.rooms.length === 0;
     const roomsDisabled = held || noRooms;

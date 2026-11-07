@@ -495,7 +495,6 @@ export type WorkspaceIntent =
   | { readonly type: "toggle-labels" }
   | { readonly type: "toggle-wifi-signal" }
   | { readonly type: "set-wifi-scale"; readonly scale: WifiScale }
-  | { readonly type: "toggle-floor-types" }
   | { readonly type: "toggle-floor-type"; readonly item: "carpet" | "vent" }
   | { readonly type: "toggle-cleaning-coverage"; readonly mode: "vacuum" | "mop" }
   | { readonly type: "set-follow-mode"; readonly mode: FollowMode }
@@ -753,7 +752,6 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "toggle-labels": true,
   "toggle-wifi-signal": true,
   "set-wifi-scale": true,
-  "toggle-floor-types": true,
   "toggle-floor-type": true,
   "toggle-cleaning-coverage": true,
   "set-follow-mode": true,

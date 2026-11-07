@@ -402,6 +402,36 @@ test("a cold unavailable scene keeps Stop available and recovers queue controls 
   await expect(panel.getByRole("button", { name: "Stop cleaning" })).toBeEnabled();
 });
 
+test("a failed initial map offers retry instead of leaving cleaning choices loading", async ({ page }) => {
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialPlanCatalog: QUEUE_CATALOG,
+    initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA, historySceneStatus: 404 });
+  await page.evaluate(() => {
+    window.__failInitialScene = true;
+    const panel = window.__panelFixture.createPanel();
+    const fetch = panel.hass.fetchWithAuth;
+    panel.hass = { ...panel.hass, fetchWithAuth: (path, init) => window.__failInitialScene && path.includes("/slam_scene/")
+      ? Promise.resolve(new Response(null, { status: 404 })) : fetch(path, init) };
+    document.body.append(panel);
+  });
+  const panel = page.locator(fixture.panelTag);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status)).toBe("error");
+  await expect(panel.getByRole("button", { name: "Stop cleaning" })).toBeEnabled();
+  await expect(panel.getByRole("region", { name: "Change this clean" }).getByRole("status"))
+    .toHaveText("Queue changes are unavailable until the current map and room list are ready.");
+  await expect(panel.getByText("Loading your saved home choices…")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Try again", exact: true })).toBeVisible();
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().optionalUiReady)).toBe(false);
+  expect(await page.evaluate(() => window.__panelFixture.planReads)).toBe(0);
+  await page.evaluate(() => { window.__failInitialScene = false; });
+  await panel.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await expect(panel.getByRole("group", { name: "Change Kitchen" }).getByRole("button")).toHaveText([
+    "Skip", "Clean next", "Clean again",
+  ]);
+  expect(await page.evaluate(() => window.__panelFixture.userDataCalls
+    .some(({ type, key }) => type === "frontend/get_user_data" && key === "matic_robot_home_shortcuts.synthetic-entry"))).toBe(true);
+});
+
 test("cleaning with an empty v2 shortcut set loads the verified room catalog after map admission", async ({ page }) => {
   await page.goto("/");
   const emptyShortcuts = { "matic_robot_home_shortcuts.synthetic-entry": { version: 2, pins: [], excluded: [] } };

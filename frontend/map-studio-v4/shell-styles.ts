@@ -65,9 +65,6 @@ export const shellStyles = [tokens, base, controls, css`
     .toolbar-row { min-block-size: 48px; flex-wrap: wrap; gap: var(--ms-space-1) var(--ms-space-3); padding-block: var(--ms-space-1); }
     .toolbar-context { flex-wrap: wrap; }
     .toolbar-context .title { font-size: 1.08rem; font-weight: 650; letter-spacing: -.025em; margin-inline-end: var(--ms-space-1); }
-    .toolbar-context .floor-switcher { border-width: 0; border-inline-start: 1px solid var(--ms-line); border-radius: 0; background-color: transparent; font-weight: var(--ms-w-medium); }
-    .toolbar-context .floor-switcher, .toolbar-context .floor-switcher:disabled { color: var(--ms-bar-text); opacity: 1; }
-    .floor-switcher option { color: var(--ms-text); background-color: var(--ms-surface-card); }
     .toolbar-actions .ms-btn { border: 0; color: var(--ms-bar-text); }
     .toolbar-actions .ms-btn:hover { color: var(--ms-bar-text); }
     .toolbar-actions .ms-icon { width: 19px; height: 19px; }
@@ -91,8 +88,6 @@ export const shellStyles = [tokens, base, controls, css`
       font-weight: var(--ms-w-bold);
       letter-spacing: var(--ms-track-tight);
     }
-
-    .spacer { flex: 1; }
 
     .overflow-wrap { position: relative; }
     .narrow .overflow { padding-inline: 4px; font-size: .75rem; }
@@ -365,7 +360,6 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .sheet-body { flex: 1; min-block-size: 0; padding-block-end: var(--ms-space-1); overflow: auto; overscroll-behavior: contain; }
     .narrow .mobile-sheet .action-bar { flex: none; margin-block-start: 0; padding-block-start: var(--ms-space-2); }
     .narrow .title { font-size: var(--ms-t-md); }
-    .narrow .robot-switcher { max-inline-size: 7rem; }
     .narrow .robot-switcher { flex: 1 1 auto; min-inline-size: 0; max-inline-size: none; }
     .narrow .full-map-hud { inset-inline-start: var(--ms-space-3); inset-block-end: max(var(--ms-space-3), var(--ms-safe-bottom)); inline-size: auto; max-inline-size: none; }
     .narrow .hud-exit { min-inline-size: var(--ms-control); padding-inline: var(--ms-space-2); }

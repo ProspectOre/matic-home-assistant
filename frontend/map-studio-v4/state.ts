@@ -450,15 +450,6 @@ export const reduceWorkspace = (
     case "archive-access-denied":
     case "set-comparison-active":
       return state;
-    case "toggle-floor-types": {
-      const enabled = state.floorTypeModes === 3 ? 0 : 3;
-      return {
-        ...state,
-        floorTypeModes: enabled,
-        floorTypes: enabled === 0 ? null
-          : state.floorTypes ?? { status: "loading", carpet: [], vent: [] },
-      };
-    }
     case "toggle-floor-type": {
       const bit = intent.item === "carpet" ? 1 : 2;
       const enabled = state.floorTypeModes ^ bit;

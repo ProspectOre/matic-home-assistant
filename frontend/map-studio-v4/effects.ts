@@ -506,6 +506,7 @@ export class EffectController {
     this.#store.patch({
       owner: { userKey: projection.userKey, entryKey: projection.entryKey },
       host: projection.host,
+      liveCoverage: projection.host.connected && projection.host.robotConnected ? this.#store.value.liveCoverage : null,
       activity: projection.activity,
       batteryPercent: projection.batteryPercent,
       currentArea: projection.currentArea,
@@ -729,8 +730,6 @@ export class EffectController {
   }
 
   toggleWifiSignal(): Promise<void> { return this.#spatialResources.toggleWifiSignal(); }
-
-  toggleFloorTypes(): Promise<void> { return this.#spatialResources.toggleFloorTypes(); }
 
   toggleFloorType(item: "carpet" | "vent"): Promise<void> { return this.#spatialResources.toggleFloorType(item); }
 

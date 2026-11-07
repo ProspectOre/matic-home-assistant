@@ -10,6 +10,10 @@ export type MapLayerLocalize = (key: string, fallback: string) => string;
 
 /** Styles for the map's permanently visible layer controls. */
 export const layerToolbarStyles = css`
+    .toolbar-context .floor-switcher { border-width: 0; border-inline-start: 1px solid var(--ms-line); border-radius: 0; background-color: transparent; font-weight: var(--ms-w-medium); }
+    .toolbar-context .floor-switcher, .toolbar-context .floor-switcher:disabled { color: var(--ms-bar-text); opacity: 1; }
+    .floor-switcher option { color: var(--ms-text); background-color: var(--ms-surface-card); }
+
     .toolbar-row .ms-segment .ms-btn { position: relative; z-index: 0; border: 0; background: transparent; border-radius: var(--ms-radius-sm); }
     .toolbar-row .ms-segment .ms-btn::before { position: absolute; inset: 5px 0; z-index: -1; content: ""; border-radius: 6px; }
     .toolbar-row .ms-segment .ms-btn[aria-pressed="true"]::before { background: var(--ms-surface-card); box-shadow: 0 1px 3px color-mix(in srgb, var(--ms-text) 22%, transparent); }

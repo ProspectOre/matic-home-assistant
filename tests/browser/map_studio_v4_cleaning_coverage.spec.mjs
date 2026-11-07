@@ -201,6 +201,35 @@ test("coverage clears when the robot stops its native session", async ({ page })
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
 });
 
+for (const disconnect of ["host", "robot"]) test(`@safety ${disconnect} disconnect clears live coverage and rejects a delayed response`, async ({ page }) => {
+  await page.clock.install();
+  const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
+  await page.evaluate(async (tag) => {
+    const panel = window.__panelFixture.createPanel();
+    document.body.append(panel);
+    await customElements.whenDefined(tag);
+    await panel.updateComplete;
+  }, panelTag);
+  const panel = page.locator(panelTag);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
+  await page.evaluate(() => { window.__holdCleaningCoverage = true; });
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => page.evaluate(() => typeof window.__releaseCleaningCoverage)).toBe("function");
+  await panel.evaluate(async (element, disconnect) => {
+    const hass = element.hass;
+    element.hass = disconnect === "host" ? { ...hass, connected: false } : {
+      ...hass, states: { ...hass.states, "vacuum.synthetic": { ...hass.states["vacuum.synthetic"], state: "unavailable" } },
+    };
+    await element.updateComplete;
+  }, disconnect);
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return { coverage: state.liveCoverage, retainedMap: state.resources.scene.value !== null };
+  })).toEqual({ coverage: null, retainedMap: true });
+  await page.evaluate(() => window.__releaseCleaningCoverage());
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+});
+
 test("a late coverage response cannot enter a new run on the same floor", async ({ page }) => {
   await page.clock.install();
   const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
