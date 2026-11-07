@@ -565,9 +565,20 @@ test("a newly rendered narrow floor selector matches the saved map", async ({ pa
   await gallery.evaluate(async (element) => {
     const module = await import("/map_studio_v4-review/review.js");
     const state = module.createGalleryState("history");
-    element.replaceWorkspaceState({ ...state, workflow: "none", selection: { ...state.selection, floorId: "saved-1" } });
+    element.replaceWorkspaceState({ ...state, workflow: "none", optionalUiReady: true,
+      selection: { ...state.selection, floorId: "saved-1" } });
   });
-  await expect(gallery.getByRole("combobox", { name: "Choose floor", exact: true })).toHaveValue("saved-1");
+  const floor = gallery.getByRole("combobox", { name: "Choose floor", exact: true });
+  await expect(floor).toHaveValue("saved-1");
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await expect(floor).toHaveValue("saved-1");
+  const mapView = gallery.getByRole("group", { name: "Map view" });
+  await mapView.getByRole("button", { name: "2D", exact: true }).click();
+  await expect(floor).toHaveValue("saved-1");
+  await mapView.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(floor).toHaveValue("saved-1");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(floor).toHaveValue("saved-1");
 });
 
 

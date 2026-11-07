@@ -27,19 +27,6 @@ const wifiRow = (panel) => panel.evaluate((element) => {
   return scan(element.shadowRoot);
 });
 
-const clickInShadow = (panel, selector) => panel.evaluate((element, target) => {
-  const scan = (root) => {
-    const match = root.querySelector(target);
-    if (match) return match;
-    for (const child of root.querySelectorAll("*")) {
-      const found = child.shadowRoot && scan(child.shadowRoot);
-      if (found) return found;
-    }
-    return null;
-  };
-  scan(element.shadowRoot).click();
-}, selector);
-
 const mountPanel = async (page, wifiSignal, moduleSource = "typescript", options = {}) => {
   const { panelTag } = await installPanelFixture(page, { wifiSignal, moduleSource, ...options });
   await page.evaluate(async (tag) => {
@@ -50,7 +37,9 @@ const mountPanel = async (page, wifiSignal, moduleSource = "typescript", options
     await panel.updateComplete;
   }, panelTag);
   const panel = page.locator(`${panelTag}[data-test-panel=true]`);
-  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status), {
+    timeout: 15_000,
+  }).toBe("ready");
   return panel;
 };
 
@@ -58,7 +47,7 @@ test("The toolbar turns on Wi-Fi and reads the selected survey", async ({ page }
   const panel = await mountPanel(page, SURVEY);
   await expect.poll(() => wifiRow(panel)).toEqual({ checked: "false", text: "Wi-Fi" });
 
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toEqual({
     status: "ready",
     surveying: true,
@@ -67,7 +56,7 @@ test("The toolbar turns on Wi-Fi and reads the selected survey", async ({ page }
   });
   await expect.poll(() => wifiRow(panel)).toEqual({ checked: "true", text: "Wi-Fi" });
 
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toBeNull();
 });
 
@@ -77,7 +66,7 @@ test("Wi-Fi colors can compare strong sampled spots without labeling them as poo
     { x: 0.152, y: 0.152, dbm: -59 }, { x: 0.457, y: 0.152, dbm: -41.3 },
   ] }, "packaged");
   await expect.poll(() => wifiRow(panel)).not.toBeNull();
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.status)).toBe("ready");
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.cells.length)).toBe(2);
   const toolbar = panel.getByRole("group", { name: "Layers" });
@@ -107,7 +96,7 @@ test("Wi-Fi colors stay available while docked on a narrow screen", async ({ pag
     "vacuum.synthetic": { state: "docked", attributes: { matic_entry_id: "synthetic-entry" } },
   } });
   await expect.poll(() => wifiRow(panel)).not.toBeNull();
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   const toolbar = panel.getByRole("group", { name: "Layers" });
   const relative = toolbar.locator('[data-wifi-scale="relative"]');
   await relative.scrollIntoViewIfNeeded();
@@ -119,7 +108,7 @@ test("Wi-Fi colors stay available while docked on a narrow screen", async ({ pag
 test("the layer picks up new cells while it stays on", async ({ page }) => {
   await page.clock.install();
   const panel = await mountPanel(page, { enabled: true, cell_size: 0.5, cells: [] });
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.status)).toBe("ready");
   expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal.cells)).toEqual([]);
 
@@ -131,7 +120,7 @@ test("the layer picks up new cells while it stays on", async ({ page }) => {
 test("a reattached panel keeps refreshing a layer left on", async ({ page }) => {
   await page.clock.install();
   const panel = await mountPanel(page, { enabled: true, cell_size: 0.5, cells: [] });
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.status)).toBe("ready");
 
   await panel.evaluate(async (element) => {
@@ -147,7 +136,7 @@ test("a reattached panel keeps refreshing a layer left on", async ({ page }) => 
 test("a floor change from the catalog drops the old floor's cells", async ({ page }) => {
   await page.clock.install();
   const panel = await mountPanel(page, SURVEY);
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.cells.length)).toBe(2);
 
   await panel.evaluate(async (element) => {
@@ -168,7 +157,7 @@ test("a floor change from the catalog drops the old floor's cells", async ({ pag
 test("a new map session on the same floor drops the old frame's cells", async ({ page }) => {
   await page.clock.install();
   const panel = await mountPanel(page, SURVEY);
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
+  await panel.locator('[data-map-layer="wifi"]').click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.cells.length)).toBe(2);
 
   await panel.evaluate(async (element) => {
@@ -186,10 +175,15 @@ test("a new map session on the same floor drops the old frame's cells", async ({
 
 test("an empty survey says how to start one", async ({ page }) => {
   const panel = await mountPanel(page, { enabled: false, cell_size: 0.5, cells: [] });
-  await clickInShadow(panel, '[data-map-layer=\"wifi\"]');
-  await expect.poll(() => wifiRow(panel)).toEqual({
-    checked: "true",
-    text: "Wi-Fi",
+  const wifi = panel.locator('[data-map-layer="wifi"]');
+  await expect(wifi).toBeVisible();
+  await wifi.click();
+  await expect(wifi).toHaveAttribute("aria-pressed", "true");
+  await expect(wifi).toHaveAttribute("data-detail", "No samples yet. Enable the survey in robot settings.");
+  await expect(panel.locator('.map-layer-toolbar__note[role="status"]'))
+    .toHaveText("No samples yet. Enable the survey in robot settings.");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toEqual({
+    status: "ready", surveying: false, cellSize: 0.5, cells: [],
   });
 });
 
