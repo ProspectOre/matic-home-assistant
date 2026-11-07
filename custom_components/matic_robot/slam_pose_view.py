@@ -28,6 +28,7 @@ from .slam_view_data import (
     _map_session_key,
     _pose_frame_key,
     observe_run_trail,
+    pose_frame_token,
     pose_observed_in_frame,
 )
 
@@ -269,6 +270,7 @@ class MaticSlamPoseView(HomeAssistantView):
                 ),
                 "map_floor_coherent": floor_plan_coherent,
                 "pose_revision": cached.revision,
+                "pose_frame_key": pose_frame_token(runtime),
                 "pose_age_seconds": (
                     round(native_age, 3) if native_age is not None else None
                 ),
@@ -313,6 +315,7 @@ class MaticSlamPoseView(HomeAssistantView):
                 ),
                 "map_floor_coherent": False,
                 "pose_revision": 0,
+                "pose_frame_key": None,
                 "pose_age_seconds": None,
                 "pose_fetch_age_seconds": None,
                 "pose_observation_current": False,

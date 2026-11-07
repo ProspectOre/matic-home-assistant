@@ -34,6 +34,9 @@ MAX_TRAILS = 20
 MAX_LIVE_TRAIL_POINTS = 4_000
 MAX_SAVED_TRAIL_POINTS = 600
 MAX_TRAIL_SEGMENTS = 8
+# Legacy storage allowed eight sections of up to 4,000 points each.
+# Splitting their visible gaps must not reduce that accepted point capacity.
+MAX_STORED_TRAIL_POINTS = MAX_TRAIL_SEGMENTS * MAX_LIVE_TRAIL_POINTS
 MIN_SAVED_TRAIL_POINTS = 3
 TRAIL_STEP_METERS = 0.15
 TRAIL_GAP_SECONDS = 8.0
@@ -448,6 +451,8 @@ class _LiveTrail:
     started_at: str
     segments: list[list[TrailPoint]] = field(default_factory=list)
     last_observed_at: float | None = None
+    frame_key: object = None
+    segment_limit: int = MAX_TRAIL_SEGMENTS
 
 
 class RunTrails:
@@ -511,6 +516,12 @@ class RunTrails:
                 and math.isfinite(live["last_observed_at"])
                 and live["last_observed_at"] > 0
                 else None,
+                # Preserve migrated sections until normal point compaction.
+                segment_limit=(
+                    MAX_LIVE_TRAIL_POINTS
+                    if len(live_segments) > MAX_TRAIL_SEGMENTS
+                    else MAX_TRAIL_SEGMENTS
+                ),
             )
         if migrated:
             self._schedule_save()
@@ -537,6 +548,7 @@ class RunTrails:
         map_key: str | None,
         point: TrailPoint | None,
         observed_at: float | None = None,
+        frame_key: object = None,
     ) -> None:
         """Track run boundaries and add one verified position."""
         key = f"run:{run_id}" if run_id else "robot" if native_active else None
@@ -561,7 +573,12 @@ class RunTrails:
         if observed_at is not None:
             if previous_timestamp is not None and observed_at <= previous_timestamp:
                 return
-        points = live.segments[-1] if live.segments else []
+        points = (
+            live.segments[-1] if live.segments and live.frame_key == frame_key else []
+        )
+        # Frame generations are process-local. A restored trail has no live
+        # proof, so its first admitted observation also starts a new section.
+        live.frame_key = frame_key
         if (
             points
             and observed_at is not None
@@ -581,7 +598,7 @@ class RunTrails:
         if not points:
             live.segments.append([])
             points = live.segments[-1]
-            live.segments = live.segments[-MAX_TRAIL_SEGMENTS:]
+            live.segments = live.segments[-live.segment_limit :]
             points = live.segments[-1]
         if observed_at is not None:
             live.last_observed_at = observed_at
@@ -672,7 +689,7 @@ class RunTrails:
         )
         if existing is not None:
             self._trails.remove(existing)
-            segments = [*existing["segments"], *segments][-MAX_TRAIL_SEGMENTS:]
+            segments = [*existing["segments"], *segments]
             trail = {
                 **existing,
                 "ended_at": ended_at,
@@ -752,13 +769,21 @@ def _valid_trail(value: object) -> bool:
             _timestamp(value.get(key)) is not None for key in ("started_at", "ended_at")
         )
         and isinstance(segments, list)
-        and 0 < len(segments) <= MAX_TRAIL_SEGMENTS
+        and 0
+        < len(segments)
+        <= (
+            MAX_STORED_TRAIL_POINTS
+            if value.get("path_format") == TRAIL_PATH_FORMAT_VERSION
+            else MAX_TRAIL_SEGMENTS
+        )
         and all(
             isinstance(segment, list)
             and len(segment) <= MAX_LIVE_TRAIL_POINTS
             and all(_valid_point(point) for point in segment)
             for segment in segments
         )
+        and len(segments) <= max(MAX_TRAIL_SEGMENTS, sum(map(len, segments)))
+        and sum(map(len, segments)) <= MAX_STORED_TRAIL_POINTS
     )
 
 
@@ -777,7 +802,7 @@ def _split_legacy_segments(
             current.append(item)
         if current:
             split.append(current)
-    return split[-MAX_TRAIL_SEGMENTS:]
+    return split
 
 
 def _thin(points: Sequence[TrailPoint], limit: int) -> list[TrailPoint]:

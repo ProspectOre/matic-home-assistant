@@ -67,6 +67,7 @@ def observe_run_trail(
         map_key=_map_session_key(runtime),
         point=position,
         observed_at=observed_at,
+        frame_key=_pose_frame_key(runtime),
     )
 
 
@@ -123,6 +124,13 @@ def _pose_frame_key(
         getattr(runtime.coordinator, "floor_read_generation", 0),
         getattr(runtime.slam_map, "pose_frame_generation", 0),
     )
+
+
+def pose_frame_token(runtime: MaticRuntimeData) -> str:
+    """Expose an opaque, runtime-local proof epoch for live trail continuity."""
+    return sha256(
+        repr((id(runtime), _pose_frame_key(runtime))).encode("utf-8")
+    ).hexdigest()
 
 
 def catalog_entry_projection(

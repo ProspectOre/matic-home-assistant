@@ -940,6 +940,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "scene_epoch": None,
         "map_floor_coherent": True,
         "pose_revision": 1,
+        "pose_frame_key": json.loads(exact.body)["pose_frame_key"],
         "pose_age_seconds": 0.0,
         "pose_measured_at": runtime.coordinator.data.pose.observed_at,
         "pose_processing_seconds": 0.0,
@@ -984,6 +985,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "scene_epoch": None,
         "map_floor_coherent": False,
         "pose_revision": 0,
+        "pose_frame_key": None,
         "pose_age_seconds": None,
         "pose_fetch_age_seconds": None,
         "pose_observation_current": False,
@@ -4300,3 +4302,25 @@ async def test_delayed_pose_is_withheld_after_same_floor_reverification(
             assert payload["position"] is None
             assert not payload["pose_observation_current"]
     assert runtime.run_trails.observe.call_args.kwargs["point"] is None
+
+
+async def test_pose_response_exposes_proof_changes_without_changing_map_identity():
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    runtime.slam_map.pose_frame_generation = 1
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at + 2,
+    ):
+        first = json.loads((await view.get(request, "entry")).body)
+        same = json.loads((await view.get(request, "entry")).body)
+        assert len(first["pose_frame_key"]) == 64
+        assert first["pose_frame_key"] == same["pose_frame_key"]
+        runtime.slam_map.pose_frame_generation += 2
+        runtime.slam_map.pose_frame_started_at = pose.observed_at + 1
+        returned = json.loads((await view.get(request, "entry")).body)
+    assert returned["map_session_key"] == first["map_session_key"]
+    assert returned["pose_frame_key"] != first["pose_frame_key"]
+    assert returned["position"] is None

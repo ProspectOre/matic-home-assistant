@@ -36,6 +36,7 @@ export const parsePose = (value: unknown): PoseModel => {
     floorCoherent: booleanValue(payload.map_floor_coherent, "invalid-pose-floor"),
     mapSessionKey: mapSessionKey(payload.map_session_key),
     freshness,
+    ...(payload.pose_frame_key === undefined ? {} : { poseFrameKey: mapSessionKey(payload.pose_frame_key) }),
     ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
     ...(poseProcessingSeconds === undefined ? {} : { poseProcessingSeconds }),
     poseMeasuredAt: payload.pose_measured_at,

@@ -66,6 +66,8 @@ const MAX_RUNS = 200;
 const MAX_ITEMS = 64;
 const MAX_SEGMENTS = 8;
 const MAX_POINTS = 4_000;
+// Legacy gap migration can create one section per originally accepted point.
+const MAX_STORED_POINTS = MAX_SEGMENTS * MAX_POINTS;
 
 const fail = (code: string): never => {
   throw new Error(code);
@@ -126,12 +128,17 @@ const coordinate = (value: unknown): number =>
 export const parseRunTrail = (value: unknown): RunTrail => {
   const payload = record(value, "invalid-trail");
   const segments = payload.segments;
-  if (!Array.isArray(segments) || segments.length > MAX_SEGMENTS) return fail("invalid-trail");
+  if (!Array.isArray(segments) || segments.length > MAX_STORED_POINTS) return fail("invalid-trail");
+  const pointCount = segments.reduce((total, section) => total + (Array.isArray(section) ? section.length : 0), 0);
+  if (segments.length > Math.max(MAX_SEGMENTS, pointCount)) return fail("invalid-trail");
+  let points = 0;
   return {
     id: text(payload.trail, 64, "invalid-trail"),
     mapSessionKey: text(payload.map_session_key, 128, "invalid-trail"),
     segments: segments.map((segment) => {
       if (!Array.isArray(segment) || segment.length > MAX_POINTS) return fail("invalid-trail");
+      points += segment.length;
+      if (points > MAX_STORED_POINTS) return fail("invalid-trail");
       return segment.map((point) => {
         if (!Array.isArray(point) || point.length !== 2) return fail("invalid-trail");
         return [coordinate(point[0]), coordinate(point[1])] as const;
@@ -187,7 +194,7 @@ const WORKING: readonly RobotActivity[] = ["starting", "cleaning", "paused", "re
 const trailRuns = new WeakMap<WorkspaceStore, { entryId: string | null; run: string | null }>();
 // A fresh server response has its own segment boundaries and no timestamp for
 // its tail. Only extend a segment whose last point this browser observed.
-const trailObservations = new WeakMap<RunTrail, { seconds: number; native: boolean }>();
+const trailObservations = new WeakMap<RunTrail, { seconds: number; native: boolean; generation: number; frameKey: string | null }>();
 
 /**
  * Adds a verified live pose to the run-in-progress trail, keeping points at
@@ -214,20 +221,30 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   const measured = pose.poseMeasuredAt;
   const age = pose.nativeObservationAgeSeconds;
   const native = typeof measured === "number" && Number.isFinite(measured) && typeof age === "number";
-  const observation = { seconds: native ? measured - age : performance.now() / 1000, native };
+  const observation = { seconds: native ? measured - age : performance.now() / 1000, native,
+    generation: state.generation, frameKey: pose.poseFrameKey ?? null };
   const prior = trailObservations.get(trail);
   const sameClock = prior && prior.native === native;
   if (native && sameClock && observation.seconds <= prior.seconds) return;
   const distance = last ? Math.hypot(x - last[0], y - last[1]) : 0;
-  const gap = !sameClock || observation.seconds - prior.seconds > 8;
+  const gap = !sameClock || prior.generation !== observation.generation
+    || prior.frameKey !== observation.frameKey || observation.seconds - prior.seconds > 8;
   if (last && distance < 0.15 && (!gap || (!prior && distance === 0))) {
     trailObservations.set(trail, observation);
     return;
   }
   const point = [x, y] as const;
-  const segments = last && (gap || distance > 1.5)
-    ? [...trail.segments, [point]].slice(-MAX_SEGMENTS)
+  // A migrated server trail can carry more sections without more total points.
+  const segmentLimit = trail.segments.length > MAX_SEGMENTS ? MAX_STORED_POINTS : MAX_SEGMENTS;
+  let segments = last && (gap || distance > 1.5)
+    ? [...trail.segments, [point]].slice(-segmentLimit)
     : [...trail.segments.slice(0, -1), [...segment, point].slice(-MAX_POINTS)];
+  let excess = segments.reduce((total, section) => total + section.length, 0) - MAX_STORED_POINTS;
+  if (excess > 0) segments = segments.flatMap((section) => {
+    const trim = Math.min(Math.max(excess, 0), section.length);
+    excess -= trim;
+    return trim === section.length ? [] : [section.slice(trim)];
+  });
   const updated = { ...trail, segments };
   trailObservations.set(updated, observation);
   store.patch({ trail: updated });

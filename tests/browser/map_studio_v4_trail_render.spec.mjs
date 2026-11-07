@@ -42,3 +42,55 @@ test("travel path preserves observed steps and only connects points within each 
     { width: 2, colour: "rgba(6,120,206,1)" },
   ]);
 });
+
+test("migrated trails retain every section and the original aggregate point bound", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: `
+    export { drawRunTrail } from "./frontend/map-studio-v4/renderer-layers";
+    export { parseRunTrail, extendLiveTrail } from "./frontend/map-studio-v4/run-history-data";
+    export { parsePose } from "./frontend/map-studio-v4/pose-contract";
+  `, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/migrated-trail.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { drawRunTrail, parseRunTrail, extendLiveTrail, parsePose } = await import("/migrated-trail.js");
+    const key = "a".repeat(64);
+    const sections = Array.from({ length: 12 }, (_, index) => [[index * 2, 0], [index * 2 + 0.4, 0]]);
+    const payload = segments => ({ trail: "live", map_session_key: key, segments });
+    const trail = parseRunTrail(payload(sections));
+    const path = [];
+    const context = { beginPath() {}, save() {}, restore() {},
+      moveTo(x, y) { path.push(["move", x, y]); }, lineTo(x, y) { path.push(["line", x, y]); },
+      stroke() {}, fill() {}, arc() {} };
+    drawRunTrail(context, { dataMode: "live", workflow: "none", trail, resources: { entry: { mapSessionKey: key } } },
+      { accent: [6, 120, 206], onAccent: [255, 255, 255] }, (x, y) => ({ x, y }));
+    const store = { value: { activity: "cleaning", generation: 1, selection: { entryId: "robot" }, trail },
+      patch(change) { this.value = { ...this.value, ...change }; } };
+    const observe = (x, timestamp, frame = "b") => extendLiveTrail(store, parsePose({
+      position: [x, 0], source: "exact_pose", revision: 1, pose_revision: timestamp,
+      map_floor_coherent: true, map_session_key: key, pose_freshness: "live",
+      pose_age_seconds: 0, pose_measured_at: timestamp, pose_frame_key: frame.repeat(64),
+    }));
+    observe(24, 100);
+    observe(24.3, 101);
+    observe(24.31, 102, "c"); // A -> B -> A occurred between browser reads.
+    store.value.generation += 1;
+    observe(24.32, 103, "c"); // A browser-side proof revocation is also a break.
+    const continued = store.value.trail.segments;
+    const invalid = [];
+    for (const sections of [Array.from({ length: 9 }, () => []),
+      [[...Array(4_001)].map(() => [0, 0])],
+      Array.from({ length: 9 }, () => Array.from({ length: 4_000 }, () => [0, 0]))]) {
+      try { parseRunTrail(payload(sections)); invalid.push(false); }
+      catch { invalid.push(true); }
+    }
+    const full = Array.from({ length: 32_000 }, () => [[0, 0]]);
+    store.value = { ...store.value, trail: parseRunTrail(payload(full)) };
+    observe(0.1, 104);
+    return { path, continued, invalid, maximumPoints: store.value.trail.segments.reduce((n, s) => n + s.length, 0) };
+  });
+  const original = Array.from({ length: 12 }, (_, index) => [[index * 2, 0], [index * 2 + 0.4, 0]]);
+  expect(result.path).toEqual(original.flatMap(([first, last]) => [["move", ...first], ["line", ...last]]));
+  expect(result.continued).toEqual([...original, [[24, 0], [24.3, 0]], [[24.31, 0]], [[24.32, 0]]]);
+  expect(result.invalid).toEqual([true, true, true]);
+  expect(result.maximumPoints).toBe(32_000);
+});

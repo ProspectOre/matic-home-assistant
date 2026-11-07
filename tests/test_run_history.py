@@ -567,7 +567,8 @@ async def test_trail_segments_and_live_points_stay_bounded(hass: HomeAssistant) 
             trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=point)
     trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
     segments = trails.segments(trails.trail_id(MAP, run_id="run-1"), MAP)
-    assert len(segments) == MAX_TRAIL_SEGMENTS
+    assert len(segments) == MAX_TRAIL_SEGMENTS + 2
+    assert sum(map(len, segments)) <= MAX_SAVED_TRAIL_POINTS
 
 
 async def test_trail_splits_after_a_pose_gap(hass: HomeAssistant) -> None:
@@ -984,3 +985,152 @@ def test_a_finished_run_saved_before_history_existed_is_listed() -> None:
 
     append_run_history(robot, robot["last_run"])
     assert len(history_entries(robot, (), manual=lambda plan_id: False)) == 1
+
+
+@pytest.mark.parametrize("observe_gap", [False, True])
+async def test_short_map_proof_revocation_starts_new_trail_section(
+    hass: HomeAssistant, observe_gap
+) -> None:
+    trails = RunTrails(hass, "entry")
+    for timestamp, x in [(100.0, 0.0), (101.0, 0.3)]:
+        trails.observe(
+            run_id="run",
+            native_active=True,
+            map_key=MAP,
+            point=(x, 0),
+            observed_at=timestamp,
+            frame_key=(MAP, 1),
+        )
+    if observe_gap:
+        trails.observe(
+            run_id="run",
+            native_active=True,
+            map_key=MAP,
+            point=None,
+            observed_at=101.5,
+            frame_key=(MAP, 2),
+        )
+    # Same map, short interval and tiny displacement: only the changed proof
+    # epoch establishes that this must not be a continuous path.
+    trails.observe(
+        run_id="run",
+        native_active=True,
+        map_key=MAP,
+        point=(0.31, 0),
+        observed_at=102.0,
+        frame_key=(MAP, 3),
+    )
+    trails.observe(
+        run_id="run",
+        native_active=True,
+        map_key=MAP,
+        point=(0.6, 0),
+        observed_at=103.0,
+        frame_key=(MAP, 3),
+    )
+    assert trails.live(MAP) == [[(0.0, 0.0), (0.3, 0.0)], [(0.31, 0.0), (0.6, 0.0)]]
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    reloaded.observe(
+        run_id="run",
+        native_active=True,
+        map_key=MAP,
+        point=(0.61, 0),
+        observed_at=104.0,
+        frame_key=(MAP, 1),
+    )
+    assert reloaded.live(MAP) == [
+        [(0.0, 0.0), (0.3, 0.0)],
+        [(0.31, 0.0), (0.6, 0.0)],
+        [(0.61, 0.0)],
+    ]
+    await reloaded.async_shutdown()
+
+
+@pytest.mark.parametrize("live", [False, True])
+async def test_legacy_migration_preserves_every_visible_section_across_reload(
+    hass: HomeAssistant, hass_storage, live
+) -> None:
+    sections = [[(index * 2.0, 0), (index * 2.0 + 0.4, 0)] for index in range(12)]
+    trail = {
+        "id": LIVE_TRAIL_ID if live else "legacy",
+        "key": "run:run-1",
+        "run_id": "run-1",
+        "map_key": MAP,
+        "started_at": STARTED,
+        "ended_at": ENDED,
+        "segments": [[p for section in sections for p in section]],
+    }
+    hass_storage["matic_robot.run_trails.entry"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "matic_robot.run_trails.entry",
+        "data": {"trails": [] if live else [trail], "live": trail if live else None},
+    }
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    assert trails.segments(trail["id"], MAP) == sections
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.segments(trail["id"], MAP) == sections
+    # Continuing a restored live run or rejoining the saved run keeps all
+    # original sections; this example remains below normal point budgets.
+    for index in range(3):
+        reloaded.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=(24.0 + index * 0.2, 0),
+            observed_at=100 + index,
+            frame_key=(MAP, 1),
+        )
+    reloaded.observe(run_id=None, native_active=False, map_key=MAP, point=None)
+    saved_id = reloaded.trail_id(MAP, run_id="run-1")
+    assert reloaded.segments(saved_id, MAP) == [
+        *sections,
+        [(24.0, 0.0), (24.2, 0.0), (24.4, 0.0)],
+    ]
+    await reloaded.async_shutdown()
+
+
+async def test_migrated_storage_retains_the_original_aggregate_point_bound(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    points = [(0.0, 0.0), (2.0, 0.0)] * (MAX_LIVE_TRAIL_POINTS // 2)
+    trail = {
+        "id": "legacy",
+        "run_id": "run",
+        "map_key": MAP,
+        "started_at": STARTED,
+        "ended_at": ENDED,
+        "segments": [points] * MAX_TRAIL_SEGMENTS,
+    }
+    hass_storage["matic_robot.run_trails.entry"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "matic_robot.run_trails.entry",
+        "data": {"trails": [trail], "live": None},
+    }
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    sections = trails.segments("legacy", MAP)
+    assert len(sections) == run_history.MAX_STORED_TRAIL_POINTS
+    assert all(len(section) == 1 for section in sections)
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.segments("legacy", MAP) == sections
+    stored = reloaded._data()["trails"][0]
+    assert run_history._valid_trail(stored)
+    assert not run_history._valid_trail(
+        {**stored, "segments": [[]] * (MAX_TRAIL_SEGMENTS + 1)}
+    )
+    assert not run_history._valid_trail(
+        {**stored, "segments": [[(0, 0), (0.1, 0)], *sections[1:]]}
+    )
+    assert not run_history._valid_trail(
+        {**stored, "segments": [[(0, 0)] * (MAX_LIVE_TRAIL_POINTS + 1)]}
+    )
+    await reloaded.async_shutdown()

@@ -176,6 +176,8 @@ export interface PoseModel {
   readonly sceneRevision: number | null;
   readonly sceneEpoch: string | null;
   readonly poseRevision: number;
+  /** Opaque proof epoch; changes even when localization returns to the same floor. */
+  readonly poseFrameKey?: string | null;
   readonly floorCoherent: boolean;
   readonly mapSessionKey: string | null;
   readonly freshness: "live" | "coordinator_fallback" | "unavailable";
