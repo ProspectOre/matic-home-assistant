@@ -138,7 +138,7 @@ export class CatalogResources {
           resources: {
             ...this.#store.value.resources,
             catalog: resource(entries.length ? "ready" : "empty", entries),
-            entry: currentEntry && ended
+            entry: currentEntry && ended && currentEntry.nativeSessionActive !== selected.nativeSessionActive
               ? { ...currentEntry, nativeSessionActive: selected.nativeSessionActive } : currentEntry,
           },
         });

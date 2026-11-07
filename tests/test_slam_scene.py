@@ -4071,6 +4071,36 @@ async def test_quiet_pose_stream_recovers_through_a_fresh_on_demand_read():
     runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
 
 
+async def test_delayed_stream_cannot_replace_a_newer_on_demand_pose():
+    runtime = _runtime()
+    initial = runtime.coordinator.data.pose
+    fresh = replace(initial, x=0.3, observed_at=initial.observed_at + 6)
+    tracker = SimpleNamespace(current=lambda: initial, revision=8)
+    runtime.live_pose = tracker
+    runtime.client.async_get_pose.return_value = fresh
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=fresh.observed_at,
+    ):
+        first = json.loads((await view.get(request, "entry")).body)
+        assert first["position"] == [0.3, 0.2]
+        delayed = replace(initial, x=0.2, observed_at=initial.observed_at + 5)
+        tracker.current = lambda: delayed
+        second = json.loads((await view.get(request, "entry")).body)
+        assert second["position"] == first["position"]
+        assert second["pose_revision"] == first["pose_revision"]
+        newest = replace(fresh, x=0.4, observed_at=fresh.observed_at + 0.1)
+        tracker.current = lambda: newest
+        third = json.loads((await view.get(request, "entry")).body)
+        assert third["position"] == [0.4, 0.2]
+        tracker.current = lambda: delayed
+        fourth = json.loads((await view.get(request, "entry")).body)
+        assert fourth["position"] == third["position"]
+    runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
+
+
 async def test_empty_live_tracker_refreshes_pose_after_floor_becomes_available():
     runtime = _runtime()
     pose = runtime.coordinator.data.pose
@@ -4090,6 +4120,36 @@ async def test_empty_live_tracker_refreshes_pose_after_floor_becomes_available()
         response = await view.get(_request(hass), "entry")
     assert json.loads(response.body)["position"] == [0.1, 0.2]
     runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
+
+
+async def test_delayed_on_demand_response_keeps_a_newer_stream_pose():
+    runtime = _runtime()
+    initial = runtime.coordinator.data.pose
+    tracker = SimpleNamespace(current=lambda: None, revision=8)
+    runtime.live_pose = tracker
+    started = asyncio.Event()
+    pending = asyncio.get_running_loop().create_future()
+
+    async def read_pose(**_kwargs):
+        started.set()
+        return await pending
+
+    runtime.client.async_get_pose.side_effect = read_pose
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    fresh = replace(initial, x=0.3, observed_at=initial.observed_at + 1)
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=fresh.observed_at,
+    ):
+        reading = asyncio.create_task(view.get(request, "entry"))
+        await started.wait()
+        tracker.current = lambda: fresh
+        current = json.loads((await view.get(request, "entry")).body)
+        pending.set_result(initial)
+        delayed = json.loads((await reading).body)
+    assert current["position"] == delayed["position"] == [0.3, 0.2]
+    assert current["pose_revision"] == delayed["pose_revision"] == 8
 
 
 def test_stream_trail_records_only_fresh_coherent_positions():

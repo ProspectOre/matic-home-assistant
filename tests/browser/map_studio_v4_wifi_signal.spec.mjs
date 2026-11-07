@@ -245,6 +245,51 @@ test("mixed one-foot and legacy Wi-Fi samples keep the raster and strong/weak sp
   expect(result.strong?.[2]).toBeGreaterThan(result.weak?.[2]);
 });
 
+for (const count of [1261, 1500]) test(`large Wi-Fi surveys retain ${count} readings without crossing walls`, async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { buildWifiRaster } from "./frontend/map-studio-v4/wifi-raster"; export { parseWifiSignal } from "./frontend/map-studio-v4/wifi-signal";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/wifi-raster.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async (count) => {
+    const { buildWifiRaster, parseWifiSignal } = await import("/wifi-raster.js");
+    const width = 120, height = 100;
+    const mask = new Uint8Array(Math.ceil(width * height / 8));
+    const supported = (x, y) => x !== 6 && x !== 55 && !(x >= 20 && x < 24 && y >= 20 && y < 24);
+    for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+      if (!supported(x, y)) continue;
+      const at = y * width + x;
+      mask[at >>> 3] |= 1 << (at & 7);
+    }
+    const support = { version: 1, status: "verified", encoding: "bitset-little-v1", originCells: [0, 0],
+      metersPerCell: 0.015, spanCells: [width, height], occupiedCells: width * height,
+      maskSha256: "c".repeat(64), mask };
+    const cells = [];
+    for (let y = 10; y < 50; y += 1) for (let x = 10; x < 50; x += 1) {
+      if (supported(x, y) && cells.length < count) cells.push({ x: (x + 0.5) * 0.015,
+        y: (y + 0.5) * 0.015, dbm: x < 30 ? -42 : -84, size: 1 });
+    }
+    const layer = parseWifiSignal({ enabled: true, cell_size: 1, cells });
+    const raster = buildWifiRaster(layer, support, "relative");
+    if (!raster) return { visible: 0 };
+    const pixels = raster.canvas.getContext("2d").getImageData(0, 0, raster.width, raster.height).data;
+    const pixel = (x, y) => {
+      if (x < raster.left || y < raster.top || x >= raster.left + raster.width || y >= raster.top + raster.height) return [0, 0, 0, 0];
+      const offset = ((y - raster.top) * raster.width + x - raster.left) * 4;
+      return [...pixels.slice(offset, offset + 4)];
+    };
+    let leaks = 0;
+    for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+      if ((!supported(x, y) || x < 6 || x > 55) && pixel(x, y)[3]) leaks += 1;
+    }
+    return { visible: cells.filter((cell) => pixel(Math.round(cell.x / 0.015 - 0.5), Math.round(cell.y / 0.015 - 0.5))[3] > 0).length,
+      leaks, strong: pixel(15, 15), weak: pixel(45, 15), cached: buildWifiRaster(layer, support, "relative") === raster };
+  }, count);
+  expect(result.visible).toBe(count);
+  expect(result.leaks).toBe(0);
+  expect(result.strong[0]).toBeLessThan(result.weak[0]);
+  expect(result.strong[2]).toBeGreaterThan(result.weak[2]);
+  expect(result.cached).toBe(true);
+});
+
 test("Wi-Fi heatmap fills measured floor bins, clips walls, blends neighbors, and stays below coverage", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { buildWifiRaster, drawWifiRaster } from "./frontend/map-studio-v4/wifi-raster"; export { drawMapLayers } from "./frontend/map-studio-v4/renderer-layers"; export { entryCoherenceIdentity } from "./frontend/map-studio-v4/backend-contracts"; export { parseWifiSignal } from "./frontend/map-studio-v4/wifi-signal"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/wifi-raster.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

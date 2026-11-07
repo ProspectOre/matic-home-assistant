@@ -20,7 +20,7 @@ from .client.floor_plan import (
     resolve_robot_map_position,
     robot_location_source,
 )
-from .client.models import RobotPose
+from .client.models import FloorPlan, RobotPose
 from .http import POSE_API_URL, PRIVATE_NO_STORE_HEADERS, runtime_for_entry
 from .slam_map_store import SlamMapIdentity
 from .slam_scene import MaticSlamSceneView
@@ -42,6 +42,26 @@ class _CachedPose:
     revision: int
     freshness: str
     frame_key: tuple[SlamMapIdentity | None, str | None, int]
+
+
+def _newest_pose(
+    cached: _CachedPose | None, candidate: _CachedPose, floor_plan: FloorPlan
+) -> _CachedPose:
+    """Keep native observation order across stream and on-demand responses."""
+    if (
+        cached is not None
+        and cached.runtime_id == candidate.runtime_id
+        and cached.frame_key == candidate.frame_key
+        and cached.freshness == candidate.freshness == "live"
+        and cached.pose is not None
+        and cached.pose.observed_at is not None
+        and candidate.pose is not None
+        and candidate.pose.observed_at is not None
+        and cached.pose.observed_at >= candidate.pose.observed_at
+        and pose_observation_is_current(cached.pose, floor_plan, now=time())
+    ):
+        return cached
+    return candidate
 
 
 class MaticSlamPoseView(HomeAssistantView):
@@ -84,9 +104,14 @@ class MaticSlamPoseView(HomeAssistantView):
         if tracker is not None and pose_observation_is_current(
             tracked_pose, floor_plan, now=time()
         ):
-            cached = _CachedPose(
-                id(runtime), tracked_pose, now, tracker.revision, "live", frame_key
+            cached = _newest_pose(
+                cached,
+                _CachedPose(
+                    id(runtime), tracked_pose, now, tracker.revision, "live", frame_key
+                ),
+                floor_plan,
             )
+            self._cache[entry_id] = cached
         elif (
             cached is None
             or cached.runtime_id != id(runtime)
@@ -134,13 +159,17 @@ class MaticSlamPoseView(HomeAssistantView):
                         if cached is not None and cached.runtime_id == id(runtime)
                         else 0
                     )
-                    cached = _CachedPose(
-                        id(runtime),
-                        pose,
-                        monotonic(),
-                        previous_revision + 1,
-                        freshness,
-                        frame_key,
+                    cached = _newest_pose(
+                        self._cache.get(entry_id),
+                        _CachedPose(
+                            id(runtime),
+                            pose,
+                            monotonic(),
+                            previous_revision + 1,
+                            freshness,
+                            frame_key,
+                        ),
+                        floor_plan,
                     )
                     self._cache[entry_id] = cached
         data = runtime.coordinator.data
