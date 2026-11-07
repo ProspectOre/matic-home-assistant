@@ -480,19 +480,34 @@ test("Unchanged Wi-Fi polls reuse raster work while changed readings and floors 
     await resources.reloadWifi(); const changed = raster();
     const pixel = value => [...value.canvas.getContext("2d").getImageData(15 - value.left, 15 - value.top, 1, 1).data];
     const changedColor = JSON.stringify(pixel(first)) !== JSON.stringify(pixel(changed));
+    const copiedSupport = structuredClone(support);
+    const sameMask = buildWifiRaster(store.value.wifiSignal, copiedSupport, "absolute") === changed;
+    const changedBytes = structuredClone(support);
+    changedBytes.mask[0] = 0;
+    const maskChanged = buildWifiRaster(store.value.wifiSignal, changedBytes, "absolute") !== changed;
+    const geometryChanged = [
+      { ...support, originCells: [1, 0] }, { ...support, originCells: [0, 1] },
+      { ...support, spanCells: [16, 64] }, { ...support, metersPerCell: 0.02 },
+    ].every(value => {
+      const baseline = buildWifiRaster(store.value.wifiSignal, support, "absolute");
+      return buildWifiRaster(store.value.wifiSignal, value, "absolute") !== baseline;
+    });
+    const current = buildWifiRaster(store.value.wifiSignal, support, "absolute");
     const newSupport = { ...support, mask: support.mask.slice(), maskSha256: "b".repeat(64) };
-    const newFloor = buildWifiRaster(store.value.wifiSignal, newSupport, "absolute") !== changed;
-    const newScale = buildWifiRaster(store.value.wifiSignal, support, "relative") !== changed;
+    const newFloor = buildWifiRaster(store.value.wifiSignal, newSupport, "absolute") !== current;
+    const scaleBase = buildWifiRaster(store.value.wifiSignal, support, "absolute");
+    const newScale = buildWifiRaster(store.value.wifiSignal, support, "relative") !== scaleBase;
     // Entry switching clears optional state before the next robot's survey is admitted.
     store.value.resources.entry = { ...entry, entryId: "robot-b", wifiHeatmapUrl: "/survey-b", mapSessionKey: "b" };
     store.value.generation += 1;
     store.value.wifiSignal = { status: "loading", cells: [], cellSize: 0.3, surveying: false };
     await resources.reloadWifi();
     return { reused, metadataReused, failed, recovered, changedColor, changedRaster: changed !== first,
-      newFloor, newScale, newRobot: raster() !== changed };
+      sameMask, maskChanged, geometryChanged, newFloor, newScale, newRobot: raster() !== scaleBase };
   });
   expect(result).toEqual({ reused: true, metadataReused: true, failed: true, recovered: true,
-    changedColor: true, changedRaster: true, newFloor: true, newScale: true, newRobot: true });
+    changedColor: true, changedRaster: true, sameMask: true, maskChanged: true, geometryChanged: true,
+    newFloor: true, newScale: true, newRobot: true });
 });
 
 test("Tilted Wi-Fi patches stay within a quarter backing pixel of the floor projection", async ({ page }) => {

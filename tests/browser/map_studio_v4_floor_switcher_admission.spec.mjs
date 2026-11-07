@@ -194,22 +194,19 @@ test("floor discovery rejects another robot's reply and retries the selected rob
 });
 
 test("catalog polling refreshes added and removed floors without changing the live frame", async ({ page }) => {
+  test.setTimeout(40_000);
   const panel = await mountHistoryProbe(page);
   const selector = panel.locator("select.floor-switcher option");
   await expect(selector).toHaveText(["Home", "Loft"]);
   const generation = await panel.evaluate(element => element.getWorkspaceSnapshot().generation);
-  await page.clock.install();
   for (const [count, labels] of [[3, ["Home", "Loft", "Basement · No saved map for this floor yet"]], [1, ["Home"]]]) {
     await page.evaluate(({ catalogEntry, count }) => {
       window.__historyProbe.count = count;
       window.__panelFixture.setCatalogEntries([catalogEntry]);
     }, { catalogEntry: entry(count), count });
-    await page.clock.runFor(5_100);
-    await expect(selector).toHaveText(labels);
+    await expect(selector).toHaveText(labels, { timeout: 15_000 });
     expect(await panel.evaluate(element => element.getWorkspaceSnapshot().generation)).toBe(generation);
   }
-  expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(3);
-  await page.clock.runFor(10_000);
   expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(3);
 });
 

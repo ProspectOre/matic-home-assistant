@@ -44,7 +44,21 @@ const reaches = (sample: RasterSample, x: number, y: number): boolean => {
     && sample.reachable[localY * sample.footprintWidth + localX] === 1;
 };
 
-const cache = new WeakMap<WifiSignalLayer["cells"], WeakMap<SceneFloorSupport, Map<WifiScale, WifiRaster | null>>>();
+const cache = new WeakMap<WifiSignalLayer["cells"], { support: SceneFloorSupport; scales: Map<WifiScale, WifiRaster | null> }>();
+
+const sameSupport = (left: SceneFloorSupport, right: SceneFloorSupport): boolean => {
+  if (left === right) return true;
+  if (left.maskSha256 !== right.maskSha256 || left.metersPerCell !== right.metersPerCell
+    || left.originCells[0] !== right.originCells[0] || left.originCells[1] !== right.originCells[1]
+    || left.spanCells[0] !== right.spanCells[0] || left.spanCells[1] !== right.spanCells[1]
+    || left.mask.length !== right.mask.length) return false;
+  // The parser validates mask shape, not its supplied digest. Check bytes
+  // once per replacement object, then reuse the reference on later frames.
+  for (let index = 0; index < left.mask.length; index += 1) {
+    if (left.mask[index] !== right.mask[index]) return false;
+  }
+  return true;
+};
 
 const occupiedAt = (support: SceneFloorSupport, x: number, y: number): boolean => {
   if (x < 0 || y < 0 || x >= support.spanCells[0] || y >= support.spanCells[1]) return false;
@@ -93,16 +107,13 @@ export const buildWifiRaster = (
   support: SceneFloorSupport,
   scale: WifiScale,
 ): WifiRaster | null => {
-  let bySupport = cache.get(layer.cells);
-  if (!bySupport) {
-    bySupport = new WeakMap();
-    cache.set(layer.cells, bySupport);
+  let cached = cache.get(layer.cells);
+  if (!cached || !sameSupport(cached.support, support)) {
+    cached = { support, scales: new Map() };
+    cache.set(layer.cells, cached);
   }
-  let byScale = bySupport.get(support);
-  if (!byScale) {
-    byScale = new Map();
-    bySupport.set(support, byScale);
-  }
+  cached.support = support;
+  const byScale = cached.scales;
   if (byScale.has(scale)) return byScale.get(scale)!;
 
   const metersPerCell = support.metersPerCell;
