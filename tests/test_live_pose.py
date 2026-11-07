@@ -413,7 +413,7 @@ async def test_pose_cannot_cross_unobserved_map_proof_epoch(
     )
     task = asyncio.create_task(tracker.watch())
     try:
-        first = RobotPose(1, 2, 0, mission_id=floor.mission_id, observed_at=100.0)
+        first = RobotPose(1, 2, 0, mission_id=floor.mission_id, observed_at=100.01)
         await queue.put(first)
         await asyncio.sleep(0)
         assert tracker.current() is first
@@ -438,7 +438,7 @@ async def test_pose_cannot_cross_unobserved_map_proof_epoch(
         await asyncio.sleep(0)
         assert tracker.current() is None
         assert observations == [first]
-        fresh = RobotPose(5, 6, 0, mission_id=floor.mission_id, observed_at=102.0)
+        fresh = RobotPose(5, 6, 0, mission_id=floor.mission_id, observed_at=102.01)
         await queue.put(fresh)
         await asyncio.sleep(0)
         assert tracker.current() is fresh

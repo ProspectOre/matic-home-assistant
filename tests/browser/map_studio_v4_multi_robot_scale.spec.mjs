@@ -347,3 +347,63 @@ test("late Wi-Fi and floor material from robot A cannot replace robot B data", a
   })).toEqual([entries[1].entry_id, [8, 9], 8, 8, 8, 8]);
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
 });
+
+test("disconnect before optional admission keeps A coverage cleared and B usable @safety", async ({ page }) => {
+  const anchor = new Date("2026-11-07T08:00:00Z");
+  await page.clock.install({ time: anchor });
+  await page.clock.pauseAt(anchor);
+  const activeEntries = twoEntriesWithLayers().map((item) => ({ ...item, native_session_active: true }));
+  const cleaningStates = {
+    "vacuum.robot_a": { state: "cleaning", attributes: { matic_entry_id: entries[0].entry_id } },
+    "vacuum.robot_b": { state: "cleaning", attributes: { matic_entry_id: entries[1].entry_id } },
+  };
+  const layer = (session, x) => ({ active: true, map_session_key: session.repeat(64), cell_size: 0.015,
+    truncated: true, coverage_basis: "observed_changes", runs: [[x, x, 1, 1]] });
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "packaged", initialCatalogEntries: activeEntries, initialRobotStates: cleaningStates,
+    cleaningCoverage: layer("a", 1), cleaningCoverageB: layer("b", 8),
+  });
+  await page.evaluate(() => {
+    window.__coverageRequests = [];
+    const panel = window.__panelFixture.createPanel();
+    const fetch = panel.hass.fetchWithAuth.bind(panel.hass);
+    panel.hass = { ...panel.hass, fetchWithAuth: (url, options) => {
+      if (String(url).includes("/live_coverage/")) window.__coverageRequests.push(String(url));
+      return fetch(url, options);
+    } };
+    document.body.append(panel);
+  });
+  const panel = page.locator(fixture.panelTag);
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return [state.map.available, state.optionalUiReady];
+  })).toEqual([true, false]);
+  await panel.evaluate(async (element) => {
+    const hass = element.hass;
+    element.hass = { ...hass, states: { ...hass.states,
+      "vacuum.robot_a": { ...hass.states["vacuum.robot_a"], state: "unavailable" },
+    } };
+    await element.updateComplete;
+  });
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return [state.host.robotConnected, state.map.available, state.floor.readOnly];
+  })).toEqual([false, true, true]);
+  // Existing floor revocation must also block the later admission callback.
+  await page.clock.runFor(100);
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return [state.map.available, state.optionalUiReady];
+  })).toEqual([true, true]);
+  expect(await page.evaluate(() => window.__coverageRequests)).toEqual([]);
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+  await panel.locator("select.robot-switcher").selectOption(entries[1].entry_id);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await page.clock.runFor(100);
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
+    return [state.selection.entryId, state.liveCoverage?.frameKey?.startsWith("synthetic-entry-b|"),
+      state.liveCoverage?.runs?.[0]?.[0]];
+  })).toEqual([entries[1].entry_id, true, 8]);
+  expect(await page.evaluate(() => window.__coverageRequests)).toEqual(["/api/matic_robot/live_coverage/synthetic-b"]);
+});

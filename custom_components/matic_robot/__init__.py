@@ -438,7 +438,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         entry.async_create_background_task(
             hass,
-            wifi_survey.async_collect(client, coordinator),
+            wifi_survey.async_collect(runtime_data),
             f"{DOMAIN} Wi-Fi survey collector",
         )
 

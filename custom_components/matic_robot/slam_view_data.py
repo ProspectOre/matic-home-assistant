@@ -106,7 +106,7 @@ def pose_observed_in_frame(
         observed_at is not None
         and runtime.slam_map.floor_plan_is_current(runtime.coordinator.data.floor_plan)
         and observed_at
-        >= max(
+        > max(
             getattr(runtime.slam_map, "pose_frame_started_at", 0.0),
             getattr(runtime.coordinator, "floor_frame_started_at", 0.0),
         )
