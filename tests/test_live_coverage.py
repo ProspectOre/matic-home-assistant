@@ -29,6 +29,12 @@ from .test_slam_map import synthetic_semantic_entry
 MISSION = 42
 
 
+def _client():
+    client = MagicMock()
+    client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
+    return client
+
+
 def _page_entry(
     cells: bytes,
     *,
@@ -84,7 +90,7 @@ def test_coverage_requires_active_session_and_verified_current_frame() -> None:
 
 
 async def test_missing_marker_keeps_active_coverage_hidden(monkeypatch) -> None:
-    client = MagicMock()
+    client = _client()
     session = active_key()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
     client.async_get_tracked_collection_entries = AsyncMock(return_value=())
@@ -109,7 +115,7 @@ async def test_missing_marker_keeps_active_coverage_hidden(monkeypatch) -> None:
 
 async def test_session_or_frame_change_immediately_hides_coverage() -> None:
     context = [(MISSION, "floor")]
-    client = MagicMock()
+    client = _client()
     session = active_key()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
     coverage = LiveCoverage(client, lambda: context[0])
@@ -127,7 +133,7 @@ async def test_session_or_frame_change_immediately_hides_coverage() -> None:
 
 async def test_frame_change_during_session_read_is_discarded() -> None:
     context = [(MISSION, "floor")]
-    client = MagicMock()
+    client = _client()
 
     async def read_session():
         context[0] = (MISSION, "other")
@@ -144,7 +150,7 @@ async def test_frame_change_during_session_read_is_discarded() -> None:
 
 
 async def test_watcher_fails_closed_on_session_read_failure(monkeypatch) -> None:
-    client = MagicMock()
+    client = _client()
     failed = asyncio.Event()
     calls = 0
     session = active_key()
@@ -195,7 +201,7 @@ async def test_watcher_tracks_only_post_marker_changes(monkeypatch) -> None:
         yield _page_entry(bytes(baseline), sequence=2)
         yield _page_entry(bytes(changed), sequence=3)
 
-    client = MagicMock()
+    client = _client()
     client.async_get_tracked_collection_entries = AsyncMock(
         return_value=[_marker(session)]
     )
@@ -220,7 +226,7 @@ async def test_watcher_tracks_only_post_marker_changes(monkeypatch) -> None:
 async def test_marker_read_racing_frame_change_never_subscribes() -> None:
     session = active_key()
     context = [(MISSION, "floor")]
-    client = MagicMock()
+    client = _client()
 
     async def read_marker(*args, **kwargs):
         context[0] = (MISSION, "new-floor")
@@ -249,7 +255,7 @@ async def test_cancelled_watcher_clears_session_and_page_stream(monkeypatch) -> 
         finally:
             closed.set()
 
-    client = MagicMock()
+    client = _client()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
     client.async_get_tracked_collection_entries = AsyncMock(
         return_value=[_marker(session)]
@@ -402,7 +408,7 @@ async def test_view_handles_revalidation_failure_after_encoding() -> None:
 
 
 async def test_async_current_rejects_a_changed_native_session() -> None:
-    client = MagicMock()
+    client = _client()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=b"new")
     coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
     coverage._bound_context = (MISSION, "floor")
@@ -463,7 +469,7 @@ def test_coverage_output_limit_fails_bounded(monkeypatch) -> None:
 
 async def test_quiet_stream_rechecks_identity_until_run_changes(monkeypatch) -> None:
     session = active_key()
-    client = MagicMock()
+    client = _client()
     client.async_get_tracked_collection_entries = AsyncMock(
         return_value=[_marker(session)]
     )
@@ -486,7 +492,7 @@ async def test_quiet_stream_rechecks_identity_until_run_changes(monkeypatch) -> 
 
 async def test_frame_changes_while_next_page_is_in_flight() -> None:
     session = active_key()
-    client = MagicMock()
+    client = _client()
     client.async_get_tracked_collection_entries = AsyncMock(
         return_value=[_marker(session)]
     )
@@ -506,7 +512,7 @@ async def test_reconnect_establishes_new_baselines_after_sequence_failure(
     monkeypatch,
 ) -> None:
     session = active_key()
-    client = MagicMock()
+    client = _client()
     client.async_get_tracked_collection_entries = AsyncMock(
         return_value=[_marker(session)]
     )
@@ -547,3 +553,95 @@ async def test_reconnect_establishes_new_baselines_after_sequence_failure(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
+
+
+@pytest.mark.parametrize("active", [False, None])
+async def test_retained_session_cannot_serve_coverage_after_native_task_ends(active):
+    client = _client()
+    session = active_key()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    client.async_get_active_cleaning_session_state.return_value = active
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    coverage._changes = CoverageChanges(MISSION, 10, 1)
+    coverage._changes.update(_page_entry(bytes(1024), sequence=2))
+    coverage._changes.update(_page_entry(bytes([1]) + bytes(1023), sequence=3))
+    assert coverage.current()[0].cells[0] == 1  # Coordinator still says active.
+    assert await coverage.async_current() is None
+    runtime = SimpleNamespace(live_coverage=coverage)
+    response = await MaticLiveCoverageView().get(_request(runtime), "entry")
+    assert json.loads(response.body)["active"] is False
+    assert json.loads(response.body)["runs"] == []
+
+
+async def test_frame_change_during_native_activity_read_cannot_serve_old_pages():
+    context = [(MISSION, "floor")]
+    client = _client()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=active_key())
+    coverage = LiveCoverage(client, lambda: context[0])
+    coverage._bound_context = context[0]
+    coverage._session = active_key()
+
+    async def activity():
+        context[0] = (MISSION, "other-floor")
+        return True
+
+    client.async_get_active_cleaning_session_state = activity
+    assert await coverage.async_current() is None
+
+
+async def test_watcher_discards_retained_session_baseline_after_native_task_end(
+    monkeypatch,
+):
+    client = _client()
+    session = active_key()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    inactive = asyncio.Event()
+    closed = asyncio.Event()
+    reads = 0
+
+    async def activity():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return True
+        inactive.set()
+        return False
+
+    async def updates():
+        try:
+            yield _page_entry(bytes(1024), sequence=2)
+            yield _page_entry(bytes([1]) + bytes(1023), sequence=3)
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    client.async_get_active_cleaning_session_state = activity
+    client.async_subscribe_collection_entries = MagicMock(return_value=updates())
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))  # Stale coordinator.
+    cleared = asyncio.Event()
+    clear = coverage._clear
+
+    def observe_clear():
+        clear()
+        cleared.set()
+
+    monkeypatch.setattr(coverage, "_clear", observe_clear)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_coverage._CHECK_SECONDS", 0.01
+    )
+    task = asyncio.create_task(coverage.watch())
+    try:
+        await asyncio.wait_for(inactive.wait(), 2)
+        await asyncio.wait_for(closed.wait(), 2)
+        await asyncio.wait_for(cleared.wait(), 2)
+        assert coverage.current() is None
+        assert coverage._changes is None
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

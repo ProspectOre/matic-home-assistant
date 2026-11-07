@@ -59,19 +59,25 @@ class LiveCoverage:
         self.generation += 1
 
     async def async_current(self) -> tuple[SlamSemanticTile, ...] | None:
-        """Revalidate the private session before giving pages to a client."""
+        """Revalidate task activity and private identity before serving pages."""
         context = self._bound_context
         session = self._session
         generation = self.generation
         if context is None or session is None or context != self._context():
             return None
         current_session = await self._client.async_get_cleaning_session_identity()
+        active = await self._client.async_get_active_cleaning_session_state()
         if (
             current_session != session
             or self._bound_context != context
             or self.generation != generation
         ):
             raise CannotConnectError("coverage session changed or is unknown")
+        if active is not True:
+            # A retained property cannot carry a baseline across a task end
+            # or an interval whose activity cannot be verified.
+            self._clear()
+            return None
         return self.current()
 
     async def watch(self) -> None:
@@ -81,7 +87,10 @@ class LiveCoverage:
                 context = self._context()
                 if context is not None:
                     session = await self._client.async_get_cleaning_session_identity()
-                    if session and self._context() == context:
+                    active = (
+                        await self._client.async_get_active_cleaning_session_state()
+                    )
+                    if session and active is True and self._context() == context:
                         await self._watch_session(context, session)
             except Exception:
                 _LOGGER.debug("Live coverage stream failed", exc_info=True)
@@ -127,7 +136,7 @@ class LiveCoverage:
             pending = asyncio.create_task(anext(stream))
             next_check = monotonic() + _CHECK_SECONDS
             try:
-                while self._context() == context:
+                while self._bound_context == context and self._context() == context:
                     done, _ = await asyncio.wait(
                         {pending}, timeout=max(0.0, next_check - monotonic())
                     )
@@ -136,7 +145,7 @@ class LiveCoverage:
                             entry = pending.result()
                         except StopAsyncIteration:
                             return
-                        if self._context() != context:
+                        if self._bound_context != context or self._context() != context:
                             return
                         try:
                             changed = changes.update(entry)
@@ -149,7 +158,14 @@ class LiveCoverage:
                         current_session = (
                             await self._client.async_get_cleaning_session_identity()
                         )
-                        if current_session != session or self._context() != context:
+                        active = (
+                            await self._client.async_get_active_cleaning_session_state()
+                        )
+                        if (
+                            current_session != session
+                            or active is not True
+                            or self._context() != context
+                        ):
                             return
                         next_check = monotonic() + _CHECK_SECONDS
             finally:

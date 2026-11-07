@@ -229,7 +229,7 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   const distance = last ? Math.hypot(x - last[0], y - last[1]) : 0;
   const gap = !sameClock || prior.generation !== observation.generation
     || prior.frameKey !== observation.frameKey || observation.seconds - prior.seconds > 8;
-  if (last && distance < 0.15 && (!gap || (!prior && distance === 0))) {
+  if (last && distance < 0.15 && !gap) {
     trailObservations.set(trail, observation);
     return;
   }

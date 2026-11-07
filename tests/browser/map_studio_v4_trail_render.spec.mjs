@@ -76,6 +76,10 @@ test("migrated trails retain every section and the original aggregate point boun
     store.value.generation += 1;
     observe(24.32, 103, "c"); // A browser-side proof revocation is also a break.
     const continued = store.value.trail.segments;
+    store.value = { ...store.value, trail: parseRunTrail(payload([[[0, 0], [1, 0]]])) };
+    observe(1, 150);
+    observe(1.3, 151);
+    const resumedAtEndpoint = store.value.trail.segments;
     const invalid = [];
     for (const sections of [Array.from({ length: 9 }, () => []),
       [[...Array(4_001)].map(() => [0, 0])],
@@ -90,12 +94,13 @@ test("migrated trails retain every section and the original aggregate point boun
     const maximumPoints = store.value.trail.segments.reduce((n, s) => n + s.length, 0);
     store.value = { ...store.value, trail: parseRunTrail(payload([[]])) };
     for (let index = 0; index < 20; index += 1) observe(index * 0.2, 200 + index * 10);
-    return { path, continued, invalid, storedPoints, maximumPoints, smallSections: store.value.trail.segments,
+    return { path, continued, resumedAtEndpoint, invalid, storedPoints, maximumPoints, smallSections: store.value.trail.segments,
       finalPoints: store.value.trail.segments.reduce((n, s) => n + s.length, 0) };
   });
   const original = Array.from({ length: 12 }, (_, index) => [[index * 2, 0], [index * 2 + 0.4, 0]]);
   expect(result.path).toEqual(original.flatMap(([first, last]) => [["move", ...first], ["line", ...last]]));
   expect(result.continued).toEqual([...original, [[24, 0], [24.3, 0]], [[24.31, 0]], [[24.32, 0]]]);
+  expect(result.resumedAtEndpoint).toEqual([[[0, 0], [1, 0]], [[1, 0], [1.3, 0]]]);
   expect(result.invalid).toEqual([true, true, true]);
   expect(result.storedPoints).toBe(32_000);
   expect(result.maximumPoints).toBe(4_000);
