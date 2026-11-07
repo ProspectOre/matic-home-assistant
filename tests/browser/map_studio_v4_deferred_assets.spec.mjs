@@ -1231,3 +1231,36 @@ test("Stop works when every optional JavaScript download fails @safety", async (
   await expect.poll(() => page.evaluate(() => window.__panelFixture.serviceCalls
     .filter(({ service }) => service === "stop_intelligent_cleaning").length)).toBe(1);
 });
+
+test("two-robot startup holds optional UI while animation frames are suspended", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto("/");
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "packaged", initialCatalogEntries: twoRobotEntries(), initialRobotStates: TWO_ROBOT_STATES,
+  });
+  await page.evaluate(async () => import("/matic_icons.js"));
+  await page.evaluate(() => {
+    const original = { request: window.requestAnimationFrame, cancel: window.cancelAnimationFrame };
+    const frames = new Map();
+    let next = 0;
+    window.requestAnimationFrame = callback => { const id = ++next; frames.set(id, callback); return id; };
+    window.cancelAnimationFrame = id => frames.delete(id);
+    window.__resumeAnimationFrames = () => {
+      window.requestAnimationFrame = original.request;
+      window.cancelAnimationFrame = original.cancel;
+      for (const callback of frames.values()) requestAnimationFrame(callback);
+      frames.clear();
+    };
+  });
+  await armFirstMapOpportunity(page, fixture.panelTag);
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await page.waitForTimeout(2_100);
+  expect(await panel.evaluate(element => element.getWorkspaceSnapshot().optionalUiReady)).toBe(false);
+  expect(await page.evaluate(() => performance.getEntriesByType("resource").map(item => new URL(item.name).pathname)
+    .filter(path => /(?:home-pin-resources|map-layer-resources|map-layer-toolbar)-.*\.js$/.test(path)))).toEqual([]);
+  await page.evaluate(() => window.__resumeAnimationFrames());
+  expect(await firstMapOpportunityPaths(page)).toEqual(Object.keys(startupGraph()).map(path => `/${path}`).sort());
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().optionalUiReady)).toBe(true);
+});

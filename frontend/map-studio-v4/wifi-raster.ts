@@ -341,6 +341,28 @@ export const buildWifiRaster = (
     // Extremely dense, large surveys still retain each sample's own coverage.
     // Drop only neighbor blending once its bounded search budget is spent.
     const neighbours = candidateBudgetExceeded ? samples.map(() => []) : neighborLists;
+    // A clear route between sample centers does not prove every blended pixel
+    // is visible from both. Summed blocked cells give a conservative O(1)
+    // check per contribution without ray tracing across every footprint.
+    const blocked = new Uint32Array(width * height);
+    for (let y = 0; y < height; y += 1) {
+      let row = 0;
+      for (let x = 0; x < width; x += 1) {
+        row += occupiedAt(support, x + left, y + top) ? 0 : 1;
+        blocked[y * width + x] = row + (y ? blocked[(y - 1) * width + x]! : 0);
+      }
+    }
+    const prefix = (x: number, y: number): number => x < 0 || y < 0 ? 0 : blocked[y * width + x]!;
+    const clearBlend = (sample: RasterSample, x: number, y: number): boolean => {
+      const fromX = Math.round(sample.x) - left;
+      const fromY = Math.round(sample.y) - top;
+      const toX = x - left;
+      const toY = y - top;
+      const x0 = Math.min(fromX, toX), x1 = Math.max(fromX, toX);
+      const y0 = Math.min(fromY, toY), y1 = Math.max(fromY, toY);
+      return x0 >= 0 && y0 >= 0 && x1 < width && y1 < height
+        && prefix(x1, y1) - prefix(x0 - 1, y1) - prefix(x1, y0 - 1) + prefix(x0 - 1, y0 - 1) === 0;
+    };
     for (const [sampleIndex, sample] of rasterSamples.entries()) {
       const minX = sample.footprintLeft;
       const maxX = sample.footprintLeft + sample.footprintWidth - 1;
@@ -355,7 +377,8 @@ export const buildWifiRaster = (
             const neighbor = rasterSamples[neighborIndex]!;
             const distanceMeters = Math.hypot(x - neighbor.x, y - neighbor.y) * metersPerCell;
             const influenceMeters = (sample.size + neighbor.size) / 2 * metersPerCell + metersPerCell;
-            if (distanceMeters > influenceMeters) continue;
+            if (distanceMeters > influenceMeters
+              || (neighborIndex !== sampleIndex && !clearBlend(neighbor, x, y))) continue;
             const weight = 1 / (distanceMeters ** 2 + 0.15 ** 2);
             weightedSignal[index] = weightedSignal[index]! + neighbor.dbm * weight;
             weights[index] = weights[index]! + weight;

@@ -171,6 +171,7 @@ test("native robot picker keeps long names keyboard reachable and clear at norma
 
 test("native robot picker remains visible and separate from actions in actual fullscreen", async ({ page }) => {
   const { panel, selector } = await mountLongNamePanel(page);
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().map.available)).toBe(true);
   for (const width of [320, 390, 768, 1180]) {
     await page.setViewportSize({ width, height: 844 });
     await panel.locator("button.workspace-toggle").click();
@@ -192,6 +193,7 @@ test("native robot picker remains visible and separate from actions in actual fu
     expect(dimensions.clipped).toBe(false);
     await page.keyboard.press("Escape");
     await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().fullMap)).toBe(false);
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
   }
 });
 
@@ -272,6 +274,7 @@ test("late Wi-Fi and floor material from robot A cannot replace robot B data", a
   });
   await dispatchIntent(panel, { type: "toggle-wifi-signal" });
   await dispatchIntent(panel, { type: "toggle-floor-type", item: "carpet" });
+  await expect(panel.getByRole("button", { name: "Carpet", exact: true })).toHaveAttribute("aria-pressed", "true");
   await dispatchIntent(panel, { type: "show-trail", trail: "live" });
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().trail?.segments?.[0]?.[0]?.[0])).toBe(1);
   await expect.poll(() => panel.evaluate((element, prefix) => element.getWorkspaceSnapshot().liveCoverage?.frameKey?.startsWith(prefix),
@@ -291,12 +294,13 @@ test("late Wi-Fi and floor material from robot A cannot replace robot B data", a
       mapAvailable: state.map.available,
       wifi: state.wifiSignal,
       floorTypes: state.floorTypes,
+      floorTypeModes: state.floorTypeModes,
       coverage: state.liveCoverage,
       trailCurrent: Boolean(state.trail && entry && state.trail.mapSessionKey === entry.mapSessionKey),
     };
   });
   expect(duringEntrySwitch).toEqual({ selection: entries[1].entry_id, entryId: null, mapAvailable: false,
-    wifi: null, floorTypes: null, coverage: null, trailCurrent: false });
+    wifi: null, floorTypes: null, floorTypeModes: 0, coverage: null, trailCurrent: false });
   await page.evaluate(() => { window.__holdCleaningCoverage = true; });
   await page.evaluate(() => window.__panelFixture.releaseCatalog());
   await expect.poll(() => panel.evaluate((element) => {
@@ -314,8 +318,11 @@ test("late Wi-Fi and floor material from robot A cannot replace robot B data", a
     };
   });
   expect(staleLayerProvenance).toEqual({ oldCoverageIsCurrent: false, oldTrailIsCurrent: false, oldMaterialWasCleared: true });
+  await expect(panel.getByRole("button", { name: "Carpet", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await expect(panel.getByRole("button", { name: "Vents", exact: true })).toHaveAttribute("aria-pressed", "false");
   await dispatchIntent(panel, { type: "toggle-wifi-signal" });
   await dispatchIntent(panel, { type: "toggle-floor-type", item: "carpet" });
+  await expect(panel.getByRole("button", { name: "Carpet", exact: true })).toHaveAttribute("aria-pressed", "true");
   await dispatchIntent(panel, { type: "show-trail", trail: "live" });
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();

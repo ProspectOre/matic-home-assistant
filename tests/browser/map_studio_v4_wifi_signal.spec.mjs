@@ -421,3 +421,34 @@ test("Wi-Fi heatmap fills measured floor bins, clips walls, blends neighbors, an
   expect(result.dprPreservedInThreeD).toBe(true);
   expect(result.drawOrder).toEqual(["wifi", "coverage", "wifi", "coverage"]);
 });
+
+test("Wi-Fi neighbors cannot tint a floor pixel across a wall corner", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { buildWifiRaster } from "./frontend/map-studio-v4/wifi-raster"; export { parseWifiSignal } from "./frontend/map-studio-v4/wifi-signal";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/wifi-corner.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { buildWifiRaster, parseWifiSignal } = await import("/wifi-corner.js");
+    const width = 64, height = 40;
+    const mask = new Uint8Array(Math.ceil(width * height / 8)).fill(255);
+    for (let y = 12; y < height; y += 1) {
+      const at = y * width + 28;
+      mask[at >>> 3] &= ~(1 << (at & 7));
+    }
+    const support = { version: 1, status: "verified", encoding: "bitset-little-v1", originCells: [0, 0],
+      metersPerCell: 0.015, spanCells: [width, height], occupiedCells: width * height - 28,
+      maskSha256: "a".repeat(64), mask };
+    const layer = parseWifiSignal({ enabled: true, cell_size: 0.3048, cells: [
+      { x: 15.5 * 0.015, y: 10.5 * 0.015, dbm: -90, size: 0.6 },
+      { x: 35.5 * 0.015, y: 10.5 * 0.015, dbm: -35, size: 0.15 },
+    ] });
+    const raster = buildWifiRaster(layer, support, "relative");
+    const open = buildWifiRaster(layer, { ...support, mask: new Uint8Array(mask.length).fill(255) }, "relative");
+    const pixel = (image, x, y) => [...image.canvas.getContext("2d").getImageData(x - image.left, y - image.top, 1, 1).data];
+    return { reference: pixel(raster, 5, 25), blocked: pixel(raster, 17, 25),
+      open: pixel(open, 17, 25), wall: pixel(raster, 28, 20) };
+  });
+  expect(result.blocked).toEqual(result.reference);
+  expect(result.open).not.toEqual(result.reference);
+  expect(result.blocked[3]).toBeGreaterThan(0);
+  expect(result.wall[3]).toBe(0);
+});

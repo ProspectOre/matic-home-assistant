@@ -297,6 +297,8 @@ export class EffectController {
         }
         if (this.#store.value.trail?.id === "live") void this.#restoreLiveTrail();
       },
+      // Optional imports must wait for a map frame, even when RAF is throttled.
+      0,
     );
   }
 
