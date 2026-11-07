@@ -29,6 +29,10 @@ from .test_slam_map import synthetic_semantic_entry
 MISSION = 42
 
 
+class _CoverageStub(SimpleNamespace):
+    __hash__ = object.__hash__
+
+
 def _client():
     client = MagicMock()
     client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
@@ -126,7 +130,8 @@ async def test_session_or_frame_change_immediately_hides_coverage() -> None:
     client.async_get_cleaning_session_identity.return_value = active_key(UUID(int=5))
     with pytest.raises(CannotConnectError):
         await coverage.async_current()
-    assert coverage.generation == old_generation
+    assert coverage.generation > old_generation
+    assert coverage._changes is None
     context[0] = (MISSION, "other")
     assert coverage.current() is None
 
@@ -287,7 +292,7 @@ def test_coverage_runs_keep_modes_and_column_major_cell_positions() -> None:
 
 async def test_view_requires_admin_and_revalidates_entry() -> None:
     runtime = SimpleNamespace(
-        live_coverage=SimpleNamespace(
+        live_coverage=_CoverageStub(
             async_current=AsyncMock(return_value=()),
             revision=1,
             generation=1,
@@ -325,7 +330,7 @@ async def test_view_returns_snapshot_while_coverage_keeps_changing(
     first = SlamSemanticTile(0, 0, "mission", b"\x01" + bytes(1023))
     newer = SlamSemanticTile(0, 0, "mission", b"\x01\x10" + bytes(1022))
     runtime = SimpleNamespace(
-        live_coverage=SimpleNamespace(
+        live_coverage=_CoverageStub(
             revision=1,
             generation=1,
             ownership_unverified=False,
@@ -362,7 +367,7 @@ async def test_view_returns_snapshot_while_coverage_keeps_changing(
 
 async def test_view_requires_and_revalidates_map_session() -> None:
     runtime = SimpleNamespace(
-        live_coverage=SimpleNamespace(
+        live_coverage=_CoverageStub(
             async_current=AsyncMock(return_value=()),
             revision=1,
             generation=1,
@@ -385,7 +390,7 @@ async def test_view_requires_and_revalidates_map_session() -> None:
 
 async def test_view_discards_session_changed_during_encoding() -> None:
     runtime = SimpleNamespace(
-        live_coverage=SimpleNamespace(
+        live_coverage=_CoverageStub(
             async_current=AsyncMock(side_effect=[(), None]),
             revision=1,
             generation=1,
@@ -397,7 +402,7 @@ async def test_view_discards_session_changed_during_encoding() -> None:
 
 async def test_view_handles_revalidation_failure_after_encoding() -> None:
     runtime = SimpleNamespace(
-        live_coverage=SimpleNamespace(
+        live_coverage=_CoverageStub(
             async_current=AsyncMock(side_effect=[(), CannotConnectError("offline")]),
             revision=1,
             generation=1,
@@ -416,17 +421,16 @@ async def test_async_current_rejects_a_changed_native_session() -> None:
     with pytest.raises(CannotConnectError):
         await coverage.async_current()
     client.async_get_cleaning_session_identity.return_value = None
-    with pytest.raises(CannotConnectError):
-        await coverage.async_current()
+    assert await coverage.async_current() is None
     client.async_get_cleaning_session_identity.return_value = b"old"
-    assert await coverage.async_current() == ()
+    assert await coverage.async_current() is None
     coverage._clear()
     assert await coverage.async_current() is None
 
 
 async def test_view_discards_new_valid_session_during_encoding() -> None:
     runtime = SimpleNamespace(
-        live_coverage=SimpleNamespace(
+        live_coverage=_CoverageStub(
             async_current=AsyncMock(return_value=()),
             revision=1,
             generation=1,
@@ -448,12 +452,12 @@ async def test_view_handles_unavailable_or_unloaded_coverage() -> None:
     view = MaticLiveCoverageView()
     assert (await view.get(_request(None), "entry")).status == 404
     inactive = SimpleNamespace(
-        live_coverage=SimpleNamespace(async_current=AsyncMock(return_value=None))
+        live_coverage=_CoverageStub(async_current=AsyncMock(return_value=None))
     )
     response = await view.get(_request(inactive), "entry")
     assert json.loads(response.body)["active"] is False
     runtime = SimpleNamespace(
-        live_coverage=SimpleNamespace(
+        live_coverage=_CoverageStub(
             async_current=AsyncMock(side_effect=CannotConnectError("offline"))
         )
     )
@@ -735,3 +739,152 @@ async def test_watcher_closes_when_next_task_activity_follows_previous_identity(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.parametrize("failure", [None, b"other", "activity", "confirmation"])
+async def test_failed_proof_discards_owned_baseline_without_resurrection(failure):
+    client = _client()
+    session = active_key()
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    coverage._changes = CoverageChanges(MISSION, 10, 1)
+    coverage._changes.update(_page_entry(bytes(1024), sequence=2))
+    coverage._changes.update(_page_entry(b"\x01" + bytes(1023), sequence=3))
+    assert coverage.current()
+    generation = coverage.generation
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    if failure == "activity":
+        client.async_get_active_cleaning_session_state.side_effect = CannotConnectError(
+            "offline"
+        )
+    elif failure == "confirmation":
+        client.async_get_cleaning_session_identity.side_effect = [session, None]
+    else:
+        client.async_get_cleaning_session_identity.return_value = failure
+    with pytest.raises(CannotConnectError):
+        await coverage.async_current()
+    assert coverage.generation > generation
+    assert coverage._changes is None
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
+    assert await coverage.async_current() is None
+
+
+async def test_old_proof_does_not_clear_new_watcher_baseline():
+    client = _client()
+    session = active_key()
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    newer = CoverageChanges(MISSION, 11, 1)
+
+    async def rebind():
+        coverage.generation += 1
+        coverage._changes = newer
+        return session
+
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=rebind)
+    with pytest.raises(CannotConnectError):
+        await coverage.async_current()
+    assert coverage._changes is newer
+    assert coverage._bound_context == (MISSION, "floor")
+
+
+async def test_frame_loss_before_proof_discards_baseline():
+    context = [(MISSION, "floor")]
+    coverage = LiveCoverage(_client(), lambda: context[0])
+    coverage._bound_context = context[0]
+    coverage._session = active_key()
+    coverage._changes = CoverageChanges(MISSION, 10, 1)
+    context[0] = None
+    assert await coverage.async_current() is None
+    assert coverage._changes is None
+    context[0] = (MISSION, "floor")
+    assert await coverage.async_current() is None
+
+
+async def test_proof_delivery_rechecks_generation():
+    client = _client()
+    session = active_key()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def identity():
+        entered.set()
+        await release.wait()
+        return session
+
+    client.async_get_cleaning_session_identity = identity
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    reading = asyncio.create_task(coverage.async_current())
+    await entered.wait()
+    coverage._proof_task.add_done_callback(lambda _: coverage._clear())
+    release.set()
+    with pytest.raises(CannotConnectError):
+        await reading
+
+
+async def test_concurrent_viewers_share_proofs_and_revision_encoding():
+    client = _client()
+    session = active_key()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def identity():
+        entered.set()
+        await release.wait()
+        return session
+
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=identity)
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    coverage._changes = CoverageChanges(MISSION, 10, 1)
+    coverage._changes.update(_page_entry(bytes(1024), sequence=2))
+    coverage._changes.update(_page_entry(b"\x01" + bytes(1023), sequence=3))
+    request = _request(SimpleNamespace(live_coverage=coverage))
+    view = MaticLiveCoverageView()
+    viewers = [asyncio.create_task(view.get(request, "entry")) for _ in range(12)]
+    await entered.wait()
+    assert client.async_get_cleaning_session_identity.await_count == 1
+    release.set()
+    responses = await asyncio.gather(*viewers)
+    assert all(response.status == 200 for response in responses)
+    assert client.async_get_cleaning_session_identity.await_count == 4
+    assert client.async_get_active_cleaning_session_state.await_count == 2
+    encoder = request.app[KEY_HASS].async_add_executor_job
+    assert encoder.await_count == 1
+    assert (await view.get(request, "entry")).status == 200
+    assert encoder.await_count == 1
+    coverage._changes.update(_page_entry(b"\x01\x10" + bytes(1022), sequence=4))
+    coverage.revision += 1
+    response = await view.get(request, "entry")
+    assert response.status == 200
+    assert len(json.loads(response.body)["runs"]) == 2
+    assert encoder.await_count == 2
+
+
+async def test_cancelled_viewer_does_not_cancel_shared_proof():
+    client = _client()
+    session = active_key()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def identity():
+        entered.set()
+        await release.wait()
+        return session
+
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=identity)
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    first = asyncio.create_task(coverage.async_current())
+    second = asyncio.create_task(coverage.async_current())
+    await entered.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    assert await second == ()
+    assert client.async_get_cleaning_session_identity.await_count == 2

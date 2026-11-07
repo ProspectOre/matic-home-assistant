@@ -38,6 +38,8 @@ class LiveCoverage:
         self.partial = False
         self.revision = 0
         self.generation = 0
+        self._proof_owner: tuple[int, tuple[int, object], bytes] | None = None
+        self._proof_task: asyncio.Task[bool] | None = None
 
     @property
     def ownership_unverified(self) -> bool:
@@ -58,32 +60,65 @@ class LiveCoverage:
         self.revision += 1
         self.generation += 1
 
-    async def async_current(self) -> tuple[SlamSemanticTile, ...] | None:
-        """Revalidate task activity and private identity before serving pages."""
-        context = self._bound_context
-        session = self._session
-        generation = self.generation
-        if context is None or session is None or context != self._context():
-            return None
-        current_session = await self._client.async_get_cleaning_session_identity()
-        active = await self._client.async_get_active_cleaning_session_state()
-        confirmed_session = (
-            await self._client.async_get_cleaning_session_identity()
-            if active is True
-            else current_session
+    def _owns(self, owner: tuple[int, tuple[int, object], bytes]) -> bool:
+        generation, context, session = owner
+        return (
+            self.generation == generation
+            and self._bound_context == context
+            and self._session == session
         )
-        if (
-            current_session != session
-            or confirmed_session != current_session
-            or self._bound_context != context
-            or self.generation != generation
-        ):
-            raise CannotConnectError("coverage session changed or is unknown")
-        if active is not True:
-            # A retained property cannot carry a baseline across a task end
-            # or an interval whose activity cannot be verified.
+
+    def _invalidate(self, owner: tuple[int, tuple[int, object], bytes]) -> None:
+        if self._owns(owner):
             self._clear()
+
+    async def _verify(self, owner: tuple[int, tuple[int, object], bytes]) -> bool:
+        _, context, session = owner
+        try:
+            current_session = await self._client.async_get_cleaning_session_identity()
+            if current_session != session:
+                raise CannotConnectError("coverage session changed or is unknown")
+            active = await self._client.async_get_active_cleaning_session_state()
+            if (
+                active is True
+                and await self._client.async_get_cleaning_session_identity() != session
+            ):
+                raise CannotConnectError(
+                    "coverage session changed during activity read"
+                )
+        except Exception, asyncio.CancelledError:
+            self._invalidate(owner)
+            raise
+        if not self._owns(owner):
+            raise CannotConnectError("coverage generation changed during proof read")
+        if active is not True or self._context() != context:
+            self._invalidate(owner)
+            return False
+        return True
+
+    async def async_current(self) -> tuple[SlamSemanticTile, ...] | None:
+        """Share only in-flight proofs; every later read revalidates the robot."""
+        context, session = self._bound_context, self._session
+        if context is None or session is None:
             return None
+        owner = (self.generation, context, session)
+        if context != self._context():
+            self._invalidate(owner)
+            return None
+        task = self._proof_task
+        if task is None or task.done() or self._proof_owner != owner:
+            task = asyncio.create_task(self._verify(owner))
+            # A disconnected viewer must not cancel another viewer's proof or
+            # leave an unobserved exception when its shared read completes.
+            task.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
+            self._proof_task = task
+            self._proof_owner = owner
+        if not await asyncio.shield(task):
+            return None
+        if not self._owns(owner):
+            raise CannotConnectError("coverage generation changed after proof read")
         return self.current()
 
     async def watch(self) -> None:

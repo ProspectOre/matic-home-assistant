@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from http import HTTPStatus
+from weakref import WeakKeyDictionary
 
 from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
@@ -11,6 +13,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from .client.exceptions import MaticError
 from .client.slam_tiles import TILE_SIDE, VOXEL_SCALE_METERS, SlamSemanticTile
 from .http import COVERAGE_API_URL, PRIVATE_NO_STORE_HEADERS, runtime_for_entry
+from .live_coverage import LiveCoverage
 from .slam_view_data import _map_session_key
 
 _MAX_RUNS = 20_000
@@ -21,6 +24,11 @@ class MaticLiveCoverageView(HomeAssistantView):
 
     url = COVERAGE_API_URL
     name = "api:matic_robot:live_coverage"
+
+    def __init__(self) -> None:
+        self._encoded: WeakKeyDictionary[
+            LiveCoverage, tuple[int, int, asyncio.Future[tuple[list[list[int]], bool]]]
+        ] = WeakKeyDictionary()
 
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
@@ -51,8 +59,29 @@ class MaticLiveCoverageView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.SERVICE_UNAVAILABLE, headers=PRIVATE_NO_STORE_HEADERS
             )
-        generation = runtime.live_coverage.generation
-        runs, truncated = await hass.async_add_executor_job(_coverage_runs, pages or ())
+        coverage = runtime.live_coverage
+        generation, revision = coverage.generation, coverage.revision
+        ownership_unverified = coverage.ownership_unverified
+        partial = getattr(coverage, "partial", False)
+        cached = self._encoded.get(coverage)
+        if (
+            cached is None
+            or cached[:2] != (generation, revision)
+            or (
+                cached[2].done()
+                and (cached[2].cancelled() or cached[2].exception() is not None)
+            )
+        ):
+            encoding = asyncio.ensure_future(
+                hass.async_add_executor_job(_coverage_runs, pages)
+            )
+            encoding.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
+            self._encoded[coverage] = (generation, revision, encoding)
+        else:
+            encoding = cached[2]
+        runs, truncated = await asyncio.shield(encoding)
         if runtime_for_entry(hass, entry_id) is not runtime:
             return web.Response(
                 status=HTTPStatus.SERVICE_UNAVAILABLE, headers=PRIVATE_NO_STORE_HEADERS
@@ -82,11 +111,10 @@ class MaticLiveCoverageView(HomeAssistantView):
                 "runs": runs,
                 **(
                     {"ownership_unverified": True}
-                    if runtime.live_coverage.ownership_unverified
+                    if ownership_unverified
                     else {"coverage_basis": "observed_changes"}
                 ),
-                "truncated": truncated
-                or getattr(runtime.live_coverage, "partial", False),
+                "truncated": truncated or partial,
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )

@@ -130,3 +130,63 @@ test("floor metadata follows each selected robot after first-map admission", asy
   })).toBe("synthetic-entry");
   await expect(floorSelector.locator("option")).toHaveText(["Home", "Loft"]);
 });
+
+const mountHistoryProbe = async (page, { hold = false, failures = 0 } = {}) => {
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialCatalogEntries: [entry(2)] });
+  await page.evaluate(({ hold, failures }) => {
+    const panel = window.__panelFixture.createPanel();
+    const original = panel.hass.fetchWithAuth;
+    const probe = window.__historyProbe = { hold, failures, reads: 0, aborted: 0 };
+    panel.hass = { ...panel.hass, fetchWithAuth: async (path, init) => {
+      if (!path.includes("slam_history/")) return original(path, init);
+      probe.reads += 1;
+      if (probe.failures > 0) { probe.failures -= 1; return new Response(null, { status: 503 }); }
+      if (probe.hold) return new Promise((resolve, reject) => {
+        probe.release = () => resolve(original(path, init));
+        init?.signal?.addEventListener("abort", () => { probe.aborted += 1; reject(new DOMException("Aborted", "AbortError")); }, { once: true });
+      });
+      return original(path, init);
+    } };
+    document.body.append(panel);
+  }, { hold, failures });
+  return page.locator(fixture.panelTag);
+};
+
+test("pending floor discovery survives repeated Home Assistant updates", async ({ page }) => {
+  const panel = await mountHistoryProbe(page, { hold: true });
+  await expect.poll(() => page.evaluate(() => window.__historyProbe.reads)).toBe(1);
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().resources.history.status)).toBe("loading");
+  await panel.evaluate(async element => {
+    for (let index = 0; index < 10; index += 1) {
+      element.hass = { ...element.hass, states: { ...element.hass.states } };
+      await element.updateComplete;
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+  });
+  expect(await page.evaluate(() => [window.__historyProbe.reads, window.__historyProbe.aborted])).toEqual([1, 0]);
+  await page.evaluate(() => { window.__historyProbe.hold = false; window.__historyProbe.release(); });
+  await expect(panel.locator("select.floor-switcher option")).toHaveText(["Home", "Loft"]);
+});
+
+test("floor discovery retries a transient history response", async ({ page }) => {
+  const panel = await mountHistoryProbe(page, { failures: 1 });
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().resources.history.status)).toBe("ready");
+  await expect(panel.locator("select.floor-switcher option")).toHaveText(["Home", "Loft"]);
+  expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(2);
+});
+
+test("failed floor discovery stops automatic retries and allows an explicit retry", async ({ page }) => {
+  const panel = await mountHistoryProbe(page, { failures: 10 });
+  await expect.poll(() => page.evaluate(() => window.__historyProbe.reads), { timeout: 8000 }).toBe(3);
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().resources.history.status)).toBe("error");
+  await page.clock.install();
+  await page.clock.runFor(10_000);
+  expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(3);
+  await page.evaluate(() => { window.__historyProbe.failures = 0; });
+  await panel.locator("matic-map-shell-v4").evaluate(element => element.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+    detail: { type: "refresh-history" }, bubbles: true, composed: true,
+  })));
+  await page.clock.runFor(100);
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().resources.history.status)).toBe("ready");
+  expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(4);
+});

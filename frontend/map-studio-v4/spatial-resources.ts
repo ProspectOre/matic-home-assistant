@@ -109,7 +109,7 @@ export class SpatialResources {
   }
   stopDeltaStream(): void { this.#scene.stop(); }
   ownsLiveDelta(entry: MapEntry): boolean { return this.#scene.owns(entry); }
-  async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+  async loadHistory(entry: MapEntry, stamp: ResourceStamp, discover = false): Promise<void> {
     if (!this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return;
     const history = await this.#spatialHistory();
     if (!history) {
@@ -117,7 +117,8 @@ export class SpatialResources {
       return;
     }
     if (this.#callbacks.pageActive() && !this.#callbacks.disposed() && this.#coherence.accepts(stamp)) {
-      await history.loadHistory(entry, stamp);
+      if (discover) history.discoverFloors(entry, stamp);
+      else await history.loadHistory(entry, stamp);
     }
   }
 
@@ -206,11 +207,11 @@ export class SpatialResources {
     const stamp = this.#coherence.current();
     if (state.optionalUiReady && state.map.available && state.dataMode === "live" && !state.floor.readOnly
       && entry?.historyFloorCount && entry.historyFloorCount > 1 && stamp
-      && state.resources.history.status === "idle") {
+      && ["idle", "error"].includes(state.resources.history.status)) {
       // Saved-floor metadata is optional at first paint. The Effects
       // controller calls startPolling after the two-frame map-admission gate,
       // so multi-floor homes discover their floors without growing startup.
-      void this.loadHistory(entry, stamp);
+      void this.loadHistory(entry, stamp, true);
     }
     this.#startOptionalLayers();
     if (this.#store.value.optionalUiReady) {
@@ -219,6 +220,7 @@ export class SpatialResources {
   }
 
   stopPolling(): void {
+    this.#history?.stopDiscovery();
     this.#pose.stopPolling();
     this.#optionalLayers?.stopCoverage();
     this.#optionalLayers?.stopWifi();
