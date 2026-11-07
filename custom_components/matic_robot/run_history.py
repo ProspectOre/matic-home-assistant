@@ -468,6 +468,7 @@ class RunTrails:
         self._trails: list[dict[str, Any]] = []
         self._live: _LiveTrail | None = None
         self._closed = False
+        self._save_pending = False
 
     async def async_load(self) -> None:
         """Load saved trails, dropping any that fail validation."""
@@ -692,9 +693,16 @@ class RunTrails:
         self._schedule_save()
 
     def _schedule_save(self) -> None:
-        if self._closed:
+        if self._closed or self._save_pending:
             return
-        self._store.async_delay_save(self._data, TRAIL_SAVE_DELAY_SECONDS)
+        # Store debounces repeated calls. Keep the first deadline so a steady
+        # pose stream still checkpoints, using the latest data at write time.
+        self._save_pending = True
+        self._store.async_delay_save(self._checkpoint_data, TRAIL_SAVE_DELAY_SECONDS)
+
+    def _checkpoint_data(self) -> dict[str, Any]:
+        self._save_pending = False
+        return self._data()
 
     def _data(self) -> dict[str, Any]:
         live = self._live

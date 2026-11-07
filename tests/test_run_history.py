@@ -879,6 +879,34 @@ async def test_trails_reload_and_reject_damaged_storage(
     assert trails._data() == {"trails": [], "live": None}
 
 
+@pytest.mark.parametrize("step", [0.001, 0.1])
+async def test_live_trail_checkpoints_continue_during_frequent_pose_updates(
+    hass: HomeAssistant, hass_storage, step: float
+) -> None:
+    trails = RunTrails(hass, "entry")
+    clock = hass.loop.time()
+    observed = dt_util.utcnow().timestamp()
+    storage_key = "matic_robot.run_trails.entry"
+    for second in range(66):
+        with patch.object(hass.loop, "time", return_value=clock + second):
+            trails.observe(
+                run_id="run-1",
+                native_active=True,
+                map_key=MAP,
+                point=(second * step, 0),
+                observed_at=observed + second,
+            )
+            async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        if second in (30, 61):
+            saved = hass_storage[storage_key]["data"]["live"]
+            assert saved["last_observed_at"] == observed + second
+            reloaded = RunTrails(hass, "entry")
+            await reloaded.async_load()
+            assert reloaded.live(MAP) == trails.live(MAP)
+    await trails.async_shutdown()
+
+
 async def test_trail_shutdown_writes_now_so_removal_stays_removed(
     hass: HomeAssistant, hass_storage
 ) -> None:
