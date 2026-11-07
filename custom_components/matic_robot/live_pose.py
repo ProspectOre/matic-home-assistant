@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import aclosing
 from time import time
 
 from .client.api import MaticHermesClient
@@ -13,6 +14,7 @@ from .client.models import RobotPose
 
 _LOGGER = logging.getLogger(__name__)
 _RETRY_SECONDS = 2
+_STREAM_IDLE_SECONDS = 3
 
 
 class LivePose:
@@ -51,26 +53,41 @@ class LivePose:
         """Reconnect after stream failure; config entry owns cancellation."""
         while True:
             try:
-                async for pose in self._client.async_subscribe_poses(self._mission):
-                    if (
-                        pose.mission_id == self._mission()
-                        and pose.observed_at is not None
-                        and pose.observed_at <= time() + POSE_FUTURE_ALLOWANCE_SECONDS
-                    ):
-                        frame = self._frame()
+                async with (
+                    aclosing(
+                        self._client.async_subscribe_poses(self._mission)
+                    ) as stream,
+                    asyncio.timeout(_STREAM_IDLE_SECONDS) as idle,
+                ):
+                    async for pose in stream:
                         if (
-                            frame == self._last_frame
-                            and self._last_timestamp is not None
-                            and pose.observed_at <= self._last_timestamp
+                            pose.mission_id == self._mission()
+                            and pose.observed_at is not None
+                            and pose.observed_at
+                            <= time() + POSE_FUTURE_ALLOWANCE_SECONDS
                         ):
-                            continue
-                        self._pose = pose
-                        self._pose_frame = frame
-                        self._last_frame = frame
-                        self._last_timestamp = pose.observed_at
-                        self.revision += 1
-                        if self._on_pose is not None:
-                            self._on_pose(pose)
+                            frame = self._frame()
+                            if (
+                                frame == self._last_frame
+                                and self._last_timestamp is not None
+                                and pose.observed_at <= self._last_timestamp
+                            ):
+                                continue
+                            self._pose = pose
+                            self._pose_frame = frame
+                            self._last_frame = frame
+                            self._last_timestamp = pose.observed_at
+                            self.revision += 1
+                            # A silent stream (or a replay of the same sample)
+                            # must not leave background trail collection stalled.
+                            idle.reschedule(
+                                asyncio.get_running_loop().time() + _STREAM_IDLE_SECONDS
+                            )
+                            if self._on_pose is not None:
+                                try:
+                                    self._on_pose(pose)
+                                except Exception:
+                                    _LOGGER.exception("Live robot pose observer failed")
             except asyncio.CancelledError:
                 raise
             except Exception:

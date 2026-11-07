@@ -173,3 +173,101 @@ async def test_cancel_during_subscription_does_not_restart_if_stream_swallows_it
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 0.5)
+
+
+@pytest.mark.parametrize("replay", [False, True])
+async def test_stalled_stream_reconnects_without_browser_reads(monkeypatch, replay):
+    attempts = 0
+    closed = []
+    ready = asyncio.Event()
+    first = RobotPose(1, 2, 0, mission_id=1, observed_at=time())
+    recovered = RobotPose(3, 4, 0, mission_id=1, observed_at=first.observed_at + 0.1)
+    observed = []
+
+    async def subscribe(_mission):
+        nonlocal attempts
+        attempts += 1
+        attempt = attempts
+        try:
+            if attempt == 1:
+                yield first
+                while replay:
+                    await asyncio.sleep(0.001)
+                    yield first
+                await asyncio.Event().wait()
+            yield recovered
+            ready.set()
+            await asyncio.Event().wait()
+        finally:
+            closed.append(attempt)
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_pose._STREAM_IDLE_SECONDS", 0.02
+    )
+    monkeypatch.setattr("custom_components.matic_robot.live_pose._RETRY_SECONDS", 0)
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe),
+        lambda: 1,
+        lambda: "frame",
+        observed.append,
+    )
+    task = asyncio.create_task(tracker.watch())
+    try:
+        await asyncio.wait_for(ready.wait(), 1)
+        assert attempts == 2
+        assert closed == [1]
+        assert tracker.current() == recovered
+        assert observed == [first, recovered]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert closed == [1, 2]
+    assert tracker.current() is None
+
+
+async def test_observer_failure_keeps_pose_and_subscription_alive(caplog):
+    ready = asyncio.Event()
+    resume = asyncio.Event()
+    first = RobotPose(1, 2, 0, mission_id=1, observed_at=time())
+    second = RobotPose(3, 4, 0, mission_id=1, observed_at=first.observed_at + 0.1)
+    observations = []
+    attempts = 0
+
+    def observe(pose):
+        observations.append(pose)
+        if pose is first:
+            raise RuntimeError("trail observer failed")
+
+    async def subscribe(_mission):
+        nonlocal attempts
+        attempts += 1
+        yield first
+        ready.set()
+        await resume.wait()
+        yield second
+        ready.set()
+        await asyncio.Event().wait()
+
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe),
+        lambda: 1,
+        lambda: "frame",
+        observe,
+    )
+    task = asyncio.create_task(tracker.watch())
+    try:
+        await asyncio.wait_for(ready.wait(), 1)
+        assert tracker.current() == first
+        assert "Live robot pose observer failed" in caplog.text
+        ready.clear()
+        resume.set()
+        await asyncio.wait_for(ready.wait(), 1)
+        assert tracker.current() == second
+        assert tracker.revision == 2
+        assert attempts == 1
+        assert observations == [first, second]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
