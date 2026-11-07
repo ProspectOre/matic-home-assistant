@@ -456,3 +456,55 @@ async def test_pose_cannot_cross_unobserved_map_proof_epoch(
         with pytest.raises(asyncio.CancelledError):
             await task
         await store.async_remove()
+
+
+async def test_future_allowed_observation_cannot_rebind_after_frame_verification(
+    monkeypatch,
+):
+    now = [100.0]
+    state = {"frame": 1, "verified_at": 99.0}
+    monkeypatch.setattr("custom_components.matic_robot.live_pose.time", lambda: now[0])
+    queue = asyncio.Queue()
+    delivered = asyncio.Event()
+    observations = []
+
+    async def subscribe(_mission):
+        while True:
+            yield await queue.get()
+            delivered.set()
+
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe),
+        lambda: 1,
+        lambda: state["frame"],
+        observations.append,
+        admit=lambda pose: pose.observed_at > state["verified_at"],
+    )
+    task = asyncio.create_task(tracker.watch())
+
+    async def deliver(pose):
+        delivered.clear()
+        await queue.put(pose)
+        await asyncio.wait_for(delivered.wait(), 1)
+
+    first = RobotPose(1, 2, 0, mission_id=1, observed_at=101.0)
+    try:
+        await deliver(first)
+        assert tracker.current() is first
+        now[0] = 100.5
+        state.update(frame=2, verified_at=100.5)
+        assert tracker.current() is None
+        # The previously accepted native time passes the new wall-clock fence.
+        assert first.observed_at > state["verified_at"]
+        await deliver(first)
+        assert tracker.current() is None
+        assert observations == [first]
+        now[0] = 101.1
+        current = RobotPose(3, 4, 0, mission_id=1, observed_at=101.1)
+        await deliver(current)
+        assert tracker.current() is current
+        assert observations == [first, current]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

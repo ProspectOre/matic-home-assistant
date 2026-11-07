@@ -33,6 +33,7 @@ class CoverageChanges:
         self.epoch = epoch
         self.start = start
         self.pages: dict[tuple[int, int], _PageObservation] = {}
+        self.withdrawals = 0
 
     def visible_pages(self) -> tuple[SlamSemanticTile, ...]:
         return tuple(
@@ -88,5 +89,10 @@ class CoverageChanges:
                     tile.mission_token,
                     observed.to_bytes(SEMANTIC_BYTES, "little"),
                 )
+        previous_visible = prev.visible if prev else None
+        if previous_visible is not None and int.from_bytes(
+            previous_visible.cells, "little"
+        ) & ~(int.from_bytes(visible.cells, "little") if visible else 0):
+            self.withdrawals += 1
         self.pages[key] = _PageObservation(seq, modes, visible)
-        return (prev.visible if prev else None) != visible
+        return previous_visible != visible

@@ -42,6 +42,11 @@ class LiveCoverage:
         self._proof_task: asyncio.Task[bool] | None = None
 
     @property
+    def withdrawal_revision(self) -> int:
+        """Invalidate encoded snapshots only when displayed marks were removed."""
+        return self._changes.withdrawals if self._changes else 0
+
+    @property
     def ownership_unverified(self) -> bool:
         """A verified baseline stream is required before reporting changes."""
         return self._changes is None

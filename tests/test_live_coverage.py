@@ -31,6 +31,7 @@ MISSION = 42
 
 class _CoverageStub(SimpleNamespace):
     __hash__ = object.__hash__
+    withdrawal_revision = 0
 
 
 def _client():
@@ -888,3 +889,57 @@ async def test_cancelled_viewer_does_not_cancel_shared_proof():
     release.set()
     assert await second == ()
     assert client.async_get_cleaning_session_identity.await_count == 2
+
+
+@pytest.mark.parametrize("removed", ["page", "mode"])
+@pytest.mark.parametrize("during", ["encoding", "final_proof"])
+async def test_withdrawn_coverage_cannot_reappear_from_inflight_snapshot(
+    removed, during
+):
+    client = _client()
+    session = active_key()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    coverage._changes = CoverageChanges(MISSION, 10, 1)
+    coverage._changes.update(_page_entry(bytes(1024), sequence=2))
+    coverage._changes.update(_page_entry(b"\x11" + bytes(1023), sequence=3))
+    assert coverage.withdrawal_revision == 0
+    request = _request(SimpleNamespace(live_coverage=coverage))
+    view = MaticLiveCoverageView()
+    withdrawn = False
+
+    def withdraw():
+        nonlocal withdrawn
+        if withdrawn:
+            return
+        withdrawn = True
+        entry = _page_entry(b"\x01" + bytes(1023), sequence=4)
+        if removed == "page":
+            entry = replace(entry, deleted=True)
+        assert coverage._changes.update(entry)
+        coverage.revision += 1
+
+    async def encode(target, *args):
+        if during == "encoding":
+            withdraw()
+        return target(*args)
+
+    activity_reads = 0
+
+    async def active():
+        nonlocal activity_reads
+        activity_reads += 1
+        if during == "final_proof" and activity_reads == 2:
+            withdraw()
+        return True
+
+    request.app[KEY_HASS].async_add_executor_job.side_effect = encode
+    client.async_get_active_cleaning_session_state.side_effect = active
+    assert (await view.get(request, "entry")).status == 503
+    assert coverage.withdrawal_revision == 1
+    response = await view.get(request, "entry")
+    assert response.status == 200
+    runs = json.loads(response.body)["runs"]
+    assert runs == ([] if removed == "page" else [[64, -32, 1, 1]])

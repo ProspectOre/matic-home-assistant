@@ -80,6 +80,10 @@ class LivePose:
                             if self._admit is not None and not self._admit(pose):
                                 continue
                             frame = self._frame()
+                            # Keep this watermark across frames. A native sample
+                            # within the two-second future allowance can predate
+                            # a new frame yet pass its wall-clock admission fence.
+                            # Resetting here would rebind that replay to the frame.
                             if (
                                 self._last_timestamp is not None
                                 and pose.observed_at <= self._last_timestamp

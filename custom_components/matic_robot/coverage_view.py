@@ -61,6 +61,7 @@ class MaticLiveCoverageView(HomeAssistantView):
             )
         coverage = runtime.live_coverage
         generation, revision = coverage.generation, coverage.revision
+        withdrawals = coverage.withdrawal_revision
         ownership_unverified = coverage.ownership_unverified
         partial = getattr(coverage, "partial", False)
         cached = self._encoded.get(coverage)
@@ -96,13 +97,14 @@ class MaticLiveCoverageView(HomeAssistantView):
             runtime_for_entry(hass, entry_id) is not runtime
             or current is None
             or runtime.live_coverage.generation != generation
+            or coverage.withdrawal_revision != withdrawals
             or _map_session_key(runtime) != map_session_key
         ):
             return web.Response(
                 status=HTTPStatus.SERVICE_UNAVAILABLE, headers=PRIVATE_NO_STORE_HEADERS
             )
-        # Pages are immutable. Newer cells from the same session and frame do
-        # not invalidate this snapshot or require the robot to stop updating.
+        # Additive updates do not invalidate an immutable snapshot, but a
+        # withdrawn mark must never be restored by an in-flight response.
         return self.json(
             {
                 "active": True,
