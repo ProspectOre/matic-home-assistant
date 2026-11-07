@@ -206,8 +206,7 @@ export class SpatialResources {
     const entry = state.resources.entry;
     const stamp = this.#coherence.current();
     if (state.optionalUiReady && state.map.available && state.dataMode === "live" && !state.floor.readOnly
-      && entry?.historyFloorCount && entry.historyFloorCount > 1 && stamp
-      && ["idle", "error"].includes(state.resources.history.status)) {
+      && entry && (entry.historyFloorCount > 1 || state.resources.history.value) && stamp) {
       // Saved-floor metadata is optional at first paint. The Effects
       // controller calls startPolling after the two-frame map-admission gate,
       // so multi-floor homes discover their floors without growing startup.
@@ -608,7 +607,7 @@ export class SpatialResources {
         void this.#callbacks.loadPlans();
       }
       this.#callbacks.resumeAreaCatalog();
-      this.#startOptionalLayers();
+      this.startPolling();
       // Transient scene failures do not necessarily advance map identity.
       // Retry on the next verified catalog poll, without interrupting a
       // request that is still building the scene.

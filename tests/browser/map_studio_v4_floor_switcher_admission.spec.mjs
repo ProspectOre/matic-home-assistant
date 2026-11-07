@@ -131,12 +131,12 @@ test("floor metadata follows each selected robot after first-map admission", asy
   await expect(floorSelector.locator("option")).toHaveText(["Home", "Loft"]);
 });
 
-const mountHistoryProbe = async (page, { hold = false, failures = 0 } = {}) => {
+const mountHistoryProbe = async (page, { hold = false, failures = 0, wrongEntry = 0 } = {}) => {
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialCatalogEntries: [entry(2)] });
-  await page.evaluate(({ hold, failures }) => {
+  await page.evaluate(({ hold, failures, wrongEntry }) => {
     const panel = window.__panelFixture.createPanel();
     const original = panel.hass.fetchWithAuth;
-    const probe = window.__historyProbe = { hold, failures, reads: 0, aborted: 0 };
+    const probe = window.__historyProbe = { hold, failures, wrongEntry, count: 2, reads: 0, aborted: 0 };
     panel.hass = { ...panel.hass, fetchWithAuth: async (path, init) => {
       if (!path.includes("slam_history/")) return original(path, init);
       probe.reads += 1;
@@ -145,10 +145,19 @@ const mountHistoryProbe = async (page, { hold = false, failures = 0 } = {}) => {
         probe.release = () => resolve(original(path, init));
         init?.signal?.addEventListener("abort", () => { probe.aborted += 1; reject(new DOMException("Aborted", "AbortError")); }, { once: true });
       });
-      return original(path, init);
+      const response = await original(path, init);
+      const data = await response.json();
+      if (probe.wrongEntry > 0) {
+        probe.wrongEntry -= 1;
+        data.entry_id = "other-robot";
+        data.floors[1].label = "Other robot's floor";
+      }
+      if (probe.count === 1) data.floors = data.floors.slice(0, 1);
+      if (probe.count === 3) data.floors.push({ ...data.floors[1], id: "saved-2", ordinal: 3, label: "Basement", snapshots: [] });
+      return Response.json(data);
     } };
     document.body.append(panel);
-  }, { hold, failures });
+  }, { hold, failures, wrongEntry });
   return page.locator(fixture.panelTag);
 };
 
@@ -173,6 +182,35 @@ test("floor discovery retries a transient history response", async ({ page }) =>
   await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().resources.history.status)).toBe("ready");
   await expect(panel.locator("select.floor-switcher option")).toHaveText(["Home", "Loft"]);
   expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(2);
+});
+
+test("floor discovery rejects another robot's reply and retries the selected robot", async ({ page }) => {
+  const panel = await mountHistoryProbe(page, { wrongEntry: 1 });
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().resources.history.status)).toBe("error");
+  expect(await panel.evaluate(element => element.getWorkspaceSnapshot().resources.history.value)).toBeNull();
+  await expect(panel.locator("select.floor-switcher option")).not.toHaveText(["Home", "Other robot's floor"]);
+  await expect(panel.locator("select.floor-switcher option")).toHaveText(["Home", "Loft"]);
+  expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(2);
+});
+
+test("catalog polling refreshes added and removed floors without changing the live frame", async ({ page }) => {
+  const panel = await mountHistoryProbe(page);
+  const selector = panel.locator("select.floor-switcher option");
+  await expect(selector).toHaveText(["Home", "Loft"]);
+  const generation = await panel.evaluate(element => element.getWorkspaceSnapshot().generation);
+  await page.clock.install();
+  for (const [count, labels] of [[3, ["Home", "Loft", "Basement · No saved map for this floor yet"]], [1, ["Home"]]]) {
+    await page.evaluate(({ catalogEntry, count }) => {
+      window.__historyProbe.count = count;
+      window.__panelFixture.setCatalogEntries([catalogEntry]);
+    }, { catalogEntry: entry(count), count });
+    await page.clock.runFor(5_100);
+    await expect(selector).toHaveText(labels);
+    expect(await panel.evaluate(element => element.getWorkspaceSnapshot().generation)).toBe(generation);
+  }
+  expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(3);
+  await page.clock.runFor(10_000);
+  expect(await page.evaluate(() => window.__historyProbe.reads)).toBe(3);
 });
 
 test("failed floor discovery stops automatic retries and allows an explicit retry", async ({ page }) => {
