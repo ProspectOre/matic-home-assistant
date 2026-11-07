@@ -1631,6 +1631,7 @@ async def test_live_pose_stream_skips_bad_foreign_values_and_closes() -> None:
 
     async def entries():
         try:
+            yield HermesCollectionEntry(b"invalid-key", _pose_payload())
             yield HermesCollectionEntry(_pose_key(84), b"invalid")
             yield HermesCollectionEntry(_pose_key(42), _pose_payload())
             await asyncio.Event().wait()
@@ -1646,16 +1647,17 @@ async def test_live_pose_stream_skips_bad_foreign_values_and_closes() -> None:
 
 
 @pytest.mark.parametrize("value", [b"invalid", b"x" * (16 * 1024 + 1)])
-async def test_live_pose_stream_rejects_bad_active_values(value: bytes) -> None:
+async def test_live_pose_stream_skips_bad_active_values(value: bytes) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
 
     async def entries():
         yield HermesCollectionEntry(_pose_key(42), value)
+        yield HermesCollectionEntry(_pose_key(42), _pose_payload())
 
     client._collections.async_subscribe_collection_entries = lambda _name: entries()
     stream = client.async_subscribe_poses(lambda: 42)
-    with pytest.raises(CannotConnectError):
-        await anext(stream)
+    assert (await anext(stream)).mission_id == 42
+    await stream.aclose()
 
 
 async def test_pose_acknowledges_foreign_before_selecting_active_record(

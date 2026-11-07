@@ -49,16 +49,21 @@ def _newest_pose(
 ) -> _CachedPose:
     """Keep native observation order across stream and on-demand responses."""
     if (
-        cached is not None
-        and cached.runtime_id == candidate.runtime_id
-        and cached.frame_key == candidate.frame_key
-        and cached.freshness == candidate.freshness == "live"
-        and cached.pose is not None
-        and cached.pose.observed_at is not None
-        and candidate.pose is not None
-        and candidate.pose.observed_at is not None
-        and cached.pose.observed_at >= candidate.pose.observed_at
-        and pose_observation_is_current(cached.pose, floor_plan, now=time())
+        cached is None
+        or cached.runtime_id != candidate.runtime_id
+        or cached.frame_key != candidate.frame_key
+        or cached.freshness != "live"
+        or cached.pose is None
+        or cached.pose.observed_at is None
+    ):
+        return candidate
+    now = time()
+    candidate_time = candidate.pose.observed_at if candidate.pose is not None else None
+    if pose_observation_is_current(cached.pose, floor_plan, now=now) and (
+        candidate.freshness != "live"
+        or candidate_time is None
+        or not pose_observation_is_current(candidate.pose, floor_plan, now=now)
+        or cached.pose.observed_at >= candidate_time
     ):
         return cached
     return candidate
@@ -171,6 +176,24 @@ class MaticSlamPoseView(HomeAssistantView):
                         ),
                         floor_plan,
                     )
+                    # The background stream can recover while this read waits,
+                    # even when no second HTTP request has refreshed the cache.
+                    tracked_pose = tracker.current() if tracker is not None else None
+                    if tracker is not None and pose_observation_is_current(
+                        tracked_pose, floor_plan, now=time()
+                    ):
+                        cached = _newest_pose(
+                            cached,
+                            _CachedPose(
+                                id(runtime),
+                                tracked_pose,
+                                monotonic(),
+                                tracker.revision,
+                                "live",
+                                frame_key,
+                            ),
+                            floor_plan,
+                        )
                     self._cache[entry_id] = cached
         data = runtime.coordinator.data
         floor_plan_coherent = runtime.slam_map.floor_plan_is_current(data.floor_plan)

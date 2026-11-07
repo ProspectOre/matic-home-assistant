@@ -4122,7 +4122,23 @@ async def test_empty_live_tracker_refreshes_pose_after_floor_becomes_available()
     runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
 
 
-async def test_delayed_on_demand_response_keeps_a_newer_stream_pose():
+@pytest.mark.parametrize("cache_stream", [False, True])
+@pytest.mark.parametrize(
+    ("response_kind", "cache_age"),
+    [
+        ("older", 0),
+        ("failed", 0),
+        ("empty", 0),
+        ("unobserved", 0),
+        ("future", 0),
+        ("foreign", 0),
+        ("newer", 0),
+        ("failed", 6),
+    ],
+)
+async def test_delayed_on_demand_response_keeps_a_newer_stream_pose(
+    response_kind, cache_age, cache_stream
+):
     runtime = _runtime()
     initial = runtime.coordinator.data.pose
     tracker = SimpleNamespace(current=lambda: None, revision=8)
@@ -4141,15 +4157,38 @@ async def test_delayed_on_demand_response_keeps_a_newer_stream_pose():
     with patch(
         "custom_components.matic_robot.slam_pose_view.time",
         return_value=fresh.observed_at,
-    ):
+    ) as clock:
         reading = asyncio.create_task(view.get(request, "entry"))
         await started.wait()
         tracker.current = lambda: fresh
-        current = json.loads((await view.get(request, "entry")).body)
-        pending.set_result(initial)
+        if cache_stream:
+            current = json.loads((await view.get(request, "entry")).body)
+            assert current["position"] == [0.3, 0.2]
+            assert current["pose_revision"] == 8
+        clock.return_value += cache_age
+        if response_kind == "failed":
+            pending.set_exception(CannotConnectError("read failed"))
+        else:
+            pending.set_result(
+                {
+                    "older": initial,
+                    "empty": None,
+                    "unobserved": replace(fresh, observed_at=None),
+                    "future": replace(fresh, observed_at=fresh.observed_at + 100),
+                    "foreign": replace(fresh, mission_id=99),
+                    "newer": replace(fresh, x=0.4, observed_at=fresh.observed_at + 0.1),
+                }[response_kind]
+            )
         delayed = json.loads((await reading).body)
-    assert current["position"] == delayed["position"] == [0.3, 0.2]
-    assert current["pose_revision"] == delayed["pose_revision"] == 8
+    if cache_age:
+        assert delayed["position"] is None
+        assert delayed["pose_freshness"] == "coordinator_fallback"
+    elif response_kind == "newer":
+        assert delayed["position"] == [0.4, 0.2]
+    else:
+        assert delayed["position"] == [0.3, 0.2]
+        assert delayed["pose_revision"] == 8
+        assert delayed["pose_freshness"] == "live"
 
 
 def test_stream_trail_records_only_fresh_coherent_positions():

@@ -322,10 +322,10 @@ class HermesReads:
                 try:
                     if _pose_entry_mission(entry) == mission():
                         yield _decode_pose_entry(entry)
-                except DecodeError as err:
-                    raise CannotConnectError(
-                        "Hermes returned a malformed robot pose"
-                    ) from err
+                except DecodeError:
+                    # A bad retained record must not block the valid entries
+                    # that follow it in every reconnect snapshot.
+                    continue
         finally:
             await iterator.aclose()
 
