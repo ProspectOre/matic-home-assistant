@@ -72,6 +72,33 @@ test("losing live authority clears following immediately", () => {
   assert.equal(store.value.followMode, "off");
 });
 
+test("following waits for a fresh pose but ends when the map frame changes", () => {
+  const base = initialWorkspaceState();
+  const entry = { entryId: "robot", mapFloorCoherent: true, mapSessionVerified: true,
+    mapSessionKey: "session-a", mapSceneEpoch: "epoch-a" };
+  const pose = { position: [1, 2], freshness: "live", floorCoherent: true,
+    mapSessionKey: "session-a", heading: 0 };
+  const store = new WorkspaceStore({ ...base, pageActive: true, coherence: "current",
+    host: { ...base.host, administrator: true, connected: true, robotConnected: true },
+    map: { ...base.map, available: true, floorCoherent: true, sessionVerified: true, exactPose: true },
+    resources: { ...base.resources, entry, scene: { status: "ready", value: { source: "live" }, problem: null },
+      pose: { status: "ready", value: pose, problem: null } },
+  });
+  store.dispatch({ type: "set-follow-mode", mode: "ride" });
+  assert.equal(store.value.followMode, "ride");
+  store.patch({ map: { ...store.value.map, exactPose: false },
+    resources: { ...store.value.resources, pose: { status: "idle", value: null, problem: null } } });
+  assert.equal(store.value.followMode, "ride");
+  store.patch({ resources: { ...store.value.resources, entry: { ...entry } } });
+  assert.equal(store.value.followMode, "ride");
+  store.patch({ map: { ...store.value.map, exactPose: true },
+    resources: { ...store.value.resources, pose: { status: "ready", value: pose, problem: null } } });
+  assert.equal(store.value.followMode, "ride");
+  store.patch({ resources: { ...store.value.resources, entry: { ...entry, mapSceneEpoch: "epoch-b" } },
+    map: { ...store.value.map, exactPose: false } });
+  assert.equal(store.value.followMode, "off");
+});
+
 test("overlap candidates include both catalogs and discard stale ids", () => {
   const state = initialWorkspaceState();
   const store = new WorkspaceStore({ ...state, resources: { ...state.resources,

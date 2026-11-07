@@ -10,7 +10,12 @@ const MAX_POINTS = 40_000;
  */
 export const parseFloorTypes = (value: unknown): FloorTypesLayer => {
   if (!value || typeof value !== "object") throw new ContractError("invalid-floor-types");
-  const layers = (value as Record<string, unknown>).layers;
+  const root = value as Record<string, unknown>;
+  if ((root.partial !== undefined && typeof root.partial !== "boolean")
+    || (root.truncated !== undefined && typeof root.truncated !== "boolean")) {
+    throw new ContractError("invalid-floor-types");
+  }
+  const layers = root.layers;
   if (!layers || typeof layers !== "object") throw new ContractError("invalid-floor-types");
   let points = 0;
   const outlines = (candidate: unknown): FloorTypeOutline[] => {
@@ -28,6 +33,12 @@ export const parseFloorTypes = (value: unknown): FloorTypesLayer => {
       });
     });
   };
-  const root = layers as Record<string, unknown>;
-  return { status: "ready", carpet: outlines(root.carpet), vent: outlines(root.vent) };
+  const rootLayers = layers as Record<string, unknown>;
+  return {
+    status: "ready",
+    carpet: outlines(rootLayers.carpet),
+    vent: outlines(rootLayers.vent),
+    ...(root.partial === true ? { partial: true } : {}),
+    ...(root.truncated === true ? { truncated: true } : {}),
+  };
 };

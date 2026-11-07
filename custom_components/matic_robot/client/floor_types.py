@@ -69,6 +69,8 @@ class FloorTypeLayer:
     layers: dict[str, tuple[Outline, ...]]
     page_count: int
     truncated: bool
+    # Indicates whether the caller knows that this collection is incomplete.
+    partial: bool = False
 
 
 def mission_token(mission_id: int) -> str:
@@ -82,6 +84,7 @@ def floor_type_layer(
     overrides: Iterable[SlamSemanticTile] = (),
     *,
     mission: str,
+    partial: bool = False,
 ) -> FloorTypeLayer:
     """Merge the floor's semantic pages and outline each drawn class."""
     merged: dict[tuple[int, int], np.ndarray] = {}
@@ -97,7 +100,7 @@ def floor_type_layer(
     if len(merged) > MAX_SLAM_TILES:
         raise DecodeError("too many semantic pages")
     if not merged:
-        return FloorTypeLayer(dict.fromkeys(FLOOR_LAYER_KINDS, ()), 0, False)
+        return FloorTypeLayer(dict.fromkeys(FLOOR_LAYER_KINDS, ()), 0, False, partial)
 
     min_x = min(x for x, _ in merged)
     min_y = min(y for _, y in merged)
@@ -120,7 +123,7 @@ def floor_type_layer(
         )
         layers[name] = outlines
         truncated = truncated or cut
-    return FloorTypeLayer(layers, len(merged), truncated)
+    return FloorTypeLayer(layers, len(merged), truncated, partial)
 
 
 def _cells(page: SlamSemanticTile) -> np.ndarray:

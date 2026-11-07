@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import struct
 from io import BytesIO
@@ -168,6 +170,7 @@ def synthetic_semantic_entry(
     page_y: int = -1,
     mission_id: int = 0x1234ABCD,
     malformed: str | None = None,
+    cells: bytes | None = None,
 ) -> HermesCollectionEntry:
     """Build a synthetic equivalent of an observed native semantic page."""
     page = _varint_field(3, _sint32(page_x)) + _varint_field(4, _sint32(page_y))
@@ -185,7 +188,8 @@ def synthetic_semantic_entry(
     )
     if malformed == "dimensions":
         dimensions += _varint_field(5, 1)
-    cells = bytes(index % 7 for index in range(SEMANTIC_BYTES))
+    if cells is None:
+        cells = bytes(index % 7 for index in range(SEMANTIC_BYTES))
     if malformed == "cells":
         cells = cells[:-1]
     cells_wrapper = _bytes_field(1, cells)
@@ -385,6 +389,13 @@ def test_encode_slam_scene_packs_floor_surface_rooms_and_neutral_color() -> None
     metadata = json.loads(
         scene[metadata_start : metadata_start + metadata_size].decode()
     )
+    floor_support = metadata.pop("floor_support")
+    support_bytes = base64.b64decode(floor_support["mask_base64"])
+    assert floor_support["status"] == "verified"
+    assert floor_support["origin_cells"] == [-64, 96]
+    assert floor_support["span_cells"] == [32, 32]
+    assert floor_support["occupied_cells"] == floor_count
+    assert hashlib.sha256(support_bytes).hexdigest() == floor_support["mask_sha256"]
     assert metadata == {
         "meters_per_cell": 0.015,
         "origin_cells": [-64, 96],
@@ -428,6 +439,140 @@ def test_encode_slam_scene_deterministically_bounds_point_count() -> None:
     )
     assert metadata["sample_step"] == 513
     assert floor_count + surface_count == 2
+    support = metadata["floor_support"]
+    assert support["occupied_cells"] == 1024
+    occupied_count = sum(
+        byte.bit_count() for byte in base64.b64decode(support["mask_base64"])
+    )
+    assert occupied_count == 1024
+
+
+def _scene_metadata(scene: bytes) -> dict[str, object]:
+    _, _, _, metadata_size, _, _ = struct.unpack_from("<8sHHIII", scene)
+    metadata_start = struct.calcsize("<8sHHIII")
+    return json.loads(scene[metadata_start : metadata_start + metadata_size])
+
+
+def test_wifi_floor_support_excludes_persistent_vertical_surface_columns() -> None:
+    source = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    surfaces = np.unpackbits(
+        np.frombuffer(source.surface_bits, dtype=np.uint8), bitorder="big"
+    ).reshape(32, 32, 24)
+    surfaces[4, 19, 7:15] = True
+    tile = SlamTile(
+        source.page_x,
+        source.page_y,
+        source.mission_token,
+        source.floor_rgba,
+        np.packbits(surfaces.reshape(-1), bitorder="big").tobytes(),
+        b"",
+    )
+
+    metadata = _scene_metadata(encode_slam_scene((tile,)))
+    support = metadata["floor_support"]
+    mask = np.unpackbits(
+        np.frombuffer(base64.b64decode(support["mask_base64"]), dtype=np.uint8),
+        bitorder="little",
+    ).reshape(32, 32)
+
+    assert not mask[19, 4]
+    assert mask[4, 19]
+    assert mask[19, 5]
+    assert support["occupied_cells"] == 1023
+
+
+def test_wifi_obstructions_do_not_clip_room_selection_geometry() -> None:
+    source = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    surfaces = np.zeros((32, 32, 24), dtype=np.uint8)
+    surfaces[12, :, 7:15] = 1
+    tile = SlamTile(
+        source.page_x,
+        source.page_y,
+        source.mission_token,
+        source.floor_rgba,
+        np.packbits(surfaces.reshape(-1), bitorder="big").tobytes(),
+        b"",
+    )
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "room",
+                "Synthetic room",
+                "room",
+                b"room",
+                ((0.0, 0.0), (0.48, 0.0), (0.48, 0.48), (0.0, 0.48)),
+            ),
+        ),
+    )
+    metadata = _scene_metadata(encode_slam_scene((tile,), floor_plan=floor_plan))
+    photographed = _scene_metadata(encode_slam_scene((source,), floor_plan=floor_plan))
+    assert metadata["rooms"] == photographed["rooms"]
+    assert metadata["rooms"][0]["boundary"] == [[0, 0], [32, 0], [32, 32], [0, 32]]
+    support = metadata["floor_support"]
+    mask = np.unpackbits(
+        np.frombuffer(base64.b64decode(support["mask_base64"]), dtype=np.uint8),
+        bitorder="little",
+    ).reshape(32, 32)
+    assert not mask[:, 12].any()
+    assert mask[:, :12].all() and mask[:, 13:].all()
+
+
+def test_scene_metadata_drops_floor_mask_before_compare_coverage(monkeypatch) -> None:
+    from custom_components.matic_robot.client import slam_scene as slam_scene_module
+
+    source = decode_slam_tile(synthetic_slam_entry())
+    structure = decode_slam_structure_tile(synthetic_structure_entry())
+    monkeypatch.setattr(
+        slam_scene_module,
+        "_floor_support_metadata",
+        lambda *_args: {"oversized": "x" * 2000},
+    )
+    monkeypatch.setattr(slam_scene_module, "MAX_SCENE_METADATA_BYTES", 800)
+
+    metadata = _scene_metadata(
+        encode_slam_scene((source,), structure_tiles=(structure,))
+    )
+
+    assert "floor_support" not in metadata
+    assert metadata["coverage"]["status"] == "verified"
+
+
+def test_scene_metadata_coverage_fallbacks_are_explicit(monkeypatch) -> None:
+    from custom_components.matic_robot.client import slam_scene as slam_scene_module
+
+    source = decode_slam_tile(synthetic_slam_entry())
+    structure = decode_slam_structure_tile(synthetic_structure_entry())
+    monkeypatch.setattr(slam_scene_module, "_floor_support_metadata", lambda *_args: {})
+    monkeypatch.setattr(
+        slam_scene_module,
+        "_coverage_metadata",
+        lambda *_args: {"version": 1, "status": "verified", "payload": "x" * 500},
+    )
+    metadata_without_coverage = _scene_metadata(encode_slam_scene((source,)))
+    metadata_without_coverage.pop("floor_support")
+    base_size = len(
+        json.dumps(metadata_without_coverage, separators=(",", ":")).encode()
+    )
+
+    monkeypatch.setattr(slam_scene_module, "MAX_SCENE_METADATA_BYTES", base_size + 120)
+    fallback = _scene_metadata(
+        encode_slam_scene((source,), structure_tiles=(structure,))
+    )
+    assert fallback["coverage"]["status"] == "too_large"
+    assert fallback["coverage"]["diff_eligible"] is False
+
+    monkeypatch.setattr(slam_scene_module, "MAX_SCENE_METADATA_BYTES", base_size + 1)
+    omitted = _scene_metadata(
+        encode_slam_scene((source,), structure_tiles=(structure,))
+    )
+    assert "coverage" not in omitted
+
+    monkeypatch.setattr(slam_scene_module, "MAX_SCENE_METADATA_BYTES", base_size - 1)
+    with pytest.raises(DecodeError, match="metadata exceeds its byte limit"):
+        encode_slam_scene((source,), structure_tiles=(structure,))
 
 
 def test_encode_slam_scene_clips_room_geometry_to_photographed_floor() -> None:
@@ -631,17 +776,38 @@ def test_scene_encoder_and_header_parser_share_the_metadata_limit(monkeypatch) -
     from custom_components.matic_robot.client import slam_scene as slam_scene_module
 
     tile = decode_slam_tile(synthetic_slam_entry())
-    scene = encode_slam_scene((tile,))
-    metadata_bytes = parse_slam_scene_header(scene).metadata_bytes
-    monkeypatch.setattr(slam_scene_module, "MAX_SCENE_METADATA_BYTES", metadata_bytes)
-    assert parse_slam_scene_header(encode_slam_scene((tile,))).metadata_bytes == (
-        metadata_bytes
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "large",
+                "x" * 2048,
+                "large",
+                b"large",
+                ((0, 0), (0.48, 0), (0.48, 0.48), (0, 0.48)),
+            ),
+        ),
     )
+    scene = encode_slam_scene((tile,), floor_plan=floor_plan)
+    metadata_bytes = parse_slam_scene_header(scene).metadata_bytes
+    required_metadata = _scene_metadata(scene)
+    required_metadata.pop("floor_support")
+    required_metadata_bytes = len(
+        json.dumps(
+            required_metadata, ensure_ascii=False, separators=(",", ":")
+        ).encode()
+    )
+    monkeypatch.setattr(slam_scene_module, "MAX_SCENE_METADATA_BYTES", metadata_bytes)
+    assert parse_slam_scene_header(
+        encode_slam_scene((tile,), floor_plan=floor_plan)
+    ).metadata_bytes == (metadata_bytes)
     monkeypatch.setattr(
-        slam_scene_module, "MAX_SCENE_METADATA_BYTES", metadata_bytes - 1
+        slam_scene_module, "MAX_SCENE_METADATA_BYTES", required_metadata_bytes - 1
     )
     with pytest.raises(DecodeError, match="metadata exceeds its byte limit"):
-        encode_slam_scene((tile,))
+        encode_slam_scene((tile,), floor_plan=floor_plan)
     with pytest.raises(DecodeError, match="invalid SLAM scene payload"):
         parse_slam_scene_header(scene)
 

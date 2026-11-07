@@ -209,6 +209,12 @@ test("@safety a removed requested robot never falls back to another loaded robot
   await selector.selectOption("synthetic-entry-b");
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
+    return state.map.available && state.resources.entry?.entryId === "synthetic-entry-b";
+  })).toBe(true);
+  // Pose polling starts after the map has been admitted for two frames.
+  await page.clock.runFor(100);
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
     return state.map.available && state.map.exactPose
       && state.resources.entry?.entryId === "synthetic-entry-b";
   })).toBe(true);
@@ -288,6 +294,8 @@ test("@safety a removed requested robot never falls back to another loaded robot
     const state = element.getWorkspaceSnapshot();
     return [state.selection.entryId, state.resources.entry?.entryId ?? null];
   })).toEqual(["synthetic-entry", "synthetic-entry"]);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await page.clock.runFor(100);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
     return state.map.available && state.map.exactPose;

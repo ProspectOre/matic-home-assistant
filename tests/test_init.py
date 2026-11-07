@@ -66,7 +66,10 @@ from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
 from custom_components.matic_robot.plan_storage import STOP_FENCE_EXPIRES_AT
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
+from custom_components.matic_robot.slam_view_data import (
+    observe_coordinator_trail,
+    observe_live_pose_trail,
+)
 
 
 def _wifi_survey() -> SimpleNamespace:
@@ -1018,7 +1021,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 18
+    assert hass.http.register_view.call_count == 19
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -1178,8 +1181,10 @@ async def test_setup_refreshes_before_forwarding_platforms(
 
     plans.repository.async_add_listener.side_effect = deliver_setup_floor_plan
     setup_scheduled = []
+    setup_task_names = []
 
     def capture_setup_tasks(_hass, target, name):
+        setup_task_names.append(name)
         if name == "matic_robot custom area binding upgrade":
             setup_scheduled.append(target)
         else:
@@ -1354,9 +1359,12 @@ async def test_setup_refreshes_before_forwarding_platforms(
     slam_history.async_load.assert_awaited_once()
     run_trails.return_value.async_load.assert_awaited_once_with()
     assert entry.runtime_data.run_trails is run_trails.return_value
+    assert entry.runtime_data.live_pose._on_pose.func is observe_live_pose_trail
+    assert entry.runtime_data.live_pose._on_pose.args == (entry.runtime_data,)
+    assert "matic_robot live pose collector" in setup_task_names
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 8 + (
+    assert entry.async_create_background_task.call_count == 10 + (
         recovering_run or recovering_stop
     )
     assert isinstance(entry.runtime_data.photos, RobotPhotoStore)
@@ -1366,7 +1374,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
     )
-    assert coordinator.async_add_listener.call_count == 2
+    assert coordinator.async_add_listener.call_count == 3
+    assert (
+        coordinator.async_add_listener.call_args_list[1].args[0]
+        == entry.runtime_data.live_pose.activity_changed
+    )
     trail_callback = coordinator.async_add_listener.call_args_list[0].args[0]
     assert trail_callback.func is observe_coordinator_trail
     assert trail_callback.args == (entry.runtime_data,)
@@ -1457,7 +1469,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.repository.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 11 + (
+    assert entry.async_create_background_task.call_count == 13 + (
         recovering_run or recovering_stop
     )
     assert plans.catalog.async_upgrade_area_bindings.await_count == 5

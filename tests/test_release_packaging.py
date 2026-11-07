@@ -102,13 +102,18 @@ def test_browser_ci_image_matches_the_locked_playwright_runtime() -> None:
         assert lock["packages"][f"node_modules/{dependency}"]["version"] == version
 
     commands = [step["run"] for step in browser["steps"] if "run" in step]
-    assert "npm run test:browser" in commands
     assert package["scripts"]["test:browser"] == "playwright test"
     assert not any("playwright install" in command for command in commands)
-    browser_test = next(
-        step for step in browser["steps"] if step.get("run") == "npm run test:browser"
+    manifest = "tests/browser/multi-robot.list"
+    household_command = "npm run test:browser:multi-robot"
+    remaining_command = f"npm run test:browser -- --test-list-invert {manifest}"
+    assert package["scripts"]["test:browser:multi-robot"] == (
+        f"playwright test --test-list {manifest}"
     )
-    assert browser_test["env"]["HOME"] == "/root"
+    assert commands.index(household_command) < commands.index(remaining_command)
+    for step in browser["steps"]:
+        if step.get("run") in {household_command, remaining_command}:
+            assert step["env"]["HOME"] == "/root"
 
 
 @pytest.mark.parametrize(

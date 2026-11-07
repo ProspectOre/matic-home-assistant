@@ -94,8 +94,8 @@ const drawCanvasStyles = css`
     .zone-coordinates input:focus-visible { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: 1px; }
     .zone-feedback { max-width: 100%; padding: 8px 12px; border-radius: 12px; color: var(--ms-resolved-danger-text, var(--ms-danger)); pointer-events: auto; }
     .zone-feedback[hidden] { display: none; }
-    /* A phone's rail keeps "?" in its bottom row; the point actions sit above it. */
-    .map-root[data-narrow="true"] .zone-help { bottom: calc(12px + 44px + 8px); }
+    /* On phones the drawing tools are in the sheet below the scene. */
+    .map-root[data-narrow="true"] .zone-help { bottom: 12px; }
 `;
 
 export class OutlineEditor {

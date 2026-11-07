@@ -1044,6 +1044,46 @@ async def test_subscribe_collection_entries_yields_snapshot_and_updates(
     assert stream.requests[3].sequence_id == second_sequence
 
 
+async def test_subscribe_collection_entries_can_report_keyed_deletions(
+    monkeypatch,
+) -> None:
+    checkpoint = SequenceId(start_ts_nanos=10, sequence_no=1)
+    deletion = SequenceId(start_ts_nanos=10, sequence_no=2)
+    stream = _BidirectionalSequenceStream(
+        [
+            SimpleNamespace(
+                HasField=lambda field: field == "sequence_id", sequence_id=checkpoint
+            ),
+            SimpleNamespace(
+                HasField=lambda field: field == "sequence_id",
+                key_bytes=b"page",
+                sequence_id=deletion,
+            ),
+            None,
+        ]
+    )
+    method = _OpenMethod(stream)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.hermes_collections.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._connection._channel = object()
+
+    entries = [
+        entry
+        async for entry in client.async_subscribe_collection_entries(
+            "coverage", include_deletions=True
+        )
+    ]
+
+    assert len(entries) == 1
+    assert entries[0].key == b"page"
+    assert entries[0].deleted is True
+    assert stream.requests[1].sequence_id == checkpoint
+    assert stream.requests[2].sequence_id == deletion
+
+
 async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
     monkeypatch,
 ) -> None:
@@ -1583,6 +1623,41 @@ async def test_pose_selects_active_mission_without_first_record_guessing() -> No
     assert (pose.x, pose.y, pose.z, pose.mission_id) == (1.0, 2.0, 0.0, 42)
     assert pose.observed_at == 1_800_000_000.00000001
     assert closed == [True]
+
+
+async def test_live_pose_stream_skips_bad_foreign_values_and_closes() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    closed = []
+
+    async def entries():
+        try:
+            yield HermesCollectionEntry(b"invalid-key", _pose_payload())
+            yield HermesCollectionEntry(_pose_key(84), b"invalid")
+            yield HermesCollectionEntry(_pose_key(42), _pose_payload())
+            await asyncio.Event().wait()
+        finally:
+            closed.append(True)
+
+    client._collections.async_subscribe_collection_entries = lambda _name: entries()
+    stream = client.async_subscribe_poses(lambda: 42)
+    pose = await anext(stream)
+    assert pose.mission_id == 42
+    await stream.aclose()
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("value", [b"invalid", b"x" * (16 * 1024 + 1)])
+async def test_live_pose_stream_skips_bad_active_values(value: bytes) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+
+    async def entries():
+        yield HermesCollectionEntry(_pose_key(42), value)
+        yield HermesCollectionEntry(_pose_key(42), _pose_payload())
+
+    client._collections.async_subscribe_collection_entries = lambda _name: entries()
+    stream = client.async_subscribe_poses(lambda: 42)
+    assert (await anext(stream)).mission_id == 42
+    await stream.aclose()
 
 
 async def test_pose_acknowledges_foreign_before_selecting_active_record(

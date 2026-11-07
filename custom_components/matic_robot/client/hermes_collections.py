@@ -210,7 +210,7 @@ class HermesCollections:
         return tuple(entries)
 
     async def async_subscribe_collection_entries(
-        self, collection_name: str
+        self, collection_name: str, *, include_deletions: bool = False
     ) -> AsyncGenerator[HermesCollectionEntry]:
         """Yield the initial snapshot and later updates from a collection.
 
@@ -245,7 +245,10 @@ class HermesCollections:
                         await stream.send_message(request, end=False)
                         while (response := await stream.recv_message()) is not None:
                             entry = None
-                            if response.HasField("value"):
+                            if response.HasField("value") or (
+                                include_deletions
+                                and getattr(response, "key_bytes", b"")
+                            ):
                                 sequence = (
                                     response.sequence_id
                                     if response.HasField("sequence_id")
@@ -253,13 +256,16 @@ class HermesCollections:
                                 )
                                 entry = HermesCollectionEntry(
                                     bytes(response.key_bytes),
-                                    response_value_bytes(response),
+                                    response_value_bytes(response)
+                                    if response.HasField("value")
+                                    else b"",
                                     int(sequence.start_ts_nanos)
                                     if sequence is not None
                                     else None,
                                     int(sequence.sequence_no)
                                     if sequence is not None
                                     else None,
+                                    not response.HasField("value"),
                                 )
                             if response.HasField("sequence_id"):
                                 await stream.send_message(

@@ -123,7 +123,7 @@ const safeRobotLabel = (value: unknown): string => {
   return label
     && Array.from(label).length <= 128
     && !/[\u0000-\u001f\u007f]/u.test(label)
-    ? label
+    ? label.replace(/\s+/gu, " ")
     : "Robot";
 };
 
@@ -144,7 +144,7 @@ export class HassAdapter {
     let selectedVacuum: HassEntityLike | null = null;
     let selectedVacuumEntityId: string | null = null;
     let selectedEntryKey: string | null = requestedEntry;
-    const robots = new Map<string, { readonly entryId: string; readonly label: string }>();
+    const robots = new Map<string, { readonly entityId: string; readonly label: string }>();
     const histories = new Map<string, Readonly<Record<string, unknown>>>();
     const schedules = new Map<string, ScheduledRun | null>();
 
@@ -158,7 +158,7 @@ export class HassAdapter {
         schedules.set(entryKey, scheduledRun(entity.attributes.matic_next_run));
       }
       if (!entityId.startsWith("vacuum.")) continue;
-      robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });
+      robots.set(entryKey, { entityId, label: safeRobotLabel(entity.attributes?.friendly_name) });
       if (requestedEntry ? entryKey === requestedEntry : !selectedVacuum) {
         selectedVacuum = entity;
         selectedVacuumEntityId = entityId;
@@ -198,9 +198,21 @@ export class HassAdapter {
       ? previousDates
       : { language: dateLanguage, timeZone };
     const userKey = safeUserKey(hass?.user?.id);
-    const robotLabel = safeRobotLabel(selectedVacuum?.attributes?.friendly_name);
-    const robotChoices = [...robots.values()].sort((left, right) =>
-      left.label.localeCompare(right.label, language, { sensitivity: "base" }));
+    // Two robots can have the same friendly name (or neither may have one).
+    // Put the exact HA object ID first in that case, so the distinction is
+    // visible even in a narrow picker. Its option value is still the entry ID.
+    const nameCounts = new Map<string, number>();
+    for (const { label } of robots.values()) {
+      const key = label.normalize().toLowerCase();
+      nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+    }
+    const robotChoices = Array.from(robots, ([entryId, { entityId, label }]) => ({
+      entryId,
+      label: nameCounts.get(label.normalize().toLowerCase()) === 1
+        ? label : `${entityId.slice("vacuum.".length)} · ${label}`,
+    })).sort((left, right) => left.label.localeCompare(right.label, language, { sensitivity: "base" }));
+    const robotLabel = robotChoices.find((choice) => choice.entryId === selectedEntryKey)?.label
+      ?? safeRobotLabel(selectedVacuum?.attributes?.friendly_name);
     const history = histories.get(selectedEntryKey ?? "");
     const timing = entities.filter(([id, entity]) => id.startsWith("sensor.")
       && maticEntryKey(entity) === selectedEntryKey && entity.attributes?.matic_metric === "current_room_estimated_progress");

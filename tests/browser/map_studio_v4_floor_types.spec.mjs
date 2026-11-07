@@ -3,8 +3,8 @@ import { build } from "esbuild";
 
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
-// Carpet and vents are off by default. Map options turns the layer on, which
-// reads the current floor's outlines; the row explains an empty floor.
+// Carpet and vents are independent map layers. Either toggle loads the shared
+// floor-type resource once and keeps the sibling layer off.
 
 const RUG = [[0.3, 0.3], [1.2, 0.3], [1.2, 0.9], [0.3, 0.9]];
 const HOLE = [[0.6, 0.45], [0.6, 0.6], [0.75, 0.6], [0.75, 0.45]];
@@ -22,7 +22,10 @@ const findInShadow = (panel, selector) => panel.evaluate((element, target) => {
     return null;
   };
   const row = scan(element.shadowRoot);
-  return row && { checked: row.getAttribute("aria-checked"), text: row.innerText.replace(/\s+/gu, " ").trim() };
+  return row && {
+    pressed: row.getAttribute("aria-pressed"), disabled: row.getAttribute("aria-disabled"),
+    detail: row.getAttribute("data-detail"),
+  };
 }, selector);
 
 const clickInShadow = (panel, selector) => panel.evaluate((element, target) => {
@@ -54,29 +57,28 @@ const mountPanel = async (page, floorTypes) => {
 
 const snapshot = (panel) => panel.evaluate((element) => element.getWorkspaceSnapshot().floorTypes);
 
-test("Map options turns on carpet and vents and reads the outlines", async ({ page }) => {
+test("carpet and vents toggle independently while sharing the floor data", async ({ page }) => {
   const panel = await mountPanel(page, LAYERS);
-  await clickInShadow(panel, "[aria-controls=map-options]");
-  await expect.poll(() => findInShadow(panel, "[data-floor-types]")).toEqual({ checked: "false", text: "Carpet and vents" });
-
-  await clickInShadow(panel, "[data-floor-types]");
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="carpet"]')).toMatchObject({ pressed: "false", disabled: "false" });
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="vents"]')).toMatchObject({ pressed: "false", disabled: "false" });
+  await clickInShadow(panel, '[data-map-layer="carpet"]');
   await expect.poll(() => snapshot(panel)).toEqual({ status: "ready", carpet: [RUG, HOLE], vent: [VENT] });
-  await expect.poll(() => findInShadow(panel, "[data-floor-types]")).toEqual({
-    checked: "true", text: "Carpet and vents Brown is carpet, blue is a vent",
-  });
-
-  await clickInShadow(panel, "[data-floor-types]");
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="carpet"]')).toMatchObject({ pressed: "true" });
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="vents"]')).toMatchObject({ pressed: "false" });
+  await clickInShadow(panel, '[data-map-layer="vents"]');
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="vents"]')).toMatchObject({ pressed: "true" });
+  await clickInShadow(panel, '[data-map-layer="carpet"]');
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="carpet"]')).toMatchObject({ pressed: "false" });
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="vents"]')).toMatchObject({ pressed: "true" });
+  await clickInShadow(panel, '[data-map-layer="vents"]');
   await expect.poll(() => snapshot(panel)).toBeNull();
 });
 
 test("the layer picks up new outlines while it stays on", async ({ page }) => {
   await page.clock.install();
   const panel = await mountPanel(page, { ...LAYERS, layers: { carpet: [], vent: [] } });
-  await clickInShadow(panel, "[aria-controls=map-options]");
-  await clickInShadow(panel, "[data-floor-types]");
-  await expect.poll(() => findInShadow(panel, "[data-floor-types]")).toEqual({
-    checked: "true", text: "Carpet and vents None mapped yet · the robot finds them while cleaning",
-  });
+  await clickInShadow(panel, '[data-map-layer="carpet"]');
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="carpet"]')).toMatchObject({ pressed: "true", detail: "No detections" });
 
   await page.evaluate((layers) => { window.__floorTypesReply = layers; }, LAYERS);
   await page.clock.fastForward(60_000);
@@ -86,8 +88,7 @@ test("the layer picks up new outlines while it stays on", async ({ page }) => {
 test("a new map session drops the old frame's outlines", async ({ page }) => {
   await page.clock.install();
   const panel = await mountPanel(page, LAYERS);
-  await clickInShadow(panel, "[aria-controls=map-options]");
-  await clickInShadow(panel, "[data-floor-types]");
+  await clickInShadow(panel, '[data-map-layer="carpet"]');
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().floorTypes?.carpet.length)).toBe(2);
 
   await panel.evaluate(async (element) => {
@@ -101,11 +102,14 @@ test("a new map session drops the old frame's outlines", async ({ page }) => {
   await expect.poll(() => snapshot(panel)).toEqual({ status: "ready", carpet: [], vent: [] });
 });
 
-test("the row stays hidden without the endpoint", async ({ page }) => {
+test("material toggles explain when floor data is unavailable", async ({ page }) => {
   const panel = await mountPanel(page, null);
-  await clickInShadow(panel, "[aria-controls=map-options]");
-  await expect.poll(() => panel.evaluate((element) => Boolean(element.shadowRoot))).toBe(true);
-  expect(await findInShadow(panel, "[data-floor-types]")).toBeNull();
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="carpet"]')).toMatchObject({
+    pressed: "false", disabled: "true", detail: "Carpet and vent data is unavailable for this map.",
+  });
+  await expect.poll(() => findInShadow(panel, '[data-map-layer="vents"]')).toMatchObject({
+    pressed: "false", disabled: "true", detail: "Carpet and vent data is unavailable for this map.",
+  });
 });
 
 test("renderer fills carpet even-odd and vents on the live floor only", async ({ page }) => {
@@ -130,13 +134,13 @@ test("renderer fills carpet even-odd and vents on the live floor only", async ({
     const initial = createGalleryState("ready");
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const floorTypes = parseFloorTypes(layers);
-    renderer.setState({ ...initial, floorTypes });
+    renderer.setState({ ...initial, floorTypes, floorTypeModes: 3 });
     await frame();
     const live = fills.splice(0);
-    renderer.setState({ ...initial, floorTypes, dataMode: "history" });
+    renderer.setState({ ...initial, floorTypes, floorTypeModes: 3, dataMode: "history" });
     await frame();
     const history = fills.splice(0);
-    renderer.setState({ ...initial, floorTypes, floor: { ...initial.floor, readOnly: true } });
+    renderer.setState({ ...initial, floorTypes, floorTypeModes: 3, floor: { ...initial.floor, readOnly: true } });
     await frame();
     const retained = fills.splice(0);
     renderer.dispose();
@@ -149,11 +153,19 @@ test("renderer fills carpet even-odd and vents on the live floor only", async ({
       { layers: { carpet: [[[0, 0], [1, "0"], [0, 1]]], vent: [] } },
       { layers: { carpet: Array.from({ length: 13_334 }, () => triangle), vent: [] } },
     ].map((value) => { try { parseFloorTypes(value); return false; } catch { return true; } });
-    return { live, history, retained, rejected };
+    const partial = parseFloorTypes({ ...layers, partial: true });
+    const truncated = parseFloorTypes({ ...layers, truncated: true });
+    const invalidFlags = ["partial", "truncated"].map((key) => {
+      try { parseFloorTypes({ ...layers, [key]: "true" }); return false; } catch { return true; }
+    });
+    return { live, history, retained, rejected, partial: partial.partial, truncated: truncated.truncated, invalidFlags };
   }, LAYERS);
   // The canvas reports the hsl() colours as hex.
   expect(result.live).toHaveLength(2);
   expect(result.history).toEqual([]);
   expect(result.retained).toEqual([]);
   expect(result.rejected).toEqual([true, true, true, true, true, true]);
+  expect(result.partial).toBe(true);
+  expect(result.truncated).toBe(true);
+  expect(result.invalidFlags).toEqual([true, true]);
 });

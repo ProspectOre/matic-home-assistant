@@ -33,23 +33,34 @@ for (const [colorScheme, header] of [["light", false], ["dark", false], ["light"
       element.style.setProperty("--app-header-background-color", "#075985");
       element.style.setProperty("--app-header-text-color", "#ffffff");
     });
-    if (header) await expect(gallery.locator(".app-bar > .ms-btn").first()).toHaveCSS("color", "rgb(255, 255, 255)");
+    if (header) await expect(gallery.getByRole("button", { name: "Tools", exact: true })).toHaveCSS("color", "rgb(255, 255, 255)");
     const ratios = await gallery.locator(".app-bar").evaluate((bar) => {
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = 1;
       const context = canvas.getContext("2d");
-      const luminance = (color) => {
+      const paint = (color) => {
         context.fillStyle = color;
         context.fillRect(0, 0, 1, 1);
+      };
+      const luminance = () => {
         const channels = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3).map((channel) => {
           const value = channel / 255;
           return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
         });
         return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
       };
-      const background = luminance(getComputedStyle(bar).backgroundColor);
-      return [...bar.querySelectorAll("h1, button")].map((element) => {
-        const foreground = luminance(getComputedStyle(element).color);
+      return [...bar.querySelectorAll("h1, select, button")].filter((element) => element.getClientRects().length).map((element) => {
+        const stack = [];
+        for (let node = element; node && bar.contains(node); node = node.parentElement) stack.unshift(node);
+        context.clearRect(0, 0, 1, 1);
+        for (const node of stack) {
+          paint(getComputedStyle(node).backgroundColor);
+          const plate = getComputedStyle(node, "::before");
+          if (plate.content !== "none") paint(plate.backgroundColor);
+        }
+        const background = luminance();
+        paint(getComputedStyle(element).color);
+        const foreground = luminance();
         return { name: element.getAttribute("aria-label") || element.textContent.trim(),
           ratio: (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) };
       });
@@ -554,9 +565,20 @@ test("a newly rendered narrow floor selector matches the saved map", async ({ pa
   await gallery.evaluate(async (element) => {
     const module = await import("/map_studio_v4-review/review.js");
     const state = module.createGalleryState("history");
-    element.replaceWorkspaceState({ ...state, workflow: "none", selection: { ...state.selection, floorId: "saved-1" } });
+    element.replaceWorkspaceState({ ...state, workflow: "none", optionalUiReady: true,
+      selection: { ...state.selection, floorId: "saved-1" } });
   });
-  await expect(gallery.getByRole("combobox", { name: "Choose floor", exact: true })).toHaveValue("saved-1");
+  const floor = gallery.getByRole("combobox", { name: "Choose floor", exact: true });
+  await expect(floor).toHaveValue("saved-1");
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await expect(floor).toHaveValue("saved-1");
+  const mapView = gallery.getByRole("group", { name: "Map view" });
+  await mapView.getByRole("button", { name: "2D", exact: true }).click();
+  await expect(floor).toHaveValue("saved-1");
+  await mapView.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(floor).toHaveValue("saved-1");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(floor).toHaveValue("saved-1");
 });
 
 
@@ -1090,12 +1112,25 @@ for (const width of [320, 390, 820, 1280]) {
           plans: { ...state.resources.plans, value: { ...state.resources.plans.value,
             plans: [plan, { ...plan, id: "second", name: "Evening routine", enabled: false }] } } } });
       });
-      const menu = gallery.getByRole("button", { name: "Open Home Assistant sidebar" });
+      const tools = gallery.getByRole("button", { name: "Tools", exact: true });
       const title = gallery.getByRole("heading", { name: "Matic Map", exact: true });
       const toggle = gallery.getByRole("button", { name: "Full map", exact: true });
-      const [m, t, w] = await Promise.all([menu.boundingBox(), title.boundingBox(), toggle.boundingBox()]);
-      expect(m.x + m.width).toBeLessThanOrEqual(t.x);
+      const [t, w] = await Promise.all([title.boundingBox(), toggle.boundingBox()]);
       expect(w.x).toBeGreaterThan(t.x);
+      if (width <= 390) {
+        await gallery.evaluate((element) => {
+          window.__navigationToggles = 0;
+          element.addEventListener("hass-toggle-menu", () => { window.__navigationToggles += 1; });
+        });
+        await tools.click();
+        const menu = gallery.getByRole("menu", { name: "Map options" });
+        const navigation = menu.getByRole("menuitem", { name: "Open Home Assistant sidebar", exact: true });
+        await expect(navigation).toBeVisible();
+        await navigation.click();
+        expect(await page.evaluate(() => window.__navigationToggles)).toBe(1);
+      } else {
+        await expect(gallery.getByRole("button", { name: "Open Home Assistant sidebar", exact: true })).toHaveCount(0);
+      }
       await openPlanPicker(gallery);
       await expect(gallery.getByRole("heading", { name: "Your plans", exact: true })).toBeVisible();
       await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveCount(0);
@@ -1123,7 +1158,7 @@ for (const width of [320, 390, 820, 1280]) {
       else expect(appearance.background).toBeGreaterThan(.7);
       expect(appearance.contrast.length).toBeGreaterThanOrEqual(2);
       for (const contrast of appearance.contrast) expect(contrast).toBeGreaterThanOrEqual(4.5);
-      for (const control of [menu, create, choice]) {
+      for (const control of [tools, create, choice]) {
         const box = await control.boundingBox();
         expect(box.width).toBeGreaterThanOrEqual(44);
         expect(box.height).toBeGreaterThanOrEqual(44);

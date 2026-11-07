@@ -35,6 +35,7 @@ const { outputFiles } = await build({
       export { CatalogResources } from "./catalog-resources";
       export { SpatialScene } from "./spatial-scene";
       export { SpatialPose } from "./spatial-pose";
+      export { PoseClock } from "./pose-clock";
       export { SpatialHistory } from "./spatial-history";
       export { SpatialResources } from "./spatial-resources";
       export { RoomPreviewController } from "./room-preview-controller";
@@ -55,7 +56,7 @@ const { outputFiles } = await build({
   target: "es2022",
 });
 const {
-  CatalogResources, SpatialScene, SpatialPose, SpatialHistory, SpatialResources,
+  CatalogResources, SpatialScene, SpatialPose, PoseClock, SpatialHistory, SpatialResources,
   RoomPreviewController, HomePinResources, RunHistoryResources, previewHelpers,
   WorkspaceStore, CoherenceMachine, ResourceRequests, BackendError,
   entryFloorKey, entryMissionKey,
@@ -86,6 +87,7 @@ const fixture = () => {
   const stamp = coherence.begin(entry.entryId, entryFloorKey(entry), entryMissionKey(entry), entry.mapRevision);
   store.patch({
     generation: stamp.generation,
+    optionalUiReady: true,
     host: { ...store.value.host, ...host },
     coherence: "current",
     selection: { ...store.value.selection, entryId: entry.entryId },
@@ -444,6 +446,36 @@ const livePose = (overrides = {}) => ({
   freshness: "live", nativeObservationAgeSeconds: 0, ...overrides,
 });
 
+test("the first map is admitted before pose loading and polling resumes immediately", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture();
+  f.store.patch({ optionalUiReady: false });
+  let reads = 0;
+  const owner = spatialOwner(f, async () => { reads += 1; return livePose(); });
+  owner.admitCatalog(f.entry, null, true, false, false);
+  await flush();
+  assert.equal(reads, 0);
+  await owner.refreshPose();
+  assert.equal(reads, 0);
+  f.store.patch({ optionalUiReady: true });
+  owner.startPolling();
+  await flush();
+  assert.equal(reads, 1);
+  assert.equal(f.store.value.map.exactPose, true);
+  owner.startPolling();
+  await flush();
+  assert.equal(reads, 1, "repeated lifecycle updates must not trigger extra pose reads");
+  owner.dispose();
+});
+
+test("invalid server timestamps cannot establish or poison clock calibration", () => {
+  const clock = new PoseClock();
+  for (const value of [null, 0, -1, NaN, Infinity, 1e308, "1000"]) {
+    assert.equal(clock.transit(value, 0, 1_000, 100), 900);
+  }
+  assert.ok(clock.transit(1000.05, 0, 100, 0) <= 102);
+});
+
 test("slow server work does not consume fresh-pose lifetime twice", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let now = 0;
@@ -471,6 +503,51 @@ test("slow server work does not consume fresh-pose lifetime twice", async (t) =>
   now += 6_000;
   oldServer.resolve(livePose({ nativeObservationAgeSeconds: 0.75 }));
   await pending;
+  assert.equal(f.store.value.map.exactPose, false);
+});
+
+test("a calibrated server timestamp separates queueing from a delayed response", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const f = fixture();
+  f.store.patch({ optionalUiReady: true });
+  const replies = [deferred(), deferred(), deferred(), deferred(), deferred()];
+  let index = 0;
+  const owner = new SpatialPose(f.store, { pose: () => replies[index++].promise }, f.coherence, f.requests, {
+    ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {},
+  });
+  const warmup = owner.load(f.entry, f.stamp);
+  now = 10;
+  replies[0].resolve(livePose({ poseMeasuredAt: 1000.005 }));
+  await warmup;
+  await flush();
+  now = 100;
+  const first = owner.load(f.entry, f.stamp);
+  now = 200;
+  replies[1].resolve(livePose({ poseMeasuredAt: 1000.15 }));
+  await first;
+  assert.equal(f.store.value.map.exactPose, true);
+
+  now = 1_000;
+  const queued = owner.load(f.entry, f.stamp);
+  now = 5_000;
+  replies[2].resolve(livePose({ nativeObservationAgeSeconds: 2, poseMeasuredAt: 1004.9 }));
+  await queued;
+  assert.equal(f.store.value.map.exactPose, true);
+
+  now = 6_000;
+  const delayed = owner.load(f.entry, f.stamp);
+  now = 12_000;
+  replies[3].resolve(livePose({ poseMeasuredAt: 1006.1 }));
+  await delayed;
+  assert.equal(f.store.value.map.exactPose, false);
+
+  now = 13_000;
+  const jumped = owner.load(f.entry, f.stamp);
+  now = 17_000;
+  replies[4].resolve(livePose({ nativeObservationAgeSeconds: 2, poseMeasuredAt: 2016.9 }));
+  await jumped;
   assert.equal(f.store.value.map.exactPose, false);
 });
 
@@ -518,23 +595,33 @@ test("a replacement observation keeps its own deadline when the retained pose wo
   assert.equal(f.store.value.map.exactPose, false);
 });
 
-test("live trail restore backfills the latest verified pose and rejects owner changes", async () => {
+test("live trail restore backfills only the latest verified pose for the same owner", async () => {
   const f = fixture();
   f.store.patch({ activity: "cleaning", owner: { entryKey: "robot-a", userKey: "user-a" },
-    trail: { id: "live", mapSessionKey: "session-a", segments: [[[0, 0]]], },
+    trail: { id: "live", mapSessionKey: "session-a", segments: [[[0, 0]]] },
     resources: { ...f.store.value.resources, pose: { status: "ready", problem: null, value: livePose({ position: [1, 1] }) } } });
-  const owner = new RunHistoryResources(f.store, {}, f.requests, { disposed: () => false, pageActive: () => true });
+  const callbacks = { disposed: () => false, pageActive: () => true };
+  const unverified = new RunHistoryResources(f.store, {}, f.requests, callbacks);
+  await unverified.restoreLiveTrail();
+  assert.deepEqual(f.store.value.trail.segments, [[[0, 0]]]);
+  unverified.dispose();
+
+  f.store.patch({ map: { ...f.store.value.map, exactPose: true } });
+  const owner = new RunHistoryResources(f.store, {}, f.requests, callbacks);
   const restore = owner.restoreLiveTrail();
   f.store.patch({ resources: { ...f.store.value.resources,
     pose: { status: "ready", problem: null, value: livePose({ position: [2, 2] }) } } });
   await restore;
-  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
-
-  const staleRestore = owner.restoreLiveTrail();
-  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" } });
-  await staleRestore;
-  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
+  assert.deepEqual(f.store.value.trail.segments, [[[0, 0]], [[2, 2]]]);
   owner.dispose();
+
+  const retiring = new RunHistoryResources(f.store, {}, f.requests, callbacks);
+  const staleRestore = retiring.restoreLiveTrail();
+  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" },
+    resources: { ...f.store.value.resources, pose: { status: "ready", problem: null, value: livePose({ position: [3, 3] }) } } });
+  await staleRestore;
+  assert.deepEqual(f.store.value.trail.segments, [[[0, 0]], [[2, 2]]]);
+  retiring.dispose();
 });
 
 test("a forced catalog refresh cannot promote fallback, unknown-age or stale poses to exact", async () => {

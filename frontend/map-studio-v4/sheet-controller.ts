@@ -228,7 +228,7 @@ export class SheetController {
       .map((selector) => sheet.querySelector<HTMLElement>(selector)?.offsetHeight ?? 0)
       .reduce((sum, height) => sum + height, 0) + rem * 0.75;
     const full = this.#compact ? available * 0.72 : Math.min(available * 0.92, available - rem * 9);
-    const half = Math.min(available * 0.48, rem * 26, full);
+    const half = Math.min(available * 0.52, rem * 26, full);
     return { peek: Math.min(chrome, half), half, full };
   }
 

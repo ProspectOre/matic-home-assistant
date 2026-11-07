@@ -21,7 +21,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .client.exceptions import MaticError
-from .client.floor_types import FloorTypeLayer, floor_type_layer, mission_token
+from .client.floor_types import FloorTypeLayer, floor_type_layer
 from .client.models import HermesCollectionEntry
 from .client.slam_tiles import (
     MAX_SLAM_TILES,
@@ -38,10 +38,10 @@ from .slam_map_store import SlamMapIdentity
 if TYPE_CHECKING:
     from . import MaticRuntimeData
 
-FLOOR_LAYERS_CACHE_SECONDS = 600.0
-# A read that found no page for this floor is retried sooner.
-FLOOR_LAYERS_EMPTY_RETRY_SECONDS = 30.0
+# Re-read promptly while the robot's live collection has no completeness marker.
+FLOOR_LAYERS_PARTIAL_RETRY_SECONDS = 30.0
 FLOOR_LAYERS_READ_SECONDS = 45.0
+FLOOR_LAYERS_COLLECTION_IDLE_SECONDS = 1.5
 
 
 type _Pages = dict[tuple[int, int], SlamSemanticTile]
@@ -49,7 +49,7 @@ type _Pages = dict[tuple[int, int], SlamSemanticTile]
 
 @dataclass(frozen=True, slots=True)
 class _CachedLayers:
-    mission_id: int
+    identity: SlamMapIdentity
     expires_at: float
     layer: FloorTypeLayer
     pages: _Pages
@@ -81,23 +81,28 @@ class MaticFloorLayersView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        mission_id = identity.mission_id
         async with self._locks.setdefault(entry_id, asyncio.Lock()):
             if not _still_current(hass, entry_id, runtime, identity):
                 return _conflict()
             cached = self._cache.get(entry_id)
-            if cached is not None and cached.mission_id != mission_id:
+            if cached is not None and cached.identity != identity:
                 cached = None
             if cached is None or monotonic() >= cached.expires_at:
                 try:
                     read = runtime.client.async_get_tracked_collection_entries
                     async with asyncio.timeout(FLOOR_LAYERS_READ_SECONDS):
-                        pages = await read("map_semantics", limit=MAX_SLAM_TILES)
+                        pages = await read(
+                            "map_semantics",
+                            limit=MAX_SLAM_TILES,
+                            idle_timeout=FLOOR_LAYERS_COLLECTION_IDLE_SECONDS,
+                        )
                         overrides = await read(
-                            "map_semantics_override", limit=MAX_SLAM_TILES
+                            "map_semantics_override",
+                            limit=MAX_SLAM_TILES,
+                            idle_timeout=FLOOR_LAYERS_COLLECTION_IDLE_SECONDS,
                         )
                     merged = await hass.async_add_executor_job(
-                        _merge, cached, pages, overrides, mission_id
+                        _merge, cached, pages, overrides, identity
                     )
                 except MaticError, TimeoutError, DecodeError:
                     return web.Response(
@@ -115,6 +120,7 @@ class MaticFloorLayersView(HomeAssistantView):
                 "entry_id": entry_id,
                 "page_count": cached.layer.page_count,
                 "truncated": cached.layer.truncated,
+                "partial": cached.layer.partial,
                 "layers": {
                     name: [[list(point) for point in outline] for outline in outlines]
                     for name, outlines in cached.layer.layers.items()
@@ -145,22 +151,28 @@ def _merge(
     previous: _CachedLayers | None,
     pages: tuple[HermesCollectionEntry, ...],
     overrides: tuple[HermesCollectionEntry, ...],
-    mission_id: int,
+    identity: SlamMapIdentity,
 ) -> _CachedLayers:
     """Add this read's pages to the floor's earlier ones and outline the result."""
-    mission = mission_token(mission_id)
+    mission_id = identity.mission_id
+    assert mission_id is not None
+    mission = identity.mission_token
     merged_pages = _pages(previous.pages if previous else {}, pages, mission)
     merged_overrides = _pages(
         previous.overrides if previous else {}, overrides, mission
     )
     layer = floor_type_layer(
-        merged_pages.values(), merged_overrides.values(), mission=mission
+        merged_pages.values(),
+        merged_overrides.values(),
+        mission=mission,
+        # Hermes does not signal when the floor's initial replay is complete.
+        partial=True,
     )
-    ttl = (
-        FLOOR_LAYERS_CACHE_SECONDS if merged_pages else FLOOR_LAYERS_EMPTY_RETRY_SECONDS
-    )
+    # Collection reads are bounded observations, not complete snapshots. Keep
+    # accumulated pages, but refresh frequently while reporting partial data.
+    ttl = FLOOR_LAYERS_PARTIAL_RETRY_SECONDS
     return _CachedLayers(
-        mission_id, monotonic() + ttl, layer, merged_pages, merged_overrides
+        identity, monotonic() + ttl, layer, merged_pages, merged_overrides
     )
 
 

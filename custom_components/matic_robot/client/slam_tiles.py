@@ -200,34 +200,7 @@ def decode_slam_semantic_tile(entry: HermesCollectionEntry) -> SlamSemanticTile:
     ):
         raise DecodeError("semantic SLAM tile is empty or oversized")
 
-    key_fields = decode_fields(entry.key)
-    if tuple((field.number, field.wire_type) for field in key_fields) != (
-        (1, 2),
-        (2, 2),
-    ):
-        raise DecodeError("semantic SLAM key has an invalid shape")
-    page = first_bytes(entry.key, 1)
-    mission = first_bytes(entry.key, 2)
-    page_fields = decode_fields(page)
-    if any(
-        field.number not in (3, 4)
-        or field.wire_type != 0
-        or not isinstance(field.value, int)
-        for field in page_fields
-    ) or len({field.number for field in page_fields}) != len(page_fields):
-        raise DecodeError("semantic SLAM page has an invalid shape")
-    mission_fields = decode_fields(mission)
-    if (
-        len(mission_fields) != 1
-        or mission_fields[0].number != 2
-        or mission_fields[0].wire_type != 5
-        or not isinstance(mission_fields[0].value, bytes)
-    ):
-        raise DecodeError("semantic SLAM mission has an invalid shape")
-    page_x = _optional_sint32(page, 3)
-    page_y = _optional_sint32(page, 4)
-    if max(abs(page_x), abs(page_y)) > _MAX_TILE_PAGE_COORDINATE:
-        raise DecodeError("semantic SLAM page is outside safe bounds")
+    page_x, page_y, mission = decode_semantic_page_key(entry.key)
 
     fields = decode_fields(entry.value)
     if tuple((field.number, field.wire_type) for field in fields) != (
@@ -282,6 +255,41 @@ def decode_slam_semantic_tile(entry: HermesCollectionEntry) -> SlamSemanticTile:
         mission_token=hashlib.sha256(mission).hexdigest(),
         cells=cells,
     )
+
+
+def decode_semantic_page_key(key: bytes) -> tuple[int, int, bytes]:
+    """Decode the page and mission of a semantic-shaped collection key."""
+    if not key or len(key) > 64:
+        raise DecodeError("semantic SLAM key is empty or oversized")
+    key_fields = decode_fields(key)
+    if tuple((field.number, field.wire_type) for field in key_fields) != (
+        (1, 2),
+        (2, 2),
+    ):
+        raise DecodeError("semantic SLAM key has an invalid shape")
+    page = first_bytes(key, 1)
+    mission = first_bytes(key, 2)
+    page_fields = decode_fields(page)
+    if any(
+        field.number not in (3, 4)
+        or field.wire_type != 0
+        or not isinstance(field.value, int)
+        for field in page_fields
+    ) or len({field.number for field in page_fields}) != len(page_fields):
+        raise DecodeError("semantic SLAM page has an invalid shape")
+    mission_fields = decode_fields(mission)
+    if (
+        len(mission_fields) != 1
+        or mission_fields[0].number != 2
+        or mission_fields[0].wire_type != 5
+        or not isinstance(mission_fields[0].value, bytes)
+    ):
+        raise DecodeError("semantic SLAM mission has an invalid shape")
+    page_x = _optional_sint32(page, 3)
+    page_y = _optional_sint32(page, 4)
+    if max(abs(page_x), abs(page_y)) > _MAX_TILE_PAGE_COORDINATE:
+        raise DecodeError("semantic SLAM page is outside safe bounds")
+    return page_x, page_y, mission
 
 
 def _decode_floor_rgba(payload: bytes) -> bytes:

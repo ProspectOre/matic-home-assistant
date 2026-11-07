@@ -23,7 +23,7 @@ import {
   type WorkspaceState,
 } from "./contracts";
 import type { AreaCircle, SavedPlan } from "./backend-contracts";
-import { entryFloorKey, entryMissionKey } from "./backend-contracts";
+import { entryCoherenceIdentity, entryFloorKey, entryMissionKey } from "./backend-contracts";
 import { notice, readWorkspaceNotice } from "./contracts";
 
 /** Task geometry stays top-down; the live overview keeps its own presentation. */
@@ -96,6 +96,9 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   wifiSignal: null,
   wifiScale: "absolute",
   floorTypes: null,
+  floorTypeModes: 0,
+  liveCoverage: null,
+  coverageModes: 3,
   followMode: "off",
   comparisonActive: false,
   homePresentation: null,
@@ -447,8 +450,18 @@ export const reduceWorkspace = (
     case "archive-access-denied":
     case "set-comparison-active":
       return state;
-    case "toggle-floor-types":
-      return { ...state, floorTypes: state.floorTypes ? null : { status: "loading", carpet: [], vent: [] } };
+    case "toggle-floor-type": {
+      const bit = intent.item === "carpet" ? 1 : 2;
+      const enabled = state.floorTypeModes ^ bit;
+      return {
+        ...state,
+        floorTypeModes: enabled,
+        floorTypes: enabled === 0 ? null
+          : state.floorTypes ?? { status: "loading", carpet: [], vent: [] },
+      };
+    }
+    case "toggle-cleaning-coverage":
+      return { ...state, coverageModes: state.coverageModes ^ (intent.mode === "vacuum" ? 1 : 2) };
     case "open-workflow":
       if (isReadOnlyWorkspace(state) && readOnlyWorkflows.has(intent.workflow)) return state;
       return {
@@ -935,7 +948,13 @@ export class WorkspaceStore {
       ? !noticed.scheduleDeleteRequest || !sharedCadenceDeleteRequestIsCurrent(noticed, noticed.scheduleDeleteRequest)
       : noticed.dialog?.startsWith("confirmDelete") && !deleteSubject(noticed);
     const presented = taskPresentation(this.#state, missingSubject ? { ...noticed, dialog: null, scheduleDeleteRequest: null } : noticed);
-    const committed = presented.followMode !== "off" && !canFollowRobot(presented, presented.followMode)
+    const before = this.#state.resources.entry;
+    const entry = presented.resources.entry;
+    const waitingForPose = presented.followMode !== "off" && presented.followMode === this.#state.followMode
+      && presented.pageActive && !forcesTop(presented) && canShowPoseFrame(presented)
+      && presented.resources.scene.value?.source === "live" && before && entry && entry.mapSessionKey
+      && entryCoherenceIdentity(before) === entryCoherenceIdentity(entry);
+    const committed = presented.followMode !== "off" && !canFollowRobot(presented, presented.followMode) && !waitingForPose
       ? { ...presented, followMode: "off" as const } : presented;
     this.#state = committed;
     this.#publish();
@@ -1036,7 +1055,7 @@ export const isSelectedRobotUnavailable = (state: WorkspaceState): boolean =>
   state.selection.entryId !== null && state.robots.length > 0
   && !state.robots.some((robot) => robot.entryId === state.selection.entryId);
 
-export const canShowExactPose = (state: WorkspaceState): boolean =>
+const canShowPoseFrame = (state: WorkspaceState): boolean =>
   canShowLiveMap(state)
   && !state.floor.readOnly
   // A degraded map stream can still have an independently verified floor,
@@ -1046,9 +1065,11 @@ export const canShowExactPose = (state: WorkspaceState): boolean =>
   && (state.coherence === "current" || state.coherence === "degraded")
   && state.map.floorCoherent
   && state.map.sessionVerified
-  && state.map.exactPose
   && state.host.connected
   && state.host.robotConnected;
+
+export const canShowExactPose = (state: WorkspaceState): boolean =>
+  canShowPoseFrame(state) && state.map.exactPose;
 
 export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride"): boolean => {
   const pose = state.resources.pose.value;

@@ -148,6 +148,8 @@ async def test_history_view_still_lists_runs_when_robot_history_fails(
 
 async def test_live_pose_reads_feed_the_trail_recorder() -> None:
     runtime = _runtime()
+    runtime.coordinator.floor_read_generation = 2
+    runtime.slam_map.pose_frame_generation = 3
     runtime.run_trails = MagicMock()
     runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value="run-1")
     hass = _hass(_entry(runtime))
@@ -161,6 +163,13 @@ async def test_live_pose_reads_feed_the_trail_recorder() -> None:
         native_active=False,
         map_key=_browser_session_key(runtime),
         point=(0.1, 0.2),
+        observed_at=runtime.coordinator.data.pose.observed_at,
+        frame_key=(
+            runtime.slam_map.mission_identity,
+            _browser_session_key(runtime),
+            2,
+            3,
+        ),
     )
 
     fallback = _runtime(pose=False)
@@ -176,6 +185,19 @@ def test_coordinator_updates_record_exact_poses_and_close_runs() -> None:
     runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value=None)
     observe_coordinator_trail(runtime)
     assert runtime.run_trails.observe.call_args.kwargs["point"] == (0.1, 0.2)
+    first_frame = runtime.run_trails.observe.call_args.kwargs["frame_key"]
+    assert first_frame == (
+        runtime.slam_map.mission_identity,
+        _browser_session_key(runtime),
+        0,
+        0,
+    )
+    runtime.slam_map.pose_frame_generation = 1
+    observe_coordinator_trail(runtime)
+    assert runtime.run_trails.observe.call_args.kwargs["frame_key"] == (
+        *first_frame[:3],
+        1,
+    )
 
     runtime.slam_map.mission_identity = None
     observe_coordinator_trail(runtime)
@@ -184,6 +206,8 @@ def test_coordinator_updates_record_exact_poses_and_close_runs() -> None:
         "native_active": False,
         "map_key": None,
         "point": None,
+        "observed_at": runtime.coordinator.data.pose.observed_at,
+        "frame_key": (None, None, 0, 1),
     }
     observe_coordinator_trail(_runtime())
 

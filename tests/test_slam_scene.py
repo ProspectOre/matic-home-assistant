@@ -940,7 +940,9 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "scene_epoch": None,
         "map_floor_coherent": True,
         "pose_revision": 1,
+        "pose_frame_key": json.loads(exact.body)["pose_frame_key"],
         "pose_age_seconds": 0.0,
+        "pose_measured_at": runtime.coordinator.data.pose.observed_at,
         "pose_processing_seconds": 0.0,
         "pose_fetch_age_seconds": 0.0,
         "pose_observation_current": True,
@@ -983,6 +985,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "scene_epoch": None,
         "map_floor_coherent": False,
         "pose_revision": 0,
+        "pose_frame_key": None,
         "pose_age_seconds": None,
         "pose_fetch_age_seconds": None,
         "pose_observation_current": False,
@@ -1155,8 +1158,13 @@ async def test_pose_frame_revocation_uses_current_scene_revision_after_await() -
     assert payload["scene_revision"] > initial_revision
 
 
-async def test_pose_view_coalesces_concurrent_live_reads_and_rechecks_runtime() -> None:
+@pytest.mark.parametrize("empty_tracker", [False, True])
+async def test_pose_view_coalesces_concurrent_live_reads_and_rechecks_runtime(
+    empty_tracker: bool,
+) -> None:
     runtime = _runtime()
+    if empty_tracker:
+        runtime.live_pose = SimpleNamespace(current=lambda: None, revision=0)
     entry = _entry(runtime)
     hass = _hass(entry)
     view = MaticSlamPoseView()
@@ -1353,8 +1361,9 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
                 "wifi_heatmap_url": f"/api/matic_robot/wifi_heatmap/{loaded.entry_id}",
                 "floor_layers_url": f"/api/matic_robot/floor_layers/{loaded.entry_id}",
+                "coverage_url": f"/api/matic_robot/live_coverage/{loaded.entry_id}",
                 "history_count": 0,
-                "history_floor_count": 0,
+                "history_floor_count": 2,
                 "map_revision": 7,
                 "map_floor_coherent": True,
                 "selected_floor_ordinal": 1,
@@ -4021,3 +4030,343 @@ def test_history_record_trash_metadata_omits_scene_url_and_errors_map_statuses()
         response = _history_error(ValueError(error))
         assert response.status == expected
         assert json.loads(response.body) == {"error": error}
+
+
+async def test_live_tracker_serves_fresh_pose_without_waiting_for_robot():
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    runtime.live_pose = SimpleNamespace(current=lambda: pose, revision=8)
+    hass = _hass(_entry(runtime))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at,
+    ):
+        response = await MaticSlamPoseView().get(_request(hass), "entry")
+    payload = json.loads(response.body)
+    assert payload["position"] == [0.1, 0.2]
+    assert payload["pose_revision"] == 8
+    runtime.client.async_get_pose.assert_not_awaited()
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at + 6,
+    ):
+        response = await MaticSlamPoseView().get(_request(hass), "entry")
+    assert json.loads(response.body)["position"] is None
+
+
+async def test_quiet_pose_stream_recovers_through_a_fresh_on_demand_read():
+    runtime = _runtime()
+    stale = runtime.coordinator.data.pose
+    fresh = replace(stale, x=0.3, observed_at=stale.observed_at + 6)
+    runtime.live_pose = SimpleNamespace(current=lambda: stale, revision=8)
+    runtime.client.async_get_pose.return_value = fresh
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=fresh.observed_at,
+    ):
+        for _ in range(2):
+            payload = json.loads((await view.get(request, "entry")).body)
+            assert payload["position"] == [0.3, 0.2]
+            assert payload["pose_observation_current"]
+    runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
+
+
+async def test_delayed_stream_cannot_replace_a_newer_on_demand_pose():
+    runtime = _runtime()
+    initial = runtime.coordinator.data.pose
+    fresh = replace(initial, x=0.3, observed_at=initial.observed_at + 6)
+    tracker = SimpleNamespace(current=lambda: initial, revision=8)
+    runtime.live_pose = tracker
+    runtime.client.async_get_pose.return_value = fresh
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=fresh.observed_at,
+    ):
+        first = json.loads((await view.get(request, "entry")).body)
+        assert first["position"] == [0.3, 0.2]
+        delayed = replace(initial, x=0.2, observed_at=initial.observed_at + 5)
+        tracker.current = lambda: delayed
+        second = json.loads((await view.get(request, "entry")).body)
+        assert second["position"] == first["position"]
+        assert second["pose_revision"] == first["pose_revision"]
+        newest = replace(fresh, x=0.4, observed_at=fresh.observed_at + 0.1)
+        tracker.current = lambda: newest
+        third = json.loads((await view.get(request, "entry")).body)
+        assert third["position"] == [0.4, 0.2]
+        tracker.current = lambda: delayed
+        fourth = json.loads((await view.get(request, "entry")).body)
+        assert fourth["position"] == third["position"]
+    runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
+
+
+async def test_empty_live_tracker_refreshes_pose_after_floor_becomes_available():
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    floor_plan = runtime.coordinator.data.floor_plan
+    runtime.live_pose = SimpleNamespace(current=lambda: None, revision=0)
+    hass = _hass(_entry(runtime))
+    view = MaticSlamPoseView()
+    runtime.coordinator.data.floor_plan = None
+    unavailable = await view.get(_request(hass), "entry")
+    assert json.loads(unavailable.body)["position"] is None
+    runtime.client.async_get_pose.assert_not_awaited()
+    runtime.coordinator.data.floor_plan = floor_plan
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at,
+    ):
+        response = await view.get(_request(hass), "entry")
+    assert json.loads(response.body)["position"] == [0.1, 0.2]
+    runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_retained_pose_coalesces_reads_without_renewing_native_age(failed):
+    runtime = _runtime()
+    fresh = runtime.coordinator.data.pose
+    runtime.live_pose = SimpleNamespace(current=lambda: fresh, revision=8)
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read_pose(**_kwargs):
+        started.set()
+        await release.wait()
+        if failed:
+            raise CannotConnectError("read failed")
+        return replace(fresh, observed_at=fresh.observed_at - 1)
+
+    runtime.client.async_get_pose.side_effect = read_pose
+    with (
+        patch(
+            "custom_components.matic_robot.slam_pose_view.time",
+            return_value=fresh.observed_at,
+        ) as wall,
+        patch(
+            "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
+        ) as clock,
+    ):
+        await view.get(request, "entry")
+        runtime.live_pose.current = lambda: None
+        clock.return_value = 12.0
+        wall.return_value = fresh.observed_at + 2
+        first = asyncio.create_task(view.get(request, "entry"))
+        await started.wait()
+        waiting = [asyncio.create_task(view.get(request, "entry")) for _ in range(3)]
+        await asyncio.sleep(0)
+        release.set()
+        replies = await asyncio.gather(first, *waiting)
+        runtime.client.async_get_pose.assert_awaited_once()
+        for response in replies:
+            payload = json.loads(response.body)
+            assert payload["position"] == [0.1, 0.2]
+            assert payload["pose_age_seconds"] == 2.0
+            assert payload["pose_fetch_age_seconds"] == 0.0
+        clock.return_value = 18.0
+        wall.return_value = fresh.observed_at + 8
+        expired = json.loads((await view.get(request, "entry")).body)
+        assert expired["position"] is None
+        assert runtime.client.async_get_pose.await_count == 2
+
+
+@pytest.mark.parametrize("cache_stream", [False, True])
+@pytest.mark.parametrize(
+    ("response_kind", "cache_age"),
+    [
+        ("older", 0),
+        ("failed", 0),
+        ("empty", 0),
+        ("unobserved", 0),
+        ("future", 0),
+        ("foreign", 0),
+        ("newer", 0),
+        ("failed", 6),
+    ],
+)
+async def test_delayed_on_demand_response_keeps_a_newer_stream_pose(
+    response_kind, cache_age, cache_stream
+):
+    runtime = _runtime()
+    initial = runtime.coordinator.data.pose
+    tracker = SimpleNamespace(current=lambda: None, revision=8)
+    runtime.live_pose = tracker
+    started = asyncio.Event()
+    pending = asyncio.get_running_loop().create_future()
+
+    async def read_pose(**_kwargs):
+        started.set()
+        return await pending
+
+    runtime.client.async_get_pose.side_effect = read_pose
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    fresh = replace(initial, x=0.3, observed_at=initial.observed_at + 1)
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=fresh.observed_at,
+    ) as clock:
+        reading = asyncio.create_task(view.get(request, "entry"))
+        await started.wait()
+        tracker.current = lambda: fresh
+        if cache_stream:
+            current = json.loads((await view.get(request, "entry")).body)
+            assert current["position"] == [0.3, 0.2]
+            assert current["pose_revision"] == 8
+        clock.return_value += cache_age
+        if response_kind == "failed":
+            pending.set_exception(CannotConnectError("read failed"))
+        else:
+            pending.set_result(
+                {
+                    "older": initial,
+                    "empty": None,
+                    "unobserved": replace(fresh, observed_at=None),
+                    "future": replace(fresh, observed_at=fresh.observed_at + 100),
+                    "foreign": replace(fresh, mission_id=99),
+                    "newer": replace(fresh, x=0.4, observed_at=fresh.observed_at + 0.1),
+                }[response_kind]
+            )
+        delayed = json.loads((await reading).body)
+    if cache_age:
+        assert delayed["position"] is None
+        assert delayed["pose_freshness"] == "coordinator_fallback"
+    elif response_kind == "newer":
+        assert delayed["position"] == [0.4, 0.2]
+    else:
+        assert delayed["position"] == [0.3, 0.2]
+        assert delayed["pose_revision"] == 8
+        assert delayed["pose_freshness"] == "live"
+
+
+def test_stream_trail_records_only_fresh_coherent_positions():
+    from custom_components.matic_robot.slam_view_data import observe_live_pose_trail
+
+    runtime = _runtime()
+    runtime.run_trails = SimpleNamespace(observe=MagicMock())
+    runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value="run")
+    pose = runtime.coordinator.data.pose
+    with patch(
+        "custom_components.matic_robot.client.floor_plan.time.time",
+        return_value=pose.observed_at,
+    ):
+        observe_live_pose_trail(runtime, pose)
+    assert runtime.run_trails.observe.call_args.kwargs["point"] == (0.1, 0.2)
+    with patch(
+        "custom_components.matic_robot.client.floor_plan.time.time",
+        return_value=pose.observed_at + 6,
+    ):
+        observe_live_pose_trail(runtime, pose)
+    assert runtime.run_trails.observe.call_args.kwargs["point"] is None
+    runtime.slam_map.floor_plan_is_current = MagicMock(return_value=False)
+    observe_live_pose_trail(runtime, pose)
+    assert runtime.run_trails.observe.call_args.kwargs["point"] is None
+
+
+@pytest.mark.parametrize("fence_owner", ["slam_map", "coordinator"])
+@pytest.mark.parametrize("source", ["rpc", "stream", "coordinator_trail"])
+async def test_delayed_pose_is_withheld_after_same_floor_reverification(
+    fence_owner, source
+):
+    from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
+
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    owner = getattr(runtime, fence_owner)
+    setattr(
+        owner,
+        "pose_frame_started_at"
+        if fence_owner == "slam_map"
+        else "floor_frame_started_at",
+        pose.observed_at + 1,
+    )
+    runtime.run_trails = SimpleNamespace(observe=MagicMock())
+    runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value="run")
+    if source == "stream":
+        runtime.live_pose = SimpleNamespace(current=lambda: pose, revision=8)
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at + 2,
+    ):
+        if source == "coordinator_trail":
+            observe_coordinator_trail(runtime)
+        else:
+            response = await MaticSlamPoseView().get(
+                _request(_hass(_entry(runtime))), "entry"
+            )
+            payload = json.loads(response.body)
+            assert payload["position"] is None
+            assert not payload["pose_observation_current"]
+    assert runtime.run_trails.observe.call_args.kwargs["point"] is None
+
+
+async def test_pose_response_exposes_proof_changes_without_changing_map_identity():
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    runtime.slam_map.pose_frame_generation = 1
+    view = MaticSlamPoseView()
+    request = _request(_hass(_entry(runtime)))
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at + 2,
+    ):
+        first = json.loads((await view.get(request, "entry")).body)
+        same = json.loads((await view.get(request, "entry")).body)
+        assert len(first["pose_frame_key"]) == 64
+        assert first["pose_frame_key"] == same["pose_frame_key"]
+        runtime.slam_map.pose_frame_generation += 2
+        runtime.slam_map.pose_frame_started_at = pose.observed_at + 1
+        returned = json.loads((await view.get(request, "entry")).body)
+    assert returned["map_session_key"] == first["map_session_key"]
+    assert returned["pose_frame_key"] != first["pose_frame_key"]
+    assert returned["position"] is None
+
+
+@pytest.mark.parametrize(
+    ("saved", "mapped", "archive", "expected"),
+    [
+        (False, False, None, 1),
+        (True, False, None, 2),
+        (False, True, None, 2),
+        (True, True, None, 2),
+        (False, False, "kept", 2),
+        (False, False, "trash", 1),
+    ],
+)
+async def test_floor_count_matches_choices_without_current_snapshot(
+    saved, mapped, archive, expected
+):
+    runtime = _runtime()
+    current = runtime.slam_map.mission_identity.mission_token
+    other = "b" * 64
+    floors = [MappedFloor(1, "Current", current)]
+    if mapped:
+        floors.append(MappedFloor(2, "Other", other))
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan, mapped_floors=tuple(floors)
+    )
+    record = SimpleNamespace(
+        record_id="c" * 32,
+        snapshot_id="d" * 64,
+        created_at=datetime(2026, 11, 7, tzinfo=UTC),
+        revision=1,
+        point_count=10,
+        mission_token=other,
+        imported=archive is not None,
+        retention=archive or "automatic",
+    )
+    runtime.slam_history.catalogs_by_mission.return_value = (
+        ((other, (record,)),) if saved else ()
+    )
+    runtime.slam_history.catalog.return_value = (record,) if saved or archive else ()
+    # The current floor deliberately has no saved snapshot.
+    response = await MaticSlamHistoryView().get(
+        _request(_hass(_entry(runtime))), "entry"
+    )
+    choices = json.loads(response.body)["floors"]
+    assert len(choices) == expected
+    assert catalog_entry_projection("entry", runtime)["history_floor_count"] == expected

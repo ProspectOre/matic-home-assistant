@@ -22,19 +22,30 @@ const openFollowing = async (page) => {
   const panel = page.locator(panelTag);
   const following = () => panel.evaluate((element) => element.getWorkspaceSnapshot().followMode === "follow");
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
   expect(await following()).toBe(false);
 
-  await clickInShadow(panel, "[aria-controls=map-options]");
   await clickInShadow(panel, "[data-follow-robot]");
   await expect.poll(following).toBe(true);
-  await page.keyboard.press("Escape");
+  await expect.poll(() => panel.evaluate((element) => {
+    const scan = (root) => {
+      const match = root.querySelector("[data-follow-robot]");
+      if (match) return match;
+      for (const child of root.querySelectorAll("*")) {
+        const found = child.shadowRoot && scan(child.shadowRoot);
+        if (found) return found;
+      }
+      return null;
+    };
+    return scan(element.shadowRoot)?.getAttribute("aria-pressed");
+  })).toBe("true");
 
   const map = panel.locator("matic-map-shell-v4").locator(".map-root");
   const bounds = await map.boundingBox();
-  return { following, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  return { panel, following, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
 };
 
-test("Map options turns following on and a drag turns it off", async ({ page }) => {
+test("the map toolbar turns following on and a drag turns it off", async ({ page }) => {
   const { following, x, y } = await openFollowing(page);
   await page.mouse.move(x, y);
   await page.mouse.down();
@@ -61,4 +72,14 @@ test("Fit map turns following off", async ({ page }) => {
   const { following } = await openFollowing(page);
   await page.locator("matic-map-canvas-v4").getByRole("button", { name: "Fit the whole map on screen" }).click();
   await expect.poll(following).toBe(false);
+});
+
+test("following pauses during a missing pose and resumes when it returns", async ({ page }) => {
+  const { panel, following } = await openFollowing(page);
+  await page.evaluate(() => { window.__posePosition = null; });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(false);
+  expect(await following()).toBe(true);
+  await page.evaluate(() => { delete window.__posePosition; });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
+  expect(await following()).toBe(true);
 });

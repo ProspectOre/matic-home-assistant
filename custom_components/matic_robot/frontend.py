@@ -15,6 +15,7 @@ from homeassistant.components.http import (  # type: ignore[attr-defined,unused-
 from homeassistant.core import HomeAssistant
 
 from .area_views import MaticAreasView
+from .coverage_view import MaticLiveCoverageView
 from .daily_limit_view import MaticDailyLimitView
 from .floor_layers import MaticFloorLayersView
 from .photos import MaticRobotPhotoPreviewView, MaticRobotPhotoView
@@ -134,6 +135,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticDailyLimitView)
     hass.http.register_view(MaticRunHistoryView)
     hass.http.register_view(MaticWifiHeatmapView)
+    hass.http.register_view(MaticLiveCoverageView)
     hass.http.register_view(floor_layers_view)
     hass.http.register_view(run_thumbnail_view)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)

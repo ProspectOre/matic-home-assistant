@@ -6,6 +6,26 @@ Acceptance plan for the [experience](design-map-experience.md) and
 The thresholds below are proposed engineering gates, not measured results or a
 certification. Name the minimum supported phone and host profile before accepting them.
 
+## Multi-robot compatibility
+
+Run this matrix on every candidate. The **Multi-robot households** step in
+Browser UI runs `npm run test:browser:multi-robot`. It exercises the
+[entry selection tests](../tests/browser/map_studio_v4_entry_selection.spec.mjs)
+and [household scenarios](../tests/browser/map_studio_v4_multi_robot_scale.spec.mjs)
+in Chromium and WebKit. Keep the one-robot case and run the two-robot case even
+when the development host has only one physical robot.
+
+| Case | Required result |
+| --- | --- |
+| One robot; two robots with long names | One robot needs no chooser. With two robots, try distinct and identical display names. The native **Choose robot** selector remains visible beside the map title or on the row directly below it. Check desktop, tablet, 320- and 390-pixel phone widths and full screen. It has a 44-pixel target, keeps the full option names available, works from the keyboard and does not cover the floor or layer controls. |
+| A → B → A with delayed responses | Use different config entry IDs and reuse a floor or room name. Delay A’s responses until B is selected. The title, floor, position, trail, Wi-Fi, coverage, materials and cleaning controls belong only to the selected entry. Repeat after leaving and reopening the map. |
+| Disconnect or remove the selected entry | Indicate which selection became unavailable. Withhold its data and actions. The user can choose another robot; neither reconnecting nor a late response may silently select one or start work. |
+| Commands and preferences | Exercise an action against the selected entry in the test fixture and inspect the call target. Entry-specific plans, runs, surveys and device settings cannot spill between robots. Switching the selector itself sends no motion command. |
+
+Record the browser results separately from a run on physical robots. A second
+floor on one robot is not a second robot. The large-home exercise below adds
+concurrent runs and host-load checks.
+
 ## Measures that decide the design
 
 Measure current and candidate builds with identical scene hashes, device/browser
