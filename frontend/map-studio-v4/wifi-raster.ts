@@ -44,7 +44,7 @@ const reaches = (sample: RasterSample, x: number, y: number): boolean => {
     && sample.reachable[localY * sample.footprintWidth + localX] === 1;
 };
 
-const cache = new WeakMap<WifiSignalLayer, WeakMap<SceneFloorSupport, Map<WifiScale, WifiRaster | null>>>();
+const cache = new WeakMap<WifiSignalLayer["cells"], WeakMap<SceneFloorSupport, Map<WifiScale, WifiRaster | null>>>();
 
 const occupiedAt = (support: SceneFloorSupport, x: number, y: number): boolean => {
   if (x < 0 || y < 0 || x >= support.spanCells[0] || y >= support.spanCells[1]) return false;
@@ -93,10 +93,10 @@ export const buildWifiRaster = (
   support: SceneFloorSupport,
   scale: WifiScale,
 ): WifiRaster | null => {
-  let bySupport = cache.get(layer);
+  let bySupport = cache.get(layer.cells);
   if (!bySupport) {
     bySupport = new WeakMap();
-    cache.set(layer, bySupport);
+    cache.set(layer.cells, bySupport);
   }
   let byScale = bySupport.get(support);
   if (!byScale) {
@@ -435,12 +435,59 @@ export const drawWifiRaster = (
   const cell = support.metersPerCell;
   const worldX = (raster.left + support.originCells[0]) * cell;
   const worldY = (raster.top + support.originCells[1]) * cell;
-  const drawPatch = (x: number, y: number, width: number, height: number): void => {
+  const base = context.getTransform();
+  // The Frobenius norm bounds amplification by any canvas transform, including DPR.
+  const tolerance = 0.25 / Math.hypot(base.a, base.b, base.c, base.d);
+  let remaining = 16_384;
+  const drawPatch = (x: number, y: number, width: number, height: number, depth = 0): void => {
+    if (remaining-- <= 0) return;
     const x0 = worldX + x * cell;
     const y0 = worldY + y * cell;
     const topLeft = project(x0, y0, 0.1, false);
     const topRight = project(x0 + width * cell, y0, 0.1, false);
     const bottomLeft = project(x0, y0 + height * cell, 0.1, false);
+    if (perspective) {
+      const bottomRight = project(x0 + width * cell, y0 + height * cell, 0.1, false);
+      const corners = [topLeft, topRight, bottomLeft, bottomRight];
+      let error = Infinity;
+      if (topLeft && topRight && bottomLeft && bottomRight) {
+        const points = [topLeft, topRight, bottomLeft, bottomRight];
+        const screen = points.map(point => base.transformPoint(point));
+        if (screen.every(point => point.x < 0) || screen.every(point => point.x > context.canvas.width)
+          || screen.every(point => point.y < 0) || screen.every(point => point.y > context.canvas.height)) return;
+        const warp = Math.hypot(bottomRight.x - topRight.x - bottomLeft.x + topLeft.x,
+          bottomRight.y - topRight.y - bottomLeft.y + topLeft.y);
+        const depths = points.map(point => point.depth);
+        if (depths.every((value): value is number => value !== undefined && Number.isFinite(value) && value > 0)) {
+          const [w0, w1, w2, w3] = depths as [number, number, number, number];
+          // Subtract the affine texture mapping from the planar homography.
+          // Its numerator is u(1-u)*du*edgeU + v(1-v)*dv*edgeV
+          // minus u*v*(du*edgeV + dv*edgeU). The cross term is w3*warp.
+          error = (0.25 * Math.abs(w1 - w0) * Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y)
+            + 0.25 * Math.abs(w2 - w0) * Math.hypot(bottomLeft.x - topLeft.x, bottomLeft.y - topLeft.y)
+            + w3 * warp) / Math.min(...depths);
+        } else {
+          // Affine/test projectors need not expose homogeneous depth.
+          error = warp;
+          for (const [u, v] of [[0.5, 0], [0, 0.5], [1, 0.5], [0.5, 1], [0.5, 0.5]]) {
+            const actual = project(x0 + u! * width * cell, y0 + v! * height * cell, 0.1, false);
+            error = Math.max(error, actual ? Math.hypot(
+              actual.x - (topLeft.x + u! * (topRight.x - topLeft.x) + v! * (bottomLeft.x - topLeft.x)),
+              actual.y - (topLeft.y + u! * (topRight.y - topLeft.y) + v! * (bottomLeft.y - topLeft.y)),
+            ) : Infinity);
+          }
+        }
+      }
+      if (error > tolerance) {
+        if (depth >= 12 || corners.every(point => point === null)) return;
+        const halfWidth = width / 2, halfHeight = height / 2;
+        drawPatch(x, y, halfWidth, halfHeight, depth + 1);
+        drawPatch(x + halfWidth, y, halfWidth, halfHeight, depth + 1);
+        drawPatch(x, y + halfHeight, halfWidth, halfHeight, depth + 1);
+        drawPatch(x + halfWidth, y + halfHeight, halfWidth, halfHeight, depth + 1);
+        return;
+      }
+    }
     if (!topLeft || !topRight || !bottomLeft) return;
     const a = (topRight.x - topLeft.x) / width;
     const b = (topRight.y - topLeft.y) / width;
@@ -448,7 +495,6 @@ export const drawWifiRaster = (
     const d = (bottomLeft.y - topLeft.y) / height;
     const e = topLeft.x - a * x - c * y;
     const f = topLeft.y - b * x - d * y;
-    const base = context.getTransform();
     context.save();
     context.setTransform(
       base.a * a + base.c * b,

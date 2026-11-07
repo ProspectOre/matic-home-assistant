@@ -452,3 +452,103 @@ test("Wi-Fi neighbors cannot tint a floor pixel across a wall corner", async ({ 
   expect(result.blocked[3]).toBeGreaterThan(0);
   expect(result.wall[3]).toBe(0);
 });
+
+test("Unchanged Wi-Fi polls reuse raster work while changed readings and floors redraw", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { MapLayerResources } from "./frontend/map-studio-v4/map-layer-resources"; export { ResourceRequests } from "./frontend/map-studio-v4/resource-requests"; export { buildWifiRaster } from "./frontend/map-studio-v4/wifi-raster";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/wifi-polls.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { MapLayerResources, ResourceRequests, buildWifiRaster } = await import("/wifi-polls.js");
+    const entry = { entryId: "robot-a", wifiHeatmapUrl: "/survey-a", mapSessionKey: "a" };
+    const store = { value: { resources: { entry }, generation: 1, dataMode: "live", selection: { floorId: "current" },
+      wifiSignal: { status: "loading", cells: [], cellSize: 0.3, surveying: false } },
+      patch(change) { Object.assign(this.value, change); } };
+    let reply = { enabled: true, cell_size: 0.3, cells: [{ x: 0.155, y: 0.155, dbm: -80 }] };
+    let fail = false;
+    const backend = { async mapLayer() { if (fail) throw new Error("offline"); return structuredClone(reply); } };
+    const resources = new MapLayerResources(store, backend, new ResourceRequests(), { disposed: () => false, pageActive: () => true });
+    const support = { version: 1, status: "verified", encoding: "bitset-little-v1", originCells: [0, 0],
+      metersPerCell: 0.01, spanCells: [32, 32], occupiedCells: 1024, maskSha256: "a".repeat(64), mask: new Uint8Array(128).fill(255) };
+    const raster = () => buildWifiRaster(store.value.wifiSignal, support, "absolute");
+    await resources.reloadWifi(); const first = raster();
+    await resources.reloadWifi(); const reused = raster() === first;
+    reply.enabled = false;
+    await resources.reloadWifi(); const metadataReused = raster() === first && !store.value.wifiSignal.surveying;
+    fail = true; await resources.reloadWifi(); const failed = store.value.wifiSignal.status === "failed";
+    fail = false; await resources.reloadWifi(); const recovered = store.value.wifiSignal.status === "ready" && raster() === first;
+    reply.cells[0].dbm = -40;
+    await resources.reloadWifi(); const changed = raster();
+    const pixel = value => [...value.canvas.getContext("2d").getImageData(15 - value.left, 15 - value.top, 1, 1).data];
+    const changedColor = JSON.stringify(pixel(first)) !== JSON.stringify(pixel(changed));
+    const newSupport = { ...support, mask: support.mask.slice(), maskSha256: "b".repeat(64) };
+    const newFloor = buildWifiRaster(store.value.wifiSignal, newSupport, "absolute") !== changed;
+    const newScale = buildWifiRaster(store.value.wifiSignal, support, "relative") !== changed;
+    // Entry switching clears optional state before the next robot's survey is admitted.
+    store.value.resources.entry = { ...entry, entryId: "robot-b", wifiHeatmapUrl: "/survey-b", mapSessionKey: "b" };
+    store.value.generation += 1;
+    store.value.wifiSignal = { status: "loading", cells: [], cellSize: 0.3, surveying: false };
+    await resources.reloadWifi();
+    return { reused, metadataReused, failed, recovered, changedColor, changedRaster: changed !== first,
+      newFloor, newScale, newRobot: raster() !== changed };
+  });
+  expect(result).toEqual({ reused: true, metadataReused: true, failed: true, recovered: true,
+    changedColor: true, changedRaster: true, newFloor: true, newScale: true, newRobot: true });
+});
+
+test("Tilted Wi-Fi patches stay within a quarter backing pixel of the floor projection", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { drawWifiRaster } from "./frontend/map-studio-v4/wifi-raster";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/wifi-projection.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { drawWifiRaster } = await import("/wifi-projection.js");
+    const source = document.createElement("canvas"); source.width = 96; source.height = 96;
+    const ink = source.getContext("2d"); ink.fillStyle = "rgba(40,80,200,0.65)";
+    ink.fillRect(1, 1, 94, 94); ink.clearRect(47, 0, 1, 96); ink.clearRect(68, 68, 8, 8);
+    const raster = { canvas: source, left: 0, top: 0, width: 96, height: 96, patches: [[0, 0], [1, 0], [0, 1], [1, 1]] };
+    const support = { originCells: [0, 0], metersPerCell: 0.01 };
+    const target = document.createElement("canvas"); target.width = 1100; target.height = 1100;
+    const context = target.getContext("2d"); context.scale(2, 2);
+    const project = (x, y) => {
+      const depth = 1 - 0.45 * x - 0.15 * y;
+      return { x: 20 + (160 * x + 20 * y) / depth, y: 20 + (10 * x + 150 * y) / depth, depth };
+    };
+    let area = 0, maxError = 0, leaves = 0;
+    const covered = new Uint8Array(96 * 96);
+    const draw = context.drawImage.bind(context);
+    context.drawImage = (image, x, y, width, height, ...destination) => {
+      leaves += 1; area += width * height;
+      const transform = context.getTransform();
+      for (let v = 0; v <= 8; v += 1) for (let u = 0; u <= 8; u += 1) {
+        const a = x + width * u / 8, b = y + height * v / 8;
+        const actual = transform.transformPoint({ x: a, y: b }), exact = project(a * 0.01, b * 0.01);
+        maxError = Math.max(maxError, Math.hypot(actual.x - exact.x * 2, actual.y - exact.y * 2));
+      }
+      for (let iy = Math.ceil(y - 0.5); iy + 0.5 < y + height; iy += 1) {
+        for (let ix = Math.ceil(x - 0.5); ix + 0.5 < x + width; ix += 1) covered[iy * 96 + ix] += 1;
+      }
+      return draw(image, x, y, width, height, ...destination);
+    };
+    drawWifiRaster(context, raster, support, project, true);
+    const transform = context.getTransform();
+    const preserved = transform.a === 2 && transform.d === 2 && transform.e === 0 && transform.f === 0;
+    const pixel = (x, y) => { const p = project((x + 0.5) * 0.01, (y + 0.5) * 0.01);
+      return context.getImageData(Math.floor(p.x * 2), Math.floor(p.y * 2), 1, 1).data[3]; };
+    const visible = pixel(20, 20), wall = pixel(47, 60), hole = pixel(72, 72), outside = pixel(98, 50);
+    let affineDraws = 0;
+    context.drawImage = (...args) => { affineDraws += 1; return draw(...args); };
+    drawWifiRaster(context, raster, support, (x, y) => ({ x: 20 + x * 100, y: 20 + y * 100 }), false);
+    return { maxError, area, leaves, once: [...covered].every(count => count === 1),
+      preserved, visible, wall, hole, outside, affineDraws };
+  });
+  expect(result.maxError).toBeLessThanOrEqual(0.25);
+  expect(result.area).toBe(96 * 96);
+  expect(result.leaves).toBeGreaterThan(4);
+  expect(result.leaves).toBeLessThan(16_384);
+  expect(result.once).toBe(true);
+  expect(result.preserved).toBe(true);
+  expect(result.visible).toBeGreaterThan(0);
+  expect(result.wall).toBe(0);
+  expect(result.hole).toBe(0);
+  expect(result.outside).toBe(0);
+  expect(result.affineDraws).toBe(1);
+});

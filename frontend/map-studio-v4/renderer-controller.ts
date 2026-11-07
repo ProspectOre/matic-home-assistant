@@ -24,6 +24,7 @@ interface OptionalModuleLoad {
 export interface MapPoint {
   readonly x: number;
   readonly y: number;
+  readonly depth?: number;
 }
 
 export interface RendererDiagnostics {
@@ -1639,6 +1640,7 @@ export class RendererController {
     return {
       x: (xNormalized * 0.5 + 0.5) * bounds.width,
       y: (-yNormalized * 0.5 + 0.5) * bounds.height,
+      depth: clipW,
     };
   }
 

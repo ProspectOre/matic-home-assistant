@@ -85,7 +85,14 @@ export class MapLayerResources {
         && entryCoherenceIdentity(this.store.value.resources.entry) === identity);
     try {
       const layer = parseWifiSignal(await this.backend.mapLayer("wifiSignal", entry.wifiHeatmapUrl, controller.signal));
-      if (current()) this.store.patch({ wifiSignal: layer });
+      if (current()) {
+        const previous = this.store.value.wifiSignal?.cells;
+        const unchanged = previous?.length === layer.cells.length && layer.cells.every((cell, index) => {
+          const before = previous[index]!;
+          return cell.x === before.x && cell.y === before.y && cell.size === before.size && cell.dbm === before.dbm;
+        });
+        this.store.patch({ wifiSignal: unchanged ? { ...layer, cells: previous } : layer });
+      }
     } catch (error) {
       const shown = this.store.value.wifiSignal;
       if (!isAbort(error) && current() && shown) this.store.patch({ wifiSignal: { ...shown, status: "failed" } });

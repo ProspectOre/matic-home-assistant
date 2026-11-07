@@ -9,6 +9,8 @@ import { clamp } from "./shared-primitives";
 export interface MapPoint {
   readonly x: number;
   readonly y: number;
+  /** Homogeneous depth for error-bounded floor texture projection. */
+  readonly depth?: number;
 }
 
 let positionFormat: { readonly locale: string; readonly format: Intl.NumberFormat } | null = null;
