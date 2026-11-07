@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,63 +73,57 @@ const TWO_ROBOT_STATES = {
   "vacuum.synthetic_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b" } },
 };
 
+const pendingFirstMapAssets = new WeakMap();
+const firstMapAssetsAtMarker = new WeakMap();
+
 async function armFirstMapOpportunity(page, panelTag) {
-  const markerPath = `/__matic-first-map-${randomUUID()}`;
-  const starts = [];
-  let startsAtMarker = [];
+  const observedAssets = new Map();
+  pendingFirstMapAssets.set(page, observedAssets);
   const isAssetPath = (path) => path === "/matic_icons.js"
     || path.startsWith("/map_studio_v4/") && path.endsWith(".js");
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (path === markerPath) {
-      // Playwright delivers request-start events in issue order. Snapshotting
-      // at the marker includes scripts still in flight at the first map frame.
-      startsAtMarker = [...starts];
-    } else if (isAssetPath(path)) starts.push(path);
+    if (!isAssetPath(path)) return;
+    let resolveRequest;
+    const completed = new Promise((resolve) => { resolveRequest = resolve; });
+    observedAssets.set(request, { completed, resolve: resolveRequest });
   });
-  await page.route(`**${markerPath}`, (route) => route.fulfill({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({ starts: startsAtMarker }),
-  }));
-  await page.evaluate(({ tag, markerPath }) => {
-    window.__firstMapObservedResources = [];
-    const observer = new PerformanceObserver((records) => {
-      window.__firstMapObservedResources.push(...records.getEntries().map(({ name, startTime }) => ({ name, startTime })));
-    });
-    observer.observe({ type: "resource", buffered: true });
-    window.__firstMapOpportunity = new Promise((resolve) => {
+  const finishRequest = (request) => {
+    const tracked = observedAssets.get(request);
+    if (!tracked) return;
+    observedAssets.delete(request);
+    tracked.resolve();
+  };
+  page.on("requestfinished", finishRequest);
+  page.on("requestfailed", finishRequest);
+  await page.evaluate(({ tag }) => {
+    window.__firstMapMarker = new Promise((resolve) => {
       const observe = () => {
         const element = document.querySelector(tag);
         if (!element?.getWorkspaceSnapshot().map.available) {
           requestAnimationFrame(observe);
           return;
         }
-        const markerTime = performance.timeOrigin + performance.now();
-        void fetch(markerPath, {
-          method: "POST",
-          cache: "no-store",
-          body: JSON.stringify({ markerTime }),
-        }).then((response) => response.json()).then(({ starts }) => {
-          const completed = performance.getEntriesByType("resource")
-            .filter(({ startTime }) => performance.timeOrigin + startTime <= markerTime)
-            .map(({ name }) => new URL(name).pathname);
-          const observed = window.__firstMapObservedResources
-            .filter(({ startTime }) => performance.timeOrigin + startTime <= markerTime)
-            .map(({ name }) => new URL(name).pathname);
-          resolve([...new Set([...starts, ...completed, ...observed])]
-            .filter((path) => path === "/matic_icons.js" || path.startsWith("/map_studio_v4/") && path.endsWith(".js"))
-            .sort());
-          observer.disconnect();
-        });
+        resolve(performance.now());
       };
       requestAnimationFrame(observe);
     });
-  }, { tag: panelTag, markerPath });
+  }, { tag: panelTag });
 }
 
-async function firstMapOpportunityPaths(page) {
-  return page.evaluate(() => window.__firstMapOpportunity);
+async function firstMapMarkerTime(page) {
+  const markerTime = await page.evaluate(() => window.__firstMapMarker);
+  firstMapAssetsAtMarker.set(page, [...pendingFirstMapAssets.get(page).values()].map(({ completed }) => completed));
+  return markerTime;
+}
+
+async function firstMapOpportunityPaths(page, markerTime) {
+  markerTime ??= await firstMapMarkerTime(page);
+  await Promise.all(firstMapAssetsAtMarker.get(page) ?? []);
+  return page.evaluate((admissionTime) => [...new Set(performance.getEntriesByType("resource")
+    .filter(({ startTime }) => startTime <= admissionTime)
+    .map(({ name }) => new URL(name).pathname)
+    .filter((path) => path === "/matic_icons.js" || path.startsWith("/map_studio_v4/") && path.endsWith(".js")))].sort(), markerTime);
 }
 
 async function dispatchQueueAction(panel, change = "skip_room") {
@@ -207,36 +201,63 @@ test("two-robot startup keeps the native selector in the first-map budget on a 3
 });
 
 test("first-map capture includes a script request still in flight at the marker", async ({ page }) => {
-  await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
-  const workflowPanel = readdirSync(join(COMPONENT_ASSETS, "map_studio_v4", "chunks"))
-    .find((name) => /^workflow-panel-[^/]+\.js$/u.test(name));
-  expect(workflowPanel).toBeTruthy();
-  const heldPath = `/map_studio_v4/chunks/${workflowPanel}`;
   let releaseHeldResponse;
-  let markHeldStarted;
-  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
-  await page.route((url) => {
-    const parsed = new URL(url);
-    return parsed.pathname === heldPath && parsed.searchParams.get("held-before-marker") === "1";
-  }, (route) => new Promise((resolve) => {
-    markHeldStarted();
-    releaseHeldResponse = () => { void route.continue().finally(resolve); };
-  }));
-  await armFirstMapOpportunity(page, fixture.panelTag);
-  await page.evaluate((path) => {
-    window.__heldScriptResponse = fetch(`${path}?held-before-marker=1`).then((response) => response.status);
-  }, heldPath);
-  await heldStarted;
-  await page.evaluate(() => import("/matic_icons.js"));
-  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const heldPath = "/map_studio_v4/chunks/held-before-marker.js";
+  const afterMarkerPath = "/map_studio_v4/chunks/after-marker-probe.js";
+  const server = createServer((request, response) => {
+    const path = new URL(request.url, "http://127.0.0.1").pathname;
+    response.writeHead(200, {
+      "Access-Control-Allow-Origin": "http://127.0.0.1:4173",
+      "Cache-Control": "no-store",
+      "Content-Type": "text/javascript",
+      "Timing-Allow-Origin": "http://127.0.0.1:4173",
+    });
+    if (path === heldPath) {
+      response.flushHeaders();
+      response.write("export const held = true;");
+      releaseHeldResponse = () => {
+        releaseHeldResponse = null;
+        response.end(";");
+      };
+      return;
+    }
+    if (path === afterMarkerPath) {
+      response.end("export {}; ");
+      return;
+    }
+    response.end("not found");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const serverURL = `http://127.0.0.1:${server.address().port}`;
   try {
-    const firstFramePaths = await firstMapOpportunityPaths(page);
+    await page.goto("/");
+    const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
+    await armFirstMapOpportunity(page, fixture.panelTag);
+    await page.evaluate((url) => {
+      window.__heldScriptResponse = fetch(url).then(async (response) => {
+        window.__heldScriptStatus = response.status;
+        await response.arrayBuffer();
+        return response.status;
+      });
+    }, `${serverURL}${heldPath}?held-before-marker=1`);
+    await page.waitForFunction(() => window.__heldScriptStatus === 200);
+    await page.evaluate(() => import("/matic_icons.js"));
+    await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+    const markerTime = await firstMapMarkerTime(page);
+    releaseHeldResponse?.();
+    expect(await page.evaluate(() => window.__heldScriptResponse)).toBe(200);
+    expect(await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      await response.arrayBuffer();
+      return response.status;
+    }, `${serverURL}${afterMarkerPath}`)).toBe(200);
+    const firstFramePaths = await firstMapOpportunityPaths(page, markerTime);
     expect(firstFramePaths).toContain(heldPath);
+    expect(firstFramePaths).not.toContain(afterMarkerPath);
   } finally {
     releaseHeldResponse?.();
+    await new Promise((resolve) => server.close(resolve));
   }
-  await expect.poll(() => page.evaluate(() => window.__heldScriptResponse)).toBe(200);
 });
 
 test("supported servers automatically load workspace push within the first-map gzip budget", async ({ page }) => {
