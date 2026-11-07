@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from functools import partial
-from time import monotonic
+from time import monotonic, time
 from typing import Any, cast
 
 from google.protobuf.message import DecodeError
@@ -191,6 +191,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._displayed_floor_unknown = False
         self._verified_floor_mission_id: int | None = None
         self._floor_read_generation = 0
+        self._floor_frame_started_at = time()
         self._floor_reads_in_flight = 0
         self._cached_telemetry: RobotTelemetry | None = None
         self._map_refresh_due = 0.0
@@ -364,7 +365,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         invalidates_read and self._floor_reads_in_flight > 0
                     )
                     if invalidates_read:
-                        self._floor_read_generation += 1
+                        self._advance_floor_frame()
                     if verified_invalidated:
                         # The displayed mission and floor signature are the
                         # immediate localization authority for later reads.
@@ -406,7 +407,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._displayed_floor_mission_id = None
         self._displayed_floor_signature = None
         self._verified_floor_mission_id = None
-        self._floor_read_generation += 1
+        self._advance_floor_frame()
         self._cached_floor_plan = None
         self._map_refresh_due = 0.0
         if self.data is not None and self.data.floor_plan is not None:
@@ -663,6 +664,15 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         finally:
             if self._full_refresh_generation == full_refresh_generation:
                 self._force_full_refresh = False
+
+    def _advance_floor_frame(self) -> None:
+        self._floor_read_generation += 1
+        self._floor_frame_started_at = time()
+
+    @property
+    def floor_frame_started_at(self) -> float:
+        """Return the native-pose admission fence for the selected floor."""
+        return self._floor_frame_started_at
 
     @property
     def floor_read_generation(self) -> int:
@@ -927,7 +937,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         if expected_mission_id is not None:
             if self._verified_floor_mission_id != expected_mission_id:
                 self._verified_floor_mission_id = expected_mission_id
-                self._floor_read_generation += 1
+                self._advance_floor_frame()
         self._map_refresh_due = 0.0
         await self.async_request_refresh()
 

@@ -68,6 +68,7 @@ from .slam_view_data import (
     _pose_frame_key,
     observe_coordinator_trail,
     observe_live_pose_trail,
+    pose_observed_in_frame,
 )
 from .wifi_survey import WifiSurveyStore
 
@@ -354,6 +355,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             ),
             lambda: _pose_frame_key(runtime_data),
             partial(observe_live_pose_trail, runtime_data),
+            admit=lambda pose: pose_observed_in_frame(runtime_data, pose.observed_at),
         )
         entry.async_create_background_task(
             hass, runtime_data.live_pose.watch(), f"{DOMAIN} live pose collector"

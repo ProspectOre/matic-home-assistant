@@ -57,6 +57,8 @@ def observe_run_trail(
     if trails is None:
         return
     data = runtime.coordinator.data
+    if not pose_observed_in_frame(runtime, observed_at):
+        position = None
     trails.observe(
         run_id=runtime.cleaning_plans.ledger.active_run_id(
             str(data.info.serial_number)
@@ -96,14 +98,30 @@ def observe_live_pose_trail(runtime: MaticRuntimeData, pose: RobotPose) -> None:
     )
 
 
+def pose_observed_in_frame(
+    runtime: MaticRuntimeData, observed_at: float | None
+) -> bool:
+    """Reject delayed poses from before the current live frame was established."""
+    return (
+        observed_at is not None
+        and runtime.slam_map.floor_plan_is_current(runtime.coordinator.data.floor_plan)
+        and observed_at
+        >= max(
+            getattr(runtime.slam_map, "pose_frame_started_at", 0.0),
+            getattr(runtime.coordinator, "floor_frame_started_at", 0.0),
+        )
+    )
+
+
 def _pose_frame_key(
     runtime: MaticRuntimeData,
-) -> tuple[SlamMapIdentity | None, str | None, int]:
+) -> tuple[SlamMapIdentity | None, str | None, int, int]:
     """Bind pose reads to a coordinate frame and its revocation epoch."""
     return (
         runtime.slam_map.mission_identity,
         _map_session_key(runtime),
         getattr(runtime.coordinator, "floor_read_generation", 0),
+        getattr(runtime.slam_map, "pose_frame_generation", 0),
     )
 
 

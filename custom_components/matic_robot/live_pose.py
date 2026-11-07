@@ -26,11 +26,14 @@ class LivePose:
         mission: Callable[[], int | None],
         frame: Callable[[], object],
         on_pose: Callable[[RobotPose], None] | None = None,
+        *,
+        admit: Callable[[RobotPose], bool] | None = None,
     ) -> None:
         self._client = client
         self._mission = mission
         self._frame = frame
         self._on_pose = on_pose
+        self._admit = admit
         self._pose_frame: object = None
         self._last_timestamp: float | None = None
         self._pose: RobotPose | None = None
@@ -42,6 +45,7 @@ class LivePose:
             self._pose is None
             or self._pose.mission_id != self._mission()
             or self._pose_frame != self._frame()
+            or (self._admit is not None and not self._admit(self._pose))
         ):
             self._pose = None
             self._pose_frame = None
@@ -73,6 +77,8 @@ class LivePose:
                             and pose.observed_at
                             <= time() + POSE_FUTURE_ALLOWANCE_SECONDS
                         ):
+                            if self._admit is not None and not self._admit(pose):
+                                continue
                             frame = self._frame()
                             if (
                                 self._last_timestamp is not None

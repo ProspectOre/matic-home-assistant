@@ -211,6 +211,20 @@ test("duplicate and missing friendly names stay distinct in native entry choices
       },
       labels: ["downstairs · Robot", "upstairs · Robot"],
     },
+    {
+      states: {
+        "vacuum.upstairs_matic": { state: "idle", attributes: { matic_entry_id: entries[0].entry_id, friendly_name: "Matic" } },
+        "vacuum.upstairs__matic": { state: "docked", attributes: { matic_entry_id: entries[1].entry_id, friendly_name: "Matic" } },
+      },
+      labels: ["upstairs_matic · Matic", "upstairs__matic · Matic"],
+    },
+    {
+      states: {
+        "vacuum.downstairs": { state: "idle", attributes: { matic_entry_id: entries[0].entry_id, friendly_name: "My Matic" } },
+        "vacuum.upstairs": { state: "docked", attributes: { matic_entry_id: entries[1].entry_id, friendly_name: "My  Matic" } },
+      },
+      labels: ["downstairs · My Matic", "upstairs · My Matic"],
+    },
   ];
   for (const scenario of cases) {
     const fixture = await installPanelFixture(page, {
@@ -220,7 +234,7 @@ test("duplicate and missing friendly names stay distinct in native entry choices
     const panel = page.locator(fixture.panelTag);
     const options = panel.locator("select.robot-switcher option");
     await expect(options).toHaveCount(2);
-    expect(await options.evaluateAll((nodes) => nodes.map((option) => [option.value, option.textContent.trim()])))
+    expect(await options.evaluateAll((nodes) => nodes.map((option) => [option.value, option.textContent.trim()]).sort((a, b) => a[0].localeCompare(b[0]))))
       .toEqual([[entries[0].entry_id, scenario.labels[0]], [entries[1].entry_id, scenario.labels[1]]]);
     await page.locator(fixture.panelTag).evaluate((element) => element.remove());
   }

@@ -24,7 +24,12 @@ from .client.models import FloorPlan, RobotPose
 from .http import POSE_API_URL, PRIVATE_NO_STORE_HEADERS, runtime_for_entry
 from .slam_map_store import SlamMapIdentity
 from .slam_scene import MaticSlamSceneView
-from .slam_view_data import _map_session_key, _pose_frame_key, observe_run_trail
+from .slam_view_data import (
+    _map_session_key,
+    _pose_frame_key,
+    observe_run_trail,
+    pose_observed_in_frame,
+)
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
@@ -41,7 +46,7 @@ class _CachedPose:
     fetched_at: float
     revision: int
     freshness: str
-    frame_key: tuple[SlamMapIdentity | None, str | None, int]
+    frame_key: tuple[SlamMapIdentity | None, str | None, int, int]
 
 
 def _newest_pose(
@@ -207,7 +212,13 @@ class MaticSlamPoseView(HomeAssistantView):
         native_age = pose_observation_age_seconds(cached.pose, now=pose_now)
         # Transport fallback cannot certify a current position. Keep room-only
         # presence available without moving an old point onto the current map.
-        visible_pose = cached.pose if cached.freshness == "live" else None
+        visible_pose = (
+            cached.pose
+            if cached.freshness == "live"
+            and cached.pose is not None
+            and pose_observed_in_frame(runtime, cached.pose.observed_at)
+            else None
+        )
         position = (
             resolve_robot_map_position(
                 data.floor_plan,

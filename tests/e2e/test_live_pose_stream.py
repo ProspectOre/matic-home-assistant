@@ -63,11 +63,14 @@ async def test_live_pose_stream_recovers_after_silent_subscription(
         initial_reads = robot.reads["latest_pose"]
         robot._refresh_pose()
         async with asyncio.timeout(3):
-            while (  # noqa: ASYNC110
+            while (
                 tracker.current() is None
                 or tracker.revision <= initial_revision
                 or robot.reads["latest_pose"] <= initial_reads
             ):
+                # Like the robot, keep emitting native observations while
+                # startup map proof and the stalled subscription recover.
+                robot._refresh_pose()
                 await asyncio.sleep(0.01)
         assert tracker.current().mission_id == robot.floor.mission_id
         revision = tracker.revision

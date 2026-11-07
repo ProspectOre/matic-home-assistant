@@ -10,7 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
-from time import monotonic
+from time import monotonic, time
 from typing import Literal
 
 from google.protobuf.message import DecodeError
@@ -205,6 +205,8 @@ class SlamMapStore:
         self._mission_id: int | None = None
         self._expected_mission_id: int | None = None
         self._selection_generation = 0
+        self._pose_frame_generation = 0
+        self._pose_frame_started_at = time()
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
         self._active_raw_bytes = 0
@@ -256,6 +258,7 @@ class SlamMapStore:
         loaded = await self._hass.async_add_executor_job(
             decode_snapshot, stored, _snapshot_limits()
         )
+        self._advance_pose_frame()
         self._mission_token = loaded.mission_token
         self._mission_id = loaded.mission_id
         self._entries = loaded.entries
@@ -358,6 +361,7 @@ class SlamMapStore:
                 self._retire_mission(candidate_token)
             self._candidates.clear()
             self._cancel_candidate_expiry()
+            self._advance_pose_frame()
             self._mission_token = mission_token
             self._mission_id = tile.mission_id
         if mission_token != self._mission_token:
@@ -371,6 +375,7 @@ class SlamMapStore:
             raise DecodeError("SLAM mission identity changed without a new token")
         identity_changed = self._mission_id is None and tile.mission_id is not None
         if identity_changed:
+            self._advance_pose_frame()
             self._mission_id = tile.mission_id
         target = self._structure_entries if structural else self._entries
         content_digests = (
@@ -701,6 +706,7 @@ class SlamMapStore:
             if pending.generation < candidate.generation:
                 self._candidates.pop(token)
                 self._retire_mission(token)
+        self._advance_pose_frame()
         self._mission_token = mission_token
         self._mission_id = candidate.mission_id
         self._entries = candidate.entries
@@ -791,6 +797,20 @@ class SlamMapStore:
         self._schedule_save()
         self._notify_listeners()
 
+    @property
+    def pose_frame_generation(self) -> int:
+        """Return the epoch of live coordinate-frame proof, independent of tiles."""
+        return self._pose_frame_generation
+
+    @property
+    def pose_frame_started_at(self) -> float:
+        """Return the earliest native observation allowed in this frame."""
+        return self._pose_frame_started_at
+
+    def _advance_pose_frame(self) -> None:
+        self._pose_frame_generation += 1
+        self._pose_frame_started_at = time()
+
     def _observe_live_layer(self, *, structural: bool) -> bool:
         """Record one fresh collection layer and report first live proof."""
         was_confirmed = self._live_photo_seen and self._live_structure_seen
@@ -798,12 +818,16 @@ class SlamMapStore:
             self._live_structure_seen = True
         else:
             self._live_photo_seen = True
-        return not was_confirmed and self._live_photo_seen and self._live_structure_seen
+        confirmed = not was_confirmed and self.live_session_verified
+        if confirmed:
+            self._advance_pose_frame()
+        return confirmed
 
     def _invalidate_live_session(self) -> None:
         """Fail closed while a newly observed map mission is classified."""
         if not (self._live_photo_seen or self._live_structure_seen):
             return
+        self._advance_pose_frame()
         self._live_photo_seen = False
         self._live_structure_seen = False
         self._content_changed()
@@ -986,6 +1010,7 @@ class SlamMapStore:
             return
         self._expected_mission_id = mission_id
         self._selection_generation += 1
+        self._advance_pose_frame()
         self._cancel_candidate_expiry()
         self._cancel_candidate_refresh_retry()
         self._candidates = OrderedDict(
@@ -1195,6 +1220,7 @@ class SlamMapStore:
         self._candidate_generation = 0
         self._live_photo_seen = False
         self._live_structure_seen = False
+        self._advance_pose_frame()
         self._mission_token = None
         self._mission_id = None
         self._revision += 1

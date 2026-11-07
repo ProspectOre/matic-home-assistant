@@ -4263,3 +4263,40 @@ def test_stream_trail_records_only_fresh_coherent_positions():
     runtime.slam_map.floor_plan_is_current = MagicMock(return_value=False)
     observe_live_pose_trail(runtime, pose)
     assert runtime.run_trails.observe.call_args.kwargs["point"] is None
+
+
+@pytest.mark.parametrize("fence_owner", ["slam_map", "coordinator"])
+@pytest.mark.parametrize("source", ["rpc", "stream", "coordinator_trail"])
+async def test_delayed_pose_is_withheld_after_same_floor_reverification(
+    fence_owner, source
+):
+    from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
+
+    runtime = _runtime()
+    pose = runtime.coordinator.data.pose
+    owner = getattr(runtime, fence_owner)
+    setattr(
+        owner,
+        "pose_frame_started_at"
+        if fence_owner == "slam_map"
+        else "floor_frame_started_at",
+        pose.observed_at + 1,
+    )
+    runtime.run_trails = SimpleNamespace(observe=MagicMock())
+    runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value="run")
+    if source == "stream":
+        runtime.live_pose = SimpleNamespace(current=lambda: pose, revision=8)
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.time",
+        return_value=pose.observed_at + 2,
+    ):
+        if source == "coordinator_trail":
+            observe_coordinator_trail(runtime)
+        else:
+            response = await MaticSlamPoseView().get(
+                _request(_hass(_entry(runtime))), "entry"
+            )
+            payload = json.loads(response.body)
+            assert payload["position"] is None
+            assert not payload["pose_observation_current"]
+    assert runtime.run_trails.observe.call_args.kwargs["point"] is None

@@ -360,3 +360,99 @@ async def test_idle_reconnect_retains_original_observation_without_refreshing_ag
         with pytest.raises(asyncio.CancelledError):
             await task
     assert tracker.current() is None
+
+
+@pytest.mark.parametrize("during_gap", [False, True])
+async def test_pose_cannot_cross_unobserved_map_proof_epoch(
+    hass, monkeypatch, during_gap
+):
+    from custom_components.matic_robot.client.models import FloorPlan
+    from custom_components.matic_robot.slam_map_store import (
+        CANDIDATE_CLASSIFICATION_SECONDS,
+        SlamMapStore,
+    )
+    from custom_components.matic_robot.slam_view_data import (
+        _pose_frame_key,
+        pose_observed_in_frame,
+    )
+    from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
+
+    clock = [100.0]
+    monotonic_clock = [0.0]
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_pose.time", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.slam_map_store.time", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        lambda: monotonic_clock[0],
+    )
+    store = SlamMapStore(hass, "pose-epoch")
+    floor = FloorPlan(0x1234ABCD, "active", b"active", ())
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    runtime = SimpleNamespace(
+        slam_map=store,
+        coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor)),
+    )
+    queue = asyncio.Queue()
+    observations = []
+
+    async def subscribe(_mission):
+        while True:
+            yield await queue.get()
+
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe),
+        lambda: floor.mission_id,
+        lambda: _pose_frame_key(runtime),
+        observations.append,
+        admit=lambda pose: pose_observed_in_frame(runtime, pose.observed_at),
+    )
+    task = asyncio.create_task(tracker.watch())
+    try:
+        first = RobotPose(1, 2, 0, mission_id=floor.mission_id, observed_at=100.0)
+        await queue.put(first)
+        await asyncio.sleep(0)
+        assert tracker.current() is first
+        frame = _pose_frame_key(runtime)
+        clock[0] = 101.0
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        assert not store.live_session_verified
+        delayed = RobotPose(3, 4, 0, mission_id=floor.mission_id, observed_at=101.0)
+        if during_gap:
+            await queue.put(delayed)
+            await asyncio.sleep(0)
+            assert observations == [first]
+        # No current() or frame read occurs between revocation and reproof.
+        clock[0] = 102.0
+        monotonic_clock[0] = CANDIDATE_CLASSIFICATION_SECONDS + 1
+        await store.async_add(synthetic_slam_entry(page_x=8))
+        await store.async_add_structure(synthetic_structure_entry(page_x=8))
+        assert store.live_session_verified
+        assert _pose_frame_key(runtime) != frame
+        assert tracker.current() is None
+        await queue.put(delayed)
+        await asyncio.sleep(0)
+        assert tracker.current() is None
+        assert observations == [first]
+        fresh = RobotPose(5, 6, 0, mission_id=floor.mission_id, observed_at=102.0)
+        await queue.put(fresh)
+        await asyncio.sleep(0)
+        assert tracker.current() is fresh
+        assert observations == [first, fresh]
+        # Repeated ordinary tiles do not revoke a current pose.
+        frame = _pose_frame_key(runtime)
+        await store.async_add(synthetic_slam_entry(page_x=8))
+        assert _pose_frame_key(runtime) == frame
+        assert tracker.current() is fresh
+        # A same-mission coordinator frame change is an independent boundary.
+        runtime.coordinator.floor_frame_started_at = 103.0
+        assert tracker.current() is None
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await store.async_remove()

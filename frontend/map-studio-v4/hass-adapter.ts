@@ -123,7 +123,7 @@ const safeRobotLabel = (value: unknown): string => {
   return label
     && Array.from(label).length <= 128
     && !/[\u0000-\u001f\u007f]/u.test(label)
-    ? label
+    ? label.replace(/\s+/gu, " ")
     : "Robot";
 };
 
@@ -199,7 +199,7 @@ export class HassAdapter {
       : { language: dateLanguage, timeZone };
     const userKey = safeUserKey(hass?.user?.id);
     // Two robots can have the same friendly name (or neither may have one).
-    // Put the HA object name first only in that case, so the distinction is
+    // Put the exact HA object ID first in that case, so the distinction is
     // visible even in a narrow picker. Its option value is still the entry ID.
     const nameCounts = new Map<string, number>();
     for (const { label } of robots.values()) {
@@ -209,7 +209,7 @@ export class HassAdapter {
     const robotChoices = Array.from(robots, ([entryId, { entityId, label }]) => ({
       entryId,
       label: nameCounts.get(label.normalize().toLowerCase()) === 1
-        ? label : `${entityId.slice("vacuum.".length).replaceAll("_", " ")} · ${label}`,
+        ? label : `${entityId.slice("vacuum.".length)} · ${label}`,
     })).sort((left, right) => left.label.localeCompare(right.label, language, { sensitivity: "base" }));
     const robotLabel = robotChoices.find((choice) => choice.entryId === selectedEntryKey)?.label
       ?? safeRobotLabel(selectedVacuum?.attributes?.friendly_name);
