@@ -452,7 +452,6 @@ class _LiveTrail:
     segments: list[list[TrailPoint]] = field(default_factory=list)
     last_observed_at: float | None = None
     frame_key: object = None
-    segment_limit: int = MAX_TRAIL_SEGMENTS
 
 
 class RunTrails:
@@ -516,12 +515,6 @@ class RunTrails:
                 and math.isfinite(live["last_observed_at"])
                 and live["last_observed_at"] > 0
                 else None,
-                # Preserve migrated sections until normal point compaction.
-                segment_limit=(
-                    MAX_LIVE_TRAIL_POINTS
-                    if len(live_segments) > MAX_TRAIL_SEGMENTS
-                    else MAX_TRAIL_SEGMENTS
-                ),
             )
         if migrated:
             self._schedule_save()
@@ -597,8 +590,6 @@ class RunTrails:
             return
         if not points:
             live.segments.append([])
-            points = live.segments[-1]
-            live.segments = live.segments[-live.segment_limit :]
             points = live.segments[-1]
         if observed_at is not None:
             live.last_observed_at = observed_at
@@ -865,8 +856,13 @@ def _thin_segments(
     paths = [list(segment) for segment in segments if segment]
     if sum(map(len, paths)) <= limit:
         return paths
-    paths = paths[-(limit // 2) :] if len(paths) * 2 > limit else paths
     budgets = [min(2, len(path)) for path in paths]
+    endpoint_count = sum(budgets)
+    first = 0
+    while endpoint_count > limit:
+        endpoint_count -= budgets[first]
+        first += 1
+    paths, budgets = paths[first:], budgets[first:]
     remaining = limit - sum(budgets)
     interior_counts = [max(0, len(path) - 2) for path in paths]
     total = sum(interior_counts)

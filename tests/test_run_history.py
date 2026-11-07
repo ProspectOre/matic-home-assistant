@@ -774,7 +774,7 @@ def test_segment_simplifier_uses_available_budget_across_uneven_paths(
 
 def test_segment_simplifier_bounds_many_short_and_truncated_paths() -> None:
     short = [[(float(index), 0.0)] for index in range(5)]
-    assert run_history._thin_segments(short, 4) == short[-2:]
+    assert run_history._thin_segments(short, 4) == short[-4:]
 
     long_paths = [
         [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0)],
@@ -1134,3 +1134,36 @@ async def test_migrated_storage_retains_the_original_aggregate_point_bound(
         {**stored, "segments": [[(0, 0)] * (MAX_LIVE_TRAIL_POINTS + 1)]}
     )
     await reloaded.async_shutdown()
+
+
+@pytest.mark.parametrize("gap", ["time", "frame"])
+async def test_many_live_gaps_preserve_earlier_sections_through_save(
+    hass: HomeAssistant, gap
+) -> None:
+    trails = RunTrails(hass, "entry")
+    for index in range(20):
+        trails.observe(
+            run_id="run",
+            native_active=True,
+            map_key=MAP,
+            point=(index * 0.2, 0),
+            observed_at=100 + index * (10 if gap == "time" else 1),
+            frame_key=(MAP, index if gap == "frame" else 1),
+        )
+    expected = [[(round(index * 0.2, 2), 0.0)] for index in range(20)]
+    assert trails.live(MAP) == expected
+    trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
+    saved = trails.trail_id(MAP, run_id="run")
+    assert trails.segments(saved, MAP) == expected
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.segments(saved, MAP) == expected
+    await reloaded.async_shutdown()
+
+
+def test_single_point_sections_use_the_full_compaction_budget() -> None:
+    paths = [[(float(index), 0.0)] for index in range(650)]
+    assert run_history._thin_segments(paths, 600) == paths[-600:]
+    mixed = [*paths[:300], *[[(float(i), 0), (float(i), 1)] for i in range(200)]]
+    assert run_history._thin_segments(mixed, 600) == mixed[100:]

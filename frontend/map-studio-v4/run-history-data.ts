@@ -234,12 +234,11 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
     return;
   }
   const point = [x, y] as const;
-  // A migrated server trail can carry more sections without more total points.
-  const segmentLimit = trail.segments.length > MAX_SEGMENTS ? MAX_STORED_POINTS : MAX_SEGMENTS;
+  // Gaps do not consume a separate section budget. Bound live points overall.
   let segments = last && (gap || distance > 1.5)
-    ? [...trail.segments, [point]].slice(-segmentLimit)
+    ? [...trail.segments, [point]]
     : [...trail.segments.slice(0, -1), [...segment, point].slice(-MAX_POINTS)];
-  let excess = segments.reduce((total, section) => total + section.length, 0) - MAX_STORED_POINTS;
+  let excess = segments.reduce((total, section) => total + section.length, 0) - MAX_POINTS;
   if (excess > 0) segments = segments.flatMap((section) => {
     const trim = Math.min(Math.max(excess, 0), section.length);
     excess -= trim;

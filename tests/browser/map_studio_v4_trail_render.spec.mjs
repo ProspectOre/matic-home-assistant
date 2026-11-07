@@ -85,12 +85,20 @@ test("migrated trails retain every section and the original aggregate point boun
     }
     const full = Array.from({ length: 32_000 }, () => [[0, 0]]);
     store.value = { ...store.value, trail: parseRunTrail(payload(full)) };
+    const storedPoints = store.value.trail.segments.reduce((n, s) => n + s.length, 0);
     observe(0.1, 104);
-    return { path, continued, invalid, maximumPoints: store.value.trail.segments.reduce((n, s) => n + s.length, 0) };
+    const maximumPoints = store.value.trail.segments.reduce((n, s) => n + s.length, 0);
+    store.value = { ...store.value, trail: parseRunTrail(payload([[]])) };
+    for (let index = 0; index < 20; index += 1) observe(index * 0.2, 200 + index * 10);
+    return { path, continued, invalid, storedPoints, maximumPoints, smallSections: store.value.trail.segments,
+      finalPoints: store.value.trail.segments.reduce((n, s) => n + s.length, 0) };
   });
   const original = Array.from({ length: 12 }, (_, index) => [[index * 2, 0], [index * 2 + 0.4, 0]]);
   expect(result.path).toEqual(original.flatMap(([first, last]) => [["move", ...first], ["line", ...last]]));
   expect(result.continued).toEqual([...original, [[24, 0], [24.3, 0]], [[24.31, 0]], [[24.32, 0]]]);
   expect(result.invalid).toEqual([true, true, true]);
-  expect(result.maximumPoints).toBe(32_000);
+  expect(result.storedPoints).toBe(32_000);
+  expect(result.maximumPoints).toBe(4_000);
+  expect(result.smallSections).toEqual(Array.from({ length: 20 }, (_, index) => [[index * 0.2, 0]]));
+  expect(result.finalPoints).toBe(20);
 });
