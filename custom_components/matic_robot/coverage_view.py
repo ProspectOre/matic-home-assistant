@@ -51,7 +51,6 @@ class MaticLiveCoverageView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.SERVICE_UNAVAILABLE, headers=PRIVATE_NO_STORE_HEADERS
             )
-        revision = runtime.live_coverage.revision
         generation = runtime.live_coverage.generation
         runs, truncated = await hass.async_add_executor_job(_coverage_runs, pages or ())
         if runtime_for_entry(hass, entry_id) is not runtime:
@@ -73,10 +72,8 @@ class MaticLiveCoverageView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.SERVICE_UNAVAILABLE, headers=PRIVATE_NO_STORE_HEADERS
             )
-        if runtime.live_coverage.revision != revision:
-            return web.Response(
-                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-            )
+        # Pages are immutable. Newer cells from the same session and frame do
+        # not invalidate this snapshot or require the robot to stop updating.
         return self.json(
             {
                 "active": True,

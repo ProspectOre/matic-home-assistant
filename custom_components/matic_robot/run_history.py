@@ -8,6 +8,7 @@ to the map session they were recorded on.
 
 from __future__ import annotations
 
+import heapq
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -37,8 +38,8 @@ MIN_SAVED_TRAIL_POINTS = 3
 TRAIL_STEP_METERS = 0.15
 TRAIL_GAP_SECONDS = 8.0
 TRAIL_MAX_STEP_METERS = 1.5
-TRAIL_SIMPLIFY_METERS = 0.04
 TRAIL_LIVE_COMPACT_AT = MAX_LIVE_TRAIL_POINTS + 1
+TRAIL_LIVE_COMPACT_TO = MAX_LIVE_TRAIL_POINTS // 2
 MAX_TRAIL_COORDINATE = 10_000.0
 LIVE_TRAIL_ID = "live"
 _OPEN_END = "9999-12-31T23:59:59+00:00"
@@ -585,7 +586,7 @@ class RunTrails:
             live.last_observed_at = observed_at
         points.append((round(point[0], 2), round(point[1], 2)))
         if sum(map(len, live.segments)) >= TRAIL_LIVE_COMPACT_AT:
-            live.segments = _thin_segments(live.segments, MAX_LIVE_TRAIL_POINTS)
+            live.segments = _thin_segments(live.segments, TRAIL_LIVE_COMPACT_TO)
         self._schedule_save()
 
     def live(self, map_key: str | None) -> list[list[TrailPoint]] | None:
@@ -772,53 +773,56 @@ def _split_legacy_segments(
 
 
 def _thin(points: Sequence[TrailPoint], limit: int) -> list[TrailPoint]:
-    """Simplify a path by geometric error while retaining its important turns."""
+    """Remove the least significant bends in O(n log n), preserving endpoints.
+
+    The point budget is a hard bound. Recalculate only the two neighboring
+    bends after a removal; repeated full-path scans would block pose ingestion.
+    """
     if len(points) <= limit:
         return list(points)
-    minimum = TRAIL_SIMPLIFY_METERS
-    selected = _simplify(points, minimum)
-    if len(selected) <= limit:
-        return selected
-    maximum = minimum
-    while len(selected) > limit:
-        maximum *= 2
-        selected = _simplify(points, maximum)
-    for _ in range(16):
-        tolerance = (minimum + maximum) / 2
-        candidate = _simplify(points, tolerance)
-        if len(candidate) > limit:
-            minimum = tolerance
-        else:
-            maximum = tolerance
-            selected = candidate
-    return selected
+    count = len(points)
+    previous = list(range(-1, count - 1))
+    following = list(range(1, count + 1))
+    removed = [False] * count
+
+    def candidate(index: int) -> tuple[float, int, int, int]:
+        before, after = previous[index], following[index]
+        return (
+            _point_error_squared(points[index], points[before], points[after]),
+            index,
+            before,
+            after,
+        )
+
+    heap = [candidate(index) for index in range(1, count - 1)]
+    heapq.heapify(heap)
+    remaining = count
+    while remaining > max(2, limit):
+        _, index, before, after = heapq.heappop(heap)
+        if removed[index] or previous[index] != before or following[index] != after:
+            continue
+        removed[index] = True
+        following[before], previous[after] = after, before
+        remaining -= 1
+        for neighbor in (before, after):
+            if 0 < neighbor < count - 1:
+                heapq.heappush(heap, candidate(neighbor))
+    return [point for index, point in enumerate(points) if not removed[index]]
 
 
-def _simplify(points: Sequence[TrailPoint], tolerance: float) -> list[TrailPoint]:
-    """Return path endpoints and recursively important turns at one tolerance."""
-    selected = {0, len(points) - 1}
-    stack = [(0, len(points) - 1)]
-    while stack:
-        start, end = stack.pop()
-        first, last = points[start], points[end]
-        dx, dy = last[0] - first[0], last[1] - first[1]
-        length_squared = dx * dx + dy * dy
-        maximum_squared, furthest = -1.0, -1
-        for index in range(start + 1, end):
-            px, py = points[index][0] - first[0], points[index][1] - first[1]
-            # Clamp to the segment so a collinear turnaround beyond its end survives.
-            fraction = (
-                min(1.0, max(0.0, (px * dx + py * dy) / length_squared))
-                if length_squared
-                else 0.0
-            )
-            error_squared = (px - fraction * dx) ** 2 + (py - fraction * dy) ** 2
-            if error_squared > maximum_squared:
-                maximum_squared, furthest = error_squared, index
-        if maximum_squared > tolerance * tolerance:
-            selected.add(furthest)
-            stack.extend(((start, furthest), (furthest, end)))
-    return [points[index] for index in sorted(selected)]
+def _point_error_squared(
+    point: TrailPoint, first: TrailPoint, last: TrailPoint
+) -> float:
+    """Measure a bend against the segment, including collinear turnarounds."""
+    dx, dy = last[0] - first[0], last[1] - first[1]
+    px, py = point[0] - first[0], point[1] - first[1]
+    length_squared = dx * dx + dy * dy
+    fraction = (
+        min(1.0, max(0.0, (px * dx + py * dy) / length_squared))
+        if length_squared
+        else 0.0
+    )
+    return (px - fraction * dx) ** 2 + (py - fraction * dy) ** 2
 
 
 def _thin_segments(

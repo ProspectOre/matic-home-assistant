@@ -32,7 +32,6 @@ class LivePose:
         self._frame = frame
         self._on_pose = on_pose
         self._pose_frame: object = None
-        self._last_frame: object = None
         self._last_timestamp: float | None = None
         self._pose: RobotPose | None = None
         self.revision = 0
@@ -51,7 +50,15 @@ class LivePose:
 
     async def watch(self) -> None:
         """Reconnect after stream failure; config entry owns cancellation."""
+        try:
+            await self._watch_streams()
+        finally:
+            self._pose = None
+            self._pose_frame = None
+
+    async def _watch_streams(self) -> None:
         while True:
+            idle_timeout = False
             try:
                 async with (
                     aclosing(
@@ -68,14 +75,12 @@ class LivePose:
                         ):
                             frame = self._frame()
                             if (
-                                frame == self._last_frame
-                                and self._last_timestamp is not None
+                                self._last_timestamp is not None
                                 and pose.observed_at <= self._last_timestamp
                             ):
                                 continue
                             self._pose = pose
                             self._pose_frame = frame
-                            self._last_frame = frame
                             self._last_timestamp = pose.observed_at
                             self.revision += 1
                             # A silent stream (or a replay of the same sample)
@@ -90,12 +95,18 @@ class LivePose:
                                     _LOGGER.exception("Live robot pose observer failed")
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                # Keep the last observation through a silent-stream reconnect.
+                # Consumers still enforce its native age and current frame.
+                idle_timeout = True
+                _LOGGER.debug("Reopening idle live robot pose stream")
             except Exception:
                 _LOGGER.debug("Live robot pose stream failed", exc_info=True)
             finally:
-                self._pose = None
-                self._pose_frame = None
+                if not idle_timeout:
+                    self._pose = None
+                    self._pose_frame = None
             task = asyncio.current_task()
             if task is not None and task.cancelling():
                 raise asyncio.CancelledError
-            await asyncio.sleep(_RETRY_SECONDS)
+            await asyncio.sleep(0 if idle_timeout else _RETRY_SECONDS)

@@ -548,8 +548,17 @@ async def test_trail_segments_and_live_points_stay_bounded(hass: HomeAssistant) 
             run_id="run-1", native_active=True, map_key=MAP, point=(index * 0.2, 0)
         )
     (points,) = trails.live(MAP)
-    assert len(points) <= MAX_LIVE_TRAIL_POINTS
+    assert len(points) == run_history.TRAIL_LIVE_COMPACT_TO
     assert points[-1] == (round(MAX_LIVE_TRAIL_POINTS * 0.2, 2), 0)
+    with patch.object(
+        run_history, "_thin_segments", wraps=run_history._thin_segments
+    ) as compact:
+        for index in range(MAX_LIVE_TRAIL_POINTS + 1, MAX_LIVE_TRAIL_POINTS + 501):
+            trails.observe(
+                run_id="run-1", native_active=True, map_key=MAP, point=(index * 0.2, 0)
+            )
+        compact.assert_not_called()
+    assert sum(map(len, trails.live(MAP))) == run_history.TRAIL_LIVE_COMPACT_TO + 500
     for _ in range(MAX_TRAIL_SEGMENTS + 1):
         trails.observe(
             run_id="run-1", native_active=True, map_key=OTHER_MAP, point=None
@@ -700,6 +709,33 @@ def test_simplifier_keeps_endpoints_within_a_tight_point_budget() -> None:
     assert len(kept) <= 50
     assert kept[0] == points[0]
     assert kept[-1] == points[-1]
+
+
+def test_dense_tight_turns_have_bounded_simplification_work() -> None:
+    points = [(index * 0.15, 0.05 * (index % 2)) for index in range(4_001)]
+    with patch.object(
+        run_history, "_point_error_squared", wraps=run_history._point_error_squared
+    ) as distance:
+        kept = run_history._thin(points, MAX_SAVED_TRAIL_POINTS)
+    assert len(kept) == MAX_SAVED_TRAIL_POINTS
+    assert kept[0] == points[0]
+    assert kept[-1] == points[-1]
+    # Each original point and at most two neighbors per removal are measured.
+    # This catches repeated whole-path scans without a machine-speed threshold.
+    assert distance.call_count <= 3 * len(points)
+
+
+def test_dense_parallel_passes_keep_the_turn_landmarks() -> None:
+    path = []
+    turns = []
+    for row in range(20):
+        xs = range(200) if row % 2 == 0 else range(199, -1, -1)
+        lane = [(column * 0.05, row * 0.3) for column in xs]
+        path.extend(lane)
+        turns.extend((lane[0], lane[-1]))
+    kept = run_history._thin(path, MAX_SAVED_TRAIL_POINTS)
+    assert len(kept) == MAX_SAVED_TRAIL_POINTS
+    assert all(point in kept for point in turns)
 
 
 def test_trail_simplification_keeps_both_ends_of_a_retraced_pass() -> None:

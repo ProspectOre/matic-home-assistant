@@ -200,6 +200,33 @@ test("two-robot startup keeps the native selector in the first-map budget on a 3
   expect(await selector.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
 });
 
+test("two-robot slow startup keeps optional assets deferred and the selector usable", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto("/");
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "packaged",
+    initialCatalogEntries: twoRobotEntries(),
+    initialRobotStates: TWO_ROBOT_STATES,
+  });
+  await page.evaluate(() => window.__panelFixture.deferNextSceneRead());
+  await page.evaluate(async () => import("/matic_icons.js"));
+  await armFirstMapOpportunity(page, fixture.panelTag);
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  const selector = panel.locator("select.robot-switcher");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingSceneReadCount())).toBe(1);
+  await page.waitForTimeout(2_500);
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().optionalUiReady)).toBe(false);
+  await expect(selector).toBeVisible();
+  await expect(selector).toBeEnabled();
+  await expect(selector.locator("option")).toHaveCount(2);
+  await page.evaluate(() => window.__panelFixture.releaseSceneRead());
+  expect(await firstMapOpportunityPaths(page)).toEqual(Object.keys(startupGraph()).map((path) => `/${path}`).sort());
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().optionalUiReady)).toBe(true);
+  await selector.selectOption("synthetic-entry-b");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().selection.entryId)).toBe("synthetic-entry-b");
+});
+
 test("first-map capture includes a script request still in flight at the marker", async ({ page }) => {
   let releaseHeldResponse;
   const heldPath = "/map_studio_v4/chunks/held-before-marker.js";
@@ -602,7 +629,7 @@ test("a connection replacement keeps the sent queue operation fenced across cont
   expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().notice?.key)).toBe("v4_notice_queue_skipped");
 });
 
-test("a no-map queue fallback waits two seconds without loading workflows, then loads queue controls after map admission", async ({ page }) => {
+test("a slow map keeps optional assets deferred past two seconds, then loads queue controls after map admission", async ({ page }) => {
   let queueModuleRequests = 0;
   page.on("request", (request) => {
     if (/\/chunks\/workflow-panel-[^/]+\.js$/u.test(request.url())) queueModuleRequests += 1;
@@ -617,55 +644,26 @@ test("a no-map queue fallback waits two seconds without loading workflows, then 
       window.__observedAssetPaths.push(...records.getEntries().map(({ name }) => new URL(name).pathname));
     }).observe({ type: "resource", buffered: true });
   });
-  await page.clock.install();
   await page.evaluate(() => import("/matic_icons.js"));
   await armFirstMapOpportunity(page, fixture.panelTag);
-  await page.evaluate(() => {
-    window.__queueAdmissionTimerStarts = [];
-    const nativeSetTimeout = window.setTimeout.bind(window);
-    window.setTimeout = ((callback, delay, ...args) => {
-      if (delay === 2_000) window.__queueAdmissionTimerStarts.push(performance.now());
-      return nativeSetTimeout(callback, delay, ...args);
-    });
-  });
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect(panel.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingSceneReadCount())).toBe(1);
   await expect(panel.getByRole("region", { name: "Change this clean" }).getByRole("status")).toHaveText("Loading…");
   expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(false);
-  const beforeAdmission = await panel.evaluate((element) => {
-    const state = element.getWorkspaceSnapshot();
-    return { activity: state.activity, mapAvailable: state.map.available, plansStatus: state.resources.plans.status };
-  });
-  const admissionElapsed = await page.evaluate(() => {
-    const startedAt = window.__queueAdmissionTimerStarts[0];
-    if (typeof startedAt !== "number") throw new Error("queue admission timer was not scheduled");
-    return performance.now() - startedAt;
-  });
-  await page.clock.runFor(Math.max(0, 1_999 - admissionElapsed));
+  await page.waitForTimeout(2_500);
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().optionalUiReady)).toBe(false);
   expect(queueModuleRequests).toBe(0);
-  const beforeDeadline = await panel.evaluate((element) => {
-    const state = element.getWorkspaceSnapshot();
-    return { activity: state.activity, mapAvailable: state.map.available, plansStatus: state.resources.plans.status };
-  });
-  const elapsedAtBoundary = await page.evaluate(() => performance.now() - window.__queueAdmissionTimerStarts[0]);
-  await page.clock.runFor(Math.max(0, 2_000 - elapsedAtBoundary));
-  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().optionalUiReady)).toBe(true);
-  expect(queueModuleRequests).toBe(0);
-  await expect(panel.getByRole("region", { name: "Change this clean" }).getByRole("status")).toContainText("unavailable");
-  console.info("[workspace queue fallback admission]", JSON.stringify({ beforeAdmission, beforeDeadline, atDeadline: {
-    queueModuleRequests, ...await panel.evaluate((element) => {
-      const state = element.getWorkspaceSnapshot();
-      return { activity: state.activity, mapAvailable: state.map.available, plansStatus: state.resources.plans.status };
-    }),
-  } }));
+  await expect(panel.getByRole("region", { name: "Change this clean" }).getByRole("status")).toHaveText("Loading…");
   await page.evaluate(() => window.__panelFixture.releaseSceneRead());
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
   const firstFramePaths = await firstMapOpportunityPaths(page);
   const firstFrameBytes = firstFramePaths.reduce((total, path) =>
     total + gzipSync(readFileSync(join(COMPONENT_ASSETS, path.slice(1))), { level: 9 }).byteLength, 0);
   const staticGraphBytes = Object.values(startupGraph()).reduce((total, size) => total + size, 0);
+  expect(firstFramePaths).toEqual(Object.keys(startupGraph()).map((path) => `/${path}`).sort());
+  expect(firstFrameBytes).toBeLessThanOrEqual(STARTUP_BUDGET_BYTES);
   await expect(panel.getByRole("group", { name: "Change Kitchen" })).toBeVisible();
   await expect.poll(() => queueModuleRequests).toBe(1);
   const allAssetPaths = await page.evaluate(() => [...new Set(window.__observedAssetPaths ?? [])]

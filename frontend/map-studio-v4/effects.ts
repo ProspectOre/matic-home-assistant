@@ -286,7 +286,7 @@ export class EffectController {
     this.#store.patch({ optionalUiReady: false });
     this.#cancelPinsAdmission = scheduleAfterMapAdmission(
       this.#store,
-      (state) => this.#pinContextActive(state),
+      (state) => this.#pinContextActive(state) && state.map.available,
       () => {
         this.#store.patch({ optionalUiReady: true });
         this.#spatialResources.startPolling();

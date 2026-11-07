@@ -312,24 +312,46 @@ async def test_view_requires_admin_and_revalidates_entry() -> None:
     assert (await view.get(request, "entry")).status == 503
 
 
-async def test_view_discards_coverage_changed_during_encoding() -> None:
+@pytest.mark.parametrize("update_during", ["encoding", "session_read"])
+async def test_view_returns_snapshot_while_coverage_keeps_changing(
+    update_during,
+) -> None:
+    first = SlamSemanticTile(0, 0, "mission", b"\x01" + bytes(1023))
+    newer = SlamSemanticTile(0, 0, "mission", b"\x01\x10" + bytes(1022))
     runtime = SimpleNamespace(
         live_coverage=SimpleNamespace(
-            async_current=AsyncMock(return_value=()),
             revision=1,
             generation=1,
             ownership_unverified=False,
         )
     )
+    reads = 0
+
+    async def current():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return (first,)
+        if update_during == "session_read":
+            runtime.live_coverage.revision += 1
+        return (newer,)
+
+    runtime.live_coverage.async_current = current
     request = _request(runtime)
     hass = request.app[KEY_HASS]
 
     async def change_during_encoding(target, *args):
-        runtime.live_coverage.revision += 1
+        if update_during == "encoding":
+            runtime.live_coverage.revision += 1
         return target(*args)
 
     hass.async_add_executor_job.side_effect = change_during_encoding
-    assert (await MaticLiveCoverageView().get(request, "entry")).status == 409
+    response = await MaticLiveCoverageView().get(request, "entry")
+    assert response.status == 200
+    assert json.loads(response.body)["runs"] == [[0, 0, 1, 1]]
+    assert json.loads(response.body)["coverage_basis"] == "observed_changes"
+    assert runtime.live_coverage.revision == 2
+    assert reads == 2
 
 
 async def test_view_requires_and_revalidates_map_session() -> None:

@@ -154,6 +154,60 @@ async def test_future_observation_allowance_is_bounded(monkeypatch):
             await task
 
 
+async def test_frame_revocation_cannot_rebind_a_replayed_pose():
+    queue = asyncio.Queue()
+    state = {"mission": 1, "frame": "a"}
+    observations = []
+    delivered = asyncio.Event()
+
+    async def subscribe(_mission):
+        while True:
+            yield await queue.get()
+            delivered.set()
+
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe),
+        lambda: state["mission"],
+        lambda: state["frame"],
+        observations.append,
+    )
+    first = RobotPose(1, 2, 0, mission_id=1, observed_at=time())
+    newer = RobotPose(3, 4, 0, mission_id=1, observed_at=first.observed_at + 0.1)
+    task = asyncio.create_task(tracker.watch())
+
+    async def deliver(pose):
+        delivered.clear()
+        await queue.put(pose)
+        await asyncio.wait_for(delivered.wait(), 1)
+
+    try:
+        await deliver(first)
+        assert tracker.current() == first
+        state["frame"] = "revoked"
+        assert tracker.current() is None
+        state["frame"] = "reverified"
+        await deliver(first)
+        assert tracker.current() is None
+        assert observations == [first]
+        await deliver(newer)
+        assert tracker.current() == newer
+        assert observations == [first, newer]
+        state["mission"] = 2
+        state["frame"] = "other-floor"
+        assert tracker.current() is None
+        await deliver(RobotPose(5, 6, 0, mission_id=2, observed_at=first.observed_at))
+        assert tracker.current() is None
+        state["mission"] = 1
+        state["frame"] = "a"
+        await deliver(first)
+        assert tracker.current() is None
+        assert tracker.revision == 2
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 async def test_cancel_during_subscription_does_not_restart_if_stream_swallows_it():
     ready = asyncio.Event()
 
@@ -271,3 +325,38 @@ async def test_observer_failure_keeps_pose_and_subscription_alive(caplog):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+async def test_idle_reconnect_retains_original_observation_without_refreshing_age(
+    monkeypatch,
+):
+    reconnecting = asyncio.Event()
+    first = RobotPose(1, 2, 0, mission_id=1, observed_at=time())
+    attempts = 0
+
+    async def subscribe(_mission):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            yield first
+        else:
+            reconnecting.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_pose._STREAM_IDLE_SECONDS", 0.02
+    )
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe), lambda: 1, lambda: "frame"
+    )
+    task = asyncio.create_task(tracker.watch())
+    try:
+        await asyncio.wait_for(reconnecting.wait(), 1)
+        assert tracker.current() is first
+        assert tracker.current().observed_at == first.observed_at
+        assert tracker.revision == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert tracker.current() is None
