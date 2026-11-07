@@ -2043,6 +2043,28 @@ test.describe("cleaning history", () => {
     expect(steps).toEqual([[0, 1], [0, 1], [3], [4], [4, 5], ["next-map", 6]]);
   });
 
+  test("live trail extensions keep localization jumps and observation gaps separate", async ({ page }) => {
+    await loadStoreHarness(page);
+    const segments = await page.evaluate(async (harness) => {
+      const { WorkspaceStore, createGalleryState, extendLiveTrail } = await import(harness);
+      const ready = createGalleryState("ready");
+      const key = ready.resources.entry.mapSessionKey;
+      const store = new WorkspaceStore({ ...ready, activity: "cleaning",
+        trail: { id: "live", mapSessionKey: key, segments: [[[0, 0]]] } });
+      const observe = (x, y, time) => extendLiveTrail(store, { ...ready.resources.pose.value,
+        mapSessionKey: key, position: [x, y], poseMeasuredAt: time + 1, nativeObservationAgeSeconds: 1 });
+      observe(5, 5, 100);
+      observe(5, 6, 101);
+      observe(5, 7, 99);    // An older observation arrives late.
+      observe(5, 6, 108);   // Stationary observations keep the interval current.
+      observe(5, 7, 115);
+      observe(5, 7.1, 126); // Small displacement after 11 unobserved seconds.
+      observe(1, 1, 127);   // Localization jumps within one second.
+      return store.value.trail.segments;
+    }, HARNESS);
+    expect(segments).toEqual([[[0, 0]], [[5, 5], [5, 6], [5, 7]], [[5, 7.1]], [[1, 1]]]);
+  });
+
   test("an open history rereads when the run it reports changes", async ({ page }) => {
     await loadStoreHarness(page);
     const reloads = await page.evaluate(async (harness) => {

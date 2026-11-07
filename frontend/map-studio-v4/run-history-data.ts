@@ -184,7 +184,10 @@ export const readRuns = async (
 
 const WORKING: readonly RobotActivity[] = ["starting", "cleaning", "paused", "returning", "stopping"];
 // The run each store's live trail last grew for; null while no run is active.
-const trailRuns = new WeakMap<WorkspaceStore, string | null>();
+const trailRuns = new WeakMap<WorkspaceStore, { entryId: string | null; run: string | null }>();
+// A fresh server response has its own segment boundaries and no timestamp for
+// its tail. Only extend a segment whose last point this browser observed.
+const trailObservations = new WeakMap<RunTrail, { seconds: number; native: boolean }>();
 
 /**
  * Adds a verified live pose to the run-in-progress trail, keeping points at
@@ -197,18 +200,37 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   const managed = state.lastRun?.outcome === "running" ? `run:${state.lastRun.runId}` : null;
   const run = managed ?? (WORKING.includes(state.activity) ? "robot" : null);
   const previous = trailRuns.get(store);
-  trailRuns.set(store, run);
+  const entryId = state.selection.entryId;
+  trailRuns.set(store, { entryId, run });
   let trail = state.trail;
   if (!run || !pose.position || !pose.mapSessionKey || trail?.id !== "live") return;
   // A new run, or a new verified map whose frame the old points do not share.
-  if ((previous !== undefined && previous !== run) || trail.mapSessionKey !== pose.mapSessionKey) {
+  if ((previous?.entryId === entryId && previous.run !== run) || trail.mapSessionKey !== pose.mapSessionKey) {
     trail = { id: "live", mapSessionKey: pose.mapSessionKey, segments: [[]] };
   }
   const segment = trail.segments.at(-1) ?? [];
   const last = segment.at(-1);
   const [x, y] = pose.position;
-  if (last && Math.hypot(x - last[0], y - last[1]) < 0.15) return;
-  store.patch({ trail: { ...trail, segments: [...trail.segments.slice(0, -1), [...segment, [x, y] as const].slice(-MAX_POINTS)] } });
+  const measured = pose.poseMeasuredAt;
+  const age = pose.nativeObservationAgeSeconds;
+  const native = typeof measured === "number" && Number.isFinite(measured) && typeof age === "number";
+  const observation = { seconds: native ? measured - age : performance.now() / 1000, native };
+  const prior = trailObservations.get(trail);
+  const sameClock = prior && prior.native === native;
+  if (native && sameClock && observation.seconds <= prior.seconds) return;
+  const distance = last ? Math.hypot(x - last[0], y - last[1]) : 0;
+  const gap = !sameClock || observation.seconds - prior.seconds > 8;
+  if (last && distance < 0.15 && (!gap || (!prior && distance === 0))) {
+    trailObservations.set(trail, observation);
+    return;
+  }
+  const point = [x, y] as const;
+  const segments = last && (gap || distance > 1.5)
+    ? [...trail.segments, [point]].slice(-MAX_SEGMENTS)
+    : [...trail.segments.slice(0, -1), [...segment, point].slice(-MAX_POINTS)];
+  const updated = { ...trail, segments };
+  trailObservations.set(updated, observation);
+  store.patch({ trail: updated });
 };
 
 /**

@@ -143,6 +143,9 @@ async function detentDragDistance(gallery, from, to) {
     }));
     if (original === null) sheet.removeAttribute("data-detent");
     else sheet.setAttribute("data-detent", original);
+    // Commit the restored size while transitions are still disabled, so the
+    // next drag begins at the active detent rather than animating from full.
+    void sheet.getBoundingClientRect().height;
     sheet.style.transition = transition;
     return measured;
   }, [from, to]);
@@ -8210,7 +8213,8 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
 
     // A slow movement below half the measured gap snaps back to its detent.
     const halfGap = Math.abs(await detentDragDistance(gallery, "half", "full"));
-    await touchDrag(page, grip, slowDrag(-Math.max(7, Math.floor(halfGap * 0.4))), { stepMs: 40 });
+    const slowDistance = Math.max(7, Math.floor(halfGap * 0.4));
+    await touchDrag(page, grip, slowDrag(-slowDistance), { stepMs: 40 });
     await expect(sheet).toHaveAttribute("data-detent", "half");
   });
 

@@ -65,7 +65,7 @@ export class RunHistoryResources {
     const current = this.#store.value;
     if (this.#callbacks.disposed() || current.generation !== state.generation
       || current.owner?.entryKey !== owner.entryKey || current.owner?.userKey !== owner.userKey
-      || current.selection.entryId !== entryId || current.trail?.id !== "live"
+      || !current.map.exactPose || current.selection.entryId !== entryId || current.trail?.id !== "live"
       || current.trail.mapSessionKey !== trail.mapSessionKey
       || current.resources.pose.value?.mapSessionKey !== trail.mapSessionKey) return;
     this.#runs.extendLiveTrail(this.#store, current.resources.pose.value);
