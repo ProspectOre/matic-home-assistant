@@ -27,7 +27,7 @@ from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
-from .client.models import FloorPlan
+from .client.models import FloorPlan, RobotActivity
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,
@@ -356,6 +356,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             lambda: _pose_frame_key(runtime_data),
             partial(observe_live_pose_trail, runtime_data),
             admit=lambda pose: pose_observed_in_frame(runtime_data, pose.observed_at),
+            docked=lambda: (
+                coordinator.data.operational.activity
+                in (RobotActivity.DOCKED, RobotActivity.CHARGING)
+            ),
         )
         entry.async_create_background_task(
             hass, runtime_data.live_pose.watch(), f"{DOMAIN} live pose collector"
@@ -373,6 +377,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             coordinator.async_add_listener(
                 partial(observe_coordinator_trail, runtime_data)
             )
+        )
+        entry.async_on_unload(
+            coordinator.async_add_listener(runtime_data.live_pose.activity_changed)
         )
         workspace_socket = hass.data.get(DOMAIN, {}).get("workspace_socket")
         track_workspace_entry = getattr(workspace_socket, "track_entry", None)

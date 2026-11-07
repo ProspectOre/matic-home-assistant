@@ -1374,7 +1374,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
     )
-    assert coordinator.async_add_listener.call_count == 2
+    assert coordinator.async_add_listener.call_count == 3
+    assert (
+        coordinator.async_add_listener.call_args_list[1].args[0]
+        == entry.runtime_data.live_pose.activity_changed
+    )
     trail_callback = coordinator.async_add_listener.call_args_list[0].args[0]
     assert trail_callback.func is observe_coordinator_trail
     assert trail_callback.args == (entry.runtime_data,)

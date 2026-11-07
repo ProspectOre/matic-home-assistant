@@ -508,3 +508,88 @@ async def test_future_allowed_observation_cannot_rebind_after_frame_verification
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+async def test_docked_reconnects_back_off_and_departure_wakes_promptly(monkeypatch):
+    starts = []
+    docked = [True]
+    resumed = asyncio.Event()
+    fourth = asyncio.Event()
+    first = RobotPose(1, 2, 0, mission_id=1, observed_at=time())
+
+    async def subscribe(_mission):
+        starts.append(asyncio.get_running_loop().time())
+        if len(starts) == 1:
+            yield first
+        if len(starts) == 4:
+            fourth.set()
+        if not docked[0]:
+            resumed.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_pose._STREAM_IDLE_SECONDS", 0.005
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_pose._DOCKED_RETRY_SECONDS", 0.02
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_pose._MAX_DOCKED_RETRY_SECONDS", 0.08
+    )
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe),
+        lambda: 1,
+        lambda: "frame",
+        docked=lambda: docked[0],
+    )
+    task = asyncio.create_task(tracker.watch())
+    try:
+        await asyncio.wait_for(fourth.wait(), 1)
+        assert [
+            b - a >= minimum
+            for a, b, minimum in zip(
+                starts, starts[1:], [0.02, 0.04, 0.08], strict=False
+            )
+        ] == [True] * 3
+        assert tracker.current() is first
+        assert tracker.revision == 1
+        await asyncio.sleep(0.01)
+        docked[0] = False
+        tracker.activity_changed()
+        await asyncio.wait_for(resumed.wait(), 0.05)
+        assert len(starts) == 5
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert tracker.current() is None
+
+
+async def test_cancel_during_docked_backoff_clears_pose(monkeypatch):
+    ready = asyncio.Event()
+    starts = []
+
+    async def subscribe(_mission):
+        starts.append(True)
+        yield RobotPose(1, 2, 0, mission_id=1, observed_at=time())
+        ready.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_pose._STREAM_IDLE_SECONDS", 0.005
+    )
+    tracker = LivePose(
+        SimpleNamespace(async_subscribe_poses=subscribe),
+        lambda: 1,
+        lambda: "frame",
+        docked=lambda: True,
+    )
+    task = asyncio.create_task(tracker.watch())
+    await asyncio.wait_for(ready.wait(), 1)
+    await asyncio.sleep(0.02)
+    assert tracker.current() is not None
+    assert len(starts) == 1
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 0.1)
+    assert tracker.current() is None

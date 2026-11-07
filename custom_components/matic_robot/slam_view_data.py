@@ -23,6 +23,7 @@ from .slam_map_store import SlamMapIdentity
 if TYPE_CHECKING:
     from . import MaticRuntimeData
     from .client.models import RobotPose
+    from .slam_history_format import SlamHistorySnapshot
     from .slam_scene import MaticSlamSceneView
 
 _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
@@ -133,6 +134,31 @@ def pose_frame_token(runtime: MaticRuntimeData) -> str:
     ).hexdigest()
 
 
+def history_floor_choices(
+    runtime: MaticRuntimeData,
+) -> tuple[str | None, tuple[str, ...], tuple[SlamHistorySnapshot, ...]]:
+    """Share current, saved and imported floor choices between both catalogs."""
+    floor_plan = runtime.coordinator.data.floor_plan
+    identity = runtime.slam_map.mission_identity
+    current = (
+        identity.mission_token
+        if identity is not None and runtime.slam_map.floor_plan_is_current(floor_plan)
+        else None
+    )
+    missions = dict.fromkeys(dict(runtime.slam_history.catalogs_by_mission()))
+    for floor in floor_plan.mapped_floors if floor_plan is not None else ():
+        missions.setdefault(floor.mission_token)
+    if current is not None:
+        missions.pop(current, None)
+    imported = tuple(
+        snapshot
+        for snapshot in runtime.slam_history.catalog()
+        if getattr(snapshot, "imported", False)
+        and getattr(snapshot, "retention", "automatic") != "trash"
+    )
+    return current, tuple(missions), imported
+
+
 def catalog_entry_projection(
     entry_id: str,
     runtime: MaticRuntimeData,
@@ -181,6 +207,7 @@ def catalog_entry_projection(
     serial_number = runtime.coordinator.data.info.serial_number
     plan_snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
     telemetry = getattr(runtime.coordinator.data, "telemetry", None)
+    _, saved_floors, imported = history_floor_choices(runtime)
     return {
         "entry_id": entry_id,
         # The workspace push is the default transport when this capability is
@@ -200,7 +227,7 @@ def catalog_entry_projection(
             if map_identity is not None
             else ()
         ),
-        "history_floor_count": len(runtime.slam_history.catalogs_by_mission()),
+        "history_floor_count": 1 + len(saved_floors) + bool(imported),
         "map_revision": (
             scene_view.available_revision(entry_id, runtime)
             if scene_view is not None

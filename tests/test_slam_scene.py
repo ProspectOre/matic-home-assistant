@@ -1363,7 +1363,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "floor_layers_url": f"/api/matic_robot/floor_layers/{loaded.entry_id}",
                 "coverage_url": f"/api/matic_robot/live_coverage/{loaded.entry_id}",
                 "history_count": 0,
-                "history_floor_count": 0,
+                "history_floor_count": 2,
                 "map_revision": 7,
                 "map_floor_coherent": True,
                 "selected_floor_ordinal": 1,
@@ -4324,3 +4324,49 @@ async def test_pose_response_exposes_proof_changes_without_changing_map_identity
     assert returned["map_session_key"] == first["map_session_key"]
     assert returned["pose_frame_key"] != first["pose_frame_key"]
     assert returned["position"] is None
+
+
+@pytest.mark.parametrize(
+    ("saved", "mapped", "archive", "expected"),
+    [
+        (False, False, None, 1),
+        (True, False, None, 2),
+        (False, True, None, 2),
+        (True, True, None, 2),
+        (False, False, "kept", 2),
+        (False, False, "trash", 1),
+    ],
+)
+async def test_floor_count_matches_choices_without_current_snapshot(
+    saved, mapped, archive, expected
+):
+    runtime = _runtime()
+    current = runtime.slam_map.mission_identity.mission_token
+    other = "b" * 64
+    floors = [MappedFloor(1, "Current", current)]
+    if mapped:
+        floors.append(MappedFloor(2, "Other", other))
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan, mapped_floors=tuple(floors)
+    )
+    record = SimpleNamespace(
+        record_id="c" * 32,
+        snapshot_id="d" * 64,
+        created_at=datetime(2026, 11, 7, tzinfo=UTC),
+        revision=1,
+        point_count=10,
+        mission_token=other,
+        imported=archive is not None,
+        retention=archive or "automatic",
+    )
+    runtime.slam_history.catalogs_by_mission.return_value = (
+        ((other, (record,)),) if saved else ()
+    )
+    runtime.slam_history.catalog.return_value = (record,) if saved or archive else ()
+    # The current floor deliberately has no saved snapshot.
+    response = await MaticSlamHistoryView().get(
+        _request(_hass(_entry(runtime))), "entry"
+    )
+    choices = json.loads(response.body)["floors"]
+    assert len(choices) == expected
+    assert catalog_entry_projection("entry", runtime)["history_floor_count"] == expected

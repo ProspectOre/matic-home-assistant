@@ -15,6 +15,8 @@ from .client.models import RobotPose
 _LOGGER = logging.getLogger(__name__)
 _RETRY_SECONDS = 2
 _STREAM_IDLE_SECONDS = 3
+_DOCKED_RETRY_SECONDS = 15
+_MAX_DOCKED_RETRY_SECONDS = 300
 
 
 class LivePose:
@@ -28,16 +30,23 @@ class LivePose:
         on_pose: Callable[[RobotPose], None] | None = None,
         *,
         admit: Callable[[RobotPose], bool] | None = None,
+        docked: Callable[[], bool] | None = None,
     ) -> None:
         self._client = client
         self._mission = mission
         self._frame = frame
         self._on_pose = on_pose
         self._admit = admit
+        self._docked = docked
+        self._activity_changed = asyncio.Event()
         self._pose_frame: object = None
         self._last_timestamp: float | None = None
         self._pose: RobotPose | None = None
         self.revision = 0
+
+    def activity_changed(self) -> None:
+        """Wake a docked retry promptly when coordinator activity changes."""
+        self._activity_changed.set()
 
     def current(self) -> RobotPose | None:
         """Never transfer an observation to a different mission."""
@@ -61,6 +70,7 @@ class LivePose:
             self._pose_frame = None
 
     async def _watch_streams(self) -> None:
+        docked_delay = 0.0
         while True:
             idle_timeout = False
             try:
@@ -92,6 +102,7 @@ class LivePose:
                             self._pose = pose
                             self._pose_frame = frame
                             self._last_timestamp = pose.observed_at
+                            docked_delay = 0.0
                             self.revision += 1
                             # A silent stream (or a replay of the same sample)
                             # must not leave background trail collection stalled.
@@ -119,4 +130,21 @@ class LivePose:
             task = asyncio.current_task()
             if task is not None and task.cancelling():
                 raise asyncio.CancelledError
-            await asyncio.sleep(0 if idle_timeout else _RETRY_SECONDS)
+            if self._docked is not None and self._docked():
+                docked_delay = min(
+                    max(_DOCKED_RETRY_SECONDS, docked_delay * 2),
+                    _MAX_DOCKED_RETRY_SECONDS,
+                )
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + docked_delay
+                while (remaining := deadline - loop.time()) > 0:
+                    self._activity_changed.clear()
+                    if not self._docked():
+                        break
+                    try:
+                        await asyncio.wait_for(self._activity_changed.wait(), remaining)
+                    except TimeoutError:
+                        break
+            else:
+                docked_delay = 0.0
+                await asyncio.sleep(0 if idle_timeout else _RETRY_SECONDS)

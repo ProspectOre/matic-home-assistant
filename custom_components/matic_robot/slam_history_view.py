@@ -24,6 +24,7 @@ from .http import (
 )
 from .slam_history import HistoryReadCapacityError
 from .slam_history_format import MAX_ARCHIVE_BYTES, SlamHistorySnapshot
+from .slam_view_data import history_floor_choices
 
 MAX_HISTORY_IMPORT_REQUEST_BYTES = MAX_ARCHIVE_BYTES + 16 * 1024
 
@@ -44,10 +45,8 @@ class MaticSlamHistoryView(HomeAssistantView):
             )
         floor_plan = runtime.coordinator.data.floor_plan
         floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
-        current_token = (
-            runtime.slam_map.mission_identity.mission_token
-            if floor_plan_coherent and runtime.slam_map.mission_identity is not None
-            else None
+        current_token, saved_missions, imported_snapshots = history_floor_choices(
+            runtime
         )
         current_snapshots = (
             runtime.slam_history.catalog_for_mission(current_token)
@@ -79,19 +78,6 @@ class MaticSlamHistoryView(HomeAssistantView):
             }
         ]
         history_by_mission = dict(runtime.slam_history.catalogs_by_mission())
-        saved_missions = [
-            mission_token
-            for mission_token in history_by_mission
-            if mission_token != current_token
-        ]
-        saved_missions.extend(
-            mapped_floor.mission_token
-            for mapped_floor in (
-                floor_plan.mapped_floors if floor_plan is not None else ()
-            )
-            if mapped_floor.mission_token != current_token
-            and mapped_floor.mission_token not in history_by_mission
-        )
         for saved_ordinal, mission_token in enumerate(saved_missions, start=1):
             mission_snapshots = history_by_mission.get(mission_token, ())
             floors.append(
@@ -104,12 +90,6 @@ class MaticSlamHistoryView(HomeAssistantView):
                     "snapshots": _history_metadata(entry_id, mission_snapshots),
                 }
             )
-        imported_snapshots = tuple(
-            snapshot
-            for snapshot in runtime.slam_history.catalog()
-            if getattr(snapshot, "imported", False)
-            and getattr(snapshot, "retention", "automatic") != "trash"
-        )
         if imported_snapshots:
             floors.append(
                 {
