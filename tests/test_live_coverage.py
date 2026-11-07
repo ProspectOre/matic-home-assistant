@@ -645,3 +645,93 @@ async def test_watcher_discards_retained_session_baseline_after_native_task_end(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+async def test_activity_from_next_run_cannot_validate_previous_coverage():
+    client = _client()
+    previous = active_key()
+    following = active_key(UUID(int=8))
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[previous, following]
+    )
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = previous
+    with pytest.raises(CannotConnectError):
+        await coverage.async_current()
+    client.async_get_active_cleaning_session_state.assert_awaited_once()
+    assert client.async_get_cleaning_session_identity.await_count == 2
+
+
+async def test_watcher_does_not_bind_a_task_that_changed_during_activity_read(
+    monkeypatch,
+):
+    client = _client()
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[active_key(), active_key(UUID(int=8))]
+    )
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+
+    async def end_iteration(_delay):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_coverage.asyncio.sleep", end_iteration
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await coverage.watch()
+    client.async_subscribe_collection_entries.assert_not_called()
+    assert coverage.current() is None
+
+
+async def test_watcher_closes_when_next_task_activity_follows_previous_identity(
+    monkeypatch,
+):
+    client = _client()
+    session = active_key()
+    # Startup and one periodic check agree; the next check straddles a new run.
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[
+            session,
+            session,
+            session,
+            session,
+            session,
+            active_key(UUID(int=8)),
+        ]
+    )
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=[_marker(session)]
+    )
+    closed = asyncio.Event()
+    cleared = asyncio.Event()
+
+    async def updates():
+        try:
+            yield _page_entry(bytes(1024), sequence=2)
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    client.async_subscribe_collection_entries = MagicMock(return_value=updates())
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    clear = coverage._clear
+
+    def observe_clear():
+        clear()
+        cleared.set()
+
+    monkeypatch.setattr(coverage, "_clear", observe_clear)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.live_coverage._CHECK_SECONDS", 0.01
+    )
+    task = asyncio.create_task(coverage.watch())
+    try:
+        await asyncio.wait_for(cleared.wait(), 2)
+        assert closed.is_set()
+        assert coverage.current() is None
+        assert coverage._changes is None
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

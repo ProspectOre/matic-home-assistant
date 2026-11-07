@@ -67,8 +67,14 @@ class LiveCoverage:
             return None
         current_session = await self._client.async_get_cleaning_session_identity()
         active = await self._client.async_get_active_cleaning_session_state()
+        confirmed_session = (
+            await self._client.async_get_cleaning_session_identity()
+            if active is True
+            else current_session
+        )
         if (
             current_session != session
+            or confirmed_session != current_session
             or self._bound_context != context
             or self.generation != generation
         ):
@@ -90,7 +96,13 @@ class LiveCoverage:
                     active = (
                         await self._client.async_get_active_cleaning_session_state()
                     )
-                    if session and active is True and self._context() == context:
+                    if (
+                        session
+                        and active is True
+                        and await self._client.async_get_cleaning_session_identity()
+                        == session
+                        and self._context() == context
+                    ):
                         await self._watch_session(context, session)
             except Exception:
                 _LOGGER.debug("Live coverage stream failed", exc_info=True)
@@ -164,6 +176,8 @@ class LiveCoverage:
                         if (
                             current_session != session
                             or active is not True
+                            or await self._client.async_get_cleaning_session_identity()
+                            != session
                             or self._context() != context
                         ):
                             return
