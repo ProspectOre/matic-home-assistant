@@ -3,8 +3,6 @@
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
-import pytest
-
 from custom_components.matic_robot.client import api
 from custom_components.matic_robot.client.history_semantics import (
     decode_history_semantics,
@@ -65,10 +63,14 @@ async def test_corrupt_revision_keeps_exact_key_for_credit_retraction():
     )
     records, revision = await client.async_get_cleaning_session_snapshot()
     assert len(records) == 1 and records[0].key == history_key()
+    assert records[0].decoded is False
     assert records[0].session.completed is None
     assert revision != api._native_history_collection_revision(())
-    with pytest.raises(api.MaticError, match="undecodable"):
-        await client.async_get_cleaning_session_snapshot(strict=True)
+    # The key still names the session, so a strict read is complete.
+    assert await client.async_get_cleaning_session_snapshot(strict=True) == (
+        records,
+        revision,
+    )
 
 
 async def test_non_room_and_unknown_modern_records_keep_strict_baselines():
@@ -84,6 +86,7 @@ async def test_non_room_and_unknown_modern_records_keep_strict_baselines():
         )
         records = await client.async_get_cleaning_session_records(strict=True)
         assert len(records) == 1 and records[0].key == key
+        assert records[0].decoded is True
         assert records[0].session.completed is None
         assert not records[0].session.completed_rooms
         assert not records[0].session.mode_results

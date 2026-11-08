@@ -19,8 +19,13 @@ from custom_components.matic_robot.client.commands import UserCommand, _wrapped_
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
+    NativeHistoryIncompleteError,
 )
-from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.client.models import (
+    FloorPlan,
+    HermesCollectionEntry,
+    Room,
+)
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import (
     PlanCancelledError,
@@ -44,6 +49,8 @@ from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
 )
+from tests.test_coverage_receipts import history_key
+from tests.test_undecodable_history import _client, _oversized
 from tests.wire_builders import _session_identity
 
 
@@ -580,6 +587,7 @@ async def test_restart_unexpected_stop_error_respects_transmission(
         "changed_history",
         "history_error",
         "enriched_history",
+        "undecodable_history",
     ],
 )
 async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
@@ -613,6 +621,14 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
             CannotConnectError("unavailable")
         )
+    elif case == "undecodable_history":
+        # A retained record too large to decode still names its session, so
+        # the strict handoff read matches the persisted key set.
+        reader = _client((HermesCollectionEntry(history_key(), _oversized()),))
+        entry.runtime_data.client.async_get_cleaning_session_records = (
+            reader.async_get_cleaning_session_records
+        )
+        checkpoint["handoff_history"] = [hashlib.sha256(history_key()).hexdigest()]
     manager._robot("serial")["last_run"]["room_count"] = 2
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
@@ -646,11 +662,18 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     ):
         await async_recover_managed_run(hass, entry, "serial")
 
-    if case in {"valid", "timeout", "cancel", "stop_during_wait", "enriched_history"}:
+    if case in {
+        "valid",
+        "timeout",
+        "cancel",
+        "stop_during_wait",
+        "enriched_history",
+        "undecodable_history",
+    }:
         settled.assert_awaited_once()
     else:
         settled.assert_not_awaited()
-    if case in {"valid", "enriched_history"}:
+    if case in {"valid", "enriched_history", "undecodable_history"}:
         runner.assert_awaited_once()
     else:
         runner.assert_not_awaited()
@@ -747,6 +770,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
         "unknown",
         "floor",
         "history_error",
+        "history_incomplete",
         "malformed",
         "no_entity",
         "superseded",
@@ -775,6 +799,10 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
     elif case == "history_error":
         client.async_get_cleaning_session_records.side_effect = CannotConnectError(
             "unavailable"
+        )
+    elif case == "history_incomplete":
+        client.async_get_cleaning_session_records.side_effect = (
+            NativeHistoryIncompleteError("no session identity")
         )
     elif case == "malformed":
         checkpoint["rooms"] = [{"invalid": True}]
@@ -810,6 +838,12 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
     assert snapshot["last_run"]["outcome"] == (
         "cancelled" if case == "stop_intent" else "unverified"
     )
+    if case in {"history_error", "history_incomplete"}:
+        assert snapshot["last_run"]["reason_code"] == (
+            "restart_history_incomplete"
+            if case == "history_incomplete"
+            else "restart_recovery_unavailable"
+        )
     assert snapshot["active_plan"] is None
     assert manager.recovery_run("serial") is None
 

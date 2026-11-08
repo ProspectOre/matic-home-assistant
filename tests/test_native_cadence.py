@@ -339,7 +339,7 @@ async def test_malformed_revision_retracts_cached_canonical_statistics(hass):
     manager._store = SimpleNamespace(async_save=AsyncMock())
     await manager.async_import_native_history("serial", floor, [record])
     assert manager._robot("serial")["rooms"]["room-a"]["robot_last_completed"]
-    rejected = replace(record, session=CleaningSession(None, None, None, (), (), None))
+    rejected = CleaningSessionRecord.undecodable(record.key)
     other = replace(floor, mission_id=8, partition_protocol_id="other", rooms=())
     assert await manager.async_import_native_history("serial", other, [rejected])
     assert "robot_last_completed" not in manager._robot("serial")["rooms"]["room-a"]

@@ -66,6 +66,10 @@ async def test_verification_recovers_real_history_without_motion(hass, recovery_
     assert events[0].data["room"] == "Kitchen"
     assert run["run_id"] == "run"
     client.async_send_user_command.assert_not_awaited()
+    # Both the baseline and verification reads are strict, so an entry without
+    # a session identity cannot vanish from either.
+    reads = client.async_get_cleaning_session_records.await_args_list
+    assert reads and all(read.kwargs == {"strict": True} for read in reads)
 
 
 @pytest.mark.parametrize(
@@ -104,7 +108,7 @@ async def test_verification_fails_closed(hass, recovery_state, case):
     elif case in {"cancel", "floor"}:
         reads = 0
 
-        async def records():
+        async def records(**_kwargs):
             nonlocal reads
             reads += 1
             if reads == 2:
@@ -305,7 +309,7 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
     else:
         reads = 0
 
-        async def history():
+        async def history(**_kwargs):
             nonlocal reads
             reads += 1
             if reads > 1:

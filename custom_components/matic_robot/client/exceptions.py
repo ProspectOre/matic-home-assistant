@@ -7,6 +7,10 @@ class MaticError(Exception):
     """Base Matic Hermes error."""
 
 
+class NativeHistoryIncompleteError(MaticError):
+    """A strict history read found an entry without a native session identity."""
+
+
 class CoverageGuardReason(StrEnum):
     """Safe, stable reason codes for managed coverage preflight guards."""
 
