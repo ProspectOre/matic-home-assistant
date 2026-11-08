@@ -334,6 +334,16 @@ class CleaningSessionRecord:
 
     key: bytes
     session: CleaningSession
+    decoded: bool = True
+
+    @classmethod
+    def undecodable(cls, key: bytes) -> CleaningSessionRecord:
+        """Keep the key of an entry whose value cannot be decoded.
+
+        The session is empty and ``decoded`` is false, so the record identifies
+        the entry but is not evidence of anything.
+        """
+        return cls(key, CleaningSession(None, None, None, (), (), None), False)
 
 
 @dataclass(frozen=True, slots=True)

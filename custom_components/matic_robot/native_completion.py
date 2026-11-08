@@ -77,6 +77,19 @@ def room_completion_duration(
     return durations[0] if len(durations) == 1 else None
 
 
+def records_since_baseline(
+    records: Iterable[CleaningSessionRecord], baseline: Collection[bytes]
+) -> tuple[CleaningSessionRecord, ...] | None:
+    """Return the records created after a dispatch baseline, or None if unsafe.
+
+    None means a new record cannot be decoded. It may be the dispatched session
+    itself, so no new record can be attributed to the dispatch until it does.
+    Undecodable records in the baseline predate the dispatch and do not matter.
+    """
+    new = tuple(record for record in records if record.key not in baseline)
+    return None if any(not record.decoded for record in new) else new
+
+
 def match_single_room_completions(
     records: Iterable[CleaningSessionRecord],
     *,
@@ -88,11 +101,14 @@ def match_single_room_completions(
     legacy_policy: LegacyCompletionPolicy = "aggregate",
 ) -> tuple[NativeRoomCompletion, ...]:
     """Return at most two matching records to distinguish unique from ambiguous."""
+    if baseline is not None:
+        new = records_since_baseline(records, baseline)
+        if new is None:
+            return ()
+        records = new
     target = native_room_key(room_name)
     matches: list[NativeRoomCompletion] = []
     for record in records:
-        if baseline is not None and record.key in baseline:
-            continue
         session = record.session
         started = dt_util.parse_datetime(session.started_at or "")
         ended = dt_util.parse_datetime(session.ended_at or "")

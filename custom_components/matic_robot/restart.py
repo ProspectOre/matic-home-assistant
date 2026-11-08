@@ -16,7 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .client.commands import UserCommand
-from .client.exceptions import MaticError
+from .client.exceptions import MaticError, NativeHistoryIncompleteError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
@@ -494,7 +494,7 @@ async def async_recover_managed_run(
             )
             return
         assert dispatched_at is not None
-        records = await runtime.client.async_get_cleaning_session_records()
+        records = await runtime.client.async_get_cleaning_session_records(strict=True)
         hashes = checkpoint.get("history_baseline")
         if not isinstance(hashes, list):
             return
@@ -537,7 +537,11 @@ async def async_recover_managed_run(
             )
 
             async def read_history() -> tuple[CleaningSessionRecord, ...]:
-                records = await runtime.client.async_get_cleaning_session_records()
+                # A new entry without a session identity must hold credit, not
+                # vanish from the read.
+                records = await runtime.client.async_get_cleaning_session_records(
+                    strict=True
+                )
                 if (
                     cancel.is_set()
                     or manager.motion_generation(serial_number) != generation
@@ -664,6 +668,9 @@ async def async_recover_managed_run(
         if _shutdown_suspends_run(hass, manager, serial_number):
             reason = "home_assistant_shutdown"
         raise
+    except NativeHistoryIncompleteError:
+        # Unlike a failed read, this persists until the robot drops the entry.
+        reason = "restart_history_incomplete"
     except (
         HomeAssistantError,
         MaticError,

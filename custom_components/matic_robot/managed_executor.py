@@ -43,7 +43,11 @@ from homeassistant.util import dt as dt_util
 
 from .client.commands import UserCommand
 from .client.coverage_receipts import CoverageVerifier, native_session_hash
-from .client.exceptions import CoverageGuardError, MaticError
+from .client.exceptions import (
+    CoverageGuardError,
+    MaticError,
+    NativeHistoryIncompleteError,
+)
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
@@ -51,7 +55,11 @@ from .coverage_accounting import (
     async_confirm_completed_coverage,
     coverage_evidence_from_storage,
 )
-from .native_completion import match_single_room_completions, native_room_key
+from .native_completion import (
+    match_single_room_completions,
+    native_room_key,
+    records_since_baseline,
+)
 from .plans import (
     OEM_STOP_RECONCILIATION_SECONDS as OEM_STOP_RECONCILIATION_SECONDS,
 )
@@ -280,7 +288,12 @@ async def _async_dispatch_leg_command(
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    history_baseline = await _async_session_history_baseline(session_history)
+    try:
+        history_baseline = await _async_session_history_baseline(
+            session_history, raise_incomplete=True
+        )
+    except NativeHistoryIncompleteError as err:
+        raise NativeHistoryIncompleteBaselineError from err
     if session_history is not None and history_baseline is None:
         # A configured native-history reader that failed is different from a
         # legacy caller that has no reader. Dispatching in the former case
@@ -1996,10 +2009,14 @@ async def _async_verify_leg_completion(
                 )
                 now = dt_util.utcnow()
                 matches: list[CleaningSessionRecord] = []
-                for record in records:
+                new_records = records_since_baseline(records, baseline)
+                if new_records is None:
+                    # If the unreadable record never decodes, the rooms stay
+                    # unverified and due.
+                    evidence = None
+                    new_records = ()
+                for record in new_records:
                     session = record.session
-                    if record.key in baseline:
-                        continue
                     started = dt_util.parse_datetime(session.started_at or "")
                     ended = dt_util.parse_datetime(session.ended_at or "")
                     if started is None or ended is None or started > ended:
@@ -2369,8 +2386,14 @@ async def _async_active_session_state(
 
 async def _async_session_history_baseline(
     reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    *,
+    raise_incomplete: bool = False,
 ) -> frozenset[bytes] | None:
-    """Capture opaque native keys before dispatch without exposing their values."""
+    """Capture opaque native keys before dispatch without exposing their values.
+
+    A failed read returns None. With ``raise_incomplete``, a read that found an
+    entry without a session identity raises instead, so dispatch can say so.
+    """
     if reader is None:
         return None
     try:
@@ -2379,6 +2402,8 @@ async def _async_session_history_baseline(
         _LOGGER.debug(
             "Native Matic completion baseline unavailable (%s)", type(err).__name__
         )
+        if raise_incomplete and isinstance(err, NativeHistoryIncompleteError):
+            raise
         return None
 
 
@@ -3348,6 +3373,20 @@ class NativeHistoryBaselineUnavailableError(HomeAssistantError):
     """Native completion history could not be read before mission dispatch."""
 
 
+class NativeHistoryIncompleteBaselineError(NativeHistoryBaselineUnavailableError):
+    """Native history keeps an entry without a session identity.
+
+    Unlike a failed read, retrying does not help until the robot drops the entry.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The robot's cleaning history has an entry that doesn't identify its "
+            "cleaning session, so this plan can't track its results. Plans can "
+            "start again once the robot no longer keeps that entry."
+        )
+
+
 class RoomStartTimeoutError(TimeoutError):
     """The commanded room did not become active before its start deadline."""
 
@@ -3373,6 +3412,8 @@ def _failure_reason_code(error: BaseException) -> str:
         return guard_error.reason_code
     if isinstance(error, ServiceValidationError) and error.__cause__ is not None:
         error = error.__cause__
+    if isinstance(error, NativeHistoryIncompleteBaselineError):
+        return "native_history_incomplete"
     if isinstance(error, NativeHistoryBaselineUnavailableError):
         return "native_history_baseline_unavailable"
     if isinstance(error, RoomStartTimeoutError):
