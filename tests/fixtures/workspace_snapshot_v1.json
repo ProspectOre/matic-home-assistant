@@ -46,7 +46,7 @@
       "floor_layers_url": "/api/matic_robot/floor_layers/synthetic-entry",
       "coverage_url": "/api/matic_robot/live_coverage/synthetic-entry",
       "history_count": 0,
-      "history_floor_count": 0,
+      "history_floor_count": 1,
       "map_revision": 7,
       "map_scene_epoch": null,
       "map_floor_coherent": true,
