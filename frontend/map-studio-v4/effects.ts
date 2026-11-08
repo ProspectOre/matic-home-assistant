@@ -632,10 +632,8 @@ export class EffectController {
       && needsPlanCatalog(this.#store.value)) void this.loadPlans();
     if (resources.has("areas")) void this.loadAreas();
     const state = this.#store.value;
-    const liveFloorChoicesLoaded = state.dataMode === "live" && !state.floor.readOnly
-      && (state.resources.history.value !== null
-        || (state.optionalUiReady && state.map.available && entry.historyFloorCount > 1));
-    if (resources.has("history") && (needsHistoryCatalog(state) || liveFloorChoicesLoaded)) {
+    if (resources.has("history") && (needsHistoryCatalog(state) || state.resources.history.value
+      || (state.optionalUiReady && state.map.available && entry.historyFloorCount > 1))) {
       // A catalog mutation can add or remove the only saved map for an
       // existing mapped floor without changing the number of floor choices.
       // Cancel an older read so this invalidation always fetches the new list.
