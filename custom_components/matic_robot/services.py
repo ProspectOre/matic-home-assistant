@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import (
     Callable,
     Coroutine,
@@ -407,6 +409,35 @@ INSPECT_ENDPOINT_SERVICE_SCHEMA = cv.make_entity_service_schema(
 )
 
 FIRMWARE_SNAPSHOT_SCHEMA = cv.make_entity_service_schema({})
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _keep_managed_run(
+    hass: HomeAssistant, handler: Callable[[ServiceCall], Coroutine[Any, Any, None]]
+) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
+    """Keep an admitted run owned when its service caller disconnects."""
+
+    @wraps(handler)
+    async def run(call: ServiceCall) -> None:
+        task = hass.async_create_background_task(
+            handler(call), f"{DOMAIN} managed {call.service}"
+        )
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+
+            def report_result(done: asyncio.Task[None]) -> None:
+                if not done.cancelled() and (err := done.exception()) is not None:
+                    _LOGGER.warning(
+                        "Detached managed run ended (%s)", type(err).__name__
+                    )
+
+            task.add_done_callback(report_result)
+            raise
+
+    return run
 
 
 def _require_matic_control[ServiceResult](
@@ -1003,7 +1034,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_ROOM_SEQUENCE,
-        _require_matic_control(hass, async_clean_room_sequence),
+        _require_matic_control(
+            hass, _keep_managed_run(hass, async_clean_room_sequence)
+        ),
         schema=CLEAN_ROOM_SEQUENCE_SCHEMA,
     )
 
@@ -1066,19 +1099,19 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_INTELLIGENT_CLEAN,
-        _require_matic_control(hass, async_intelligent_clean),
+        _require_matic_control(hass, _keep_managed_run(hass, async_intelligent_clean)),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_ENTIRE_PLAN,
-        _require_matic_control(hass, async_clean_entire_plan),
+        _require_matic_control(hass, _keep_managed_run(hass, async_clean_entire_plan)),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_SELECTED_PLAN,
-        _require_matic_control(hass, async_run_selected_plan),
+        _require_matic_control(hass, _keep_managed_run(hass, async_run_selected_plan)),
         schema=RUN_SELECTED_PLAN_SCHEMA,
     )
 

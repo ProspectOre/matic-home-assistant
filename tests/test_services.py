@@ -6854,3 +6854,148 @@ async def test_stop_expected_run_mismatch_has_no_effect(hass, active_run) -> Non
     finally:
         if lock is not None and lock.locked():
             lock.release()
+
+
+async def test_managed_service_survives_caller_cancellation(hass):
+    """A disconnected client does not own the admitted run's lifetime."""
+    from custom_components.matic_robot.services import _keep_managed_run
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        await finish.wait()
+        completed.set()
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert not completed.is_set()
+    finish.set()
+    await asyncio.wait_for(completed.wait(), 1)
+
+
+async def test_managed_service_propagates_immediate_refusal(hass):
+    from custom_components.matic_robot.services import _keep_managed_run
+
+    async def handler(call):
+        raise ServiceValidationError("plan already running")
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    with pytest.raises(ServiceValidationError, match="plan already running"):
+        await _keep_managed_run(hass, handler)(call)
+
+
+async def test_detached_managed_run_remains_owned_by_entry_unload(hass):
+    from custom_components.matic_robot.services import _keep_managed_run
+
+    manager = CleaningPlanManager(hass)
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def handler(call):
+        manager.register_run_task("serial")
+        try:
+            started.set()
+            await manager.cancellation_event("serial").wait()
+            stopped.set()
+        finally:
+            manager.unregister_run_task("serial")
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    await asyncio.wait_for(manager.async_cancel_and_wait("serial"), 1)
+    assert stopped.is_set()
+    assert "serial" not in manager._run_tasks
+
+
+@pytest.mark.parametrize("service", ["run_selected_plan", "clean_room_sequence"])
+async def test_registered_plan_service_keeps_run_after_caller_cancel(hass, service):
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor = FloorPlan(
+        42,
+        "partition",
+        b"partition",
+        (Room("office", "Office", "office", b"office", ()),),
+    )
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "office",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(floor_plan=floor),
+                async_request_refresh=AsyncMock(),
+                async_confirm_room_completed=MagicMock(),
+            ),
+            client=SimpleNamespace(
+                async_get_active_cleaning_session_state=AsyncMock(),
+                async_get_cleaning_session_records=AsyncMock(),
+                async_get_cleaning_session_identity=AsyncMock(),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    services = await _registered_services(hass, manager)
+    data = {"entity_id": ["vacuum.test"]}
+    if service == "run_selected_plan":
+        data["plan"] = "Home"
+        data = SAVED_PLAN_SERVICE_SCHEMA(data)
+    else:
+        data["rooms"] = [
+            {"room": "Office", "cleaning_mode": "vacuum", "coverage_setting": "quick"}
+        ]
+        data = CLEAN_ROOM_SEQUENCE_SCHEMA(data)
+    call = ServiceCall(hass, DOMAIN, service, data)
+    started, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def executor(*args, **kwargs):
+        started.set()
+        await release.wait()
+        completed.set()
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            side_effect=executor,
+        ),
+    ):
+        caller = asyncio.create_task(_registered_handler(services, service)(call))
+        await asyncio.wait_for(started.wait(), 2)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        if service == "clean_room_sequence":
+            assert manager._manual_room_sequence_reservations["serial"]
+        release.set()
+        await asyncio.wait_for(completed.wait(), 2)
+        await asyncio.sleep(0)
+        if service == "clean_room_sequence":
+            assert "serial" not in manager._manual_room_sequence_reservations
