@@ -6,6 +6,8 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import aclosing
+from hashlib import sha256
+from secrets import token_bytes
 from time import monotonic
 
 from google.protobuf.message import DecodeError
@@ -38,8 +40,18 @@ class LiveCoverage:
         self.partial = False
         self.revision = 0
         self.generation = 0
+        self._request_nonce = token_bytes(16)
         self._proof_owner: tuple[int, tuple[int, object], bytes] | None = None
         self._proof_task: asyncio.Task[bool] | None = None
+
+    @property
+    def request_key(self) -> str | None:
+        """Bind a catalog URL to this collector's current session generation."""
+        if self._bound_context is None or self._session is None:
+            return None
+        return sha256(
+            self._request_nonce + str(self.generation).encode("ascii")
+        ).hexdigest()
 
     @property
     def withdrawal_revision(self) -> int:

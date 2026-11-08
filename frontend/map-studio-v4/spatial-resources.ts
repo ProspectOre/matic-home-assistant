@@ -516,7 +516,7 @@ export class SpatialResources {
       draftFloorOrdinal: verifiedFloor ?? previousDraftFloor,
       draftMapSessionKey: verifiedSession ?? previousDraftSession,
       managedLock: entryManagedLock(entry),
-      liveCoverage: coherent && state.liveCoverage?.frameKey === entryCoherenceIdentity(entry)
+      liveCoverage: coherent && state.liveCoverage?.frameKey === `${entryCoherenceIdentity(entry)}|${entry.coverageUrl}`
         ? state.liveCoverage : null,
       generation: stamp.generation,
       coherence: coherent ? (degraded ? "degraded" : retainedReadOnly ? "verifying" : "current") : "verifying",
@@ -607,6 +607,10 @@ export class SpatialResources {
         void this.#callbacks.loadPlans();
       }
       this.#callbacks.resumeAreaCatalog();
+      if (previousEntry?.coverageUrl !== selected.coverageUrl) {
+        this.#store.patch({ liveCoverage: null });
+        void this.#startOptionalLayer("coverage");
+      }
       this.startPolling();
       // Transient scene failures do not necessarily advance map identity.
       // Retry on the next verified catalog poll, without interrupting a

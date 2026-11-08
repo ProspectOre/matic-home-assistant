@@ -243,7 +243,7 @@ export async function installPanelFixture(page, {
       return { response: { plan: { id: plan.id } } };
     };
     const fetchWithAuth = async (path, options = {}) => {
-      const entryB = path.endsWith("-b");
+      const entryB = path.split("?")[0].endsWith("-b");
       if (/areas\/synthetic(?:-b)?$/.test(path) && options.method === "POST") {
         const body = JSON.parse(options.body);
         areaRequests.push({ method: "POST", body });
@@ -300,12 +300,12 @@ export async function installPanelFixture(page, {
         }
         return result;
       }
-      if (/live_coverage\/synthetic(?:-b)?$/.test(path)) {
+      if (/live_coverage\/synthetic(?:-b)?(?:\?session=[a-z0-9]+)?$/.test(path)) {
         const payload = entryB ? cleaningCoverageB : cleaningCoverage;
         if (!payload) throw new Error(`unexpected synthetic request: ${path}`);
         if (window.__cleaningCoverageStatus) return new Response(null, { status: window.__cleaningCoverageStatus });
         if (window.__holdCleaningCoverage) return new Promise((resolve) => {
-          window.__releaseCleaningCoverage = () => resolve(json(entryB
+          window.__releaseCleaningCoverage = (status) => resolve(status ? new Response(null, { status }) : json(entryB
             ? (window.__cleaningCoverageReplyB ?? payload) : (window.__cleaningCoverageReply ?? payload)));
         });
         return json(entryB ? (window.__cleaningCoverageReplyB ?? payload) : (window.__cleaningCoverageReply ?? payload));

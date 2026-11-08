@@ -179,7 +179,7 @@ export function drawMapLayers(
     }
     if (state.liveCoverage?.active && state.liveCoverage.ownershipUnverified !== true && state.resources.entry
       && state.resources.entry.nativeSessionActive === true
-      && state.liveCoverage.frameKey === entryCoherenceIdentity(state.resources.entry)) {
+      && state.liveCoverage.frameKey === `${entryCoherenceIdentity(state.resources.entry)}|${state.resources.entry.coverageUrl}`) {
       drawCleaningCoverage(context, state, project);
     }
   }

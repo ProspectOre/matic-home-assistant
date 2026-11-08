@@ -208,6 +208,8 @@ def catalog_entry_projection(
     plan_snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
     telemetry = getattr(runtime.coordinator.data, "telemetry", None)
     _, saved_floors, imported = history_floor_choices(runtime)
+    coverage = getattr(runtime, "live_coverage", None)
+    coverage_key = coverage.request_key if coverage is not None else None
     return {
         "entry_id": entry_id,
         # The workspace push is the default transport when this capability is
@@ -221,7 +223,8 @@ def catalog_entry_projection(
         "plans_url": plans_api_url(entry_id),
         "wifi_heatmap_url": WIFI_HEATMAP_API_URL.format(entry_id=entry_id),
         "floor_layers_url": FLOOR_LAYERS_API_URL.format(entry_id=entry_id),
-        "coverage_url": COVERAGE_API_URL.format(entry_id=entry_id),
+        "coverage_url": COVERAGE_API_URL.format(entry_id=entry_id)
+        + (f"?session={coverage_key}" if coverage_key is not None else ""),
         "history_count": len(
             runtime.slam_history.catalog_for_mission(map_identity.mission_token)
             if map_identity is not None

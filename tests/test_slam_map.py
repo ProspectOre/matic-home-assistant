@@ -468,7 +468,13 @@ def test_wifi_floor_support_excludes_persistent_vertical_surface_columns() -> No
         b"",
     )
 
-    metadata = _scene_metadata(encode_slam_scene((tile,)))
+    with patch(
+        "custom_components.matic_robot.client.slam_scene.np.unpackbits",
+        wraps=np.unpackbits,
+    ) as unpack:
+        metadata = _scene_metadata(encode_slam_scene((tile,)))
+    # Point counting and emission each decode once; Wi-Fi reuses emission.
+    assert unpack.call_count == 2
     support = metadata["floor_support"]
     mask = np.unpackbits(
         np.frombuffer(base64.b64decode(support["mask_base64"]), dtype=np.uint8),

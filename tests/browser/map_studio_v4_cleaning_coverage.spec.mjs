@@ -158,7 +158,7 @@ test("coverage from a different map session is cleared until the matching frame 
   await expect.poll(async () => (await layer())?.runs.length).toBe(2);
 });
 
-test("coverage stays visible during page churn but clears when the session is unavailable", async ({ page }) => {
+for (const status of [409, 503]) test(`coverage clears when its current session request fails with ${status}`, async ({ page }) => {
   await page.clock.install();
   const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
   await page.evaluate(async (tag) => {
@@ -170,10 +170,7 @@ test("coverage stays visible during page churn but clears when the session is un
   }, panelTag);
   const panel = page.locator(`${panelTag}[data-test-panel=true]`);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
-  await page.evaluate(() => { window.__cleaningCoverageStatus = 409; });
-  await page.clock.fastForward(5_000);
-  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs.length)).toBe(2);
-  await page.evaluate(() => { window.__cleaningCoverageStatus = 503; });
+  await page.evaluate(value => { window.__cleaningCoverageStatus = value; }, status);
   await page.clock.fastForward(5_000);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
 });
@@ -230,7 +227,7 @@ for (const disconnect of ["host", "robot"]) test(`@safety ${disconnect} disconne
   expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
 });
 
-test("a late coverage response cannot enter a new run on the same floor", async ({ page }) => {
+for (const lateConflict of [false, true]) for (const intermediateStop of [true, false]) test(`a late coverage response cannot enter a new same-floor run (stop update: ${intermediateStop}, conflict: ${lateConflict})`, async ({ page }) => {
   await page.clock.install();
   const { panelTag } = await installPanelFixture(page, { cleaningCoverage: coverage });
   await page.evaluate(async (tag) => {
@@ -249,29 +246,33 @@ test("a late coverage response cannot enter a new run on the same floor", async 
   });
   await page.clock.fastForward(5_000);
   await expect.poll(() => page.evaluate(() => typeof window.__releaseCleaningCoverage)).toBe("function");
-  await panel.evaluate(async (element) => {
-    const { entries } = await (await element.hass.fetchWithAuth("/api/matic_robot/slam_entries")).json();
-    window.__panelFixture.setCatalogEntries(entries.map((entry) => ({ ...entry, native_session_active: false })));
-    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-action", {
-      detail: { id: "recheck-status" }, bubbles: true, composed: true,
-    }));
-  });
-  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(false);
-  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+  if (intermediateStop) {
+    await panel.evaluate(async (element) => {
+      const { entries } = await (await element.hass.fetchWithAuth("/api/matic_robot/slam_entries")).json();
+      window.__panelFixture.setCatalogEntries(entries.map((entry) => ({ ...entry, native_session_active: false })));
+      element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-action", {
+        detail: { id: "recheck-status" }, bubbles: true, composed: true,
+      }));
+    });
+    await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(false);
+    await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
+  }
   await page.evaluate(() => {
     window.__oldCoverageReply = window.__releaseCleaningCoverage;
     window.__releaseCleaningCoverage = null;
   });
   await panel.evaluate(async (element) => {
     const { entries } = await (await element.hass.fetchWithAuth("/api/matic_robot/slam_entries")).json();
-    window.__panelFixture.setCatalogEntries(entries.map((entry) => ({ ...entry, native_session_active: true })));
+    window.__panelFixture.setCatalogEntries(entries.map((entry) => ({ ...entry, native_session_active: true,
+      coverage_url: entry.coverage_url.split("?")[0] + "?session=next" })));
     element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-action", {
       detail: { id: "recheck-status" }, bubbles: true, composed: true,
     }));
   });
-  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.nativeSessionActive)).toBe(true);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.coverageUrl)).toContain("?session=next");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
   await expect.poll(() => page.evaluate(() => typeof window.__releaseCleaningCoverage)).toBe("function");
-  await page.evaluate(() => window.__oldCoverageReply());
+  if (!lateConflict) await page.evaluate(() => window.__oldCoverageReply());
   expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage)).toBeNull();
   await page.evaluate(() => {
     window.__cleaningCoverageReply = { active: true, map_session_key: "a".repeat(64), cell_size: 0.015,
@@ -279,6 +280,11 @@ test("a late coverage response cannot enter a new run on the same floor", async 
     window.__releaseCleaningCoverage();
   });
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs)).toEqual([[9, 9, 2, 1]]);
+  if (lateConflict) {
+    await page.evaluate(() => window.__oldCoverageReply(409));
+    await page.clock.runFor(100);
+    expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().liveCoverage?.runs)).toEqual([[9, 9, 2, 1]]);
+  }
 });
 
 test("an ended session revokes coverage during a spatial recovery cooldown @safety", async ({ page }) => {
@@ -329,7 +335,7 @@ test("coverage renders its selected modes only on the matching live frame", asyn
       mapSessionVerified: true, nativeSessionActive: true };
     const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" },
       resources: { entry, scene: { value: null } }, floorTypes: null, wifiSignal: null, coverageModes: 3,
-      liveCoverage: { active: true, frameKey: entryCoherenceIdentity(entry), cellSize: .015,
+      liveCoverage: { active: true, frameKey: `${entryCoherenceIdentity(entry)}|${entry.coverageUrl}`, cellSize: .015,
         truncated: true, coverageBasis: "observed_changes", runs: [[2, 3, 4, 1], [7, 5, 2, 2]] } };
     const fills = [];
     const context = { save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},

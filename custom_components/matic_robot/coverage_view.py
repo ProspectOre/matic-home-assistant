@@ -54,6 +54,10 @@ class MaticLiveCoverageView(HomeAssistantView):
                 },
                 headers=PRIVATE_NO_STORE_HEADERS,
             )
+        if request.query.get("session") != runtime.live_coverage.request_key:
+            return web.Response(
+                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+            )
         map_session_key = _map_session_key(runtime)
         if map_session_key is None:
             return web.Response(

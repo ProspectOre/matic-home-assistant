@@ -387,7 +387,7 @@ test("Wi-Fi heatmap fills measured floor bins, clips walls, blends neighbors, an
     const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" }, view: "top",
       wifiScale: "relative", wifiSignal: layer, floorTypeModes: 0, floorTypes: null,
       resources: { entry, scene: { value: { metadata: { floorSupport: support } } } },
-      liveCoverage: { active: true, frameKey: identity, mapSessionKey: "session", cellSize: 0.015,
+      liveCoverage: { active: true, frameKey: `${identity}|${entry.coverageUrl}`, mapSessionKey: "session", cellSize: 0.015,
         runs: [[0, 0, 1, 1]], truncated: true, ownershipUnverified: false, coverageBasis: "observed_changes" },
       coverageModes: 1 };
     drawMapLayers(context, state, (x, y) => ({ x: 20 + x * 50, y: 20 + y * 50 }));

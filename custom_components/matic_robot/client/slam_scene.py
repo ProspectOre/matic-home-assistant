@@ -171,22 +171,10 @@ def encode_slam_scene(
         )
         offset_x = tile.page_x * TILE_SIDE - min_cell_x
         offset_y = tile.page_y * TILE_SIDE - min_cell_y
-        surfaces = np.unpackbits(
-            np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
-        ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
-        # Surface columns index x then y. The floor raster indexes rows then columns.
-        vertical_obstruction = (
-            np.count_nonzero(surfaces[:, :, 7:], axis=2).T
-            >= MIN_VERTICAL_PARTITION_LEVELS
-        )
         floor_occupancy[
             offset_y : offset_y + TILE_SIDE,
             offset_x : offset_x + TILE_SIDE,
         ] |= floor[:, :, 3] != 0
-        wifi_occupancy[
-            offset_y : offset_y + TILE_SIDE,
-            offset_x : offset_x + TILE_SIDE,
-        ] |= (floor[:, :, 3] != 0) & ~vertical_obstruction
         local_y, local_x = np.nonzero(floor[:, :, 3])
         keep = (global_ordinal + np.arange(count)) % sample_step == 0
         global_ordinal += count
@@ -207,6 +195,20 @@ def encode_slam_scene(
         surfaces = np.unpackbits(
             np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
         ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
+        floor = np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
+            TILE_SIDE, TILE_SIDE, 4
+        )
+        offset_x = tile.page_x * TILE_SIDE - min_cell_x
+        offset_y = tile.page_y * TILE_SIDE - min_cell_y
+        # Reuse the surface decode for Wi-Fi's row-major obstruction mask.
+        vertical_obstruction = (
+            np.count_nonzero(surfaces[:, :, 7:], axis=2).T
+            >= MIN_VERTICAL_PARTITION_LEVELS
+        )
+        wifi_occupancy[
+            offset_y : offset_y + TILE_SIDE,
+            offset_x : offset_x + TILE_SIDE,
+        ] |= (floor[:, :, 3] != 0) & ~vertical_obstruction
         local_x, local_y, levels = np.nonzero(surfaces)
         if tile.rgb_data:
             colors = np.frombuffer(tile.rgb_data, dtype=np.uint8).reshape(-1, 3)

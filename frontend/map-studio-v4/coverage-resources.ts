@@ -1,5 +1,5 @@
 import { entryCoherenceIdentity } from "./backend-contracts";
-import { BackendError, type MaticBackend } from "./backend";
+import type { MaticBackend } from "./backend";
 import type { ResourceRequests } from "./resource-requests";
 import type { WorkspaceStore } from "./state";
 import { isAbort } from "./shared-primitives";
@@ -8,6 +8,7 @@ import { parseCleaningCoverage } from "./cleaning-coverage";
 /** Poll coverage only while the current live map owns the page. */
 export class CoverageResources {
   #timer: number | null = null;
+  #url: string | null = null;
   constructor(
     readonly store: WorkspaceStore,
     readonly backend: MaticBackend,
@@ -16,13 +17,18 @@ export class CoverageResources {
   ) {}
 
   start(): void {
-    if (this.#timer !== null) return;
+    const url = this.store.value.resources.entry?.coverageUrl ?? null;
+    if (this.#timer !== null && url === this.#url) return;
+    this.stop();
+    this.#url = url;
+    this.store.patch({ liveCoverage: null });
     this.#timer = window.setInterval(() => void this.#load(), 5_000);
     void this.#load();
   }
 
   stop(): void {
     this.requests.cancel("cleaning-coverage");
+    this.#url = null;
     if (this.#timer !== null) window.clearInterval(this.#timer);
     this.#timer = null;
   }
@@ -38,7 +44,7 @@ export class CoverageResources {
       return;
     }
     if (this.requests.has("cleaning-coverage")) return;
-    const identity = entryCoherenceIdentity(entry);
+    const identity = `${entryCoherenceIdentity(entry)}|${entry.coverageUrl}`;
     const controller = this.requests.begin("cleaning-coverage");
     const current = (): boolean => {
       const currentState = this.store.value;
@@ -46,15 +52,14 @@ export class CoverageResources {
         && currentState.dataMode === "live" && currentState.selection.floorId === "current"
         && !currentState.floor.readOnly && Boolean(currentState.resources.entry
           && currentState.resources.entry.nativeSessionActive === true
-          && entryCoherenceIdentity(currentState.resources.entry) === identity);
+          && `${entryCoherenceIdentity(currentState.resources.entry)}|${currentState.resources.entry.coverageUrl}` === identity);
     };
     try {
       const layer = parseCleaningCoverage(await this.backend.mapLayer("coverage", entry.coverageUrl, controller.signal));
       if (current()) this.store.patch({ liveCoverage: layer.active && layer.mapSessionKey === entry.mapSessionKey
         ? { ...layer, frameKey: identity } : null });
     } catch (error) {
-      if (!isAbort(error) && !(error instanceof BackendError && error.status === 409)
-        && current()) this.store.patch({ liveCoverage: null });
+      if (!isAbort(error) && current()) this.store.patch({ liveCoverage: null });
     } finally {
       this.requests.release("cleaning-coverage", controller);
     }

@@ -23,7 +23,7 @@ from custom_components.matic_robot.coverage_view import (
 from custom_components.matic_robot.live_coverage import LiveCoverage
 
 from .test_coverage_receipts import active_key
-from .test_floor_types import _request
+from .test_floor_types import _request as _floor_request
 from .test_slam_map import synthetic_semantic_entry
 
 MISSION = 42
@@ -32,6 +32,14 @@ MISSION = 42
 class _CoverageStub(SimpleNamespace):
     __hash__ = object.__hash__
     withdrawal_revision = 0
+    request_key = "f" * 64
+
+
+def _request(runtime, **kwargs):
+    request = _floor_request(runtime, **kwargs)
+    coverage = getattr(runtime, "live_coverage", None)
+    key = coverage.request_key if coverage is not None else None
+    return request.clone(rel_url=f"/?session={key}") if key else request
 
 
 def _client():
@@ -943,3 +951,33 @@ async def test_withdrawn_coverage_cannot_reappear_from_inflight_snapshot(
     assert response.status == 200
     runs = json.loads(response.body)["runs"]
     assert runs == ([] if removed == "page" else [[64, -32, 1, 1]])
+
+
+async def test_coverage_urls_are_bound_to_collector_and_session_generation():
+    client = _client()
+    session = active_key()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=session)
+    coverage = LiveCoverage(client, lambda: (MISSION, "floor"))
+    assert coverage.request_key is None
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = session
+    runtime = SimpleNamespace(live_coverage=coverage)
+    request_a = _request(runtime)
+    key_a = coverage.request_key
+    assert len(key_a) == 64
+    view = MaticLiveCoverageView()
+    assert (await view.get(request_a, "entry")).status == 200
+    assert (await view.get(_floor_request(runtime), "entry")).status == 409
+    coverage._clear()
+    assert coverage.request_key is None
+    coverage._bound_context = (MISSION, "floor")
+    coverage._session = active_key(UUID(int=9))
+    client.async_get_cleaning_session_identity.return_value = coverage._session
+    assert coverage.request_key != key_a
+    assert (await view.get(request_a, "entry")).status == 409
+    assert (await view.get(_request(runtime), "entry")).status == 200
+    other = LiveCoverage(client, lambda: (MISSION, "floor"))
+    other._bound_context = (MISSION, "floor")
+    other._session = coverage._session
+    other.generation = coverage.generation
+    assert other.request_key != coverage.request_key

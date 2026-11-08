@@ -4370,3 +4370,12 @@ async def test_floor_count_matches_choices_without_current_snapshot(
     choices = json.loads(response.body)["floors"]
     assert len(choices) == expected
     assert catalog_entry_projection("entry", runtime)["history_floor_count"] == expected
+
+
+def test_catalog_binds_coverage_url_to_the_collector_generation():
+    runtime = _runtime()
+    runtime.live_coverage = SimpleNamespace(request_key="a" * 64)
+    first = catalog_entry_projection("entry", runtime)["coverage_url"]
+    assert first == "/api/matic_robot/live_coverage/entry?session=" + "a" * 64
+    runtime.live_coverage.request_key = "b" * 64
+    assert catalog_entry_projection("entry", runtime)["coverage_url"] != first
