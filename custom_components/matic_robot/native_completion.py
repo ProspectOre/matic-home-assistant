@@ -93,6 +93,13 @@ def match_single_room_completions(
     for record in records:
         if baseline is not None and record.key in baseline:
             continue
+        if not record.decoded:
+            if baseline is not None:
+                # A new record without decodable contents could be this
+                # dispatch's session or a second one. Neither a unique match
+                # nor ambiguity can be shown, so nothing is credited.
+                return ()
+            continue
         session = record.session
         started = dt_util.parse_datetime(session.started_at or "")
         ended = dt_util.parse_datetime(session.ended_at or "")

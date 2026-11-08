@@ -989,20 +989,30 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             "coverage_session_history", limit=64
         )
         records_list: list[CleaningSessionRecord] = []
-        invalid = False
+        identity_lost = False
         for entry in entries:
             session = _decode_cleaning_session(entry.value)
-            if not entry.key or session is None:
-                invalid = True
-                if not entry.key or native_session_hash(entry.key) is None:
-                    continue
-                # Keep a rejected record's exact identity as a tombstone. Its
-                # disappearance from retention is different from a correction
-                # that no longer supports an earlier completion credit.
-                session = CleaningSession(None, None, None, (), (), None)
-            records_list.append(CleaningSessionRecord(entry.key, session))
-        if strict and invalid:
-            raise MaticError("Native history is incomplete or undecodable")
+            if entry.key and session is not None:
+                records_list.append(CleaningSessionRecord(entry.key, session))
+                continue
+            if not entry.key or native_session_hash(entry.key) is None:
+                identity_lost = True
+                continue
+            # Keep a rejected record's exact identity as a tombstone. Its
+            # disappearance from retention is different from a correction
+            # that no longer supports an earlier completion credit.
+            records_list.append(
+                CleaningSessionRecord(
+                    entry.key,
+                    CleaningSession(None, None, None, (), (), None),
+                    decoded=False,
+                )
+            )
+        # Strict callers compare record keys across a dispatch, so they need
+        # every retained identity, not every record's contents. A tombstone
+        # keeps its exact key; only a dropped entry leaves the set incomplete.
+        if strict and identity_lost:
+            raise MaticError("Native history is incomplete")
         records = tuple(records_list)
         return records, _native_history_collection_revision(entries)
 

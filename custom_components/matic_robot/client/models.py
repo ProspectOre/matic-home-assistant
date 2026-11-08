@@ -330,10 +330,16 @@ class CleaningSession:
 
 @dataclass(frozen=True, slots=True)
 class CleaningSessionRecord:
-    """One opaque native history key and its decoded session summary."""
+    """One opaque native history key and its decoded session summary.
+
+    ``decoded`` is false for a retained record whose contents could not be
+    decoded. Its key is still exact, so baselines stay complete, but its
+    session carries no evidence.
+    """
 
     key: bytes
     session: CleaningSession
+    decoded: bool = True
 
 
 @dataclass(frozen=True, slots=True)

@@ -113,6 +113,42 @@ def test_shared_single_room_matcher_bounds_ambiguity_and_honors_baseline():
     )
 
 
+def test_managed_matcher_refuses_credit_beside_a_new_undecodable_record():
+    """An undecodable new record could be a second session; fail closed."""
+    from custom_components.matic_robot.client.models import CleaningSession
+
+    session = _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+    assert session is not None
+    match = CleaningSessionRecord(b"synthetic-match", session)
+    opaque = CleaningSessionRecord(
+        b"synthetic-opaque",
+        CleaningSession(None, None, None, (), (), None),
+        decoded=False,
+    )
+    arguments = {
+        "room_name": "Study",
+        "cleaning_mode": "vacuum",
+        "dispatched_at": dt_util.utcnow() - timedelta(seconds=90),
+        "now": dt_util.utcnow(),
+    }
+
+    # Retained before dispatch: the opaque record cannot be this mission.
+    assert (
+        len(
+            match_single_room_completions(
+                (opaque, match), baseline={opaque.key}, **arguments
+            )
+        )
+        == 1
+    )
+    # New since dispatch: it might be this mission, so nothing is unique.
+    assert not match_single_room_completions(
+        (opaque, match), baseline=frozenset(), **arguments
+    )
+    # Unbaselined history views keep ignoring opaque records.
+    assert len(match_single_room_completions((opaque, match), **arguments)) == 1
+
+
 def test_shared_matcher_preserves_distinct_legacy_admission_rules():
     from custom_components.matic_robot.client.models import CleaningSession
 

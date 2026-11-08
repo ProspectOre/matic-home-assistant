@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 
@@ -67,8 +68,54 @@ async def test_corrupt_revision_keeps_exact_key_for_credit_retraction():
     assert len(records) == 1 and records[0].key == history_key()
     assert records[0].session.completed is None
     assert revision != api._native_history_collection_revision(())
-    with pytest.raises(api.MaticError, match="undecodable"):
-        await client.async_get_cleaning_session_snapshot(strict=True)
+    assert records[0].decoded is False
+    # Strict reads protect identity completeness, not content decoding. A
+    # retained record that cannot be decoded keeps its exact key (#402).
+    strict_records, _ = await client.async_get_cleaning_session_snapshot(strict=True)
+    assert strict_records == records
+
+
+@pytest.mark.parametrize(
+    ("key", "payload"),
+    [(b"", _payload()), (b"not-a-native-session-key", b"\xff")],
+    ids=["empty-key", "unhashable-key-undecodable"],
+)
+async def test_strict_read_refuses_history_whose_identity_is_lost(key, payload):
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(history_key(), _payload()),
+            HermesCollectionEntry(key, payload),
+        )
+    )
+    records = await client.async_get_cleaning_session_records()
+    assert [record.key for record in records] == [history_key()]
+    with pytest.raises(api.MaticError, match="incomplete"):
+        await client.async_get_cleaning_session_records(strict=True)
+
+
+async def test_oversized_retained_record_does_not_block_managed_baseline():
+    """#402: one record above the decode budget must not block dispatch."""
+    from functools import partial
+
+    from custom_components.matic_robot.managed_executor import (
+        _async_session_history_baseline,
+    )
+
+    oversized_key = history_key(UUID(int=402))
+    oversized = _payload() + _bfield(9, bytes(api._CLEANING_SESSION_MAX_BYTES))
+    assert api._decode_cleaning_session(oversized) is None
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(history_key(), _payload()),
+            HermesCollectionEntry(oversized_key, oversized),
+        )
+    )
+    baseline = await _async_session_history_baseline(
+        partial(client.async_get_cleaning_session_records, strict=True)
+    )
+    assert baseline == frozenset({history_key(), oversized_key})
 
 
 async def test_non_room_and_unknown_modern_records_keep_strict_baselines():
