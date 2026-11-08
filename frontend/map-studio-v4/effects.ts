@@ -745,6 +745,7 @@ export class EffectController {
     const stamp = this.#coherence.current();
     if (!entry || !stamp || !state.host.administrator || !state.host.connected) return;
     const revision = ++this.#historyViewRevision;
+    this.#requests.cancel("history");
     await this.#spatialResources.loadHistory(entry, stamp);
     const current = this.#store.value;
     if (historyId && !this.#disposed && revision === this.#historyViewRevision
