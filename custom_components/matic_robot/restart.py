@@ -533,8 +533,12 @@ async def async_recover_managed_run(
                 serial_number, "verifying", reason="native_end_previously_observed"
             )
 
-            async def read_history() -> tuple[CleaningSessionRecord, ...]:
-                records = await runtime.client.async_get_cleaning_session_records()
+            async def read_history(
+                exclude_keys: frozenset[bytes],
+            ) -> tuple[CleaningSessionRecord, ...]:
+                records = await runtime.client.async_get_cleaning_session_records(
+                    exclude_keys, strict=True
+                )
                 if (
                     cancel.is_set()
                     or manager.motion_generation(serial_number) != generation

@@ -67,6 +67,51 @@ async def test_key_inventory_does_not_require_a_decodable_record():
         await client.async_get_cleaning_session_records(strict=True)
 
 
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_completion_history_excludes_only_known_baseline_records(oversized):
+    from uuid import UUID
+
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    circle = _bfield(1, _fixed32(1, 17.5) + _fixed32(2, 29.25)) + _fixed32(2, 0.2)
+    old_value = (
+        _payload(goal_geometry=_bfield(1, circle) * 10000, goal_ids=((1, 2),) * 12)
+        if oversized
+        else b"\xff"
+    )
+    old_key = history_key(UUID(int=1))
+    new_key = history_key(UUID(int=2))
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(old_key, old_value),)
+    )
+    baseline = await client.async_get_cleaning_session_keys()
+    client.async_get_tracked_collection_entries.return_value = (
+        HermesCollectionEntry(old_key, old_value),
+        HermesCollectionEntry(new_key, _payload()),
+    )
+
+    (record,) = await client.async_get_cleaning_session_records(baseline, strict=True)
+    assert record.key == new_key
+    assert record.session.completed_rooms == ("Kitchen",)
+    assert record.session.room_durations_for_mode("vacuum") == (("Kitchen", 73),)
+    with pytest.raises(api.MaticError, match="undecodable"):
+        await client.async_get_cleaning_session_records(strict=True)
+
+    filtered_snapshot = await client.async_get_cleaning_session_snapshot(
+        strict=True, exclude_keys=baseline
+    )
+    client.async_get_tracked_collection_entries.return_value = (
+        HermesCollectionEntry(new_key, _payload()),
+    )
+    assert await client.async_get_cleaning_session_snapshot(strict=True) == (
+        filtered_snapshot
+    )
+    client.async_get_tracked_collection_entries.return_value += (
+        HermesCollectionEntry(history_key(UUID(int=3)), b"\xff"),
+    )
+    with pytest.raises(api.MaticError, match="undecodable"):
+        await client.async_get_cleaning_session_records(baseline, strict=True)
+
+
 @pytest.mark.parametrize("keys", [(b"",), (b"same", b"same")])
 async def test_key_inventory_rejects_ambiguous_keys(keys):
     client = api.MaticHermesClient("192.0.2.1", 16320)

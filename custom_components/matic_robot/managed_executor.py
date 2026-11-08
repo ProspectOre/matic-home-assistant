@@ -258,7 +258,10 @@ async def _async_dispatch_leg_command(
     entity_id: str,
     rooms: Sequence[CleaningRoom] | AreaLeg,
     motion_token: int | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ]
+    | None,
     *,
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
@@ -470,7 +473,9 @@ async def _async_run_room(
     refresh: Callable[[], Awaitable[None]] | None = None,
     motion_token: int | None = None,
     active_session: Callable[[], Awaitable[bool | None]] | None = None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ]
     | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
@@ -1139,7 +1144,10 @@ async def _async_run_area_leg(
     cancel_event: asyncio.Event,
     motion_token: int,
     active_session: Callable[[], Awaitable[bool | None]] | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ]
+    | None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None,
     *,
     prepared_dispatch: _PreparedRoomDispatch | None,
@@ -1339,7 +1347,9 @@ async def _async_run_leg(
     refresh: Callable[[], Awaitable[None]] | None = None,
     motion_token: int | None = None,
     active_session: Callable[[], Awaitable[bool | None]] | None = None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ]
     | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
@@ -1956,7 +1966,8 @@ async def _async_run_leg(
 
 
 async def _async_verify_leg_completion(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    | None,
     baseline: frozenset[bytes] | None,
     rooms: Sequence[CleaningRoom],
     dispatched_at: datetime,
@@ -1994,7 +2005,7 @@ async def _async_verify_leg_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await reader(baseline)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic leg evidence unavailable (%s)", type(err).__name__
@@ -2395,7 +2406,8 @@ async def _async_session_history_baseline(
 
 
 async def _async_verify_room_completion(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    | None,
     baseline: frozenset[bytes] | None,
     room: CleaningRoom,
     dispatched_at: datetime,
@@ -2420,7 +2432,7 @@ async def _async_verify_room_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await reader(baseline)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic completion evidence unavailable (%s)",
@@ -2814,7 +2826,10 @@ def _schedule_native_reconciliation(
     reconciliation: _NativeReconciliation | None,
     history_baseline: frozenset[bytes] | None,
     active_session: Callable[[], Awaitable[bool | None]] | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ]
+    | None,
     confirm_room_completed: Callable[[str], None] | None,
     context: Context | None,
     coverage_verifier: CoverageVerifier | None = None,
@@ -2871,7 +2886,9 @@ async def _async_reconcile_native_stop(
     reconciliation: _NativeReconciliation,
     history_baseline: frozenset[bytes],
     active_session: Callable[[], Awaitable[bool | None]] | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ],
     confirm_room_completed: Callable[[str], None] | None,
     context: Context | None,
     coverage_verifier: CoverageVerifier | None = None,
@@ -2893,7 +2910,7 @@ async def _async_reconcile_native_stop(
             )
             break
         try:
-            records = await session_history()
+            records = await session_history(history_baseline)
         except MaticError as err:
             _LOGGER.debug(
                 "Native Matic stop reconciliation read unavailable (%s)",
@@ -3508,7 +3525,9 @@ async def _async_execute_rooms_reserved(
     cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
     refresh: Callable[[], Awaitable[None]] | None = None,
     active_session: Callable[[], Awaitable[bool | None]] | None = None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ]
     | None = None,
     session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,
@@ -4357,7 +4376,9 @@ async def _async_execute_rooms(
     cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
     refresh: Callable[[], Awaitable[None]] | None = None,
     active_session: Callable[[], Awaitable[bool | None]] | None = None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    session_history: Callable[
+        [frozenset[bytes]], Awaitable[tuple[CleaningSessionRecord, ...]]
+    ]
     | None = None,
     session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,

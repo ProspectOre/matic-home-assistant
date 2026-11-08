@@ -984,12 +984,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     async def async_get_cleaning_session_records(
         self,
+        exclude_keys: frozenset[bytes] = frozenset(),
         *,
         strict: bool = False,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
         records, _revision = await self.async_get_cleaning_session_snapshot(
-            strict=strict
+            strict=strict, exclude_keys=exclude_keys
         )
         return records
 
@@ -997,11 +998,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
         *,
         strict: bool = False,
+        exclude_keys: frozenset[bytes] = frozenset(),
     ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
         """Return decoded records and their opaque revision from one collection read."""
         entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
+        if exclude_keys:
+            entries = tuple(entry for entry in entries if entry.key not in exclude_keys)
         records_list: list[CleaningSessionRecord] = []
         invalid = False
         for entry in entries:

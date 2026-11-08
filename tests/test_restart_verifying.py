@@ -305,7 +305,7 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
     else:
         reads = 0
 
-        async def history():
+        async def history(*_args, **_kwargs):
             nonlocal reads
             reads += 1
             if reads > 1:

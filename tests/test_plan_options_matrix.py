@@ -119,7 +119,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         hass.states.async_set("vacuum.matic", "returning")
         return RoomRunOutcome.HANDOFF_CANDIDATE, None
 
-    async def history():
+    async def history(*_args):
         if not ended:
             return ()
         results = tuple(
@@ -334,7 +334,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
         hass.states.async_set("vacuum.matic", "idle")
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
-    async def history():
+    async def history(*_args):
         if not ended:
             return ()
         if manager.snapshot("serial")["active_plan"]["status"] == "verifying":

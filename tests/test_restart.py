@@ -723,7 +723,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     before_count = manager.snapshot("serial")["last_run"]["completed_room_count"]
 
-    async def history(**_kwargs):
+    async def history(*_args, **_kwargs):
         if rename_timing == "during_history":
             runtime.coordinator.data.floor_plan = renamed
         return ()

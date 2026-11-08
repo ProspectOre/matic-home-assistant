@@ -1117,7 +1117,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
     room = _room("Study", "room-study")
     reads = 0
 
-    async def history():
+    async def history(*_args):
         nonlocal reads
         reads += 1
         if reads == 1 or scenario != "complete":
@@ -7366,7 +7366,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
     )
     history_reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal history_reads
         history_reads += 1
         if history_reads == 1:
@@ -7502,7 +7502,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
     room = _room("Kitchen", "room-kitchen")
     now = dt_util.utcnow()
 
-    async def failing_reader() -> tuple[CleaningSessionRecord, ...]:
+    async def failing_reader(*_args) -> tuple[CleaningSessionRecord, ...]:
         raise MaticError("synthetic unavailable")
 
     assert await _async_session_history_baseline(failing_reader) is None
@@ -7581,7 +7581,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     cancel_event = asyncio.Event()
 
-    async def cancel_during_retry() -> tuple[CleaningSessionRecord, ...]:
+    async def cancel_during_retry(*_args) -> tuple[CleaningSessionRecord, ...]:
         asyncio.get_running_loop().call_soon(cancel_event.set)
         return ()
 
@@ -7728,7 +7728,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
     hass.services.async_register("vacuum", "send_command", send_command)
     history_reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal history_reads
         history_reads += 1
         if history_reads == 1:
@@ -7917,7 +7917,7 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
 
     hass.async_create_task(end_leg(), eager_start=True)
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
 
     confirmed: list[str] = []
@@ -8008,7 +8008,7 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
     hass.services.async_register("vacuum", "send_command", send_command)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -8079,7 +8079,7 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
     hass.services.async_register("vacuum", "send_command", send_command)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -8390,7 +8390,7 @@ async def test_leg_partial_verification_does_not_start_next_leg(
     hass.services.async_register("vacuum", "send_command", send_command)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -8674,7 +8674,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     record: CleaningSessionRecord | None = None
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads, record
         reads += 1
         if reads == 1:
@@ -8766,7 +8766,7 @@ async def test_leg_partial_record_credits_only_verified_subset(
     hass.services.async_register("vacuum", "send_command", send_command)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -8817,7 +8817,7 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
     hass.services.async_register("vacuum", "send_command", send_command)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -8964,7 +8964,7 @@ async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
     prefetched = False
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(*_args) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         assert not prefetched
@@ -10846,7 +10846,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
 
         hass.async_create_task(finish(), eager_start=True)
 
-    async def history():
+    async def history(*_args):
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -10930,7 +10930,7 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
         session_reads += 1
         return session_reads < 3
 
-    async def history():
+    async def history(*_args):
         nonlocal history_reads
         history_reads += 1
         if history_reads == 1:
@@ -11035,7 +11035,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
             return True
         return False
 
-    async def history():
+    async def history(*_args):
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -11099,7 +11099,7 @@ async def test_multi_room_leg_persists_completion_before_next_dispatch(
 
         hass.async_create_task(finish(), eager_start=True)
 
-    async def history():
+    async def history(*_args):
         nonlocal reads
         reads += 1
         assert not prefetched, "next mission started during prior evidence polling"
@@ -11192,7 +11192,7 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
     )
     reads = 0
 
-    async def history():
+    async def history(*_args):
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -11255,7 +11255,7 @@ async def test_terminal_history_has_its_own_budget(
         )
     reads = 0
 
-    async def history():
+    async def history(*_args):
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -11294,7 +11294,7 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
     )
     cancelled = False
 
-    async def slow_reader():
+    async def slow_reader(*_args):
         nonlocal cancelled
         try:
             await asyncio.sleep(1)
