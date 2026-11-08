@@ -283,8 +283,14 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
         assert await hass.config_entries.async_reload(reloaded.entry_id)
         assert reloaded.state is ConfigEntryState.LOADED
         assert reloaded.runtime_data is not west_runtime
+        assert reloaded.runtime_data.photos is not west_runtime.photos
         reloaded_photo_url = f"/api/{DOMAIN}/photo/{reloaded.entry_id}/{photo_id}"
-        assert (await client.get(reloaded_photo_url)).status == 404
+        # The fresh store can already have replayed retained robot photos by
+        # the time reload returns; verify their owner instead of racing replay.
+        await reloaded.runtime_data.photos.async_read()
+        reloaded_response = await client.get(reloaded_photo_url)
+        assert reloaded_response.status == 200
+        assert await reloaded_response.read() == _webp(colors[1])
         robots[1].arrive_at_dock()
         await reloaded.runtime_data.coordinator.async_refresh()
         reconnected_photo_id = uuid4()

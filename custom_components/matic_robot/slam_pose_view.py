@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http import HTTPStatus
 from time import monotonic, time
 from typing import TYPE_CHECKING
@@ -16,14 +16,21 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from .client.exceptions import MaticError
 from .client.floor_plan import (
     pose_observation_age_seconds,
+    pose_observation_is_current,
     resolve_robot_map_position,
     robot_location_source,
 )
-from .client.models import RobotPose
+from .client.models import FloorPlan, RobotPose
 from .http import POSE_API_URL, PRIVATE_NO_STORE_HEADERS, runtime_for_entry
 from .slam_map_store import SlamMapIdentity
 from .slam_scene import MaticSlamSceneView
-from .slam_view_data import _map_session_key, _pose_frame_key, observe_run_trail
+from .slam_view_data import (
+    _map_session_key,
+    _pose_frame_key,
+    observe_run_trail,
+    pose_frame_token,
+    pose_observed_in_frame,
+)
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
@@ -40,7 +47,34 @@ class _CachedPose:
     fetched_at: float
     revision: int
     freshness: str
-    frame_key: tuple[SlamMapIdentity | None, str | None, int]
+    frame_key: tuple[SlamMapIdentity | None, str | None, int, int]
+
+
+def _newest_pose(
+    cached: _CachedPose | None, candidate: _CachedPose, floor_plan: FloorPlan
+) -> _CachedPose:
+    """Keep native observation order across stream and on-demand responses."""
+    if (
+        cached is None
+        or cached.runtime_id != candidate.runtime_id
+        or cached.frame_key != candidate.frame_key
+        or cached.freshness != "live"
+        or cached.pose is None
+        or cached.pose.observed_at is None
+    ):
+        return candidate
+    now = time()
+    candidate_time = candidate.pose.observed_at if candidate.pose is not None else None
+    if pose_observation_is_current(cached.pose, floor_plan, now=now) and (
+        candidate.freshness != "live"
+        or candidate_time is None
+        or not pose_observation_is_current(candidate.pose, floor_plan, now=now)
+        or cached.pose.observed_at >= candidate_time
+    ):
+        # Refresh only the read-attempt clock, not the native observation.
+        # Requests queued on the lock can then share this completed attempt.
+        return replace(cached, fetched_at=max(cached.fetched_at, candidate.fetched_at))
+    return candidate
 
 
 class MaticSlamPoseView(HomeAssistantView):
@@ -76,9 +110,22 @@ class MaticSlamPoseView(HomeAssistantView):
         floor_plan = runtime.coordinator.data.floor_plan
         if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
             return self._unavailable_frame(entry_id, runtime)
+        tracker = getattr(runtime, "live_pose", None)
+        tracked_pose = tracker.current() if tracker is not None else None
         cached = self._cache.get(entry_id)
         now = request_started
-        if (
+        if tracker is not None and pose_observation_is_current(
+            tracked_pose, floor_plan, now=time()
+        ):
+            cached = _newest_pose(
+                cached,
+                _CachedPose(
+                    id(runtime), tracked_pose, now, tracker.revision, "live", frame_key
+                ),
+                floor_plan,
+            )
+            self._cache[entry_id] = cached
+        elif (
             cached is None
             or cached.runtime_id != id(runtime)
             or cached.frame_key != frame_key
@@ -125,14 +172,36 @@ class MaticSlamPoseView(HomeAssistantView):
                         if cached is not None and cached.runtime_id == id(runtime)
                         else 0
                     )
-                    cached = _CachedPose(
-                        id(runtime),
-                        pose,
-                        monotonic(),
-                        previous_revision + 1,
-                        freshness,
-                        frame_key,
+                    cached = _newest_pose(
+                        self._cache.get(entry_id),
+                        _CachedPose(
+                            id(runtime),
+                            pose,
+                            monotonic(),
+                            previous_revision + 1,
+                            freshness,
+                            frame_key,
+                        ),
+                        floor_plan,
                     )
+                    # The background stream can recover while this read waits,
+                    # even when no second HTTP request has refreshed the cache.
+                    tracked_pose = tracker.current() if tracker is not None else None
+                    if tracker is not None and pose_observation_is_current(
+                        tracked_pose, floor_plan, now=time()
+                    ):
+                        cached = _newest_pose(
+                            cached,
+                            _CachedPose(
+                                id(runtime),
+                                tracked_pose,
+                                monotonic(),
+                                tracker.revision,
+                                "live",
+                                frame_key,
+                            ),
+                            floor_plan,
+                        )
                     self._cache[entry_id] = cached
         data = runtime.coordinator.data
         floor_plan_coherent = runtime.slam_map.floor_plan_is_current(data.floor_plan)
@@ -144,7 +213,13 @@ class MaticSlamPoseView(HomeAssistantView):
         native_age = pose_observation_age_seconds(cached.pose, now=pose_now)
         # Transport fallback cannot certify a current position. Keep room-only
         # presence available without moving an old point onto the current map.
-        visible_pose = cached.pose if cached.freshness == "live" else None
+        visible_pose = (
+            cached.pose
+            if cached.freshness == "live"
+            and cached.pose is not None
+            and pose_observed_in_frame(runtime, cached.pose.observed_at)
+            else None
+        )
         position = (
             resolve_robot_map_position(
                 data.floor_plan,
@@ -166,7 +241,11 @@ class MaticSlamPoseView(HomeAssistantView):
             else "unavailable"
         )
         if cached.freshness == "live":
-            observe_run_trail(runtime, position[:2] if position is not None else None)
+            observe_run_trail(
+                runtime,
+                position[:2] if position is not None else None,
+                visible_pose.observed_at if visible_pose is not None else None,
+            )
         return self.json(
             {
                 "position": list(position[:2]) if position is not None else None,
@@ -191,9 +270,11 @@ class MaticSlamPoseView(HomeAssistantView):
                 ),
                 "map_floor_coherent": floor_plan_coherent,
                 "pose_revision": cached.revision,
+                "pose_frame_key": pose_frame_token(runtime),
                 "pose_age_seconds": (
                     round(native_age, 3) if native_age is not None else None
                 ),
+                "pose_measured_at": pose_now,
                 "pose_processing_seconds": math.floor(
                     max(0.0, age_measured_at - request_started) * 1000
                 )
@@ -234,6 +315,7 @@ class MaticSlamPoseView(HomeAssistantView):
                 ),
                 "map_floor_coherent": False,
                 "pose_revision": 0,
+                "pose_frame_key": None,
                 "pose_age_seconds": None,
                 "pose_fetch_age_seconds": None,
                 "pose_observation_current": False,

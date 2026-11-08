@@ -13,6 +13,7 @@ export const BACKEND_REQUEST_OPERATIONS = [
   "runs",
   "wifiSignal",
   "carpetVents",
+  "coverage",
 ] as const;
 
 export type BackendRequestOperation = typeof BACKEND_REQUEST_OPERATIONS[number];

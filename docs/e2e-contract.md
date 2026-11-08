@@ -45,6 +45,12 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
    acceptance. Local tests and UI checks complement live proof; they do not
    replace it.
 
+For households with multiple robots, repeat entry-scoped actions against each
+robot and inspect the target entity or config entry. Switching the map selection
+alone must never send a cleaning command. Use the
+[multi-robot acceptance matrix](qualification-map-experience.md#multi-robot-compatibility)
+for the selector, map layers and delayed responses on every candidate.
+
 ## Acceptance matrix
 
 | Scenario | Required evidence | Room-credit rule |

@@ -33,6 +33,7 @@ MAX_SCENE_SPAN = 65_536
 MAX_SCENE_RASTER_CELLS = 4 * 1024 * 1024
 MAX_SCENE_METADATA_BYTES = 1024 * 1024
 MAX_COVERAGE_MASK_BYTES = 384 * 1024
+MIN_VERTICAL_PARTITION_LEVELS = 4
 _SCENE_HEADER = struct.Struct("<8sHHIII")
 
 
@@ -159,6 +160,7 @@ def encode_slam_scene(
     floor_chunks: list[bytes] = []
     surface_chunks: list[bytes] = []
     floor_occupancy = np.zeros((span_y, span_x), dtype=bool)
+    wifi_occupancy = np.zeros((span_y, span_x), dtype=bool)
     floor_point_count = 0
     surface_point_count = 0
     global_ordinal = 0
@@ -193,6 +195,20 @@ def encode_slam_scene(
         surfaces = np.unpackbits(
             np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
         ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
+        floor = np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
+            TILE_SIDE, TILE_SIDE, 4
+        )
+        offset_x = tile.page_x * TILE_SIDE - min_cell_x
+        offset_y = tile.page_y * TILE_SIDE - min_cell_y
+        # Reuse the surface decode for Wi-Fi's row-major obstruction mask.
+        vertical_obstruction = (
+            np.count_nonzero(surfaces[:, :, 7:], axis=2).T
+            >= MIN_VERTICAL_PARTITION_LEVELS
+        )
+        wifi_occupancy[
+            offset_y : offset_y + TILE_SIDE,
+            offset_x : offset_x + TILE_SIDE,
+        ] |= (floor[:, :, 3] != 0) & ~vertical_obstruction
         local_x, local_y, levels = np.nonzero(surfaces)
         if tile.rgb_data:
             colors = np.frombuffer(tile.rgb_data, dtype=np.uint8).reshape(-1, 3)
@@ -265,6 +281,9 @@ def encode_slam_scene(
         )
         if coverage is not None:
             metadata_value["coverage"] = coverage
+    metadata_value["floor_support"] = _floor_support_metadata(
+        wifi_occupancy, min_cell_x, min_cell_y
+    )
     metadata = json.dumps(
         metadata_value,
         ensure_ascii=False,
@@ -275,17 +294,22 @@ def encode_slam_scene(
     # reject an unrepresentable scene rather than silently omitting rooms or
     # identities and producing a payload that the renderer will discard.
     if len(metadata) > MAX_SCENE_METADATA_BYTES:
-        # Coverage is optional for display but required for validated compare.
-        # Keep the scene usable and make omitted support explicitly unknown.
-        metadata_value.pop("coverage", None)
-        metadata_value["coverage"] = {
-            "version": 1,
-            "status": "too_large",
-            "diff_eligible": False,
-        }
+        # The floor mask is optional display support. Preserve the existing
+        # compare coverage whenever dropping the new mask is enough to fit.
+        metadata_value.pop("floor_support", None)
         metadata = json.dumps(
             metadata_value, ensure_ascii=False, separators=(",", ":")
         ).encode()
+        if len(metadata) > MAX_SCENE_METADATA_BYTES:
+            metadata_value.pop("coverage", None)
+            metadata_value["coverage"] = {
+                "version": 1,
+                "status": "too_large",
+                "diff_eligible": False,
+            }
+            metadata = json.dumps(
+                metadata_value, ensure_ascii=False, separators=(",", ":")
+            ).encode()
         if len(metadata) > MAX_SCENE_METADATA_BYTES:
             metadata_value.pop("coverage", None)
             metadata = json.dumps(
@@ -347,6 +371,24 @@ def _coverage_metadata(
         "mask_sha256": hashlib.sha256(compressed).hexdigest(),
         "mask_zlib_base64": base64.b64encode(compressed).decode("ascii"),
         "diff_eligible": True,
+    }
+
+
+def _floor_support_metadata(
+    occupied: np.ndarray, origin_x: int, origin_y: int
+) -> dict[str, object]:
+    """Retain the exact photographed-floor footprint before point sampling."""
+    packed = np.packbits(occupied.reshape(-1), bitorder="little").tobytes()
+    return {
+        "version": 1,
+        "status": "verified",
+        "encoding": "bitset-little-v1",
+        "origin_cells": [origin_x, origin_y],
+        "meters_per_cell": VOXEL_SCALE_METERS,
+        "span_cells": [occupied.shape[1], occupied.shape[0]],
+        "occupied_cells": int(np.count_nonzero(occupied)),
+        "mask_sha256": hashlib.sha256(packed).hexdigest(),
+        "mask_base64": base64.b64encode(packed).decode("ascii"),
     }
 
 

@@ -22,7 +22,7 @@ const percent = (canvas) => canvas.evaluate((element) => {
   return d.fitDistance / d.cameraDistance * 100;
 });
 async function openZoom(gallery) {
-  await gallery.getByRole("button", { name: "Map options", exact: true }).click();
+  await gallery.getByRole("button", { name: "Tools", exact: true }).click();
   await gallery.getByRole("menuitem", { name: "Map zoom", exact: true }).click();
   return gallery.getByRole("dialog", { name: "Map zoom", exact: true });
 }
@@ -36,7 +36,7 @@ for (const mode of ["top", "three", "draw"]) for (const narrow of [false, true])
     const dialog = await openZoom(gallery);
     const input = dialog.getByLabel("Map zoom percent", { exact: true });
     await expect(input).toBeFocused();
-    await expect(gallery.getByRole("button", { name: "Map options", exact: true })).toHaveAttribute("aria-haspopup", "dialog");
+    await expect(gallery.getByRole("button", { name: "Tools", exact: true })).toHaveAttribute("aria-haspopup", "dialog");
     for (const value of [100, 400, 1000]) {
       await dialog.getByRole("button", { name: `${value}%`, exact: true }).click();
       await expect.poll(() => percent(canvas)).toBeCloseTo(value, 5);
@@ -62,10 +62,10 @@ for (const mode of ["top", "three", "draw"]) for (const narrow of [false, true])
     await expect.poll(() => percent(canvas)).toBeCloseTo(375, 5);
     await input.press("Escape");
     await expect(dialog).toHaveCount(0);
-    await expect(gallery.getByRole("button", { name: "Map options", exact: true })).toBeFocused();
+    await expect(gallery.getByRole("button", { name: "Tools", exact: true })).toBeFocused();
     await gallery.getByRole("button", { name: "Fit the whole map on screen" }).click();
     await expect.poll(() => percent(canvas)).toBeCloseTo(100, 5);
-    await gallery.getByRole("button", { name: "Map options", exact: true }).click();
+    await gallery.getByRole("button", { name: "Tools", exact: true }).click();
     await expect(gallery.getByRole("menu", { name: "Map options" })).toBeVisible();
   });
 }
@@ -165,7 +165,7 @@ for (const narrow of [false, true]) test(`numeric zoom stays reachable in compac
 
 test("numeric zoom is absent without an admitted visible map", async ({ page }) => {
   const gallery = await mount(page, "map-unavailable", false);
-  await gallery.getByRole("button", { name: "Map options", exact: true }).click();
+  await gallery.getByRole("button", { name: "Tools", exact: true }).click();
   await expect(gallery.getByRole("menu", { name: "Map options" })).toBeVisible();
   await expect(gallery.getByRole("menuitem", { name: "Map zoom", exact: true })).toHaveCount(0);
 });
@@ -201,12 +201,12 @@ test("numeric zoom remains available with Room colors and matching popup semanti
   const canvas = gallery.locator(".map-canvas");
   await expect.poll(() => canvas.evaluate(element => element.rendererDiagnostics().renderedPoints)).toBe(0);
   const dialog = await openZoom(gallery);
-  await expect(gallery.getByRole("button", { name: "Map options", exact: true })).toHaveAttribute("aria-haspopup", "dialog");
+  await expect(gallery.getByRole("button", { name: "Tools", exact: true })).toHaveAttribute("aria-haspopup", "dialog");
   await dialog.getByRole("button", { name: "400%", exact: true }).click();
   await expect.poll(() => percent(canvas)).toBeCloseTo(400, 5);
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await gallery.getByRole("button", { name: "Map options", exact: true }).click();
-  await expect(gallery.getByRole("button", { name: "Map options", exact: true })).toHaveAttribute("aria-haspopup", "menu");
+  await gallery.getByRole("button", { name: "Tools", exact: true }).click();
+  await expect(gallery.getByRole("button", { name: "Tools", exact: true })).toHaveAttribute("aria-haspopup", "menu");
 });
 
 for (const [width, depth] of [[1, 1], [10, 1]]) test(`numeric presets persist on a ${width} by ${depth} meter map`, async ({ page }) => {

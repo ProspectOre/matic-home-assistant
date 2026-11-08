@@ -40,7 +40,7 @@ export const shellStyles = [tokens, base, controls, css`
 
     .app {
       display: grid;
-      grid-template-rows: calc(3.5rem + var(--ms-safe-top)) minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
       block-size: 100%;
       background: var(--ms-surface-app);
     }
@@ -50,9 +50,7 @@ export const shellStyles = [tokens, base, controls, css`
       --ms-local: var(--ms-surface-bar);
       position: relative;
       z-index: 12;
-      display: flex;
-      align-items: center;
-      gap: var(--ms-space-2);
+      display: grid;
       min-inline-size: 0;
       padding-block-start: var(--ms-safe-top);
       padding-inline: max(var(--ms-space-3), var(--ms-safe-left)) max(var(--ms-space-3), var(--ms-safe-right));
@@ -61,9 +59,17 @@ export const shellStyles = [tokens, base, controls, css`
       box-shadow: var(--ms-shadow-1);
     }
 
-    .app-bar > .ms-btn, .app-bar > .overflow-wrap > .ms-btn { color: var(--ms-bar-text); }
-    .app-bar > .ms-btn:focus-visible, .app-bar > .overflow-wrap > .ms-btn:focus-visible { outline-color: var(--ms-bar-text); }
-
+    .toolbar-row, .toolbar-context, .toolbar-actions, .toolbar-view, .tracking-switch {
+      display: flex; align-items: center; gap: var(--ms-space-1); min-inline-size: 0;
+    }
+    .toolbar-row { min-block-size: 48px; flex-wrap: wrap; gap: var(--ms-space-1) var(--ms-space-3); padding-block: var(--ms-space-1); }
+    .toolbar-context { flex-wrap: wrap; }
+    .toolbar-context .title { font-size: 1.08rem; font-weight: 650; letter-spacing: -.025em; margin-inline-end: var(--ms-space-1); }
+    .toolbar-actions .ms-btn { border: 0; color: var(--ms-bar-text); }
+    .toolbar-actions .ms-btn:hover { color: var(--ms-bar-text); }
+    .toolbar-actions .ms-icon { width: 19px; height: 19px; }
+    .toolbar-actions { margin-inline-start: auto; }
+    .toolbar-row :is(.ms-btn,select) { min-block-size: 44px; min-inline-size: 44px; }
     .context-switcher { max-inline-size: 9rem; inline-size: auto; min-block-size: var(--ms-control); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .floor-switcher, .robot-switcher { appearance: none; block-size: 44px; padding-inline-end: 1.8rem; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
     .floor-switcher:dir(rtl), .robot-switcher:dir(rtl) { background-position: 10px 50%, 15px 50%; }
@@ -82,8 +88,6 @@ export const shellStyles = [tokens, base, controls, css`
       font-weight: var(--ms-w-bold);
       letter-spacing: var(--ms-track-tight);
     }
-
-    .spacer { flex: 1; }
 
     .overflow-wrap { position: relative; }
     .narrow .overflow { padding-inline: 4px; font-size: .75rem; }
@@ -287,7 +291,7 @@ export const shellStyles = [tokens, base, controls, css`
 
     /* Programmatic focus after a workflow change is for assistive tech; a ring on a heading reads as a control. */
     h2[tabindex="-1"]:focus { outline: 0; }
-    .narrow .app { grid-template-rows: calc(3.35rem + var(--ms-safe-top)) minmax(0, 1fr); }
+
     .narrow .workspace { grid-template-columns: minmax(0, 1fr); }
     .narrow .inspector { border-inline-start: 0; }
     .narrow .mobile-sheet {
@@ -307,7 +311,7 @@ export const shellStyles = [tokens, base, controls, css`
       transition: block-size var(--ms-base) var(--ms-ease);
       will-change: transform;
     }
-    .narrow .mobile-sheet[data-detent="half"] { block-size: min(48%, 26rem); }
+    .narrow .mobile-sheet[data-detent="half"] { block-size: min(52%, 26rem); }
     .narrow .mobile-sheet[data-detent="full"] { block-size: min(92%, calc(100% - 9rem)); }
     .narrow .mobile-sheet.dragging,
     .narrow .mobile-sheet.instant { transition: none; }
@@ -356,7 +360,6 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .sheet-body { flex: 1; min-block-size: 0; padding-block-end: var(--ms-space-1); overflow: auto; overscroll-behavior: contain; }
     .narrow .mobile-sheet .action-bar { flex: none; margin-block-start: 0; padding-block-start: var(--ms-space-2); }
     .narrow .title { font-size: var(--ms-t-md); }
-    .narrow .context-switcher { max-inline-size: 7rem; }
     .narrow .robot-switcher { flex: 1 1 auto; min-inline-size: 0; max-inline-size: none; }
     .narrow .full-map-hud { inset-inline-start: var(--ms-space-3); inset-block-end: max(var(--ms-space-3), var(--ms-safe-bottom)); inline-size: auto; max-inline-size: none; }
     .narrow .hud-exit { min-inline-size: var(--ms-control); padding-inline: var(--ms-space-2); }
@@ -385,7 +388,7 @@ export const shellStyles = [tokens, base, controls, css`
     }
     /* Compact sheet, height < 480 (design-system.md §7): a 48 px bar, peek
        and full, and the action bar in the grip row with its reason under it. */
-    .compact .app { grid-template-rows: calc(3rem + var(--ms-safe-top)) minmax(0, 1fr); }
+    /* The toolbar keeps its intrinsic height in short landscape as well. */
     .compact .mobile-sheet[data-detent="full"] { block-size: 72%; }
     .compact .sheet-grip { display: flex; flex-wrap: wrap; }
     .compact .sheet-status { flex: 1; }

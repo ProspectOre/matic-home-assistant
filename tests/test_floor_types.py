@@ -79,6 +79,7 @@ def test_carpet_rectangle_becomes_one_outline_in_map_metres() -> None:
 
     assert layer.page_count == 1
     assert not layer.truncated
+    assert layer.partial is False
     assert layer.layers["vent"] == ()
     (outline,) = layer.layers["carpet"]
     xs = {point[0] for point in outline}
@@ -193,7 +194,9 @@ def _runtime(
         client=SimpleNamespace(
             async_get_tracked_collection_entries=read
             or AsyncMock(
-                side_effect=lambda name, limit: pages if name == "map_semantics" else ()
+                side_effect=lambda name, **kwargs: (
+                    pages if name == "map_semantics" else ()
+                )
             )
         ),
     )
@@ -223,16 +226,24 @@ async def test_view_serves_outlines_and_caches_them_per_floor() -> None:
     assert body["entry_id"] == "entry"
     assert body["page_count"] == 1
     assert body["truncated"] is False
+    assert body["partial"] is True
     assert len(body["layers"]["carpet"]) == 1
     assert body["layers"]["vent"] == []
 
     await view.get(_request(runtime), "entry")
     assert runtime.client.async_get_tracked_collection_entries.await_count == 2
 
-    runtime.slam_map.mission_identity = SlamMapIdentity("other", 7)
+    # Mission id alone is not a cache key: another floor token must clear it.
+    runtime.slam_map.mission_identity = SlamMapIdentity("other", 0x1234ABCD)
     body = json.loads((await view.get(_request(runtime), "entry")).body)
     assert body["page_count"] == 0
     assert runtime.client.async_get_tracked_collection_entries.await_count == 4
+    assert (
+        runtime.client.async_get_tracked_collection_entries.await_args.kwargs[
+            "idle_timeout"
+        ]
+        == 1.5
+    )
 
     with patch(
         "custom_components.matic_robot.floor_layers.monotonic", return_value=1e12
@@ -266,9 +277,9 @@ async def test_view_discards_a_layer_read_across_a_floor_change() -> None:
     hass = request.app[KEY_HASS]
     reads = runtime.client.async_get_tracked_collection_entries.side_effect
 
-    async def change_floor(name, limit):
+    async def change_floor(name, **kwargs):
         runtime.slam_map.mission_identity = SlamMapIdentity("other", 7)
-        return reads(name, limit)
+        return reads(name, **kwargs)
 
     runtime.client.async_get_tracked_collection_entries.side_effect = change_floor
     assert (await view.get(request, "entry")).status == 409
@@ -276,11 +287,11 @@ async def test_view_discards_a_layer_read_across_a_floor_change() -> None:
     replaced = _runtime()
     runtime.client.async_get_tracked_collection_entries.side_effect = reads
 
-    async def replace_runtime(name, limit):
+    async def replace_runtime(name, **kwargs):
         hass.config_entries.async_get_entry.return_value = SimpleNamespace(
             domain=DOMAIN, state=ConfigEntryState.LOADED, runtime_data=replaced
         )
-        return reads(name, limit)
+        return reads(name, **kwargs)
 
     runtime.slam_map.mission_identity = SlamMapIdentity(MISSION, 0x1234ABCD)
     runtime.client.async_get_tracked_collection_entries.side_effect = replace_runtime
@@ -311,7 +322,7 @@ async def test_view_keeps_pages_a_later_read_did_not_replay() -> None:
         _semantic_entry(second).value,
     )
     reads = iter(((_semantic_entry(first),), (), (), (), (later,), ()))
-    runtime = _runtime(read=AsyncMock(side_effect=lambda name, limit: next(reads)))
+    runtime = _runtime(read=AsyncMock(side_effect=lambda name, **kwargs: next(reads)))
     view = MaticFloorLayersView()
 
     body = json.loads((await view.get(_request(runtime), "entry")).body)

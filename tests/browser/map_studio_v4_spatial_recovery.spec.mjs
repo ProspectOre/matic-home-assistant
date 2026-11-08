@@ -142,6 +142,11 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   await expect(panel.locator("select.robot-switcher")).toHaveValue("synthetic-entry-b");
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
+    return state.map.available && state.resources.entry?.entryId === "synthetic-entry-b";
+  })).toBe(true);
+  await page.clock.runFor(100);
+  await expect.poll(() => panel.evaluate((element) => {
+    const state = element.getWorkspaceSnapshot();
     return state.map.available && state.map.exactPose && state.resources.entry?.entryId === "synthetic-entry-b";
   })).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.deltaReads)).toBeGreaterThan(0);
@@ -159,6 +164,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   await page.clock.fastForward(1_000);
   await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.poseMismatches)).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.pendingSceneCount())).toBe(1);
+  await page.clock.runFor(1_000);
   await expect.poll(() => page.evaluate(() => typeof window.__spatialRecoveryProbe.releaseGoodPose === "function"))
     .toBe(true);
   const oneRecoveryCatalog = await page.evaluate(() => window.__panelFixture.catalogReads);

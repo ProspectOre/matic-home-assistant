@@ -255,7 +255,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
 
     async def async_subscribe_collection_entries(
-        self, collection_name: str
+        self, collection_name: str, *, include_deletions: bool = False
     ) -> AsyncGenerator[HermesCollectionEntry]:
         """Yield the initial snapshot and later updates from a collection.
 
@@ -263,9 +263,22 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         open. Map collections publish new pages on that stream rather than
         returning their complete history to every fresh snapshot reader.
         """
-        async with aclosing(
-            self._collections.async_subscribe_collection_entries(collection_name)
-        ) as values:
+        stream = (
+            self._collections.async_subscribe_collection_entries(
+                collection_name, include_deletions=True
+            )
+            if include_deletions
+            else self._collections.async_subscribe_collection_entries(collection_name)
+        )
+        async with aclosing(stream) as values:
+            async for value in values:
+                yield value
+
+    async def async_subscribe_poses(
+        self, mission: Callable[[], int | None]
+    ) -> AsyncGenerator[RobotPose]:
+        """Yield bounded, mission-keyed robot pose observations."""
+        async with aclosing(self._reads.async_subscribe_poses(mission)) as values:
             async for value in values:
                 yield value
 

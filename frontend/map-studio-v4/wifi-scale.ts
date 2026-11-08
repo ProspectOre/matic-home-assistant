@@ -5,6 +5,19 @@ export interface WifiScaleBounds {
   readonly max: number;
 }
 
+/** Shared by the sampled-cell renderer and the signal legend. */
+export const WIFI_COLOR_STOPS = [
+  { offset: 0, color: "#AE527D" },
+  { offset: 0.25, color: "#DF9C55" },
+  { offset: 0.5, color: "#E5CF84" },
+  { offset: 0.75, color: "#6FC1AA" },
+  { offset: 1, color: "#2584A4" },
+] as const;
+const WIFI_RGB_STOPS = WIFI_COLOR_STOPS.map(({ offset, color }) => ({
+  offset,
+  rgb: [Number.parseInt(color.slice(1, 3), 16), Number.parseInt(color.slice(3, 5), 16), Number.parseInt(color.slice(5, 7), 16)] as const,
+}));
+
 /** The range of averaged readings, without inventing values for unsampled space. */
 export const wifiSampleBounds = (cells: readonly WifiSignalCell[]): WifiScaleBounds | null => {
   if (cells.length === 0) return null;
@@ -29,3 +42,12 @@ export const wifiScaleBounds = (cells: readonly WifiSignalCell[], scale: WifiSca
 
 export const wifiSignalHue = (dbm: number, bounds: WifiScaleBounds): number =>
   Math.round(Math.min(1, Math.max(0, (dbm - bounds.min) / (bounds.max - bounds.min))) * 120);
+
+export const wifiSignalColor = (dbm: number, bounds: WifiScaleBounds): readonly [number, number, number] => {
+  const ratio = Math.min(1, Math.max(0, (dbm - bounds.min) / (bounds.max - bounds.min)));
+  const upperIndex = WIFI_RGB_STOPS.findIndex((stop) => stop.offset >= ratio);
+  const upper = WIFI_RGB_STOPS[Math.max(1, upperIndex)]!;
+  const lower = WIFI_RGB_STOPS[Math.max(0, upperIndex - 1)]!;
+  const amount = (ratio - lower.offset) / (upper.offset - lower.offset);
+  return lower.rgb.map((channel, index) => Math.round(channel + (upper.rgb[index]! - channel) * amount)) as [number, number, number];
+};

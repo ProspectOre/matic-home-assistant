@@ -132,6 +132,29 @@ function slowDrag(dy, x = 160, y = 20) {
   return points;
 }
 
+async function detentDragDistance(gallery, from, to) {
+  const heights = await gallery.locator(".mobile-sheet").evaluate((sheet, detents) => {
+    const original = sheet.getAttribute("data-detent");
+    const transition = sheet.style.transition;
+    sheet.style.transition = "none";
+    const measured = Object.fromEntries(detents.map((detent) => {
+      sheet.setAttribute("data-detent", detent);
+      return [detent, sheet.getBoundingClientRect().height];
+    }));
+    if (original === null) sheet.removeAttribute("data-detent");
+    else sheet.setAttribute("data-detent", original);
+    // Commit the restored size while transitions are still disabled, so the
+    // next drag begins at the active detent rather than animating from full.
+    void sheet.getBoundingClientRect().height;
+    sheet.style.transition = transition;
+    return measured;
+  }, [from, to]);
+  return Math.round((() => {
+    const target = ((heights[from] ?? 0) + (heights[to] ?? 0)) / 2 + ((heights[to] ?? 0) > (heights[from] ?? 0) ? 8 : -8);
+    return (heights[from] ?? 0) - target;
+  })());
+}
+
 test.describe("Map Studio v0.4 foundation", () => {
   test("loads workflow tools on first open and diagnostics only when requested", async ({ page }) => {
     const workflowRequests = [];
@@ -2583,10 +2606,12 @@ test.describe("Map Studio v0.4 foundation", () => {
     const reads = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
       const initial = createGalleryState("ready");
-      const store = new WorkspaceStore(initial);
+      const singleFloorEntry = { ...initial.resources.entry, historyFloorCount: 1 };
+      const store = new WorkspaceStore({ ...initial,
+        resources: { ...initial.resources, entry: singleFloorEntry } });
       let historyReads = 0;
       const effects = new EffectController(store, {
-        catalog: async () => [initial.resources.entry],
+        catalog: async () => [singleFloorEntry],
         history: async () => { historyReads++; return initial.resources.history.value; },
         scene: async (_url, revision, floorCoherent) => ({ revision, floorCoherent, scene: initial.resources.scene.value }),
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },
@@ -2702,6 +2727,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         try {
           effects.sync(projection);
           await effects.refreshCatalog(true);
+          for (let i = 0; i < 120 && !store.value.optionalUiReady; i++) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          if (!store.value.optionalUiReady) throw new Error("Map admission did not complete");
           await effects.refreshPose();
           const connectedGeneration = store.value.generation;
           const retainedScene = store.value.resources.scene.value;
@@ -2720,6 +2749,10 @@ test.describe("Map Studio v0.4 foundation", () => {
           hold = false;
           effects.sync(projection);
           await effects.refreshCatalog(true);
+          for (let i = 0; i < 120 && !store.value.optionalUiReady; i++) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          if (!store.value.optionalUiReady) throw new Error("Map readmission did not complete");
           await effects.refreshPose();
           return {
             connectedGeneration, disconnectedGeneration, abortedGeneration, repeatedDisconnectGeneration,
@@ -4878,7 +4911,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
     await gallery.getByRole("button", { name: "2D", exact: true }).click();
     await gallery.getByRole("button", { name: "Room colors", exact: true }).click();
-    await gallery.getByRole("button", { name: "Room names", exact: true }).click();
+    await gallery.locator('[data-map-layer="labels"]').click();
     // Double-click the scene itself: the map root now also hosts the control
     // rail and dock, so its centre is not guaranteed to be bare map.
     const scene = gallery.locator("matic-map-canvas-v4 .scene-window");
@@ -6237,7 +6270,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
     await expect(appearance.getByRole("button", { name: "Room colors" })).toHaveAttribute("aria-pressed", "true");
 
-    const options = gallery.getByRole("button", { name: "Map options" });
+    const options = gallery.getByRole("button", { name: "Tools" });
     await expect(options).toHaveAttribute("aria-controls", "map-options");
     await options.click();
     await expect(options).toHaveAttribute("aria-expanded", "true");
@@ -6262,9 +6295,13 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("makes the first cleaning decision explicit without a phantom Run plan action", async ({ page }) => {
-    const gallery = await loadGallery(page, { scenario: "ready" });
-
-    const navigation = gallery.getByRole("button", { name: "Open Home Assistant sidebar" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
+    const tools = gallery.getByRole("button", { name: "Tools", exact: true });
+    await expect(tools).toBeVisible();
+    await tools.click();
+    const navigation = gallery.getByRole("menu", { name: "Map options" })
+      .getByRole("menuitem", { name: "Open Home Assistant sidebar", exact: true });
     await expect(navigation).toBeVisible();
     await page.evaluate((tag) => {
       window.__navigationToggles = 0;
@@ -7253,7 +7290,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       return route.fulfill({
         status: 204,
         headers: {
-          "X-Matic-Revision": "2",
+          "X-Matic-Revision": new URL(route.request().url()).searchParams.get("since"),
           "X-Matic-Floor-Coherent": "1",
         },
       });
@@ -7461,7 +7498,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     // frame-revoked response: it must clear the old verified marker.
     poseSessionKey = "a".repeat(64);
     posePosition = [11, 13];
-    await expect.poll(() => page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
+    // A second mismatch during the first revalidation uses the bounded
+    // five-second recovery retry before admitting a fresh pose.
+    await expect.poll(() => page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose),
+      { timeout: 12_000 }).toBe(true);
     poseFloorCoherent = false;
     poseSessionKey = null;
     posePosition = null;
@@ -8109,12 +8149,12 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
-    await touchDrag(page, grip, slowDrag(220), { stepMs: 40 });
+    await touchDrag(page, grip, slowDrag(await detentDragDistance(gallery, "full", "half")), { stepMs: 40 });
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
-    await touchDrag(page, grip, slowDrag(220), { stepMs: 40 });
+    await touchDrag(page, grip, slowDrag(await detentDragDistance(gallery, "half", "peek")), { stepMs: 40 });
     await expect(sheet).toHaveAttribute("data-detent", "peek");
     await settleSheet(gallery);
     await expect(gallery.locator("#sheet-panel")).toBeHidden();
@@ -8171,8 +8211,10 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
-    // Dragging the same 75px slowly snaps back to where it started.
-    await touchDrag(page, grip, slowDrag(-75), { stepMs: 40 });
+    // A slow movement below half the measured gap snaps back to its detent.
+    const halfGap = Math.abs(await detentDragDistance(gallery, "half", "full"));
+    const slowDistance = Math.max(7, Math.floor(halfGap * 0.4));
+    await touchDrag(page, grip, slowDrag(-slowDistance), { stepMs: 40 });
     await expect(sheet).toHaveAttribute("data-detent", "half");
   });
 
@@ -8645,7 +8687,7 @@ for (const ordered of [false, true]) {
 }
 
 for (const width of [320, 390, 820, 1280]) {
-  test(`map corner controls stay separate at ${width}px`, async ({ page }, testInfo) => {
+  test(`toolbar and map camera controls stay separate at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     const gallery = await loadGallery(page);
     const floor = gallery.getByRole("combobox", { name: "Choose floor" });
@@ -8658,10 +8700,17 @@ for (const width of [320, 390, 820, 1280]) {
     const check = async () => expect(async () => {
       const [f, v, fitBox, c, map] = await Promise.all([floor.boundingBox(), view.boundingBox(), fit.boundingBox(), camera.boundingBox(), gallery.locator(".map-root").boundingBox()]);
       for (const box of [f, v, fitBox, c]) expect(box).not.toBeNull();
-      expect(f.x + f.width).toBeLessThanOrEqual(v.x);
-      expect(v.x + v.width).toBeLessThanOrEqual(fitBox.x);
-      expect(Math.abs((f.y + f.height / 2) - (v.y + v.height / 2))).toBeLessThanOrEqual(2);
-      expect(Math.abs((f.y + f.height / 2) - (fitBox.y + fitBox.height / 2))).toBeLessThanOrEqual(2);
+      const controls = [f, v, fitBox];
+      for (const [index, box] of controls.entries()) {
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        for (const other of controls.slice(index + 1)) {
+          const overlapWidth = Math.min(box.x + box.width, other.x + other.width) - Math.max(box.x, other.x);
+          const overlapHeight = Math.min(box.y + box.height, other.y + other.height) - Math.max(box.y, other.y);
+          expect(Math.min(overlapWidth, overlapHeight)).toBeLessThanOrEqual(0);
+        }
+      }
       expect(c.x + c.width).toBeLessThanOrEqual(map.x + map.width);
       expect(c.y).toBeGreaterThan(fitBox.y + fitBox.height);
       const sheet = gallery.locator(".mobile-sheet");
@@ -8669,7 +8718,6 @@ for (const width of [320, 390, 820, 1280]) {
         const bounds = await sheet.boundingBox();
         expect(c.y + c.height).toBeLessThanOrEqual(bounds.y);
       }
-      expect(f.height).toBeGreaterThanOrEqual(44);
     }).toPass({ timeout: 2000 });
     await check();
     const more = gallery.getByRole("button", { name: "Expand panel" });
@@ -8685,10 +8733,10 @@ for (const width of [320, 390, 820, 1280]) {
     await expect(fit).toBeVisible();
     await expect(camera).toHaveCount(0);
     await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
-    // Locating shows no map, so the floor select leaves the rail with Fit
-    // (home-rooms.md §11 MS-HOME-04).
+    // A missing live scene leaves known floors available for recovery.
     await gallery.evaluate((element) => element.setScenario("transition"));
-    await expect(floor).toHaveCount(0);
+    await expect(floor).toBeEnabled();
+    await expect(floor.locator('option[value="saved-1"]')).toHaveCount(1);
     await expect(fit).toHaveCount(0);
   });
 }
@@ -8730,8 +8778,11 @@ for (const width of [1024, 1100]) {
     await expect(gallery.getByRole("button", { name: "3D", exact: true })).toBeDisabled();
     await expect(gallery.getByRole("toolbar", { name: "Map camera controls" })).toHaveCount(0);
     const chipBox = await chip.boundingBox();
-    for (const selector of [".map-context", ".map-tools", ".appearance-switch", ".map-extras"]) {
-      const box = await gallery.locator(selector).boundingBox();
+    for (const selector of ["[data-map-toolbar] .toolbar-context", "[data-map-toolbar] .toolbar-view",
+      "[data-map-toolbar] .map-layer-toolbar", ".map-tools"]) {
+      const control = gallery.locator(selector);
+      if (!await control.count()) continue;
+      const box = await control.boundingBox();
       expect(box.x < chipBox.x + chipBox.width && box.x + box.width > chipBox.x
         && box.y < chipBox.y + chipBox.height && box.y + box.height > chipBox.y, selector).toBe(false);
     }
@@ -8763,7 +8814,9 @@ for (const width of [1024, 1100]) {
           const help = gallery.getByRole("dialog", { name: "How to move the map", exact: true });
           await expect(help).toBeVisible();
           const helpBox = await help.boundingBox();
-          for (const selector of [".map-context", ".map-tools", ".appearance-switch", ".camera-steps", ".map-extras", ".selection-chip"]) {
+          for (const selector of ["[data-map-toolbar] .toolbar-context", "[data-map-toolbar] .toolbar-view",
+            "[data-map-toolbar] .tracking-switch", "[data-map-toolbar] .toolbar-actions",
+            "[data-map-toolbar] .map-layer-toolbar", ".map-tools", ".camera-steps", ".selection-chip"]) {
             const controls = gallery.locator(selector);
             if (!await controls.count()) continue;
             const box = await controls.boundingBox();
@@ -9529,6 +9582,8 @@ for (const device of [
     }, GALLERY_TAG);
     await expect(gallery.getByRole("button", { name: "Points", exact: true })).toHaveAttribute("aria-pressed", "true");
     const first = gallery.getByRole("button", { name: "Point 1", exact: true });
+    const fit = gallery.locator("[data-map-toolbar]").getByRole("button", { name: "Fit the whole map on screen" });
+    await expect(fit).toBeVisible();
     if (device.touch) await first.tap(); else await first.click();
     await expect(gallery.getByRole("button", { name: "Insert point", exact: true })).toBeVisible();
     await expect(gallery.getByRole("button", {name:"Name and save",exact:true})).toBeEnabled();
@@ -9543,8 +9598,8 @@ for (const device of [
         const r = button.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
         let hit = document.elementFromPoint(x, y);
         for (let i = 0; hit?.shadowRoot && i < 12; i++) { const next = hit.shadowRoot.elementFromPoint(x,y); if (!next || next === hit) break; hit = next; }
-        return hit === button || button.contains(hit);
-      }), await target.getAttribute("aria-label") || await target.innerText()).toBe(true);
+        return hit === button || button.contains(hit) ? null : hit?.getAttribute("aria-label") || hit?.className || hit?.tagName || "outside the viewport";
+      }), await target.getAttribute("aria-label") || await target.innerText()).toBeNull();
     }
     const scale = await gallery.locator(".map-scale").boundingBox(), hint = await gallery.locator(".zone-help").boundingBox();
     expect(scale.x < hint.x + hint.width && scale.x + scale.width > hint.x && scale.y < hint.y + hint.height && scale.y + scale.height > hint.y).toBe(false);
@@ -9618,10 +9673,14 @@ test("companion safe areas keep navigation and drawing actions clear of system U
     element.style.setProperty("--safe-area-inset-top", "62px");
     element.style.setProperty("--safe-area-inset-bottom", "34px");
   });
-  const navigation = gallery.getByRole("button", { name: "Open Home Assistant sidebar", exact: true });
   const bar = gallery.locator(".app-bar");
+  const tools = gallery.getByRole("button", { name: "Tools", exact: true });
+  await tools.click();
+  const navigation = gallery.getByRole("menu", { name: "Map options" })
+    .getByRole("menuitem", { name: "Open Home Assistant sidebar", exact: true });
   await expect.poll(async () => (await navigation.boundingBox())?.y).toBeGreaterThanOrEqual(62);
-  const initialHeight = (await bar.boundingBox()).height;
+  await navigation.click();
+  await expect(bar).toHaveCSS("padding-top", "62px");
   await gallery.getByRole("button", { name: /Clean custom area/ }).click();
   await gallery.getByRole("button", { name: "New area", exact: true }).click();
   const clear = gallery.getByRole("button", { name: "Clear", exact: true });
@@ -9635,19 +9694,19 @@ test("companion safe areas keep navigation and drawing actions clear of system U
     element.style.setProperty("--safe-area-inset-right", "62px");
     element.style.setProperty("--safe-area-inset-bottom", "21px");
   });
-  await expect.poll(async () => Math.round(initialHeight - (await bar.boundingBox()).height)).toBe(62);
+  await expect(bar).toHaveCSS("padding-top", "0px");
   const floor = await gallery.getByRole("combobox", { name: "Choose floor" }).boundingBox();
   expect(floor.x).toBeGreaterThanOrEqual(62);
   const fit = await gallery.getByRole("button", { name: "Fit the whole map on screen" }).boundingBox();
   expect(fit.x + fit.width).toBeLessThanOrEqual(844 - 62);
-  const overflow = gallery.getByRole("button", { name: "Map options", exact: true });
+  const overflow = gallery.getByRole("button", { name: "Tools", exact: true });
   const overflowBox = await overflow.boundingBox();
   expect(overflowBox.x + overflowBox.width).toBeLessThanOrEqual(844 - 62);
   await page.setViewportSize({ width: 390, height: 844 });
   await gallery.evaluate((element) => {
     for (const edge of ["top", "right", "bottom", "left"]) element.style.setProperty(`--safe-area-inset-${edge}`, "0px");
   });
-  await expect.poll(async () => (await navigation.boundingBox())?.y).toBeLessThan(20);
+  await expect.poll(async () => (await tools.boundingBox())?.y).toBeLessThan(20);
 });
 
 test("plan catalog refresh preserves explicit selection and reconciles a saved new plan", async ({ page }) => {
@@ -11200,7 +11259,7 @@ test.describe("Map Studio accessibility baselines", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     const gallery = await loadGallery(page, { scenario: "rooms-ready", narrow: true });
     await settleWorkspace(gallery);
-    await gallery.getByRole("button", { name: "Map options" }).click();
+    await gallery.getByRole("button", { name: "Tools" }).click();
     await expect(gallery.getByRole("menu", { name: "Map options" })).toBeVisible();
     await expect(gallery.getByRole("menu", { name: "Map options" })).toHaveAttribute("tabindex", "0");
     const { violations, incomplete } = await new AxeBuilder({ page }).analyze();
@@ -11646,15 +11705,14 @@ test.describe("Map Studio resolved theme colours", () => {
     const saved = gallery.getByRole("group", { name: "Cleaning order" }).locator('[aria-pressed="true"]');
     await expect.poll(() => style(saved, "borderTopColor"), "pressed order").toBe(indicator);
 
-    // The Room names switch row sits in the phone's Map options menu
-    // (home-rooms.md §5 Display).
+    // Room names remains a first-class, pressed toolbar control on phones.
     await page.setViewportSize({ width: 390, height: 844 });
     const phone = await loadGallery(page, { scenario: "ready", narrow: true });
     await settleWorkspace(phone);
     await theme(page, HA_LIGHT);
-    await phone.getByRole("button", { name: "Map options", exact: true }).click();
-    const names = phone.getByRole("menuitemcheckbox", { name: "Room names" }).locator(".ms-switch");
-    await expect.poll(() => names.evaluate((element) => getComputedStyle(element, "::before").backgroundColor), "Room names").toBe(indicator);
+    const names = phone.locator('[data-map-toolbar] [data-map-layer="labels"]');
+    await expect(names).toBeVisible();
+    await expect.poll(() => names.evaluate((element) => getComputedStyle(element, "::before").borderTopColor), "Room names").toBe(indicator);
   });
 
   // One ordering rule: a press always shows over hover, for every variant.

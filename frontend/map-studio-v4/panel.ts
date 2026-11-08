@@ -273,8 +273,8 @@ export class MaticMapPanelV4 extends LitElement {
       void this.#effects?.toggleWifiSignal();
       return;
     }
-    if (intent.type === "toggle-floor-types") {
-      void this.#effects?.toggleFloorTypes();
+    if (intent.type === "toggle-floor-type") {
+      void this.#effects?.toggleFloorType(intent.item);
       return;
     }
     if (intent.type === "set-history") {

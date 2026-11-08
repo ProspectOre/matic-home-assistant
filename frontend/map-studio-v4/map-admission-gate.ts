@@ -1,7 +1,7 @@
 import type { WorkspaceState } from "./contracts";
 import type { WorkspaceStore } from "./state";
 
-/** Admit optional UI after map admission and two frames, or after a bounded fallback. */
+/** Admit after two map frames, with an optional bounded fallback (zero disables it). */
 export const scheduleAfterMapAdmission = (
   store: WorkspaceStore,
   active: (state: WorkspaceState) => boolean,
@@ -30,7 +30,7 @@ export const scheduleAfterMapAdmission = (
       clearFrames();
       return;
     }
-    if (!timer) timer = setTimeout(() => {
+    if (!timer && timeoutMs > 0) timer = setTimeout(() => {
       timer = undefined;
       const current = store.value;
       if (active(current)) finish();

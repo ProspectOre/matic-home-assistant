@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -3242,3 +3242,59 @@ def test_robot_alert_sensor_names_known_codes_and_keeps_unknown_ones() -> None:
         "bag_full",
         "unknown",
     ]
+
+
+@pytest.mark.parametrize("photorealistic", [False, True])
+@pytest.mark.parametrize("during_render", [False, True])
+async def test_camera_rejects_pose_after_same_floor_proof_changes(
+    hass, photorealistic, during_render
+) -> None:
+    entry = _entry()
+    runtime = entry.runtime_data
+    data = runtime.coordinator.data
+    pose = data.pose
+    store = runtime.slam_map
+    store.pose_frame_generation = 1
+    store.pose_frame_started_at = pose.observed_at - 1
+    entity_type = (
+        camera.MaticPhotorealisticMapCamera if photorealistic else camera.MaticMapCamera
+    )
+    entity = entity_type(entry)
+    entity.hass = hass
+
+    def change_frame():
+        # A proof-only A -> B -> A transition can retain the floor object and
+        # coordinator read generation. Equal-time observations are not newer.
+        store.pose_frame_generation += 1
+        store.pose_frame_started_at = pose.observed_at
+
+    def render(*args, **_kwargs):
+        rendered_pose = args[2].pose if photorealistic else args[1]
+        if during_render and rendered_pose is not None:
+            change_frame()
+        return b"with-marker" if rendered_pose is not None else b"without-marker"
+
+    renderer_name = (
+        "_render_photorealistic_entries" if photorealistic else "render_floor_plan"
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.client.floor_plan.time.time",
+            return_value=pose.observed_at,
+        ),
+        patch(
+            f"custom_components.matic_robot.camera.{renderer_name}", side_effect=render
+        ),
+        patch(
+            "custom_components.matic_robot.camera.render_floor_plan",
+            return_value=b"without-marker",
+        )
+        if photorealistic
+        else nullcontext(),
+    ):
+        image = await entity.async_camera_image()
+        assert image == (b"without-marker" if during_render else b"with-marker")
+        if not during_render:
+            change_frame()
+        assert await entity.async_camera_image() == b"without-marker"
+        assert entity.extra_state_attributes["robot_location_source"] != "exact_pose"

@@ -16,7 +16,7 @@ from .client.floor_plan import (
     resolve_robot_map_position,
     robot_location_source,
 )
-from .client.models import HermesCollectionEntry, RobotState
+from .client.models import HermesCollectionEntry, RobotPose, RobotState
 from .client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
@@ -29,6 +29,7 @@ from .http import (
 )
 from .slam_map_store import SlamMapStore
 from .slam_render import render_slam_map
+from .slam_view_data import pose_observed_in_frame
 
 PARALLEL_UPDATES = 0
 MAX_CAMERA_DIMENSION = 4096
@@ -43,6 +44,19 @@ def _floor_render_identity(
         data.floor_plan,
         store.floor_plan_is_current(data.floor_plan),
         floor_read_generation,
+        getattr(store, "pose_frame_generation", 0),
+    )
+
+
+def _camera_pose(entry: MaticConfigEntry, data: RobotState) -> RobotPose | None:
+    """Render only observations admitted after the current map proof."""
+    pose = data.pose
+    return (
+        pose
+        if pose is not None
+        and pose_observed_in_frame(entry.runtime_data, pose.observed_at)
+        and pose_observation_is_current(pose, data.floor_plan)
+        else None
     )
 
 
@@ -127,12 +141,7 @@ class MaticMapCamera(MaticEntity, Camera):
         render_floor_identity = _floor_render_identity(
             self._store, data, getattr(self.coordinator, "floor_read_generation", 0)
         )
-        render_pose = (
-            data.pose
-            if floor_plan_coherent
-            and pose_observation_is_current(data.pose, data.floor_plan)
-            else None
-        )
+        render_pose = _camera_pose(self._config_entry, data)
         requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
         requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
         cache_key = (
@@ -207,7 +216,7 @@ class MaticMapCamera(MaticEntity, Camera):
             ),
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
-                data.pose,
+                _camera_pose(self._config_entry, data),
                 data.operational.current_area,
             ),
             "source": "local_room_map",
@@ -301,11 +310,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
                     height=requested_height,
                 )
             )
-        render_pose = (
-            data.pose
-            if pose_observation_is_current(data.pose, data.floor_plan)
-            else None
-        )
+        render_pose = _camera_pose(self._config_entry, data)
         key: tuple[object, ...] = (
             self._store.revision,
             id(data.floor_plan),
@@ -339,11 +344,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             render_floor_identity = _floor_render_identity(
                 self._store, data, getattr(self.coordinator, "floor_read_generation", 0)
             )
-            render_pose = (
-                data.pose
-                if pose_observation_is_current(data.pose, data.floor_plan)
-                else None
-            )
+            render_pose = _camera_pose(self._config_entry, data)
             key = (
                 self._store.revision,
                 id(data.floor_plan),
@@ -425,7 +426,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             ),
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
-                data.pose,
+                _camera_pose(self._config_entry, data),
                 data.operational.current_area,
             ),
             "source": "local_robot_slam",

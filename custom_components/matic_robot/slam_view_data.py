@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from .client.floor_plan import resolve_robot_map_position
 from .http import (
+    COVERAGE_API_URL,
     FLOOR_LAYERS_API_URL,
     WIFI_HEATMAP_API_URL,
     areas_api_url,
@@ -21,6 +22,8 @@ from .slam_map_store import SlamMapIdentity
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
+    from .client.models import RobotPose
+    from .slam_history_format import SlamHistorySnapshot
     from .slam_scene import MaticSlamSceneView
 
 _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
@@ -46,13 +49,17 @@ def _map_session_key(runtime: MaticRuntimeData) -> str | None:
 
 
 def observe_run_trail(
-    runtime: MaticRuntimeData, position: tuple[float, float] | None
+    runtime: MaticRuntimeData,
+    position: tuple[float, float] | None,
+    observed_at: float | None = None,
 ) -> None:
     """Give the trail recorder one verified position, or only the run state."""
     trails: RunTrails | None = getattr(runtime, "run_trails", None)
     if trails is None:
         return
     data = runtime.coordinator.data
+    if not pose_observed_in_frame(runtime, observed_at):
+        position = None
     trails.observe(
         run_id=runtime.cleaning_plans.ledger.active_run_id(
             str(data.info.serial_number)
@@ -60,6 +67,8 @@ def observe_run_trail(
         native_active=data.telemetry.active_cleaning_session,
         map_key=_map_session_key(runtime),
         point=position,
+        observed_at=observed_at,
+        frame_key=_pose_frame_key(runtime),
     )
 
 
@@ -71,18 +80,83 @@ def observe_coordinator_trail(runtime: MaticRuntimeData) -> None:
         if runtime.slam_map.floor_plan_is_current(data.floor_plan)
         else None
     )
-    observe_run_trail(runtime, position[:2] if position is not None else None)
+    observe_run_trail(
+        runtime,
+        position[:2] if position is not None else None,
+        data.pose.observed_at if data.pose is not None else None,
+    )
+
+
+def observe_live_pose_trail(runtime: MaticRuntimeData, pose: RobotPose) -> None:
+    """Record fresh stream poses even when no browser is open."""
+    data = runtime.coordinator.data
+    position = (
+        resolve_robot_map_position(data.floor_plan, pose, None)
+        if runtime.slam_map.floor_plan_is_current(data.floor_plan)
+        else None
+    )
+    observe_run_trail(
+        runtime, position[:2] if position is not None else None, pose.observed_at
+    )
+
+
+def pose_observed_in_frame(
+    runtime: MaticRuntimeData, observed_at: float | None
+) -> bool:
+    """Reject delayed poses from before the current live frame was established."""
+    return (
+        observed_at is not None
+        and runtime.slam_map.floor_plan_is_current(runtime.coordinator.data.floor_plan)
+        and observed_at
+        > max(
+            getattr(runtime.slam_map, "pose_frame_started_at", 0.0),
+            getattr(runtime.coordinator, "floor_frame_started_at", 0.0),
+        )
+    )
 
 
 def _pose_frame_key(
     runtime: MaticRuntimeData,
-) -> tuple[SlamMapIdentity | None, str | None, int]:
+) -> tuple[SlamMapIdentity | None, str | None, int, int]:
     """Bind pose reads to a coordinate frame and its revocation epoch."""
     return (
         runtime.slam_map.mission_identity,
         _map_session_key(runtime),
         getattr(runtime.coordinator, "floor_read_generation", 0),
+        getattr(runtime.slam_map, "pose_frame_generation", 0),
     )
+
+
+def pose_frame_token(runtime: MaticRuntimeData) -> str:
+    """Expose an opaque, runtime-local proof epoch for live trail continuity."""
+    return sha256(
+        repr((id(runtime), _pose_frame_key(runtime))).encode("utf-8")
+    ).hexdigest()
+
+
+def history_floor_choices(
+    runtime: MaticRuntimeData,
+) -> tuple[str | None, tuple[str, ...], tuple[SlamHistorySnapshot, ...]]:
+    """Share current, saved and imported floor choices between both catalogs."""
+    floor_plan = runtime.coordinator.data.floor_plan
+    identity = runtime.slam_map.mission_identity
+    current = (
+        identity.mission_token
+        if identity is not None and runtime.slam_map.floor_plan_is_current(floor_plan)
+        else None
+    )
+    missions = dict.fromkeys(dict(runtime.slam_history.catalogs_by_mission()))
+    for floor in floor_plan.mapped_floors if floor_plan is not None else ():
+        missions.setdefault(floor.mission_token)
+    if current is not None:
+        missions.pop(current, None)
+    imported = tuple(
+        snapshot
+        for snapshot in runtime.slam_history.catalog()
+        if getattr(snapshot, "imported", False)
+        and getattr(snapshot, "retention", "automatic") != "trash"
+    )
+    return current, tuple(missions), imported
 
 
 def catalog_entry_projection(
@@ -133,6 +207,9 @@ def catalog_entry_projection(
     serial_number = runtime.coordinator.data.info.serial_number
     plan_snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
     telemetry = getattr(runtime.coordinator.data, "telemetry", None)
+    _, saved_floors, imported = history_floor_choices(runtime)
+    coverage = getattr(runtime, "live_coverage", None)
+    coverage_key = coverage.request_key if coverage is not None else None
     return {
         "entry_id": entry_id,
         # The workspace push is the default transport when this capability is
@@ -146,12 +223,14 @@ def catalog_entry_projection(
         "plans_url": plans_api_url(entry_id),
         "wifi_heatmap_url": WIFI_HEATMAP_API_URL.format(entry_id=entry_id),
         "floor_layers_url": FLOOR_LAYERS_API_URL.format(entry_id=entry_id),
+        "coverage_url": COVERAGE_API_URL.format(entry_id=entry_id)
+        + (f"?session={coverage_key}" if coverage_key is not None else ""),
         "history_count": len(
             runtime.slam_history.catalog_for_mission(map_identity.mission_token)
             if map_identity is not None
             else ()
         ),
-        "history_floor_count": len(runtime.slam_history.catalogs_by_mission()),
+        "history_floor_count": 1 + len(saved_floors) + bool(imported),
         "map_revision": (
             scene_view.available_revision(entry_id, runtime)
             if scene_view is not None

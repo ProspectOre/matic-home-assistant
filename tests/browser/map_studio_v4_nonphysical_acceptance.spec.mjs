@@ -44,7 +44,7 @@ test("unknown workspace events preserve the mounted panel and its live state @sa
     return panel.getWorkspaceSnapshot() === before;
   });
   expect(preserved).toBe(true);
-  await expect(panel.getByRole("button", { name: "Map options", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Tools", exact: true })).toBeVisible();
 });
 
 for (const { label, width } of [

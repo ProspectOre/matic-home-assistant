@@ -1,0 +1,8 @@
+# Paths are relative to the Playwright test directory. Include every configured browser project.
+map_studio_v4_multi_robot_scale.spec.mjs
+map_studio_v4_entry_selection.spec.mjs
+map_studio_v4_stop_identity.spec.mjs
+map_studio_v4_floor_switcher_admission.spec.mjs
+map_studio_v4_deferred_assets.spec.mjs › two-robot startup keeps the native selector in the first-map budget on a 320px viewport
+map_studio_v4_deferred_assets.spec.mjs › two-robot slow startup keeps optional assets deferred and the selector usable
+map_studio_v4_deferred_assets.spec.mjs › two-robot startup holds optional UI while animation frames are suspended

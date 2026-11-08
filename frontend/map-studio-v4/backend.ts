@@ -1,5 +1,5 @@
 import type { AreaOutline } from "./area-outline";
-import { MAX_ROOM_SEQUENCE_SIZE, type FloorTypesLayer, type HassLike, type WifiSignalLayer } from "./contracts";
+import { MAX_ROOM_SEQUENCE_SIZE, type HassLike } from "./contracts";
 import {
   CATALOG_URL,
   ContractError,
@@ -8,7 +8,6 @@ import {
   SCENE_MAX_BYTES,
   isPrivatePath,
   parseCatalog,
-  parsePose,
   type AreaCircle,
   type AreasCatalog,
   type CleaningMode,
@@ -417,7 +416,11 @@ export class MaticBackend {
   }
 
   async pose(path: string, signal?: AbortSignal): Promise<PoseModel> {
-    return parsePose(await this.#json("pose", path, REQUEST_TIMEOUTS.pose, signal));
+    const [{ parsePose }, value] = await Promise.all([
+      import("./map-layer-resources"),
+      this.#json("pose", path, REQUEST_TIMEOUTS.pose, signal),
+    ]);
+    return parsePose(value);
   }
 
   async history(path: string, signal?: AbortSignal): Promise<HistoryCatalog> {
@@ -483,20 +486,8 @@ export class MaticBackend {
     return parseAreasCatalog(value, areaCatalogHelpers, geometry);
   }
 
-  async wifiSignal(path: string, signal?: AbortSignal): Promise<WifiSignalLayer> {
-    const [{ parseWifiSignal }, value] = await Promise.all([
-      import("./wifi-signal"),
-      this.#json("wifiSignal", path, REQUEST_TIMEOUTS.workflow, signal),
-    ]);
-    return parseWifiSignal(value);
-  }
-
-  async floorTypes(path: string, signal?: AbortSignal): Promise<FloorTypesLayer> {
-    const [{ parseFloorTypes }, value] = await Promise.all([
-      import("./floor-types"),
-      this.#json("carpetVents", path, REQUEST_TIMEOUTS.floorTypes, signal),
-    ]);
-    return parseFloorTypes(value);
+  mapLayer(operation: "wifiSignal" | "carpetVents" | "coverage", path: string, signal?: AbortSignal): Promise<unknown> {
+    return this.#json(operation, path, operation === "carpetVents" ? REQUEST_TIMEOUTS.floorTypes : REQUEST_TIMEOUTS.workflow, signal);
   }
 
   async previewRoomSequence(

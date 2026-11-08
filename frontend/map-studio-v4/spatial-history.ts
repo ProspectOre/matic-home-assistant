@@ -30,6 +30,9 @@ export class SpatialHistory {
   readonly #coherence: CoherenceMachine;
   readonly #requests: ResourceRequests;
   readonly #callbacks: SpatialHistoryCallbacks;
+  #read: { stamp: ResourceStamp; controller: AbortController; promise: Promise<void> } | null = null;
+  #loaded: { stamp: ResourceStamp; count: number } | null = null;
+  #discovery: { stamp: ResourceStamp; count: number; attempts: number; pending: boolean; timer: number | null } | null = null;
 
   constructor(store: WorkspaceStore, backend: Pick<MaticBackend, "scene" | "history">, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialHistoryCallbacks) {
     this.#store = store;
@@ -39,15 +42,58 @@ export class SpatialHistory {
     this.#callbacks = callbacks;
   }
 
-  async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
-    if (!this.#callbacks.pageActive()) return;
+  stopDiscovery(): void {
+    if (this.#discovery?.timer !== null && this.#discovery?.timer !== undefined) window.clearTimeout(this.#discovery.timer);
+    this.#discovery = null;
+  }
+
+  discoverFloors(entry: MapEntry, stamp: ResourceStamp): void {
+    if (this.#callbacks.disposed() || !this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return;
+    const status = this.#store.value.resources.history.status;
+    if (status === "loading" || (status === "ready" && this.#loaded
+      && sameCoherenceGeneration(this.#loaded.stamp, stamp) && this.#loaded.count === entry.historyFloorCount)) return;
+    let discovery = this.#discovery;
+    if (!discovery || !sameCoherenceGeneration(discovery.stamp, stamp) || discovery.count !== entry.historyFloorCount) {
+      this.stopDiscovery();
+      discovery = this.#discovery = { stamp, count: entry.historyFloorCount, attempts: 0, pending: false, timer: null };
+    }
+    if (discovery.pending || discovery.timer !== null || discovery.attempts >= 3) return;
+    discovery.attempts += 1;
+    discovery.pending = true;
+    const owner = discovery;
+    void this.loadHistory(entry, stamp).then(() => {
+      owner.pending = false;
+      if (this.#discovery !== owner || owner.attempts >= 3 || this.#callbacks.disposed()
+        || !this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)
+        || this.#store.value.resources.history.status !== "error") return;
+      owner.timer = window.setTimeout(() => {
+        owner.timer = null;
+        this.discoverFloors(entry, stamp);
+      }, 1000 * 2 ** (owner.attempts - 1));
+    });
+  }
+
+  loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+    if (!this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return Promise.resolve();
+    if (this.#read && !this.#read.controller.signal.aborted && sameCoherenceGeneration(this.#read.stamp, stamp)) return this.#read.promise;
     const controller = this.#requests.begin("history");
+    const promise = Promise.resolve().then(() => this.#loadHistory(entry, stamp, controller)).finally(() => {
+      if (this.#read?.controller === controller) this.#read = null;
+    });
+    this.#read = { stamp, controller, promise };
+    return promise;
+  }
+
+  async #loadHistory(entry: MapEntry, stamp: ResourceStamp, controller: AbortController): Promise<void> {
+    if (controller.signal.aborted) return;
+    this.#store.patch({ resources: { ...this.#store.value.resources,
+      history: resource("loading", this.#store.value.resources.history.value) } });
     try {
       const history = await this.#backend.history(entry.historyUrl, controller.signal);
       const current = this.#coherence.current();
-      if (controller.signal.aborted || !current
-        || !sameCoherenceGeneration(stamp, current)
-        || history.entryId !== entry.entryId) return;
+      if (controller.signal.aborted || !current || !sameCoherenceGeneration(stamp, current)) return;
+      if (history.entryId !== entry.entryId) throw new Error("history-entry-mismatch");
+      this.#loaded = { stamp, count: entry.historyFloorCount };
       const state = this.#store.value;
       const selectedFloor = history.floors.find((floor) => floor.id === state.selection.floorId);
       const selectedSnapshotExists = !state.selection.historyId

@@ -30,6 +30,7 @@ export interface MapEntry {
   readonly wifiHeatmapUrl: string | null;
   /** Absent on integrations without the carpet and vent layer. */
   readonly floorTypesUrl: string | null;
+  readonly coverageUrl: string | null;
   readonly mapRevision: number;
   readonly mapSceneEpoch: string | null;
   readonly mapFloorCoherent: boolean;
@@ -114,6 +115,18 @@ export interface SceneComparisonCoverage {
   readonly diffEligible: boolean;
 }
 
+export interface SceneFloorSupport {
+  readonly version: 1;
+  readonly status: "verified";
+  readonly encoding: "bitset-little-v1";
+  readonly originCells: readonly [number, number];
+  readonly metersPerCell: number;
+  readonly spanCells: readonly [number, number];
+  readonly occupiedCells: number;
+  readonly maskSha256: string;
+  readonly mask: Uint8Array;
+}
+
 export interface SceneMetadata {
   readonly metersPerCell: number;
   readonly origin: readonly [number, number];
@@ -121,6 +134,7 @@ export interface SceneMetadata {
   readonly sampleStep: number;
   readonly rooms: readonly SceneRoom[];
   readonly coverage?: SceneComparisonCoverage;
+  readonly floorSupport?: SceneFloorSupport;
 }
 
 /** Bounded contiguous point ranges grouped by their 32-cell source tile. */
@@ -162,6 +176,8 @@ export interface PoseModel {
   readonly sceneRevision: number | null;
   readonly sceneEpoch: string | null;
   readonly poseRevision: number;
+  /** Opaque proof epoch; changes even when localization returns to the same floor. */
+  readonly poseFrameKey?: string | null;
   readonly floorCoherent: boolean;
   readonly mapSessionKey: string | null;
   readonly freshness: "live" | "coordinator_fallback" | "unavailable";
@@ -169,6 +185,8 @@ export interface PoseModel {
   readonly nativeObservationAgeSeconds?: number | null;
   /** Server processing time before it measured that age. */
   readonly poseProcessingSeconds?: number;
+  /** Server wall-clock time, validated by the optional clock calibration. */
+  readonly poseMeasuredAt?: unknown;
   /** Map-frame yaw in radians when the pose carried a rotation. */
   readonly heading?: number | null;
 }
@@ -498,7 +516,7 @@ const nullableBoolean = (value: unknown, code: string): boolean | null => {
   return booleanValue(value, code);
 };
 
-const mapSessionKey = (value: unknown): string | null => {
+export const mapSessionKey = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;
   const key = boundedString(value, 64, "invalid-map-session-key");
   if (!/^[0-9a-f]{64}$/u.test(key)) throw new ContractError("invalid-map-session-key");
@@ -536,6 +554,9 @@ export const privatePath = (value: unknown, code: string): string => {
   return path;
 };
 
+const optionalPrivatePath = (value: unknown): string | null =>
+  value == null ? null : privatePath(value, "invalid-private-path");
+
 const healthValue = (entry: Record<string, unknown>): MapHealth => {
   const state = typeof entry.map_health === "string" ? entry.map_health.toLowerCase() : "";
   const stream = typeof entry.stream_state === "string" ? entry.stream_state.toLowerCase() : "";
@@ -568,19 +589,14 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
         "invalid-live-workspace-transport",
       ),
       sceneUrl: privatePath(entry.scene_url, "invalid-scene-url"),
-      deltaUrl: entry.delta_url === undefined || entry.delta_url === null
-        ? null
-        : privatePath(entry.delta_url, "invalid-delta-url"),
+      deltaUrl: optionalPrivatePath(entry.delta_url),
       poseUrl: privatePath(entry.pose_url, "invalid-pose-url"),
       historyUrl: privatePath(entry.history_url, "invalid-history-url"),
       areasUrl: privatePath(entry.areas_url, "invalid-areas-url"),
       plansUrl: privatePath(entry.plans_url, "invalid-plans-url"),
-      wifiHeatmapUrl: entry.wifi_heatmap_url === undefined || entry.wifi_heatmap_url === null
-        ? null
-        : privatePath(entry.wifi_heatmap_url, "invalid-wifi-heatmap-url"),
-      floorTypesUrl: entry.floor_layers_url === undefined || entry.floor_layers_url === null
-        ? null
-        : privatePath(entry.floor_layers_url, "invalid-floor-layers-url"),
+      wifiHeatmapUrl: optionalPrivatePath(entry.wifi_heatmap_url),
+      floorTypesUrl: optionalPrivatePath(entry.floor_layers_url),
+      coverageUrl: optionalPrivatePath(entry.coverage_url),
       mapRevision,
       mapSceneEpoch: selectedId(entry.map_scene_epoch, "invalid-scene-epoch"),
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),
@@ -620,60 +636,11 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
   });
 };
 
-const point = (value: unknown, code: string): readonly [number, number] => {
-  if (!Array.isArray(value) || value.length !== 2) throw new ContractError(code);
-  return [
-    boundedNumber(value[0], -1_000_000, 1_000_000, code),
-    boundedNumber(value[1], -1_000_000, 1_000_000, code),
-  ];
-};
-
 export const parseSavedPlanId = (value: unknown): string => {
   const result = objectValue(value, "invalid-plan-save-response");
   const response = objectValue(result.response, "invalid-plan-save-response");
   const plan = objectValue(response.plan, "invalid-plan-save-response");
   return boundedString(plan.id, 128, "invalid-plan-save-response");
-};
-
-export const parsePose = (value: unknown): PoseModel => {
-  const payload = objectValue(value, "invalid-pose");
-  const rawPosition = payload.position;
-  const position = rawPosition === null
-    ? null
-    : point(rawPosition, "invalid-pose-position");
-  const freshness = payload.pose_freshness;
-  if (freshness !== "live" && freshness !== "coordinator_fallback") {
-    throw new ContractError("invalid-pose-freshness");
-  }
-  // The finite bounds reject NaN and infinities as well as out-of-range ages.
-  const age = payload.pose_age_seconds;
-  const nativeObservationAgeSeconds = Object.hasOwn(payload, "pose_age_seconds")
-    ? typeof age === "number" && age >= -2 && age <= 5
-      ? age
-      : null
-    : undefined;
-  const processing = payload.pose_processing_seconds;
-  const poseProcessingSeconds = typeof processing === "number" && processing >= 0 && processing <= 60 ? processing : undefined;
-  return {
-    position,
-    source: boundedString(payload.source, 64, "invalid-pose-source"),
-    revision: boundedInteger(payload.revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-revision"),
-    sceneRevision: payload.scene_revision == null ? null
-      : boundedInteger(payload.scene_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-revision"),
-    sceneEpoch: selectedId(payload.scene_epoch, "invalid-scene-epoch"),
-    poseRevision: boundedInteger(payload.pose_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-sequence"),
-    floorCoherent: booleanValue(payload.map_floor_coherent, "invalid-pose-floor"),
-    mapSessionKey: mapSessionKey(payload.map_session_key),
-    freshness,
-    ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
-    ...(poseProcessingSeconds === undefined ? {} : { poseProcessingSeconds }),
-    // An unreadable heading falls back to the plain dot instead of dropping
-    // an otherwise valid position.
-    heading: position !== null && typeof payload.heading === "number"
-      && Math.abs(payload.heading) <= Math.PI + 1e-3
-      ? payload.heading
-      : null,
-  };
 };
 
 export const isPrivatePath = (value: unknown): value is string => {

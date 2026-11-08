@@ -53,11 +53,19 @@ export async function installPanelFixture(page, {
   userData = null,
   // The Wi-Fi survey response. Null leaves the URL out of the catalog, as before.
   wifiSignal = null,
+  wifiSignalB = null,
+  posePositionB = null,
   // Opt into the new-server workspace capability. Omitted continues to model
   // older servers, which have no capability and therefore remain poll-only.
   workspacePush = false,
   // The carpet and vent response. Null leaves the URL out of the catalog.
   floorTypes = null,
+  floorTypesB = null,
+  cleaningCoverage = null,
+  cleaningCoverageB = null,
+  runTrail = null,
+  runTrailB = null,
+  historySceneStatus = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -117,7 +125,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, workspacePush }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, posePositionB, initialCatalogEntries, initialRobotStates, userData, wifiSignal, wifiSignalB, floorTypes, floorTypesB, cleaningCoverage, cleaningCoverageB, runTrail, runTrailB, historySceneStatus, workspacePush }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -132,6 +140,7 @@ export async function installPanelFixture(page, {
       plans_url: "/api/matic_robot/plans/synthetic",
       ...(wifiSignal ? { wifi_heatmap_url: "/api/matic_robot/wifi_heatmap/synthetic" } : {}),
       ...(floorTypes ? { floor_layers_url: "/api/matic_robot/floor_layers/synthetic" } : {}),
+      ...(cleaningCoverage ? { coverage_url: "/api/matic_robot/live_coverage/synthetic" } : {}),
       map_revision: 7,
       map_floor_coherent: true,
       map_session_verified: true,
@@ -153,19 +162,20 @@ export async function installPanelFixture(page, {
       stop_settle_pending: false,
       active_plan: false,
       native_reconciliation_pending: false,
-      native_session_active: false,
+      native_session_active: Boolean(cleaningCoverage),
     }] };
     let catalogEntries = initialCatalogEntries || catalog.entries;
     let robotStates = initialRobotStates || { "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } } };
     let catalogReads = 0;
     let deferredCatalogs = 0;
     const pendingCatalogs = [];
-    const history = { entry_id: "synthetic-entry", live_available: true, floors: [
+    let history = { entry_id: "synthetic-entry", live_available: true, floors: [
       { id: "current", active: true, read_only: false, live_available: true, label: "Home", ordinal: null, snapshots: [] },
       { id: "saved-1", active: false, read_only: true, live_available: false, label: "Loft", ordinal: 2,
         snapshots: [{ id: "saved-shot", created_at: "2026-09-25T12:00:00Z", revision: 6, point_count: 1,
           scene_url: "/api/matic_robot/slam_scene/history" }] },
     ] };
+    let historyReads = 0;
     const entryBHistory = { ...history, entry_id: "synthetic-entry-b", floors: history.floors.map((floor) => ({
       ...floor,
       snapshots: floor.snapshots.map((snapshot) => ({
@@ -176,6 +186,10 @@ export async function installPanelFixture(page, {
     const pendingHistoryScenes = [];
     let deferredSceneReads = 0;
     const pendingSceneReads = [];
+    let deferredWifiReads = 0;
+    const pendingWifiReads = [];
+    let deferredFloorTypeReads = 0;
+    const pendingFloorTypeReads = [];
     const serviceCalls = [];
     const serviceFailures = [];
     let deferredServices = 0;
@@ -230,7 +244,7 @@ export async function installPanelFixture(page, {
       return { response: { plan: { id: plan.id } } };
     };
     const fetchWithAuth = async (path, options = {}) => {
-      const entryB = path.endsWith("-b");
+      const entryB = path.split("?")[0].endsWith("-b");
       if (/areas\/synthetic(?:-b)?$/.test(path) && options.method === "POST") {
         const body = JSON.parse(options.body);
         areaRequests.push({ method: "POST", body });
@@ -267,11 +281,49 @@ export async function installPanelFixture(page, {
         }
         return result;
       }
-      if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
-      if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
-      if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
+      if (/wifi_heatmap\/synthetic(?:-b)?$/.test(path)) {
+        const payload = entryB ? wifiSignalB : wifiSignal;
+        if (!payload) throw new Error(`unexpected synthetic request: ${path}`);
+        const result = json(entryB ? (window.__wifiSignalReplyB ?? payload) : (window.__wifiSignalReply ?? payload));
+        if (deferredWifiReads > 0) {
+          deferredWifiReads -= 1;
+          return new Promise((resolve) => pendingWifiReads.push(() => resolve(result)));
+        }
+        return result;
+      }
+      if (/floor_layers\/synthetic(?:-b)?$/.test(path)) {
+        const payload = entryB ? floorTypesB : floorTypes;
+        if (!payload) throw new Error(`unexpected synthetic request: ${path}`);
+        const result = json(entryB ? (window.__floorTypesReplyB ?? payload) : (window.__floorTypesReply ?? payload));
+        if (deferredFloorTypeReads > 0) {
+          deferredFloorTypeReads -= 1;
+          return new Promise((resolve) => pendingFloorTypeReads.push(() => resolve(result)));
+        }
+        return result;
+      }
+      if (/live_coverage\/synthetic(?:-b)?(?:\?session=[a-z0-9]+)?$/.test(path)) {
+        const payload = entryB ? cleaningCoverageB : cleaningCoverage;
+        if (!payload) throw new Error(`unexpected synthetic request: ${path}`);
+        if (window.__cleaningCoverageStatus) return new Response(null, { status: window.__cleaningCoverageStatus });
+        if (window.__holdCleaningCoverage) return new Promise((resolve) => {
+          window.__releaseCleaningCoverage = (status) => resolve(status ? new Response(null, { status }) : json(entryB
+            ? (window.__cleaningCoverageReplyB ?? payload) : (window.__cleaningCoverageReply ?? payload)));
+        });
+        return json(entryB ? (window.__cleaningCoverageReplyB ?? payload) : (window.__cleaningCoverageReply ?? payload));
+      }
+      if (/\/runs\/synthetic-entry(?:-b)?\?trail=live$/.test(path)) {
+        const payload = path.includes("/runs/synthetic-entry-b?") ? runTrailB : runTrail;
+        if (!payload) return new Response(null, { status: 404 });
+        return json(payload);
+      }
+      if (/slam_history\/synthetic(?:-b)?$/.test(path)) {
+        historyReads += 1;
+        return json(entryB ? entryBHistory : history);
+      }
       if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
-        position: posePosition,
+        position: entryB
+          ? (Object.hasOwn(window, "__posePositionB") ? window.__posePositionB : (posePositionB ?? posePosition))
+          : (Object.hasOwn(window, "__posePosition") ? window.__posePosition : posePosition),
         source: "latest_pose",
         revision: 7,
         pose_revision: 1,
@@ -311,6 +363,7 @@ export async function installPanelFixture(page, {
         return result;
       }
       if (/slam_scene\/history(?:-b)?$/.test(path)) {
+        if (historySceneStatus !== null) return new Response(null, { status: historySceneStatus });
         return new Promise((resolve) => pendingHistoryScenes.push(() => resolve(new Response(new Uint8Array(scenes), {
           headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "6" },
         }))));
@@ -348,6 +401,7 @@ export async function installPanelFixture(page, {
     const userDataCalls = [];
     const userDataFailures = [];
     const workspaceCalls = [];
+    const workspaceCallbacks = [];
     let deferredUserDataReads = 0;
     const pendingUserDataReads = [];
     const connection = userStore ? {
@@ -393,15 +447,19 @@ export async function installPanelFixture(page, {
         }
         throw new Error(`unexpected synthetic message: ${message.type}`);
       },
-      subscribeMessage: async (_callback, message) => {
+      subscribeMessage: async (callback, message) => {
         if (message?.type?.startsWith("matic_robot/workspace_")) {
           const panel = document.querySelector(MATIC_MAP_PANEL_TAG);
           workspaceCalls.push({
             type: message.type,
             mapAvailable: panel?.getWorkspaceSnapshot?.().map.available === true,
           });
+          workspaceCallbacks.push(callback);
         }
-        return () => undefined;
+        return () => {
+          const index = workspaceCallbacks.indexOf(callback);
+          if (index >= 0) workspaceCallbacks.splice(index, 1);
+        };
       },
     } : null;
     const makePanel = () => {
@@ -521,11 +579,24 @@ export async function installPanelFixture(page, {
       deferNextSceneRead: () => { deferredSceneReads += 1; },
       pendingSceneReadCount: () => pendingSceneReads.length,
       releaseSceneRead: () => { const release = pendingSceneReads.shift(); if (!release) throw new Error("no deferred scene read"); release(); },
+      deferNextWifiRead: () => { deferredWifiReads += 1; },
+      pendingWifiReadCount: () => pendingWifiReads.length,
+      releaseWifiRead: (index = 0) => { const release = pendingWifiReads.splice(index, 1)[0]; if (!release) throw new Error("no deferred Wi-Fi read"); release(); },
+      deferNextFloorTypeRead: () => { deferredFloorTypeReads += 1; },
+      pendingFloorTypeReadCount: () => pendingFloorTypeReads.length,
+      releaseFloorTypeRead: (index = 0) => { const release = pendingFloorTypeReads.splice(index, 1)[0]; if (!release) throw new Error("no deferred floor type read"); release(); },
       get planReads() { return planReads; },
       setPlanCatalog: (value) => Object.assign(planCatalog, structuredClone(value)),
       areaRequests,
       userData: () => structuredClone(userStore),
       workspaceCalls,
+      get workspaceSubscriptions() { return workspaceCallbacks.length; },
+      sendWorkspaceEnvelope: (envelope) => {
+        for (const callback of [...workspaceCallbacks]) callback(structuredClone(envelope));
+      },
+      get historyReads() { return historyReads; },
+      getHistory: () => structuredClone(history),
+      setHistory: (value) => { history = structuredClone(value); },
       userDataCalls,
       // Reject the next frontend user data message of `type` once.
       failNextUserData: (type) => { userDataFailures.push(type); },
@@ -548,11 +619,19 @@ export async function installPanelFixture(page, {
     areas: initialAreasCatalog,
     sceneDeltaPayload,
     posePosition,
+    posePositionB,
     initialCatalogEntries,
     initialRobotStates,
     userData,
     wifiSignal,
+    wifiSignalB,
     floorTypes,
+    floorTypesB,
+    cleaningCoverage,
+    cleaningCoverageB,
+    runTrail,
+    runTrailB,
+    historySceneStatus,
     workspacePush,
   });
   await remount();

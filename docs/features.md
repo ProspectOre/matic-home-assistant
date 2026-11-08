@@ -36,12 +36,30 @@ works](cleaning.md#intelligent-rotation).
 
 ## Maps and controls alongside your other devices
 
-Matic Map brings live 3D and 2D maps, room selection, plan Run and Edit views,
-named custom areas, saved map history, carpet and vent outlines and an opt-in
-Wi-Fi signal map into Home Assistant. Dashboard cameras
-and entities let you build your own view. Settings include water flow,
-double-pass mopping, child lock, pet-waste avoidance, and the Cues voice
-assistant.
+In Matic Map, choose the floor and view beside the title. If you have several
+robots, choose the robot here first. When two share a name, the selector also
+shows their Home Assistant entity names. The layer buttons below
+control what you see on the map:
+
+- **Trail** shows the recorded path. **Vacuum** and **Mop** show cleaning
+  coverage separately. If tracking started partway through a clean, the map
+  shows only the changes observed since then. Open Cleaning history for the
+  robot’s completed map.
+- **Wi-Fi** shows the saved survey on the current floor, including while the
+  robot is docked. Collection is opt-in: enable **Wi-Fi survey** on the robot
+  to collect readings during runs. Switching the map layer off only hides it.
+  Use **Signal strength** for a fixed dBm scale or **Compare sampled spots** to
+  see smaller differences on this floor. Blank areas are unmeasured.
+- **Carpet** and **Vents** show the outlines the robot has detected. An outline
+  can cover only part of a rug. **Room names** toggles the labels.
+
+**Follow** centres the current robot position; **Ride along** follows its
+heading. Both depend on live position data. A docked robot with no known
+dock location shows its status without an old position on the floor.
+
+Dashboard cameras and entities let you build your own view. Settings include
+water flow, double-pass mopping, child lock, pet-waste avoidance and the Cues
+voice assistant.
 
 [Map and area guide](cleaning.md) · [Plan Run and Edit](cleaning.md#run-and-edit) ·
 [Entity reference](entities.md)

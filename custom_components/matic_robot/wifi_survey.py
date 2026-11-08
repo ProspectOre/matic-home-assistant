@@ -26,10 +26,10 @@ from .http import (
     WIFI_HEATMAP_API_URL,
     runtime_for_entry,
 )
+from .slam_view_data import _pose_frame_key, pose_observed_in_frame
 
 if TYPE_CHECKING:
-    from .client.api import MaticHermesClient
-    from .coordinator import MaticCoordinator
+    from . import MaticRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -201,9 +201,7 @@ class WifiSurveyStore:
             for (ix, iy, size), cell in sorted(self._floors.get(mission_id, {}).items())
         ]
 
-    async def async_collect(
-        self, client: MaticHermesClient, coordinator: MaticCoordinator
-    ) -> None:
+    async def async_collect(self, runtime: MaticRuntimeData) -> None:
         """Scan at a fixed pace while the survey is on and the robot is out."""
         loop = asyncio.get_running_loop()
         deadline = loop.time()
@@ -212,11 +210,11 @@ class WifiSurveyStore:
             deadline = max(deadline + SAMPLE_INTERVAL_SECONDS, loop.time())
             await asyncio.sleep(deadline - loop.time())
             if self._enabled and not self._closed:
-                await self._async_sample(client, coordinator)
+                await self._async_sample(runtime)
 
-    async def _async_sample(
-        self, client: MaticHermesClient, coordinator: MaticCoordinator
-    ) -> None:
+    async def _async_sample(self, runtime: MaticRuntimeData) -> None:
+        client = runtime.client
+        coordinator = runtime.coordinator
         state = coordinator.data
         floor_plan = state.floor_plan if state is not None else None
         if (
@@ -224,14 +222,21 @@ class WifiSurveyStore:
             or state.operational.is_charging
             or floor_plan is None
             or coordinator.expected_floor_mission_id != floor_plan.mission_id
+            or not runtime.slam_map.floor_plan_is_current(floor_plan)
         ):
             return
         mission_id = floor_plan.mission_id
         frame = survey_frame(floor_plan.partition_id_wire)
         epoch = self._epoch
+        pose_frame = _pose_frame_key(runtime)
         try:
             before = await client.async_get_pose(expected_mission_id=mission_id)
-            if not pose_observation_is_current(before, floor_plan, now=time()):
+            if (
+                before is None
+                or not pose_observation_is_current(before, floor_plan, now=time())
+                or _pose_frame_key(runtime) != pose_frame
+                or not pose_observed_in_frame(runtime, before.observed_at)
+            ):
                 return
             dbm = await client.async_scan_wifi_signal()
             after = await client.async_get_pose(expected_mission_id=mission_id)
@@ -241,18 +246,12 @@ class WifiSurveyStore:
         if (
             dbm is None
             or epoch != self._epoch
+            or _pose_frame_key(runtime) != pose_frame
+            or after is None
+            or not pose_observed_in_frame(runtime, after.observed_at)
+            or not pose_observed_in_frame(runtime, before.observed_at)
             or not pose_observation_is_current(after, floor_plan, now=time())
             or not _poses_agree(before, after)
-        ):
-            return
-        # The frame can change during the scan; a stale fingerprint would wipe
-        # the new frame's cells.
-        state = coordinator.data
-        current = state.floor_plan if state is not None else None
-        if (
-            current is None
-            or current.mission_id != mission_id
-            or survey_frame(current.partition_id_wire) != frame
         ):
             return
         self.add_sample(

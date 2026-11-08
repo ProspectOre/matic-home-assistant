@@ -79,7 +79,7 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
   await settleAll();
   let a = await active();
   log(`K3a Your plans -> Plans heading focus @${w}`, a.tag === "h2" && /Your plans/.test(a.name), `focus = ${fmt(a)}`);
-  t = await tabTo((x) => x.tag === "button" && !/Back|workspace|sidebar|Map options|Show|Fit|3D|2D/.test(x.name) && x.name.length > 3, 12);
+  t = await tabTo((x) => x.tag === "button" && !/Back|workspace|sidebar|Tools|Show|Fit|3D|2D/.test(x.name) && x.name.length > 3, 12);
   console.log("   first plan-list control after heading:", fmt(t.a));
   await page.keyboard.press("Enter");
   await settleAll();
@@ -166,19 +166,19 @@ await inject(page);
   log("K6c Tab leaves the toolbar (roving, single tab stop)", !/Zone|Paint|Erase|Move map|Undo|Redo|Brush/.test(a3.name), fmt(a3));
 }
 
-// ---------- K7: Map options menu + help popover Escape/focus return ----------
+// ---------- K7: Tools menu + help popover Escape/focus return ----------
 for (const [w, h] of [[1440, 900], [390, 844]]) {
   await openScenario(page, "ready", { width: w, height: h });
   await inject(page);
-  let t = await tabTo((x) => /Map options/.test(x.name));
+  let t = await tabTo((x) => /Tools/.test(x.name));
   await page.keyboard.press("Enter");
   await settleAll();
   let a = await active();
-  log(`K7a Map options opens and focus enters the menu @${w}`, /Map detail|Auto/.test(a.name) || a.tag === "select", fmt(a));
+  log(`K7a Tools opens and focus enters the menu @${w}`, /Map detail|Auto/.test(a.name) || a.tag === "select", fmt(a));
   await page.keyboard.press("Escape");
   await settleAll();
   a = await active();
-  log(`K7b Escape closes menu, focus returns to Map options @${w}`, /Map options/.test(a.name), fmt(a));
+  log(`K7b Escape closes menu, focus returns to Tools @${w}`, /Tools/.test(a.name), fmt(a));
   // Help
   const help = await page.evaluate(() => {
     const a = window.__uxAudit; const el = a.all().find((e) => /How to move the map/.test(e.getAttribute("aria-label") || e.textContent || "") && e.localName === "button" && a.visible(e));

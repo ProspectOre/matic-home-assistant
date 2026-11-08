@@ -482,6 +482,37 @@ async def test_trail_records_verified_points_per_run(hass: HomeAssistant) -> Non
     assert trails.trail_id(None, run_id="run-1") is None
 
 
+async def test_trail_rejects_out_of_order_pose_sources(hass: HomeAssistant) -> None:
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    for timestamp in (float("nan"), float("inf"), 0.0, -1.0):
+        trails.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=(8.0, 0.0),
+            observed_at=timestamp,
+        )
+    assert trails.live(MAP) is None
+    for timestamp, point in (
+        (100.0, (0.0, 0.0)),
+        (102.0, (1.0, 0.0)),
+        (101.0, (8.0, 0.0)),
+        (102.0, (9.0, 0.0)),
+        (105.0, (1.0, 0.0)),  # A stationary newer observation still advances time.
+        (104.0, (7.0, 0.0)),
+        (106.0, (2.0, 0.0)),
+    ):
+        trails.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=point,
+            observed_at=timestamp,
+        )
+    assert trails.live(MAP) == [[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]]
+
+
 async def test_trail_splits_on_map_change_and_merges_a_runs_segments(
     hass: HomeAssistant,
 ) -> None:
@@ -494,7 +525,7 @@ async def test_trail_splits_on_map_change_and_merges_a_runs_segments(
     first = trails.trail_id(MAP, run_id="run-1")
     assert first is not None
     (segment,) = trails.segments(first, MAP)
-    assert len(segment) == MAX_SAVED_TRAIL_POINTS
+    assert len(segment) <= MAX_SAVED_TRAIL_POINTS
     assert segment[0] == path[0]
     assert segment[-1] == path[-1]
     # Back on the first map: the same run's next segment joins its trail.
@@ -517,8 +548,17 @@ async def test_trail_segments_and_live_points_stay_bounded(hass: HomeAssistant) 
             run_id="run-1", native_active=True, map_key=MAP, point=(index * 0.2, 0)
         )
     (points,) = trails.live(MAP)
-    assert len(points) == MAX_LIVE_TRAIL_POINTS // 2 + 1
+    assert len(points) == run_history.TRAIL_LIVE_COMPACT_TO
     assert points[-1] == (round(MAX_LIVE_TRAIL_POINTS * 0.2, 2), 0)
+    with patch.object(
+        run_history, "_thin_segments", wraps=run_history._thin_segments
+    ) as compact:
+        for index in range(MAX_LIVE_TRAIL_POINTS + 1, MAX_LIVE_TRAIL_POINTS + 501):
+            trails.observe(
+                run_id="run-1", native_active=True, map_key=MAP, point=(index * 0.2, 0)
+            )
+        compact.assert_not_called()
+    assert sum(map(len, trails.live(MAP))) == run_history.TRAIL_LIVE_COMPACT_TO + 500
     for _ in range(MAX_TRAIL_SEGMENTS + 1):
         trails.observe(
             run_id="run-1", native_active=True, map_key=OTHER_MAP, point=None
@@ -527,7 +567,225 @@ async def test_trail_segments_and_live_points_stay_bounded(hass: HomeAssistant) 
             trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=point)
     trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
     segments = trails.segments(trails.trail_id(MAP, run_id="run-1"), MAP)
-    assert len(segments) == MAX_TRAIL_SEGMENTS
+    assert len(segments) == MAX_TRAIL_SEGMENTS + 2
+    assert sum(map(len, segments)) <= MAX_SAVED_TRAIL_POINTS
+
+
+async def test_trail_splits_after_a_pose_gap(hass: HomeAssistant) -> None:
+    trails = RunTrails(hass, "entry")
+    for timestamp, point in (
+        (100.0, (0.0, 0.0)),
+        (102.0, (0.25, 0.0)),
+        (111.0, (0.5, 0.0)),
+    ):
+        trails.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=point,
+            observed_at=timestamp,
+        )
+    assert trails.live(MAP) == [
+        [(0.0, 0.0), (0.25, 0.0)],
+        [(0.5, 0.0)],
+    ]
+
+
+async def test_trail_splits_on_an_implausible_pose_jump(hass: HomeAssistant) -> None:
+    trails = RunTrails(hass, "entry")
+    for timestamp, point in (
+        (100.0, (0.0, 0.0)),
+        (102.0, (0.25, 0.0)),
+        (104.0, (3.0, 0.0)),
+        (106.0, (3.25, 0.0)),
+    ):
+        trails.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=point,
+            observed_at=timestamp,
+        )
+    assert trails.live(MAP) == [
+        [(0.0, 0.0), (0.25, 0.0)],
+        [(3.0, 0.0), (3.25, 0.0)],
+    ]
+
+
+async def test_trail_path_format_migrates_old_unverified_long_segments(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    trail = {
+        "id": "legacy",
+        "run_id": "run-1",
+        "map_key": MAP,
+        "started_at": STARTED,
+        "ended_at": ENDED,
+        "segments": [[], [(0, 0), (0.4, 0), (2, 0), (2.4, 0)]],
+    }
+    hass_storage["matic_robot.run_trails.entry"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "matic_robot.run_trails.entry",
+        "data": {"trails": [trail], "live": None},
+    }
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    assert trails.segments("legacy", MAP) == [
+        [(0, 0), (0.4, 0)],
+        [(2, 0), (2.4, 0)],
+    ]
+    assert trails._data()["trails"][0]["path_format"] == (
+        run_history.TRAIL_PATH_FORMAT_VERSION
+    )
+
+
+async def test_current_trail_format_preserves_a_verified_long_step(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    trails = RunTrails(hass, "entry")
+    for timestamp, point in (
+        (100.0, (0.0, 0.0)),
+        (102.0, (1.2, 0.0)),
+        (104.0, (2.4, 0.0)),
+    ):
+        trails.observe(
+            run_id=None,
+            native_active=True,
+            map_key=MAP,
+            point=point,
+            observed_at=timestamp,
+        )
+    trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
+    trail_id = trails._trails[0]["id"]
+    assert trails.segments(trail_id, MAP) == [[(0.0, 0.0), (1.2, 0.0), (2.4, 0.0)]]
+    assert trails._data()["trails"][0]["path_format"] == (
+        run_history.TRAIL_PATH_FORMAT_VERSION
+    )
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.segments(trail_id, MAP) == [[(0.0, 0.0), (1.2, 0.0), (2.4, 0.0)]]
+
+
+async def test_saved_trail_simplification_keeps_parallel_passes_and_turns(
+    hass: HomeAssistant,
+) -> None:
+    trails = RunTrails(hass, "entry")
+    turns = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (2.0, 0.0),
+        (2.0, 1.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+    ]
+    for index in range(1_200):
+        point = turns[index % len(turns)]
+        # Closely spaced points along several parallel passes stay below the
+        # per-observation jump bound while exceeding the saved-trail budget.
+        row, column = divmod(index, 200)
+        x = column * 0.01 if row % 2 == 0 else 1.99 - column * 0.01
+        y = row * 0.3
+        if index < len(turns):
+            x, y = point
+        trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=(x, y))
+    trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
+    trail_id = trails.trail_id(MAP, run_id="run-1")
+    segments = trails.segments(trail_id, MAP)
+    assert segments is not None
+    assert sum(map(len, segments)) <= MAX_SAVED_TRAIL_POINTS
+    kept = {point for segment in segments for point in segment}
+    assert (0.0, 0.0) in kept
+    assert (1.0, 0.0) in kept
+    assert (1.99, 0.3) in kept
+    assert (1.99, 1.5) in kept
+
+
+def test_simplifier_keeps_endpoints_within_a_tight_point_budget() -> None:
+    points = [
+        (index * 0.1, float(index % 2)) for index in range(MAX_SAVED_TRAIL_POINTS * 2)
+    ]
+    kept = run_history._thin(points, 50)
+    assert len(kept) <= 50
+    assert kept[0] == points[0]
+    assert kept[-1] == points[-1]
+
+
+def test_dense_tight_turns_have_bounded_simplification_work() -> None:
+    points = [(index * 0.15, 0.05 * (index % 2)) for index in range(4_001)]
+    with patch.object(
+        run_history, "_point_error_squared", wraps=run_history._point_error_squared
+    ) as distance:
+        kept = run_history._thin(points, MAX_SAVED_TRAIL_POINTS)
+    assert len(kept) == MAX_SAVED_TRAIL_POINTS
+    assert kept[0] == points[0]
+    assert kept[-1] == points[-1]
+    # Each original point and at most two neighbors per removal are measured.
+    # This catches repeated whole-path scans without a machine-speed threshold.
+    assert distance.call_count <= 3 * len(points)
+
+
+def test_dense_parallel_passes_keep_the_turn_landmarks() -> None:
+    path = []
+    turns = []
+    for row in range(20):
+        xs = range(200) if row % 2 == 0 else range(199, -1, -1)
+        lane = [(column * 0.05, row * 0.3) for column in xs]
+        path.extend(lane)
+        turns.extend((lane[0], lane[-1]))
+    kept = run_history._thin(path, MAX_SAVED_TRAIL_POINTS)
+    assert len(kept) == MAX_SAVED_TRAIL_POINTS
+    assert all(point in kept for point in turns)
+
+
+def test_trail_simplification_keeps_both_ends_of_a_retraced_pass() -> None:
+    path = [(distance / 10, 0.0) for distance in range(101)]
+    path.extend((distance / 10, 0.0) for distance in range(99, -51, -1))
+    path.extend((distance / 10, 0.0) for distance in range(-49, 2))
+
+    assert run_history._thin(path, 4) == [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (-5.0, 0.0),
+        (0.1, 0.0),
+    ]
+
+
+@pytest.mark.parametrize("short_length", [1, 2, 7])
+@pytest.mark.parametrize("short_index", [0, 1, 3])
+def test_segment_simplifier_uses_available_budget_across_uneven_paths(
+    short_length: int, short_index: int
+) -> None:
+    lengths = [300, 300, 300]
+    lengths.insert(short_index, short_length)
+    paths = [
+        [(float(index), float(row)) for index in range(length)]
+        for row, length in enumerate(lengths)
+    ]
+    kept = run_history._thin_segments(paths, MAX_SAVED_TRAIL_POINTS)
+    assert sum(map(len, kept)) == MAX_SAVED_TRAIL_POINTS
+    if short_length <= 2:
+        assert kept[short_index] == paths[short_index]
+    for original, simplified in zip(paths, kept, strict=True):
+        assert simplified[0] == original[0]
+        assert simplified[-1] == original[-1]
+
+
+def test_segment_simplifier_bounds_many_short_and_truncated_paths() -> None:
+    short = [[(float(index), 0.0)] for index in range(5)]
+    assert run_history._thin_segments(short, 4) == short[-4:]
+
+    long_paths = [
+        [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0)],
+        [(2.0, 0.0), (2.5, 0.0), (3.0, 0.0)],
+        [(4.0, 0.0), (4.5, 0.0), (5.0, 0.0)],
+    ]
+    bounded = run_history._thin_segments(long_paths, 4)
+    assert len(bounded) == 2
+    assert sum(map(len, bounded)) <= 4
+    assert bounded[0][0] == long_paths[1][0]
+    assert bounded[-1][-1] == long_paths[-1][-1]
 
 
 async def test_robot_started_trails_match_by_time_and_stay_bounded(
@@ -583,7 +841,7 @@ async def test_trails_reload_and_reject_damaged_storage(
         "map_key": MAP,
         "started_at": STARTED,
         "ended_at": ENDED,
-        "segments": [[[0, 0], [1, 1], [2, 2]]],
+        "segments": [[[0, 0], [0.5, 0.5], [1, 1]]],
     }
     bad = [
         "junk",
@@ -615,11 +873,20 @@ async def test_trails_reload_and_reject_damaged_storage(
     }
     trails = RunTrails(hass, "entry")
     await trails.async_load()
-    assert trails._data()["trails"] == [good]
+    assert trails._data()["trails"] == [
+        {
+            **good,
+            "segments": [[(0, 0), (0.5, 0.5), (1, 1)]],
+            "path_format": run_history.TRAIL_PATH_FORMAT_VERSION,
+        }
+    ]
     assert trails.trail_id(MAP, run_id="run-2") == LIVE_TRAIL_ID
     trails.observe(run_id="run-2", native_active=True, map_key=MAP, point=(5, 5))
-    assert trails.live(MAP) == [[(0, 0), (1, 1), (2, 2), (5, 5)]]
-    assert trails._data()["live"]["segments"] == [[(0, 0), (1, 1), (2, 2), (5, 5)]]
+    assert trails.live(MAP) == [[(0, 0), (0.5, 0.5), (1, 1)], [(5, 5)]]
+    assert trails._data()["live"]["segments"] == [
+        [(0, 0), (0.5, 0.5), (1, 1)],
+        [(5, 5)],
+    ]
 
     hass_storage["matic_robot.run_trails.entry"]["data"] = {
         "trails": "junk",
@@ -633,6 +900,34 @@ async def test_trails_reload_and_reject_damaged_storage(
     assert trails._data() == {"trails": [], "live": None}
 
 
+@pytest.mark.parametrize("step", [0.001, 0.1])
+async def test_live_trail_checkpoints_continue_during_frequent_pose_updates(
+    hass: HomeAssistant, hass_storage, step: float
+) -> None:
+    trails = RunTrails(hass, "entry")
+    clock = hass.loop.time()
+    observed = dt_util.utcnow().timestamp()
+    storage_key = "matic_robot.run_trails.entry"
+    for second in range(66):
+        with patch.object(hass.loop, "time", return_value=clock + second):
+            trails.observe(
+                run_id="run-1",
+                native_active=True,
+                map_key=MAP,
+                point=(second * step, 0),
+                observed_at=observed + second,
+            )
+            async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        if second in (30, 61):
+            saved = hass_storage[storage_key]["data"]["live"]
+            assert saved["last_observed_at"] == observed + second
+            reloaded = RunTrails(hass, "entry")
+            await reloaded.async_load()
+            assert reloaded.live(MAP) == trails.live(MAP)
+    await trails.async_shutdown()
+
+
 async def test_trail_shutdown_writes_now_so_removal_stays_removed(
     hass: HomeAssistant, hass_storage
 ) -> None:
@@ -642,6 +937,10 @@ async def test_trail_shutdown_writes_now_so_removal_stays_removed(
     await trails.async_shutdown()
     saved = hass_storage["matic_robot.run_trails.entry"]["data"]
     assert saved["live"]["run_id"] == "run-1"
+    assert saved["live"]["path_format"] == run_history.TRAIL_PATH_FORMAT_VERSION
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.live(MAP) == [[(0, 0)]]
     await trails.async_shutdown()
     trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=(1, 1))
 
@@ -686,3 +985,185 @@ def test_a_finished_run_saved_before_history_existed_is_listed() -> None:
 
     append_run_history(robot, robot["last_run"])
     assert len(history_entries(robot, (), manual=lambda plan_id: False)) == 1
+
+
+@pytest.mark.parametrize("observe_gap", [False, True])
+async def test_short_map_proof_revocation_starts_new_trail_section(
+    hass: HomeAssistant, observe_gap
+) -> None:
+    trails = RunTrails(hass, "entry")
+    for timestamp, x in [(100.0, 0.0), (101.0, 0.3)]:
+        trails.observe(
+            run_id="run",
+            native_active=True,
+            map_key=MAP,
+            point=(x, 0),
+            observed_at=timestamp,
+            frame_key=(MAP, 1),
+        )
+    if observe_gap:
+        trails.observe(
+            run_id="run",
+            native_active=True,
+            map_key=MAP,
+            point=None,
+            observed_at=101.5,
+            frame_key=(MAP, 2),
+        )
+    # Same map, short interval and tiny displacement: only the changed proof
+    # epoch establishes that this must not be a continuous path.
+    trails.observe(
+        run_id="run",
+        native_active=True,
+        map_key=MAP,
+        point=(0.31, 0),
+        observed_at=102.0,
+        frame_key=(MAP, 3),
+    )
+    trails.observe(
+        run_id="run",
+        native_active=True,
+        map_key=MAP,
+        point=(0.6, 0),
+        observed_at=103.0,
+        frame_key=(MAP, 3),
+    )
+    assert trails.live(MAP) == [[(0.0, 0.0), (0.3, 0.0)], [(0.31, 0.0), (0.6, 0.0)]]
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    reloaded.observe(
+        run_id="run",
+        native_active=True,
+        map_key=MAP,
+        point=(0.61, 0),
+        observed_at=104.0,
+        frame_key=(MAP, 1),
+    )
+    assert reloaded.live(MAP) == [
+        [(0.0, 0.0), (0.3, 0.0)],
+        [(0.31, 0.0), (0.6, 0.0)],
+        [(0.61, 0.0)],
+    ]
+    await reloaded.async_shutdown()
+
+
+@pytest.mark.parametrize("live", [False, True])
+async def test_legacy_migration_preserves_every_visible_section_across_reload(
+    hass: HomeAssistant, hass_storage, live
+) -> None:
+    sections = [[(index * 2.0, 0), (index * 2.0 + 0.4, 0)] for index in range(12)]
+    trail = {
+        "id": LIVE_TRAIL_ID if live else "legacy",
+        "key": "run:run-1",
+        "run_id": "run-1",
+        "map_key": MAP,
+        "started_at": STARTED,
+        "ended_at": ENDED,
+        "segments": [[p for section in sections for p in section]],
+    }
+    hass_storage["matic_robot.run_trails.entry"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "matic_robot.run_trails.entry",
+        "data": {"trails": [] if live else [trail], "live": trail if live else None},
+    }
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    assert trails.segments(trail["id"], MAP) == sections
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.segments(trail["id"], MAP) == sections
+    # Continuing a restored live run or rejoining the saved run keeps all
+    # original sections; this example remains below normal point budgets.
+    for index in range(3):
+        reloaded.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=(24.0 + index * 0.2, 0),
+            observed_at=100 + index,
+            frame_key=(MAP, 1),
+        )
+    reloaded.observe(run_id=None, native_active=False, map_key=MAP, point=None)
+    saved_id = reloaded.trail_id(MAP, run_id="run-1")
+    assert reloaded.segments(saved_id, MAP) == [
+        *sections,
+        [(24.0, 0.0), (24.2, 0.0), (24.4, 0.0)],
+    ]
+    await reloaded.async_shutdown()
+
+
+async def test_migrated_storage_retains_the_original_aggregate_point_bound(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    points = [(0.0, 0.0), (2.0, 0.0)] * (MAX_LIVE_TRAIL_POINTS // 2)
+    trail = {
+        "id": "legacy",
+        "run_id": "run",
+        "map_key": MAP,
+        "started_at": STARTED,
+        "ended_at": ENDED,
+        "segments": [points] * MAX_TRAIL_SEGMENTS,
+    }
+    hass_storage["matic_robot.run_trails.entry"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "matic_robot.run_trails.entry",
+        "data": {"trails": [trail], "live": None},
+    }
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    sections = trails.segments("legacy", MAP)
+    assert len(sections) == run_history.MAX_STORED_TRAIL_POINTS
+    assert all(len(section) == 1 for section in sections)
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.segments("legacy", MAP) == sections
+    stored = reloaded._data()["trails"][0]
+    assert run_history._valid_trail(stored)
+    assert not run_history._valid_trail(
+        {**stored, "segments": [[]] * (MAX_TRAIL_SEGMENTS + 1)}
+    )
+    assert not run_history._valid_trail(
+        {**stored, "segments": [[(0, 0), (0.1, 0)], *sections[1:]]}
+    )
+    assert not run_history._valid_trail(
+        {**stored, "segments": [[(0, 0)] * (MAX_LIVE_TRAIL_POINTS + 1)]}
+    )
+    await reloaded.async_shutdown()
+
+
+@pytest.mark.parametrize("gap", ["time", "frame"])
+async def test_many_live_gaps_preserve_earlier_sections_through_save(
+    hass: HomeAssistant, gap
+) -> None:
+    trails = RunTrails(hass, "entry")
+    for index in range(20):
+        trails.observe(
+            run_id="run",
+            native_active=True,
+            map_key=MAP,
+            point=(index * 0.2, 0),
+            observed_at=100 + index * (10 if gap == "time" else 1),
+            frame_key=(MAP, index if gap == "frame" else 1),
+        )
+    expected = [[(round(index * 0.2, 2), 0.0)] for index in range(20)]
+    assert trails.live(MAP) == expected
+    trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
+    saved = trails.trail_id(MAP, run_id="run")
+    assert trails.segments(saved, MAP) == expected
+    await trails.async_shutdown()
+    reloaded = RunTrails(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.segments(saved, MAP) == expected
+    await reloaded.async_shutdown()
+
+
+def test_single_point_sections_use_the_full_compaction_budget() -> None:
+    paths = [[(float(index), 0.0)] for index in range(650)]
+    assert run_history._thin_segments(paths, 600) == paths[-600:]
+    mixed = [*paths[:300], *[[(float(i), 0), (float(i), 1)] for i in range(200)]]
+    assert run_history._thin_segments(mixed, 600) == mixed[100:]

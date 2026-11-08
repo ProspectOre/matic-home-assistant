@@ -27,7 +27,7 @@ from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
-from .client.models import FloorPlan
+from .client.models import FloorPlan, RobotActivity
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,
@@ -47,6 +47,8 @@ from .const import (
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
 from .frontend import async_register_frontend, clear_slam_scene_cache
+from .live_coverage import LiveCoverage
+from .live_pose import LivePose
 from .llm import async_register_matic_llm_api
 from .maintenance import async_delete_maintenance_issues
 from .managed_reconciliation import OEM_STOP_RECONCILIATION_POLL_SECONDS
@@ -62,7 +64,12 @@ from .services import async_register_services
 from .slam_history import SlamHistoryStore
 from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapIdentity, SlamMapStore
-from .slam_view_data import observe_coordinator_trail
+from .slam_view_data import (
+    _pose_frame_key,
+    observe_coordinator_trail,
+    observe_live_pose_trail,
+    pose_observed_in_frame,
+)
 from .wifi_survey import WifiSurveyStore
 
 __all__ = ["async_migrate_entry"]
@@ -91,10 +98,28 @@ class MaticRuntimeData:
     run_trails: RunTrails
     wifi_survey: WifiSurveyStore
     photos: RobotPhotoStore
+    live_pose: LivePose | None = None
+    live_coverage: LiveCoverage | None = None
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def _coverage_context(runtime: MaticRuntimeData) -> tuple[int, object] | None:
+    """Admit a cleaning session only on the verified current map frame."""
+    data = runtime.coordinator.data
+    floor = data.floor_plan
+    frame = _pose_frame_key(runtime)
+    if (
+        data.telemetry.active_cleaning_session is not True
+        or floor is None
+        or floor.mission_id is None
+        or frame[1] is None
+        or not runtime.slam_map.floor_plan_is_current(floor)
+    ):
+        return None
+    return floor.mission_id, frame
 
 
 def _entry_update_listener(
@@ -321,10 +346,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             RobotPhotoStore(client),
         )
         entry.runtime_data = runtime_data
+        runtime_data.live_pose = LivePose(
+            client,
+            lambda: (
+                coordinator.data.floor_plan.mission_id
+                if coordinator.data.floor_plan is not None
+                else None
+            ),
+            lambda: _pose_frame_key(runtime_data),
+            partial(observe_live_pose_trail, runtime_data),
+            admit=lambda pose: pose_observed_in_frame(runtime_data, pose.observed_at),
+            docked=lambda: (
+                coordinator.data.operational.activity
+                in (RobotActivity.DOCKED, RobotActivity.CHARGING)
+            ),
+        )
+        entry.async_create_background_task(
+            hass, runtime_data.live_pose.watch(), f"{DOMAIN} live pose collector"
+        )
+
+        runtime_data.live_coverage = LiveCoverage(
+            client, partial(_coverage_context, runtime_data)
+        )
+        entry.async_create_background_task(
+            hass,
+            runtime_data.live_coverage.watch(),
+            f"{DOMAIN} live coverage collector",
+        )
         entry.async_on_unload(
             coordinator.async_add_listener(
                 partial(observe_coordinator_trail, runtime_data)
             )
+        )
+        entry.async_on_unload(
+            coordinator.async_add_listener(runtime_data.live_pose.activity_changed)
         )
         workspace_socket = hass.data.get(DOMAIN, {}).get("workspace_socket")
         track_workspace_entry = getattr(workspace_socket, "track_entry", None)
@@ -390,7 +445,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         entry.async_create_background_task(
             hass,
-            wifi_survey.async_collect(client, coordinator),
+            wifi_survey.async_collect(runtime_data),
             f"{DOMAIN} Wi-Fi survey collector",
         )
 

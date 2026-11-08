@@ -7,6 +7,7 @@ import logging
 import struct
 from collections.abc import (
     AsyncGenerator,
+    Callable,
 )
 from dataclasses import replace
 from time import monotonic
@@ -79,6 +80,34 @@ _LATEST_POSE_ENTRY_LIMIT = 64
 _LATEST_POSE_VALUE_MAX_BYTES = 16 * 1024
 _LATEST_POSE_READ_TIMEOUT = 3.0
 _DISPLAYED_MISSION_LIMIT = 256
+
+
+def _pose_entry_mission(entry: HermesCollectionEntry) -> int:
+    """Read the mission from a bounded, well-formed collection key."""
+    if len(entry.key) != 5:
+        raise DecodeError("latest pose has a malformed mission key")
+    fields = decode_fields(entry.key, max_fields=2)
+    if (
+        len(fields) != 1
+        or fields[0].number != 2
+        or fields[0].wire_type != 5
+        or not isinstance(fields[0].value, bytes)
+        or len(fields[0].value) != 4
+    ):
+        raise DecodeError("latest pose has a malformed mission key")
+    return int(struct.unpack("<I", fields[0].value)[0])
+
+
+def _decode_pose_entry(entry: HermesCollectionEntry) -> RobotPose:
+    """Decode a pose only when its bounded mission key is well formed."""
+    if len(entry.value) > _LATEST_POSE_VALUE_MAX_BYTES:
+        raise DecodeError("latest pose exceeds its value size bound")
+    mission_id = _pose_entry_mission(entry)
+    return decode_pose(
+        entry.value,
+        mission_id=mission_id,
+        observed_at=decode_pose_observation_time(entry.value),
+    )
 
 
 class HermesReads:
@@ -273,30 +302,30 @@ class HermesReads:
                     raise CannotConnectError(
                         "latest pose read exceeded its time bound"
                     ) from err
-                if len(entry.key) != 5:
-                    raise DecodeError("latest pose has a malformed mission key")
                 if len(entry.value) > _LATEST_POSE_VALUE_MAX_BYTES:
                     raise DecodeError("latest pose exceeds its value size bound")
-                key_fields = decode_fields(entry.key, max_fields=2)
-                if (
-                    len(key_fields) != 1
-                    or key_fields[0].number != 2
-                    or key_fields[0].wire_type != 5
-                    or not isinstance(key_fields[0].value, bytes)
-                    or len(key_fields[0].value) != 4
-                ):
-                    raise DecodeError("latest pose has a malformed mission key")
-                mission_id = struct.unpack("<I", key_fields[0].value)[0]
-                if mission_id == expected_mission_id:
-                    observed_at = decode_pose_observation_time(entry.value)
-                    return decode_pose(
-                        entry.value,
-                        mission_id=expected_mission_id,
-                        observed_at=observed_at,
-                    )
+                if _pose_entry_mission(entry) == expected_mission_id:
+                    return _decode_pose_entry(entry)
             raise CannotConnectError("latest pose stream exceeded its entry bound")
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed robot pose") from err
+        finally:
+            await iterator.aclose()
+
+    async def async_subscribe_poses(
+        self, mission: Callable[[], int | None]
+    ) -> AsyncGenerator[RobotPose]:
+        """Decode a persistent stream of mission-keyed pose observations."""
+        iterator = self._collections.async_subscribe_collection_entries("latest_pose")
+        try:
+            async for entry in iterator:
+                try:
+                    if _pose_entry_mission(entry) == mission():
+                        yield _decode_pose_entry(entry)
+                except DecodeError:
+                    # A bad retained record must not block the valid entries
+                    # that follow it in every reconnect snapshot.
+                    continue
         finally:
             await iterator.aclose()
 

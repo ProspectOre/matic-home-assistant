@@ -42,7 +42,6 @@ import {
   planSelection,
   WorkspaceStore,
   areaSelection,
-  needsHistoryCatalog,
   needsPlanCatalog,
 } from "./state";
 import { PreferenceStore, type MapPreferences } from "./preferences";
@@ -286,9 +285,10 @@ export class EffectController {
     this.#store.patch({ optionalUiReady: false });
     this.#cancelPinsAdmission = scheduleAfterMapAdmission(
       this.#store,
-      (state) => this.#pinContextActive(state),
+      (state) => this.#pinContextActive(state) && state.map.available,
       () => {
         this.#store.patch({ optionalUiReady: true });
+        this.#spatialResources.startPolling();
         void this.#pinResources(false, true);
         if (this.#store.value.activity === "cleaning" && this.#store.value.resources.plans.status === "idle"
           && canReadFloorResources(this.#store.value)) {
@@ -296,6 +296,8 @@ export class EffectController {
         }
         if (this.#store.value.trail?.id === "live") void this.#restoreLiveTrail();
       },
+      // Optional imports must wait for a map frame, even when RAF is throttled.
+      0,
     );
   }
 
@@ -505,6 +507,7 @@ export class EffectController {
     this.#store.patch({
       owner: { userKey: projection.userKey, entryKey: projection.entryKey },
       host: projection.host,
+      liveCoverage: projection.host.connected && projection.host.robotConnected ? this.#store.value.liveCoverage : null,
       activity: projection.activity,
       batteryPercent: projection.batteryPercent,
       currentArea: projection.currentArea,
@@ -627,7 +630,12 @@ export class EffectController {
     if ((resources.has("plans") || resources.has("plan_state"))
       && needsPlanCatalog(this.#store.value)) void this.loadPlans();
     if (resources.has("areas")) void this.loadAreas();
-    if (resources.has("history") && needsHistoryCatalog(this.#store.value)) {
+    const state = this.#store.value;
+    if (resources.has("history") && state.resources.history.status !== "idle") {
+      // A catalog mutation can add or remove the only saved map for an
+      // existing mapped floor without changing the number of floor choices.
+      // Cancel an older read so this invalidation always fetches the new list.
+      this.#requests.cancel("history");
       void this.#spatialResources.loadHistory(entry, stamp);
     }
     if (refreshCatalogProjection
@@ -650,14 +658,14 @@ export class EffectController {
   }
 
   #abortResources(except: readonly string[] = []): void {
-    const mutationCancelled = this.#requests.abort([...except, "wifi-signal", "floor-types"]);
+    const mutationCancelled = this.#requests.abort([...except, "wifi-signal", "floor-types", "cleaning-coverage"]);
     if (mutationCancelled && this.#store.value.command === "pending") {
       this.#store.patch({ command: "idle", notice: null });
     }
   }
 
   #clearPrivate(problem: string, selectedEntryId: string | null = null): void {
-    this.#spatialResources.clearRecovery();
+    this.#spatialResources.stopPolling();
     this.#motion.invalidate();
     const generation = this.#coherence.invalidate();
     this.#spatialResources.stopDeltaStream();
@@ -683,6 +691,7 @@ export class EffectController {
       dialog: null,
       notice: null,
       draftFloorOrdinal: null,
+      draftMapSessionKey: null,
       draw: empty.draw,
       planDraft: empty.planDraft,
       areaDraft: empty.areaDraft,
@@ -691,6 +700,10 @@ export class EffectController {
       fullMap: false,
       precisionOpen: false,
       trail: null,
+      wifiSignal: null,
+      floorTypes: null,
+      floorTypeModes: 0,
+      liveCoverage: null,
       resources: { ...empty.resources, catalog: resource("error", null, problem) },
       manualRoomPreview: empty.manualRoomPreview,
       map: empty.map,
@@ -724,7 +737,7 @@ export class EffectController {
 
   toggleWifiSignal(): Promise<void> { return this.#spatialResources.toggleWifiSignal(); }
 
-  toggleFloorTypes(): Promise<void> { return this.#spatialResources.toggleFloorTypes(); }
+  toggleFloorType(item: "carpet" | "vent"): Promise<void> { return this.#spatialResources.toggleFloorType(item); }
 
   async refreshHistory(historyId?: string): Promise<void> {
     const state = this.#store.value;
@@ -732,6 +745,7 @@ export class EffectController {
     const stamp = this.#coherence.current();
     if (!entry || !stamp || !state.host.administrator || !state.host.connected) return;
     const revision = ++this.#historyViewRevision;
+    this.#requests.cancel("history");
     await this.#spatialResources.loadHistory(entry, stamp);
     const current = this.#store.value;
     if (historyId && !this.#disposed && revision === this.#historyViewRevision

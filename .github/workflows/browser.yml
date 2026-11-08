@@ -56,7 +56,12 @@ jobs:
             fi
             exit "$status"
           fi
-      - run: npm run test:browser
+      - name: Multi-robot households
+        run: npm run test:browser:multi-robot
         env:
           # Firefox requires a Home directory owned by the container user.
+          HOME: /root
+      - name: Remaining browser scenarios
+        run: npm run test:browser -- --test-list-invert tests/browser/multi-robot.list
+        env:
           HOME: /root

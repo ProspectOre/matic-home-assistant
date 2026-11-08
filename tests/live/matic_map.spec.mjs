@@ -578,18 +578,15 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
   await returnToTasksHome(page);
   const panel = page.getByRole("complementary", { name: "Cleaning panel" });
   await expectReadyToClean(page, robot);
-  await page.getByRole("button", { name: "Map options" }).click();
-  const menu = page.getByRole("menu", { name: "Map options" });
-  const wifi = menu.getByRole("menuitemcheckbox", { name: /Wi-Fi signal/ });
+  const wifi = page.getByRole("button", { name: "Wi-Fi", exact: true });
   await expect(wifi).toBeVisible();
   await wifi.click();
-  await expect(wifi).toHaveAttribute("aria-checked", "true");
-  await expect(wifi).toContainText("Turn on Wi-Fi survey in the robot's settings");
+  await expect(wifi).toHaveAttribute("aria-pressed", "true");
+  await expect(wifi).toHaveAccessibleDescription("No samples yet. Enable the survey in robot settings.");
 
   const enabled = await callWifiSurveyService(page, "turn_on");
   expect(enabled.status).toBe(200);
   expect(enabled.entityId).toBeTruthy();
-  await page.getByRole("button", { name: "Map options" }).click();
   await panel.getByRole("button", { name: "Clean rooms", exact: false }).click();
   await clearRoomSelection(page);
   await panel.getByRole("checkbox", { name: "Kitchen" }).check();
@@ -609,13 +606,12 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
     return payload.cells.length;
   }, { timeout: 15_000 }).toBeGreaterThan(0);
 
-  await page.getByRole("button", { name: "Map options" }).click();
-  const updatedWifi = page.getByRole("menu", { name: "Map options" }).getByRole("menuitemcheckbox", { name: /Wi-Fi signal/ });
-  await updatedWifi.click();
-  await updatedWifi.click();
-  await expect(updatedWifi).toHaveAttribute("aria-checked", "true");
-  await expect(updatedWifi).toContainText("Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured.");
-  expect((await workspaceState(page)).wifiSignal.cells.length).toBeGreaterThan(0);
+  await wifi.click();
+  await wifi.click();
+  await expect(wifi).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(async () => (await workspaceState(page)).wifiSignal?.cells.length ?? 0).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Signal strength", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Compare sampled spots", exact: true })).toBeVisible();
 
   await step(robot, "finish_room");
   await step(robot, "finish_session");
@@ -626,14 +622,12 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
   expect(disabled.status).toBe(200);
   // Display and collection are independent; toggling either while docked keeps the survey.
   await expect.poll(async () => (await robotState(robot)).phase).toBe("docked");
-  await page.getByRole("button", { name: "Map options" }).click();
-  const dockedWifi = page.getByRole("menu", { name: "Map options" }).getByRole("menuitemcheckbox", { name: /Wi-Fi signal/ });
-  await expect(dockedWifi).toHaveAttribute("aria-checked", "true");
-  await dockedWifi.click();
-  await expect(dockedWifi).toHaveAttribute("aria-checked", "false");
+  await expect(wifi).toHaveAttribute("aria-pressed", "true");
+  await wifi.click();
+  await expect(wifi).toHaveAttribute("aria-pressed", "false");
   await expect.poll(async () => (await workspaceState(page)).wifiSignal).toBeNull();
-  await dockedWifi.click();
-  await expect(dockedWifi).toHaveAttribute("aria-checked", "true");
+  await wifi.click();
+  await expect(wifi).toHaveAttribute("aria-pressed", "true");
   await expect.poll(async () => {
     const state = await workspaceState(page);
     return { activity: state.activity, mode: state.dataMode, readOnly: state.floor.readOnly,
@@ -642,13 +636,13 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
   const savedCells = (await workspaceState(page)).wifiSignal.cells;
   expect(savedCells.length).toBeGreaterThan(0);
   expect((await callWifiSurveyService(page, "turn_on")).status).toBe(200);
-  await dockedWifi.click();
-  await dockedWifi.click();
+  await wifi.click();
+  await wifi.click();
   await expect.poll(async () => (await workspaceState(page)).wifiSignal?.surveying).toBe(true);
   expect((await workspaceState(page)).wifiSignal.cells).toEqual(savedCells);
   expect((await callWifiSurveyService(page, "turn_off")).status).toBe(200);
-  await dockedWifi.click();
-  await dockedWifi.click();
+  await wifi.click();
+  await wifi.click();
   await expect.poll(async () => {
     const layer = (await workspaceState(page)).wifiSignal;
     return layer?.status === "ready" && layer.surveying === false && layer.cells.length > 0;
