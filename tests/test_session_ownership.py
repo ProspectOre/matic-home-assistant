@@ -36,6 +36,7 @@ from custom_components.matic_robot.plans import (
     CleaningRoom,
     ManagedMotionReplacedError,
 )
+from tests.history import history_keys
 from tests.wire_builders import _session_identity
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
@@ -141,6 +142,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
             session_identity=read_identity,
             active_session=presence,
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             managed_user_command=sender,
         )
     )
@@ -580,6 +582,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
             rooms,
             session_identity=read_identity,
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             managed_user_command=sender,
         )
     )
@@ -668,6 +671,7 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
             rooms,
             session_identity=AsyncMock(side_effect=lambda: identity),
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             managed_user_command=sender,
         )
     )
@@ -1625,6 +1629,7 @@ async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
             rooms,
             motion_token=motion_token,
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
             managed_user_command=sender,
             session_identity=read_identity,
             on_native_identity=bound.append,
@@ -1786,6 +1791,7 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
             ROOM,
             motion_token=7,
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
             managed_user_command=sender,
             session_identity=read_identity,
         )
@@ -1836,7 +1842,8 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
             "synthetic-serial",
             ROOM,
             motion_token=7,
-            session_history=AsyncMock(side_effect=MaticError("offline")),
+            session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(side_effect=MaticError("offline")),
             managed_user_command=sender,
         )
 
@@ -1911,6 +1918,7 @@ async def test_cancelled_managed_dispatch_stops_only_its_exact_session(hass, rep
             [ROOM],
             session_identity=read_identity,
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
             managed_user_command=send_managed_command,
         )
     )
@@ -2147,6 +2155,7 @@ async def _run_area_plan(
                 session_identity=robot.read_identity,
                 active_session=AsyncMock(return_value=False),
                 session_history=robot.history,
+                session_history_keys=lambda: history_keys(robot.history),
                 managed_user_command=sender,
                 floor_is_current=lambda: True,
                 floor_token=floor_token,
@@ -2721,18 +2730,24 @@ async def test_area_record_waiter_is_bounded_and_honours_cancel(monkeypatch):
     await _async_wait_for_area_record(unused, None, cancel)
     unused.assert_not_awaited()
 
-    arrives = AsyncMock(side_effect=[(old,), MaticError("busy"), (old, new)])
+    arrives = AsyncMock(
+        side_effect=[
+            frozenset({old.key}),
+            MaticError("busy"),
+            frozenset({old.key, new.key}),
+        ]
+    )
     await _async_wait_for_area_record(arrives, frozenset({old.key}), cancel)
     assert arrives.await_count == 3
 
     # A record that never arrives leaves the next leg's fence to decide.
-    never = AsyncMock(return_value=(old,))
+    never = AsyncMock(return_value=frozenset({old.key}))
     await _async_wait_for_area_record(never, frozenset({old.key}), cancel)
     assert never.await_count == 3
 
-    async def stopped() -> tuple:
+    async def stopped() -> frozenset[bytes]:
         cancel.set()
-        return (old,)
+        return frozenset({old.key})
 
     with pytest.raises(PlanCancelledError):
         await _async_wait_for_area_record(stopped, frozenset({old.key}), cancel)

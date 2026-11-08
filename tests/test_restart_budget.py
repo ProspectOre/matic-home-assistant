@@ -60,6 +60,7 @@ async def test_dispatch_does_not_consume_the_separate_completion_budget(hass):
         [CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")],
         None,
         AsyncMock(return_value=()),
+        session_history_keys=AsyncMock(return_value=frozenset()),
         session_identity=AsyncMock(side_effect=[b"", b"accepted"]),
     )
     assert dispatch.native_identity == b"accepted"

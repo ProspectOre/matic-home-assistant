@@ -825,6 +825,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 entry.runtime_data.client.async_get_cleaning_session_records,
                 strict=True,
             ),
+            session_history_keys=(
+                entry.runtime_data.client.async_get_cleaning_session_keys
+            ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
             ),
@@ -969,6 +972,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 session_history=partial(
                     entry.runtime_data.client.async_get_cleaning_session_records,
                     strict=True,
+                ),
+                session_history_keys=(
+                    entry.runtime_data.client.async_get_cleaning_session_keys
                 ),
                 session_identity=(
                     entry.runtime_data.client.async_get_cleaning_session_identity

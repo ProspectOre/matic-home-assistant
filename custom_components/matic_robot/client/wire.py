@@ -21,7 +21,7 @@ class WireField:
 
     number: int
     wire_type: int
-    value: int | bytes
+    value: int | bytes | memoryview
 
 
 @dataclass(slots=True)
@@ -44,7 +44,7 @@ class _WireShapeLimitError(Exception):
 
 
 def decode_fields(
-    payload: bytes,
+    payload: bytes | memoryview,
     *,
     max_fields: int | None = None,
     field_budget: WireFieldBudget | None = None,
@@ -53,7 +53,9 @@ def decode_fields(
 
     When ``max_fields`` is supplied, reject field-dense untrusted messages
     before parsing more than that many fields. A shared ``field_budget`` can
-    additionally bound allocations across a group of nested messages.
+    additionally bound allocations across a group of nested messages. Passing
+    a memoryview retains zero-copy views of byte fields, including opaque data
+    that the caller does not need to traverse.
     """
     fields: list[WireField] = []
     offset = 0
@@ -71,7 +73,7 @@ def decode_fields(
         wire_type = tag & 7
         if number == 0:
             raise DecodeError("invalid protobuf field number")
-        value: int | bytes
+        value: int | bytes | memoryview
         if wire_type == 0:
             value, offset = _decode_varint(payload, offset)
         elif wire_type == 1:
@@ -283,7 +285,7 @@ def uuid_string(
     raise DecodeError("invalid Matic UUID")
 
 
-def _decode_varint(payload: bytes, offset: int) -> tuple[int, int]:
+def _decode_varint(payload: bytes | memoryview, offset: int) -> tuple[int, int]:
     value = 0
     shift = 0
     while shift < 70:
@@ -298,7 +300,9 @@ def _decode_varint(payload: bytes, offset: int) -> tuple[int, int]:
     raise DecodeError("oversized protobuf varint")
 
 
-def _take(payload: bytes, offset: int, length: int) -> tuple[bytes, int]:
+def _take(
+    payload: bytes | memoryview, offset: int, length: int
+) -> tuple[bytes | memoryview, int]:
     end = offset + length
     if length < 0 or end > len(payload):
         raise DecodeError("truncated protobuf value")

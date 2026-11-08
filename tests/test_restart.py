@@ -44,6 +44,7 @@ from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
 )
+from tests.history import history_keys
 from tests.wire_builders import _session_identity
 
 
@@ -109,9 +110,14 @@ async def recovery_state(hass):
     }
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     journal_scope = {"run_id": None}
+
+    async def inventory():
+        return await history_keys(client.async_get_cleaning_session_records)
+
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_keys=AsyncMock(side_effect=inventory),
         async_get_active_cleaning_session_state=AsyncMock(return_value=True),
         async_get_state=AsyncMock(return_value=_operational_state()),
         async_send_user_command=AsyncMock(),
@@ -135,13 +141,24 @@ async def recovery_state(hass):
     return manager, SimpleNamespace(runtime_data=runtime), checkpoint, room
 
 
-async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery_state):
-    manager, entry, _, room = recovery_state
+@pytest.mark.parametrize("opaque_history", [False, True])
+async def test_recovery_passes_existing_dispatch_and_run_identity(
+    hass, recovery_state, opaque_history
+):
+    manager, entry, checkpoint, room = recovery_state
+    baseline = frozenset({b"opaque-key"}) if opaque_history else frozenset()
+    checkpoint["history_baseline"] = [
+        hashlib.sha256(key).hexdigest() for key in baseline
+    ]
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_keys.side_effect = None
+    entry.runtime_data.client.async_get_cleaning_session_keys.return_value = baseline
 
     async def execute(*args, **kwargs):
         assert kwargs["recovery"]["run_id"] == "run"
         assert kwargs["recovered_dispatch"].rooms == (room,)
         assert kwargs["recovered_dispatch"].native_identity == b"synthetic-session"
+        assert kwargs["recovered_dispatch"].history_baseline == baseline
         assert kwargs["floor_is_current"]()
         assert kwargs["mapped_room_names"] == ("Kitchen", "Office", "Hall")
         await manager.async_finish_run(
@@ -607,10 +624,14 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
             SimpleNamespace(key=key, session=SimpleNamespace(enriched=True)),
         )
+        entry.runtime_data.client.async_get_cleaning_session_keys.return_value = (
+            frozenset({key})
+        )
+        entry.runtime_data.client.async_get_cleaning_session_keys.side_effect = None
         if case == "enriched_history":
             checkpoint["handoff_history"] = [hashlib.sha256(key).hexdigest()]
     elif case == "history_error":
-        entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
+        entry.runtime_data.client.async_get_cleaning_session_keys.side_effect = (
             CannotConnectError("unavailable")
         )
     manager._robot("serial")["last_run"]["room_count"] = 2
@@ -707,7 +728,12 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
             runtime.coordinator.data.floor_plan = renamed
         return ()
 
+    async def inventory():
+        await history()
+        return frozenset()
+
     runtime.client.async_get_cleaning_session_records.side_effect = history
+    runtime.client.async_get_cleaning_session_keys.side_effect = inventory
     if rename_timing == "before_recovery":
         runtime.coordinator.data.floor_plan = renamed
     with (
@@ -917,6 +943,13 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
                 else AsyncMock(side_effect=CannotConnectError("unavailable"))
                 if history_state == "error"
                 else AsyncMock(return_value=(SimpleNamespace(key=b"new"),))
+            ),
+            session_history_keys=(
+                None
+                if history_state == "missing"
+                else AsyncMock(side_effect=CannotConnectError("unavailable"))
+                if history_state == "error"
+                else AsyncMock(return_value=frozenset({b"new"}))
             ),
         )
     if history_state != "available":

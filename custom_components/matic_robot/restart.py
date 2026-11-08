@@ -422,10 +422,8 @@ async def async_recover_managed_run(
             ):
                 reason = "restart_handoff_history_unavailable"
                 return
-            records = await runtime.client.async_get_cleaning_session_records(
-                strict=True
-            )
-            if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
+            keys = await runtime.client.async_get_cleaning_session_keys()
+            if {hashlib.sha256(key).hexdigest() for key in keys} != set(
                 handoff_history
             ):
                 reason = "restart_handoff_history_changed"
@@ -470,6 +468,7 @@ async def async_recover_managed_run(
                 session_history=partial(
                     runtime.client.async_get_cleaning_session_records, strict=True
                 ),
+                session_history_keys=runtime.client.async_get_cleaning_session_keys,
                 session_identity=runtime.client.async_get_cleaning_session_identity,
                 coverage_verifier=getattr(
                     runtime.client, "async_confirm_coverage_receipt", None
@@ -494,14 +493,12 @@ async def async_recover_managed_run(
             )
             return
         assert dispatched_at is not None
-        records = await runtime.client.async_get_cleaning_session_records()
+        keys = await runtime.client.async_get_cleaning_session_keys()
         hashes = checkpoint.get("history_baseline")
         if not isinstance(hashes, list):
             return
         baseline = frozenset(
-            record.key
-            for record in records
-            if hashlib.sha256(record.key).hexdigest() in hashes
+            key for key in keys if hashlib.sha256(key).hexdigest() in hashes
         )
         # Recheck after I/O: Stop, takeover, and map transitions win recovery.
         if (
@@ -632,6 +629,7 @@ async def async_recover_managed_run(
             session_history=partial(
                 runtime.client.async_get_cleaning_session_records, strict=True
             ),
+            session_history_keys=runtime.client.async_get_cleaning_session_keys,
             session_identity=runtime.client.async_get_cleaning_session_identity,
             coverage_verifier=getattr(
                 runtime.client, "async_confirm_coverage_receipt", None

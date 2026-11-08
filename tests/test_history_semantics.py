@@ -60,6 +60,7 @@ def _payload(
     mop_status: int | None = None,
     goals_field: int | tuple[int, ...] = 2,
     goal_ids: tuple[tuple[int, int], ...] = ((1, 2),),
+    goal_geometry: bytes = b"",
     start_payload: bytes | None = None,
     event_entries: tuple[bytes, ...] | None = None,
     include_summary_reason: bool = True,
@@ -76,10 +77,16 @@ def _payload(
         user = _bfield(start_child, b"")
         start_reason = _bfield(2, user)
     goal_fields = (goals_field,) if isinstance(goals_field, int) else goals_field
+    custom_target = (
+        _bfield(2, _bfield(3, _bfield(2, goal_geometry))) if goal_geometry else b""
+    )
     goals = b"".join(
         _bfield(
             field,
-            _bfield(7, _bfield(1, _bfield(1, _bfield(2, _uuid(*identity))))),
+            _bfield(
+                7,
+                _bfield(1, _bfield(1, _bfield(2, _uuid(*identity)))) + custom_target,
+            ),
         )
         for identity in goal_ids
         for field in goal_fields
@@ -116,7 +123,7 @@ def test_decodes_canonical_identity_and_per_room_result() -> None:
     assert decoded.mode_results[0].duration_seconds == 73
 
 
-@pytest.mark.parametrize("payload", [b"", b"\xff", b"x" * (256 * 1024 + 1)])
+@pytest.mark.parametrize("payload", [b"", b"\xff", b"x" * (2 * 1024 * 1024 + 1)])
 def test_rejects_malformed_or_oversized_payload(payload: bytes) -> None:
     assert decode_history_semantics(payload) is None
 

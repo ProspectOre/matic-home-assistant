@@ -268,6 +268,7 @@ async def _async_dispatch_leg_command(
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline.
 
@@ -280,8 +281,10 @@ async def _async_dispatch_leg_command(
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    history_baseline = await _async_session_history_baseline(session_history)
-    if session_history is not None and history_baseline is None:
+    history_baseline = await _async_session_history_baseline(session_history_keys)
+    if (
+        session_history is not None or session_history_keys is not None
+    ) and history_baseline is None:
         # A configured native-history reader that failed is different from a
         # legacy caller that has no reader. Dispatching in the former case
         # guarantees that completion cannot be attributed to this mission.
@@ -478,6 +481,7 @@ async def _async_run_room(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
+    session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
     record_room_completed: Callable[[CleaningRoom], None] | None = None,
@@ -547,6 +551,7 @@ async def _async_run_room(
                 [room],
                 motion_token,
                 session_history,
+                session_history_keys=session_history_keys,
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
@@ -1089,7 +1094,7 @@ async def _async_wait_for_area_end(
 
 
 async def _async_wait_for_area_record(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[], Awaitable[frozenset[bytes]]] | None,
     baseline: frozenset[bytes] | None,
     cancel_event: asyncio.Event,
 ) -> None:
@@ -1149,6 +1154,7 @@ async def _async_run_area_leg(
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]] | None,
     provenance: str,
     settle_history: bool,
+    session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
 ) -> bool:
     """Clean one plan custom area as its own owned native mission.
 
@@ -1192,6 +1198,7 @@ async def _async_run_area_leg(
                 area,
                 motion_token,
                 session_history,
+                session_history_keys=session_history_keys,
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
@@ -1249,7 +1256,9 @@ async def _async_run_area_leg(
             )
         if settle_history:
             await _async_wait_for_area_record(
-                session_history, dispatch.history_baseline, cancel_event
+                session_history_keys,
+                dispatch.history_baseline,
+                cancel_event,
             )
     except PlanCancelledError, asyncio.CancelledError:
         # Stop owns its own STOP.
@@ -1341,6 +1350,7 @@ async def _async_run_leg(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
+    session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
     record_room_completed: Callable[[CleaningRoom], None] | None = None,
@@ -1384,6 +1394,7 @@ async def _async_run_leg(
             floor_is_current=floor_is_current,
             floor_token=floor_token,
             session_identity=session_identity,
+            session_history_keys=session_history_keys,
             on_native_identity=on_native_identity,
             run_id=run_id,
             record_room_completed=record_room_completed,
@@ -1461,6 +1472,7 @@ async def _async_run_leg(
                 leg,
                 motion_token,
                 session_history,
+                session_history_keys=session_history_keys,
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
@@ -2368,13 +2380,13 @@ async def _async_active_session_state(
 
 
 async def _async_session_history_baseline(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[], Awaitable[frozenset[bytes]]] | None,
 ) -> frozenset[bytes] | None:
     """Capture opaque native keys before dispatch without exposing their values."""
     if reader is None:
         return None
     try:
-        return frozenset(record.key for record in await reader())
+        return await reader()
     except MaticError as err:
         _LOGGER.debug(
             "Native Matic completion baseline unavailable (%s)", type(err).__name__
@@ -3498,6 +3510,7 @@ async def _async_execute_rooms_reserved(
     active_session: Callable[[], Awaitable[bool | None]] | None = None,
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
     | None = None,
+    session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
@@ -3835,6 +3848,7 @@ async def _async_execute_rooms_reserved(
                             candidate,
                             motion_token,
                             session_history,
+                            session_history_keys=session_history_keys,
                             floor_is_current=floor_is_current,
                             floor_token=floor_token,
                             session_identity=session_identity,
@@ -3868,6 +3882,7 @@ async def _async_execute_rooms_reserved(
                         active_session,
                         session_history,
                         managed_user_command,
+                        session_history_keys=session_history_keys,
                         prepared_dispatch=prepared_dispatch,
                         finish_room_event=finish_room_event,
                         floor_is_current=floor_is_current,
@@ -3899,6 +3914,7 @@ async def _async_execute_rooms_reserved(
                         session_history,
                         confirm_room_completed,
                         managed_user_command,
+                        session_history_keys=session_history_keys,
                         prepared_dispatch=prepared_dispatch,
                         prefetch_next=prefetch_next
                         if next_leg is not None and not durable
@@ -3954,7 +3970,7 @@ async def _async_execute_rooms_reserved(
                     # queue instead of treating the prior verifying leg as
                     # the only recoverable work.
                     handoff_keys = await _async_session_history_baseline(
-                        session_history
+                        session_history_keys
                     )
                     checkpoint.update(
                         {
@@ -4343,6 +4359,7 @@ async def _async_execute_rooms(
     active_session: Callable[[], Awaitable[bool | None]] | None = None,
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
     | None = None,
+    session_history_keys: Callable[[], Awaitable[frozenset[bytes]]] | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
@@ -4413,6 +4430,7 @@ async def _async_execute_rooms(
             refresh=refresh,
             active_session=active_session,
             session_history=session_history,
+            session_history_keys=session_history_keys,
             confirm_room_completed=confirm_room_completed,
             managed_user_command=managed_user_command,
             mapped_room_names=mapped_room_names,

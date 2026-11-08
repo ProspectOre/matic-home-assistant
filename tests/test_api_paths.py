@@ -1147,8 +1147,10 @@ async def test_get_tracked_collection_entries_enforces_bounds(monkeypatch) -> No
         await client.async_get_tracked_collection_entries("history", limit=0)
 
 
+@pytest.mark.parametrize("require_complete", [False, True])
 async def test_get_tracked_collection_entries_honors_overall_deadline(
     monkeypatch,
+    require_complete,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
 
@@ -1162,7 +1164,59 @@ async def test_get_tracked_collection_entries_honors_overall_deadline(
         MagicMock(side_effect=(0.0, 31.0)),
     )
 
-    assert await client.async_get_tracked_collection_entries("history") == ()
+    if require_complete:
+        with pytest.raises(CannotConnectError, match="timed out"):
+            await client.async_get_tracked_collection_entries(
+                "history", require_complete=True
+            )
+    else:
+        assert await client.async_get_tracked_collection_entries("history") == ()
+
+
+@pytest.mark.parametrize("count", [0, 64, 65])
+async def test_history_key_inventory_rejects_truncated_streams(monkeypatch, count):
+    client = MaticHermesClient("robot.invalid", 16320)
+
+    async def entries(name):
+        assert name == "coverage_session_history"
+        for index in range(count):
+            yield HermesCollectionEntry(bytes((index + 1,)), b"\xff")
+
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
+    if count == 65:
+        with pytest.raises(CannotConnectError, match="reached its limit"):
+            await client.async_get_cleaning_session_keys()
+    else:
+        keys = await client.async_get_cleaning_session_keys()
+        assert keys == frozenset(bytes((index + 1,)) for index in range(count))
+
+
+@pytest.mark.parametrize("boundary", ["first_response", "idle", "deadline"])
+async def test_complete_inventory_distinguishes_timeout_from_settled_history(
+    monkeypatch, boundary
+):
+    client = MaticHermesClient("robot.invalid", 16320)
+
+    async def entries(_name):
+        if boundary != "first_response":
+            yield HermesCollectionEntry(b"existing", b"opaque")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
+    if boundary == "deadline":
+        monkeypatch.setattr(
+            "custom_components.matic_robot.client.api._COLLECTION_TIMEOUT", 0.01
+        )
+    if boundary == "idle":
+        result = await client.async_get_tracked_collection_entries(
+            "history", idle_timeout=0.01, require_complete=True
+        )
+        assert result == (HermesCollectionEntry(b"existing", b"opaque"),)
+    else:
+        with pytest.raises(CannotConnectError, match="timed out"):
+            await client.async_get_tracked_collection_entries(
+                "history", first_timeout=0.01, idle_timeout=1, require_complete=True
+            )
 
 
 async def test_subscribe_approximate_trajectory_decodes_active_mission(

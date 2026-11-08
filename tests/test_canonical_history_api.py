@@ -12,7 +12,69 @@ from custom_components.matic_robot.client.history_semantics import (
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from tests.test_coverage_receipts import history_key
 from tests.test_history_semantics import _payload
-from tests.wire_builders import _bfield
+from tests.wire_builders import _bfield, _fixed32
+
+
+async def test_geometry_heavy_history_retains_identity_and_per_mode_evidence():
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    circle = _bfield(1, _fixed32(1, 17.5) + _fixed32(2, 29.25)) + _fixed32(2, 0.2)
+    circles = _bfield(1, circle) * 5000
+    payload = _payload(
+        goal_geometry=circles,
+        goal_ids=((1, 2),) * 12,
+        mop_status=1,
+    )
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(history_key(), payload),)
+    )
+
+    (record,) = await client.async_get_cleaning_session_records(strict=True)
+    assert await client.async_get_cleaning_session_keys() == frozenset({history_key()})
+    session = record.session
+    assert session.mission_id == 44
+    assert session.partition_id == "00000000-0000-0001-0000-000000000002"
+    assert session.initiator == "app"
+    assert session.stop_reason == "finished"
+    assert session.completed is False
+    assert session.completed_rooms == ()
+    assert session.combined_completed_rooms == ()
+    assert [
+        (result.cleaning_mode, result.status, result.duration_seconds)
+        for result in session.mode_results
+    ] == [("vacuum", "completed", 73), ("mop", "partial", None)]
+
+    conflicting = _payload(
+        goal_geometry=circles,
+        goal_ids=((1, 2),) * 11 + ((3, 4),),
+        mop_status=1,
+    )
+    client.async_get_tracked_collection_entries.return_value = (
+        HermesCollectionEntry(history_key(), conflicting),
+    )
+    (revised,) = await client.async_get_cleaning_session_records(strict=True)
+    assert revised.key == record.key
+    assert revised.session.partition_id is None
+    assert revised.session.mode_results == ()
+
+
+async def test_key_inventory_does_not_require_a_decodable_record():
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"opaque-key", b"\xff"),)
+    )
+    assert await client.async_get_cleaning_session_keys() == frozenset({b"opaque-key"})
+    with pytest.raises(api.MaticError, match="undecodable"):
+        await client.async_get_cleaning_session_records(strict=True)
+
+
+@pytest.mark.parametrize("keys", [(b"",), (b"same", b"same")])
+async def test_key_inventory_rejects_ambiguous_keys(keys):
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=tuple(HermesCollectionEntry(key, b"\xff") for key in keys)
+    )
+    with pytest.raises(api.MaticError, match="incomplete or ambiguous"):
+        await client.async_get_cleaning_session_keys()
 
 
 def test_canonical_projection_keeps_room_identity_and_stop_separate():
@@ -97,8 +159,6 @@ def test_conflicting_modern_envelopes_remain_undecodable():
 
 
 async def test_managed_baseline_accepts_an_opaque_non_room_session():
-    from functools import partial
-
     from custom_components.matic_robot.managed_executor import (
         _async_session_history_baseline,
     )
@@ -110,6 +170,6 @@ async def test_managed_baseline_accepts_an_opaque_non_room_session():
         )
     )
     baseline = await _async_session_history_baseline(
-        partial(client.async_get_cleaning_session_records, strict=True)
+        client.async_get_cleaning_session_keys
     )
     assert baseline is not None and set(baseline) == {history_key()}

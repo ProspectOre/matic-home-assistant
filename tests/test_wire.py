@@ -35,6 +35,20 @@ def test_decode_fields_enforces_optional_field_limit() -> None:
         decode_fields(b"\x08\x00" * 3, max_fields=2)
 
 
+def test_decode_fields_can_retain_views_without_copying_opaque_values() -> None:
+    payload = b"\x08\x07\x12\x05hello"
+    fields = decode_fields(memoryview(payload))
+    assert fields[0].value == 7
+    view = fields[1].value
+    assert isinstance(view, memoryview)
+    assert view == b"hello"
+    assert view.obj is payload
+    with pytest.raises(DecodeError, match="truncated protobuf value"):
+        decode_fields(memoryview(payload[:-1]))
+    with pytest.raises(DecodeError, match="aggregate field budget"):
+        decode_fields(memoryview(payload), field_budget=WireFieldBudget(1))
+
+
 def test_decode_fields_checks_limit_before_parsing_next_field() -> None:
     payload = b"\x08\x00" * 2 + b"\x00"
     with pytest.raises(DecodeError, match="field limit"):

@@ -696,9 +696,11 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         verification_deadline=dt_util.utcnow() + timedelta(minutes=4),
     )
     checkpoint = manager.recovery_run("serial")["recovery_checkpoint"]
+    record = _record((room,))
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=b""),
-        async_get_cleaning_session_records=AsyncMock(return_value=(_record((room,)),)),
+        async_get_cleaning_session_records=AsyncMock(return_value=(record,)),
+        async_get_cleaning_session_keys=AsyncMock(return_value=frozenset({record.key})),
         async_confirm_coverage_receipt=AsyncMock(return_value=True),
         async_send_user_command=AsyncMock(),
         activity_journal=SimpleNamespace(

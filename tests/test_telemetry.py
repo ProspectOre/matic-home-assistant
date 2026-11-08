@@ -460,12 +460,17 @@ def test_cleaning_session_decoder_enforces_payload_field_and_room_budgets(
         details = _bfield(3, name) + _bfield(4, _vfield(1, 30))
         return _bfield(6, _bfield(1, _bfield(2, details)))
 
-    payload = _bfield(5, room(b"Kitchen") + room(b"Office"))
+    summary = room(b"Kitchen") + room(b"Office")
+    payload = _bfield(5, summary)
 
-    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(payload) - 1)
+    monkeypatch.setattr(api_module, "MAX_HISTORY_BYTES", len(payload) - 1)
     assert _decode_cleaning_session(payload) is None
 
-    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(payload))
+    monkeypatch.setattr(api_module, "MAX_HISTORY_BYTES", len(payload))
+    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(summary) - 1)
+    assert _decode_cleaning_session(payload) is None
+
+    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(summary))
     monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_FIELDS", 1)
     assert _decode_cleaning_session(payload) is None
 

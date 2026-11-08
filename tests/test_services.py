@@ -1647,6 +1647,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_keys=AsyncMock(return_value=frozenset()),
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
                 ),
@@ -1805,6 +1806,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_keys=AsyncMock(return_value=frozenset()),
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
                 async_send_user_command=AsyncMock(),
             ),
@@ -2186,6 +2188,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_keys=AsyncMock(return_value=frozenset()),
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
                 async_send_user_command=AsyncMock(),
             ),
@@ -2543,6 +2546,7 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_keys=AsyncMock(return_value=frozenset()),
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
                 ),
@@ -2972,6 +2976,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_keys=AsyncMock(return_value=frozenset()),
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
                 ),
@@ -3076,6 +3081,7 @@ async def test_legacy_saved_run_revalidates_after_stop_settlement(
     client = SimpleNamespace(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_keys=AsyncMock(return_value=frozenset()),
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
     )
@@ -3191,6 +3197,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     client = SimpleNamespace(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_keys=AsyncMock(return_value=frozenset()),
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
     )
@@ -5588,7 +5595,7 @@ async def test_room_dispatch_rechecks_exact_floor_before_robot_command(
     services = SimpleNamespace(async_call=AsyncMock())
     hass = SimpleNamespace(services=services)
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
-    session_history = AsyncMock(return_value=())
+    session_history_keys = AsyncMock(return_value=frozenset())
     floor_is_current = MagicMock(
         side_effect=[True, False] if changes_during_history else [False]
     )
@@ -5601,16 +5608,17 @@ async def test_room_dispatch_rechecks_exact_floor_before_robot_command(
             "vacuum.test",
             [room],
             17,
-            session_history,
+            None,
+            session_history_keys=session_history_keys,
             floor_is_current=floor_is_current,
             on_dispatch=on_dispatch,
         )
 
     assert excinfo.value.translation_key == "room_plan_unavailable"
     if changes_during_history:
-        session_history.assert_awaited_once()
+        session_history_keys.assert_awaited_once()
     else:
-        session_history.assert_not_awaited()
+        session_history_keys.assert_not_awaited()
     on_dispatch.assert_not_called()
     services.async_call.assert_not_awaited()
 

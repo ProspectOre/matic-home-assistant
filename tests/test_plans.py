@@ -92,6 +92,7 @@ from custom_components.matic_robot.plans import (
     resolve_rooms,
 )
 from custom_components.matic_robot.services import _entry_for_entity
+from tests.history import history_keys
 
 
 @pytest.fixture(autouse=True)
@@ -1179,6 +1180,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             "serial",
             [room],
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             active_session=AsyncMock(return_value=False),
         )
     await manager.async_cancel_and_wait("serial")
@@ -1283,6 +1285,7 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
                     AsyncMock(return_value=None) if terminal == "interrupted" else None
                 ),
                 session_history=AsyncMock(return_value=()),
+                session_history_keys=AsyncMock(return_value=frozenset()),
             )
         )
         try:
@@ -7403,6 +7406,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
                 _room("Kitchen", "room-kitchen"),
                 active_session=AsyncMock(return_value=False),
                 session_history=history,
+                session_history_keys=lambda: history_keys(history),
                 confirm_room_completed=confirm,
             )
         else:
@@ -7416,6 +7420,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
                     _room("Kitchen", "room-kitchen"),
                     active_session=AsyncMock(return_value=False),
                     session_history=history,
+                    session_history_keys=lambda: history_keys(history),
                     confirm_room_completed=confirm,
                 )
 
@@ -7778,6 +7783,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
             "serial",
             room,
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             managed_user_command=sender,
             prefetch_next=prefetch,
             active_session=(
@@ -8017,6 +8023,7 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
         "serial",
         rooms,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         session_identity=AsyncMock(
             side_effect=lambda: (
                 b""
@@ -8087,6 +8094,7 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
         "serial",
         rooms,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         session_identity=AsyncMock(
             side_effect=lambda: (
                 b""
@@ -8280,6 +8288,7 @@ async def test_leg_takeover_during_verification_interrupts(hass) -> None:
             "serial",
             _leg_rooms(),
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
         )
 
     manager.async_mark_interrupted.assert_awaited_once()
@@ -8343,6 +8352,7 @@ async def test_leg_that_ends_in_place_is_interrupted_without_credit(hass) -> Non
             "serial",
             rooms,
             session_history=AsyncMock(return_value=(record,)),
+            session_history_keys=AsyncMock(return_value=frozenset({record.key})),
             motion_token=7,
         )
 
@@ -8398,6 +8408,7 @@ async def test_leg_partial_verification_does_not_start_next_leg(
         "serial",
         rooms,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         managed_user_command=sender,
         motion_token=7,
         prefetch_next=prefetch,
@@ -8693,6 +8704,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
                 rooms,
                 refresh=AsyncMock(),
                 session_history=history,
+                session_history_keys=lambda: history_keys(history),
                 managed_user_command=sender,
                 motion_token=motion_token,
             )
@@ -8707,6 +8719,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
             rooms,
             refresh=AsyncMock(),
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             managed_user_command=sender,
             motion_token=motion_token,
         )
@@ -8769,6 +8782,7 @@ async def test_leg_partial_record_credits_only_verified_subset(
         "serial",
         rooms,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         managed_user_command=sender,
         motion_token=7,
     )
@@ -8830,6 +8844,7 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
         "serial",
         rooms,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         managed_user_command=sender,
         motion_token=7,
         finish_room_event=finish_room_event,
@@ -8986,6 +9001,7 @@ async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
         "serial",
         room,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         managed_user_command=sender,
         prefetch_next=prefetch,
     )
@@ -9043,6 +9059,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
             "serial",
             room,
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
             managed_user_command=sender,
             motion_token=7,
             prefetch_next=prefetch,
@@ -9959,6 +9976,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             session_identity=AsyncMock(return_value=b""),
             active_session=AsyncMock(return_value=False) if settled is True else None,
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
         )
 
     assert run.await_count == 1
@@ -10088,6 +10106,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             floor_token="a" * 64,
             session_identity=identity,
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             handoff_expected_identity=b"" if takeover_leg == 0 else None,
         )
 
@@ -10140,6 +10159,7 @@ async def test_execute_rooms_prepares_next_command_during_current_return(hass) -
             "serial",
             rooms,
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
             managed_user_command=managed_command,
         )
 
@@ -10184,6 +10204,7 @@ async def test_execute_rooms_cleans_up_prefetch_when_graceful_stop_arrives(
             "serial",
             rooms,
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
             managed_user_command=managed_command,
         )
 
@@ -10726,6 +10747,7 @@ async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None
             session_identity=AsyncMock(return_value=b""),
             active_session=AsyncMock(return_value=False),
             session_history=AsyncMock(return_value=()),
+            session_history_keys=AsyncMock(return_value=frozenset()),
         )
 
     assert observed == [[rooms[0]], [rooms[1]]]
@@ -10862,6 +10884,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
             "serial",
             rooms,
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             active_session=native_session,
             managed_user_command=sender,
         )
@@ -10927,6 +10950,7 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
         _leg_rooms(),
         active_session=active_session,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
     )
     assert result is True
     assert manager.snapshot("serial")["completed_runs"] == 2
@@ -11033,6 +11057,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
         _leg_rooms(),
         active_session=AsyncMock(),
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         managed_user_command=sender,
         motion_token=motion_token,
     )
@@ -11108,6 +11133,7 @@ async def test_multi_room_leg_persists_completion_before_next_dispatch(
         _leg_rooms(),
         active_session=AsyncMock(return_value=False),
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         prefetch_next=prefetch,
     )
     assert prefetched
@@ -11181,6 +11207,7 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         "serial",
         rooms,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
     )
     await hass.async_block_till_done()
     # HA schedules listener callbacks independently; assert delivery multiplicity.
@@ -11246,6 +11273,7 @@ async def test_terminal_history_has_its_own_budget(
         "serial",
         rooms,
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         active_session=AsyncMock(side_effect=[True, False])
         if resolves
         else AsyncMock(return_value=False),

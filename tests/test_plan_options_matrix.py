@@ -26,6 +26,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
 )
+from tests.history import history_keys
 from tests.wire_builders import _session_identity
 
 LAYOUTS = (
@@ -175,6 +176,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         expected,
         active_session=AsyncMock(return_value=False),
         session_history=history,
+        session_history_keys=lambda: history_keys(history),
         confirm_room_completed=confirm,
         managed_user_command=dock,
         mapped_room_names=tuple(r.name for r in rooms),
@@ -379,6 +381,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
             rooms,
             active_session=AsyncMock(return_value=False),
             session_history=history,
+            session_history_keys=lambda: history_keys(history),
             confirm_room_completed=confirm,
             managed_user_command=managed_command,
             floor_is_current=lambda: True,

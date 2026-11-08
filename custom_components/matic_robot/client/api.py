@@ -71,7 +71,11 @@ from .history import (
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
 )
-from .history_semantics import SemanticHistory, decode_history_semantics
+from .history_semantics import (
+    MAX_HISTORY_BYTES,
+    SemanticHistory,
+    decode_history_semantics,
+)
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
     CleaningModeResult,
@@ -968,6 +972,16 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return None
         return confirmed.native_session_activity(identity_cleared=True)
 
+    async def async_get_cleaning_session_keys(self) -> frozenset[bytes]:
+        """Read a bounded history inventory independently of record semantics."""
+        entries = await self.async_get_tracked_collection_entries(
+            "coverage_session_history", limit=65, require_complete=True
+        )
+        keys = frozenset(entry.key for entry in entries)
+        if len(entries) > 64 or b"" in keys or len(keys) != len(entries):
+            raise MaticError("Native history key inventory is incomplete or ambiguous")
+        return keys
+
     async def async_get_cleaning_session_records(
         self,
         *,
@@ -1438,8 +1452,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         limit: int = 256,
         first_timeout: float = 3.0,
         idle_timeout: float = 0.25,
+        require_complete: bool = False,
     ) -> tuple[HermesCollectionEntry, ...]:
-        """Return a bounded snapshot while acknowledging tracked updates."""
+        """Read until stream end or idle; optionally reject local truncation.
+
+        Hermes has no verified snapshot-complete marker. An idle boundary is
+        still the collection's settling heuristic, not server completeness proof.
+        """
         if not 1 <= limit <= 4096:
             raise ValueError("Hermes collection limit must be between 1 and 4096")
         entries: list[HermesCollectionEntry] = []
@@ -1451,12 +1470,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             while len(entries) < limit:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
+                    if require_complete:
+                        raise CannotConnectError("Hermes collection snapshot timed out")
                     break
                 timeout = min(idle_timeout if received else first_timeout, remaining)
                 try:
                     async with asyncio.timeout(timeout):
                         entry = await anext(iterator)
-                except StopAsyncIteration, TimeoutError:
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    if require_complete and (not received or monotonic() >= deadline):
+                        raise CannotConnectError(
+                            "Hermes collection snapshot timed out"
+                        ) from None
                     break
                 received = True
                 collected_bytes += len(entry.key) + len(entry.value)
@@ -1465,6 +1492,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                         f"Hermes {collection_name} collection exceeds the byte limit"
                     )
                 entries.append(entry)
+            if require_complete and len(entries) >= limit:
+                raise CannotConnectError("Hermes collection snapshot reached its limit")
         finally:
             await iterator.aclose()
         return tuple(entries)
@@ -3063,15 +3092,21 @@ def _canonical_cleaning_session(
 
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     """Decode native history without treating its global default as room proof."""
-    if len(payload) > _CLEANING_SESSION_MAX_BYTES:
+    if len(payload) > MAX_HISTORY_BYTES:
         return None
     try:
-        summary = _telemetry_bytes(
-            payload,
-            5,
-            max_bytes=_CLEANING_SESSION_MAX_BYTES,
-            max_fields=_CLEANING_SESSION_MAX_FIELDS,
+        fields = decode_fields(
+            memoryview(payload), max_fields=_CLEANING_SESSION_MAX_FIELDS
         )
+        summaries = tuple(field for field in fields if field.number == 5)
+        if (
+            len(summaries) != 1
+            or summaries[0].wire_type != 2
+            or not isinstance(summaries[0].value, memoryview)
+            or len(summaries[0].value) > _CLEANING_SESSION_MAX_BYTES
+        ):
+            return None
+        summary = bytes(summaries[0].value)
     except DecodeError:
         return None
     started_at = _decode_nested_timestamp(summary, 3)
