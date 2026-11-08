@@ -109,9 +109,23 @@ test("history invalidations refresh saved-map availability without changing the 
 });
 
 test("single-floor homes keep saved-floor metadata lazy", async ({ page }) => {
-  const { panel } = await mountPanel(page, { initialCatalogEntries: [entry(1)] });
+  const { panel } = await mountPanel(page, {
+    initialCatalogEntries: [{ ...entry(1), live_workspace_transport_enabled: true }],
+    workspacePush: true,
+    userData: {},
+  });
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.history.status)).toBe("idle");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.workspaceSubscriptions)).toBeGreaterThan(0);
+  await page.evaluate(() => window.__panelFixture.sendWorkspaceEnvelope({ type: "invalidate", invalidation: {
+    epoch: "synthetic-workspace-epoch",
+    sequence: 1,
+    coherence_generation: 1,
+    revisions: { workspace: 1, history: 1 },
+    resources: ["history"],
+  } }));
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() => window.__panelFixture.historyReads)).toBe(0);
   await expect(panel.locator("select.floor-switcher")).toHaveCount(1);
   await expect(panel.locator("select.floor-switcher option")).toHaveCount(1);
 });
