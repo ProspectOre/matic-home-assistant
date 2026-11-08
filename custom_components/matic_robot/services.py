@@ -93,6 +93,7 @@ from .plans import (
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_coherence import room_completion_names_are_current
 from .room_sequence import resolve_room_sequence, saved_plan_preview_token
+from .run_admission import admission_event
 
 SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
@@ -421,20 +422,33 @@ def _keep_managed_run(
 
     @wraps(handler)
     async def run(call: ServiceCall) -> None:
+        admitted = asyncio.Event()
+
+        async def execute() -> None:
+            token = admission_event.set(admitted)
+            try:
+                await handler(call)
+            finally:
+                admission_event.reset(token)
+
         task = hass.async_create_background_task(
-            handler(call), f"{DOMAIN} managed {call.service}"
+            execute(), f"{DOMAIN} managed {call.service}"
         )
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
+            if not admitted.is_set():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            else:
 
-            def report_result(done: asyncio.Task[None]) -> None:
-                if not done.cancelled() and (err := done.exception()) is not None:
-                    _LOGGER.warning(
-                        "Detached managed run ended (%s)", type(err).__name__
-                    )
+                def report_result(done: asyncio.Task[None]) -> None:
+                    if not done.cancelled() and (err := done.exception()) is not None:
+                        _LOGGER.warning(
+                            "Detached managed run ended (%s)", type(err).__name__
+                        )
 
-            task.add_done_callback(report_result)
+                task.add_done_callback(report_result)
             raise
 
     return run

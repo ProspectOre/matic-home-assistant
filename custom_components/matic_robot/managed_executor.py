@@ -81,6 +81,7 @@ from .plans import (
     leg_groups as leg_groups,
 )
 from .room_coherence import current_room_cadence_identity
+from .run_admission import managed_run_admitted
 from .stop_return import (
     async_clear_ownerless_stop_if_settled,
     schedule_dock_confirmation,
@@ -3567,6 +3568,7 @@ async def _async_execute_rooms_reserved(
         manager.register_run_task(serial_number)
         cancel_event = manager.prepare_run(serial_number)
         motion_token = manager.begin_managed_motion(serial_number)
+        managed_run_admitted()
         cleanup_stop_sent = False
         dock_confirmation_scheduled = False
         native_identity: bytes | None = handoff_expected_identity

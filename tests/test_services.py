@@ -6858,6 +6858,7 @@ async def test_stop_expected_run_mismatch_has_no_effect(hass, active_run) -> Non
 
 async def test_managed_service_survives_caller_cancellation(hass):
     """A disconnected client does not own the admitted run's lifetime."""
+    from custom_components.matic_robot.run_admission import managed_run_admitted
     from custom_components.matic_robot.services import _keep_managed_run
 
     started = asyncio.Event()
@@ -6865,6 +6866,7 @@ async def test_managed_service_survives_caller_cancellation(hass):
     completed = asyncio.Event()
 
     async def handler(call):
+        managed_run_admitted()
         started.set()
         await finish.wait()
         completed.set()
@@ -6892,6 +6894,7 @@ async def test_managed_service_propagates_immediate_refusal(hass):
 
 
 async def test_detached_managed_run_remains_owned_by_entry_unload(hass):
+    from custom_components.matic_robot.run_admission import managed_run_admitted
     from custom_components.matic_robot.services import _keep_managed_run
 
     manager = CleaningPlanManager(hass)
@@ -6900,6 +6903,7 @@ async def test_detached_managed_run_remains_owned_by_entry_unload(hass):
 
     async def handler(call):
         manager.register_run_task("serial")
+        managed_run_admitted()
         try:
             started.set()
             await manager.cancellation_event("serial").wait()
@@ -6920,6 +6924,8 @@ async def test_detached_managed_run_remains_owned_by_entry_unload(hass):
 
 @pytest.mark.parametrize("service", ["run_selected_plan", "clean_room_sequence"])
 async def test_registered_plan_service_keeps_run_after_caller_cancel(hass, service):
+    from custom_components.matic_robot.run_admission import managed_run_admitted
+
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     floor = FloorPlan(
@@ -6973,6 +6979,7 @@ async def test_registered_plan_service_keeps_run_after_caller_cancel(hass, servi
     started, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def executor(*args, **kwargs):
+        managed_run_admitted()
         started.set()
         await release.wait()
         completed.set()
@@ -6999,3 +7006,76 @@ async def test_registered_plan_service_keeps_run_after_caller_cancel(hass, servi
         await asyncio.sleep(0)
         if service == "clean_room_sequence":
             assert "serial" not in manager._manual_room_sequence_reservations
+
+
+async def test_caller_cancel_before_admission_does_not_start_run(hass):
+    from custom_components.matic_robot.services import _keep_managed_run
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def handler(call):
+        entered.set()
+        await release.wait()
+        started.set()
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+    await entered.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    await asyncio.sleep(0)
+    assert not started.is_set()
+
+
+async def test_admitted_executor_survives_caller_cancel_and_honors_stop(hass):
+    from custom_components.matic_robot.services import _keep_managed_run
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_check(*args):
+        entered.set()
+        await release.wait()
+
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {
+            "plan_id": "home",
+            "start_timeout": 120,
+            "completion_timeout": 21600,
+            "return_to_base": True,
+        },
+    )
+    room = CleaningRoom("office", "Office", "vacuum", "quick")
+
+    async def handler(call):
+        await _async_execute_rooms(hass, call, manager, "vacuum.test", "serial", [room])
+
+    with (
+        patch(
+            "custom_components.matic_robot.managed_executor._ensure_stop_settled",
+            side_effect=delayed_check,
+        ),
+        patch(
+            "custom_components.matic_robot.managed_executor._async_run_leg"
+        ) as dispatch,
+    ):
+        caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+        await asyncio.wait_for(entered.wait(), 2)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert manager.has_managed_task("serial")
+        assert manager.request_stop("serial").behavior == "immediate"
+        owned = manager._run_tasks["serial"]
+        release.set()
+        await asyncio.wait_for(owned, 2)
+        assert not manager.has_managed_task("serial")
+        dispatch.assert_not_awaited()
