@@ -56,6 +56,58 @@ test("a multi-floor home discovers floors from the main toolbar after live map a
   expect(await page.evaluate(() => window.__panelFixture.pendingHistoryScenes.length)).toBe(0);
 });
 
+test("history invalidations refresh saved-map availability without changing the floor count", async ({ page }) => {
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "packaged",
+    initialCatalogEntries: [{ ...entry(2), live_workspace_transport_enabled: true }],
+    workspacePush: true,
+    userData: {},
+  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  const selector = panel.locator("select.floor-switcher option");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await expect(selector).toHaveText(["Home", "Loft"]);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.historyReads)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.workspaceSubscriptions)).toBeGreaterThan(0);
+  const generation = await panel.evaluate((element) => element.getWorkspaceSnapshot().generation);
+  const savedSnapshots = await page.evaluate(() => window.__panelFixture.getHistory().floors[1].snapshots);
+
+  await page.evaluate(() => {
+    const fixture = window.__panelFixture;
+    const updated = fixture.getHistory();
+    updated.floors[1].snapshots = [];
+    fixture.setHistory(updated);
+    fixture.sendWorkspaceEnvelope({ type: "invalidate", invalidation: {
+      epoch: "synthetic-workspace-epoch",
+      sequence: 1,
+      coherence_generation: 1,
+      revisions: { workspace: 1, history: 1 },
+      resources: ["history"],
+    } });
+  });
+  await expect(selector).toHaveText(["Home", "Loft · No saved map for this floor yet"]);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.historyReads)).toBe(2);
+
+  await page.evaluate((savedSnapshots) => {
+    const fixture = window.__panelFixture;
+    const updated = fixture.getHistory();
+    updated.floors[1].snapshots = savedSnapshots;
+    fixture.setHistory(updated);
+    fixture.sendWorkspaceEnvelope({ type: "invalidate", invalidation: {
+      epoch: "synthetic-workspace-epoch",
+      sequence: 2,
+      coherence_generation: 1,
+      revisions: { workspace: 2, history: 2 },
+      resources: ["history"],
+    } });
+  }, savedSnapshots);
+  await expect(selector).toHaveText(["Home", "Loft"]);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.historyReads)).toBe(3);
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().generation)).toBe(generation);
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry.historyFloorCount)).toBe(2);
+});
+
 test("single-floor homes keep saved-floor metadata lazy", async ({ page }) => {
   const { panel } = await mountPanel(page, { initialCatalogEntries: [entry(1)] });
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);

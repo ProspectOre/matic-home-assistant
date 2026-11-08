@@ -169,12 +169,13 @@ export async function installPanelFixture(page, {
     let catalogReads = 0;
     let deferredCatalogs = 0;
     const pendingCatalogs = [];
-    const history = { entry_id: "synthetic-entry", live_available: true, floors: [
+    let history = { entry_id: "synthetic-entry", live_available: true, floors: [
       { id: "current", active: true, read_only: false, live_available: true, label: "Home", ordinal: null, snapshots: [] },
       { id: "saved-1", active: false, read_only: true, live_available: false, label: "Loft", ordinal: 2,
         snapshots: [{ id: "saved-shot", created_at: "2026-09-25T12:00:00Z", revision: 6, point_count: 1,
           scene_url: "/api/matic_robot/slam_scene/history" }] },
     ] };
+    let historyReads = 0;
     const entryBHistory = { ...history, entry_id: "synthetic-entry-b", floors: history.floors.map((floor) => ({
       ...floor,
       snapshots: floor.snapshots.map((snapshot) => ({
@@ -315,7 +316,10 @@ export async function installPanelFixture(page, {
         if (!payload) return new Response(null, { status: 404 });
         return json(payload);
       }
-      if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
+      if (/slam_history\/synthetic(?:-b)?$/.test(path)) {
+        historyReads += 1;
+        return json(entryB ? entryBHistory : history);
+      }
       if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
         position: entryB
           ? (Object.hasOwn(window, "__posePositionB") ? window.__posePositionB : (posePositionB ?? posePosition))
@@ -397,6 +401,7 @@ export async function installPanelFixture(page, {
     const userDataCalls = [];
     const userDataFailures = [];
     const workspaceCalls = [];
+    const workspaceCallbacks = [];
     let deferredUserDataReads = 0;
     const pendingUserDataReads = [];
     const connection = userStore ? {
@@ -442,15 +447,19 @@ export async function installPanelFixture(page, {
         }
         throw new Error(`unexpected synthetic message: ${message.type}`);
       },
-      subscribeMessage: async (_callback, message) => {
+      subscribeMessage: async (callback, message) => {
         if (message?.type?.startsWith("matic_robot/workspace_")) {
           const panel = document.querySelector(MATIC_MAP_PANEL_TAG);
           workspaceCalls.push({
             type: message.type,
             mapAvailable: panel?.getWorkspaceSnapshot?.().map.available === true,
           });
+          workspaceCallbacks.push(callback);
         }
-        return () => undefined;
+        return () => {
+          const index = workspaceCallbacks.indexOf(callback);
+          if (index >= 0) workspaceCallbacks.splice(index, 1);
+        };
       },
     } : null;
     const makePanel = () => {
@@ -581,6 +590,13 @@ export async function installPanelFixture(page, {
       areaRequests,
       userData: () => structuredClone(userStore),
       workspaceCalls,
+      get workspaceSubscriptions() { return workspaceCallbacks.length; },
+      sendWorkspaceEnvelope: (envelope) => {
+        for (const callback of [...workspaceCallbacks]) callback(structuredClone(envelope));
+      },
+      get historyReads() { return historyReads; },
+      getHistory: () => structuredClone(history),
+      setHistory: (value) => { history = structuredClone(value); },
       userDataCalls,
       // Reject the next frontend user data message of `type` once.
       failNextUserData: (type) => { userDataFailures.push(type); },
