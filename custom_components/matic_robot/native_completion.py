@@ -2,16 +2,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, TypeIs
 
 from homeassistant.util import dt as dt_util
 
+from .client.coverage_receipts import native_session_hash
 from .client.models import CleaningSession, CleaningSessionRecord
 
 LegacyCompletionPolicy = Literal["aggregate", "room_list"]
+
+
+type HistoryReader = Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeHistoryReader:
+    """Expose ordinary inventory reads and a bounded lookup for an owned run."""
+
+    read: Callable[..., Awaitable[tuple[CleaningSessionRecord, ...]]]
+
+    async def __call__(self) -> tuple[CleaningSessionRecord, ...]:
+        return await self.read(strict=True)
+
+    async def for_session(self, session_hash: str) -> tuple[CleaningSessionRecord, ...]:
+        return await self.read(strict=True, session_hash=session_hash)
+
+
+async def read_dispatch_history(
+    reader: HistoryReader, session_hash: str | None
+) -> tuple[CleaningSessionRecord, ...]:
+    if isinstance(reader, NativeHistoryReader) and session_hash is not None:
+        return await reader.for_session(session_hash)
+    return await reader()
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +115,43 @@ def records_since_baseline(
     return None if any(not record.decoded for record in new) else new
 
 
+def is_session_hash(value: object) -> TypeIs[str]:
+    """Validate a persisted native session fingerprint."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def records_for_dispatch(
+    records: Iterable[CleaningSessionRecord],
+    baseline: Collection[bytes] | None,
+    session_hash: str | None,
+) -> tuple[CleaningSessionRecord, ...] | None:
+    """Select the owned record, or use the baseline for legacy dispatches.
+
+    An open subscription can return only part of the retained history. An
+    omitted old key cannot make an unrelated record part of an owned run.
+    """
+    if session_hash is None:
+        return (
+            records_since_baseline(records, baseline)
+            if baseline is not None
+            else tuple(records)
+        )
+    if baseline is not None and any(
+        native_session_hash(key) == session_hash for key in baseline
+    ):
+        return None
+    matching = tuple(
+        record for record in records if native_session_hash(record.key) == session_hash
+    )
+    if len(matching) > 1 or any(not record.decoded for record in matching):
+        return None
+    return matching
+
+
 def match_single_room_completions(
     records: Iterable[CleaningSessionRecord],
     *,
@@ -99,16 +161,15 @@ def match_single_room_completions(
     now: datetime,
     baseline: Collection[bytes] | None = None,
     legacy_policy: LegacyCompletionPolicy = "aggregate",
+    session_hash: str | None = None,
 ) -> tuple[NativeRoomCompletion, ...]:
     """Return at most two matching records to distinguish unique from ambiguous."""
-    if baseline is not None:
-        new = records_since_baseline(records, baseline)
-        if new is None:
-            return ()
-        records = new
+    candidates = records_for_dispatch(records, baseline, session_hash)
+    if candidates is None:
+        return ()
     target = native_room_key(room_name)
     matches: list[NativeRoomCompletion] = []
-    for record in records:
+    for record in candidates:
         session = record.session
         started = dt_util.parse_datetime(session.started_at or "")
         ended = dt_util.parse_datetime(session.ended_at or "")

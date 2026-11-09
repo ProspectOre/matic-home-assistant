@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from google.protobuf.message import DecodeError
@@ -16,6 +15,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .client.commands import UserCommand
+from .client.coverage_receipts import native_session_hash
 from .client.exceptions import MaticError, NativeHistoryIncompleteError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
@@ -30,6 +30,11 @@ from .managed_executor import (
     _PreparedRoomDispatch,
     _schedule_managed_dock_after_stop,
     _shutdown_suspends_run,
+)
+from .native_completion import (
+    NativeHistoryReader,
+    is_session_hash,
+    read_dispatch_history,
 )
 from .plans import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
 from .room_coherence import current_floor_plan, room_completion_names_are_current
@@ -467,8 +472,8 @@ async def async_recover_managed_run(
                 rooms,
                 refresh=runtime.coordinator.async_request_refresh,
                 active_session=runtime.client.async_get_active_cleaning_session_state,
-                session_history=partial(
-                    runtime.client.async_get_cleaning_session_records, strict=True
+                session_history=NativeHistoryReader(
+                    runtime.client.async_get_cleaning_session_records
                 ),
                 session_identity=runtime.client.async_get_cleaning_session_identity,
                 coverage_verifier=getattr(
@@ -494,6 +499,17 @@ async def async_recover_managed_run(
             )
             return
         assert dispatched_at is not None
+        session_hash = checkpoint.get("session_hash")
+        if session_hash is not None and not is_session_hash(session_hash):
+            return
+        active_hash = native_session_hash(identity, active=True) if identity else None
+        if (
+            session_hash is not None
+            and active_hash is not None
+            and active_hash != session_hash
+        ):
+            return
+        session_hash = session_hash or active_hash
         records = await runtime.client.async_get_cleaning_session_records(strict=True)
         hashes = checkpoint.get("history_baseline")
         if not isinstance(hashes, list):
@@ -539,8 +555,11 @@ async def async_recover_managed_run(
             async def read_history() -> tuple[CleaningSessionRecord, ...]:
                 # A new entry without a session identity must hold credit, not
                 # vanish from the read.
-                records = await runtime.client.async_get_cleaning_session_records(
-                    strict=True
+                records = await read_dispatch_history(
+                    NativeHistoryReader(
+                        runtime.client.async_get_cleaning_session_records
+                    ),
+                    session_hash,
                 )
                 if (
                     cancel.is_set()
@@ -562,6 +581,7 @@ async def async_recover_managed_run(
                 cancel_event=cancel,
                 timeout_seconds=remaining,
                 on_verified_session=completion_sessions.append,
+                session_hash=session_hash,
             )
             verified_coverage = await async_confirm_completed_coverage(
                 manager.coverage_receipt(serial_number, run["run_id"]),
@@ -633,8 +653,8 @@ async def async_recover_managed_run(
             rooms,
             refresh=runtime.coordinator.async_request_refresh,
             active_session=runtime.client.async_get_active_cleaning_session_state,
-            session_history=partial(
-                runtime.client.async_get_cleaning_session_records, strict=True
+            session_history=NativeHistoryReader(
+                runtime.client.async_get_cleaning_session_records
             ),
             session_identity=runtime.client.async_get_cleaning_session_identity,
             coverage_verifier=getattr(
@@ -657,6 +677,7 @@ async def async_recover_managed_run(
                 native_identity=identity,
                 recovered=True,
                 completion_deadline=completion_deadline,
+                session_hash=session_hash,
             ),
         )
         reason = (

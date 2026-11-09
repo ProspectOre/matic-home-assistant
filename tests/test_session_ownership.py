@@ -36,7 +36,7 @@ from custom_components.matic_robot.plans import (
     CleaningRoom,
     ManagedMotionReplacedError,
 )
-from tests.wire_builders import _session_identity
+from tests.wire_builders import _history_session_key, _session_identity
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
 ORIGINAL = b"synthetic-original-session"
@@ -2049,11 +2049,12 @@ class _AreaRobot:
         return tuple(self.records)
 
     def end_session(self, *, record: bool = True) -> None:
-        self.identity = b""
         if record:
+            assert self.identity
             self.records.append(
-                SimpleNamespace(key=f"synthetic-record-{len(self.records)}".encode())
+                SimpleNamespace(key=_history_session_key(self.identity))
             )
+        self.identity = b""
         self.hass.states.async_set("vacuum.matic", "docked")
 
     async def area_runs(self, *args) -> None:

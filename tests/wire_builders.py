@@ -48,6 +48,11 @@ def _session_identity(session_id: UUID) -> bytes:
     )
 
 
+def _history_session_key(identity: bytes) -> bytes:
+    """Wrap the native session UUID as a retained history key."""
+    return _bfield(2, _bfield(2, identity))
+
+
 # Aliases matching the historical names used by individual test modules.
 _field = _bfield
 _varint_field = _vfield

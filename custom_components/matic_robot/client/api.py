@@ -973,10 +973,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
         *,
         strict: bool = False,
+        session_hash: str | None = None,
     ) -> tuple[CleaningSessionRecord, ...]:
-        """Read opaque-keyed native history records for completion evidence."""
+        """Read native history, optionally waiting for a specific session key."""
         records, _revision = await self.async_get_cleaning_session_snapshot(
-            strict=strict
+            strict=strict, session_hash=session_hash
         )
         return records
 
@@ -984,15 +985,31 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
         *,
         strict: bool = False,
+        session_hash: str | None = None,
     ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
-        """Return decoded records and their opaque revision from one collection read.
+        """Decode a bounded history sample and hash the selected entries.
 
-        ``strict`` raises if an entry had to be left out for lacking a session
-        identity; an undecodable value with a valid key becomes a placeholder.
+        A quiet tracked stream does not prove the initial history is complete.
+        For a known session, keep reading through idle gaps until its key arrives
+        or the collection ends or reaches a resource limit.
         """
-        entries = await self.async_get_tracked_collection_entries(
-            "coverage_session_history", limit=64
-        )
+        if session_hash is None:
+            entries = await self.async_get_tracked_collection_entries(
+                "coverage_session_history", limit=64
+            )
+        else:
+            entries = await self.async_get_tracked_collection_entries(
+                "coverage_session_history",
+                limit=64,
+                wait_for_entry=lambda entry: (
+                    native_session_hash(entry.key) == session_hash
+                ),
+            )
+            entries = tuple(
+                entry
+                for entry in entries
+                if native_session_hash(entry.key) == session_hash
+            )
         records_list: list[CleaningSessionRecord] = []
         undecodable = unidentified = 0
         for entry in entries:
@@ -1456,13 +1473,15 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         limit: int = 256,
         first_timeout: float = 3.0,
         idle_timeout: float = 0.25,
+        wait_for_entry: Callable[[HermesCollectionEntry], bool] | None = None,
     ) -> tuple[HermesCollectionEntry, ...]:
-        """Return a bounded snapshot while acknowledging tracked updates."""
+        """Read bounded tracked updates, optionally waiting through gaps for a key."""
         if not 1 <= limit <= 4096:
             raise ValueError("Hermes collection limit must be between 1 and 4096")
         entries: list[HermesCollectionEntry] = []
         iterator = self.async_subscribe_collection_entries(collection_name)
         received = False
+        waiting = wait_for_entry is not None
         collected_bytes = 0
         deadline = monotonic() + _COLLECTION_TIMEOUT
         try:
@@ -1470,7 +1489,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     break
-                timeout = min(idle_timeout if received else first_timeout, remaining)
+                timeout = (
+                    remaining
+                    if waiting
+                    else min(idle_timeout if received else first_timeout, remaining)
+                )
                 try:
                     async with asyncio.timeout(timeout):
                         entry = await anext(iterator)
@@ -1483,6 +1506,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                         f"Hermes {collection_name} collection exceeds the byte limit"
                     )
                 entries.append(entry)
+                if waiting and wait_for_entry is not None and wait_for_entry(entry):
+                    waiting = False
         finally:
             await iterator.aclose()
         return tuple(entries)

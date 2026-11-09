@@ -26,7 +26,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
 )
-from tests.wire_builders import _session_identity
+from tests.wire_builders import _history_session_key, _session_identity
 
 LAYOUTS = (
     (("mop", "quick"), ("mop", "standard"), ("mop", "heavy_duty")),
@@ -77,11 +77,12 @@ async def test_executor_preserves_room_settings_and_verified_completion(
     )
     commands, confirmed = [], []
     identity = b""
+    history_key = b""
     ended = False
     started_at = None
 
     async def send(service_call):
-        nonlocal identity, started_at
+        nonlocal identity, history_key, started_at
         params = service_call.data["params"]
         commands.append(params)
         assert params["rooms"] == [r.room_id for r in expected]
@@ -107,6 +108,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
             if isinstance(session_id, str)
             else b"synthetic-task"
         )
+        history_key = _history_session_key(identity)
         started_at = dt_util.utcnow().isoformat()
         hass.states.async_set(
             "vacuum.matic", "cleaning", {"current_area": expected[0].name}
@@ -130,7 +132,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         names = tuple(r.name for r in rooms)
         return (
             CleaningSessionRecord(
-                b"synthetic-record",
+                history_key,
                 CleaningSession(
                     started_at,
                     dt_util.utcnow().isoformat(),
@@ -304,6 +306,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
         },
     )
     identity = b""
+    history_key = b""
     started_at = None
     decisions = []
     commands: list[tuple[int, UserCommand]] = []
@@ -311,7 +314,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     ended = False
 
     async def send(service_call):
-        nonlocal identity, started_at
+        nonlocal identity, history_key, started_at
         assert service_call.data["params"]["rooms"] == [rooms[0].room_id]
         session_id = service_call.data["params"].get(PLAN_SESSION_ID)
         identity = (
@@ -319,6 +322,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
             if isinstance(session_id, str)
             else b"synthetic-task"
         )
+        history_key = _history_session_key(identity)
         started_at = dt_util.utcnow().isoformat()
         hass.states.async_set(
             "vacuum.matic", "cleaning", {"current_area": rooms[0].name}
@@ -339,7 +343,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
             decisions.append(manager.request_stop("serial", stop_now=True))
         return (
             CleaningSessionRecord(
-                b"synthetic-stop-record",
+                history_key,
                 CleaningSession(
                     started_at,
                     dt_util.utcnow().isoformat(),

@@ -93,7 +93,7 @@ from .coverage_accounting import (
     verified_room_coverage,
 )
 from .native_cadence import import_native_cadence
-from .native_completion import match_single_room_completions
+from .native_completion import is_session_hash, match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
 from .room_identity import room_cadence_identity as room_cadence_identity
 from .room_statistics import (
@@ -2383,6 +2383,7 @@ class CleaningPlanManager:
             if evidence is not None:
                 matches = match_single_room_completions(
                     records,
+                    session_hash=proof_pending.get("session_hash"),
                     room_name=proof_pending["room"],
                     cleaning_mode=proof_pending.get("cleaning_mode"),
                     dispatched_at=cast(
@@ -6889,6 +6890,9 @@ def _validated_native_reconciliation(
         return None
     coverage_setting = value.get("coverage_setting")
     run_id = value.get("run_id")
+    session_hash = value.get("session_hash")
+    if "session_hash" in value and not is_session_hash(session_hash):
+        return None
     result: dict[str, Any] = {
         "plan_id": plan_id,
         "room_id": room_id,
@@ -6913,6 +6917,8 @@ def _validated_native_reconciliation(
             else {}
         ),
     }
+    if session_hash is not None:
+        result["session_hash"] = session_hash
     cadence_state = _validated_cadence_snapshot(value.get("cadence_state"))
     if cadence_state is not None:
         result["cadence_state"] = cadence_state
@@ -7066,6 +7072,7 @@ def _reconcile_pending_native_history(
         return False
     matches = match_single_room_completions(
         records,
+        session_hash=pending.get("session_hash"),
         room_name=room.name,
         cleaning_mode=cast(str | None, pending.get("cleaning_mode")),
         dispatched_at=dispatched_at,

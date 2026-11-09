@@ -16,8 +16,10 @@ credits only verified completed rooms. Older saved history is not rewritten.
 An older record the integration cannot decode does not stop a plan from
 starting, as long as it still identifies its cleaning session. If it doesn't,
 the plan won't start (`native_history_incomplete`) and the error says why;
-plans can start again once the robot drops that record. If the robot's record of the run itself cannot be
-decoded, its rooms are not credited and remain due.
+plans can start again once the robot drops that record. For an owned mission,
+Home Assistant waits for the history record with the same session ID, even
+if other retained records arrive late or cannot be decoded. If the run's
+own record is missing or unreadable, its rooms remain due.
 
 A plan runs as one or more native missions: consecutive rooms share one, each
 custom area is its own, and with Smart Stop on each room is its own. Each room
