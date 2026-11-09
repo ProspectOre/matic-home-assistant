@@ -6162,10 +6162,15 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     assert manager_with_fence.stop_pending("serial") is False
 
 
-async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None:
+@pytest.mark.parametrize("owned", [False, True])
+async def test_native_reconciliation_schedule_registers_lifecycle_task(owned) -> None:
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     reconciliation = _NativeReconciliation(
-        "away", room.room_id, room.name, dt_util.utcnow() - timedelta(seconds=5)
+        "away",
+        room.room_id,
+        room.name,
+        dt_util.utcnow() - timedelta(seconds=5),
+        session_hash="a" * 64 if owned else None,
     )
     registered = MagicMock()
     manager = SimpleNamespace(
@@ -6187,7 +6192,7 @@ async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None
             "vacuum.test",
             room,
             reconciliation,
-            frozenset(),
+            None if owned else frozenset(),
             None,
             AsyncMock(),
             None,

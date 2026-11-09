@@ -3106,6 +3106,13 @@ def _canonical_cleaning_session(
 
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     """Decode native history without treating its global default as room proof."""
+    semantics = decode_history_semantics(payload)
+    if semantics is not None:
+        return _canonical_cleaning_session(
+            semantics, semantics.started_at, semantics.ended_at
+        )
+    # The legacy projection still needs the small whole-record budget. Large
+    # records are eligible only through the bounded canonical decoder above.
     if len(payload) > _CLEANING_SESSION_MAX_BYTES:
         return None
     try:
@@ -3119,9 +3126,6 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         return None
     started_at = _decode_nested_timestamp(summary, 3)
     ended_at = _decode_nested_timestamp(summary, 4)
-    semantics = decode_history_semantics(payload)
-    if semantics is not None:
-        return _canonical_cleaning_session(semantics, started_at, ended_at)
     # A malformed modern record cannot fall back to legacy fields ignored by
     # the OEM decoder. Parse the summary once for both format admission and the
     # legacy projection below.

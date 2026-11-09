@@ -502,6 +502,7 @@ async def async_recover_managed_run(
         session_hash = checkpoint.get("session_hash")
         if session_hash is not None and not is_session_hash(session_hash):
             return
+        owned_checkpoint = session_hash is not None
         active_hash = native_session_hash(identity, active=True) if identity else None
         if (
             session_hash is not None
@@ -510,15 +511,20 @@ async def async_recover_managed_run(
         ):
             return
         session_hash = session_hash or active_hash
-        records = await runtime.client.async_get_cleaning_session_records(strict=True)
         hashes = checkpoint.get("history_baseline")
-        if not isinstance(hashes, list):
+        if isinstance(hashes, list):
+            records = await runtime.client.async_get_cleaning_session_records(
+                strict=True
+            )
+            baseline = frozenset(
+                record.key
+                for record in records
+                if hashlib.sha256(record.key).hexdigest() in hashes
+            )
+        elif hashes is None and owned_checkpoint:
+            baseline = None
+        else:
             return
-        baseline = frozenset(
-            record.key
-            for record in records
-            if hashlib.sha256(record.key).hexdigest() in hashes
-        )
         # Recheck after I/O: Stop, takeover, and map transitions win recovery.
         if (
             cancel.is_set()

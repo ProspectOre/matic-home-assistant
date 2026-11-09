@@ -344,8 +344,9 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
 
 
 @pytest.mark.parametrize("owned_visible", [True, False, "malformed"])
+@pytest.mark.parametrize("has_baseline", [True, False])
 async def test_recovery_requires_checkpoint_session_in_partial_history(
-    hass, recovery_state, owned_visible
+    hass, recovery_state, owned_visible, has_baseline
 ):
     manager, entry, checkpoint, _ = recovery_state
     key = history_key()
@@ -353,6 +354,8 @@ async def test_recovery_requires_checkpoint_session_in_partial_history(
     checkpoint["session_hash"] = (
         "invalid" if owned_visible == "malformed" else native_session_hash(key)
     )
+    if not has_baseline:
+        checkpoint["history_baseline"] = None
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     records = (
         (
@@ -371,4 +374,9 @@ async def test_recovery_requires_checkpoint_session_in_partial_history(
         await async_recover_managed_run(hass, entry, "serial")
     run = manager.snapshot("serial")["last_run"]
     assert run["completed_room_count"] == int(owned_visible is True)
+    if not has_baseline:
+        assert all(
+            read.kwargs.get("session_hash") == checkpoint["session_hash"]
+            for read in client.async_get_cleaning_session_records.await_args_list
+        )
     client.async_send_user_command.assert_not_awaited()

@@ -53,6 +53,7 @@ from tests.test_plans import (
     _room,
     fast_native_history_retries,  # noqa: F401 - autouse fixture
 )
+from tests.wire_builders import _bfield, _fixed32, _vfield
 
 _undecodable = CleaningSessionRecord.undecodable
 _BOTH = ("Kitchen", "Office")
@@ -246,10 +247,14 @@ async def test_undecodable_new_record_leaves_leg_rooms_unverified_and_due(hass) 
 
 async def test_dispatch_binds_history_to_echoed_command_id(hass) -> None:
     identity = b""
+    claim = AsyncMock()
+    history = AsyncMock(side_effect=AssertionError("must not read old history"))
 
     async def send_command(call) -> None:
         nonlocal identity
-        identity = active_key(UUID(call.data["params"][PLAN_SESSION_ID]))
+        session_id = call.data["params"][PLAN_SESSION_ID]
+        claim.assert_awaited_once_with(session_id)
+        identity = active_key(UUID(session_id))
 
     async def read_identity() -> bytes:
         return identity
@@ -261,9 +266,13 @@ async def test_dispatch_binds_history_to_echoed_command_id(hass) -> None:
         "vacuum.matic",
         _leg_rooms(),
         7,
-        AsyncMock(return_value=()),
+        history,
+        floor_token="a" * 64,
         session_identity=read_identity,
+        on_claim=claim,
     )
+    history.assert_not_awaited()
+    assert dispatch.history_baseline is None
     assert dispatch.session_hash is not None
     assert dispatch.session_hash == native_session_hash(identity, active=True)
 
@@ -336,10 +345,78 @@ async def test_owned_lookup_waits_through_a_gap_and_returns_only_the_target() ->
     async with asyncio.timeout(1):
         await _async_wait_for_area_record(
             NativeHistoryReader(client.async_get_cleaning_session_records),
-            frozenset({foreign.key}),
+            None,
             asyncio.Event(),
             session_hash=native_session_hash(key),
         )
+
+
+async def test_large_owned_result_credits_only_its_canonical_room_evidence() -> None:
+    now = dt_util.utcnow()
+    started = now - timedelta(minutes=2)
+    ended = started + timedelta(seconds=73)
+    key = history_key()
+    foreign_key = history_key(UUID(int=1337))
+    circle = _bfield(1, _fixed32(1, 1.0) + _fixed32(2, 2.0)) + _fixed32(2, 0.2)
+    geometry = _bfield(1, circle) * 10_000
+
+    def timed_payload(goal_ids: tuple[tuple[int, int], ...]) -> bytes:
+        payload = _payload(goal_geometry=geometry, goal_ids=goal_ids)
+        summary = api._telemetry_bytes(payload, 5, max_bytes=len(payload))
+        envelope = _bfield(5, summary)
+        assert payload.endswith(envelope)
+        timestamps = _bfield(3, _bfield(1, _vfield(1, int(started.timestamp()))))
+        timestamps += _bfield(4, _bfield(1, _vfield(1, int(ended.timestamp()))))
+        return payload[: -len(envelope)] + _bfield(5, summary + timestamps)
+
+    large = timed_payload(((1, 2),) * 12)
+    assert len(large) > 2 * 1024 * 1024
+    foreign = HermesCollectionEntry(foreign_key, _oversized())
+    client = _client((foreign, HermesCollectionEntry(key, large)))
+    reader = NativeHistoryReader(client.async_get_cleaning_session_records)
+    expected = await _async_verify_leg_completion(
+        reader,
+        None,
+        [replace(_room("Kitchen", "room-kitchen"), cleaning_mode="vacuum")],
+        started - timedelta(seconds=1),
+        attempts=1,
+        session_hash=native_session_hash(key),
+    )
+    assert expected == {"room-kitchen": (ended.replace(microsecond=0).isoformat(), 73)}
+
+    conflicting = timed_payload(((1, 2),) * 11 + ((3, 4),))
+    client.async_get_tracked_collection_entries.return_value = (
+        foreign,
+        HermesCollectionEntry(key, conflicting),
+    )
+    assert (
+        await _async_verify_leg_completion(
+            reader,
+            None,
+            [replace(_room("Kitchen", "room-kitchen"), cleaning_mode="vacuum")],
+            started - timedelta(seconds=1),
+            attempts=1,
+            session_hash=native_session_hash(key),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [b"", _bfield(1, _vfield(1, 1) + _vfield(2, 1_000_000_000))],
+)
+def test_malformed_canonical_timestamp_cannot_prove_the_run_window(
+    timestamp: bytes,
+) -> None:
+    payload = _payload()
+    summary = api._telemetry_bytes(payload, 5)
+    envelope = _bfield(5, summary)
+    session = api._decode_cleaning_session(
+        payload[: -len(envelope)] + _bfield(5, summary + _bfield(3, timestamp))
+    )
+    assert session is not None
+    assert session.started_at is None
 
 
 async def test_area_wait_requires_its_own_history_key() -> None:

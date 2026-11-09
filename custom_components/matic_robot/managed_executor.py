@@ -292,20 +292,28 @@ async def _async_dispatch_leg_command(
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    try:
-        history_baseline = await _async_session_history_baseline(
-            session_history, raise_incomplete=True
-        )
-    except NativeHistoryIncompleteError as err:
-        raise NativeHistoryIncompleteBaselineError from err
-    if session_history is not None and history_baseline is None:
-        # A configured native-history reader that failed is different from a
-        # legacy caller that has no reader. Dispatching in the former case
-        # guarantees that completion cannot be attributed to this mission.
-        raise NativeHistoryBaselineUnavailableError(
-            "The robot's cleaning history could not be read. "
-            "Try again before starting this plan."
-        )
+    history_baseline = None
+    # A new tracked plan claims its UUID before sending motion and must read
+    # back that exact identity. It can verify its result without old history.
+    # Legacy attribution and an existing handoff still need their baseline.
+    if (
+        motion_token is None
+        or floor_token is None
+        or session_identity is None
+        or on_claim is None
+        or expected_dispatch_history is not None
+    ):
+        try:
+            history_baseline = await _async_session_history_baseline(
+                session_history, raise_incomplete=True
+            )
+        except NativeHistoryIncompleteError as err:
+            raise NativeHistoryIncompleteBaselineError from err
+        if session_history is not None and history_baseline is None:
+            raise NativeHistoryBaselineUnavailableError(
+                "The robot's cleaning history could not be read. "
+                "Try again before starting this plan."
+            )
     if expected_dispatch_history is not None and (
         history_baseline is None
         or frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
@@ -1144,7 +1152,7 @@ async def _async_wait_for_area_record(
     run waits for its own key when the dispatch has a verified session. The
     wait is bounded so an absent record cannot stall the plan indefinitely.
     """
-    if reader is None or baseline is None:
+    if reader is None or (baseline is None and session_hash is None):
         return
     if cancel_event.is_set():
         raise PlanCancelledError
@@ -1155,7 +1163,7 @@ async def _async_wait_for_area_record(
                 reader, session_hash=session_hash
             )
             if keys is not None:
-                new_keys = keys - baseline
+                new_keys = keys - (baseline or frozenset())
                 if session_hash is None and new_keys:
                     return
                 if session_hash is not None and any(
@@ -2908,7 +2916,7 @@ def _schedule_native_reconciliation(
     if not callable(create_background_task):
         return
     if (
-        history_baseline is not None
+        (history_baseline is not None or reconciliation.session_hash is not None)
         and session_history is not None
         and callable(getattr(manager, "async_mark_native_completed", None))
     ):
@@ -2951,7 +2959,7 @@ async def _async_reconcile_native_stop(
     entity_id: str,
     room: CleaningRoom,
     reconciliation: _NativeReconciliation,
-    history_baseline: frozenset[bytes],
+    history_baseline: frozenset[bytes] | None,
     active_session: Callable[[], Awaitable[bool | None]] | None,
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     confirm_room_completed: Callable[[str], None] | None,
@@ -3070,7 +3078,7 @@ async def _async_expire_native_reconciliation(
 
 def _native_completion_match(
     records: tuple[CleaningSessionRecord, ...],
-    baseline: frozenset[bytes],
+    baseline: frozenset[bytes] | None,
     room: CleaningRoom,
     dispatched_at: datetime,
     *,

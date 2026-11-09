@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from typing import Any
 
 from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import UnsupportedStorageVersionError
 from homeassistant.helpers.storage import Store
 
 from .client.models import FloorPlan, HermesCollectionEntry
@@ -31,6 +33,7 @@ MAX_HISTORY_ITEMS = 12
 MAX_HISTORY_COMPRESSED_BYTES = 48 * 1024 * 1024
 MIN_HISTORY_INTERVAL_SECONDS = 5 * 60
 SAVE_DELAY_SECONDS = 1
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,10 +63,23 @@ class SlamHistoryStore:
         self._snapshots: list[SlamHistorySnapshot] = []
         self._listeners: set[Callable[[], None]] = set()
         self._closed = False
+        self._persistent = True
 
     async def async_load(self) -> None:
         """Load and validate retained scenes off the event loop."""
-        stored = await self._store.async_load() or {}
+        try:
+            stored = await self._store.async_load() or {}
+        except UnsupportedStorageVersionError:
+            # A newer installation may still need this cache after a rollback.
+            # Keep a temporary in-memory timeline without writing over it.
+            self._snapshots = []
+            self._persistent = False
+            self._closed = False
+            _LOGGER.warning(
+                "Using temporary map history because the saved cache is newer"
+            )
+            return
+        self._persistent = True
         snapshots, dirty = await self._hass.async_add_executor_job(
             _decode_history, stored
         )
@@ -184,6 +200,8 @@ class SlamHistoryStore:
         if self._closed:
             return
         self._closed = True
+        if not self._persistent:
+            return
         data = await self._hass.async_add_executor_job(
             _serialize_history, tuple(self._snapshots)
         )
@@ -200,7 +218,7 @@ class SlamHistoryStore:
                 listener()
 
     def _schedule_save(self) -> None:
-        if self._closed:
+        if self._closed or not self._persistent:
             return
         self._store.async_delay_save(
             partial(_serialize_history, tuple(self._snapshots)),
