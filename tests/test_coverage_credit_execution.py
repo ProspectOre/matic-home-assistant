@@ -700,6 +700,7 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         async_get_cleaning_session_identity=AsyncMock(return_value=b""),
         async_get_cleaning_session_records=AsyncMock(return_value=(_record((room,)),)),
         async_get_cleaning_session_keys=None,
+        async_get_idle_cleaning_session_revision=None,
         async_confirm_coverage_receipt=AsyncMock(return_value=True),
         async_send_user_command=AsyncMock(),
         activity_journal=SimpleNamespace(

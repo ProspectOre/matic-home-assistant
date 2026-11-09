@@ -36,6 +36,7 @@ from .native_completion import (
     is_session_hash,
     read_dispatch_history,
     read_handoff_history_keys,
+    read_handoff_revision,
 )
 from .plans import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
 from .room_coherence import current_floor_plan, room_completion_names_are_current
@@ -431,7 +432,15 @@ async def async_recover_managed_run(
             history_reader = NativeHistoryReader(
                 runtime.client.async_get_cleaning_session_records,
                 runtime.client.async_get_cleaning_session_keys,
+                runtime.client.async_get_idle_cleaning_session_revision,
             )
+            revision = checkpoint.get("handoff_revision")
+            if "handoff_revision" in checkpoint and (
+                not is_session_hash(revision)
+                or await read_handoff_revision(history_reader) != revision
+            ):
+                reason = "restart_native_mission_changed_or_ended"
+                return
             expected_history = frozenset(handoff_history)
             keys = await read_handoff_history_keys(
                 history_reader,
@@ -666,6 +675,7 @@ async def async_recover_managed_run(
             session_history=NativeHistoryReader(
                 runtime.client.async_get_cleaning_session_records,
                 runtime.client.async_get_cleaning_session_keys,
+                runtime.client.async_get_idle_cleaning_session_revision,
             ),
             session_identity=runtime.client.async_get_cleaning_session_identity,
             coverage_verifier=getattr(

@@ -10,6 +10,7 @@ from typing import Literal, TypeIs
 from homeassistant.util import dt as dt_util
 
 from .client.coverage_receipts import native_session_hash
+from .client.exceptions import MaticError
 from .client.models import CleaningSession, CleaningSessionRecord
 
 LegacyCompletionPolicy = Literal["aggregate", "room_list"]
@@ -24,6 +25,7 @@ class NativeHistoryReader:
 
     read: Callable[..., Awaitable[tuple[CleaningSessionRecord, ...]]]
     read_keys: Callable[..., Awaitable[frozenset[bytes]]] | None = None
+    read_idle_revision: Callable[[], Awaitable[str | None]] | None = None
 
     async def __call__(self) -> tuple[CleaningSessionRecord, ...]:
         return await self.read(strict=True)
@@ -52,6 +54,19 @@ async def read_handoff_history_keys(
             session_hash=session_hash, expected_hashes=expected_hashes
         )
     return frozenset(record.key for record in await reader())
+
+
+async def read_handoff_revision(reader: HistoryReader | None) -> str | None:
+    """Read the optional robot-side marker used by handoff and recovery."""
+    if (
+        isinstance(reader, NativeHistoryReader)
+        and reader.read_idle_revision is not None
+    ):
+        try:
+            return await reader.read_idle_revision()
+        except MaticError:
+            return None
+    return None
 
 
 @dataclass(frozen=True, slots=True)

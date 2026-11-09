@@ -26,6 +26,11 @@ with a collection key can take part in this check even if its results are
 unreadable. If the keys change or the integration cannot verify the inventory,
 it leaves the remaining work due.
 
+When the robot supplies an inactive session marker, the integration saves its
+fingerprint and checks it again just before the next native start. A changed
+marker stops the handoff even if the retained history looks the same. Recovery
+of a new handoff checkpoint requires its saved marker to match the robot's.
+
 A plan runs as one or more native missions: consecutive rooms share one, each
 custom area is its own, and with Smart Stop on each room is its own. Each room
 is checked against the robot's record of its own mission. The robot's summary

@@ -1648,6 +1648,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_keys=None,
+                async_get_idle_cleaning_session_revision=None,
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
                 ),
@@ -1807,6 +1808,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_keys=None,
+                async_get_idle_cleaning_session_revision=None,
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
                 async_send_user_command=AsyncMock(),
             ),
@@ -2189,6 +2191,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_keys=None,
+                async_get_idle_cleaning_session_revision=None,
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
                 async_send_user_command=AsyncMock(),
             ),
@@ -2547,6 +2550,7 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_keys=None,
+                async_get_idle_cleaning_session_revision=None,
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
                 ),
@@ -2977,6 +2981,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_keys=None,
+                async_get_idle_cleaning_session_revision=None,
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
                 ),
@@ -3082,6 +3087,7 @@ async def test_legacy_saved_run_revalidates_after_stop_settlement(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_keys=None,
+        async_get_idle_cleaning_session_revision=None,
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
     )
@@ -3198,6 +3204,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_keys=None,
+        async_get_idle_cleaning_session_revision=None,
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
     )
@@ -6971,6 +6978,7 @@ async def test_registered_plan_service_keeps_run_after_caller_cancel(hass, servi
                 async_get_active_cleaning_session_state=AsyncMock(),
                 async_get_cleaning_session_records=AsyncMock(),
                 async_get_cleaning_session_keys=None,
+                async_get_idle_cleaning_session_revision=None,
                 async_get_cleaning_session_identity=AsyncMock(),
             ),
             slam_map=SimpleNamespace(

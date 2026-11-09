@@ -940,6 +940,24 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return None
         return payload if present else b""
 
+    async def async_get_idle_cleaning_session_revision(self) -> str | None:
+        """Fingerprint the observed UUID-valued inactive session marker."""
+        payload = await self.async_get_property("active_session_key", max_bytes=96)
+        if len(payload) != 16 or UUID(bytes=payload).version != 4:
+            return None
+        return hashlib.sha256(payload).hexdigest()
+
+    async def _async_check_idle_session_revision(self, expected: str | None) -> None:
+        if expected is not None:
+            try:
+                current = await self.async_get_idle_cleaning_session_revision()
+            except MaticError as err:
+                raise CoverageGuardError(
+                    CoverageGuardReason.IDENTITY_UNAVAILABLE
+                ) from err
+            if current != expected:
+                raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+
     async def async_get_active_cleaning_session_state(self) -> bool | None:
         """Derive task activity from the vetted robot operational snapshot.
 
@@ -1615,6 +1633,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_settings_readback: bool = False,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start normal coverage; a supplied ID does not imply setting proof.
 
@@ -1637,6 +1656,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             baseline_identity = await self._async_require_idle_native_session()
         else:
             baseline_identity = None
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._async_send_user_payload(payload, command_name="START_COVERAGE")
@@ -1667,6 +1687,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
         session_id: UUID | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start then update only our accepted, still-current native mission.
 
@@ -1695,6 +1716,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             # this transaction before sending any bytes if ownership changed.
             if await self._async_require_idle_native_session() != baseline_identity:
                 raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+        await self._async_check_idle_session_revision(expected_idle_revision)
         require_current()
         try:
             await self._async_send_user_payload(
@@ -2143,6 +2165,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         coverage_setting: CoverageSetting,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> None:
         """Start an official drawn-circle custom-area coverage command.
 
@@ -2159,6 +2182,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
         if session_id is not None:
             await self._async_require_idle_native_session()
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._async_send_user_payload(

@@ -119,6 +119,7 @@ async def recovery_state(hass):
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_keys=None,
+        async_get_idle_cleaning_session_revision=None,
         async_get_active_cleaning_session_state=AsyncMock(return_value=True),
         async_get_state=AsyncMock(return_value=_operational_state()),
         async_send_user_command=AsyncMock(),
@@ -588,6 +589,9 @@ async def test_restart_unexpected_stop_error_respects_transmission(
         "history_error",
         "enriched_history",
         "undecodable_history",
+        "revision_matches",
+        "revision_changed",
+        "revision_unobserved",
     ],
 )
 async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
@@ -628,6 +632,13 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
             reader.async_get_cleaning_session_keys
         )
         checkpoint["handoff_history"] = [hashlib.sha256(key).hexdigest()]
+    elif case.startswith("revision_"):
+        checkpoint["handoff_revision"] = (
+            None if case == "revision_unobserved" else "a" * 64
+        )
+        entry.runtime_data.client.async_get_idle_cleaning_session_revision = AsyncMock(
+            return_value="b" * 64 if case == "revision_changed" else "a" * 64
+        )
     manager._robot("serial")["last_run"]["room_count"] = 2
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
@@ -668,11 +679,12 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         "stop_during_wait",
         "enriched_history",
         "undecodable_history",
+        "revision_matches",
     }:
         settled.assert_awaited_once()
     else:
         settled.assert_not_awaited()
-    if case in {"valid", "enriched_history", "undecodable_history"}:
+    if case in {"valid", "enriched_history", "undecodable_history", "revision_matches"}:
         runner.assert_awaited_once()
     else:
         runner.assert_not_awaited()

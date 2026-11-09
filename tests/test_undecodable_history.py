@@ -43,9 +43,11 @@ from custom_components.matic_robot.managed_executor import (
 from custom_components.matic_robot.native_completion import (
     NativeHistoryReader,
     match_single_room_completions,
+    read_handoff_revision,
 )
 from custom_components.matic_robot.plans import (
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     CleaningPlanManager,
     _reconcile_pending_native_history,
 )
@@ -391,6 +393,7 @@ async def test_handoff_waits_for_known_keys_without_decoding_old_results(
 
     async def send_command(call):
         nonlocal identity
+        assert call.data["params"][PLAN_SESSION_REVISION] == "a" * 64
         identity = active_key(UUID(call.data["params"][PLAN_SESSION_ID]))
 
     sender = AsyncMock(side_effect=send_command)
@@ -408,6 +411,7 @@ async def test_handoff_waits_for_known_keys_without_decoding_old_results(
         session_identity=read_identity,
         expected_dispatch_identity=b"",
         expected_dispatch_history=expected,
+        expected_dispatch_revision="a" * 64,
     )
 
     if external_clean:
@@ -422,6 +426,14 @@ async def test_handoff_waits_for_known_keys_without_decoding_old_results(
         dispatch = await run()
         assert dispatch.history_baseline == keys
         sender.assert_awaited_once()
+
+
+async def test_unavailable_revision_cannot_be_saved_as_a_marker():
+    reader = NativeHistoryReader(
+        AsyncMock(),
+        read_idle_revision=AsyncMock(side_effect=CannotConnectError("offline")),
+    )
+    assert await read_handoff_revision(reader) is None
 
 
 @pytest.mark.parametrize(
