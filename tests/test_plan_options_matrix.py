@@ -121,8 +121,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         return RoomRunOutcome.HANDOFF_CANDIDATE, None
 
     async def history():
-        if not ended:
-            return ()
+        assert ended, "a tracked initial dispatch must not read the archive"
         results = tuple(
             CleaningModeResult(room.name, mode, "completed", 20)
             for room in rooms

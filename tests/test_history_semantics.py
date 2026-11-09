@@ -60,6 +60,7 @@ def _payload(
     mop_status: int | None = None,
     goals_field: int | tuple[int, ...] = 2,
     goal_ids: tuple[tuple[int, int], ...] = ((1, 2),),
+    goal_geometry: bytes = b"",
     start_payload: bytes | None = None,
     event_entries: tuple[bytes, ...] | None = None,
     include_summary_reason: bool = True,
@@ -76,10 +77,11 @@ def _payload(
         user = _bfield(start_child, b"")
         start_reason = _bfield(2, user)
     goal_fields = (goals_field,) if isinstance(goals_field, int) else goals_field
+    target = _bfield(2, _bfield(3, _bfield(2, goal_geometry))) if goal_geometry else b""
     goals = b"".join(
         _bfield(
             field,
-            _bfield(7, _bfield(1, _bfield(1, _bfield(2, _uuid(*identity))))),
+            target + _bfield(7, _bfield(1, _bfield(1, _bfield(2, _uuid(*identity))))),
         )
         for identity in goal_ids
         for field in goal_fields
@@ -363,7 +365,9 @@ def test_wire_helpers_reject_wrong_types_duplicates_and_missing_fields() -> None
 )
 def test_initiator_rejects_unsupported_or_malformed_shapes(reason: bytes) -> None:
     with pytest.raises(DecodeError):
-        semantics._decode_initiator((WireField(3, 2, reason),), WireFieldBudget(100))
+        semantics._decode_initiator(
+            (WireField(3, 2, memoryview(reason)),), WireFieldBudget(100)
+        )
 
 
 def test_completion_kind_handles_all_unattempted_and_empty_inputs() -> None:

@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.commands import UserCommand, _wrapped_uuid
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
@@ -49,7 +50,6 @@ from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
 )
-from tests.test_coverage_receipts import history_key
 from tests.test_undecodable_history import _client, _oversized
 from tests.wire_builders import _session_identity
 
@@ -119,6 +119,8 @@ async def recovery_state(hass):
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_keys=None,
+        async_get_idle_cleaning_session_revision=None,
         async_get_active_cleaning_session_state=AsyncMock(return_value=True),
         async_get_state=AsyncMock(return_value=_operational_state()),
         async_send_user_command=AsyncMock(),
@@ -588,6 +590,9 @@ async def test_restart_unexpected_stop_error_respects_transmission(
         "history_error",
         "enriched_history",
         "undecodable_history",
+        "revision_matches",
+        "revision_changed",
+        "revision_unobserved",
     ],
 )
 async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
@@ -622,13 +627,19 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
             CannotConnectError("unavailable")
         )
     elif case == "undecodable_history":
-        # A retained record too large to decode still names its session, so
-        # the strict handoff read matches the persisted key set.
-        reader = _client((HermesCollectionEntry(history_key(), _oversized()),))
-        entry.runtime_data.client.async_get_cleaning_session_records = (
-            reader.async_get_cleaning_session_records
+        key = b"opaque-legacy-history-key"
+        reader = _client((HermesCollectionEntry(key, _oversized()),))
+        entry.runtime_data.client.async_get_cleaning_session_keys = (
+            reader.async_get_cleaning_session_keys
         )
-        checkpoint["handoff_history"] = [hashlib.sha256(history_key()).hexdigest()]
+        checkpoint["handoff_history"] = [hashlib.sha256(key).hexdigest()]
+    elif case.startswith("revision_"):
+        checkpoint["handoff_revision"] = (
+            None if case == "revision_unobserved" else "a" * 64
+        )
+        entry.runtime_data.client.async_get_idle_cleaning_session_revision = AsyncMock(
+            return_value="b" * 64 if case == "revision_changed" else "a" * 64
+        )
     manager._robot("serial")["last_run"]["room_count"] = 2
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
@@ -669,16 +680,19 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         "stop_during_wait",
         "enriched_history",
         "undecodable_history",
+        "revision_matches",
     }:
         settled.assert_awaited_once()
     else:
         settled.assert_not_awaited()
-    if case in {"valid", "enriched_history", "undecodable_history"}:
+    if case in {"valid", "enriched_history", "undecodable_history", "revision_matches"}:
         runner.assert_awaited_once()
     else:
         runner.assert_not_awaited()
     if case == "stop_during_wait":
         assert manager.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
+    if case == "undecodable_history":
+        entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
@@ -1709,3 +1723,37 @@ async def test_recovery_rejects_conflicting_session_fingerprint(hass, recovery_s
     await async_recover_managed_run(hass, entry, "serial")
     assert manager.snapshot("serial")["last_run"]["outcome"] != "completed"
     entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()
+
+
+async def test_owned_active_leg_recovers_with_opaque_retained_history(
+    hass, recovery_state
+):
+    from tests.test_coverage_receipts import active_key, history_key
+
+    manager, entry, checkpoint, _ = recovery_state
+    client = entry.runtime_data.client
+    identity = active_key()
+    owned = native_session_hash(history_key())
+    checkpoint["native_identity_hash"] = hashlib.sha256(identity).hexdigest()
+    checkpoint["session_hash"] = owned
+    opaque_key = b"old-opaque-history-key"
+    checkpoint["history_baseline"] = [hashlib.sha256(opaque_key).hexdigest()]
+    client.async_get_cleaning_session_identity.return_value = identity
+    reader = _client((HermesCollectionEntry(opaque_key, _oversized()),))
+    client.async_get_cleaning_session_records = AsyncMock(
+        wraps=reader.async_get_cleaning_session_records
+    )
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+
+    with patch(
+        "custom_components.matic_robot.restart._async_execute_rooms",
+        new_callable=AsyncMock,
+    ) as runner:
+        await async_recover_managed_run(hass, entry, "serial")
+
+    client.async_get_cleaning_session_records.assert_awaited_once_with(
+        strict=True, session_hash=owned
+    )
+    runner.assert_awaited_once()
+    assert runner.await_args.kwargs["recovered_dispatch"].session_hash == owned
+    client.async_send_user_command.assert_not_awaited()

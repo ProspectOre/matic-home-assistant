@@ -32,6 +32,7 @@ from custom_components.matic_robot.plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
@@ -133,7 +134,18 @@ async def test_managed_clean_token_is_required_until_external_replacement(hass) 
 
     await entity.async_send_command(
         "clean_rooms",
-        {"rooms": ["Study"], PLAN_MOTION_TOKEN: token, PLAN_SESSION_ID: session_id},
+        {
+            "rooms": ["Study"],
+            PLAN_MOTION_TOKEN: token,
+            PLAN_SESSION_ID: session_id,
+            PLAN_SESSION_REVISION: "a" * 64,
+        },
+    )
+    assert (
+        entry.runtime_data.coordinator.client.async_start_coverage.await_args.kwargs[
+            "expected_idle_revision"
+        ]
+        == "a" * 64
     )
     assert manager.managed_motion_is_current("synthetic-serial", token) is True
     assert (
@@ -215,6 +227,17 @@ async def test_managed_session_marker_is_private_and_canonical(hass) -> None:
     entity = vacuum.MaticVacuum(entry)
     valid_session = "abcdefab-cdef-4abc-8def-abcdefabcdef"
     token = manager.begin_managed_motion("synthetic-serial")
+
+    with pytest.raises(ServiceValidationError, match="session revision is invalid"):
+        await entity.async_send_command(
+            "clean_rooms",
+            {
+                "rooms": ["Study"],
+                PLAN_MOTION_TOKEN: token,
+                PLAN_SESSION_ID: valid_session,
+                PLAN_SESSION_REVISION: "invalid",
+            },
+        )
 
     for value in (1, "not-a-uuid", valid_session.upper()):
         with pytest.raises(ServiceValidationError, match="session ID is invalid"):

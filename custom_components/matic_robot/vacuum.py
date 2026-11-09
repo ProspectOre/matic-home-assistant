@@ -23,10 +23,12 @@ from .client.exceptions import CoverageGuardError, MaticError
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .entity import MaticEntity
+from .native_completion import is_session_hash
 from .plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     plan_area_fingerprint,
     plan_floor_token,
     resolve_room_reference,
@@ -241,6 +243,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         motion_token: int | None = None,
         expected_floor_token: str | None = None,
         managed_session_id: UUID | None = None,
+        expected_idle_revision: str | None = None,
         room_coverage: list[CoverageSetting] | None = None,
         room_modes: list[CleaningMode] | None = None,
     ) -> None:
@@ -373,6 +376,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         room_modes,
                         first_room_name=rooms[0].name,
                         session_id=managed_session_id,
+                        expected_idle_revision=expected_idle_revision,
                         require_current=require_current_dispatch,
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
@@ -407,6 +411,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         ordered=ordered,
                         require_settings_readback=True,
                         session_id=managed_session_id,
+                        expected_idle_revision=expected_idle_revision,
                         require_current=require_current_dispatch,
                     )
                 else:
@@ -454,6 +459,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         motion_token: int,
         expected_floor_token: str,
         managed_session_id: UUID,
+        expected_idle_revision: str | None = None,
     ) -> None:
         """Start one managed plan's custom area as its own owned mission.
 
@@ -513,6 +519,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     cleaning_mode=cleaning_mode,
                     coverage_setting=coverage_setting,
                     session_id=managed_session_id,
+                    expected_idle_revision=expected_idle_revision,
                     require_current=require_current_dispatch,
                 )
             except CoverageGuardError as err:
@@ -926,6 +933,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             options["motion_token"] = motion_token
             options["expected_floor_token"] = self._floor_token(params)
             options["managed_session_id"] = managed_session_id
+            options["expected_idle_revision"] = self._managed_session_revision(
+                params, motion_token
+            )
             await self._async_clean_rooms(self._resolve_rooms(identifiers), **options)
             return
         if normalized == "clean_plan_area":
@@ -959,6 +969,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 motion_token=motion_token,
                 expected_floor_token=floor_token,
                 managed_session_id=managed_session_id,
+                expected_idle_revision=self._managed_session_revision(
+                    params, motion_token
+                ),
             )
             return
         raise _validation_error(
@@ -1074,6 +1087,19 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "The managed plan floor token is invalid", "invalid_plan_command"
             )
         return token
+
+    @staticmethod
+    def _managed_session_revision(
+        params: dict[str, Any] | list[Any] | None, motion_token: int | None
+    ) -> str | None:
+        if not isinstance(params, dict) or PLAN_SESSION_REVISION not in params:
+            return None
+        revision = params[PLAN_SESSION_REVISION]
+        if motion_token is None or not is_session_hash(revision):
+            raise _validation_error(
+                "The managed session revision is invalid", "invalid_plan_command"
+            )
+        return revision
 
     @staticmethod
     def _managed_session_id(params: dict[str, Any] | list[Any] | None) -> UUID | None:

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from google.protobuf.message import DecodeError
+from homeassistant.helpers.storage import Store
 
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.slam_map import (
@@ -159,6 +160,21 @@ async def test_history_round_trips_replaces_recent_and_removes(hass) -> None:
     empty = SlamHistoryStore(hass, "synthetic-entry")
     await empty.async_load()
     assert empty.catalog() == ()
+
+
+async def test_newer_map_history_remains_intact_during_load_and_shutdown(hass) -> None:
+    newer = Store(hass, 2, "matic_robot.slam_history.synthetic-entry", private=True)
+    saved = {"newer_history": ["preserve"]}
+    await newer.async_save(saved)
+
+    history = SlamHistoryStore(hass, "synthetic-entry")
+    await history.async_load()
+    assert history.catalog() == ()
+    assert await history.async_add(_scene(), 1)
+    assert history.catalog()[0].revision == 1
+    await history.async_shutdown()
+
+    assert await newer.async_load() == saved
 
 
 async def test_history_listener_only_notifies_catalog_mutations(hass) -> None:

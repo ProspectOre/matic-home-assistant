@@ -59,6 +59,8 @@ from .native_completion import (
     match_single_room_completions,
     native_room_key,
     read_dispatch_history,
+    read_handoff_history_keys,
+    read_handoff_revision,
     records_for_dispatch,
 )
 from .plans import (
@@ -68,6 +70,7 @@ from .plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     AreaLeg,
     CleaningPlanManager,
     CleaningRoom,
@@ -280,6 +283,7 @@ async def _async_dispatch_leg_command(
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline.
 
@@ -292,20 +296,31 @@ async def _async_dispatch_leg_command(
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    try:
-        history_baseline = await _async_session_history_baseline(
-            session_history, raise_incomplete=True
-        )
-    except NativeHistoryIncompleteError as err:
-        raise NativeHistoryIncompleteBaselineError from err
-    if session_history is not None and history_baseline is None:
-        # A configured native-history reader that failed is different from a
-        # legacy caller that has no reader. Dispatching in the former case
-        # guarantees that completion cannot be attributed to this mission.
-        raise NativeHistoryBaselineUnavailableError(
-            "The robot's cleaning history could not be read. "
-            "Try again before starting this plan."
-        )
+    history_baseline = None
+    # A new tracked plan claims its UUID before sending motion and must read
+    # back that exact identity. It can verify its result without old history.
+    # Legacy attribution and an existing handoff still need their baseline.
+    if (
+        motion_token is None
+        or floor_token is None
+        or session_identity is None
+        or on_claim is None
+        or expected_dispatch_history is not None
+    ):
+        try:
+            history_baseline = await _async_session_history_baseline(
+                session_history,
+                raise_incomplete=True,
+                handoff=expected_dispatch_history is not None,
+                expected_hashes=expected_dispatch_history,
+            )
+        except NativeHistoryIncompleteError as err:
+            raise NativeHistoryIncompleteBaselineError from err
+        if session_history is not None and history_baseline is None:
+            raise NativeHistoryBaselineUnavailableError(
+                "The robot's cleaning history could not be read. "
+                "Try again before starting this plan."
+            )
     if expected_dispatch_history is not None and (
         history_baseline is None
         or frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
@@ -358,6 +373,8 @@ async def _async_dispatch_leg_command(
         params[PLAN_MOTION_TOKEN] = motion_token
     if managed_session_id is not None:
         params[PLAN_SESSION_ID] = str(managed_session_id)
+    if expected_dispatch_revision is not None:
+        params[PLAN_SESSION_REVISION] = expected_dispatch_revision
     if floor_token is not None:
         params[PLAN_FLOOR_TOKEN] = floor_token
     if managed_session_id is not None and on_claim is not None:
@@ -513,6 +530,7 @@ async def _async_run_room(
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
     coverage_verifier: CoverageVerifier | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
@@ -583,6 +601,7 @@ async def _async_run_room(
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
         else:
             if dispatch.rooms != (room,):
@@ -1144,7 +1163,7 @@ async def _async_wait_for_area_record(
     run waits for its own key when the dispatch has a verified session. The
     wait is bounded so an absent record cannot stall the plan indefinitely.
     """
-    if reader is None or baseline is None:
+    if reader is None or (baseline is None and session_hash is None):
         return
     if cancel_event.is_set():
         raise PlanCancelledError
@@ -1155,7 +1174,7 @@ async def _async_wait_for_area_record(
                 reader, session_hash=session_hash
             )
             if keys is not None:
-                new_keys = keys - baseline
+                new_keys = keys - (baseline or frozenset())
                 if session_hash is None and new_keys:
                     return
                 if session_hash is not None and any(
@@ -1214,6 +1233,7 @@ async def _async_run_area_leg(
     session_identity: Callable[[], Awaitable[bytes | None]] | None,
     expected_dispatch_identity: bytes | None,
     expected_dispatch_history: frozenset[str] | None,
+    expected_dispatch_revision: str | None = None,
     on_native_identity: Callable[[bytes | None], None],
     run_id: str,
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]] | None,
@@ -1272,6 +1292,7 @@ async def _async_run_area_leg(
                 on_identity=on_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
             if checkpoint_dispatch is not None:
                 await checkpoint_dispatch(dispatch)
@@ -1424,6 +1445,7 @@ async def _async_run_leg(
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
     wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     coverage_verifier: CoverageVerifier | None = None,
 ) -> bool:
@@ -1465,6 +1487,7 @@ async def _async_run_leg(
             recovered_suspend_reason=recovered_suspend_reason,
             expected_dispatch_identity=expected_dispatch_identity,
             expected_dispatch_history=expected_dispatch_history,
+            expected_dispatch_revision=expected_dispatch_revision,
             coverage_verifier=coverage_verifier,
         )
     if not room_name_is_unique:
@@ -1544,6 +1567,7 @@ async def _async_run_leg(
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
         else:
             if dispatch.rooms != tuple(leg):
@@ -2450,6 +2474,8 @@ async def _async_session_history_baseline(
     *,
     raise_incomplete: bool = False,
     session_hash: str | None = None,
+    handoff: bool = False,
+    expected_hashes: frozenset[str] | None = None,
 ) -> frozenset[bytes] | None:
     """Read opaque native keys without exposing their values.
 
@@ -2459,6 +2485,10 @@ async def _async_session_history_baseline(
     if reader is None:
         return None
     try:
+        if handoff:
+            return await read_handoff_history_keys(
+                reader, session_hash=session_hash, expected_hashes=expected_hashes
+            )
         return frozenset(
             record.key for record in await read_dispatch_history(reader, session_hash)
         )
@@ -2908,7 +2938,7 @@ def _schedule_native_reconciliation(
     if not callable(create_background_task):
         return
     if (
-        history_baseline is not None
+        (history_baseline is not None or reconciliation.session_hash is not None)
         and session_history is not None
         and callable(getattr(manager, "async_mark_native_completed", None))
     ):
@@ -2951,7 +2981,7 @@ async def _async_reconcile_native_stop(
     entity_id: str,
     room: CleaningRoom,
     reconciliation: _NativeReconciliation,
-    history_baseline: frozenset[bytes],
+    history_baseline: frozenset[bytes] | None,
     active_session: Callable[[], Awaitable[bool | None]] | None,
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     confirm_room_completed: Callable[[str], None] | None,
@@ -3070,7 +3100,7 @@ async def _async_expire_native_reconciliation(
 
 def _native_completion_match(
     records: tuple[CleaningSessionRecord, ...],
-    baseline: frozenset[bytes],
+    baseline: frozenset[bytes] | None,
     room: CleaningRoom,
     dispatched_at: datetime,
     *,
@@ -3862,6 +3892,7 @@ async def _async_execute_rooms_reserved(
                 )
                 recovered_dispatch = None
                 expected_dispatch_history = None
+                expected_dispatch_revision = None
                 if durable and index > 0 and prepared_dispatch is None:
                     handoff_history = checkpoint.get("handoff_history")
                     if isinstance(handoff_history, list):
@@ -3910,6 +3941,12 @@ async def _async_execute_rooms_reserved(
                     # already established that the session is inactive, and
                     # dispatch accepts either this identity or its clearing.
                     expected_dispatch_identity = completed_identity or b""
+                    expected_dispatch_revision = checkpoint.get("handoff_revision")
+                    if expected_dispatch_revision is None:
+                        expected_dispatch_revision = await read_handoff_revision(
+                            session_history
+                        )
+                        checkpoint["handoff_revision"] = expected_dispatch_revision
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
@@ -3991,6 +4028,7 @@ async def _async_execute_rooms_reserved(
                         session_identity=session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
+                        expected_dispatch_revision=expected_dispatch_revision,
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         checkpoint_dispatch=save_dispatch,
@@ -4025,6 +4063,7 @@ async def _async_execute_rooms_reserved(
                         session_identity=session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
+                        expected_dispatch_revision=expected_dispatch_revision,
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         record_room_completed=record_room_completion,
@@ -4069,14 +4108,18 @@ async def _async_execute_rooms_reserved(
                     # bounded handoff wait so restart recovery can resume the
                     # queue instead of treating the prior verifying leg as
                     # the only recoverable work.
+                    handoff_revision = await read_handoff_revision(session_history)
                     handoff_keys = await _async_session_history_baseline(
-                        session_history
+                        session_history,
+                        handoff=True,
+                        session_hash=checkpoint.get("session_hash"),
                     )
                     checkpoint.update(
                         {
                             "leg_index": index + 1,
                             "phase": "handoff",
                             "completed_room_ids": sorted(completed_room_ids),
+                            "handoff_revision": handoff_revision,
                             "handoff_history": sorted(
                                 hashlib.sha256(key).hexdigest() for key in handoff_keys
                             )

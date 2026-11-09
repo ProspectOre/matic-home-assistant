@@ -17,6 +17,11 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.coverage_receipts import (
     make_coverage_receipt,
 )
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    CoverageGuardError,
+    CoverageGuardReason,
+)
 from custom_components.matic_robot.client.models import (
     FloorPlan,
     HermesCollectionEntry,
@@ -55,6 +60,48 @@ MIXED_FLOOR = FloorPlan(
 )
 ACTIVE_IDENTITY = active_key()
 SESSION_HASH = hashlib.sha256(str(SESSION).encode("ascii")).hexdigest()
+
+
+@pytest.mark.parametrize("change", ["same", "reboot", "active", "unknown"])
+async def test_robot_revision_is_checked_before_managed_motion(change):
+    client = MaticHermesClient("192.0.2.1", 16320)
+    original = UUID("6a7624c7-1b17-4844-bf95-93745885cafe").bytes
+    rebooted = UUID("ef9ea499-f3b1-4ba7-80a3-39f89becc5a1").bytes
+    client.async_get_property = AsyncMock(return_value=original)
+    expected = await client.async_get_idle_cleaning_session_revision()
+    assert expected == hashlib.sha256(original).hexdigest()
+    if change == "unknown":
+        client.async_get_property.side_effect = CannotConnectError("offline")
+    else:
+        client.async_get_property.return_value = {
+            "same": original,
+            "reboot": rebooted,
+            "active": ACTIVE_IDENTITY,
+        }[change]
+    client._async_require_idle_native_session = AsyncMock(return_value=b"")
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+    dispatch = client.async_start_coverage(
+        FLOOR,
+        [REGION],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+        require_settings_readback=True,
+        session_id=SESSION,
+        expected_idle_revision=expected,
+    )
+    if change == "same":
+        await dispatch
+        client._async_send_user_payload.assert_awaited_once()
+    else:
+        with pytest.raises(CoverageGuardError) as error:
+            await dispatch
+        assert error.value.reason is (
+            CoverageGuardReason.IDENTITY_UNAVAILABLE
+            if change == "unknown"
+            else CoverageGuardReason.IDENTITY_CHANGED
+        )
+        client._async_send_user_payload.assert_not_awaited()
 
 
 def _normal_fixture(setting=CoverageSetting.QUICK):

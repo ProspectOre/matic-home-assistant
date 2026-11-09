@@ -13,13 +13,23 @@ docking, or ending the overall mission does not mark a room cleaned.
 
 Managed plans match results to their own run. A partially completed mission
 credits only verified completed rooms. Older saved history is not rewritten.
-An older record the integration cannot decode does not stop a plan from
-starting, as long as it still identifies its cleaning session. If it doesn't,
-the plan won't start (`native_history_incomplete`) and the error says why;
-plans can start again once the robot drops that record. For an owned mission,
-Home Assistant waits for the history record with the same session ID, even
-if other retained records arrive late or cannot be decoded. If the run's
-own record is missing or unreadable, its rooms remain due.
+A new tracked plan checks the current floor and robot ownership before starting.
+It reserves a new session ID and checks that the robot echoes it. It can start
+when the retained history is empty, delayed or unreadable. Home Assistant then
+waits for the result with that session ID. The decoder can skip repeated drawing
+geometry in a large record while checking the bounded room results. If the run's
+own result is missing or unreadable, its rooms remain due.
+
+Between missions and during restart recovery, the integration compares a bounded
+read of the robot's retained collection keys with the saved keys. An older record
+with a collection key can take part in this check even if its results are
+unreadable. If the keys change or the integration cannot verify the inventory,
+it leaves the remaining work due.
+
+When the robot supplies an inactive session marker, the integration saves its
+fingerprint and checks it again just before the next native start. A changed
+marker stops the handoff even if the retained history looks the same. Recovery
+of a new handoff checkpoint requires its saved marker to match the robot's.
 
 A plan runs as one or more native missions: consecutive rooms share one, each
 custom area is its own, and with Smart Stop on each room is its own. Each room

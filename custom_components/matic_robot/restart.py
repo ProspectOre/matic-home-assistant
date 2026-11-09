@@ -35,6 +35,8 @@ from .native_completion import (
     NativeHistoryReader,
     is_session_hash,
     read_dispatch_history,
+    read_handoff_history_keys,
+    read_handoff_revision,
 )
 from .plans import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
 from .room_coherence import current_floor_plan, room_completion_names_are_current
@@ -427,12 +429,25 @@ async def async_recover_managed_run(
             ):
                 reason = "restart_handoff_history_unavailable"
                 return
-            records = await runtime.client.async_get_cleaning_session_records(
-                strict=True
+            history_reader = NativeHistoryReader(
+                runtime.client.async_get_cleaning_session_records,
+                runtime.client.async_get_cleaning_session_keys,
+                runtime.client.async_get_idle_cleaning_session_revision,
             )
-            if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
-                handoff_history
+            revision = checkpoint.get("handoff_revision")
+            if "handoff_revision" in checkpoint and (
+                not is_session_hash(revision)
+                or await read_handoff_revision(history_reader) != revision
             ):
+                reason = "restart_native_mission_changed_or_ended"
+                return
+            expected_history = frozenset(handoff_history)
+            keys = await read_handoff_history_keys(
+                history_reader,
+                session_hash=checkpoint.get("session_hash"),
+                expected_hashes=expected_history,
+            )
+            if {hashlib.sha256(key).hexdigest() for key in keys} != expected_history:
                 reason = "restart_handoff_history_changed"
                 return
             await manager.async_mark_recovery_status(
@@ -472,9 +487,7 @@ async def async_recover_managed_run(
                 rooms,
                 refresh=runtime.coordinator.async_request_refresh,
                 active_session=runtime.client.async_get_active_cleaning_session_state,
-                session_history=NativeHistoryReader(
-                    runtime.client.async_get_cleaning_session_records
-                ),
+                session_history=history_reader,
                 session_identity=runtime.client.async_get_cleaning_session_identity,
                 coverage_verifier=getattr(
                     runtime.client, "async_confirm_coverage_receipt", None
@@ -502,6 +515,7 @@ async def async_recover_managed_run(
         session_hash = checkpoint.get("session_hash")
         if session_hash is not None and not is_session_hash(session_hash):
             return
+        owned_checkpoint = session_hash is not None
         active_hash = native_session_hash(identity, active=True) if identity else None
         if (
             session_hash is not None
@@ -510,15 +524,21 @@ async def async_recover_managed_run(
         ):
             return
         session_hash = session_hash or active_hash
-        records = await runtime.client.async_get_cleaning_session_records(strict=True)
         hashes = checkpoint.get("history_baseline")
-        if not isinstance(hashes, list):
+        if isinstance(hashes, list):
+            records = await read_dispatch_history(
+                NativeHistoryReader(runtime.client.async_get_cleaning_session_records),
+                session_hash if owned_checkpoint else None,
+            )
+            baseline = frozenset(
+                record.key
+                for record in records
+                if hashlib.sha256(record.key).hexdigest() in hashes
+            )
+        elif hashes is None and owned_checkpoint:
+            baseline = None
+        else:
             return
-        baseline = frozenset(
-            record.key
-            for record in records
-            if hashlib.sha256(record.key).hexdigest() in hashes
-        )
         # Recheck after I/O: Stop, takeover, and map transitions win recovery.
         if (
             cancel.is_set()
@@ -654,7 +674,9 @@ async def async_recover_managed_run(
             refresh=runtime.coordinator.async_request_refresh,
             active_session=runtime.client.async_get_active_cleaning_session_state,
             session_history=NativeHistoryReader(
-                runtime.client.async_get_cleaning_session_records
+                runtime.client.async_get_cleaning_session_records,
+                runtime.client.async_get_cleaning_session_keys,
+                runtime.client.async_get_idle_cleaning_session_revision,
             ),
             session_identity=runtime.client.async_get_cleaning_session_identity,
             coverage_verifier=getattr(

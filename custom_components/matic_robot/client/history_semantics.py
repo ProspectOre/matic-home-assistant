@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from google.protobuf.message import DecodeError
@@ -15,13 +16,17 @@ from google.protobuf.message import DecodeError
 from .models import CleaningModeResult
 from .wire import WireField, WireFieldBudget, decode_fields
 
-MAX_HISTORY_BYTES = 256 * 1024
+# Large native records repeat opaque geometry in their goal envelopes.
+MAX_HISTORY_BYTES = 4 * 1024 * 1024
 MAX_HISTORY_FIELDS = 8192
+MAX_ROOT_FIELDS = 1024
 MAX_NESTED_BYTES = 64 * 1024
 MAX_ROOMS = 256
 MAX_NAME_BYTES = 512
 MAX_NAME_CHARS = 128
 MAX_DURATION_SECONDS = 366 * 24 * 60 * 60
+
+type HistoryField = WireField[memoryview]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +39,8 @@ class SemanticHistory:
     stop_reason: str | None
     completion_kind: str | None
     mode_results: tuple[CleaningModeResult, ...]
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
@@ -42,18 +49,18 @@ def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
         return None
     budget = WireFieldBudget(MAX_HISTORY_FIELDS)
     try:
-        root = _fields(payload, budget)
+        root = _fields(payload, budget, envelope=True, max_fields=MAX_ROOT_FIELDS)
         mission_wrapper = _fields(_required_message(root, 1), budget)
         mission = _required_fixed32(mission_wrapper, 2)
-        log = _fields(_required_message(root, 2), budget)
+        log = _fields(_required_message(root, 2), budget, envelope=True)
         summary = _required_message(root, 5)
         events = _messages(log, 1)
         starts = []
         for event_payload in events:
-            event = _fields(event_payload, budget)
+            event = _fields(event_payload, budget, envelope=True)
             start_payload = _optional_message(event, 2)
             if start_payload is not None:
-                candidate = _fields(start_payload, budget)
+                candidate = _fields(start_payload, budget, envelope=True)
                 goals_fields = tuple(field for field in candidate if field.number == 1)
                 reason_fields = tuple(field for field in candidate if field.number == 3)
                 if (
@@ -67,8 +74,8 @@ def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
                     starts.append(start_payload)
         if len(starts) != 1:
             return None
-        start = _fields(starts[0], budget)
-        goals = _fields(_required_message(start, 1), budget)
+        start = _fields(starts[0], budget, envelope=True)
+        goals = _fields(_required_message(start, 1), budget, envelope=True)
         goals_v1 = _messages(goals, 1)
         goals_v2 = _messages(goals, 2)
         if goals_v1 and goals_v2:
@@ -78,8 +85,8 @@ def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
             return None
         partitions: list[str] = []
         for item in goal_items:
-            goal = _fields(item, budget)
-            metadata = _fields(_required_message(goal, 7), budget)
+            goal = _fields(item, budget, envelope=True)
+            metadata = _fields(_required_message(goal, 7), budget, envelope=True)
             partition_envelope = _fields(_required_message(metadata, 1), budget)
             partition_identity_envelope = _fields(
                 _required_message(partition_envelope, 1), budget
@@ -112,20 +119,30 @@ def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
             stop_reason=stop_reason,
             completion_kind=completion_kind,
             mode_results=mode_results,
+            started_at=_decode_timestamp(summary_fields, 3, budget),
+            ended_at=_decode_timestamp(summary_fields, 4, budget),
         )
     except DecodeError, ValueError, TypeError, UnicodeDecodeError:
         return None
 
 
-def _fields(payload: bytes, budget: WireFieldBudget) -> tuple[WireField, ...]:
-    if len(payload) > MAX_NESTED_BYTES:
+def _fields(
+    payload: bytes | memoryview,
+    budget: WireFieldBudget,
+    *,
+    envelope: bool = False,
+    max_fields: int = MAX_HISTORY_FIELDS,
+) -> tuple[HistoryField, ...]:
+    if len(payload) > (MAX_HISTORY_BYTES if envelope else MAX_NESTED_BYTES):
         raise DecodeError("history message exceeds byte limit")
-    return decode_fields(payload, max_fields=MAX_HISTORY_FIELDS, field_budget=budget)
+    return decode_fields(
+        memoryview(payload), max_fields=max_fields, field_budget=budget
+    )
 
 
 def _known(
-    fields: tuple[WireField, ...], number: int, wire: int
-) -> tuple[WireField, ...]:
+    fields: tuple[HistoryField, ...], number: int, wire: int
+) -> tuple[HistoryField, ...]:
     found = tuple(field for field in fields if field.number == number)
     if any(field.wire_type != wire for field in found):
         raise DecodeError("history known field has wrong wire type")
@@ -134,18 +151,18 @@ def _known(
     return found
 
 
-def _has_exact_one(fields: tuple[WireField, ...], number: int, wire: int) -> bool:
+def _has_exact_one(fields: tuple[HistoryField, ...], number: int, wire: int) -> bool:
     return len(_known(fields, number, wire)) == 1
 
 
-def _required_varint(fields: tuple[WireField, ...], number: int) -> int:
+def _required_varint(fields: tuple[HistoryField, ...], number: int) -> int:
     values = _known(fields, number, 0)
     if len(values) != 1 or not isinstance(values[0].value, int):
         raise DecodeError("history required varint is missing")
     return values[0].value
 
 
-def _optional_varint(fields: tuple[WireField, ...], number: int) -> int | None:
+def _optional_varint(fields: tuple[HistoryField, ...], number: int) -> int | None:
     values = _known(fields, number, 0)
     if not values:
         return None
@@ -154,32 +171,52 @@ def _optional_varint(fields: tuple[WireField, ...], number: int) -> int | None:
     return values[0].value
 
 
-def _messages(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
+def _messages(fields: tuple[HistoryField, ...], number: int) -> tuple[memoryview, ...]:
     found = tuple(field for field in fields if field.number == number)
     if any(
-        field.wire_type != 2 or not isinstance(field.value, bytes) for field in found
+        field.wire_type != 2 or not isinstance(field.value, memoryview)
+        for field in found
     ):
         raise DecodeError("history repeated message has wrong wire type")
-    return tuple(field.value for field in found if isinstance(field.value, bytes))
+    return tuple(field.value for field in found if isinstance(field.value, memoryview))
 
 
-def _required_message(fields: tuple[WireField, ...], number: int) -> bytes:
+def _required_message(fields: tuple[HistoryField, ...], number: int) -> memoryview:
     values = _known(fields, number, 2)
-    if len(values) != 1 or not isinstance(values[0].value, bytes):
+    if len(values) != 1 or not isinstance(values[0].value, memoryview):
         raise DecodeError("history required message is missing")
     return values[0].value
 
 
-def _optional_message(fields: tuple[WireField, ...], number: int) -> bytes | None:
+def _optional_message(
+    fields: tuple[HistoryField, ...], number: int
+) -> memoryview | None:
     values = _known(fields, number, 2)
     if not values:
         return None
-    if not isinstance(values[0].value, bytes):
+    if not isinstance(values[0].value, memoryview):
         raise DecodeError("history optional message is malformed")
     return values[0].value
 
 
-def _decode_uuid(fields: tuple[WireField, ...], words: tuple[int, int]) -> str:
+def _decode_timestamp(
+    fields: tuple[HistoryField, ...], number: int, budget: WireFieldBudget
+) -> str | None:
+    try:
+        wrapper = _optional_message(fields, number)
+        if wrapper is None:
+            return None
+        timestamp = _fields(_required_message(_fields(wrapper, budget), 1), budget)
+        seconds = _required_varint(timestamp, 1)
+        nanos = _optional_varint(timestamp, 2) or 0
+        if nanos > 999_999_999:
+            return None
+        return datetime.fromtimestamp(seconds + nanos / 1_000_000_000, UTC).isoformat()
+    except DecodeError, OSError, OverflowError, ValueError:
+        return None
+
+
+def _decode_uuid(fields: tuple[HistoryField, ...], words: tuple[int, int]) -> str:
     high = _required_fixed64(fields, words[0])
     low = _required_fixed64(fields, words[1])
     value = (high << 64) | low
@@ -188,29 +225,29 @@ def _decode_uuid(fields: tuple[WireField, ...], words: tuple[int, int]) -> str:
     return str(UUID(int=value))
 
 
-def _required_fixed64(fields: tuple[WireField, ...], number: int) -> int:
+def _required_fixed64(fields: tuple[HistoryField, ...], number: int) -> int:
     values = _known(fields, number, 1)
     if (
         len(values) != 1
-        or not isinstance(values[0].value, bytes)
+        or not isinstance(values[0].value, memoryview)
         or len(values[0].value) != 8
     ):
         raise DecodeError("history fixed64 is missing")
     return int(struct.unpack("<Q", values[0].value)[0])
 
 
-def _required_fixed32(fields: tuple[WireField, ...], number: int) -> int:
+def _required_fixed32(fields: tuple[HistoryField, ...], number: int) -> int:
     values = _known(fields, number, 5)
     if (
         len(values) != 1
-        or not isinstance(values[0].value, bytes)
+        or not isinstance(values[0].value, memoryview)
         or len(values[0].value) != 4
     ):
         raise DecodeError("history fixed32 is missing")
     return int(struct.unpack("<I", values[0].value)[0])
 
 
-def _decode_initiator(start: tuple[WireField, ...], budget: WireFieldBudget) -> str:
+def _decode_initiator(start: tuple[HistoryField, ...], budget: WireFieldBudget) -> str:
     # StartReason field 3 contains User or Schedule. Schedule labels are
     # deliberately decoded only for shape and are not retained.
     reason = _fields(_required_message(start, 3), budget)
@@ -232,7 +269,7 @@ def _decode_initiator(start: tuple[WireField, ...], budget: WireFieldBudget) -> 
     if not children:
         raise DecodeError("history user start reason is malformed")
     child = children[0]
-    if child.wire_type != 2 or not isinstance(child.value, bytes):
+    if child.wire_type != 2 or not isinstance(child.value, memoryview):
         raise DecodeError("history user start reason is malformed")
     # OEM child 7 falls through to default App; do not credit it.
     values = {
@@ -248,20 +285,22 @@ def _decode_initiator(start: tuple[WireField, ...], budget: WireFieldBudget) -> 
     return values[child.number]
 
 
-def _decode_schedule(payload: bytes, budget: WireFieldBudget) -> None:
+def _decode_schedule(payload: memoryview, budget: WireFieldBudget) -> None:
     fields = _fields(payload, budget)
     names = _known(fields, 2, 2)
     if not names:
         return
     name = names[0].value
-    if not isinstance(name, bytes) or len(name) > MAX_NAME_BYTES:
+    if not isinstance(name, memoryview) or len(name) > MAX_NAME_BYTES:
         raise DecodeError("history schedule label is oversized")
-    decoded = name.decode("utf-8").strip()
+    decoded = bytes(name).decode("utf-8").strip()
     if len(decoded) > MAX_NAME_CHARS or any(not char.isprintable() for char in decoded):
         raise DecodeError("history schedule label is malformed")
 
 
-def _decode_stop_reason(payload: bytes | None, budget: WireFieldBudget) -> str | None:
+def _decode_stop_reason(
+    payload: memoryview | None, budget: WireFieldBudget
+) -> str | None:
     if payload is None:
         return "bot_cancelled"
     fields = _fields(payload, budget)
@@ -281,18 +320,18 @@ def _decode_stop_reason(payload: bytes | None, budget: WireFieldBudget) -> str |
 
 
 def _require_empty_marker(
-    payload: bytes, numbers: tuple[int, ...], budget: WireFieldBudget
+    payload: memoryview, numbers: tuple[int, ...], budget: WireFieldBudget
 ) -> None:
     envelope = _fields(payload, budget)
     markers = [field for field in envelope if field.number in numbers]
     if len(markers) != 1 or any(
-        field.wire_type != 2 or field.value != b"" for field in markers
+        field.wire_type != 2 or field.value for field in markers
     ):
         raise DecodeError("history outcome marker is malformed")
 
 
 def _decode_modern_rooms(
-    summary: tuple[WireField, ...], budget: WireFieldBudget
+    summary: tuple[HistoryField, ...], budget: WireFieldBudget
 ) -> tuple[CleaningModeResult, ...] | None:
     modern = _required_message(summary, 11)
     region_entries = _messages(_fields(modern, budget), 1)
@@ -313,12 +352,12 @@ def _decode_modern_rooms(
         room_ids.add(room_id)
         area = _fields(_required_message(entry, 2), budget)
         name_field = _known(area, 1, 2)
-        if len(name_field) != 1 or not isinstance(name_field[0].value, bytes):
+        if len(name_field) != 1 or not isinstance(name_field[0].value, memoryview):
             return None
         raw_name = name_field[0].value
         if len(raw_name) > MAX_NAME_BYTES:
             return None
-        name = raw_name.decode("utf-8").strip()
+        name = bytes(raw_name).decode("utf-8").strip()
         if (
             not name
             or len(name) > MAX_NAME_CHARS
@@ -365,7 +404,7 @@ def _decode_modern_rooms(
     return tuple(results)
 
 
-def _decode_duration(payload: bytes, budget: WireFieldBudget) -> int | None:
+def _decode_duration(payload: memoryview, budget: WireFieldBudget) -> int | None:
     fields = _fields(payload, budget)
     seconds = _optional_varint(fields, 1)
     nanos = _optional_varint(fields, 2)

@@ -6,6 +6,7 @@ All payloads, keys and room names are synthetic.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import replace
@@ -19,6 +20,10 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client import api
 from custom_components.matic_robot.client.coverage_receipts import native_session_hash
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    NativeHistoryIncompleteError,
+)
 from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
     FloorPlan,
@@ -28,6 +33,7 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.managed_executor import (
     NativeHistoryIncompleteBaselineError,
     PlanCancelledError,
+    RoomTakenOverError,
     _async_dispatch_leg_command,
     _async_run_leg,
     _async_verify_leg_completion,
@@ -37,9 +43,11 @@ from custom_components.matic_robot.managed_executor import (
 from custom_components.matic_robot.native_completion import (
     NativeHistoryReader,
     match_single_room_completions,
+    read_handoff_revision,
 )
 from custom_components.matic_robot.plans import (
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     CleaningPlanManager,
     _reconcile_pending_native_history,
 )
@@ -53,6 +61,7 @@ from tests.test_plans import (
     _room,
     fast_native_history_retries,  # noqa: F401 - autouse fixture
 )
+from tests.wire_builders import _bfield, _fixed32, _vfield
 
 _undecodable = CleaningSessionRecord.undecodable
 _BOTH = ("Kitchen", "Office")
@@ -246,10 +255,14 @@ async def test_undecodable_new_record_leaves_leg_rooms_unverified_and_due(hass) 
 
 async def test_dispatch_binds_history_to_echoed_command_id(hass) -> None:
     identity = b""
+    claim = AsyncMock()
+    history = AsyncMock(side_effect=AssertionError("must not read old history"))
 
     async def send_command(call) -> None:
         nonlocal identity
-        identity = active_key(UUID(call.data["params"][PLAN_SESSION_ID]))
+        session_id = call.data["params"][PLAN_SESSION_ID]
+        claim.assert_awaited_once_with(session_id)
+        identity = active_key(UUID(session_id))
 
     async def read_identity() -> bytes:
         return identity
@@ -261,9 +274,13 @@ async def test_dispatch_binds_history_to_echoed_command_id(hass) -> None:
         "vacuum.matic",
         _leg_rooms(),
         7,
-        AsyncMock(return_value=()),
+        history,
+        floor_token="a" * 64,
         session_identity=read_identity,
+        on_claim=claim,
     )
+    history.assert_not_awaited()
+    assert dispatch.history_baseline is None
     assert dispatch.session_hash is not None
     assert dispatch.session_hash == native_session_hash(identity, active=True)
 
@@ -336,10 +353,187 @@ async def test_owned_lookup_waits_through_a_gap_and_returns_only_the_target() ->
     async with asyncio.timeout(1):
         await _async_wait_for_area_record(
             NativeHistoryReader(client.async_get_cleaning_session_records),
-            frozenset({foreign.key}),
+            None,
             asyncio.Event(),
             session_hash=native_session_hash(key),
         )
+
+
+@pytest.mark.parametrize("external_clean", [False, True])
+async def test_handoff_waits_for_known_keys_without_decoding_old_results(
+    hass, external_clean
+) -> None:
+    old = HermesCollectionEntry(b"opaque-legacy-history-key", b"\xff")
+    completed = HermesCollectionEntry(history_key(), _payload())
+    foreign = HermesCollectionEntry(history_key(UUID(int=1337)), b"\xff")
+
+    async def stream(_collection):
+        yield old
+        await asyncio.sleep(0)
+        yield foreign if external_clean else completed
+        if external_clean:
+            yield completed
+
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_subscribe_collection_entries = stream
+    client.async_get_tracked_collection_entries = partial(
+        client.async_get_tracked_collection_entries, idle_timeout=0
+    )
+    reader = NativeHistoryReader(
+        client.async_get_cleaning_session_records,
+        client.async_get_cleaning_session_keys,
+    )
+    expected = frozenset(
+        hashlib.sha256(row.key).hexdigest() for row in (old, completed)
+    )
+    identity = b""
+
+    async def read_identity():
+        return identity
+
+    async def send_command(call):
+        nonlocal identity
+        assert call.data["params"][PLAN_SESSION_REVISION] == "a" * 64
+        identity = active_key(UUID(call.data["params"][PLAN_SESSION_ID]))
+
+    sender = AsyncMock(side_effect=send_command)
+    hass.services.async_register("vacuum", "send_command", sender)
+    run = partial(
+        _async_dispatch_leg_command,
+        hass,
+        _call(hass),
+        "vacuum.matic",
+        [_room("Kitchen", "room-kitchen")],
+        1,
+        reader,
+        floor_token="current-floor",
+        on_claim=AsyncMock(),
+        session_identity=read_identity,
+        expected_dispatch_identity=b"",
+        expected_dispatch_history=expected,
+        expected_dispatch_revision="a" * 64,
+    )
+
+    if external_clean:
+        with pytest.raises(RoomTakenOverError, match="Native history changed"):
+            await run()
+        sender.assert_not_awaited()
+    else:
+        keys = await client.async_get_cleaning_session_keys(
+            session_hash=native_session_hash(completed.key),
+        )
+        assert keys == {old.key, completed.key}
+        dispatch = await run()
+        assert dispatch.history_baseline == keys
+        sender.assert_awaited_once()
+
+
+async def test_unavailable_revision_cannot_be_saved_as_a_marker():
+    reader = NativeHistoryReader(
+        AsyncMock(),
+        read_idle_revision=AsyncMock(side_effect=CannotConnectError("offline")),
+    )
+    assert await read_handoff_revision(reader) is None
+
+
+@pytest.mark.parametrize(
+    "case", ["empty", "keyless", "duplicate", "limit", "unanchored"]
+)
+async def test_handoff_key_inventory_rejects_ambiguous_samples(case) -> None:
+    key = history_key()
+    rows = {
+        "empty": (),
+        "keyless": (HermesCollectionEntry(b"", b"bad"),),
+        "duplicate": (HermesCollectionEntry(key, b"bad"),) * 2,
+        "limit": tuple(
+            HermesCollectionEntry(history_key(UUID(int=i)), b"bad") for i in range(64)
+        ),
+        "unanchored": (HermesCollectionEntry(history_key(UUID(int=1337)), b"bad"),),
+    }
+
+    async def stream(_collection):
+        for entry in rows[case]:
+            yield entry
+
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_subscribe_collection_entries = stream
+    error = (
+        NativeHistoryIncompleteError
+        if case in {"keyless", "duplicate"}
+        else CannotConnectError
+    )
+    with pytest.raises(error):
+        await client.async_get_cleaning_session_keys(
+            session_hash=native_session_hash(key) if case == "unanchored" else None
+        )
+
+
+async def test_large_owned_result_credits_only_its_canonical_room_evidence() -> None:
+    now = dt_util.utcnow()
+    started = now - timedelta(minutes=2)
+    ended = started + timedelta(seconds=73)
+    key = history_key()
+    foreign_key = history_key(UUID(int=1337))
+    circle = _bfield(1, _fixed32(1, 1.0) + _fixed32(2, 2.0)) + _fixed32(2, 0.2)
+    geometry = _bfield(1, circle) * 10_000
+
+    def timed_payload(goal_ids: tuple[tuple[int, int], ...]) -> bytes:
+        payload = _payload(goal_geometry=geometry, goal_ids=goal_ids)
+        summary = api._telemetry_bytes(payload, 5, max_bytes=len(payload))
+        envelope = _bfield(5, summary)
+        assert payload.endswith(envelope)
+        timestamps = _bfield(3, _bfield(1, _vfield(1, int(started.timestamp()))))
+        timestamps += _bfield(4, _bfield(1, _vfield(1, int(ended.timestamp()))))
+        return payload[: -len(envelope)] + _bfield(5, summary + timestamps)
+
+    large = timed_payload(((1, 2),) * 12)
+    assert len(large) > 2 * 1024 * 1024
+    foreign = HermesCollectionEntry(foreign_key, _oversized())
+    client = _client((foreign, HermesCollectionEntry(key, large)))
+    reader = NativeHistoryReader(client.async_get_cleaning_session_records)
+    expected = await _async_verify_leg_completion(
+        reader,
+        None,
+        [replace(_room("Kitchen", "room-kitchen"), cleaning_mode="vacuum")],
+        started - timedelta(seconds=1),
+        attempts=1,
+        session_hash=native_session_hash(key),
+    )
+    assert expected == {"room-kitchen": (ended.replace(microsecond=0).isoformat(), 73)}
+
+    conflicting = timed_payload(((1, 2),) * 11 + ((3, 4),))
+    client.async_get_tracked_collection_entries.return_value = (
+        foreign,
+        HermesCollectionEntry(key, conflicting),
+    )
+    assert (
+        await _async_verify_leg_completion(
+            reader,
+            None,
+            [replace(_room("Kitchen", "room-kitchen"), cleaning_mode="vacuum")],
+            started - timedelta(seconds=1),
+            attempts=1,
+            session_hash=native_session_hash(key),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [b"", _bfield(1, _vfield(1, 1) + _vfield(2, 1_000_000_000))],
+)
+def test_malformed_canonical_timestamp_cannot_prove_the_run_window(
+    timestamp: bytes,
+) -> None:
+    payload = _payload()
+    summary = api._telemetry_bytes(payload, 5)
+    envelope = _bfield(5, summary)
+    session = api._decode_cleaning_session(
+        payload[: -len(envelope)] + _bfield(5, summary + _bfield(3, timestamp))
+    )
+    assert session is not None
+    assert session.started_at is None
 
 
 async def test_area_wait_requires_its_own_history_key() -> None:

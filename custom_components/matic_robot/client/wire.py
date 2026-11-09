@@ -16,12 +16,12 @@ type WireShapePath = tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True, slots=True)
-class WireField:
+class WireField[Buffer: (bytes, memoryview) = bytes]:
     """One protobuf wire field."""
 
     number: int
     wire_type: int
-    value: int | bytes
+    value: int | Buffer
 
 
 @dataclass(slots=True)
@@ -43,19 +43,20 @@ class _WireShapeLimitError(Exception):
     """Signal that a structural fingerprint exceeded its public bounds."""
 
 
-def decode_fields(
-    payload: bytes,
+def decode_fields[Buffer: (bytes, memoryview)](
+    payload: Buffer,
     *,
     max_fields: int | None = None,
     field_budget: WireFieldBudget | None = None,
-) -> tuple[WireField, ...]:
+) -> tuple[WireField[Buffer], ...]:
     """Decode a protobuf message without requiring its private schema.
 
     When ``max_fields`` is supplied, reject field-dense untrusted messages
     before parsing more than that many fields. A shared ``field_budget`` can
     additionally bound allocations across a group of nested messages.
+    Pass a memoryview when opaque byte fields should remain zero-copy.
     """
-    fields: list[WireField] = []
+    fields: list[WireField[Buffer]] = []
     offset = 0
     while offset < len(payload):
         if max_fields is not None and len(fields) >= max_fields:
@@ -71,7 +72,7 @@ def decode_fields(
         wire_type = tag & 7
         if number == 0:
             raise DecodeError("invalid protobuf field number")
-        value: int | bytes
+        value: int | Buffer
         if wire_type == 0:
             value, offset = _decode_varint(payload, offset)
         elif wire_type == 1:
@@ -283,7 +284,7 @@ def uuid_string(
     raise DecodeError("invalid Matic UUID")
 
 
-def _decode_varint(payload: bytes, offset: int) -> tuple[int, int]:
+def _decode_varint(payload: bytes | memoryview, offset: int) -> tuple[int, int]:
     value = 0
     shift = 0
     while shift < 70:
@@ -298,7 +299,9 @@ def _decode_varint(payload: bytes, offset: int) -> tuple[int, int]:
     raise DecodeError("oversized protobuf varint")
 
 
-def _take(payload: bytes, offset: int, length: int) -> tuple[bytes, int]:
+def _take[Buffer: (bytes, memoryview)](
+    payload: Buffer, offset: int, length: int
+) -> tuple[Buffer, int]:
     end = offset + length
     if length < 0 or end > len(payload):
         raise DecodeError("truncated protobuf value")

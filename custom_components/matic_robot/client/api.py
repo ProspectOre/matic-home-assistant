@@ -940,6 +940,24 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return None
         return payload if present else b""
 
+    async def async_get_idle_cleaning_session_revision(self) -> str | None:
+        """Fingerprint the observed UUID-valued inactive session marker."""
+        payload = await self.async_get_property("active_session_key", max_bytes=96)
+        if len(payload) != 16 or UUID(bytes=payload).version != 4:
+            return None
+        return hashlib.sha256(payload).hexdigest()
+
+    async def _async_check_idle_session_revision(self, expected: str | None) -> None:
+        if expected is not None:
+            try:
+                current = await self.async_get_idle_cleaning_session_revision()
+            except MaticError as err:
+                raise CoverageGuardError(
+                    CoverageGuardReason.IDENTITY_UNAVAILABLE
+                ) from err
+            if current != expected:
+                raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+
     async def async_get_active_cleaning_session_state(self) -> bool | None:
         """Derive task activity from the vetted robot operational snapshot.
 
@@ -980,6 +998,38 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             strict=strict, session_hash=session_hash
         )
         return records
+
+    async def async_get_cleaning_session_keys(
+        self,
+        *,
+        session_hash: str | None = None,
+        expected_hashes: frozenset[str] | None = None,
+    ) -> frozenset[bytes]:
+        """Read opaque history keys for a handoff, independently of results."""
+        missing = set(expected_hashes or ())
+        found_session = session_hash is None
+
+        def ready(entry: HermesCollectionEntry) -> bool:
+            nonlocal found_session
+            if missing:
+                missing.discard(hashlib.sha256(entry.key).hexdigest())
+            if not found_session:
+                found_session = native_session_hash(entry.key) == session_hash
+            return found_session and not missing
+
+        limit = 64
+        entries = await self.async_get_tracked_collection_entries(
+            "coverage_session_history",
+            limit=limit,
+            wait_for_entry=ready if missing or not found_session else None,
+            retain_values=False,
+        )
+        keys = frozenset(entry.key for entry in entries)
+        if b"" in keys or len(keys) != len(entries):
+            raise NativeHistoryIncompleteError("Native history has ambiguous keys")
+        if not keys or len(entries) >= limit or not found_session:
+            raise CannotConnectError("Native history handoff inventory is unavailable")
+        return keys
 
     async def async_get_cleaning_session_snapshot(
         self,
@@ -1474,6 +1524,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         first_timeout: float = 3.0,
         idle_timeout: float = 0.25,
         wait_for_entry: Callable[[HermesCollectionEntry], bool] | None = None,
+        retain_values: bool = True,
     ) -> tuple[HermesCollectionEntry, ...]:
         """Read bounded tracked updates, optionally waiting through gaps for a key."""
         if not 1 <= limit <= 4096:
@@ -1505,7 +1556,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     raise CannotConnectError(
                         f"Hermes {collection_name} collection exceeds the byte limit"
                     )
-                entries.append(entry)
+                entries.append(entry if retain_values else replace(entry, value=b""))
                 if waiting and wait_for_entry is not None and wait_for_entry(entry):
                     waiting = False
         finally:
@@ -1582,6 +1633,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_settings_readback: bool = False,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start normal coverage; a supplied ID does not imply setting proof.
 
@@ -1604,6 +1656,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             baseline_identity = await self._async_require_idle_native_session()
         else:
             baseline_identity = None
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._async_send_user_payload(payload, command_name="START_COVERAGE")
@@ -1634,6 +1687,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
         session_id: UUID | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start then update only our accepted, still-current native mission.
 
@@ -1662,6 +1716,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             # this transaction before sending any bytes if ownership changed.
             if await self._async_require_idle_native_session() != baseline_identity:
                 raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+        await self._async_check_idle_session_revision(expected_idle_revision)
         require_current()
         try:
             await self._async_send_user_payload(
@@ -2110,6 +2165,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         coverage_setting: CoverageSetting,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> None:
         """Start an official drawn-circle custom-area coverage command.
 
@@ -2126,6 +2182,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
         if session_id is not None:
             await self._async_require_idle_native_session()
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._async_send_user_payload(
@@ -3106,6 +3163,13 @@ def _canonical_cleaning_session(
 
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     """Decode native history without treating its global default as room proof."""
+    semantics = decode_history_semantics(payload)
+    if semantics is not None:
+        return _canonical_cleaning_session(
+            semantics, semantics.started_at, semantics.ended_at
+        )
+    # The legacy projection still needs the small whole-record budget. Large
+    # records are eligible only through the bounded canonical decoder above.
     if len(payload) > _CLEANING_SESSION_MAX_BYTES:
         return None
     try:
@@ -3119,9 +3183,6 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         return None
     started_at = _decode_nested_timestamp(summary, 3)
     ended_at = _decode_nested_timestamp(summary, 4)
-    semantics = decode_history_semantics(payload)
-    if semantics is not None:
-        return _canonical_cleaning_session(semantics, started_at, ended_at)
     # A malformed modern record cannot fall back to legacy fields ignored by
     # the OEM decoder. Parse the summary once for both format admission and the
     # legacy projection below.
