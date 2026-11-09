@@ -20,9 +20,11 @@ waits for the result with that session ID. The decoder can skip repeated drawing
 geometry in a large record while checking the bounded room results. If the run's
 own result is missing or unreadable, its rooms remain due.
 
-Older run checkpoints still use their recorded history keys. Between missions,
-the integration also checks for a change in retained keys before sending the next
-command. If it can't establish that boundary, it leaves the remaining work due.
+Between missions and during restart recovery, the integration compares a bounded
+read of the robot's retained collection keys with the saved keys. An older record
+with a collection key can take part in this check even if its results are
+unreadable. If the keys change or the integration cannot verify the inventory,
+it leaves the remaining work due.
 
 A plan runs as one or more native missions: consecutive rooms share one, each
 custom area is its own, and with Smart Stop on each room is its own. Each room

@@ -23,6 +23,7 @@ class NativeHistoryReader:
     """Expose ordinary inventory reads and a bounded lookup for an owned run."""
 
     read: Callable[..., Awaitable[tuple[CleaningSessionRecord, ...]]]
+    read_keys: Callable[..., Awaitable[frozenset[bytes]]] | None = None
 
     async def __call__(self) -> tuple[CleaningSessionRecord, ...]:
         return await self.read(strict=True)
@@ -37,6 +38,20 @@ async def read_dispatch_history(
     if isinstance(reader, NativeHistoryReader) and session_hash is not None:
         return await reader.for_session(session_hash)
     return await reader()
+
+
+async def read_handoff_history_keys(
+    reader: HistoryReader,
+    *,
+    session_hash: str | None = None,
+    expected_hashes: frozenset[str] | None = None,
+) -> frozenset[bytes]:
+    """Use the key inventory when available and preserve older readers."""
+    if isinstance(reader, NativeHistoryReader) and reader.read_keys is not None:
+        return await reader.read_keys(
+            session_hash=session_hash, expected_hashes=expected_hashes
+        )
+    return frozenset(record.key for record in await reader())
 
 
 @dataclass(frozen=True, slots=True)

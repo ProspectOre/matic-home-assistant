@@ -35,6 +35,7 @@ from .native_completion import (
     NativeHistoryReader,
     is_session_hash,
     read_dispatch_history,
+    read_handoff_history_keys,
 )
 from .plans import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
 from .room_coherence import current_floor_plan, room_completion_names_are_current
@@ -427,12 +428,17 @@ async def async_recover_managed_run(
             ):
                 reason = "restart_handoff_history_unavailable"
                 return
-            records = await runtime.client.async_get_cleaning_session_records(
-                strict=True
+            history_reader = NativeHistoryReader(
+                runtime.client.async_get_cleaning_session_records,
+                runtime.client.async_get_cleaning_session_keys,
             )
-            if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
-                handoff_history
-            ):
+            expected_history = frozenset(handoff_history)
+            keys = await read_handoff_history_keys(
+                history_reader,
+                session_hash=checkpoint.get("session_hash"),
+                expected_hashes=expected_history,
+            )
+            if {hashlib.sha256(key).hexdigest() for key in keys} != expected_history:
                 reason = "restart_handoff_history_changed"
                 return
             await manager.async_mark_recovery_status(
@@ -472,9 +478,7 @@ async def async_recover_managed_run(
                 rooms,
                 refresh=runtime.coordinator.async_request_refresh,
                 active_session=runtime.client.async_get_active_cleaning_session_state,
-                session_history=NativeHistoryReader(
-                    runtime.client.async_get_cleaning_session_records
-                ),
+                session_history=history_reader,
                 session_identity=runtime.client.async_get_cleaning_session_identity,
                 coverage_verifier=getattr(
                     runtime.client, "async_confirm_coverage_receipt", None
@@ -660,7 +664,8 @@ async def async_recover_managed_run(
             refresh=runtime.coordinator.async_request_refresh,
             active_session=runtime.client.async_get_active_cleaning_session_state,
             session_history=NativeHistoryReader(
-                runtime.client.async_get_cleaning_session_records
+                runtime.client.async_get_cleaning_session_records,
+                runtime.client.async_get_cleaning_session_keys,
             ),
             session_identity=runtime.client.async_get_cleaning_session_identity,
             coverage_verifier=getattr(

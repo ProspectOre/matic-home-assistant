@@ -869,6 +869,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             ),
             session_history=NativeHistoryReader(
                 entry.runtime_data.client.async_get_cleaning_session_records,
+                entry.runtime_data.client.async_get_cleaning_session_keys,
             ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
@@ -1013,6 +1014,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 ),
                 session_history=NativeHistoryReader(
                     entry.runtime_data.client.async_get_cleaning_session_records,
+                    entry.runtime_data.client.async_get_cleaning_session_keys,
                 ),
                 session_identity=(
                     entry.runtime_data.client.async_get_cleaning_session_identity

@@ -49,7 +49,6 @@ from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
 )
-from tests.test_coverage_receipts import history_key
 from tests.test_undecodable_history import _client, _oversized
 from tests.wire_builders import _session_identity
 
@@ -119,6 +118,7 @@ async def recovery_state(hass):
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_keys=None,
         async_get_active_cleaning_session_state=AsyncMock(return_value=True),
         async_get_state=AsyncMock(return_value=_operational_state()),
         async_send_user_command=AsyncMock(),
@@ -622,13 +622,12 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
             CannotConnectError("unavailable")
         )
     elif case == "undecodable_history":
-        # A retained record too large to decode still names its session, so
-        # the strict handoff read matches the persisted key set.
-        reader = _client((HermesCollectionEntry(history_key(), _oversized()),))
-        entry.runtime_data.client.async_get_cleaning_session_records = (
-            reader.async_get_cleaning_session_records
+        key = b"opaque-legacy-history-key"
+        reader = _client((HermesCollectionEntry(key, _oversized()),))
+        entry.runtime_data.client.async_get_cleaning_session_keys = (
+            reader.async_get_cleaning_session_keys
         )
-        checkpoint["handoff_history"] = [hashlib.sha256(history_key()).hexdigest()]
+        checkpoint["handoff_history"] = [hashlib.sha256(key).hexdigest()]
     manager._robot("serial")["last_run"]["room_count"] = 2
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
@@ -679,6 +678,8 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         runner.assert_not_awaited()
     if case == "stop_during_wait":
         assert manager.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
+    if case == "undecodable_history":
+        entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 

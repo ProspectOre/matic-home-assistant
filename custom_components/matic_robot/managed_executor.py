@@ -59,6 +59,7 @@ from .native_completion import (
     match_single_room_completions,
     native_room_key,
     read_dispatch_history,
+    read_handoff_history_keys,
     records_for_dispatch,
 )
 from .plans import (
@@ -305,7 +306,10 @@ async def _async_dispatch_leg_command(
     ):
         try:
             history_baseline = await _async_session_history_baseline(
-                session_history, raise_incomplete=True
+                session_history,
+                raise_incomplete=True,
+                handoff=expected_dispatch_history is not None,
+                expected_hashes=expected_dispatch_history,
             )
         except NativeHistoryIncompleteError as err:
             raise NativeHistoryIncompleteBaselineError from err
@@ -2458,6 +2462,8 @@ async def _async_session_history_baseline(
     *,
     raise_incomplete: bool = False,
     session_hash: str | None = None,
+    handoff: bool = False,
+    expected_hashes: frozenset[str] | None = None,
 ) -> frozenset[bytes] | None:
     """Read opaque native keys without exposing their values.
 
@@ -2467,6 +2473,10 @@ async def _async_session_history_baseline(
     if reader is None:
         return None
     try:
+        if handoff:
+            return await read_handoff_history_keys(
+                reader, session_hash=session_hash, expected_hashes=expected_hashes
+            )
         return frozenset(
             record.key for record in await read_dispatch_history(reader, session_hash)
         )
@@ -4078,7 +4088,9 @@ async def _async_execute_rooms_reserved(
                     # queue instead of treating the prior verifying leg as
                     # the only recoverable work.
                     handoff_keys = await _async_session_history_baseline(
-                        session_history
+                        session_history,
+                        handoff=True,
+                        session_hash=checkpoint.get("session_hash"),
                     )
                     checkpoint.update(
                         {

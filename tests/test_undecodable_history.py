@@ -6,6 +6,7 @@ All payloads, keys and room names are synthetic.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import replace
@@ -19,6 +20,10 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client import api
 from custom_components.matic_robot.client.coverage_receipts import native_session_hash
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    NativeHistoryIncompleteError,
+)
 from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
     FloorPlan,
@@ -28,6 +33,7 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.managed_executor import (
     NativeHistoryIncompleteBaselineError,
     PlanCancelledError,
+    RoomTakenOverError,
     _async_dispatch_leg_command,
     _async_run_leg,
     _async_verify_leg_completion,
@@ -348,6 +354,105 @@ async def test_owned_lookup_waits_through_a_gap_and_returns_only_the_target() ->
             None,
             asyncio.Event(),
             session_hash=native_session_hash(key),
+        )
+
+
+@pytest.mark.parametrize("external_clean", [False, True])
+async def test_handoff_waits_for_known_keys_without_decoding_old_results(
+    hass, external_clean
+) -> None:
+    old = HermesCollectionEntry(b"opaque-legacy-history-key", b"\xff")
+    completed = HermesCollectionEntry(history_key(), _payload())
+    foreign = HermesCollectionEntry(history_key(UUID(int=1337)), b"\xff")
+
+    async def stream(_collection):
+        yield old
+        await asyncio.sleep(0)
+        yield foreign if external_clean else completed
+        if external_clean:
+            yield completed
+
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_subscribe_collection_entries = stream
+    client.async_get_tracked_collection_entries = partial(
+        client.async_get_tracked_collection_entries, idle_timeout=0
+    )
+    reader = NativeHistoryReader(
+        client.async_get_cleaning_session_records,
+        client.async_get_cleaning_session_keys,
+    )
+    expected = frozenset(
+        hashlib.sha256(row.key).hexdigest() for row in (old, completed)
+    )
+    identity = b""
+
+    async def read_identity():
+        return identity
+
+    async def send_command(call):
+        nonlocal identity
+        identity = active_key(UUID(call.data["params"][PLAN_SESSION_ID]))
+
+    sender = AsyncMock(side_effect=send_command)
+    hass.services.async_register("vacuum", "send_command", sender)
+    run = partial(
+        _async_dispatch_leg_command,
+        hass,
+        _call(hass),
+        "vacuum.matic",
+        [_room("Kitchen", "room-kitchen")],
+        1,
+        reader,
+        floor_token="current-floor",
+        on_claim=AsyncMock(),
+        session_identity=read_identity,
+        expected_dispatch_identity=b"",
+        expected_dispatch_history=expected,
+    )
+
+    if external_clean:
+        with pytest.raises(RoomTakenOverError, match="Native history changed"):
+            await run()
+        sender.assert_not_awaited()
+    else:
+        keys = await client.async_get_cleaning_session_keys(
+            session_hash=native_session_hash(completed.key),
+        )
+        assert keys == {old.key, completed.key}
+        dispatch = await run()
+        assert dispatch.history_baseline == keys
+        sender.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "case", ["empty", "keyless", "duplicate", "limit", "unanchored"]
+)
+async def test_handoff_key_inventory_rejects_ambiguous_samples(case) -> None:
+    key = history_key()
+    rows = {
+        "empty": (),
+        "keyless": (HermesCollectionEntry(b"", b"bad"),),
+        "duplicate": (HermesCollectionEntry(key, b"bad"),) * 2,
+        "limit": tuple(
+            HermesCollectionEntry(history_key(UUID(int=i)), b"bad") for i in range(64)
+        ),
+        "unanchored": (HermesCollectionEntry(history_key(UUID(int=1337)), b"bad"),),
+    }
+
+    async def stream(_collection):
+        for entry in rows[case]:
+            yield entry
+
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_subscribe_collection_entries = stream
+    error = (
+        NativeHistoryIncompleteError
+        if case in {"keyless", "duplicate"}
+        else CannotConnectError
+    )
+    with pytest.raises(error):
+        await client.async_get_cleaning_session_keys(
+            session_hash=native_session_hash(key) if case == "unanchored" else None
         )
 
 

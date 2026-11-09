@@ -981,6 +981,38 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
         return records
 
+    async def async_get_cleaning_session_keys(
+        self,
+        *,
+        session_hash: str | None = None,
+        expected_hashes: frozenset[str] | None = None,
+    ) -> frozenset[bytes]:
+        """Read opaque history keys for a handoff, independently of results."""
+        missing = set(expected_hashes or ())
+        found_session = session_hash is None
+
+        def ready(entry: HermesCollectionEntry) -> bool:
+            nonlocal found_session
+            if missing:
+                missing.discard(hashlib.sha256(entry.key).hexdigest())
+            if not found_session:
+                found_session = native_session_hash(entry.key) == session_hash
+            return found_session and not missing
+
+        limit = 64
+        entries = await self.async_get_tracked_collection_entries(
+            "coverage_session_history",
+            limit=limit,
+            wait_for_entry=ready if missing or not found_session else None,
+            retain_values=False,
+        )
+        keys = frozenset(entry.key for entry in entries)
+        if b"" in keys or len(keys) != len(entries):
+            raise NativeHistoryIncompleteError("Native history has ambiguous keys")
+        if not keys or len(entries) >= limit or not found_session:
+            raise CannotConnectError("Native history handoff inventory is unavailable")
+        return keys
+
     async def async_get_cleaning_session_snapshot(
         self,
         *,
@@ -1474,6 +1506,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         first_timeout: float = 3.0,
         idle_timeout: float = 0.25,
         wait_for_entry: Callable[[HermesCollectionEntry], bool] | None = None,
+        retain_values: bool = True,
     ) -> tuple[HermesCollectionEntry, ...]:
         """Read bounded tracked updates, optionally waiting through gaps for a key."""
         if not 1 <= limit <= 4096:
@@ -1505,7 +1538,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     raise CannotConnectError(
                         f"Hermes {collection_name} collection exceeds the byte limit"
                     )
-                entries.append(entry)
+                entries.append(entry if retain_values else replace(entry, value=b""))
                 if waiting and wait_for_entry is not None and wait_for_entry(entry):
                     waiting = False
         finally:
