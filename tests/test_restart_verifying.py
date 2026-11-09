@@ -12,6 +12,7 @@ from homeassistant.core import CoreState
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.coverage_receipts import native_session_hash
+from custom_components.matic_robot.client.exceptions import NativeHistoryIncompleteError
 from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
@@ -366,7 +367,15 @@ async def test_recovery_requires_checkpoint_session_in_partial_history(
         else (replace(completed_record(), key=old_key),)
     )
     client = entry.runtime_data.client
-    client.async_get_cleaning_session_records.return_value = records
+
+    async def read_history(*, strict, session_hash=None):
+        assert strict is True
+        if session_hash is None:
+            raise NativeHistoryIncompleteError("unrelated history key is opaque")
+        assert session_hash == checkpoint["session_hash"]
+        return records
+
+    client.async_get_cleaning_session_records.side_effect = read_history
     with patch(
         "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -374,9 +383,8 @@ async def test_recovery_requires_checkpoint_session_in_partial_history(
         await async_recover_managed_run(hass, entry, "serial")
     run = manager.snapshot("serial")["last_run"]
     assert run["completed_room_count"] == int(owned_visible is True)
-    if not has_baseline:
-        assert all(
-            read.kwargs.get("session_hash") == checkpoint["session_hash"]
-            for read in client.async_get_cleaning_session_records.await_args_list
-        )
+    assert all(
+        read.kwargs.get("session_hash") == checkpoint["session_hash"]
+        for read in client.async_get_cleaning_session_records.await_args_list
+    )
     client.async_send_user_command.assert_not_awaited()

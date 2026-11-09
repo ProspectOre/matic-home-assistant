@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.commands import UserCommand, _wrapped_uuid
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
@@ -1722,3 +1723,37 @@ async def test_recovery_rejects_conflicting_session_fingerprint(hass, recovery_s
     await async_recover_managed_run(hass, entry, "serial")
     assert manager.snapshot("serial")["last_run"]["outcome"] != "completed"
     entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()
+
+
+async def test_owned_active_leg_recovers_with_opaque_retained_history(
+    hass, recovery_state
+):
+    from tests.test_coverage_receipts import active_key, history_key
+
+    manager, entry, checkpoint, _ = recovery_state
+    client = entry.runtime_data.client
+    identity = active_key()
+    owned = native_session_hash(history_key())
+    checkpoint["native_identity_hash"] = hashlib.sha256(identity).hexdigest()
+    checkpoint["session_hash"] = owned
+    opaque_key = b"old-opaque-history-key"
+    checkpoint["history_baseline"] = [hashlib.sha256(opaque_key).hexdigest()]
+    client.async_get_cleaning_session_identity.return_value = identity
+    reader = _client((HermesCollectionEntry(opaque_key, _oversized()),))
+    client.async_get_cleaning_session_records = AsyncMock(
+        wraps=reader.async_get_cleaning_session_records
+    )
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+
+    with patch(
+        "custom_components.matic_robot.restart._async_execute_rooms",
+        new_callable=AsyncMock,
+    ) as runner:
+        await async_recover_managed_run(hass, entry, "serial")
+
+    client.async_get_cleaning_session_records.assert_awaited_once_with(
+        strict=True, session_hash=owned
+    )
+    runner.assert_awaited_once()
+    assert runner.await_args.kwargs["recovered_dispatch"].session_hash == owned
+    client.async_send_user_command.assert_not_awaited()

@@ -526,8 +526,9 @@ async def async_recover_managed_run(
         session_hash = session_hash or active_hash
         hashes = checkpoint.get("history_baseline")
         if isinstance(hashes, list):
-            records = await runtime.client.async_get_cleaning_session_records(
-                strict=True
+            records = await read_dispatch_history(
+                NativeHistoryReader(runtime.client.async_get_cleaning_session_records),
+                session_hash if owned_checkpoint else None,
             )
             baseline = frozenset(
                 record.key
