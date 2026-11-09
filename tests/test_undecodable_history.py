@@ -27,6 +27,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.managed_executor import (
     NativeHistoryIncompleteBaselineError,
+    PlanCancelledError,
     _async_dispatch_leg_command,
     _async_run_leg,
     _async_verify_leg_completion,
@@ -34,6 +35,7 @@ from custom_components.matic_robot.managed_executor import (
     _failure_reason_code,
 )
 from custom_components.matic_robot.native_completion import (
+    NativeHistoryReader,
     match_single_room_completions,
 )
 from custom_components.matic_robot.plans import (
@@ -331,6 +333,14 @@ async def test_owned_lookup_waits_through_a_gap_and_returns_only_the_target() ->
     )
     assert [(record.key, record.decoded) for record in targeted] == [(key, True)]
 
+    async with asyncio.timeout(1):
+        await _async_wait_for_area_record(
+            NativeHistoryReader(client.async_get_cleaning_session_records),
+            frozenset({foreign.key}),
+            asyncio.Event(),
+            session_hash=native_session_hash(key),
+        )
+
 
 async def test_area_wait_requires_its_own_history_key() -> None:
     key = history_key()
@@ -340,6 +350,48 @@ async def test_area_wait_requires_its_own_history_key() -> None:
         reader, frozenset(), asyncio.Event(), session_hash=native_session_hash(key)
     )
     assert reader.await_count == 2
+
+
+@pytest.mark.parametrize("end", ["already_cancelled", "stop", "deadline"])
+async def test_area_wait_interrupts_an_inflight_history_read(monkeypatch, end) -> None:
+    cancel = asyncio.Event()
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def pending_read(**_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    if end == "deadline":
+        monkeypatch.setattr(
+            "custom_components.matic_robot.managed_executor.SESSION_HISTORY_TIMEOUT_SECONDS",
+            0.02,
+        )
+    if end == "already_cancelled":
+        cancel.set()
+    key = history_key()
+    waiting = asyncio.create_task(
+        _async_wait_for_area_record(
+            NativeHistoryReader(pending_read),
+            frozenset(),
+            cancel,
+            session_hash=native_session_hash(key),
+        )
+    )
+    async with asyncio.timeout(1):
+        if end == "stop":
+            await started.wait()
+            cancel.set()
+        if end == "deadline":
+            await waiting
+        else:
+            with pytest.raises(PlanCancelledError):
+                await waiting
+    assert started.is_set() is (end != "already_cancelled")
+    assert closed.is_set() is (end != "already_cancelled")
 
 
 @pytest.mark.parametrize("marker", ["valid", "malformed"])

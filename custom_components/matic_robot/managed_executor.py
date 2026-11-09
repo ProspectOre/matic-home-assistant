@@ -1146,21 +1146,41 @@ async def _async_wait_for_area_record(
     """
     if reader is None or baseline is None:
         return
-    for _attempt in range(SESSION_HISTORY_ATTEMPTS):
-        if cancel_event.is_set():
-            raise PlanCancelledError
-        keys = await _async_session_history_baseline(reader)
-        if keys is not None:
-            new_keys = keys - baseline
-            if session_hash is None and new_keys:
-                return
-            if session_hash is not None and any(
-                native_session_hash(key) == session_hash for key in new_keys
-            ):
-                return
-        with suppress(TimeoutError):
-            async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
-                await cancel_event.wait()
+    if cancel_event.is_set():
+        raise PlanCancelledError
+
+    async def wait_for_record() -> None:
+        for attempt in range(SESSION_HISTORY_ATTEMPTS):
+            keys = await _async_session_history_baseline(
+                reader, session_hash=session_hash
+            )
+            if keys is not None:
+                new_keys = keys - baseline
+                if session_hash is None and new_keys:
+                    return
+                if session_hash is not None and any(
+                    native_session_hash(key) == session_hash for key in new_keys
+                ):
+                    return
+            if attempt + 1 < SESSION_HISTORY_ATTEMPTS:
+                await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
+
+    history = asyncio.create_task(wait_for_record())
+    cancelled = asyncio.create_task(cancel_event.wait())
+    try:
+        async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
+            await asyncio.wait(
+                {history, cancelled}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if cancel_event.is_set():
+                raise PlanCancelledError
+            history.result()
+    except TimeoutError:
+        pass
+    finally:
+        history.cancel()
+        cancelled.cancel()
+        await asyncio.gather(history, cancelled, return_exceptions=True)
 
 
 def _area_refused_before_start(error: BaseException) -> bool:
@@ -2429,8 +2449,9 @@ async def _async_session_history_baseline(
     reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
     *,
     raise_incomplete: bool = False,
+    session_hash: str | None = None,
 ) -> frozenset[bytes] | None:
-    """Capture opaque native keys before dispatch without exposing their values.
+    """Read opaque native keys without exposing their values.
 
     A failed read returns None. With ``raise_incomplete``, a read that found an
     entry without a session identity raises instead, so dispatch can say so.
@@ -2438,7 +2459,9 @@ async def _async_session_history_baseline(
     if reader is None:
         return None
     try:
-        return frozenset(record.key for record in await reader())
+        return frozenset(
+            record.key for record in await read_dispatch_history(reader, session_hash)
+        )
     except MaticError as err:
         _LOGGER.debug(
             "Native Matic completion baseline unavailable (%s)", type(err).__name__
