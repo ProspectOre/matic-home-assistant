@@ -1693,3 +1693,19 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
     assert dispatched[0]["params"]["fingerprint"] == "f" * 64
     assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"
     client.async_send_user_command.assert_not_awaited()
+
+
+async def test_recovery_rejects_conflicting_session_fingerprint(hass, recovery_state):
+    from tests.test_coverage_receipts import active_key
+
+    manager, entry, checkpoint, _ = recovery_state
+    identity = active_key()
+    checkpoint["native_identity_hash"] = hashlib.sha256(identity).hexdigest()
+    checkpoint["session_hash"] = "0" * 64
+    entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
+        identity
+    )
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await async_recover_managed_run(hass, entry, "serial")
+    assert manager.snapshot("serial")["last_run"]["outcome"] != "completed"
+    entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()

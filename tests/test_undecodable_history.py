@@ -12,26 +12,36 @@ from dataclasses import replace
 from datetime import timedelta
 from functools import partial
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client import api
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
+    FloorPlan,
     HermesCollectionEntry,
+    Room,
 )
 from custom_components.matic_robot.managed_executor import (
     NativeHistoryIncompleteBaselineError,
     _async_dispatch_leg_command,
     _async_run_leg,
     _async_verify_leg_completion,
+    _async_wait_for_area_record,
     _failure_reason_code,
 )
 from custom_components.matic_robot.native_completion import (
     match_single_room_completions,
 )
-from tests.test_coverage_receipts import history_key
+from custom_components.matic_robot.plans import (
+    PLAN_SESSION_ID,
+    CleaningPlanManager,
+    _reconcile_pending_native_history,
+)
+from tests.test_coverage_receipts import active_key, history_key
 from tests.test_history_semantics import _payload
 from tests.test_plans import (
     _call,
@@ -230,3 +240,136 @@ async def test_undecodable_new_record_leaves_leg_rooms_unverified_and_due(hass) 
         for call in manager.async_mark_ended_unverified.await_args_list
     ]
     assert unverified == ["Kitchen", "Office"]
+
+
+async def test_dispatch_binds_history_to_echoed_command_id(hass) -> None:
+    identity = b""
+
+    async def send_command(call) -> None:
+        nonlocal identity
+        identity = active_key(UUID(call.data["params"][PLAN_SESSION_ID]))
+
+    async def read_identity() -> bytes:
+        return identity
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    dispatch = await _async_dispatch_leg_command(
+        hass,
+        _call(hass),
+        "vacuum.matic",
+        _leg_rooms(),
+        7,
+        AsyncMock(return_value=()),
+        session_identity=read_identity,
+    )
+    assert dispatch.session_hash is not None
+    assert dispatch.session_hash == native_session_hash(identity, active=True)
+
+
+@pytest.mark.parametrize(
+    "case", ["ours", "foreign", "unreadable", "duplicate", "baseline"]
+)
+async def test_partial_history_only_credits_the_dispatched_session(case) -> None:
+    key = history_key()
+    foreign_key = history_key(UUID(int=1337))
+    record = replace(_leg_record(_BOTH, _BOTH), key=key)
+    foreign = replace(record, key=foreign_key)
+    observations = {
+        "ours": (record, _undecodable(foreign_key)),
+        "foreign": (foreign,),
+        "unreadable": (_undecodable(key), foreign),
+        "duplicate": (record, _undecodable(key)),
+        "baseline": (record,),
+    }[case]
+    credits = await _async_verify_leg_completion(
+        AsyncMock(return_value=observations),
+        frozenset({key}) if case == "baseline" else frozenset(),
+        _leg_rooms(),
+        dt_util.utcnow() - timedelta(minutes=5),
+        attempts=1,
+        session_hash=native_session_hash(key),
+    )
+    assert bool(credits) is (case == "ours")
+
+
+def test_single_room_ignores_unrelated_unreadable_history_for_owned_dispatch() -> None:
+    key = history_key()
+    old_key = history_key(UUID(int=1337))
+    now = dt_util.utcnow()
+    matches = match_single_room_completions(
+        (_undecodable(old_key), _kitchen(key)),
+        room_name="Kitchen",
+        cleaning_mode=None,
+        dispatched_at=now - timedelta(minutes=5),
+        now=now + timedelta(seconds=1),
+        baseline=frozenset(),
+        session_hash=native_session_hash(key),
+    )
+    assert [match.record.key for match in matches] == [key]
+
+
+async def test_owned_lookup_waits_through_a_gap_and_returns_only_the_target() -> None:
+    key = history_key()
+    foreign = HermesCollectionEntry(history_key(UUID(int=1337)), _oversized())
+    wanted = HermesCollectionEntry(key, _payload())
+
+    async def stream(_collection):
+        yield foreign
+        await asyncio.sleep(0)
+        yield wanted
+
+    client = api.MaticHermesClient("192.0.2.1", 16320)
+    client.async_subscribe_collection_entries = stream
+    client.async_get_tracked_collection_entries = partial(
+        client.async_get_tracked_collection_entries, idle_timeout=0
+    )
+
+    ordinary = await client.async_get_cleaning_session_records(strict=True)
+    assert [record.key for record in ordinary] == [foreign.key]
+    targeted = await client.async_get_cleaning_session_records(
+        strict=True, session_hash=native_session_hash(key)
+    )
+    assert [(record.key, record.decoded) for record in targeted] == [(key, True)]
+
+
+async def test_area_wait_requires_its_own_history_key() -> None:
+    key = history_key()
+    foreign_key = history_key(UUID(int=1337))
+    reader = AsyncMock(side_effect=[(_undecodable(foreign_key),), (_undecodable(key),)])
+    await _async_wait_for_area_record(
+        reader, frozenset(), asyncio.Event(), session_hash=native_session_hash(key)
+    )
+    assert reader.await_count == 2
+
+
+@pytest.mark.parametrize("marker", ["valid", "malformed"])
+async def test_persisted_reconciliation_only_credits_its_own_history(
+    hass, marker
+) -> None:
+    key = history_key()
+    foreign_key = history_key(UUID(int=1337))
+    now = dt_util.utcnow()
+    floor = FloorPlan(
+        42,
+        "partition",
+        b"partition",
+        (Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),),
+    )
+    pending = {
+        "plan_id": "away",
+        "room_id": "kitchen",
+        "room": "Kitchen",
+        "dispatched_at": (now - timedelta(minutes=5)).isoformat(),
+        "expires_at": (now + timedelta(minutes=5)).isoformat(),
+        "session_hash": native_session_hash(key) if marker == "valid" else "invalid",
+    }
+    robot = CleaningPlanManager(hass)._robot("serial")
+    robot["pending_native_reconciliation"] = pending
+    assert not _reconcile_pending_native_history(robot, floor, [_kitchen(foreign_key)])
+    if marker == "valid":
+        assert _reconcile_pending_native_history(
+            robot, floor, [_undecodable(foreign_key), _kitchen(key)]
+        )
+        assert "pending_native_reconciliation" not in robot
+    else:
+        assert not _reconcile_pending_native_history(robot, floor, [_kitchen(key)])

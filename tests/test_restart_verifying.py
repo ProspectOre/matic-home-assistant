@@ -2,14 +2,16 @@
 
 import asyncio
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import timedelta
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
 from homeassistant.core import CoreState
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
@@ -17,6 +19,7 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.plans import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
 
+from .test_coverage_receipts import history_key
 from .test_restart import recovery_state as recovery_fixture
 
 
@@ -337,4 +340,35 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
             events[0].data["reason_code"],
             events[0].data["cause"],
         ) == expected
+    client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("owned_visible", [True, False, "malformed"])
+async def test_recovery_requires_checkpoint_session_in_partial_history(
+    hass, recovery_state, owned_visible
+):
+    manager, entry, checkpoint, _ = recovery_state
+    key = history_key()
+    old_key = history_key(UUID(int=1337))
+    checkpoint["session_hash"] = (
+        "invalid" if owned_visible == "malformed" else native_session_hash(key)
+    )
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    records = (
+        (
+            CleaningSessionRecord.undecodable(old_key),
+            replace(completed_record(), key=key),
+        )
+        if owned_visible
+        else (replace(completed_record(), key=old_key),)
+    )
+    client = entry.runtime_data.client
+    client.async_get_cleaning_session_records.return_value = records
+    with patch(
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+    run = manager.snapshot("serial")["last_run"]
+    assert run["completed_room_count"] == int(owned_visible is True)
     client.async_send_user_command.assert_not_awaited()

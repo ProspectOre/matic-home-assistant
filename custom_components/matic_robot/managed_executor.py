@@ -58,7 +58,8 @@ from .coverage_accounting import (
 from .native_completion import (
     match_single_room_completions,
     native_room_key,
-    records_since_baseline,
+    read_dispatch_history,
+    records_for_dispatch,
 )
 from .plans import (
     OEM_STOP_RECONCILIATION_SECONDS as OEM_STOP_RECONCILIATION_SECONDS,
@@ -151,6 +152,7 @@ class _PreparedRoomDispatch:
     native_identity: bytes | None = None
     recovered: bool = False
     completion_deadline: datetime | None = None
+    session_hash: str | None = None
 
 
 def _remaining_completion_time(dispatch: _PreparedRoomDispatch, timeout: int) -> float:
@@ -191,6 +193,7 @@ class _NativeReconciliation:
     cleaning_mode: str | None = None
     run_id: str | None = None
     coverage_setting: str | None = None
+    session_hash: str | None = None
 
 
 async def _async_managed_user_command(
@@ -435,7 +438,16 @@ async def _async_dispatch_leg_command(
     if on_identity is not None:
         on_identity(identity)
     return _PreparedRoomDispatch(
-        leg, history_baseline, dispatched_at, identity_baseline, identity
+        leg,
+        history_baseline,
+        dispatched_at,
+        identity_baseline,
+        identity,
+        session_hash=(
+            hashlib.sha256(str(managed_session_id).encode("ascii")).hexdigest()
+            if managed_session_id is not None and session_identity is not None
+            else None
+        ),
     )
 
 
@@ -687,6 +699,7 @@ async def _async_run_room(
                                 entity_id=entity_id,
                                 cancel_event=cancel_event,
                                 on_verified_session=completion_sessions.append,
+                                session_hash=dispatch.session_hash,
                             )
                             break
                         if session_resolution is None:
@@ -753,7 +766,12 @@ async def _async_run_room(
                 dispatch_attempted,
             )
             reconciliation = _build_native_reconciliation(
-                call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
+                call.data["plan_id"],
+                room,
+                dispatched_at,
+                room_started,
+                run_id=run_id,
+                session_hash=dispatch.session_hash if dispatch is not None else None,
             )
             async with _managed_reconciliation_guard(
                 manager, serial_number, motion_token
@@ -836,7 +854,12 @@ async def _async_run_room(
             None
             if isinstance(err, RoomStoppedInPlaceError)
             else _build_native_reconciliation(
-                call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
+                call.data["plan_id"],
+                room,
+                dispatched_at,
+                room_started,
+                run_id=run_id,
+                session_hash=dispatch.session_hash if dispatch is not None else None,
             )
         )
         async with _managed_reconciliation_guard(
@@ -907,7 +930,12 @@ async def _async_run_room(
         else:
             failure_reason = str(err).strip() or "The managed room failed"
         reconciliation = _build_native_reconciliation(
-            call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
+            call.data["plan_id"],
+            room,
+            dispatched_at,
+            room_started,
+            run_id=run_id,
+            session_hash=dispatch.session_hash if dispatch is not None else None,
         )
         async with _managed_reconciliation_guard(
             manager, serial_number, motion_token
@@ -1106,13 +1134,15 @@ async def _async_wait_for_area_record(
     reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
     baseline: frozenset[bytes] | None,
     cancel_event: asyncio.Event,
+    *,
+    session_hash: str | None = None,
 ) -> None:
     """Wait, bounded, for an ended area mission's own history record.
 
     The next leg dispatches only while native history is unchanged since the
     handoff, and an area's record can land minutes after the area ends. This
-    run owned the robot throughout, so any new record is the area's own. A
-    record that never arrives leaves that fence to fail closed.
+    run waits for its own key when the dispatch has a verified session. The
+    wait is bounded so an absent record cannot stall the plan indefinitely.
     """
     if reader is None or baseline is None:
         return
@@ -1120,8 +1150,14 @@ async def _async_wait_for_area_record(
         if cancel_event.is_set():
             raise PlanCancelledError
         keys = await _async_session_history_baseline(reader)
-        if keys is not None and keys - baseline:
-            return
+        if keys is not None:
+            new_keys = keys - baseline
+            if session_hash is None and new_keys:
+                return
+            if session_hash is not None and any(
+                native_session_hash(key) == session_hash for key in new_keys
+            ):
+                return
         with suppress(TimeoutError):
             async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
                 await cancel_event.wait()
@@ -1263,7 +1299,10 @@ async def _async_run_area_leg(
             )
         if settle_history:
             await _async_wait_for_area_record(
-                session_history, dispatch.history_baseline, cancel_event
+                session_history,
+                dispatch.history_baseline,
+                cancel_event,
+                session_hash=dispatch.session_hash,
             )
     except PlanCancelledError, asyncio.CancelledError:
         # Stop owns its own STOP.
@@ -1667,6 +1706,7 @@ async def _async_run_leg(
                             entity_id=entity_id,
                             cancel_event=cancel_event,
                             on_verified_session=completion_sessions.append,
+                            session_hash=dispatch.session_hash,
                         )
                         break
                     if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
@@ -1970,6 +2010,7 @@ async def _async_verify_leg_completion(
     allow_active_cleaning: bool = False,
     timeout_seconds: float | None = None,
     on_verified_session: Callable[[str], None] | None = None,
+    session_hash: str | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
@@ -1977,7 +2018,7 @@ async def _async_verify_leg_completion(
     every leg room the record marks completed with a positive duration.  A
     missing or ambiguous record returns ``None`` and credits nothing.
     """
-    if reader is None or baseline is None:
+    if reader is None or (baseline is None and session_hash is None):
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     evidence: dict[str, tuple[str, int]] | None = None
@@ -1996,7 +2037,7 @@ async def _async_verify_leg_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await read_dispatch_history(reader, session_hash)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic leg evidence unavailable (%s)", type(err).__name__
@@ -2010,13 +2051,12 @@ async def _async_verify_leg_completion(
                 )
                 now = dt_util.utcnow()
                 matches: list[CleaningSessionRecord] = []
-                new_records = records_since_baseline(records, baseline)
-                if new_records is None:
-                    # If the unreadable record never decodes, the rooms stay
-                    # unverified and due.
+                new_records = records_for_dispatch(records, baseline, session_hash)
+                if new_records is None or (
+                    session_hash is not None and not new_records
+                ):
                     evidence = None
-                    new_records = ()
-                for record in new_records:
+                for record in new_records or ():
                     session = record.session
                     started = dt_util.parse_datetime(session.started_at or "")
                     ended = dt_util.parse_datetime(session.ended_at or "")
@@ -2084,8 +2124,8 @@ async def _async_verify_leg_completion(
     except TimeoutError:
         pass
     if evidence and matched_key is not None and on_verified_session is not None:
-        if session_hash := native_session_hash(matched_key):
-            on_verified_session(session_hash)
+        if verified_hash := native_session_hash(matched_key):
+            on_verified_session(verified_hash)
     return evidence
 
 
@@ -2420,9 +2460,10 @@ async def _async_verify_room_completion(
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
+    session_hash: str | None = None,
 ) -> bool:
     """Require one new, completed, overlapping native single-room record."""
-    if reader is None or baseline is None:
+    if reader is None or (baseline is None and session_hash is None):
         return False
     try:
         async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
@@ -2434,7 +2475,7 @@ async def _async_verify_room_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await read_dispatch_history(reader, session_hash)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic completion evidence unavailable (%s)",
@@ -2451,6 +2492,7 @@ async def _async_verify_room_completion(
                 matches = match_single_room_completions(
                     records,
                     baseline=baseline,
+                    session_hash=session_hash,
                     room_name=room.name,
                     cleaning_mode=room.cleaning_mode,
                     dispatched_at=dispatched_at,
@@ -2458,8 +2500,8 @@ async def _async_verify_room_completion(
                 )
                 if len(matches) == 1:
                     if on_verified_session is not None:
-                        if session_hash := native_session_hash(matches[0].record.key):
-                            on_verified_session(session_hash)
+                        if verified_hash := native_session_hash(matches[0].record.key):
+                            on_verified_session(verified_hash)
                     return True
                 if len(matches) > 1:
                     return False
@@ -2783,6 +2825,7 @@ def _build_native_reconciliation(
     room_started: bool,
     *,
     run_id: str | None = None,
+    session_hash: str | None = None,
 ) -> _NativeReconciliation | None:
     """Build a late-native marker only after the robot visibly started the room."""
     if not room_started or dispatched_at is None:
@@ -2795,6 +2838,7 @@ def _build_native_reconciliation(
         room.cleaning_mode,
         run_id,
         room.coverage_setting,
+        session_hash,
     )
 
 
@@ -2811,6 +2855,7 @@ def _native_reconciliation_data(
         "dispatched_at": value.dispatched_at.isoformat(),
         **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
         **({"run_id": value.run_id} if value.run_id else {}),
+        **({"session_hash": value.session_hash} if value.session_hash else {}),
         **(
             {"coverage_setting": value.coverage_setting}
             if value.coverage_setting
@@ -2919,6 +2964,7 @@ async def _async_reconcile_native_stop(
             history_baseline,
             room,
             reconciliation.dispatched_at,
+            session_hash=reconciliation.session_hash,
         )
         if match is not None:
             record, duration = match
@@ -3004,11 +3050,14 @@ def _native_completion_match(
     baseline: frozenset[bytes],
     room: CleaningRoom,
     dispatched_at: datetime,
+    *,
+    session_hash: str | None = None,
 ) -> tuple[CleaningSessionRecord, int] | None:
     """Find one new, completed, single-room native record for a dispatch."""
     matches = match_single_room_completions(
         records,
         baseline=baseline,
+        session_hash=session_hash,
         room_name=room.name,
         cleaning_mode=room.cleaning_mode,
         dispatched_at=dispatched_at,
@@ -3612,6 +3661,7 @@ async def _async_execute_rooms_reserved(
                     ).hexdigest()
                     if dispatch.native_identity
                     else None,
+                    "session_hash": dispatch.session_hash,
                     "history_baseline": [
                         hashlib.sha256(key).hexdigest()
                         for key in dispatch.history_baseline

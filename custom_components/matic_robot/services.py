@@ -10,7 +10,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from functools import partial, wraps
+from functools import wraps
 from typing import Any
 
 import probatio
@@ -67,6 +67,7 @@ from .managed_executor import (
     _ensure_stop_settled,
     _validation_error,
 )
+from .native_completion import NativeHistoryReader
 from .plans import (
     CadenceBindingError,
     CleaningPlanManager,
@@ -866,9 +867,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
             active_session=(
                 entry.runtime_data.client.async_get_active_cleaning_session_state
             ),
-            session_history=partial(
+            session_history=NativeHistoryReader(
                 entry.runtime_data.client.async_get_cleaning_session_records,
-                strict=True,
             ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
@@ -1011,9 +1011,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 active_session=(
                     entry.runtime_data.client.async_get_active_cleaning_session_state
                 ),
-                session_history=partial(
+                session_history=NativeHistoryReader(
                     entry.runtime_data.client.async_get_cleaning_session_records,
-                    strict=True,
                 ),
                 session_identity=(
                     entry.runtime_data.client.async_get_cleaning_session_identity

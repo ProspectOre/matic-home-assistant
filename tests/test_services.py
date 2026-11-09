@@ -7079,3 +7079,28 @@ async def test_admitted_executor_survives_caller_cancel_and_honors_stop(hass):
         await asyncio.wait_for(owned, 2)
         assert not manager.has_managed_task("serial")
         dispatch.assert_not_awaited()
+
+
+async def test_detached_managed_failure_is_reported_without_its_details(hass, caplog):
+    from custom_components.matic_robot.run_admission import managed_run_admitted
+    from custom_components.matic_robot.services import _keep_managed_run
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        managed_run_admitted()
+        started.set()
+        await release.wait()
+        raise RuntimeError("private diagnostic detail")
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert "Detached managed run ended (RuntimeError)" in caplog.text
+    assert "private diagnostic detail" not in caplog.text
