@@ -114,6 +114,15 @@ class RoomStoppedInPlaceError(RoomInterruptedError):
     """
 
 
+class NativeTaskEndedError(RoomInterruptedError):
+    """The dispatched native task ended before its room outcome was observed.
+
+    The session that ended is the one this run owns, so this is not a
+    takeover. Native history decides what it means: completed, unreachable,
+    or ended without credit.
+    """
+
+
 def _failure_reason_code(error: BaseException) -> str:
     """Map an internal failure to a stable, non-sensitive event code."""
     guard_error = _coverage_guard_cause(error)
@@ -123,6 +132,8 @@ def _failure_reason_code(error: BaseException) -> str:
         error = error.__cause__
     if isinstance(error, NativeHistoryBaselineUnavailableError):
         return "native_history_baseline_unavailable"
+    if isinstance(error, RoomInterruptedError):
+        return _interruption_reason_code(error)
     if isinstance(error, RoomStartTimeoutError):
         return "start_timeout"
     if isinstance(error, TimeoutError):
@@ -150,6 +161,8 @@ def _interruption_reason_code(error: RoomInterruptedError) -> str:
     """Map an unverified room terminal state without guessing its cause."""
     if isinstance(error, RoomStoppedInPlaceError):
         return "stopped_in_place"
+    if isinstance(error, NativeTaskEndedError):
+        return "native_task_ended"
     return "interrupted"
 
 

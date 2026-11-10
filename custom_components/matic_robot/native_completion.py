@@ -131,6 +131,87 @@ def match_single_room_completions(
     return tuple(matches)
 
 
+_REQUESTED_MODES = {
+    "vacuum": frozenset({"vacuum"}),
+    "mop": frozenset({"mop"}),
+    "vacuum_and_mop": frozenset({"vacuum", "mop"}),
+}
+
+
+def match_single_room_unreachable(
+    records: Iterable[CleaningSessionRecord],
+    *,
+    room_name: str,
+    cleaning_mode: str | None,
+    dispatched_at: datetime,
+    now: datetime,
+    baseline: Collection[bytes] | None = None,
+) -> tuple[CleaningSessionRecord, ...]:
+    """Return at most two records proving the robot could not reach a room.
+
+    The OEM app titles a ``Finished`` stop reason "Area inaccessible" when the
+    requested room stayed unattempted (Matic 1.183.1). A cancelled, unknown or
+    partly attempted record is never unreachable: the robot reached the room,
+    or someone stopped the mission.
+    """
+    target = native_room_key(room_name)
+    requested = _REQUESTED_MODES.get(cleaning_mode or "")
+    if requested is None:
+        return ()
+    matches: list[CleaningSessionRecord] = []
+    for record in records:
+        if baseline is not None and record.key in baseline:
+            continue
+        session = record.session
+        if session.stop_reason != "finished":
+            continue
+        if not session_overlaps_dispatch(session, dispatched_at, now):
+            continue
+        if tuple(native_room_key(name) for name in session.rooms) != (target,):
+            continue
+        results = [
+            result
+            for result in session.mode_results
+            if native_room_key(result.room) == target
+        ]
+        if (
+            not results
+            or {result.cleaning_mode for result in results} != requested
+            or any(result.status != "unattempted" for result in results)
+        ):
+            continue
+        matches.append(record)
+        if len(matches) == 2:
+            break
+    return tuple(matches)
+
+
+_CANCELLED_STOP_REASONS = frozenset({"user_cancelled", "bot_cancelled", "stopped"})
+
+
+def has_cancelled_single_room_record(
+    records: Iterable[CleaningSessionRecord],
+    *,
+    room_name: str,
+    dispatched_at: datetime,
+    now: datetime,
+    baseline: Collection[bytes] | None = None,
+) -> bool:
+    """Report a new record proving this room's mission was cancelled.
+
+    A cancelled record is final, so verification can stop waiting for a
+    completion that will not come.
+    """
+    target = native_room_key(room_name)
+    return any(
+        (baseline is None or record.key not in baseline)
+        and record.session.stop_reason in _CANCELLED_STOP_REASONS
+        and session_overlaps_dispatch(record.session, dispatched_at, now)
+        and tuple(native_room_key(name) for name in record.session.rooms) == (target,)
+        for record in records
+    )
+
+
 def match_session_room_completions(
     records: Iterable[CleaningSessionRecord],
     *,

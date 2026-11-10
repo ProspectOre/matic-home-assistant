@@ -178,7 +178,12 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     )
     with pytest.raises(ServiceValidationError) as error:
         await asyncio.wait_for(runner, 1)
-    assert error.value.translation_key == "room_taken_over"
+    # A suspended task that ends is still the owned task, so it is interrupted
+    # without credit. Only another task is a takeover.
+    ended = replacement == b""
+    assert error.value.translation_key == (
+        "room_interrupted" if ended else "room_taken_over"
+    )
     assert len(dispatched) == 1
     sender.assert_not_awaited()
     presence.assert_not_awaited()
@@ -534,6 +539,10 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
         unconfirmed_start,
     )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
+        0,
+    )
 
     async def read_identity():
         nonlocal reads, injected_transient
@@ -596,9 +605,14 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     identity_changed.set()
     with pytest.raises(ServiceValidationError) as error:
         await asyncio.wait_for(runner, 1)
+    # An ended owned task is not a takeover: history is asked and finds no
+    # verdict, so the room is interrupted without credit.
+    ended = final_identity == b"" and not multi_room
     assert error.value.translation_key == (
         "room_taken_over"
-        if final_identity in (REPLACEMENT, b"")
+        if final_identity == REPLACEMENT
+        else "room_interrupted"
+        if final_identity == b""
         else "plan_start_timeout"
     )
     if final_identity == ORIGINAL:
@@ -607,7 +621,10 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     else:
         sender.assert_not_awaited()
     assert len(dispatched) == 1
-    history.assert_awaited_once()
+    if ended:
+        assert history.await_count > 1
+    else:
+        history.assert_awaited_once()
     snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert not snapshot["last_completed_by_room"]

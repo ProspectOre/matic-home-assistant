@@ -118,6 +118,7 @@ export class MaticRunHistoryV4 extends LitElement {
       case "problem": return this.#t("v4_run_item_problem", "Problem");
       case "unconfirmed": return this.#t("v4_run_item_unconfirmed", "Not confirmed");
       case "skipped": return this.#t("v4_run_item_skipped", "Skipped");
+      case "unreachable": return this.#t("v4_run_item_unreachable", "Couldn't reach");
       case "running": return this.#t("v4_run_item_running", "In progress");
       case "not_started": return this.#t("v4_run_item_not_started", "Not started");
       case "unknown": return this.#t("v4_run_item_unknown", "Not reported");

@@ -11,8 +11,9 @@ from custom_components.matic_robot.client.cleaning_session import (
 )
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.managed_observation import (
+    NativeRoomVerdict,
+    _async_adjudicate_room_end,
     _async_verify_leg_completion,
-    _async_verify_room_completion,
 )
 from custom_components.matic_robot.managed_reconciliation import (
     _native_completion_match,
@@ -68,19 +69,14 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
     }[mode]
     duration = 60 if mode == "vacuum_and_mop" else 30
     evidence = []
-    assert (
-        await _async_verify_room_completion(
-            reader,
-            frozenset(),
-            room,
-            dispatched,
-            attempts=1,
-            on_verified_completion=lambda ended, seconds: evidence.append(
-                (ended, seconds)
-            ),
-        )
-        is expected
-    )
+    assert await _async_adjudicate_room_end(
+        reader,
+        frozenset(),
+        room,
+        dispatched,
+        attempts=1,
+        on_verified_completion=lambda ended, seconds: evidence.append((ended, seconds)),
+    ) is (NativeRoomVerdict.COMPLETED if expected else NativeRoomVerdict.UNVERIFIED)
     assert evidence == ([(session.ended_at, duration)] if expected else [])
     leg = await _async_verify_leg_completion(
         reader, frozenset(), [room], dispatched, attempts=1

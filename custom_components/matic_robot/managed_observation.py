@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from datetime import datetime
+from enum import StrEnum
 from time import monotonic
 from typing import Any
 
@@ -18,6 +19,7 @@ from .client.coverage_receipts import native_session_hash
 from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
 from .managed_run import (
+    NativeTaskEndedError,
     PlanCancelledError,
     RoomInterruptedError,
     RoomRunOutcome,
@@ -25,7 +27,9 @@ from .managed_run import (
     _validation_error,
 )
 from .native_completion import (
+    has_cancelled_single_room_record,
     match_single_room_completions,
+    match_single_room_unreachable,
     native_room_key,
     session_overlaps_dispatch,
 )
@@ -490,7 +494,15 @@ async def _async_session_history_baseline(
         return None
 
 
-async def _async_verify_room_completion(
+class NativeRoomVerdict(StrEnum):
+    """What native history proves about one owned single-room mission."""
+
+    COMPLETED = "completed"
+    UNREACHABLE = "unreachable"
+    UNVERIFIED = "unverified"
+
+
+async def _async_adjudicate_room_end(
     reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
     baseline: frozenset[bytes] | None,
     room: CleaningRoom,
@@ -503,10 +515,15 @@ async def _async_verify_room_completion(
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
     on_verified_completion: Callable[[str, int], None] | None = None,
-) -> bool:
-    """Require one new, completed, overlapping native single-room record."""
+) -> NativeRoomVerdict:
+    """Settle an ended single-room mission from one new native record.
+
+    Completion needs one new, completed, overlapping record for the room.
+    Unreachable needs one new, overlapping record the robot finished with the
+    room unattempted. Anything else, including ambiguity, earns no verdict.
+    """
     if reader is None or baseline is None:
-        return False
+        return NativeRoomVerdict.UNVERIFIED
     try:
         async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
             for attempt in range(attempts):
@@ -539,7 +556,17 @@ async def _async_verify_room_completion(
                     dispatched_at=dispatched_at,
                     now=now,
                 )
-                if len(matches) == 1:
+                unreachable = match_single_room_unreachable(
+                    records,
+                    baseline=baseline,
+                    room_name=room.name,
+                    cleaning_mode=room.cleaning_mode,
+                    dispatched_at=dispatched_at,
+                    now=now,
+                )
+                if len(matches) + len(unreachable) > 1:
+                    return NativeRoomVerdict.UNVERIFIED
+                if matches:
                     if on_verified_completion is not None:
                         on_verified_completion(
                             matches[0].ended_at, matches[0].duration_seconds
@@ -547,9 +574,17 @@ async def _async_verify_room_completion(
                     if on_verified_session is not None:
                         if session_hash := native_session_hash(matches[0].record.key):
                             on_verified_session(session_hash)
-                    return True
-                if len(matches) > 1:
-                    return False
+                    return NativeRoomVerdict.COMPLETED
+                if unreachable:
+                    return NativeRoomVerdict.UNREACHABLE
+                if has_cancelled_single_room_record(
+                    records,
+                    baseline=baseline,
+                    room_name=room.name,
+                    dispatched_at=dispatched_at,
+                    now=now,
+                ):
+                    return NativeRoomVerdict.UNVERIFIED
                 if attempt + 1 < attempts:
                     if cancel_event is None:
                         await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
@@ -561,8 +596,8 @@ async def _async_verify_room_completion(
                             continue
                         raise PlanCancelledError
     except TimeoutError:
-        return False
-    return False
+        return NativeRoomVerdict.UNVERIFIED
+    return NativeRoomVerdict.UNVERIFIED
 
 
 def _raise_if_completion_verification_was_replaced(
@@ -785,6 +820,32 @@ async def _async_periodic_refresh(
         await refresh()
 
 
+class NativeTaskSignal(StrEnum):
+    """One reading of the robot's opaque active-session identity."""
+
+    UNKNOWN = "unknown"  # The read failed; ownership is not known.
+    ENDED = "ended"  # No native task is active.
+    OWNED = "owned"  # The task this run dispatched is still active.
+    REPLACED = "replaced"  # A different native task is active.
+
+
+def _classify_native_identity(
+    identity: bytes | None, expected: bytes | None
+) -> NativeTaskSignal:
+    """Read every identity observation by the same rule.
+
+    An ended session is not a replacement: only a different, present identity
+    proves another task took over. History decides what an ended task did.
+    """
+    if identity is None:
+        return NativeTaskSignal.UNKNOWN
+    if not identity:
+        return NativeTaskSignal.ENDED
+    if identity == expected:
+        return NativeTaskSignal.OWNED
+    return NativeTaskSignal.REPLACED
+
+
 async def _async_read_session_identity(
     reader: Callable[[], Awaitable[bytes | None]] | None,
 ) -> bytes | None:
@@ -820,13 +881,14 @@ async def _async_wait_with_native_identity[T](
             if transition_observed:
                 changed.result()
             identity = await _async_read_session_identity(reader)
-            if identity is None:
+            signal = _classify_native_identity(identity, expected)
+            if signal is NativeTaskSignal.UNKNOWN:
                 unknown_reads += 1
                 if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
                     raise RoomTakenOverError(
                         "The native task ownership could not be verified"
                     )
-            elif identity and identity != expected:
+            elif signal is NativeTaskSignal.REPLACED:
                 raise RoomTakenOverError("The native cleaning task was replaced")
             else:
                 # An ended session can precede HA's normal return update;
@@ -930,8 +992,16 @@ async def _async_confirm_started_identity(
         if identity and identity != identity_baseline and expected is None:
             expected = identity
             bind_identity(identity)
-        elif identity is not None and expected and identity != expected:
-            raise RoomTakenOverError("The dispatched native task ended or was replaced")
+        elif expected:
+            signal = _classify_native_identity(identity, expected)
+            if signal is NativeTaskSignal.REPLACED:
+                raise RoomTakenOverError("The dispatched native task was replaced")
+            if signal is NativeTaskSignal.ENDED:
+                # The robot ended the mission this run owns before the room
+                # was observed, for example when the room was unreachable.
+                raise NativeTaskEndedError(
+                    "The dispatched native task ended before the room started"
+                )
         if started.done():
             state = started.result()
             if transition_observed and identity and identity == expected:
@@ -984,15 +1054,18 @@ async def _async_wait_for_owned_resume(
                     observed_resume is not None and observed_resume.done()
                 )
                 identity = await _async_read_session_identity(reader)
-                if identity is None:
+                signal = _classify_native_identity(identity, expected)
+                if signal is NativeTaskSignal.UNKNOWN:
                     unknown_reads += 1
                     if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
                         raise RoomTakenOverError(
                             "The suspended native task ownership could not be verified"
                         )
-                elif identity != expected:
-                    raise RoomTakenOverError(
-                        "The suspended native task ended or was replaced"
+                elif signal is NativeTaskSignal.REPLACED:
+                    raise RoomTakenOverError("The suspended native task was replaced")
+                elif signal is NativeTaskSignal.ENDED:
+                    raise NativeTaskEndedError(
+                        "The suspended native task ended before it resumed"
                     )
                 else:
                     unknown_reads = 0

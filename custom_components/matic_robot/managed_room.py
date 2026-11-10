@@ -26,6 +26,7 @@ from .coverage_accounting import (
     async_confirm_completed_coverage,
 )
 from .managed_run import (
+    NativeTaskEndedError,
     PlanCancelledError,
     RoomInterruptedError,
     RoomRunOutcome,
@@ -78,6 +79,7 @@ async def _async_run_room(
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     resolve_session = observation._async_wait_for_active_session_resolution
+    adjudicate_room_end = observation._async_adjudicate_room_end
     if not room_name_is_unique:
         raise managed_run._validation_error(
             "Managed completion cannot distinguish duplicate mapped room names",
@@ -110,6 +112,7 @@ async def _async_run_room(
     history_baseline: frozenset[bytes] | None = None
     dispatched_at: datetime | None = None
     native_identity: bytes | None = None
+    room_verdict: observation.NativeRoomVerdict | None = None
     managed_user_command = dispatch_control._guard_native_commands(
         managed_user_command,
         manager,
@@ -174,93 +177,122 @@ async def _async_run_room(
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
-        dispatch = replace(dispatch, native_identity=native_identity)
-        if checkpoint_dispatch is not None:
-            await checkpoint_dispatch(dispatch)
-        if start_state == "paused" or recovered_suspend_reason in {
-            "paused",
-            "low_charge",
-        }:
-            await manager.ledger.async_mark_suspended(
+        except NativeTaskEndedError:
+            # The mission this run owns ended before its room was observed.
+            # Only native history can say why; HA state may still lag behind.
+            await manager.ledger.async_mark_verifying(
                 serial_number,
                 call.data["plan_id"],
                 room,
-                recovered_suspend_reason or "paused",
+                verification_deadline=dt_util.utcnow()
+                + timedelta(seconds=observation.SESSION_HISTORY_TIMEOUT_SECONDS),
             )
-            await observation._async_wait_for_owned_resume(
-                hass,
-                entity_id,
-                managed_run._remaining_completion_time(
-                    dispatch, call.data["completion_timeout"]
-                ),
-                cancel_event,
+            room_verdict = await adjudicate_room_end(
+                session_history,
+                history_baseline,
                 room,
-                session_identity,
-                native_identity,
+                dispatched_at,
+                hass=hass,
+                entity_id=entity_id,
+                cancel_event=cancel_event,
+                allow_active_cleaning=True,
+                on_verified_session=completion_sessions.append,
+                on_verified_completion=lambda ended_at, duration: (
+                    completion_evidence.append((ended_at, duration))
+                ),
             )
-        await manager.ledger.async_mark_resumed(
-            serial_number, call.data["plan_id"], room
-        )
-        room_started = True
-        completion_budget = await managed_run._async_completion_budget(
-            dispatch, call.data["completion_timeout"], checkpoint_dispatch
-        )
-        refresh_task = (
-            asyncio.create_task(observation._async_periodic_refresh(refresh))
-            if refresh is not None
-            else None
-        )
-        try:
-            async with asyncio.timeout(completion_budget) as mission_timeout:
-                while True:
-                    outcome = await observation._async_wait_with_native_identity(
-                        lambda: observation._async_wait_for_room_outcome(
-                            hass,
-                            entity_id,
-                            room,
-                            cancel_event,
-                            # Owned start already observed this room. Preserve that
-                            # evidence across transient cleaning during dock travel.
-                            initial_observed=True,
-                        ),
-                        session_identity,
-                        native_identity,
-                    )
-                    if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        if session_identity is not None:
-                            session_resolution = await resolve_session(
+            if room_verdict is observation.NativeRoomVerdict.UNVERIFIED:
+                raise
+            completion_verified = (
+                room_verdict is observation.NativeRoomVerdict.COMPLETED
+            )
+        if room_verdict is None:
+            dispatch = replace(dispatch, native_identity=native_identity)
+            if checkpoint_dispatch is not None:
+                await checkpoint_dispatch(dispatch)
+            if start_state == "paused" or recovered_suspend_reason in {
+                "paused",
+                "low_charge",
+            }:
+                await manager.ledger.async_mark_suspended(
+                    serial_number,
+                    call.data["plan_id"],
+                    room,
+                    recovered_suspend_reason or "paused",
+                )
+                await observation._async_wait_for_owned_resume(
+                    hass,
+                    entity_id,
+                    managed_run._remaining_completion_time(
+                        dispatch, call.data["completion_timeout"]
+                    ),
+                    cancel_event,
+                    room,
+                    session_identity,
+                    native_identity,
+                )
+            await manager.ledger.async_mark_resumed(
+                serial_number, call.data["plan_id"], room
+            )
+            room_started = True
+            completion_budget = await managed_run._async_completion_budget(
+                dispatch, call.data["completion_timeout"], checkpoint_dispatch
+            )
+            refresh_task = (
+                asyncio.create_task(observation._async_periodic_refresh(refresh))
+                if refresh is not None
+                else None
+            )
+            try:
+                async with asyncio.timeout(completion_budget) as mission_timeout:
+                    while True:
+                        outcome = await observation._async_wait_with_native_identity(
+                            lambda: observation._async_wait_for_room_outcome(
                                 hass,
                                 entity_id,
-                                active_session,
-                                cancel_event,
-                                identity_reader=session_identity,
-                                expected_identity=native_identity,
-                            )
-                        else:
-                            session_resolution = (
-                                await observation._async_active_session_state(
-                                    active_session
-                                )
-                            )
-                            if active_session is None:
-                                session_resolution = False
-                            elif session_resolution is True:
-                                session_resolution = await resolve_session(
-                                    hass, entity_id, active_session, cancel_event
-                                )
-                        if session_resolution is False:
-                            mission_timeout.reschedule(None)
-                            await manager.ledger.async_mark_verifying(
-                                serial_number,
-                                call.data["plan_id"],
                                 room,
-                                verification_deadline=dt_util.utcnow()
-                                + timedelta(
-                                    seconds=observation.SESSION_HISTORY_TIMEOUT_SECONDS
-                                ),
-                            )
-                            completion_verified = (
-                                await observation._async_verify_room_completion(
+                                cancel_event,
+                                # Owned start already observed this room. Preserve that
+                                # evidence across transient cleaning during dock travel.
+                                initial_observed=True,
+                            ),
+                            session_identity,
+                            native_identity,
+                        )
+                        if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
+                            if session_identity is not None:
+                                session_resolution = await resolve_session(
+                                    hass,
+                                    entity_id,
+                                    active_session,
+                                    cancel_event,
+                                    identity_reader=session_identity,
+                                    expected_identity=native_identity,
+                                )
+                            else:
+                                session_resolution = (
+                                    await observation._async_active_session_state(
+                                        active_session
+                                    )
+                                )
+                                if active_session is None:
+                                    session_resolution = False
+                                elif session_resolution is True:
+                                    session_resolution = await resolve_session(
+                                        hass, entity_id, active_session, cancel_event
+                                    )
+                            if session_resolution is False:
+                                mission_timeout.reschedule(None)
+                                await manager.ledger.async_mark_verifying(
+                                    serial_number,
+                                    call.data["plan_id"],
+                                    room,
+                                    verification_deadline=dt_util.utcnow()
+                                    + timedelta(
+                                        seconds=observation.SESSION_HISTORY_TIMEOUT_SECONDS
+                                    ),
+                                )
+                                room_verdict = await adjudicate_room_end(
                                     session_history,
                                     history_baseline,
                                     room,
@@ -273,51 +305,54 @@ async def _async_run_room(
                                         completion_evidence.append((ended_at, duration))
                                     ),
                                 )
+                                completion_verified = (
+                                    room_verdict
+                                    is observation.NativeRoomVerdict.COMPLETED
+                                )
+                                break
+                            if session_resolution is None:
+                                raise RoomInterruptedError(
+                                    f"{room.name} completion could not be verified"
+                                )
+                            await manager.ledger.async_mark_resumed(
+                                serial_number, call.data["plan_id"], room
                             )
-                            break
-                        if session_resolution is None:
+                            continue
+                        if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
+                            raise RoomStoppedInPlaceError(
+                                f"{room.name} ended in place without returning; "
+                                "the stop cause is unconfirmed"
+                            )
+                        if outcome is RoomRunOutcome.INTERRUPTED:
                             raise RoomInterruptedError(
-                                f"{room.name} completion could not be verified"
+                                f"{room.name} stopped without verified completion"
                             )
+                        if outcome is RoomRunOutcome.PAUSED:
+                            suspend_reason = "paused"
+                        elif outcome is RoomRunOutcome.SUSPENDED:
+                            suspend_reason = "low_charge"
+                        await manager.ledger.async_mark_suspended(
+                            serial_number,
+                            call.data["plan_id"],
+                            room,
+                            suspend_reason,
+                        )
+                        await observation._async_wait_for_owned_resume(
+                            hass,
+                            entity_id,
+                            call.data["completion_timeout"],
+                            cancel_event,
+                            room,
+                            session_identity,
+                            native_identity,
+                        )
                         await manager.ledger.async_mark_resumed(
                             serial_number, call.data["plan_id"], room
                         )
-                        continue
-                    if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
-                        raise RoomStoppedInPlaceError(
-                            f"{room.name} ended in place without returning; "
-                            "the stop cause is unconfirmed"
-                        )
-                    if outcome is RoomRunOutcome.INTERRUPTED:
-                        raise RoomInterruptedError(
-                            f"{room.name} stopped without verified completion"
-                        )
-                    if outcome is RoomRunOutcome.PAUSED:
-                        suspend_reason = "paused"
-                    elif outcome is RoomRunOutcome.SUSPENDED:
-                        suspend_reason = "low_charge"
-                    await manager.ledger.async_mark_suspended(
-                        serial_number,
-                        call.data["plan_id"],
-                        room,
-                        suspend_reason,
-                    )
-                    await observation._async_wait_for_owned_resume(
-                        hass,
-                        entity_id,
-                        call.data["completion_timeout"],
-                        cancel_event,
-                        room,
-                        session_identity,
-                        native_identity,
-                    )
-                    await manager.ledger.async_mark_resumed(
-                        serial_number, call.data["plan_id"], room
-                    )
-        finally:
-            if refresh_task is not None:
-                refresh_task.cancel()
-                await asyncio.gather(refresh_task, return_exceptions=True)
+            finally:
+                if refresh_task is not None:
+                    refresh_task.cancel()
+                    await asyncio.gather(refresh_task, return_exceptions=True)
     except ManagedMotionReplacedError as err:
         if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
             raise
@@ -611,6 +646,18 @@ async def _async_run_room(
             {**event_data, "reason_code": "verified_completion"},
             context=call.context,
         )
+    elif room_verdict is observation.NativeRoomVerdict.UNREACHABLE:
+        # The robot finished its mission without reaching the room. Settle it
+        # without credit so it stays due, and let the run go on.
+        await manager.ledger.async_mark_unreachable(
+            serial_number, call.data["plan_id"], room, run_id=run_id
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_skipped",
+            {**event_data, "reason_code": "room_unreachable", "cause": "robot"},
+            context=call.context,
+        )
+        completion_verified = True
     elif run_id is not None and room.room_id in manager.ledger.skipped_room_ids(
         serial_number, run_id
     ):

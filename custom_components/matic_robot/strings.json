@@ -725,6 +725,7 @@
     "v4_run_item_problem": "Problem",
     "v4_run_item_unconfirmed": "Not confirmed",
     "v4_run_item_skipped": "Skipped",
+    "v4_run_item_unreachable": "Couldn't reach",
     "v4_queue_heading": "Change this clean",
     "v4_queue_catalog_failed": "The rooms for this clean couldn't be read. Check the map and reload to try again.",
     "v4_queue_catalog_held": "Queue changes are unavailable until the current map and room list are ready.",
