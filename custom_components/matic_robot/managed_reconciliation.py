@@ -135,7 +135,7 @@ def _build_native_reconciliation(
         run_id,
         room.coverage_setting,
         session_hash,
-        floor_token,
+        floor_token if session_hash is not None else None,
     )
 
 
@@ -244,8 +244,6 @@ async def _async_reconcile_native_stop(
     """
 
     def completion_is_current() -> bool:
-        if reconciliation.floor_token is None:
-            return True
         try:
             floor = current_entity_floor_plan(hass, entity_id)
         except HomeAssistantError:
@@ -305,7 +303,11 @@ async def _async_reconcile_native_stop(
                 duration_seconds=duration,
                 room_identity=current_room_identity,
                 verified_coverage_receipt=verified_coverage,
-                completion_is_current=completion_is_current,
+                completion_is_current=(
+                    completion_is_current
+                    if reconciliation.floor_token is not None
+                    else None
+                ),
             )
             if completed:
                 if confirm_room_completed is not None:
