@@ -57,7 +57,8 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
 | Mixed settings | Per-room settings, owned native session, and command timeline | Preserve per-room settings; verify completion for every requested mode |
 | Custom areas in a plan | `area_started` and `area_finished` per area in run order, the robot heading back to the dock between missions, then one `plan_finished` | Each area's own owned session ends; the robot's unnamed native area summary is not used for credit |
 | All selected rooms verify | `plan_finished: completed`, matching `run_id`, all room events | Credit verified rooms only |
-| Native session ends early | `plan_finished: unverified`, `partial_native_result`, `stopped_in_place`, or `unverified_completion` | Leave unverified rooms without completion credit; a known in-place stop is a controlled unverified result, not a generic service fault |
+| Room unreachable | `room_ended_unverified` with `room_unreachable` and `cause: robot`, then the next room's dispatch | Settle the room without credit and continue only on a new `finished` record with the room unattempted |
+| Native session ends early | `plan_finished: unverified`, `partial_native_result`, `stopped_in_place`, `native_task_ended`, or `unverified_completion` | Leave unverified rooms without completion credit; a known in-place stop is a controlled unverified result, not a generic service fault |
 | Delayed native history | Initial `unverified`/pending reconciliation, then exact room/run match or expiry | Award completion only on an exact match; cleaning opportunity is tracked separately |
 | Home Assistant restart recovery | Durable checkpoint, matching floor/native mission, same `run_id`, and new observation session | Retain verified results; resume only with matching ownership |
 | External/OEM interruption | Native ownership change, `cause: unknown`, and `external_unknown` provenance | No completion credit and no guessed fault |

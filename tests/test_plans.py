@@ -41,6 +41,7 @@ from custom_components.matic_robot.const import (
 )
 from custom_components.matic_robot.managed_executor import (
     SESSION_HISTORY_ATTEMPTS,
+    NativeRoomVerdict,
     PlanCancelledError,
     RoomInterruptedError,
     RoomRunOutcome,
@@ -48,6 +49,7 @@ from custom_components.matic_robot.managed_executor import (
     RoomStoppedInPlaceError,
     RoomTakenOverError,
     _async_active_session_state,
+    _async_adjudicate_room_end,
     _async_dispatch_leg_command,
     _async_execute_rooms,
     _async_run_area_leg,
@@ -55,7 +57,6 @@ from custom_components.matic_robot.managed_executor import (
     _async_run_room,
     _async_session_history_baseline,
     _async_verify_leg_completion,
-    _async_verify_room_completion,
     _async_wait_for_active_session_resolution,
     _async_wait_for_room_outcome,
     _async_wait_for_settled_leg_handoff,
@@ -7502,8 +7503,8 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     assert await _async_session_history_baseline(failing_reader) is None
     assert (
-        await _async_verify_room_completion(failing_reader, frozenset(), room, now)
-        is False
+        await _async_adjudicate_room_end(failing_reader, frozenset(), room, now)
+        is NativeRoomVerdict.UNVERIFIED
     )
 
     def record(
@@ -7548,7 +7549,8 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_verify_room_completion(reader, frozenset(), room, now) is False
+            await _async_adjudicate_room_end(reader, frozenset(), room, now)
+            is NativeRoomVerdict.UNVERIFIED
         )
 
     interrupted = record(
@@ -7561,8 +7563,9 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
     with patch(
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
-        assert not await _async_verify_room_completion(
-            interrupted_reader, frozenset(), room, now
+        assert (
+            await _async_adjudicate_room_end(interrupted_reader, frozenset(), room, now)
+            is NativeRoomVerdict.UNVERIFIED
         )
 
     empty = AsyncMock(return_value=())
@@ -7570,7 +7573,8 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_verify_room_completion(empty, frozenset(), room, now) is False
+            await _async_adjudicate_room_end(empty, frozenset(), room, now)
+            is NativeRoomVerdict.UNVERIFIED
         )
     assert empty.await_count == SESSION_HISTORY_ATTEMPTS
 
@@ -7587,7 +7591,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         ),
         pytest.raises(PlanCancelledError),
     ):
-        await _async_verify_room_completion(
+        await _async_adjudicate_room_end(
             cancel_during_retry,
             frozenset(),
             room,
@@ -7600,18 +7604,21 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
         0,
     ):
-        assert not await _async_verify_room_completion(
-            empty,
-            frozenset(),
-            room,
-            now,
-            cancel_event=unset_cancel,
+        assert (
+            await _async_adjudicate_room_end(
+                empty,
+                frozenset(),
+                room,
+                now,
+                cancel_event=unset_cancel,
+            )
+            is NativeRoomVerdict.UNVERIFIED
         )
 
     already_cancelled = asyncio.Event()
     already_cancelled.set()
     with pytest.raises(PlanCancelledError):
-        await _async_verify_room_completion(
+        await _async_adjudicate_room_end(
             empty,
             frozenset(),
             room,
@@ -7624,7 +7631,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         states=SimpleNamespace(get=MagicMock(return_value=cleaning_state))
     )
     with pytest.raises(RoomTakenOverError):
-        await _async_verify_room_completion(
+        await _async_adjudicate_room_end(
             empty,
             frozenset(),
             room,
@@ -11274,16 +11281,14 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
             cancelled = True
         return ()
 
-    verify = (
-        _async_verify_leg_completion if multi_room else _async_verify_room_completion
-    )
+    verify = _async_verify_leg_completion if multi_room else _async_adjudicate_room_end
     result = await verify(
         slow_reader,
         frozenset(),
         _leg_rooms() if multi_room else _leg_rooms()[0],
         dt_util.utcnow() - timedelta(seconds=300),
     )
-    assert not result
+    assert not result if multi_room else result is NativeRoomVerdict.UNVERIFIED
     assert cancelled
 
 
