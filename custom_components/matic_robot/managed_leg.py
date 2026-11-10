@@ -80,6 +80,7 @@ async def _async_run_leg(
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
     wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     coverage_verifier: CoverageVerifier | None = None,
 ) -> bool:
@@ -122,6 +123,7 @@ async def _async_run_leg(
             recovered_suspend_reason=recovered_suspend_reason,
             expected_dispatch_identity=expected_dispatch_identity,
             expected_dispatch_history=expected_dispatch_history,
+            expected_dispatch_revision=expected_dispatch_revision,
             coverage_verifier=coverage_verifier,
         )
     if not room_name_is_unique:
@@ -231,6 +233,7 @@ async def _async_run_leg(
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
         else:
             if dispatch.rooms != tuple(leg):
@@ -415,6 +418,7 @@ async def _async_run_leg(
                             history_baseline,
                             leg,
                             dispatched_at,
+                            session_hash=dispatch.session_hash,
                             hass=hass,
                             entity_id=entity_id,
                             cancel_event=cancel_event,

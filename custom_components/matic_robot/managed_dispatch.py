@@ -22,11 +22,12 @@ from homeassistant.util import dt as dt_util
 from . import managed_observation as observation
 from . import managed_run
 from .client.commands import UserCommand
-from .client.exceptions import MaticError
+from .client.exceptions import MaticError, NativeHistoryIncompleteError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .managed_run import (
     NativeHistoryBaselineUnavailableError,
+    NativeHistoryIncompleteBaselineError,
     RoomTakenOverError,
     _PreparedRoomDispatch,
 )
@@ -34,6 +35,7 @@ from .plan_model import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     AreaLeg,
     CleaningRoom,
     effective_room_settings,
@@ -148,6 +150,7 @@ async def _async_dispatch_leg_command(
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline.
 
@@ -160,17 +163,31 @@ async def _async_dispatch_leg_command(
         raise managed_run._validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    history_baseline = await observation._async_session_history_baseline(
-        session_history
-    )
-    if session_history is not None and history_baseline is None:
-        # A configured native-history reader that failed is different from a
-        # legacy caller that has no reader. Dispatching in the former case
-        # guarantees that completion cannot be attributed to this mission.
-        raise NativeHistoryBaselineUnavailableError(
-            "The robot's cleaning history could not be read. "
-            "Try again before starting this plan."
-        )
+    history_baseline = None
+    # A new tracked plan claims its UUID before sending motion and must read
+    # back that exact identity. It can verify its result without old history.
+    # Legacy attribution and an existing handoff still need their baseline.
+    if (
+        motion_token is None
+        or floor_token is None
+        or session_identity is None
+        or on_claim is None
+        or expected_dispatch_history is not None
+    ):
+        try:
+            history_baseline = await observation._async_session_history_baseline(
+                session_history,
+                raise_incomplete=True,
+                handoff=expected_dispatch_history is not None,
+                expected_hashes=expected_dispatch_history,
+            )
+        except NativeHistoryIncompleteError as err:
+            raise NativeHistoryIncompleteBaselineError from err
+        if session_history is not None and history_baseline is None:
+            raise NativeHistoryBaselineUnavailableError(
+                "The robot's cleaning history could not be read. "
+                "Try again before starting this plan."
+            )
     if expected_dispatch_history is not None and (
         history_baseline is None
         or frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
@@ -225,11 +242,14 @@ async def _async_dispatch_leg_command(
         params[PLAN_MOTION_TOKEN] = motion_token
     if managed_session_id is not None:
         params[PLAN_SESSION_ID] = str(managed_session_id)
+    if expected_dispatch_revision is not None:
+        params[PLAN_SESSION_REVISION] = expected_dispatch_revision
     if floor_token is not None:
         params[PLAN_FLOOR_TOKEN] = floor_token
     if managed_session_id is not None and on_claim is not None:
-        # The claim is durable before the service can dispatch the session.
-        # Native history may arrive immediately after the command is accepted.
+        # Persist ownership before the command can create a native history row.
+        # A later importer must never reclassify a private or interrupted plan
+        # as an external cleaning just because its final checkpoint was lost.
         await on_claim(str(managed_session_id))
         if floor_is_current is not None and not floor_is_current():
             raise managed_run._validation_error(
@@ -304,7 +324,16 @@ async def _async_dispatch_leg_command(
     if on_identity is not None:
         on_identity(identity)
     return _PreparedRoomDispatch(
-        leg, history_baseline, dispatched_at, identity_baseline, identity
+        leg,
+        history_baseline,
+        dispatched_at,
+        identity_baseline,
+        identity,
+        session_hash=(
+            hashlib.sha256(str(managed_session_id).encode("ascii")).hexdigest()
+            if managed_session_id is not None and session_identity is not None
+            else None
+        ),
     )
 
 

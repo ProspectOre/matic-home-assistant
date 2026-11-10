@@ -17,6 +17,11 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.coverage_receipts import (
     make_coverage_receipt,
 )
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    CoverageGuardError,
+    CoverageGuardReason,
+)
 from custom_components.matic_robot.client.models import (
     FloorPlan,
     HermesCollectionEntry,
@@ -147,6 +152,9 @@ async def test_mixed_start_returns_receipt_for_observed_update(monkeypatch):
     )
     client._reads.async_get_floor_plan = AsyncMock(return_value=MIXED_FLOOR)
     client._reads.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
+    client._reads.async_get_idle_cleaning_session_revision = AsyncMock(
+        return_value="a" * 64
+    )
     client._collections.async_get_property = AsyncMock(return_value=plan)
     client._commands.async_send_user_command = AsyncMock()
     require_current = Mock()
@@ -162,9 +170,11 @@ async def test_mixed_start_returns_receipt_for_observed_update(monkeypatch):
         prepare_stop=AsyncMock(),
         rollback_stop=AsyncMock(),
         session_id=SESSION,
+        expected_idle_revision="a" * 64,
     )
 
     assert receipt == expected
+    client._reads.async_get_idle_cleaning_session_revision.assert_awaited_once()
     assert [
         call.kwargs["command_name"]
         for call in client._connection._async_send_user_payload.await_args_list
@@ -481,3 +491,48 @@ def _changed_goal_plan(*, setting=CoverageSetting.QUICK):
         command_id_factory=lambda: UUID(int=next(identifiers)),
     )
     return receipt_plan(changed_command, transform_heavy=False)
+
+
+@pytest.mark.parametrize("change", ["same", "reboot", "active", "unknown"])
+@pytest.mark.parametrize("area", [False, True])
+async def test_robot_revision_is_checked_before_managed_motion(change, area):
+    client = MaticHermesClient("192.0.2.1", 16320)
+    original = UUID("6a7624c7-1b17-4844-bf95-93745885cafe").bytes
+    rebooted = UUID("ef9ea499-f3b1-4ba7-80a3-39f89becc5a1").bytes
+    client._collections.async_get_property = AsyncMock(return_value=original)
+    expected = await client.async_get_idle_cleaning_session_revision()
+    assert expected == hashlib.sha256(original).hexdigest()
+    if change == "unknown":
+        client._collections.async_get_property.side_effect = CannotConnectError(
+            "offline"
+        )
+    else:
+        client._collections.async_get_property.return_value = {
+            "same": original,
+            "reboot": rebooted,
+            "active": ACTIVE_IDENTITY,
+        }[change]
+    client._commands._async_require_idle_native_session = AsyncMock(return_value=b"")
+    client._connection._async_send_user_payload = AsyncMock()
+    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    start = client.async_start_custom_coverage if area else client.async_start_coverage
+    dispatch = start(
+        FLOOR,
+        [(1.0, 2.0, 0.3)] if area else [REGION],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+        session_id=SESSION,
+        expected_idle_revision=expected,
+    )
+    if change == "same":
+        await dispatch
+        client._connection._async_send_user_payload.assert_awaited_once()
+    else:
+        with pytest.raises(CoverageGuardError) as error:
+            await dispatch
+        assert error.value.reason is (
+            CoverageGuardReason.IDENTITY_UNAVAILABLE
+            if change == "unknown"
+            else CoverageGuardReason.IDENTITY_CHANGED
+        )
+        client._connection._async_send_user_payload.assert_not_awaited()

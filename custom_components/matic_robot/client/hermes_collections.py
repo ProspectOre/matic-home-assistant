@@ -6,7 +6,9 @@ import asyncio
 import logging
 from collections.abc import (
     AsyncGenerator,
+    Callable,
 )
+from dataclasses import replace
 from time import monotonic
 from typing import cast
 
@@ -297,21 +299,28 @@ class HermesCollections:
         limit: int = 256,
         first_timeout: float = 3.0,
         idle_timeout: float = 0.25,
+        wait_for_entry: Callable[[HermesCollectionEntry], bool] | None = None,
+        retain_values: bool = True,
     ) -> tuple[HermesCollectionEntry, ...]:
-        """Return a bounded snapshot while acknowledging tracked updates."""
+        """Read bounded tracked updates, optionally waiting through gaps for a key."""
         if not 1 <= limit <= 4096:
             raise ValueError("Hermes collection limit must be between 1 and 4096")
         entries: list[HermesCollectionEntry] = []
         iterator = self.async_subscribe_collection_entries(collection_name)
         received = False
+        waiting = wait_for_entry is not None
         collected_bytes = 0
-        deadline = monotonic() + _COLLECTION_TIMEOUT
+        deadline = monotonic() + (first_timeout if waiting else _COLLECTION_TIMEOUT)
         try:
             while len(entries) < limit:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     break
-                timeout = min(idle_timeout if received else first_timeout, remaining)
+                timeout = (
+                    remaining
+                    if waiting
+                    else min(idle_timeout if received else first_timeout, remaining)
+                )
                 try:
                     async with asyncio.timeout(timeout):
                         entry = await anext(iterator)
@@ -323,7 +332,9 @@ class HermesCollections:
                     raise CannotConnectError(
                         f"Hermes {collection_name} collection exceeds the byte limit"
                     )
-                entries.append(entry)
+                entries.append(entry if retain_values else replace(entry, value=b""))
+                if waiting and wait_for_entry is not None and wait_for_entry(entry):
+                    waiting = False
         finally:
             await iterator.aclose()
         return tuple(entries)

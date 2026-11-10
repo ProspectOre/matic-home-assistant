@@ -33,6 +33,7 @@ from custom_components.matic_robot.plan_model import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     CleaningRoom,
     plan_area_fingerprint,
     plan_floor_token,
@@ -243,6 +244,20 @@ async def test_managed_session_marker_is_private_and_canonical(hass) -> None:
         )
     with pytest.raises(ServiceValidationError, match="requires a managed room command"):
         await entity.async_send_command("clean_all", {PLAN_SESSION_ID: valid_session})
+
+    for params in (
+        {PLAN_SESSION_REVISION: "a" * 64},
+        {
+            PLAN_MOTION_TOKEN: token,
+            PLAN_SESSION_ID: valid_session,
+            PLAN_SESSION_REVISION: "invalid",
+        },
+    ):
+        with pytest.raises(ServiceValidationError, match="session revision is invalid"):
+            await entity.async_send_command(
+                "clean_rooms",
+                {"rooms": ["Study"], **params},
+            )
 
 
 @pytest.mark.parametrize(

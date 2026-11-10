@@ -19,6 +19,7 @@ PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
 
 PLAN_SESSION_ID = "_matic_plan_session"
+PLAN_SESSION_REVISION = "_matic_plan_session_revision"
 
 _PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v2\0"
 

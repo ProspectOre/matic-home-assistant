@@ -444,6 +444,7 @@ class CleaningSessionRecord:
 
     key: bytes
     session: CleaningSession
+    decoded: bool = True
 
 
 @dataclass(frozen=True, slots=True)

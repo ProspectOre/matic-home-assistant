@@ -7,6 +7,10 @@ class MaticError(Exception):
     """Base Matic Hermes error."""
 
 
+class NativeHistoryIncompleteError(MaticError):
+    """Native history contains an ambiguous record identity."""
+
+
 class CoverageGuardReason(StrEnum):
     """Safe, stable reason codes for managed coverage preflight guards."""
 

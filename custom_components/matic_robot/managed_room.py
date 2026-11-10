@@ -74,6 +74,7 @@ async def _async_run_room(
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
     coverage_verifier: CoverageVerifier | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
@@ -148,6 +149,7 @@ async def _async_run_room(
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
         else:
             if dispatch.rooms != (room,):
@@ -268,6 +270,7 @@ async def _async_run_room(
                                     hass=hass,
                                     entity_id=entity_id,
                                     cancel_event=cancel_event,
+                                    session_hash=dispatch.session_hash,
                                     on_verified_session=completion_sessions.append,
                                     on_verified_completion=lambda ended_at, duration: (
                                         completion_evidence.append((ended_at, duration))
@@ -343,7 +346,12 @@ async def _async_run_room(
                 dispatch_attempted,
             )
             reconciliation = history_reconciliation._build_native_reconciliation(
-                call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
+                call.data["plan_id"],
+                room,
+                dispatched_at,
+                room_started,
+                run_id=run_id,
+                session_hash=dispatch.session_hash if dispatch is not None else None,
             )
             async with dispatch_control._managed_reconciliation_guard(
                 manager, serial_number, motion_token
@@ -428,7 +436,12 @@ async def _async_run_room(
             None
             if isinstance(err, RoomStoppedInPlaceError)
             else history_reconciliation._build_native_reconciliation(
-                call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
+                call.data["plan_id"],
+                room,
+                dispatched_at,
+                room_started,
+                run_id=run_id,
+                session_hash=dispatch.session_hash if dispatch is not None else None,
             )
         )
         async with dispatch_control._managed_reconciliation_guard(
@@ -499,7 +512,12 @@ async def _async_run_room(
         else:
             failure_reason = str(err).strip() or "The managed room failed"
         reconciliation = history_reconciliation._build_native_reconciliation(
-            call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
+            call.data["plan_id"],
+            room,
+            dispatched_at,
+            room_started,
+            run_id=run_id,
+            session_hash=dispatch.session_hash if dispatch is not None else None,
         )
         async with dispatch_control._managed_reconciliation_guard(
             manager, serial_number, motion_token

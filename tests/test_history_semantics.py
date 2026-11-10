@@ -67,6 +67,7 @@ def _payload(
     modern_payload: bytes | None = None,
     omit_modern: bool = False,
     room_payload: bytes | None = None,
+    timestamps: bytes = b"",
 ) -> bytes:
     # StartReason.User uses field 2; empty User denotes App.
     if schedule_name is not None:
@@ -96,7 +97,7 @@ def _payload(
         _room(vacuum_status, mop_status) if room_payload is None else room_payload
     )
     modern = _bfield(1, room_payload) if modern_payload is None else modern_payload
-    summary = _bfield(9, b"") if include_summary_reason else b""
+    summary = timestamps + (_bfield(9, b"") if include_summary_reason else b"")
     if stop is not None:
         summary += _bfield(10, stop)
     if not omit_modern:
@@ -116,6 +117,24 @@ def test_decodes_canonical_identity_and_per_room_result() -> None:
     assert decoded.mode_results[0].room == "Kitchen"
     assert decoded.mode_results[0].room_id == decoded.partition_id
     assert decoded.mode_results[0].duration_seconds == 73
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        (
+            _bfield(1, _vfield(1, 60) + _vfield(2, 500_000_000)),
+            "1970-01-01T00:01:00.500000+00:00",
+        ),
+        (_bfield(1, _vfield(1, 60) + _vfield(2, 1_000_000_000)), None),
+        (_bfield(1, b"\xff"), None),
+    ],
+)
+def test_summary_timestamps_require_valid_seconds_and_nanos(timestamp, expected):
+    decoded = decode_history_semantics(_payload(timestamps=_bfield(3, timestamp)))
+
+    assert decoded is not None
+    assert decoded.started_at == expected
 
 
 @pytest.mark.parametrize("payload", [b"", b"\xff", b"x" * (256 * 1024 + 1)])

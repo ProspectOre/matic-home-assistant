@@ -25,7 +25,7 @@ from .coverage_accounting import (
 from .managed_run import (
     _NativeReconciliation,
 )
-from .native_completion import match_single_room_completions
+from .native_completion import match_single_room_completions, read_dispatch_history
 from .native_history import OEM_STOP_RECONCILIATION_SECONDS
 from .plan_model import (
     CleaningRoom,
@@ -115,6 +115,7 @@ def _build_native_reconciliation(
     room_started: bool,
     *,
     run_id: str | None = None,
+    session_hash: str | None = None,
 ) -> _NativeReconciliation | None:
     """Build a late-native marker only after the robot visibly started the room."""
     if not room_started or dispatched_at is None:
@@ -127,6 +128,7 @@ def _build_native_reconciliation(
         room.cleaning_mode,
         run_id,
         room.coverage_setting,
+        session_hash,
     )
 
 
@@ -143,6 +145,7 @@ def _native_reconciliation_data(
         "dispatched_at": value.dispatched_at.isoformat(),
         **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
         **({"run_id": value.run_id} if value.run_id else {}),
+        **({"session_hash": value.session_hash} if value.session_hash else {}),
         **(
             {"coverage_setting": value.coverage_setting}
             if value.coverage_setting
@@ -171,7 +174,9 @@ def _schedule_native_reconciliation(
     create_background_task = getattr(hass, "async_create_background_task", None)
     if not callable(create_background_task):
         return
-    if history_baseline is not None and session_history is not None:
+    if (
+        history_baseline is not None or reconciliation.session_hash is not None
+    ) and session_history is not None:
         watcher = _async_reconcile_native_stop(
             hass,
             manager,
@@ -211,7 +216,7 @@ async def _async_reconcile_native_stop(
     entity_id: str,
     room: CleaningRoom,
     reconciliation: _NativeReconciliation,
-    history_baseline: frozenset[bytes],
+    history_baseline: frozenset[bytes] | None,
     active_session: Callable[[], Awaitable[bool | None]] | None,
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     confirm_room_completed: Callable[[str], None] | None,
@@ -235,7 +240,9 @@ async def _async_reconcile_native_stop(
             )
             break
         try:
-            records = await session_history()
+            records = await read_dispatch_history(
+                session_history, reconciliation.session_hash
+            )
         except MaticError as err:
             _LOGGER.debug(
                 "Native Matic stop reconciliation read unavailable (%s)",
@@ -247,6 +254,7 @@ async def _async_reconcile_native_stop(
             history_baseline,
             room,
             reconciliation.dispatched_at,
+            session_hash=reconciliation.session_hash,
         )
         if match is not None:
             record, duration = match
@@ -329,14 +337,17 @@ async def _async_expire_native_reconciliation(
 
 def _native_completion_match(
     records: tuple[CleaningSessionRecord, ...],
-    baseline: frozenset[bytes],
+    baseline: frozenset[bytes] | None,
     room: CleaningRoom,
     dispatched_at: datetime,
+    *,
+    session_hash: str | None = None,
 ) -> tuple[CleaningSessionRecord, int] | None:
     """Find one new, completed, single-room native record for a dispatch."""
     matches = match_single_room_completions(
         records,
         baseline=baseline,
+        session_hash=session_hash,
         room_name=room.name,
         cleaning_mode=room.cleaning_mode,
         dispatched_at=dispatched_at,

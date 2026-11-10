@@ -1,7 +1,11 @@
 """Canonical history projection and rejected-revision propagation."""
 
+import asyncio
+import hashlib
 from dataclasses import replace
+from functools import partial
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 
@@ -11,7 +15,11 @@ from custom_components.matic_robot.client.cleaning_session import (
     _native_history_collection_revision,
     decode_cleaning_session,
 )
-from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    NativeHistoryIncompleteError,
+)
 from custom_components.matic_robot.client.history_semantics import (
     decode_history_semantics,
 )
@@ -83,6 +91,65 @@ def test_large_history_requires_one_bounded_summary():
     assert decode_cleaning_session(geometry + _bfield(5, b"") * 2) is None
 
 
+async def test_owned_history_and_handoff_keys_wait_through_idle_gap():
+    client = MaticHermesClient("192.0.2.1", 16320)
+    old = HermesCollectionEntry(b"opaque-legacy-key", b"\xff")
+    owned = HermesCollectionEntry(history_key(), _payload())
+
+    async def stream(_collection):
+        yield old
+        await asyncio.sleep(0)
+        yield owned
+
+    client._collections.async_subscribe_collection_entries = stream
+    client._collections.async_get_tracked_collection_entries = partial(
+        client._collections.async_get_tracked_collection_entries, idle_timeout=0
+    )
+    with pytest.raises(NativeHistoryIncompleteError):
+        await client.async_get_cleaning_session_records(strict=True)
+    session_hash = native_session_hash(owned.key)
+    (record,) = await client.async_get_cleaning_session_records(
+        strict=True, session_hash=session_hash
+    )
+    assert record.key == owned.key and record.decoded
+    assert await client.async_get_cleaning_session_keys(
+        session_hash=session_hash,
+        expected_hashes=frozenset({hashlib.sha256(owned.key).hexdigest()}),
+    ) == {old.key, owned.key}
+
+
+@pytest.mark.parametrize(
+    "case", ["empty", "keyless", "duplicate", "limit", "unanchored"]
+)
+async def test_handoff_key_inventory_rejects_ambiguous_samples(case):
+    client = MaticHermesClient("192.0.2.1", 16320)
+    row = HermesCollectionEntry(history_key(), b"bad")
+    rows = {
+        "empty": (),
+        "keyless": (HermesCollectionEntry(b"", b"bad"),),
+        "duplicate": (row, row),
+        "limit": tuple(
+            HermesCollectionEntry(history_key(UUID(int=i)), b"bad") for i in range(64)
+        ),
+        "unanchored": (row,),
+    }
+
+    async def stream(_collection):
+        for entry in rows[case]:
+            yield entry
+
+    client._collections.async_subscribe_collection_entries = stream
+    expected = (
+        NativeHistoryIncompleteError
+        if case in {"keyless", "duplicate"}
+        else CannotConnectError
+    )
+    with pytest.raises(expected):
+        await client.async_get_cleaning_session_keys(
+            session_hash="0" * 64 if case == "unanchored" else None
+        )
+
+
 def test_projection_handles_missing_outcomes_and_duplicate_display_names():
     semantics = decode_history_semantics(_payload())
     assert semantics is not None
@@ -118,8 +185,11 @@ async def test_corrupt_revision_keeps_exact_key_for_credit_retraction():
     assert len(records) == 1 and records[0].key == history_key()
     assert records[0].session.completed is None
     assert revision != _native_history_collection_revision(())
-    with pytest.raises(MaticError, match="undecodable"):
-        await client.async_get_cleaning_session_snapshot(strict=True)
+    assert not records[0].decoded
+    assert await client.async_get_cleaning_session_snapshot(strict=True) == (
+        records,
+        revision,
+    )
 
 
 async def test_non_room_and_unknown_modern_records_keep_strict_baselines():

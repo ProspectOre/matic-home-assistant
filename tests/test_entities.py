@@ -2496,6 +2496,7 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
             "coverage_setting": CoverageSetting.STANDARD,
             "ordered": False,
             "require_settings_readback": True,
+            "expected_idle_revision": None,
             "session_id": UUID("11111111-1111-4111-8111-111111111111"),
         },
     )

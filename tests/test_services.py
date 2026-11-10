@@ -7150,3 +7150,88 @@ async def test_stop_expected_run_mismatch_has_no_effect(hass, active_run) -> Non
     finally:
         if lock is not None and lock.locked():
             lock.release()
+
+
+async def test_managed_service_survives_caller_cancellation(hass):
+    """A disconnected client does not own the admitted run's lifetime."""
+    from custom_components.matic_robot.run_admission import managed_run_admitted
+    from custom_components.matic_robot.service_execution import _keep_managed_run
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def handler(call):
+        managed_run_admitted()
+        started.set()
+        await finish.wait()
+        completed.set()
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert not completed.is_set()
+    finish.set()
+    await asyncio.wait_for(completed.wait(), 1)
+
+
+async def test_managed_service_propagates_immediate_refusal(hass):
+    from custom_components.matic_robot.service_execution import _keep_managed_run
+
+    async def handler(call):
+        raise ServiceValidationError("plan already running")
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    with pytest.raises(ServiceValidationError, match="plan already running"):
+        await _keep_managed_run(hass, handler)(call)
+
+
+async def test_caller_cancel_before_admission_does_not_start_run(hass):
+    from custom_components.matic_robot.service_execution import _keep_managed_run
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def handler(call):
+        entered.set()
+        await release.wait()
+        started.set()
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+    await entered.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    await asyncio.sleep(0)
+    assert not started.is_set()
+
+
+async def test_detached_managed_failure_is_reported_without_its_details(hass, caplog):
+    from custom_components.matic_robot.run_admission import managed_run_admitted
+    from custom_components.matic_robot.service_execution import _keep_managed_run
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        managed_run_admitted()
+        started.set()
+        await release.wait()
+        raise RuntimeError("private diagnostic detail")
+
+    call = ServiceCall(hass, DOMAIN, "run_selected_plan", {})
+    caller = asyncio.create_task(_keep_managed_run(hass, handler)(call))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert "Detached managed run ended (RuntimeError)" in caplog.text
+    assert "private diagnostic detail" not in caplog.text

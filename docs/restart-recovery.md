@@ -75,10 +75,10 @@ at the dock. A replacement command, expiry, or ownership mismatch retires it.
 - If the mission ended or changed while Home Assistant was offline, native
   history can credit explicit completed-room results but cannot authorize the
   remaining queue.
-- Between legs, the next leg starts only if the robot's history still matches
-  the fingerprint saved at the handoff. A handoff without that fingerprint
-  (history was unreadable, or the checkpoint predates it) cannot continue; nor
-  can a robot that does not settle within the bounded 12-minute handoff wait.
+- Between legs, recovery compares the robot's idle session revision and history
+  keys with the saved handoff. Older checkpoints without a revision use their
+  saved history keys. A changed revision, missing history evidence, or a robot
+  that does not settle within the 12-minute handoff wait stops the queue.
 - If history verification had already begun, recovery resumes that observer
   with its original deadline; it cannot dispatch another leg.
 - Missing floor evidence, malformed checkpoints, and old runs without checkpoints

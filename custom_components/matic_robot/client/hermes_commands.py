@@ -245,6 +245,17 @@ class HermesCommands:
             payload, command_name=command.name, on_transmitted=on_transmitted
         )
 
+    async def _async_check_idle_session_revision(self, expected: str | None) -> None:
+        if expected is not None:
+            try:
+                current = await self._reads.async_get_idle_cleaning_session_revision()
+            except MaticError as err:
+                raise CoverageGuardError(
+                    CoverageGuardReason.IDENTITY_UNAVAILABLE
+                ) from err
+            if current != expected:
+                raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+
     async def _async_require_idle_native_session(self) -> bytes:
         """Require stable, observable idle native state before managed coverage."""
         baseline_identity = await self._reads.async_get_cleaning_session_identity()
@@ -398,6 +409,7 @@ class HermesCommands:
         require_settings_readback: bool = False,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start an exact normal-coverage command for local room IDs."""
         if require_settings_readback and session_id is None:
@@ -415,6 +427,7 @@ class HermesCommands:
             baseline_identity = await self._async_require_idle_native_session()
         else:
             baseline_identity = None
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._connection._async_send_user_payload(
@@ -447,6 +460,7 @@ class HermesCommands:
         on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
         session_id: UUID | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start then update only our accepted, still-current native mission.
 
@@ -475,6 +489,7 @@ class HermesCommands:
             # this transaction before sending any bytes if ownership changed.
             if await self._async_require_idle_native_session() != baseline_identity:
                 raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+        await self._async_check_idle_session_revision(expected_idle_revision)
         require_current()
         try:
             await self._connection._async_send_user_payload(
@@ -932,6 +947,7 @@ class HermesCommands:
         coverage_setting: CoverageSetting,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> None:
         """Start an official drawn-circle custom-area coverage command.
 
@@ -948,6 +964,7 @@ class HermesCommands:
         )
         if session_id is not None:
             await self._async_require_idle_native_session()
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._connection._async_send_user_payload(

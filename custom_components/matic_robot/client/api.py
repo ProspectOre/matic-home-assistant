@@ -194,21 +194,42 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """
         return await self._reads.async_get_active_cleaning_session_state()
 
+    async def async_get_idle_cleaning_session_revision(self) -> str | None:
+        """Read a fingerprint of the robot's inactive session marker."""
+        return await self._reads.async_get_idle_cleaning_session_revision()
+
+    async def async_get_cleaning_session_keys(
+        self,
+        *,
+        session_hash: str | None = None,
+        expected_hashes: frozenset[str] | None = None,
+    ) -> frozenset[bytes]:
+        """Read opaque keys separately from cleaning results."""
+        return await self._reads.async_get_cleaning_session_keys(
+            session_hash=session_hash, expected_hashes=expected_hashes
+        )
+
     async def async_get_cleaning_session_records(
         self,
         *,
         strict: bool = False,
+        session_hash: str | None = None,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
-        return await self._reads.async_get_cleaning_session_records(strict=strict)
+        return await self._reads.async_get_cleaning_session_records(
+            strict=strict, session_hash=session_hash
+        )
 
     async def async_get_cleaning_session_snapshot(
         self,
         *,
         strict: bool = False,
+        session_hash: str | None = None,
     ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
         """Read native history and its stable revision from one snapshot."""
-        return await self._reads.async_get_cleaning_session_snapshot(strict=strict)
+        return await self._reads.async_get_cleaning_session_snapshot(
+            strict=strict, session_hash=session_hash
+        )
 
     async def async_get_cleaning_session_images(
         self,
@@ -357,6 +378,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_settings_readback: bool = False,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start an exact normal-coverage command for local room IDs."""
         return await self._commands.async_start_coverage(
@@ -367,6 +389,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             ordered=ordered,
             require_settings_readback=require_settings_readback,
             session_id=session_id,
+            expected_idle_revision=expected_idle_revision,
             require_current=require_current,
         )
 
@@ -385,6 +408,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
         session_id: UUID | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start then update only our accepted, still-current native mission.
 
@@ -406,6 +430,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             on_recovery_stop_transmitted=on_recovery_stop_transmitted,
             checkpoint_initial_session=checkpoint_initial_session,
             session_id=session_id,
+            expected_idle_revision=expected_idle_revision,
         )
 
     async def async_confirm_coverage_receipt(
@@ -431,6 +456,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         coverage_setting: CoverageSetting,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> None:
         """Start an official drawn-circle custom-area coverage command.
 
@@ -444,6 +470,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             cleaning_mode=cleaning_mode,
             coverage_setting=coverage_setting,
             session_id=session_id,
+            expected_idle_revision=expected_idle_revision,
             require_current=require_current,
         )
 

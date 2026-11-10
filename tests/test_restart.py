@@ -19,6 +19,7 @@ from custom_components.matic_robot.client.commands import UserCommand, _wrapped_
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
+    NativeHistoryIncompleteError,
 )
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.const import DOMAIN
@@ -46,6 +47,7 @@ from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
 )
+from tests.test_coverage_receipts import active_key
 from tests.wire_builders import _session_identity
 
 
@@ -137,13 +139,38 @@ async def recovery_state(hass):
     return manager, SimpleNamespace(runtime_data=runtime), checkpoint, room
 
 
-async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery_state):
-    manager, entry, _, room = recovery_state
+@pytest.mark.parametrize("ownership", ["legacy", "owned", "invalid", "foreign"])
+async def test_recovery_passes_existing_dispatch_and_run_identity(
+    hass, recovery_state, ownership
+):
+    manager, entry, checkpoint, room = recovery_state
+    identity = b"synthetic-session"
+    session_hash = None
+    if ownership != "legacy":
+        session_id = "33333333-3333-4333-8333-333333333333"
+        identity = active_key(UUID(session_id))
+        session_hash = hashlib.sha256(session_id.encode("ascii")).hexdigest()
+        checkpoint.update(
+            native_identity_hash=hashlib.sha256(identity).hexdigest(),
+            session_hash={
+                "owned": session_hash,
+                "invalid": "invalid",
+                "foreign": "a" * 64,
+            }[ownership],
+            history_baseline=None,
+        )
+        entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
+            identity
+        )
+        await manager.recovery.async_set_recovery_checkpoint(
+            "serial", "run", checkpoint
+        )
 
     async def execute(*args, **kwargs):
         assert kwargs["recovery"]["run_id"] == "run"
         assert kwargs["recovered_dispatch"].rooms == (room,)
-        assert kwargs["recovered_dispatch"].native_identity == b"synthetic-session"
+        assert kwargs["recovered_dispatch"].native_identity == identity
+        assert kwargs["recovered_dispatch"].session_hash == session_hash
         assert kwargs["floor_is_current"]()
         assert kwargs["mapped_room_names"] == ("Kitchen", "Office", "Hall")
         await manager.ledger.async_finish_run(
@@ -155,8 +182,14 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
         side_effect=execute,
     ) as runner:
         await async_recover_managed_run(hass, entry, "serial")
-    runner.assert_awaited_once()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+    if ownership in {"invalid", "foreign"}:
+        runner.assert_not_awaited()
+        assert manager.history.snapshot("serial")["last_run"]["outcome"] == "unverified"
+        return
+    runner.assert_awaited_once()
+    if ownership == "owned":
+        entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "completed"
     assert manager.history.snapshot("serial")["active_plan"] is None
 
@@ -601,7 +634,11 @@ async def test_restart_unexpected_stop_error_respects_transmission(
         "bad_history",
         "changed_history",
         "history_error",
+        "history_keyless",
         "enriched_history",
+        "revision_matches",
+        "revision_changed",
+        "revision_unobserved",
     ],
 )
 async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
@@ -634,6 +671,17 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     elif case == "history_error":
         entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
             CannotConnectError("unavailable")
+        )
+    elif case == "history_keyless":
+        entry.runtime_data.client.async_get_cleaning_session_keys = AsyncMock(
+            side_effect=NativeHistoryIncompleteError("ambiguous keys")
+        )
+    elif case.startswith("revision_"):
+        checkpoint["handoff_revision"] = (
+            None if case == "revision_unobserved" else "a" * 64
+        )
+        entry.runtime_data.client.async_get_idle_cleaning_session_revision = AsyncMock(
+            return_value="b" * 64 if case == "revision_changed" else "a" * 64
         )
     manager.repository.robot("serial")["last_run"]["room_count"] = 2
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
@@ -670,11 +718,18 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     ):
         await async_recover_managed_run(hass, entry, "serial")
 
-    if case in {"valid", "timeout", "cancel", "stop_during_wait", "enriched_history"}:
+    if case in {
+        "valid",
+        "timeout",
+        "cancel",
+        "stop_during_wait",
+        "enriched_history",
+        "revision_matches",
+    }:
         settled.assert_awaited_once()
     else:
         settled.assert_not_awaited()
-    if case in {"valid", "enriched_history"}:
+    if case in {"valid", "enriched_history", "revision_matches"}:
         runner.assert_awaited_once()
     else:
         runner.assert_not_awaited()
@@ -682,6 +737,16 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         assert (
             manager.history.snapshot("serial")["last_run"]["reason_code"]
             == "managed_stop"
+        )
+    if case in {"revision_changed", "revision_unobserved"}:
+        assert (
+            manager.history.snapshot("serial")["last_run"]["reason_code"]
+            == "restart_native_mission_changed_or_ended"
+        )
+    if case == "history_keyless":
+        assert (
+            manager.history.snapshot("serial")["last_run"]["reason_code"]
+            == "restart_history_incomplete"
         )
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 

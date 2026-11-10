@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from google.protobuf.message import DecodeError
 
 from .coverage_receipts import native_session_hash
-from .exceptions import MaticError
+from .exceptions import NativeHistoryIncompleteError
 from .history_semantics import (
     MAX_HISTORY_BYTES,
     SemanticHistory,
@@ -65,17 +65,19 @@ def decode_cleaning_session_records(
     invalid = False
     for entry in entries:
         session = decode_cleaning_session(entry.value)
-        if not entry.key or session is None:
+        if not entry.key or (
+            session is None and native_session_hash(entry.key) is None
+        ):
             invalid = True
-            if not entry.key or native_session_hash(entry.key) is None:
-                continue
-            # Keep a rejected record's exact identity as a tombstone. Its
-            # disappearance from retention differs from a correction that no
-            # longer supports an earlier completion credit.
+            continue
+        decoded = session is not None
+        if session is None:
             session = CleaningSession(None, None, None, (), (), None)
-        records.append(CleaningSessionRecord(entry.key, session))
+        records.append(CleaningSessionRecord(entry.key, session, decoded=decoded))
     if strict and invalid:
-        raise MaticError("Native history is incomplete or undecodable")
+        raise NativeHistoryIncompleteError(
+            "Native history has an entry without a session identity"
+        )
     return tuple(records)
 
 

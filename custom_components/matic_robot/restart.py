@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from google.protobuf.message import DecodeError
@@ -16,7 +15,8 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .client.commands import UserCommand
-from .client.exceptions import MaticError
+from .client.coverage_receipts import native_session_hash
+from .client.exceptions import MaticError, NativeHistoryIncompleteError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
@@ -33,6 +33,13 @@ from .managed_observation import (
     _async_wait_for_settled_leg_handoff,
 )
 from .managed_run import _PreparedRoomDispatch
+from .native_completion import (
+    NativeHistoryReader,
+    is_session_hash,
+    read_dispatch_history,
+    read_handoff_history_keys,
+    read_handoff_revision,
+)
 from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
 from .room_coherence import current_floor_plan, room_completion_names_are_current
 
@@ -425,12 +432,27 @@ async def async_recover_managed_run(
             ):
                 reason = "restart_handoff_history_unavailable"
                 return
-            records = await runtime.client.async_get_cleaning_session_records(
-                strict=True
+            history_reader = NativeHistoryReader(
+                runtime.client.async_get_cleaning_session_records,
+                getattr(runtime.client, "async_get_cleaning_session_keys", None),
+                getattr(
+                    runtime.client, "async_get_idle_cleaning_session_revision", None
+                ),
             )
-            if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
-                handoff_history
+            revision = checkpoint.get("handoff_revision")
+            if "handoff_revision" in checkpoint and (
+                not is_session_hash(revision)
+                or await read_handoff_revision(history_reader) != revision
             ):
+                reason = "restart_native_mission_changed_or_ended"
+                return
+            expected_history = frozenset(handoff_history)
+            keys = await read_handoff_history_keys(
+                history_reader,
+                session_hash=checkpoint.get("session_hash"),
+                expected_hashes=expected_history,
+            )
+            if {hashlib.sha256(key).hexdigest() for key in keys} != expected_history:
                 reason = "restart_handoff_history_changed"
                 return
             await manager.recovery.async_mark_recovery_status(
@@ -470,9 +492,7 @@ async def async_recover_managed_run(
                 rooms,
                 refresh=runtime.coordinator.async_request_refresh,
                 active_session=runtime.client.async_get_active_cleaning_session_state,
-                session_history=partial(
-                    runtime.client.async_get_cleaning_session_records, strict=True
-                ),
+                session_history=history_reader,
                 session_identity=runtime.client.async_get_cleaning_session_identity,
                 coverage_verifier=getattr(
                     runtime.client, "async_confirm_coverage_receipt", None
@@ -497,15 +517,33 @@ async def async_recover_managed_run(
             )
             return
         assert dispatched_at is not None
-        records = await runtime.client.async_get_cleaning_session_records()
-        hashes = checkpoint.get("history_baseline")
-        if not isinstance(hashes, list):
+        session_hash = checkpoint.get("session_hash")
+        if session_hash is not None and not is_session_hash(session_hash):
             return
-        baseline = frozenset(
-            record.key
-            for record in records
-            if hashlib.sha256(record.key).hexdigest() in hashes
-        )
+        owned_checkpoint = session_hash is not None
+        active_hash = native_session_hash(identity, active=True) if identity else None
+        if (
+            session_hash is not None
+            and active_hash is not None
+            and active_hash != session_hash
+        ):
+            return
+        session_hash = session_hash or active_hash
+        hashes = checkpoint.get("history_baseline")
+        if isinstance(hashes, list):
+            records = await read_dispatch_history(
+                NativeHistoryReader(runtime.client.async_get_cleaning_session_records),
+                session_hash if owned_checkpoint else None,
+            )
+            baseline = frozenset(
+                record.key
+                for record in records
+                if hashlib.sha256(record.key).hexdigest() in hashes
+            )
+        elif hashes is None and owned_checkpoint:
+            baseline = None
+        else:
+            return
         # Recheck after I/O: Stop, takeover, and map transitions win recovery.
         if (
             cancel.is_set()
@@ -543,7 +581,12 @@ async def async_recover_managed_run(
             )
 
             async def read_history() -> tuple[CleaningSessionRecord, ...]:
-                records = await runtime.client.async_get_cleaning_session_records()
+                records = await read_dispatch_history(
+                    NativeHistoryReader(
+                        runtime.client.async_get_cleaning_session_records
+                    ),
+                    session_hash,
+                )
                 if (
                     cancel.is_set()
                     or manager.control.motion_generation(serial_number) != generation
@@ -564,6 +607,7 @@ async def async_recover_managed_run(
                 cancel_event=cancel,
                 timeout_seconds=remaining,
                 on_verified_session=completion_sessions.append,
+                session_hash=session_hash,
             )
             verified_coverage = await async_confirm_completed_coverage(
                 manager.recovery.coverage_receipt(serial_number, run["run_id"]),
@@ -636,8 +680,12 @@ async def async_recover_managed_run(
             rooms,
             refresh=runtime.coordinator.async_request_refresh,
             active_session=runtime.client.async_get_active_cleaning_session_state,
-            session_history=partial(
-                runtime.client.async_get_cleaning_session_records, strict=True
+            session_history=NativeHistoryReader(
+                runtime.client.async_get_cleaning_session_records,
+                getattr(runtime.client, "async_get_cleaning_session_keys", None),
+                getattr(
+                    runtime.client, "async_get_idle_cleaning_session_revision", None
+                ),
             ),
             session_identity=runtime.client.async_get_cleaning_session_identity,
             coverage_verifier=getattr(
@@ -660,6 +708,7 @@ async def async_recover_managed_run(
                 native_identity=identity,
                 recovered=True,
                 completion_deadline=completion_deadline,
+                session_hash=session_hash,
             ),
         )
         reason = (
@@ -671,6 +720,8 @@ async def async_recover_managed_run(
         if _shutdown_suspends_run(hass, manager, serial_number):
             reason = "home_assistant_shutdown"
         raise
+    except NativeHistoryIncompleteError:
+        reason = "restart_history_incomplete"
     except (
         HomeAssistantError,
         MaticError,
