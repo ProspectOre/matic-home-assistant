@@ -1,4 +1,4 @@
-# Matic 0.5.3 RC3
+# Matic 0.5.3
 
 Saved plans can start with old, unreadable entries in robot history. Home
 Assistant waits for the result from the clean it started, including when the
@@ -23,5 +23,11 @@ Thanks to [parkerbxyz](https://github.com/parkerbxyz) for the fix in
 testing and follow-up reports in
 [#402](https://github.com/ProspectOre/matic-home-assistant/issues/402).
 
-Back up Home Assistant, select `v0.5.3-rc3` in HACS with prereleases enabled,
-and restart Home Assistant. Home Assistant 2026.10 or later is required.
+Thanks to [thurstonsand](https://github.com/thurstonsand) for reproducing the
+oversized-history failure on two robots, prototyping separate history-key
+reads and geometry-safe decoding in
+[#401](https://github.com/ProspectOre/matic-home-assistant/pull/401), and
+testing the fix on both robots.
+
+Back up Home Assistant, update Matic to `v0.5.3` in HACS, and restart Home
+Assistant. Home Assistant 2026.10 or later is required.
