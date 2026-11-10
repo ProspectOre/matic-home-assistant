@@ -31,6 +31,7 @@ from custom_components.matic_robot.managed_executor import (
     _failure_reason_code,
 )
 from custom_components.matic_robot.native_completion import (
+    has_cancelled_single_room_record,
     match_single_room_unreachable,
 )
 from custom_components.matic_robot.plans import (
@@ -337,3 +338,47 @@ async def test_replacement_before_start_is_still_a_takeover(hass) -> None:
 
 def test_area_and_room_failures_name_an_ended_owned_task() -> None:
     assert _failure_reason_code(NativeTaskEndedError()) == "native_task_ended"
+
+
+def test_unreachable_match_bounds_mode_window_and_ambiguity() -> None:
+    now = dt_util.utcnow()
+    record = CleaningSessionRecord(b"new", _session("Kitchen", "unattempted"))
+    window = {
+        "room_name": "Kitchen",
+        "dispatched_at": now - timedelta(seconds=5),
+        "now": now + timedelta(seconds=1),
+    }
+    # No requested mode means no mode can prove the room unattempted.
+    assert not match_single_room_unreachable((record,), cleaning_mode=None, **window)
+    # A record that ended before this dispatch belongs to an earlier mission.
+    assert not match_single_room_unreachable(
+        (record,),
+        cleaning_mode="vacuum",
+        **{**window, "dispatched_at": now + timedelta(seconds=1)},
+    )
+    # Two candidates are ambiguous; the matcher stops at two.
+    other = CleaningSessionRecord(b"other", record.session)
+    assert (
+        len(
+            match_single_room_unreachable(
+                (record, other, record), cleaning_mode="vacuum", **window
+            )
+        )
+        == 2
+    )
+
+
+def test_unsafe_new_history_proves_neither_unreachable_nor_cancelled() -> None:
+    now = dt_util.utcnow()
+    unreadable = CleaningSessionRecord.undecodable(b"new")
+    window = {
+        "room_name": "Kitchen",
+        "dispatched_at": now - timedelta(seconds=5),
+        "now": now + timedelta(seconds=1),
+        "baseline": frozenset(),
+    }
+    # An unreadable new record may be the dispatched mission itself.
+    assert not match_single_room_unreachable(
+        (unreadable,), cleaning_mode="vacuum", **window
+    )
+    assert not has_cancelled_single_room_record((unreadable,), **window)
