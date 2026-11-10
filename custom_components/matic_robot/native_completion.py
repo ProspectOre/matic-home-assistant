@@ -182,6 +182,21 @@ def records_for_dispatch(
     return matching
 
 
+def _single_room_record_in_dispatch(
+    session: CleaningSession, target: str, dispatched_at: datetime, now: datetime
+) -> bool:
+    """Admit one ordered record for exactly this room, ending inside the dispatch."""
+    started = dt_util.parse_datetime(session.started_at or "")
+    ended = dt_util.parse_datetime(session.ended_at or "")
+    return (
+        started is not None
+        and ended is not None
+        and started <= ended
+        and dispatched_at <= ended <= now
+        and tuple(native_room_key(name) for name in session.rooms) == (target,)
+    )
+
+
 def match_single_room_completions(
     records: Iterable[CleaningSessionRecord],
     *,
@@ -201,14 +216,8 @@ def match_single_room_completions(
     matches: list[NativeRoomCompletion] = []
     for record in candidates:
         session = record.session
-        started = dt_util.parse_datetime(session.started_at or "")
-        ended = dt_util.parse_datetime(session.ended_at or "")
-        if started is None or ended is None or started > ended:
-            continue
-        if ended < dispatched_at or ended > now:
-            continue
         # The ordering checks rule out future starts because ended <= now.
-        if tuple(native_room_key(name) for name in session.rooms) != (target,):
+        if not _single_room_record_in_dispatch(session, target, dispatched_at, now):
             continue
         duration = room_completion_duration(
             session,
@@ -222,3 +231,84 @@ def match_single_room_completions(
         if len(matches) == 2:
             break
     return tuple(matches)
+
+
+_REQUESTED_MODES = {
+    "vacuum": frozenset({"vacuum"}),
+    "mop": frozenset({"mop"}),
+    "vacuum_and_mop": frozenset({"vacuum", "mop"}),
+}
+
+
+def match_single_room_unreachable(
+    records: Iterable[CleaningSessionRecord],
+    *,
+    room_name: str,
+    cleaning_mode: str | None,
+    dispatched_at: datetime,
+    now: datetime,
+    baseline: Collection[bytes] | None = None,
+    session_hash: str | None = None,
+) -> tuple[CleaningSessionRecord, ...]:
+    """Return at most two records proving the robot could not reach a room.
+
+    The OEM app titles a ``Finished`` stop reason "Area inaccessible" when the
+    requested room stayed unattempted (Matic 1.183.1). A cancelled, unknown or
+    partly attempted record is never unreachable: the robot reached the room,
+    or someone stopped the mission.
+    """
+    requested = _REQUESTED_MODES.get(cleaning_mode or "")
+    candidates = records_for_dispatch(records, baseline, session_hash)
+    if requested is None or candidates is None:
+        return ()
+    target = native_room_key(room_name)
+    matches: list[CleaningSessionRecord] = []
+    for record in candidates:
+        session = record.session
+        if session.stop_reason != "finished":
+            continue
+        if not _single_room_record_in_dispatch(session, target, dispatched_at, now):
+            continue
+        results = [
+            result
+            for result in session.mode_results
+            if native_room_key(result.room) == target
+        ]
+        if (
+            not results
+            or {result.cleaning_mode for result in results} != requested
+            or any(result.status != "unattempted" for result in results)
+        ):
+            continue
+        matches.append(record)
+        if len(matches) == 2:
+            break
+    return tuple(matches)
+
+
+_CANCELLED_STOP_REASONS = frozenset({"user_cancelled", "bot_cancelled", "stopped"})
+
+
+def has_cancelled_single_room_record(
+    records: Iterable[CleaningSessionRecord],
+    *,
+    room_name: str,
+    dispatched_at: datetime,
+    now: datetime,
+    baseline: Collection[bytes] | None = None,
+    session_hash: str | None = None,
+) -> bool:
+    """Report a new record proving this room's mission was cancelled.
+
+    A cancelled record is final, so verification can stop waiting for a
+    completion that will not come.
+    """
+    candidates = records_for_dispatch(records, baseline, session_hash)
+    if candidates is None:
+        return False
+    target = native_room_key(room_name)
+    return any(
+        record.session.stop_reason in _CANCELLED_STOP_REASONS
+        and _single_room_record_in_dispatch(record.session, target, dispatched_at, now)
+        for record in candidates
+    )

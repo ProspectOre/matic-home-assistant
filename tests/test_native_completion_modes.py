@@ -9,8 +9,9 @@ from homeassistant.util import dt as dt_util
 from custom_components.matic_robot.client.api import _decode_cleaning_session
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.managed_executor import (
+    NativeRoomVerdict,
+    _async_adjudicate_room_end,
     _async_verify_leg_completion,
-    _async_verify_room_completion,
     _native_completion_match,
 )
 from custom_components.matic_robot.native_completion import (
@@ -63,12 +64,9 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
         "vacuum_and_mop": vacuum_status == mop_status == 2,
     }[mode]
     duration = 60 if mode == "vacuum_and_mop" else 30
-    assert (
-        await _async_verify_room_completion(
-            reader, frozenset(), room, dispatched, attempts=1
-        )
-        is expected
-    )
+    assert await _async_adjudicate_room_end(
+        reader, frozenset(), room, dispatched, attempts=1
+    ) is (NativeRoomVerdict.COMPLETED if expected else NativeRoomVerdict.UNVERIFIED)
     leg = await _async_verify_leg_completion(
         reader, frozenset(), [room], dispatched, attempts=1
     )

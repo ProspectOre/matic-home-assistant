@@ -564,6 +564,7 @@ _HOUSEHOLD_DOCS = (
     "docs/release-notes-0.5.1.md",
     "docs/release-notes-0.5.2.md",
     "docs/release-notes-0.5.3.md",
+    "docs/release-notes-0.5.4.md",
     "docs/room-schedules.md",
 )
 # Code, link targets and HTML anchors name things; the prose around them is copy.

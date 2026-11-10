@@ -5500,6 +5500,21 @@ class CleaningPlanManager:
 
         await self._async_mutate_and_save(serial_number, mutate)
 
+    async def async_mark_unreachable(
+        self, serial_number: str, plan_id: str, room: CleaningRoom
+    ) -> None:
+        """Close a room the robot could not reach, without credit."""
+
+        def mutate() -> bool:
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "unreachable"
+            record["last_unreachable"] = dt_util.utcnow().isoformat()
+            record["unreachable_runs"] = _stored_count(record, "unreachable_runs") + 1
+            self._robot(serial_number)["active_plan"] = None
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
+
     async def async_mark_failed(
         self,
         serial_number: str,

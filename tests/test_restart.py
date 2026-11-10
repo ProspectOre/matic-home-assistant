@@ -29,6 +29,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import (
+    NativeRoomVerdict,
     PlanCancelledError,
     RoomRunOutcome,
     _async_completion_budget,
@@ -1315,8 +1316,8 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
             AsyncMock(return_value=False),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_verify_room_completion",
-            AsyncMock(return_value=True),
+            "custom_components.matic_robot.managed_executor._async_adjudicate_room_end",
+            AsyncMock(return_value=NativeRoomVerdict.COMPLETED),
         ),
         patch(
             "custom_components.matic_robot.managed_executor._async_verify_leg_completion",
@@ -1395,8 +1396,12 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             0,
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_verify_room_completion",
-            AsyncMock(return_value=verified),
+            "custom_components.matic_robot.managed_executor._async_adjudicate_room_end",
+            AsyncMock(
+                return_value=NativeRoomVerdict.COMPLETED
+                if verified
+                else NativeRoomVerdict.UNVERIFIED
+            ),
         ) as room_history,
         patch(
             "custom_components.matic_robot.managed_executor._async_verify_leg_completion",
