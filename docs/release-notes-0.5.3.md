@@ -27,7 +27,7 @@ Thanks to [thurstonsand](https://github.com/thurstonsand) for reproducing the
 oversized-history failure on two robots, prototyping separate history-key
 reads and geometry-safe decoding in
 [#401](https://github.com/ProspectOre/matic-home-assistant/pull/401), and
-verifying the fix on both robots.
+testing the fix on both robots.
 
 Back up Home Assistant, update Matic to `v0.5.3` in HACS, and restart Home
 Assistant. Home Assistant 2026.10 or later is required.
