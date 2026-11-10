@@ -9,7 +9,11 @@ from google.protobuf.message import DecodeError
 
 from .coverage_receipts import native_session_hash
 from .exceptions import MaticError
-from .history_semantics import SemanticHistory, decode_history_semantics
+from .history_semantics import (
+    MAX_HISTORY_BYTES,
+    SemanticHistory,
+    decode_history_semantics,
+)
 from .models import (
     SESSION_STOP_REASONS,
     CleaningModeResult,
@@ -27,6 +31,7 @@ from .telemetry_fields import (
 )
 from .wire import (
     WireField,
+    decode_fields,
 )
 
 _SESSION_COMPLETED_STATUS = 0
@@ -76,15 +81,29 @@ def decode_cleaning_session_records(
 
 def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     """Decode native history without treating its global default as room proof."""
-    if len(payload) > _CLEANING_SESSION_MAX_BYTES:
+    if len(payload) > MAX_HISTORY_BYTES:
         return None
     try:
-        summary = telemetry_bytes(
-            payload,
-            5,
-            max_bytes=_CLEANING_SESSION_MAX_BYTES,
-            max_fields=_CLEANING_SESSION_MAX_FIELDS,
-        )
+        if len(payload) <= _CLEANING_SESSION_MAX_BYTES:
+            summary = telemetry_bytes(
+                payload,
+                5,
+                max_bytes=_CLEANING_SESSION_MAX_BYTES,
+                max_fields=_CLEANING_SESSION_MAX_FIELDS,
+            )
+        else:
+            envelope_fields = decode_fields(
+                memoryview(payload), max_fields=_CLEANING_SESSION_MAX_FIELDS
+            )
+            summaries = [field for field in envelope_fields if field.number == 5]
+            if (
+                len(summaries) != 1
+                or summaries[0].wire_type != 2
+                or not isinstance(summaries[0].value, memoryview)
+                or len(summaries[0].value) > _CLEANING_SESSION_MAX_BYTES
+            ):
+                return None
+            summary = bytes(summaries[0].value)
     except DecodeError:
         return None
     started_at = decode_nested_timestamp(summary, 3)
@@ -100,6 +119,8 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     semantics = decode_history_semantics(payload)
     if semantics is not None:
         return _canonical_cleaning_session(semantics, started_at, ended_at, fields)
+    if len(payload) > _CLEANING_SESSION_MAX_BYTES:
+        return None
     # Modern pages are governed by the strict OEM-replayed decoder. If the
     # structure is recognized but its semantics are unknown, retain the keyed
     # record without granting room or completion credit.
