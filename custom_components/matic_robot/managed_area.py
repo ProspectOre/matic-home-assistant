@@ -14,6 +14,7 @@ from . import managed_dispatch as dispatch_control
 from . import managed_observation as observation
 from . import managed_run
 from .client.commands import UserCommand
+from .client.coverage_receipts import native_session_hash
 from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
 from .const import DOMAIN
@@ -111,25 +112,53 @@ async def _async_wait_for_area_record(
     reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
     baseline: frozenset[bytes] | None,
     cancel_event: asyncio.Event,
+    *,
+    session_hash: str | None = None,
 ) -> None:
     """Wait, bounded, for an ended area mission's own history record.
 
     The next leg dispatches only while native history is unchanged since the
     handoff, and an area's record can land minutes after the area ends. This
-    run owned the robot throughout, so any new record is the area's own. A
-    record that never arrives leaves that fence to fail closed.
+    run waits for its own key when the dispatch has a verified session. The
+    wait is bounded so an absent record cannot stall the plan indefinitely.
     """
-    if reader is None or baseline is None:
+    if reader is None or (baseline is None and session_hash is None):
         return
-    for _attempt in range(observation.SESSION_HISTORY_ATTEMPTS):
-        if cancel_event.is_set():
-            raise PlanCancelledError
-        keys = await observation._async_session_history_baseline(reader)
-        if keys is not None and keys - baseline:
-            return
-        with suppress(TimeoutError):
-            async with asyncio.timeout(observation.SESSION_HISTORY_RETRY_SECONDS):
-                await cancel_event.wait()
+    if cancel_event.is_set():
+        raise PlanCancelledError
+
+    async def wait_for_record() -> None:
+        for attempt in range(observation.SESSION_HISTORY_ATTEMPTS):
+            keys = await observation._async_session_history_baseline(
+                reader, session_hash=session_hash
+            )
+            if keys is not None:
+                new_keys = keys - (baseline or frozenset())
+                if session_hash is None and new_keys:
+                    return
+                if session_hash is not None and any(
+                    native_session_hash(key) == session_hash for key in new_keys
+                ):
+                    return
+            if attempt + 1 < observation.SESSION_HISTORY_ATTEMPTS:
+                await asyncio.sleep(observation.SESSION_HISTORY_RETRY_SECONDS)
+
+    history = asyncio.create_task(wait_for_record())
+    cancelled = asyncio.create_task(cancel_event.wait())
+    try:
+        async with asyncio.timeout(observation.SESSION_HISTORY_TIMEOUT_SECONDS):
+            await asyncio.wait(
+                {history, cancelled}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if cancel_event.is_set():
+                raise PlanCancelledError
+            history.result()
+    except TimeoutError:
+        pass
+    finally:
+        history.cancel()
+        cancelled.cancel()
+        await asyncio.gather(history, cancelled, return_exceptions=True)
 
 
 def _area_refused_before_start(error: BaseException) -> bool:
@@ -163,6 +192,7 @@ async def _async_run_area_leg(
     session_identity: Callable[[], Awaitable[bytes | None]] | None,
     expected_dispatch_identity: bytes | None,
     expected_dispatch_history: frozenset[str] | None,
+    expected_dispatch_revision: str | None = None,
     on_native_identity: Callable[[bytes | None], None],
     run_id: str,
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]] | None,
@@ -221,6 +251,7 @@ async def _async_run_area_leg(
                 on_identity=on_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
             if checkpoint_dispatch is not None:
                 await checkpoint_dispatch(dispatch)
@@ -268,7 +299,10 @@ async def _async_run_area_leg(
             )
         if settle_history:
             await _async_wait_for_area_record(
-                session_history, dispatch.history_baseline, cancel_event
+                session_history,
+                dispatch.history_baseline,
+                cancel_event,
+                session_hash=dispatch.session_hash,
             )
     except PlanCancelledError, asyncio.CancelledError:
         # Stop owns its own STOP.

@@ -41,6 +41,7 @@ from custom_components.matic_robot.cadence_accounting import (
     validated_cadence_snapshot as _validated_cadence_snapshot,
 )
 from custom_components.matic_robot.client.commands import UserCommand
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import (
     CleaningSession,
@@ -78,6 +79,7 @@ from custom_components.matic_robot.managed_run import (
     RoomTakenOverError,
     _PreparedRoomDispatch,
 )
+from custom_components.matic_robot.native_completion import NativeHistoryReader
 from custom_components.matic_robot.native_history import (
     OEM_STOP_RECONCILIATION_SECONDS,
     _reconcile_pending_native_history,
@@ -3867,6 +3869,121 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
         room.room_id
     ]
     assert record["last_result"] == last_result
+
+
+@pytest.mark.parametrize("path", ["live", "wrong_floor", "unavailable", "reload"])
+async def test_interrupted_owned_room_reconciles_only_its_session_and_floor(hass, path):
+    from tests.test_coverage_receipts import history_key
+
+    manager = CleaningPlanManager(hass)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    floor = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (Room(room.room_id, room.name, "protocol-kitchen", b"kitchen", ()),),
+    )
+    wrong_floor = replace(floor, mission_id=2)
+    floor_token = plan_model_module.plan_floor_token(floor)
+    key = history_key()
+    session_hash = native_session_hash(key)
+    now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=5)
+    record = CleaningSessionRecord(
+        key,
+        CleaningSession(
+            dispatched_at.isoformat(),
+            now.isoformat(),
+            4,
+            (room.name,),
+            ((room.name, 4),),
+            True,
+            (room.name,),
+            vacuum_completed_rooms=(room.name,),
+        ),
+    )
+    ready = asyncio.Event()
+
+    async def read_late_history(*, strict, session_hash):
+        assert strict and session_hash == native_session_hash(key)
+        await ready.wait()
+        return (record,)
+
+    await manager.ledger.async_begin_run(
+        "serial", "away", "owned-run", 1, trigger="user", service="test"
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            AsyncMock(return_value="cleaning"),
+        ),
+        patch(
+            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            AsyncMock(side_effect=TimeoutError),
+        ),
+        pytest.raises(ServiceValidationError, match="Timed out while cleaning"),
+    ):
+        await _async_run_room(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            room,
+            motion_token=manager.control.begin_managed_motion("serial"),
+            session_history=NativeHistoryReader(read_late_history),
+            prepared_dispatch=_PreparedRoomDispatch(
+                (room,), None, dispatched_at, session_hash=session_hash
+            ),
+            floor_token=floor_token,
+            run_id="owned-run",
+        )
+
+    pending = manager.ledger.pending_native_reconciliation("serial")
+    assert pending is not None
+    assert pending["session_hash"] == session_hash
+    assert pending["floor_token"] == floor_token
+    (watcher,) = manager.control.reconciliation_tasks["serial"]
+    if path == "reload":
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        persisted = deepcopy(manager.repository.store.async_save.await_args.args[0])
+        manager = CleaningPlanManager(hass)
+        manager.repository.store = SimpleNamespace(
+            async_load=AsyncMock(return_value=persisted), async_save=AsyncMock()
+        )
+        await manager.async_load()
+        assert manager.ledger.pending_native_reconciliation("serial") == pending
+    else:
+        current = MagicMock(
+            return_value=wrong_floor if path == "wrong_floor" else floor,
+            side_effect=HomeAssistantError("map unavailable")
+            if path == "unavailable"
+            else None,
+        )
+        with patch(
+            "custom_components.matic_robot.managed_reconciliation.current_entity_floor_plan",
+            current,
+        ):
+            ready.set()
+            await asyncio.wait_for(watcher, timeout=1)
+
+    if path != "live":
+        assert manager.ledger.pending_native_reconciliation("serial") == pending
+        await manager.ledger.async_import_native_history(
+            "serial", wrong_floor, (record,)
+        )
+        await manager.ledger.async_import_native_history(
+            "serial", floor, (replace(record, key=b"other-session"),)
+        )
+        assert manager.ledger.pending_native_reconciliation("serial") == pending
+        assert manager.history.snapshot("serial")["completed_runs"] == 0
+        await manager.ledger.async_import_native_history("serial", floor, (record,))
+
+    assert manager.ledger.pending_native_reconciliation("serial") is None
+    await manager.ledger.async_import_native_history("serial", floor, (record,))
+    assert manager.history.snapshot("serial")["completed_runs"] == 1
 
 
 async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> None:

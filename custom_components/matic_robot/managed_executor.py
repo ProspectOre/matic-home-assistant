@@ -35,7 +35,7 @@ from .managed_run import (
     RoomTakenOverError,
     _PreparedRoomDispatch,
 )
-from .native_completion import native_room_key
+from .native_completion import native_room_key, read_handoff_revision
 from .plan_model import (
     AreaLeg,
     CleaningRoom,
@@ -46,6 +46,7 @@ from .plan_model import (
     run_entries,
 )
 from .plans import CleaningPlanManager
+from .run_admission import managed_run_admitted
 from .run_control import ManagedMotionReplacedError
 from .stop_return import (
     schedule_dock_confirmation,
@@ -96,6 +97,7 @@ async def _async_execute_rooms_reserved(
         manager.control.register_run_task(serial_number)
         cancel_event = manager.control.prepare_run(serial_number)
         motion_token = manager.control.begin_managed_motion(serial_number)
+        managed_run_admitted()
         cleanup_stop_sent = False
         dock_confirmation_scheduled = False
         native_identity: bytes | None = handoff_expected_identity
@@ -139,6 +141,7 @@ async def _async_execute_rooms_reserved(
                     ).hexdigest()
                     if dispatch.native_identity
                     else None,
+                    "session_hash": dispatch.session_hash,
                     "history_baseline": [
                         hashlib.sha256(key).hexdigest()
                         for key in dispatch.history_baseline
@@ -335,6 +338,7 @@ async def _async_execute_rooms_reserved(
                 )
                 recovered_dispatch = None
                 expected_dispatch_history = None
+                expected_dispatch_revision = None
                 if durable and index > 0 and prepared_dispatch is None:
                     handoff_history = checkpoint.get("handoff_history")
                     if isinstance(handoff_history, list):
@@ -383,6 +387,12 @@ async def _async_execute_rooms_reserved(
                     # already established that the session is inactive, and
                     # dispatch accepts either this identity or its clearing.
                     expected_dispatch_identity = completed_identity or b""
+                    expected_dispatch_revision = checkpoint.get("handoff_revision")
+                    if expected_dispatch_revision is None:
+                        expected_dispatch_revision = await read_handoff_revision(
+                            session_history
+                        )
+                        checkpoint["handoff_revision"] = expected_dispatch_revision
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
@@ -464,6 +474,7 @@ async def _async_execute_rooms_reserved(
                         session_identity=session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
+                        expected_dispatch_revision=expected_dispatch_revision,
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         checkpoint_dispatch=save_dispatch,
@@ -505,6 +516,7 @@ async def _async_execute_rooms_reserved(
                         session_identity=session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
+                        expected_dispatch_revision=expected_dispatch_revision,
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         record_room_completed=record_room_completion,
@@ -560,14 +572,18 @@ async def _async_execute_rooms_reserved(
                     # bounded handoff wait so restart recovery can resume the
                     # queue instead of treating the prior verifying leg as
                     # the only recoverable work.
+                    handoff_revision = await read_handoff_revision(session_history)
                     handoff_keys = await observation._async_session_history_baseline(
-                        session_history
+                        session_history,
+                        handoff=True,
+                        session_hash=checkpoint.get("session_hash"),
                     )
                     checkpoint.update(
                         {
                             "leg_index": index + 1,
                             "phase": "handoff",
                             "completed_room_ids": sorted(completed_room_ids),
+                            "handoff_revision": handoff_revision,
                             "handoff_history": sorted(
                                 hashlib.sha256(key).hexdigest() for key in handoff_keys
                             )

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from functools import partial
+import asyncio
+import logging
+from collections.abc import Callable, Coroutine
+from functools import wraps
 from typing import Any
 
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
@@ -10,6 +13,7 @@ from homeassistant.const import (
     ATTR_ENTITY_ID,
 )
 from homeassistant.core import (
+    HomeAssistant,
     ServiceCall,
     SupportsResponse,
 )
@@ -25,12 +29,14 @@ from .managed_executor import _async_execute_rooms
 from .managed_run import (
     _validation_error,
 )
+from .native_completion import NativeHistoryReader
 from .plan_model import (
     plan_floor_token,
 )
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_coherence import room_completion_names_are_current
 from .room_sequence import resolve_room_sequence
+from .run_admission import admission_event
 from .service_context import ServiceRuntime
 from .service_names import (
     SERVICE_CLEAN_ENTIRE_PLAN,
@@ -56,6 +62,47 @@ from .service_schemas import (
     RUN_SELECTED_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _keep_managed_run(
+    hass: HomeAssistant, handler: Callable[[ServiceCall], Coroutine[Any, Any, None]]
+) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
+    """Keep an admitted run owned when its service caller disconnects."""
+
+    @wraps(handler)
+    async def run(call: ServiceCall) -> None:
+        admitted = asyncio.Event()
+
+        async def execute() -> None:
+            token = admission_event.set(admitted)
+            try:
+                await handler(call)
+            finally:
+                admission_event.reset(token)
+
+        task = hass.async_create_background_task(
+            execute(), f"{DOMAIN} managed {call.service}"
+        )
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not admitted.is_set():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+
+                def report_result(done: asyncio.Task[None]) -> None:
+                    if not done.cancelled() and (err := done.exception()) is not None:
+                        _LOGGER.warning(
+                            "Detached managed run ended (%s)", type(err).__name__
+                        )
+
+                task.add_done_callback(report_result)
+            raise
+
+    return run
 
 
 def register_execution_services(runtime: ServiceRuntime) -> None:
@@ -188,9 +235,16 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             active_session=(
                 entry.runtime_data.client.async_get_active_cleaning_session_state
             ),
-            session_history=partial(
+            session_history=NativeHistoryReader(
                 entry.runtime_data.client.async_get_cleaning_session_records,
-                strict=True,
+                getattr(
+                    entry.runtime_data.client, "async_get_cleaning_session_keys", None
+                ),
+                getattr(
+                    entry.runtime_data.client,
+                    "async_get_idle_cleaning_session_revision",
+                    None,
+                ),
             ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
@@ -341,9 +395,18 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 active_session=(
                     entry.runtime_data.client.async_get_active_cleaning_session_state
                 ),
-                session_history=partial(
+                session_history=NativeHistoryReader(
                     entry.runtime_data.client.async_get_cleaning_session_records,
-                    strict=True,
+                    getattr(
+                        entry.runtime_data.client,
+                        "async_get_cleaning_session_keys",
+                        None,
+                    ),
+                    getattr(
+                        entry.runtime_data.client,
+                        "async_get_idle_cleaning_session_revision",
+                        None,
+                    ),
                 ),
                 session_identity=(
                     entry.runtime_data.client.async_get_cleaning_session_identity
@@ -378,7 +441,9 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_ROOM_SEQUENCE,
-        context._require_matic_control(hass, async_clean_room_sequence),
+        context._require_matic_control(
+            hass, _keep_managed_run(hass, async_clean_room_sequence)
+        ),
         schema=CLEAN_ROOM_SEQUENCE_SCHEMA,
     )
 
@@ -442,19 +507,25 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_INTELLIGENT_CLEAN,
-        context._require_matic_control(hass, async_intelligent_clean),
+        context._require_matic_control(
+            hass, _keep_managed_run(hass, async_intelligent_clean)
+        ),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_ENTIRE_PLAN,
-        context._require_matic_control(hass, async_clean_entire_plan),
+        context._require_matic_control(
+            hass, _keep_managed_run(hass, async_clean_entire_plan)
+        ),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_SELECTED_PLAN,
-        context._require_matic_control(hass, async_run_selected_plan),
+        context._require_matic_control(
+            hass, _keep_managed_run(hass, async_run_selected_plan)
+        ),
         schema=RUN_SELECTED_PLAN_SCHEMA,
     )
 

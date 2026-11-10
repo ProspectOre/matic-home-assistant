@@ -60,12 +60,15 @@ def _payload(
     mop_status: int | None = None,
     goals_field: int | tuple[int, ...] = 2,
     goal_ids: tuple[tuple[int, int], ...] = ((1, 2),),
+    goal_geometry: bytes = b"",
     start_payload: bytes | None = None,
+    reason_payload: bytes | None = None,
     event_entries: tuple[bytes, ...] | None = None,
     include_summary_reason: bool = True,
     modern_payload: bytes | None = None,
     omit_modern: bool = False,
     room_payload: bytes | None = None,
+    timestamps: bytes = b"",
 ) -> bytes:
     # StartReason.User uses field 2; empty User denotes App.
     if schedule_name is not None:
@@ -76,14 +79,17 @@ def _payload(
         user = _bfield(start_child, b"")
         start_reason = _bfield(2, user)
     goal_fields = (goals_field,) if isinstance(goals_field, int) else goals_field
+    target = _bfield(2, _bfield(3, _bfield(2, goal_geometry))) if goal_geometry else b""
     goals = b"".join(
         _bfield(
             field,
-            _bfield(7, _bfield(1, _bfield(1, _bfield(2, _uuid(*identity))))),
+            target + _bfield(7, _bfield(1, _bfield(1, _bfield(2, _uuid(*identity))))),
         )
         for identity in goal_ids
         for field in goal_fields
     )
+    if reason_payload is not None:
+        start_reason = reason_payload
     start = start_payload or (_bfield(1, goals) + _bfield(3, start_reason))
     if event_entries is None:
         event_entries = (_bfield(2, start),)
@@ -94,7 +100,7 @@ def _payload(
         _room(vacuum_status, mop_status) if room_payload is None else room_payload
     )
     modern = _bfield(1, room_payload) if modern_payload is None else modern_payload
-    summary = _bfield(9, b"") if include_summary_reason else b""
+    summary = timestamps + (_bfield(9, b"") if include_summary_reason else b"")
     if stop is not None:
         summary += _bfield(10, stop)
     if not omit_modern:
@@ -116,6 +122,24 @@ def test_decodes_canonical_identity_and_per_room_result() -> None:
     assert decoded.mode_results[0].duration_seconds == 73
 
 
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        (
+            _bfield(1, _vfield(1, 60) + _vfield(2, 500_000_000)),
+            "1970-01-01T00:01:00.500000+00:00",
+        ),
+        (_bfield(1, _vfield(1, 60) + _vfield(2, 1_000_000_000)), None),
+        (_bfield(1, b"\xff"), None),
+    ],
+)
+def test_summary_timestamps_require_valid_seconds_and_nanos(timestamp, expected):
+    decoded = decode_history_semantics(_payload(timestamps=_bfield(3, timestamp)))
+
+    assert decoded is not None
+    assert decoded.started_at == expected
+
+
 @pytest.mark.parametrize("payload", [b"", b"\xff", b"x" * (256 * 1024 + 1)])
 def test_rejects_malformed_or_oversized_payload(payload: bytes) -> None:
     assert decode_history_semantics(payload) is None
@@ -123,6 +147,20 @@ def test_rejects_malformed_or_oversized_payload(payload: bytes) -> None:
 
 def test_rejects_unknown_user_start_reason() -> None:
     assert decode_history_semantics(_payload(start_child=7)) is None
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        _bfield(2, _bfield(1, b"")) + _bfield(3, b""),
+        _bfield(9, b""),
+        _bfield(2, _bfield(1, b"") + _bfield(2, b"")),
+        _bfield(2, b""),
+        _bfield(2, _vfield(1, 1)),
+    ],
+)
+def test_malformed_start_reason_cannot_establish_an_initiator(reason):
+    assert decode_history_semantics(_payload(reason_payload=reason)) is None
 
 
 def test_schedule_initiator_does_not_retain_schedule_name() -> None:

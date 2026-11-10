@@ -42,6 +42,7 @@ class _PreparedRoomDispatch:
     native_identity: bytes | None = None
     recovered: bool = False
     completion_deadline: datetime | None = None
+    session_hash: str | None = None
 
 
 def _remaining_completion_time(dispatch: _PreparedRoomDispatch, timeout: int) -> float:
@@ -82,6 +83,8 @@ class _NativeReconciliation:
     cleaning_mode: str | None = None
     run_id: str | None = None
     coverage_setting: str | None = None
+    session_hash: str | None = None
+    floor_token: str | None = None
 
 
 class PlanCancelledError(HomeAssistantError):
@@ -94,6 +97,20 @@ class PlanCancelledError(HomeAssistantError):
 
 class NativeHistoryBaselineUnavailableError(HomeAssistantError):
     """Native completion history could not be read before mission dispatch."""
+
+
+class NativeHistoryIncompleteBaselineError(NativeHistoryBaselineUnavailableError):
+    """Native history keeps an entry without a session identity.
+
+    Unlike a failed read, retrying does not help until the robot drops the entry.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The robot's cleaning history has an entry that doesn't identify its "
+            "cleaning session, so this plan can't track its results. Plans can "
+            "start again once the robot no longer keeps that entry."
+        )
 
 
 class RoomStartTimeoutError(TimeoutError):
@@ -121,6 +138,8 @@ def _failure_reason_code(error: BaseException) -> str:
         return guard_error.reason_code
     if isinstance(error, ServiceValidationError) and error.__cause__ is not None:
         error = error.__cause__
+    if isinstance(error, NativeHistoryIncompleteBaselineError):
+        return "native_history_incomplete"
     if isinstance(error, NativeHistoryBaselineUnavailableError):
         return "native_history_baseline_unavailable"
     if isinstance(error, RoomStartTimeoutError):

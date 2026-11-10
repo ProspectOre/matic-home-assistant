@@ -18,6 +18,7 @@ from custom_components.matic_robot.client.coverage_receipts import (
 from custom_components.matic_robot.plan_model import (
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     CleaningRoom,
     plan_floor_token,
 )
@@ -91,6 +92,7 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
         "coverage_setting": "quick",
         PLAN_MOTION_TOKEN: token,
         PLAN_SESSION_ID: str(session),
+        PLAN_SESSION_REVISION: "a" * 64,
     }
     if mixed:
         params.update(
@@ -100,6 +102,7 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
     await MaticVacuum(entry).async_send_command("clean_rooms", params)
 
     sender.assert_awaited_once()
+    assert sender.await_args.kwargs["expected_idle_revision"] == "a" * 64
     assert manager.recovery.coverage_receipt("synthetic-serial", "run") == (
         None if ownership_changed else receipt
     )

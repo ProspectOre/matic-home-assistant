@@ -15,7 +15,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from .client.coverage_receipts import native_session_hash
-from .client.exceptions import MaticError
+from .client.exceptions import MaticError, NativeHistoryIncompleteError
 from .client.models import CleaningSessionRecord
 from .managed_run import (
     PlanCancelledError,
@@ -27,6 +27,9 @@ from .managed_run import (
 from .native_completion import (
     match_single_room_completions,
     native_room_key,
+    read_dispatch_history,
+    read_handoff_history_keys,
+    records_for_dispatch,
     session_overlaps_dispatch,
 )
 from .native_history import OEM_STOP_RECONCILIATION_SECONDS
@@ -65,6 +68,7 @@ async def _async_verify_leg_completion(
     timeout_seconds: float | None = None,
     on_verified_session: Callable[[str], None] | None = None,
     skipped_room_ids: Collection[str] = (),
+    session_hash: str | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
@@ -72,7 +76,7 @@ async def _async_verify_leg_completion(
     every leg room the record marks completed with a positive duration.  A
     missing or ambiguous record returns ``None`` and credits nothing.
     """
-    if reader is None or baseline is None:
+    if reader is None or (baseline is None and session_hash is None):
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     required_room_ids = set(targets.values()) - set(skipped_room_ids)
@@ -92,7 +96,7 @@ async def _async_verify_leg_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await read_dispatch_history(reader, session_hash)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic leg evidence unavailable (%s)", type(err).__name__
@@ -106,10 +110,13 @@ async def _async_verify_leg_completion(
                 )
                 now = dt_util.utcnow()
                 matches: list[CleaningSessionRecord] = []
-                for record in records:
+                new_records = records_for_dispatch(records, baseline, session_hash)
+                if new_records is None or (
+                    session_hash is not None and not new_records
+                ):
+                    evidence = None
+                for record in new_records or ():
                     session = record.session
-                    if record.key in baseline:
-                        continue
                     if not session_overlaps_dispatch(session, dispatched_at, now):
                         continue
                     names = [name.strip().casefold() for name in session.rooms]
@@ -174,8 +181,8 @@ async def _async_verify_leg_completion(
     except TimeoutError:
         pass
     if evidence and matched_key is not None and on_verified_session is not None:
-        if session_hash := native_session_hash(matched_key):
-            on_verified_session(session_hash)
+        if verified_hash := native_session_hash(matched_key):
+            on_verified_session(verified_hash)
     return evidence
 
 
@@ -477,16 +484,33 @@ async def _async_active_session_state(
 
 async def _async_session_history_baseline(
     reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    *,
+    raise_incomplete: bool = False,
+    session_hash: str | None = None,
+    handoff: bool = False,
+    expected_hashes: frozenset[str] | None = None,
 ) -> frozenset[bytes] | None:
-    """Capture opaque native keys before dispatch without exposing their values."""
+    """Read opaque native keys without exposing their values.
+
+    A failed read returns None. With ``raise_incomplete``, a read that found an
+    entry without a session identity raises instead, so dispatch can say so.
+    """
     if reader is None:
         return None
     try:
-        return frozenset(record.key for record in await reader())
+        if handoff:
+            return await read_handoff_history_keys(
+                reader, session_hash=session_hash, expected_hashes=expected_hashes
+            )
+        return frozenset(
+            record.key for record in await read_dispatch_history(reader, session_hash)
+        )
     except MaticError as err:
         _LOGGER.debug(
             "Native Matic completion baseline unavailable (%s)", type(err).__name__
         )
+        if raise_incomplete and isinstance(err, NativeHistoryIncompleteError):
+            raise
         return None
 
 
@@ -502,10 +526,11 @@ async def _async_verify_room_completion(
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
+    session_hash: str | None = None,
     on_verified_completion: Callable[[str, int], None] | None = None,
 ) -> bool:
     """Require one new, completed, overlapping native single-room record."""
-    if reader is None or baseline is None:
+    if reader is None or (baseline is None and session_hash is None):
         return False
     try:
         async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
@@ -517,7 +542,7 @@ async def _async_verify_room_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await read_dispatch_history(reader, session_hash)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic completion evidence unavailable (%s)",
@@ -534,6 +559,7 @@ async def _async_verify_room_completion(
                 matches = match_single_room_completions(
                     records,
                     baseline=baseline,
+                    session_hash=session_hash,
                     room_name=room.name,
                     cleaning_mode=room.cleaning_mode,
                     dispatched_at=dispatched_at,
@@ -545,8 +571,8 @@ async def _async_verify_room_completion(
                             matches[0].ended_at, matches[0].duration_seconds
                         )
                     if on_verified_session is not None:
-                        if session_hash := native_session_hash(matches[0].record.key):
-                            on_verified_session(session_hash)
+                        if verified_hash := native_session_hash(matches[0].record.key):
+                            on_verified_session(verified_hash)
                     return True
                 if len(matches) > 1:
                     return False

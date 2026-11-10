@@ -15,7 +15,11 @@ from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.managed_observation as managed_observation_module
 from custom_components.matic_robot.client.commands import UserCommand
-from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
+from custom_components.matic_robot.client.exceptions import (
+    MaticError,
+    NativeHistoryIncompleteError,
+)
 from custom_components.matic_robot.managed_area import (
     _area_refused_before_start,
     _async_wait_for_area_end,
@@ -28,20 +32,25 @@ from custom_components.matic_robot.managed_observation import (
     _LegOutcomeObserver,
 )
 from custom_components.matic_robot.managed_run import (
+    NativeHistoryIncompleteBaselineError,
     PlanCancelledError,
     RoomInterruptedError,
     RoomRunOutcome,
     RoomTakenOverError,
+    _failure_reason_code,
     _PreparedRoomDispatch,
 )
+from custom_components.matic_robot.native_completion import NativeHistoryReader
 from custom_components.matic_robot.plan_model import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    PLAN_SESSION_REVISION,
     CleaningRoom,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
+from tests.test_coverage_receipts import history_key
 from tests.wire_builders import _session_identity
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
@@ -1518,12 +1527,37 @@ async def test_dispatch_retries_a_transient_unknown_baseline(hass, transient, ba
         None,
         session_identity=reader,
         on_identity=identity_observed.append,
+        expected_dispatch_revision="a" * 64,
     )
     dispatch_session = UUID(sent[0]["params"][PLAN_SESSION_ID])
+    assert sent[0]["params"][PLAN_SESSION_REVISION] == "a" * 64
     assert prepared.native_identity_baseline == baseline
     assert prepared.native_identity == _session_identity(dispatch_session)
     assert identity_observed == [_session_identity(dispatch_session)]
     assert reader.await_count == 3
+
+
+async def test_dispatch_explains_unidentifiable_legacy_history(hass):
+    from custom_components.matic_robot.managed_dispatch import (
+        _async_dispatch_leg_command,
+    )
+
+    send_command = AsyncMock()
+    hass.services.async_register("vacuum", "send_command", send_command)
+    history = NativeHistoryReader(
+        AsyncMock(side_effect=NativeHistoryIncompleteError("ambiguous history"))
+    )
+    with pytest.raises(NativeHistoryIncompleteBaselineError) as raised:
+        await _async_dispatch_leg_command(
+            hass,
+            ServiceCall(hass, "matic_robot", "intelligent_clean", {}),
+            "vacuum.matic",
+            [ROOM],
+            None,
+            history,
+        )
+    send_command.assert_not_awaited()
+    assert _failure_reason_code(raised.value) == "native_history_incomplete"
 
 
 @pytest.mark.parametrize("transient_error", [MaticError, TimeoutError])
@@ -2773,6 +2807,65 @@ async def test_area_record_waiter_is_bounded_and_honours_cancel(monkeypatch):
 
     with pytest.raises(PlanCancelledError):
         await _async_wait_for_area_record(stopped, frozenset({old.key}), cancel)
+
+
+async def test_area_wait_ignores_foreign_history(monkeypatch):
+    monkeypatch.setattr(managed_observation_module, "SESSION_HISTORY_RETRY_SECONDS", 0)
+    own_key = history_key()
+    foreign = SimpleNamespace(key=history_key(UUID(int=1337)))
+    own = SimpleNamespace(key=own_key)
+    read = AsyncMock(side_effect=[(foreign,), (own,)])
+
+    await _async_wait_for_area_record(
+        NativeHistoryReader(read),
+        None,
+        asyncio.Event(),
+        session_hash=native_session_hash(own_key),
+    )
+
+    assert read.await_count == 2
+
+
+@pytest.mark.parametrize("end", ["already_cancelled", "stop", "deadline"])
+async def test_area_wait_closes_an_inflight_history_read(monkeypatch, end):
+    cancel = asyncio.Event()
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def read(**_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    if end == "deadline":
+        monkeypatch.setattr(
+            managed_observation_module, "SESSION_HISTORY_TIMEOUT_SECONDS", 0.02
+        )
+    if end == "already_cancelled":
+        cancel.set()
+    waiter = asyncio.create_task(
+        _async_wait_for_area_record(
+            NativeHistoryReader(read),
+            None,
+            cancel,
+            session_hash=native_session_hash(history_key()),
+        )
+    )
+
+    async with asyncio.timeout(1):
+        if end == "stop":
+            await started.wait()
+            cancel.set()
+        if end == "deadline":
+            await waiter
+        else:
+            with pytest.raises(PlanCancelledError):
+                await waiter
+
+    assert started.is_set() is (end != "already_cancelled")
+    assert closed.is_set() is (end != "already_cancelled")
 
 
 def test_only_known_vacuum_refusals_skip_the_area_cleanup_stop():

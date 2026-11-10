@@ -13,6 +13,8 @@ docking, or ending the overall mission does not mark a room cleaned.
 
 Managed plans match results to their own run. A partially completed mission
 credits only verified completed rooms. Older saved history is not rewritten.
+For a mission it starts, the integration reads the history record for that
+session. An unreadable record from an older clean cannot block the new mission.
 
 A plan runs as one or more native missions: consecutive rooms share one, each
 custom area is its own, and with Smart Stop on each room is its own. Each room

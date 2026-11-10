@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -9,15 +10,22 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.commands import _wrapped_uuid
 from custom_components.matic_robot.client.coverage_receipts import native_session_hash
+from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
 )
+from custom_components.matic_robot.managed_observation import (
+    _async_verify_leg_completion,
+)
 from custom_components.matic_robot.native_completion import (
+    NativeHistoryReader,
     match_session_room_completions,
     match_single_room_completions,
+    read_handoff_revision,
 )
+from custom_components.matic_robot.plan_model import CleaningRoom
 from tests.wire_builders import _field
 
 
@@ -135,17 +143,55 @@ def test_completion_matchers_reject_untrusted_session_clocks(changes):
     assert match_single_room_completions((record,), **arguments) == ()
 
 
+@pytest.mark.parametrize(
+    "sample", ["ours", "foreign", "unreadable", "duplicate", "baseline"]
+)
+async def test_grouped_verification_only_credits_its_session(sample):
+    record = _record()
+    foreign = _record(session_id=124)
+    samples = {
+        "ours": (record, replace(foreign, decoded=False)),
+        "foreign": (foreign,),
+        "unreadable": (replace(record, decoded=False), foreign),
+        "duplicate": (record, replace(record, decoded=False)),
+        "baseline": (record,),
+    }
+    read = AsyncMock(return_value=samples[sample])
+    session_hash = native_session_hash(record.key)
+    evidence = await _async_verify_leg_completion(
+        NativeHistoryReader(read),
+        frozenset({record.key}) if sample == "baseline" else None,
+        (
+            CleaningRoom("kitchen", "Kitchen", "vacuum", "quick"),
+            CleaningRoom("office", "Office", "vacuum", "quick"),
+        ),
+        dt_util.utcnow() - timedelta(minutes=3),
+        attempts=1,
+        session_hash=session_hash,
+    )
+    if sample == "ours":
+        assert evidence == {
+            "kitchen": (record.session.ended_at, 45),
+            "office": (record.session.ended_at, 45),
+        }
+    else:
+        assert evidence is None
+    read.assert_awaited_once_with(strict=True, session_hash=session_hash)
+
+
+async def test_unavailable_robot_revision_is_missing_evidence():
+    reader = NativeHistoryReader(
+        AsyncMock(),
+        read_idle_revision=AsyncMock(side_effect=CannotConnectError("offline")),
+    )
+    assert await read_handoff_revision(reader) is None
+
+
 @pytest.mark.parametrize("completed_rooms", [("Kitchen",), ("Kitchen", "Office")])
 async def test_grouped_verification_finishes_without_waiting_for_skipped_room(
     completed_rooms,
 ):
     import asyncio
-    from unittest.mock import AsyncMock
-
-    from custom_components.matic_robot.managed_observation import (
-        _async_verify_leg_completion,
-    )
-    from custom_components.matic_robot.plan_model import CleaningRoom
 
     record = _record(completed_rooms=completed_rooms)
     rooms = (
