@@ -352,6 +352,7 @@ async def _async_run_room(
                 room_started,
                 run_id=run_id,
                 session_hash=dispatch.session_hash if dispatch is not None else None,
+                floor_token=floor_token,
             )
             async with dispatch_control._managed_reconciliation_guard(
                 manager, serial_number, motion_token
@@ -442,6 +443,7 @@ async def _async_run_room(
                 room_started,
                 run_id=run_id,
                 session_hash=dispatch.session_hash if dispatch is not None else None,
+                floor_token=floor_token,
             )
         )
         async with dispatch_control._managed_reconciliation_guard(
@@ -518,6 +520,7 @@ async def _async_run_room(
             room_started,
             run_id=run_id,
             session_hash=dispatch.session_hash if dispatch is not None else None,
+            floor_token=floor_token,
         )
         async with dispatch_control._managed_reconciliation_guard(
             manager, serial_number, motion_token

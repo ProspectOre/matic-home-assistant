@@ -84,6 +84,7 @@ class _NativeReconciliation:
     run_id: str | None = None
     coverage_setting: str | None = None
     session_hash: str | None = None
+    floor_token: str | None = None
 
 
 class PlanCancelledError(HomeAssistantError):

@@ -62,6 +62,7 @@ def _payload(
     goal_ids: tuple[tuple[int, int], ...] = ((1, 2),),
     goal_geometry: bytes = b"",
     start_payload: bytes | None = None,
+    reason_payload: bytes | None = None,
     event_entries: tuple[bytes, ...] | None = None,
     include_summary_reason: bool = True,
     modern_payload: bytes | None = None,
@@ -87,6 +88,8 @@ def _payload(
         for identity in goal_ids
         for field in goal_fields
     )
+    if reason_payload is not None:
+        start_reason = reason_payload
     start = start_payload or (_bfield(1, goals) + _bfield(3, start_reason))
     if event_entries is None:
         event_entries = (_bfield(2, start),)
@@ -144,6 +147,20 @@ def test_rejects_malformed_or_oversized_payload(payload: bytes) -> None:
 
 def test_rejects_unknown_user_start_reason() -> None:
     assert decode_history_semantics(_payload(start_child=7)) is None
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        _bfield(2, _bfield(1, b"")) + _bfield(3, b""),
+        _bfield(9, b""),
+        _bfield(2, _bfield(1, b"") + _bfield(2, b"")),
+        _bfield(2, b""),
+        _bfield(2, _vfield(1, 1)),
+    ],
+)
+def test_malformed_start_reason_cannot_establish_an_initiator(reason):
+    assert decode_history_semantics(_payload(reason_payload=reason)) is None
 
 
 def test_schedule_initiator_does_not_retain_schedule_name() -> None:

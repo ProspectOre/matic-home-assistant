@@ -1344,6 +1344,7 @@ class PlanLedger:
         duration_seconds: int | None = None,
         room_identity: str | None = None,
         verified_coverage_receipt: CoverageReceipt | None = None,
+        completion_is_current: Callable[[], bool] | None = None,
     ) -> bool:
         """Credit a native completion that arrived after managed cleanup.
 
@@ -1357,6 +1358,8 @@ class PlanLedger:
         async def commit(_lease: _MetadataLockLease) -> bool:
             nonlocal changed
             async with self.repository.store_lock:
+                if completion_is_current is not None and not completion_is_current():
+                    return False
                 return await self.async_mark_native_completed_transaction(
                     serial_number,
                     plan_id,

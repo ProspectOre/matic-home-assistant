@@ -29,9 +29,14 @@ from .native_completion import match_single_room_completions, read_dispatch_hist
 from .native_history import OEM_STOP_RECONCILIATION_SECONDS
 from .plan_model import (
     CleaningRoom,
+    plan_floor_token,
 )
 from .plans import CleaningPlanManager
-from .room_coherence import current_entity_floor_plan, current_room_cadence_identity
+from .room_coherence import (
+    current_entity_floor_plan,
+    current_room_cadence_identity,
+    room_completion_names_are_current,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -116,6 +121,7 @@ def _build_native_reconciliation(
     *,
     run_id: str | None = None,
     session_hash: str | None = None,
+    floor_token: str | None = None,
 ) -> _NativeReconciliation | None:
     """Build a late-native marker only after the robot visibly started the room."""
     if not room_started or dispatched_at is None:
@@ -129,6 +135,7 @@ def _build_native_reconciliation(
         run_id,
         room.coverage_setting,
         session_hash,
+        floor_token,
     )
 
 
@@ -145,7 +152,11 @@ def _native_reconciliation_data(
         "dispatched_at": value.dispatched_at.isoformat(),
         **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
         **({"run_id": value.run_id} if value.run_id else {}),
-        **({"session_hash": value.session_hash} if value.session_hash else {}),
+        **(
+            {"session_hash": value.session_hash, "floor_token": value.floor_token}
+            if value.session_hash
+            else {}
+        ),
         **(
             {"coverage_setting": value.coverage_setting}
             if value.coverage_setting
@@ -231,6 +242,18 @@ async def _async_reconcile_native_stop(
     is positive evidence against it: the watcher abandons the marker instead of
     crediting the room its own observation disproves.
     """
+
+    def completion_is_current() -> bool:
+        if reconciliation.floor_token is None:
+            return True
+        try:
+            floor = current_entity_floor_plan(hass, entity_id)
+        except HomeAssistantError:
+            return False
+        return plan_floor_token(floor) == reconciliation.floor_token and (
+            room_completion_names_are_current(floor, (room,))
+        )
+
     deadline = monotonic() + OEM_STOP_RECONCILIATION_SECONDS
     while monotonic() < deadline:
         state = hass.states.get(entity_id)
@@ -282,6 +305,7 @@ async def _async_reconcile_native_stop(
                 duration_seconds=duration,
                 room_identity=current_room_identity,
                 verified_coverage_receipt=verified_coverage,
+                completion_is_current=completion_is_current,
             )
             if completed:
                 if confirm_room_completed is not None:

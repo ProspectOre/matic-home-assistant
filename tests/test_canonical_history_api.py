@@ -21,6 +21,7 @@ from custom_components.matic_robot.client.exceptions import (
     NativeHistoryIncompleteError,
 )
 from custom_components.matic_robot.client.history_semantics import (
+    MAX_HISTORY_BYTES,
     decode_history_semantics,
 )
 from custom_components.matic_robot.client.models import HermesCollectionEntry
@@ -89,6 +90,7 @@ def test_large_history_requires_one_bounded_summary():
     geometry = _bfield(2, b"x" * (256 * 1024 + 1))
     assert decode_cleaning_session(geometry) is None
     assert decode_cleaning_session(geometry + _bfield(5, b"") * 2) is None
+    assert decode_cleaning_session(b"x" * (MAX_HISTORY_BYTES + 1)) is None
 
 
 async def test_owned_history_and_handoff_keys_wait_through_idle_gap():

@@ -28,7 +28,7 @@ from custom_components.matic_robot.client.cleaning_session import (
     decode_nested_timestamp,
 )
 from custom_components.matic_robot.client.commands import CleaningMode, _coverage_specs
-from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.exceptions import NativeHistoryIncompleteError
 from custom_components.matic_robot.client.models import (
     CleaningPhase,
     HermesCollectionEntry,
@@ -251,7 +251,9 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     client._collections.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=64
     )
-    with pytest.raises(MaticError, match="incomplete or undecodable"):
+    with pytest.raises(
+        NativeHistoryIncompleteError, match="without a session identity"
+    ):
         await client.async_get_cleaning_session_records(strict=True)
     client._collections.async_get_tracked_collection_entries.return_value = (
         client._collections.async_get_tracked_collection_entries.return_value[0],
