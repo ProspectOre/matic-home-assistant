@@ -340,3 +340,31 @@ def test_area_and_room_failures_name_an_ended_owned_task() -> None:
     )
 
     assert _failure_reason_code(NativeTaskEndedError()) == "native_task_ended"
+
+
+def test_unreachable_match_bounds_mode_window_and_ambiguity() -> None:
+    now = dt_util.utcnow()
+    record = CleaningSessionRecord(b"new", _session("Kitchen", "unattempted"))
+    window = {
+        "room_name": "Kitchen",
+        "dispatched_at": now - timedelta(seconds=5),
+        "now": now + timedelta(seconds=1),
+    }
+    # No requested mode means no mode can prove the room unattempted.
+    assert not match_single_room_unreachable((record,), cleaning_mode=None, **window)
+    # A record that ended before this dispatch belongs to an earlier mission.
+    assert not match_single_room_unreachable(
+        (record,),
+        cleaning_mode="vacuum",
+        **{**window, "dispatched_at": now + timedelta(seconds=1)},
+    )
+    # Two candidates are ambiguous; the matcher stops at two.
+    other = CleaningSessionRecord(b"other", record.session)
+    assert (
+        len(
+            match_single_room_unreachable(
+                (record, other, record), cleaning_mode="vacuum", **window
+            )
+        )
+        == 2
+    )
