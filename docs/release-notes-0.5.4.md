@@ -57,5 +57,5 @@ Entity IDs assume a robot named "Matic".
 | `sensor.matic_protocol_version`, `sensor.matic_dock_detections`, `sensor.matic_sink_summon_locations` | The device page's Download diagnostics file. Automations cannot read it |
 | Attributes `low_charge`, `charging`, `problem` and `current_area` of `vacuum.matic` | `binary_sensor.matic_low_charge`, `binary_sensor.matic_charging`, `binary_sensor.matic_problem` and `sensor.matic_current_area` |
 
-Back up Home Assistant, update Matic to `v0.5.4-beta2` in HACS, and restart
-Home Assistant. Home Assistant 2026.10 or later is required.
+Back up Home Assistant, update Matic to `v0.5.4` in HACS, and restart Home
+Assistant. Home Assistant 2026.10 or later is required.
