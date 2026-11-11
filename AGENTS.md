@@ -72,7 +72,11 @@ modules.
 ## CI
 
 - Test, Browser UI and Validate run on GitHub-hosted runners for every pull
-  request. A test rejects any other runner.
+  request and every push to `main` or a release branch. A test rejects any
+  other runner.
+- Nightly runs the tests and the live lane on the oldest supported, newest
+  stable and beta Home Assistant. GitHub starts it from the default branch
+  only.
 - `.github/delivery-contract.json` must list every workflow file.
   `.github/scripts/delivery-contract.py` checks that first in Test.
 
