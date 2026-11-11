@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.client import tls
+from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
@@ -72,6 +73,30 @@ async def simulator(
 @pytest.fixture
 def credential(robot: SimulatedRobot) -> HermesCredential:
     return robot.add_credential(str(uuid4()))
+
+
+def hermes_client(
+    simulator: RunningSimulator,
+    credential: HermesCredential | None,
+    **overrides: object,
+) -> MaticHermesClient:
+    """The real client, pinned to the simulated robot unless overridden."""
+    options: dict[str, object] = {
+        "hostname": simulator.robot.hostname,
+        "serial_number": simulator.robot.serial_number,
+        "certificate_fingerprint": simulator.certificate.fingerprint,
+        "credential": credential,
+    }
+    options.update(overrides)
+    return MaticHermesClient(simulator.host, simulator.port, **options)  # type: ignore[arg-type]
+
+
+@pytest.fixture
+async def client(
+    simulator: RunningSimulator, credential: HermesCredential
+) -> AsyncIterator[MaticHermesClient]:
+    async with hermes_client(simulator, credential) as client:
+        yield client
 
 
 def entry_data(

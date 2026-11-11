@@ -1,0 +1,64 @@
+name: Nightly
+
+# Test runs the suite on the one Home Assistant version pyproject.toml pins.
+# This runs the suite and the live lane on the oldest supported version, the
+# newest stable one and the beta. GitHub starts a schedule only from the
+# default branch.
+on:
+  schedule:
+    - cron: "23 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        ha: [minimum, current, beta]
+        suite: [pytest, live]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      # Unlocked on purpose: each lane replaces the pinned Home Assistant.
+      - run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/python -m pip install -e '.[test]'
+      # Each pytest-homeassistant-custom-component release pins one Home
+      # Assistant version, and the tests load on no other. current is the
+      # newest stable version that package supports and beta the newest of any
+      # kind, the same one when no beta is out. uv comes with Home Assistant.
+      - env:
+          HA: ${{ matrix.ha }}
+        run: |
+          helper=pytest-homeassistant-custom-component
+          case "$HA" in
+            minimum) uv pip install "homeassistant==$(jq -r .homeassistant hacs.json)" "$helper" ;;
+            current) uv pip install --upgrade --prerelease disallow "$helper" ;;
+            beta) uv pip install --upgrade "$helper" ;;
+          esac
+          tested=$(uv pip freeze | grep '^homeassistant==')
+          echo "$HA: $tested" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$HA" = beta ]; then
+            newest=$(echo homeassistant | uv pip compile -q --no-deps --no-header --no-annotate --prerelease allow -)
+            [ "$tested" = "$newest" ] || echo "::warning::$newest is out, but $helper supports up to $tested."
+          fi
+      - if: matrix.suite == 'pytest'
+        run: pytest
+      - if: matrix.suite == 'live'
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test --config playwright.live.config.mjs
+        env:
+          MATIC_LIVE_WORKSPACE_PUSH: paired

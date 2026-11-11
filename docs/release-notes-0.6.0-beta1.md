@@ -96,8 +96,8 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
   raises a Repair with the fix until the robot stops reporting it. Confirmed
   faults stay visible when other codes change; 207/220 use reporter-observed labels.
 - **Maintenance suggested.** On while the robot's newest monthly recap suggests
-  maintenance, with a Repair naming the month. The recap doesn't say which part
-  yet, so check the brush roll, side brush, mop roll, caster and wedge.
+  maintenance; its `recap_month` attribute names the month. The recap doesn't say
+  which part yet, so check the brush roll, side brush, mop roll, caster and wedge.
 - **Bag pass ends.** Shows when an active bag pass runs out.
 - **Robot camera photos.** **Take photo** asks the robot to take a picture,
   and **Latest photo** shows the newest one, including photos taken in the
