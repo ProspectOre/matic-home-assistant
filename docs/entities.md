@@ -1,8 +1,7 @@
 # Entities and controls
 [Documentation](README.md) · [Automations](automation.md) Build dashboards, adjust settings, and use cleaning results in automations.
 Enable per-room statistics to track each room’s last clean and successful duration.
-Each robot has 55 fixed entities — 24 sensors, 11 binary sensors, 5 buttons,
-4 switches, 4 selects, 1 number, 2 cameras, 1 calendar, 1 event, 1 update, and 1 vacuum, plus two opt-in statistics sensors per mapped room.
+Each robot has 54 fixed entities — 24 sensors, 11 binary sensors, 5 buttons, 4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and 1 vacuum, plus two opt-in statistics sensors per mapped room.
 ## Names and entity IDs
 Home Assistant shows each name after the device name. Entity IDs come from a
 fixed key, not the name, so renaming an entity never changes its ID. The IDs
