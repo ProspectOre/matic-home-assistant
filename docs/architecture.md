@@ -1,8 +1,26 @@
-# Matic architecture
+# Architecture
 
-This guide maps the 0.6 source boundaries. It describes implementation, not
-release or physical-device acceptance. The [0.5 authority contract](architecture-0.5.md)
-and its linked receipts retain the decisions and evidence for that release.
+[Contributing](../CONTRIBUTING.md) · [Testing](testing.md) · [Working alongside the Matic app](coexistence.md)
+
+Where each responsibility lives in the source, and what each part must not do.
+
+## Ownership rules
+
+One part owns each concern, and the others read its answer instead of working
+out their own.
+
+| Part | Owns | Must not |
+| --- | --- | --- |
+| Protocol client | The pinned connection and the vetted commands | Hold Home Assistant workflows or policy |
+| Coordinator | The floor the robot reports and its matching floor plan | Treat a cached floor as current after a floor change |
+| Map store | Which map data is admitted as live, and its size limits | Restore a floor's identity from old geometry |
+| Cleaning policy | Rotation, room schedules, effective settings and their explanations | Send commands or decide that a room is done |
+| Managed executor | Sending each leg, ownership, handoffs, stop settlement and restart recovery | Keep a second record of what completed |
+| Completion accounting | Room results the robot confirmed, area missions the run owned, and counting each once | Take completion from the interface or from the robot's unnamed area summary |
+| Services, HTTP views, assistant tools and the frontend | Authorized, bounded views of the above | Carry cleaning or map rules of their own |
+
+A preview, the command that follows it and the explanation shown afterwards
+all come from the same policy and accounting results.
 
 ## Integration and robot
 
@@ -106,10 +124,9 @@ areas to a verified floor. Separate modules handle bounded
 [record validation](../custom_components/matic_robot/area_binding_records.py)
 and floor-scoped [Repairs](../custom_components/matic_robot/area_binding_repairs.py).
 
-## Evidence and delivery
+## Tests and delivery
 
-[Simulated robot tests](e2e-harness.md) exercise integration paths, and the
-[installed check](installed-check.md) and [upgrade drill](upgrade-drill.md)
-provide separate installation and rollback evidence. Review and CI, installed
-runtime checks, physical behavior and owner release approval are independent
-boundaries; see [review and manual merge](maintenance-reviews.md).
+[Testing](testing.md) says what each kind of test proves. Review and CI, a
+check of the installed release, behavior on a real robot and the owner's
+release approval are separate steps; see
+[Contributing](../CONTRIBUTING.md#releasing).

@@ -1,6 +1,7 @@
 # Matic 0.6 beta 1
 
 Unpublished candidate from `release/0.6`; publication needs owner testing and approval.
+Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and [entities](entities.md).
 
 ## Highlights
 
@@ -90,8 +91,7 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 
 - **Robot schedules.** `calendar.matic_native_schedules` shows each enabled
   weekly schedule from the Matic app, with its rooms and cleaning mode. Schedule
-  details stay out of Recorder. The 0.5.1 fixes preserve every acknowledged
-  schedule, Monday-first weekdays, enabled state and ordered/unordered room lists.
+  details stay out of Recorder.
 - **Robot alert.** The alert sensor names a full or missing bag, and either one
   raises a Repair with the fix until the robot stops reporting it. Confirmed
   faults stay visible when other codes change; 207/220 use reporter-observed labels.
@@ -112,8 +112,7 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 - **Room statistics.** Completed room results reported by the robot can update sensors
   for app-started and scheduled cleans. Late corrections retract only the affected
   mode; plan schedules and daily completion counts keep their separate rules.
-  Contributor credits are in the [0.5.1 notes](release-notes-0.5.1.md).
-
+  Credits: [0.5.1 notes](https://github.com/ProspectOre/matic-home-assistant/releases/tag/v0.5.1).
 - **Plans give way.** When the app, the robot's button, voice or a robot
   schedule takes over, a running plan ends as taken over and never sends a
   command to win the robot back.
@@ -126,8 +125,7 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 
 ## Assistant tools
 
-- **Sink and rooms.** Assist and MCP can send the robot to the sink or to a
-  room.
+- **Sink and rooms.** Assist and MCP can send the robot to the sink or a room.
 - **Recent runs, schedules and zones.** New read-only tools list recent cleans
   and why each ended, the robot's schedules with the runs coming up, and the
   no-go zones with the rooms they cover.
@@ -136,14 +134,12 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
-- Keep a matching 0.5.0 backup before installing. The isolated
-  [upgrade and rollback drill](upgrade-drill.md) checks synthetic plans, areas,
-  schedules and history; the owner's snapshot and host restore remain
-  unqualified. The [installed check](installed-check.md) needs the owner's go.
-- The finer Wi-Fi survey upgrades its storage to version 2 while retaining
-  older one-metre readings. Older integration versions cannot read that store;
-  rolling back requires the matching pre-upgrade backup. A restore also returns
-  the survey to the readings captured in that backup.
+- Make a Home Assistant backup before installing. 0.6 stores saved maps and
+  the Wi-Fi survey in a new format that 0.5 can't read, so going back means
+  restoring that backup, which also returns both to what the backup held. The
+  survey keeps its older one-metre readings when it upgrades.
+- Restoring a backup on a real Home Assistant host has not been tried yet. The
+  [upgrade and rollback drill](upgrade-drill.md) covers it on test data only.
 
 ## Checks still needed
 
@@ -151,5 +147,3 @@ Interior phase labels are inferred from one capture; follow/run-map pictures nee
 The photo trial used equivalent manual commands; Photo patrol has not run installed.
 Beta 1 is blocked pending live-stream/map-update reconnect, loss/order, authorization, polling, host and device qualification.
 Push starts automatically when supported (no user toggle); older backends use polling, and Matic keeps checking status on a schedule. This may add network traffic and Home Assistant load; the hoped-for 70% reduction in requests has not been shown.
-
-See [Matic Map and features](features.md), [Actions](actions.md) and [Entities](entities.md).

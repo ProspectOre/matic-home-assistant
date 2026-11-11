@@ -1,23 +1,31 @@
-# Managed cleaning across Home Assistant restarts
+# Restart recovery
 
-[Documentation](README.md) · [Managed-run contract](e2e-contract.md)
+[Troubleshooting](troubleshooting.md) · [How a plan runs](cleaning.md#how-a-plan-runs) ·
+[Plan run contract](e2e-contract.md)
 
-Managed plans save their progress so Home Assistant can reconnect to the same
-robot mission after a restart. The run keeps its queue, settings, verified
-results, and stop preference.
+A running plan saves its progress so Home Assistant can rejoin the same robot
+mission after a restart. The run keeps its queue, settings, confirmed results
+and stop preference. Recovery never sends a cleaning command a second time.
 
 ## How a plan is split
 
-A plan runs as one or more native missions, called legs:
+A plan runs as one or more robot missions, called legs. `plan_legs` and
+`entry_mission_boundaries` in
+[plan_model.py](../custom_components/matic_robot/plan_model.py) decide them:
 
-- Consecutive rooms share one mission, each room with its own settings.
-- Each custom area is its own mission. After an area, the robot returns to its
-  dock before the next leg starts.
-- With Smart Stop (finish current room) on, each room is its own mission.
+- Consecutive rooms share one mission, each room with its own cleaning mode and
+  vacuum coverage.
+- Each custom area is its own mission. The robot heads for its dock afterwards,
+  and the next leg starts once the area's mission has ended and the robot is
+  returning, idle or docked.
+- With Smart Stop (finish current room) on, each room is its own mission, so a
+  Stop at a room boundary can't let the next room start.
 
-When a leg finishes, the runner saves the next leg and a handoff phase before
-it waits for the robot to settle, so a restart between legs can resume the
-queue.
+A room leg is one start followed by a settings update per room. The update is
+sent only to the mission the run generated, on the map it started with, while
+the first room is cleaning. When a leg finishes, the run saves the next leg and
+a handoff phase before it waits for the robot to settle, so a restart between
+legs can resume the queue.
 
 ## What to expect
 
@@ -61,8 +69,10 @@ finish-current-room preference becomes an exact-session Stop in this case,
 because the per-room settings update may not have reached the robot.
 
 Recovery never replays START, UPDATE, or an ambiguous STOP. Changed, missing,
-malformed, or unreadable session identity cannot authorize a command. If saving
-the recovery Stop intent fails, ownership is released without sending Stop.
+malformed, or unreadable session identity cannot authorize a command, and
+cleanup stops only the mission the run owns, never one that replaced it. If
+saving the recovery Stop intent fails, ownership is released without sending
+Stop.
 
 An accepted Stop keeps its run-bound settlement record across restart. The
 runner resumes watching for the native mission to become inactive and settle
@@ -93,9 +103,3 @@ at the dock. A replacement command, expiry, or ownership mismatch retires it.
 Reconnection is bounded: recovery reads the robot's mission and floor up to 60
 times, two seconds apart. Inconclusive recovery leaves unrelated native missions
 alone and retains only the results it can verify.
-
-## Release validation
-
-Synthetic tests cover shutdown, restoration, same-mission reattachment, takeover,
-stop races, and ambiguous dispatch. Follow [Contributing](../CONTRIBUTING.md#releasing)
-for candidate installation and physical restart/reconnect acceptance.

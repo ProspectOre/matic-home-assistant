@@ -22,7 +22,7 @@ control photos requested in the Matic app or erase photos already on the robot.
 
 The minimum time between patrols defaults to 15 minutes. Only one patrol may run
 per robot. It requires at least 20% battery, checks again between rooms, and stops
-after 15 minutes. A nearby native schedule also prevents a patrol from starting.
+after 15 minutes. A robot schedule due soon also prevents a patrol from starting.
 If another clean or navigation takes over, the patrol yields to it.
 
 ## Results and notifications
@@ -54,9 +54,26 @@ actions:
         image: "{{ patrol.robots[0].photos[0].url }}"
 ```
 
+## Ask a question about a photo
+
+Pass `question` and `ai_task_entity_id` together to have a Home Assistant AI
+Task entity look at each photo. The entity must be able to generate data from
+image attachments; the integration never picks an entity or provider for you.
+It receives the full photo and your question, and its provider may send them
+outside your home. Each photo then carries `analysis`, with `problem` (true or
+false) and a short `summary`. The answer is returned to the caller only: it is
+not added to the photo event, an entity or the log. The copy handed to the
+entity is deleted when the answer arrives.
+
 The **Matic: Photograph room on alert** blueprint visits one room when a sensor
-turns on. It uses the same opt-in, blocked-room and cooldown checks, and sends a
-pixelated preview unless its full-resolution option is explicitly enabled.
+turns on, asks your AI Task entity your question, and notifies you only when
+the answer reports a problem. It uses the same opt-in, blocked-room and
+cooldown checks, and attaches a pixelated preview unless **Send the full
+photo** is on. If no photo could be taken, it says so in a text notification.
+
+Administrators can also ask Assist or an MCP client: `MaticTakePhoto` returns
+a pixelated preview of one room, and `MaticInvestigate` adds a question for an
+AI Task entity you name. Both run a one-room patrol with every check above.
 
 ## Stops and errors
 
