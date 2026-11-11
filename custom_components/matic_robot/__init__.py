@@ -50,7 +50,6 @@ from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
 from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
-from .maintenance import async_delete_maintenance_issues
 from .managed_reconciliation import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .media_source import DATA_PHOTO_ATTACHMENT_SOURCE
 from .migrations import async_migrate_entry
@@ -894,7 +893,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await plans.async_remove_robot(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)
     async_delete_custom_area_issue(hass, entry.entry_id)
-    async_delete_maintenance_issues(hass, entry.entry_id)
     async_delete_robot_alert_issues(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
         DATA_FIRMWARE_TRACKER

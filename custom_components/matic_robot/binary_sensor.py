@@ -103,6 +103,9 @@ DESCRIPTIONS = (
             if state.telemetry.maintenance_suggestions is None
             else bool(state.telemetry.maintenance_suggestions)
         ),
+        attributes_fn=lambda state: {
+            "recap_month": state.telemetry.maintenance_recap_month
+        },
     ),
 )
 

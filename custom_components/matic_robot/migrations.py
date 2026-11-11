@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import slugify
 
 from .const import CONF_SERIAL_NUMBER, DOMAIN
@@ -53,6 +54,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.minor_version < 3:
         _async_remove_retired_entities(hass, entry, REMOVED_IN_0_5)
         hass.config_entries.async_update_entry(entry, minor_version=3)
+    if entry.minor_version < 4:
+        _async_delete_maintenance_repairs(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=4)
     if entry.minor_version < 5:
         _async_remove_retired_entities(hass, entry, REMOVED_IN_0_6)
         hass.config_entries.async_update_entry(entry, minor_version=5)
@@ -109,3 +113,11 @@ def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
             continue
         _LOGGER.info("Migrating entity id %s to %s", registry_entry.entity_id, desired)
         registry.async_update_entity(registry_entry.entity_id, new_entity_id=desired)
+
+
+def _async_delete_maintenance_repairs(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the maintenance Repair that 0.6 development builds stored."""
+    prefix = f"maintenance_{entry.entry_id}_"
+    for domain, issue_id in list(ir.async_get(hass).issues):
+        if domain == DOMAIN and issue_id.startswith(prefix):
+            ir.async_delete_issue(hass, domain, issue_id)
