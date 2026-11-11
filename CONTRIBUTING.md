@@ -5,9 +5,9 @@ robot: the tests and a local Home Assistant both run against a simulated one.
 
 ## Set up
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/). It
-downloads Python 3.14 and the locked dependencies the first time you run a
-command.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
+[Node.js 24](https://nodejs.org/en/download). uv downloads Python 3.14 and the
+locked dependencies the first time you run a command.
 
 ```sh
 git clone https://github.com/ProspectOre/matic-home-assistant
@@ -25,16 +25,23 @@ size rules, privacy scan, and the tests whose imports lead to a changed file.
 CI runs the same command with `--all`, which runs every test and requires 100%
 line coverage. `uv run ruff format .` fixes formatting.
 
+The tests read Matic Map, the sidebar panel, which is built from
+`frontend/map-studio-v4` and not committed. `scripts/check.py` builds it before
+it runs tests. To run pytest yourself, build it first with `npm ci` and
+`npm run build:map-studio-v4`.
+
 Without uv, install the `test` extra into a Python 3.14 environment and run
 `python scripts/check.py`.
 
 ## Run without a robot
 
 ```sh
+npm ci
+npm run build:map-studio-v4
 uv run tests/live/server.py
 ```
 
-This starts Home Assistant at <http://127.0.0.1:8123> with a simulated robot
+This builds Matic Map and starts Home Assistant at <http://127.0.0.1:8123> with a simulated robot
 already paired and no login. The first start takes about a minute while Home
 Assistant installs its frontend. Matic Map is in the sidebar.
 
@@ -62,8 +69,8 @@ npm run build:map-studio-v4
 npm run test:browser
 ```
 
-Commit the rebuilt bundle with its source; CI rebuilds it and fails on a
-difference. On Linux, `npx playwright install --with-deps` also installs system
+Git ignores the build output, so commit the source alone; every CI job builds
+its own. On Linux, `npx playwright install --with-deps` also installs system
 packages and may need administrator rights. Give each worktree its own
 `node_modules`: a shared, symlinked one can change the generated chunks.
 
@@ -89,6 +96,14 @@ Before a pull request merges:
 Maintainers request the review by commenting `@codex review` on each pushed
 head, unless a request for that head is already pending.
 
+## Install a branch build
+
+Every Test run on a pull request or a push to `main` or a release branch keeps
+`matic_robot.zip`, built the way a release builds it. To try an unreleased
+head, sign in to GitHub, open its Test run under Actions and download
+`matic_robot.zip` from Artifacts. Replace `custom_components/matic_robot` in
+your Home Assistant configuration with the zip's contents and restart.
+
 ## Documentation
 
 Write one guide per task and link to it instead of repeating it. Lead with what
@@ -97,16 +112,33 @@ development history out of user docs.
 
 ## Releasing
 
-Maintainers publish releases, and the owner approves each one.
+Maintainers publish releases, and the owner approves each one. A release is
+one run of the Release workflow.
 
-1. Merge reviewed work into `release/X.Y` and publish a candidate from it as a
-   GitHub pre-release.
-2. Install the candidate through HACS beta versions, restart Home Assistant,
-   and verify the loaded version, the changed behavior and a guarded failure
-   on a robot.
-3. If the candidate fails, fix it and publish the next one. Keep only the
-   newest candidate's release and tag; record the commit of each earlier one
-   and keep a copy to roll back to.
-4. Merge `release/X.Y` into `main`, publish `vX.Y.Z` from that merge commit,
-   then delete the branch and the candidate's release and tag. Stable releases
-   and tags stay. A fix for a stable release reaches `main` by pull request.
+1. By pull request, set the version in `manifest.json` and `pyproject.toml`
+   (`0.6.0b1` for the tag `v0.6.0-beta1`, `0.6.0rc1` for `v0.6.0-rc1`), run
+   `uv lock`, and write the notes in `docs/release-notes-0.6.0-beta1.md`, named
+   as the tag without its `v`. The first line, `# Title`, becomes the release
+   title and the rest its body.
+2. Run Release from Actions with the tag. A candidate runs on `release/X.Y` or
+   `main`. A stable `vX.Y.Z` runs on `main`, after `release/X.Y` is merged
+   into it.
+
+The run stops if the tag disagrees with the version or the branch, already
+exists or has no notes. Otherwise it builds Matic Map and `matic_robot.zip`,
+attests where the zip was built, publishes the release with the zip attached,
+then lists and deletes the release and tag of every other candidate of that
+version. It never deletes a stable release or tag. Before publishing over a
+candidate, record its commit and keep a copy of its zip to roll back to.
+
+HACS installs the zip. To check a copy against the run that built it:
+
+```sh
+gh attestation verify matic_robot.zip --repo ProspectOre/matic-home-assistant
+```
+
+Install each candidate through HACS beta versions, restart Home Assistant, and
+verify the loaded version, the changed behavior and a guarded failure on a
+robot. If it fails, fix it and publish the next candidate. After a stable
+release, delete the release branch. A fix for a stable release reaches `main`
+by pull request.

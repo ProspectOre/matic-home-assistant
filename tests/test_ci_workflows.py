@@ -70,6 +70,77 @@ def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> Non
         assert f"matrix.suite == '{suite}'" in conditions
 
 
+@pytest.mark.parametrize(
+    ("workflow", "job", "reader"),
+    [
+        ("test.yml", "live", "npx playwright test"),
+        ("browser.yml", "browser", "npm run test:browser"),
+        ("nightly.yml", "nightly", "pytest"),
+        ("nightly.yml", "nightly", "npx playwright test"),
+        ("release.yml", "build", "python scripts/release.py zip"),
+        (
+            "windows-assistive-qualification.yml",
+            "windows-assistive-qualification",
+            "./scripts/qualify_windows_accessibility.ps1",
+        ),
+    ],
+)
+def test_matic_map_is_built_before_a_job_reads_it(
+    workflow: str, job: str, reader: str
+) -> None:
+    """The bundle is not committed. In Test's `test` job, check.py builds it."""
+    commands = [
+        step.get("run", "") for step in _workflow(workflow)["jobs"][job]["steps"]
+    ]
+    built = next(i for i, run in enumerate(commands) if "npm run build:" in run)
+
+    assert "npm run build:map-studio-v4" in commands[built].splitlines()
+    assert built < min(i for i, run in enumerate(commands) if reader in run)
+
+
+def test_release_runs_by_hand_and_builds_without_write_access() -> None:
+    """npm packages run in the build job, so only the publish job may write."""
+    workflow = _workflow("release.yml")
+    build, publish = workflow["jobs"]["build"], workflow["jobs"]["publish"]
+
+    def steps(job: dict[str, Any]) -> list[str]:
+        return [step.get("run") or step["uses"].split("@")[0] for step in job["steps"]]
+
+    assert list(workflow[True]) == ["workflow_dispatch"]
+    assert list(workflow[True]["workflow_dispatch"]["inputs"]) == ["tag"]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert build["permissions"] == {
+        "attestations": "write",
+        "contents": "read",
+        "id-token": "write",
+    }
+    assert publish["permissions"] == {"contents": "write"}
+    assert publish["needs"] == "build"
+    for job in (build, publish):
+        assert job["steps"][0]["with"] == {"persist-credentials": False}
+    assert steps(build)[3:] == [
+        'python scripts/release.py check "$TAG"',
+        "npm ci",
+        "npm run build:map-studio-v4",
+        "python scripts/release.py zip",
+        "actions/attest",
+        "actions/upload-artifact",
+    ]
+    assert steps(publish)[2:] == [
+        "actions/download-artifact",
+        'python scripts/release.py publish "$TAG"',
+        'python scripts/release.py prune "$TAG"',
+    ]
+
+
+def test_the_allowed_install_script_is_the_locked_esbuild() -> None:
+    """Every job builds with esbuild, and Dependabot moves only its version."""
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    esbuild = package["devDependencies"]["esbuild"]
+
+    assert package["allowScripts"] == {f"esbuild@{esbuild}": True}
+
+
 def test_dependabot_updates_npm_but_not_the_browser_runtime() -> None:
     """Playwright must match the browser.yml image, which Dependabot cannot move."""
     dependabot = yaml.safe_load((GITHUB / "dependabot.yml").read_text(encoding="utf-8"))

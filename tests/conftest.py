@@ -6,6 +6,18 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockModule, mock_integration
 
 
+def pytest_sessionstart() -> None:
+    """Stop before collection when Matic Map is not built: tests read it."""
+    from custom_components.matic_robot.frontend import PANEL_BUILT
+
+    if not PANEL_BUILT:
+        pytest.exit(
+            "Matic Map is not built, and the tests read it. Run `npm ci` and "
+            "`npm run build:map-studio-v4`, or scripts/check.py, which runs both.",
+            returncode=1,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _enable_custom_integrations(request: pytest.FixtureRequest) -> None:
     """Enable custom integrations, but only for tests that use Home Assistant.
