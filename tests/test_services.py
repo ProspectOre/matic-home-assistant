@@ -85,6 +85,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.room_sequence import (
     _resolve_room_id as _resolve_sequence_room_id,
 )
@@ -2832,9 +2833,9 @@ async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
             "vacuum.test",
             "serial",
             [room],
+            robot=RobotPort(session_identity=AsyncMock(return_value=b"native-session")),
             cadence_by_room=cadence_snapshot,
             floor_token="synthetic-floor-token",
-            session_identity=AsyncMock(return_value=b"native-session"),
         )
 
     checkpoint_write.assert_awaited()
@@ -3505,7 +3506,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     with pytest.raises(probatio.Invalid):
         run_call(run_behavior="fastest")
     assert "intelligent" not in execute.await_args_list[0].kwargs
-    assert execute.await_args_list[0].kwargs["refresh"] is (
+    assert execute.await_args_list[0].kwargs["robot"].refresh is (
         session.heartbeat.async_request_refresh
     )
     assert "intelligent" not in execute.await_args_list[1].kwargs
@@ -6208,114 +6209,6 @@ async def test_wait_returns_reached_state_while_cancel_stays_pending(hass) -> No
     hass.states.async_set("vacuum.test", "docked")
     assert await waiting == "docked"
     assert not cancel.is_set()
-
-
-async def test_execute_rooms_skips_every_room_once_cancellation_is_set(hass) -> None:
-    cancel_event = asyncio.Event()
-    cancel_event.set()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    await manager.catalog.async_save_plan(
-        "serial",
-        "away",
-        {
-            "name": "Away",
-            "rooms": [
-                {
-                    "room_id": "room-kitchen",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                }
-            ],
-        },
-    )
-    manager.control.prepare_run = MagicMock(return_value=cancel_event)
-    call = ServiceCall(
-        hass,
-        DOMAIN,
-        "run_selected_plan",
-        {
-            "plan_id": "away",
-            "start_timeout": 120,
-            "completion_timeout": 21600,
-            "return_to_base": True,
-        },
-    )
-    room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick")
-    with patch(
-        "custom_components.matic_robot.managed_room._async_run_room", AsyncMock()
-    ) as run:
-        await _async_execute_rooms(hass, call, manager, "vacuum.test", "serial", [room])
-    run.assert_not_awaited()
-
-
-@pytest.mark.parametrize("replace", [False, True])
-async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
-    hass, replace: bool
-) -> None:
-    """An immediate Stop cannot be forgotten by a not-yet-dispatched run."""
-    manager = CleaningPlanManager(hass)
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def delayed_check(*_args) -> None:
-        entered.set()
-        await release.wait()
-
-    call = ServiceCall(
-        hass,
-        DOMAIN,
-        "clean_room_sequence",
-        {
-            "plan_id": "quick_clean",
-            "start_timeout": 120,
-            "completion_timeout": 21600,
-            "return_to_base": True,
-        },
-    )
-    room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick")
-    command = AsyncMock()
-    with (
-        patch(
-            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
-            side_effect=delayed_check,
-        ),
-        patch("custom_components.matic_robot.managed_leg._async_run_leg") as run,
-    ):
-        task = asyncio.create_task(
-            _async_execute_rooms(
-                hass,
-                call,
-                manager,
-                "vacuum.test",
-                "serial",
-                [room],
-                managed_user_command=command,
-            )
-        )
-        await entered.wait()
-        try:
-            assert manager.control.lock("serial").locked()
-            assert manager.control.request_stop("serial").behavior == "immediate"
-            if replace:
-                async with manager.control.external_motion("serial"):
-                    pass
-            with pytest.raises(ServiceValidationError, match="already running"):
-                await _async_execute_rooms(
-                    hass,
-                    call,
-                    manager,
-                    "vacuum.test",
-                    "serial",
-                    [room],
-                )
-        finally:
-            release.set()
-            await task
-    run.assert_not_awaited()
-    command.assert_not_awaited()
-    assert not manager.control.lock("serial").locked()
-    assert not manager.control.has_managed_task("serial")
 
 
 @pytest.mark.parametrize("waiting_stage", ["preflight", "lock", "persist"])

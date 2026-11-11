@@ -21,6 +21,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_port import RobotPort
 from tests.wire_builders import _session_identity
 
 LAYOUTS = (
@@ -168,14 +169,16 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         "vacuum.matic",
         "serial",
         expected,
-        active_session=AsyncMock(return_value=False),
-        session_history=history,
-        confirm_room_completed=confirm,
+        robot=RobotPort(
+            active_session=AsyncMock(return_value=False),
+            session_history=history,
+            confirm_room_completed=confirm,
+            session_identity=AsyncMock(side_effect=lambda: identity),
+        ),
         managed_user_command=dock,
         mapped_room_names=tuple(r.name for r in rooms),
         floor_is_current=lambda: True,
         floor_token="a" * 64,
-        session_identity=AsyncMock(side_effect=lambda: identity),
         wait_for_leg_outcome=observe_terminal,
     )
     assert len(commands) == 1
@@ -374,13 +377,15 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
             "vacuum.matic",
             "serial",
             rooms,
-            active_session=AsyncMock(return_value=False),
-            session_history=history,
-            confirm_room_completed=confirm,
+            robot=RobotPort(
+                active_session=AsyncMock(return_value=False),
+                session_history=history,
+                confirm_room_completed=confirm,
+                session_identity=AsyncMock(side_effect=lambda: identity),
+            ),
             managed_user_command=managed_command,
             floor_is_current=lambda: True,
             floor_token="a" * 64,
-            session_identity=AsyncMock(side_effect=lambda: identity),
         ),
         timeout=3,
     )

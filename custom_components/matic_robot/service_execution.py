@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Any
 
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
@@ -28,6 +27,7 @@ from .managed_run import (
 from .plan_model import (
     plan_floor_token,
 )
+from .robot_port import RobotPort
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_coherence import room_completion_names_are_current
 from .room_sequence import resolve_room_sequence
@@ -179,38 +179,12 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             entity_id,
             serial_number,
             rooms,
+            robot=RobotPort.for_entry(entry),
             cadence_by_room=cadence_by_room,
-            refresh=entry.runtime_data.session.heartbeat.async_request_refresh,
-            active_session=(
-                entry.runtime_data.client.async_get_active_cleaning_session_state
-            ),
-            session_history=partial(
-                entry.runtime_data.client.async_get_cleaning_session_records,
-                strict=True,
-            ),
-            session_identity=(
-                entry.runtime_data.client.async_get_cleaning_session_identity
-            ),
-            coverage_verifier=getattr(
-                entry.runtime_data.client, "async_confirm_coverage_receipt", None
-            ),
-            confirm_room_completed=(
-                entry.runtime_data.session.heartbeat.async_confirm_room_completed
-            ),
             managed_user_command=async_managed_command,
             mapped_room_names=tuple(room_map.values()),
             floor_is_current=floor_is_current,
             floor_token=execution_floor_token,
-            set_activity_run_id=getattr(
-                getattr(entry.runtime_data.client, "activity_journal", None),
-                "set_run_id",
-                None,
-            ),
-            get_activity_run_id=getattr(
-                getattr(entry.runtime_data.client, "activity_journal", None),
-                "current_run_id",
-                None,
-            ),
             validate_prepared_run=validate_prepared_run,
             # The run order of rooms and custom areas, when there is an area.
             entries=preview["entries"] if _preview_has_area(preview) else None,
@@ -330,38 +304,12 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 entity_id,
                 serial_number,
                 rooms,
+                robot=RobotPort.for_entry(entry),
                 cadence_by_room=cadence_by_room,
-                refresh=entry.runtime_data.session.heartbeat.async_request_refresh,
-                active_session=(
-                    entry.runtime_data.client.async_get_active_cleaning_session_state
-                ),
-                session_history=partial(
-                    entry.runtime_data.client.async_get_cleaning_session_records,
-                    strict=True,
-                ),
-                session_identity=(
-                    entry.runtime_data.client.async_get_cleaning_session_identity
-                ),
-                coverage_verifier=getattr(
-                    entry.runtime_data.client, "async_confirm_coverage_receipt", None
-                ),
-                confirm_room_completed=(
-                    entry.runtime_data.session.heartbeat.async_confirm_room_completed
-                ),
                 managed_user_command=async_managed_command,
                 mapped_room_names=tuple(room_map.values()),
                 floor_is_current=floor_is_current,
                 floor_token=execution_floor_token,
-                set_activity_run_id=getattr(
-                    getattr(entry.runtime_data.client, "activity_journal", None),
-                    "set_run_id",
-                    None,
-                ),
-                get_activity_run_id=getattr(
-                    getattr(entry.runtime_data.client, "activity_journal", None),
-                    "current_run_id",
-                    None,
-                ),
                 validate_prepared_run=validate_prepared_run,
             )
         finally:

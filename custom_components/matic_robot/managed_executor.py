@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
@@ -23,9 +22,7 @@ from . import managed_leg as leg_execution
 from . import managed_observation as observation
 from . import managed_run
 from .client.commands import UserCommand
-from .client.coverage_receipts import CoverageVerifier
 from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord
 from .const import DOMAIN, EVENT_PLAN_FINISHED
 from .managed_run import (
     LegOutcomeWaiter,
@@ -46,7 +43,19 @@ from .plan_model import (
     run_entries,
 )
 from .plans import CleaningPlanManager
+from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
+from .run_machine import (
+    AreaFinished,
+    DispatchRecorded,
+    HandoffEntered,
+    LegDispatching,
+    LegVerified,
+    RoomVerified,
+    Run,
+    RunEvent,
+    transition,
+)
 from .stop_return import (
     schedule_dock_confirmation,
 )
@@ -62,26 +71,18 @@ async def _async_execute_rooms_reserved(
     serial_number: str,
     rooms: list[CleaningRoom],
     *,
+    robot: RobotPort,
     cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
-    refresh: Callable[[], Awaitable[None]] | None = None,
-    active_session: Callable[[], Awaitable[bool | None]] | None = None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
-    | None = None,
-    confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
-    session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
-    set_activity_run_id: Callable[[str | None], None] | None = None,
-    get_activity_run_id: Callable[[], str | None] | None = None,
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
     wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     _prepared_run_id: str,
     validate_prepared_run: Callable[[], None] | None = None,
-    coverage_verifier: CoverageVerifier | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
 ) -> None:
@@ -118,37 +119,31 @@ async def _async_execute_rooms_reserved(
             else dispatch_control._run_provenance(call)
         )
         checkpoint = deepcopy(recovery["recovery_checkpoint"]) if recovery else {}
-        completed_room_ids: set[str] = set(checkpoint.get("completed_room_ids", []))
-        finished_area_legs: set[int] = set(checkpoint.get("finished_area_legs", []))
+        run = Run.from_checkpoint(checkpoint) if recovery else Run()
         area_leg_count = 0
         chosen: list[CleaningRoom] = []
-        durable = floor_token is not None and session_identity is not None
+        durable = floor_token is not None and robot.session_identity is not None
+
+        async def advance(event: RunEvent) -> None:
+            """Move the run and apply its write to the durable checkpoint."""
+            nonlocal run
+            run, write = transition(run, event)
+            checkpoint.update(write.fields)
+            for key in write.drop:
+                checkpoint.pop(key, None)
+            if write.save:
+                await manager.recovery.async_set_recovery_checkpoint(
+                    serial_number, run_id, checkpoint
+                )
 
         async def save_dispatch(dispatch: _PreparedRoomDispatch) -> None:
-            checkpoint.update(
-                {
-                    "phase": "accepted"
-                    if dispatch.completion_deadline is not None
-                    else "starting",
-                    "dispatched_at": dispatch.dispatched_at.isoformat(),
-                    "completion_deadline": dispatch.completion_deadline.isoformat()
-                    if dispatch.completion_deadline is not None
-                    else None,
-                    "native_identity_hash": hashlib.sha256(
-                        dispatch.native_identity
-                    ).hexdigest()
-                    if dispatch.native_identity
-                    else None,
-                    "history_baseline": [
-                        hashlib.sha256(key).hexdigest()
-                        for key in dispatch.history_baseline
-                    ]
-                    if dispatch.history_baseline is not None
-                    else None,
-                }
-            )
-            await manager.recovery.async_set_recovery_checkpoint(
-                serial_number, run_id, checkpoint
+            await advance(
+                DispatchRecorded(
+                    dispatch.dispatched_at,
+                    dispatch.completion_deadline,
+                    dispatch.native_identity,
+                    dispatch.history_baseline,
+                )
             )
 
         def bind_native_identity(identity: bytes | None) -> None:
@@ -159,15 +154,17 @@ async def _async_execute_rooms_reserved(
             managed_user_command,
             manager,
             serial_number,
-            session_identity,
+            robot.session_identity,
             lambda: native_identity,
             allow_ended_dock=True,
         )
-        if set_activity_run_id is not None:
-            set_activity_run_id(run_id)
+        if robot.set_activity_run_id is not None:
+            robot.set_activity_run_id(run_id)
 
         def record_room_completion(room: CleaningRoom) -> None:
-            completed_room_ids.add(room.room_id)
+            # Its write is empty: the next leg's position saves the room.
+            nonlocal run
+            run, _ = transition(run, RoomVerified(room.room_id))
 
         try:
             # Publish ownership before the first suspending check. Otherwise
@@ -178,7 +175,7 @@ async def _async_execute_rooms_reserved(
                 manager,
                 serial_number,
                 entity_id,
-                active_session,
+                robot.active_session,
             )
             if recovery is None and validate_prepared_run is not None:
                 validate_prepared_run()
@@ -300,9 +297,7 @@ async def _async_execute_rooms_reserved(
                     "floor_token": floor_token,
                     "rooms": [asdict(room) for room in chosen],
                     "data": dict(call.data),
-                    "leg_index": 0,
-                    "phase": "ready",
-                    "completed_room_ids": [],
+                    **run.position(),
                     "finish_current_room": finish_current_room,
                     "finish_current_room_threshold": finish_current_room_threshold,
                 }
@@ -319,7 +314,7 @@ async def _async_execute_rooms_reserved(
                 validate_prepared_run()
             prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
-                if recovery is not None and index < checkpoint["leg_index"]:
+                if recovery is not None and index < run.leg_index:
                     continue
                 if (
                     cancel_event.is_set()
@@ -343,25 +338,16 @@ async def _async_execute_rooms_reserved(
                         # No durable evidence boundary means we cannot prove
                         # that an intervening native mission did not complete.
                         break
-                    checkpoint.update(
-                        {
-                            "leg_index": index,
-                            "phase": "handoff",
-                            "completed_room_ids": sorted(completed_room_ids),
-                        }
-                    )
-                    await manager.recovery.async_set_recovery_checkpoint(
-                        serial_number, run_id, checkpoint
-                    )
+                    await advance(HandoffEntered(index))
                     if finish_room_event.is_set():
                         break
                     if not await observation._async_wait_for_settled_leg_handoff(
                         hass,
                         entity_id,
                         cancel_event,
-                        refresh=refresh,
-                        active_session=active_session,
-                        identity_reader=session_identity,
+                        refresh=robot.refresh,
+                        active_session=robot.active_session,
+                        identity_reader=robot.session_identity,
                         expected_identity=native_identity,
                         finish_room_event=finish_room_event,
                     ):
@@ -388,16 +374,7 @@ async def _async_execute_rooms_reserved(
                         # new settings-boundary leg.
                         break
                 if durable and prepared_dispatch is None:
-                    checkpoint.update(
-                        {
-                            "leg_index": index,
-                            "phase": "dispatching",
-                            "completed_room_ids": sorted(completed_room_ids),
-                        }
-                    )
-                    await manager.recovery.async_set_recovery_checkpoint(
-                        serial_number, run_id, checkpoint
-                    )
+                    await advance(LegDispatching(index))
                 following = legs[index + 1] if index + 1 < len(legs) else None
                 next_leg = following if isinstance(following, list) else None
 
@@ -423,10 +400,10 @@ async def _async_execute_rooms_reserved(
                             entity_id,
                             candidate,
                             motion_token,
-                            session_history,
+                            robot.session_history,
                             floor_is_current=floor_is_current,
                             floor_token=floor_token,
-                            session_identity=session_identity,
+                            session_identity=robot.session_identity,
                             on_claim=lambda session_id: (
                                 manager.ledger.async_claim_native_session(
                                     serial_number, session_id, run_id=run_id
@@ -454,14 +431,14 @@ async def _async_execute_rooms_reserved(
                         leg,
                         cancel_event,
                         motion_token,
-                        active_session,
-                        session_history,
+                        robot.active_session,
+                        robot.session_history,
                         managed_user_command,
                         prepared_dispatch=prepared_dispatch,
                         finish_room_event=finish_room_event,
                         floor_is_current=floor_is_current,
                         floor_token=floor_token,
-                        session_identity=session_identity,
+                        session_identity=robot.session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
                         on_native_identity=bind_native_identity,
@@ -471,15 +448,7 @@ async def _async_execute_rooms_reserved(
                         # Later legs need the area's own record in history.
                         settle_history=index + 1 < len(legs),
                     )
-                    finished_area_legs.add(index)
-                    checkpoint["finished_area_legs"] = sorted(finished_area_legs)
-                    if durable and index + 1 == len(legs):
-                        # No handoff save follows the last leg. Persist the
-                        # finish so a restart before finalization still
-                        # completes the run instead of leaving it unverified.
-                        await manager.recovery.async_set_recovery_checkpoint(
-                            serial_number, run_id, checkpoint
-                        )
+                    await advance(AreaFinished(index, last_leg=index + 1 == len(legs)))
                 else:
                     completion_verified = await leg_execution._async_run_leg(
                         hass,
@@ -489,11 +458,11 @@ async def _async_execute_rooms_reserved(
                         serial_number,
                         leg,
                         cancel_event,
-                        refresh,
+                        robot.refresh,
                         motion_token,
-                        active_session,
-                        session_history,
-                        confirm_room_completed,
+                        robot.active_session,
+                        robot.session_history,
+                        robot.confirm_room_completed,
                         managed_user_command,
                         prepared_dispatch=prepared_dispatch,
                         prefetch_next=prefetch_next
@@ -502,7 +471,7 @@ async def _async_execute_rooms_reserved(
                         finish_room_event=finish_room_event,
                         floor_is_current=floor_is_current,
                         floor_token=floor_token,
-                        session_identity=session_identity,
+                        session_identity=robot.session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
                         on_native_identity=bind_native_identity,
@@ -517,7 +486,7 @@ async def _async_execute_rooms_reserved(
                                 )
                                 or {}
                             ).get("suspend_reason")
-                            if recovery is not None and index == checkpoint["leg_index"]
+                            if recovery is not None and index == run.leg_index
                             else None
                         ),
                         recovered_room_id=(
@@ -527,11 +496,11 @@ async def _async_execute_rooms_reserved(
                                 )
                                 or {}
                             ).get("room_id")
-                            if recovery is not None and index == checkpoint["leg_index"]
+                            if recovery is not None and index == run.leg_index
                             else None
                         ),
                         wait_for_leg_outcome=wait_for_leg_outcome,
-                        coverage_verifier=coverage_verifier,
+                        coverage_verifier=robot.coverage_verifier,
                     )
                 expected_dispatch_identity = None
                 if not completion_verified:
@@ -561,29 +530,14 @@ async def _async_execute_rooms_reserved(
                     # queue instead of treating the prior verifying leg as
                     # the only recoverable work.
                     handoff_keys = await observation._async_session_history_baseline(
-                        session_history
+                        robot.session_history
                     )
-                    checkpoint.update(
-                        {
-                            "leg_index": index + 1,
-                            "phase": "handoff",
-                            "completed_room_ids": sorted(completed_room_ids),
-                            "handoff_history": sorted(
-                                hashlib.sha256(key).hexdigest() for key in handoff_keys
-                            )
-                            if handoff_keys is not None
-                            else None,
-                        }
-                    )
-                    checkpoint.pop("verification_deadline", None)
-                    await manager.recovery.async_set_recovery_checkpoint(
-                        serial_number, run_id, checkpoint
-                    )
-            completed_room_count = len(completed_room_ids)
+                    await advance(LegVerified(index + 1, handoff_keys))
+            completed_room_count = len(run.completed_room_ids)
             # Every room verified and every custom area's own mission ended.
             all_entries_done = (
                 completed_room_count == len(chosen)
-                and len(finished_area_legs) == area_leg_count
+                and len(run.finished_area_legs) == area_leg_count
             )
             if finish_room_event.is_set() and not all_entries_done:
                 run_outcome = "cancelled"
@@ -624,13 +578,13 @@ async def _async_execute_rooms_reserved(
                     if needs_dock_confirmation:
                         dock_confirmation_scheduled = schedule_dock_confirmation(
                             hass,
-                            refresh=refresh or (lambda: asyncio.sleep(0)),
+                            refresh=robot.refresh or (lambda: asyncio.sleep(0)),
                             manager=manager,
                             serial_number=serial_number,
                             entity_id=entity_id,
                             run_id=run_id,
-                            set_run_id=set_activity_run_id,
-                            get_run_id=get_activity_run_id,
+                            set_run_id=robot.set_activity_run_id,
+                            get_run_id=robot.get_activity_run_id,
                             on_docked=partial(
                                 dispatch_control._async_mark_run_docked,
                                 manager,
@@ -776,7 +730,7 @@ async def _async_execute_rooms_reserved(
                         try:
                             session_ended = (
                                 await observation._async_active_session_state(
-                                    active_session
+                                    robot.active_session
                                 )
                             ) is False
                         except (Exception, asyncio.CancelledError) as cleanup_error:
@@ -825,7 +779,7 @@ async def _async_execute_rooms_reserved(
                     event_reason_code = run_reason_code
                     event_cause = run_cause
                     event_terminal_activity = terminal_activity
-                    event_completed_room_count = len(completed_room_ids)
+                    event_completed_room_count = len(run.completed_room_ids)
                     try:
                         finish_run = manager.ledger.async_finish_run
                         await finish_run(
@@ -833,7 +787,7 @@ async def _async_execute_rooms_reserved(
                             run_id,
                             run_outcome,
                             run_reason_code,
-                            len(completed_room_ids),
+                            len(run.completed_room_ids),
                             terminal_activity=terminal_activity,
                             cause=run_cause,
                             entity_id=entity_id,
@@ -901,18 +855,21 @@ async def _async_execute_rooms_reserved(
                     manager.control.unregister_run_task(serial_number)
                 defer_scope_cleanup = manager.control.defer_activity_scope_cleanup
                 stop_watcher_owns_scope = (
-                    set_activity_run_id is not None
+                    robot.set_activity_run_id is not None
                     and (not dock_confirmation_scheduled)
                     and defer_scope_cleanup(
-                        serial_number, run_id, set_activity_run_id, get_activity_run_id
+                        serial_number,
+                        run_id,
+                        robot.set_activity_run_id,
+                        robot.get_activity_run_id,
                     )
                 )
                 if (
-                    set_activity_run_id is not None
+                    robot.set_activity_run_id is not None
                     and not dock_confirmation_scheduled
                     and not stop_watcher_owns_scope
                 ):
-                    set_activity_run_id(None)
+                    robot.set_activity_run_id(None)
 
 
 async def _async_execute_rooms(
@@ -923,25 +880,17 @@ async def _async_execute_rooms(
     serial_number: str,
     rooms: list[CleaningRoom],
     *,
+    robot: RobotPort,
     cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
-    refresh: Callable[[], Awaitable[None]] | None = None,
-    active_session: Callable[[], Awaitable[bool | None]] | None = None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
-    | None = None,
-    confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
-    session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
-    set_activity_run_id: Callable[[str | None], None] | None = None,
-    get_activity_run_id: Callable[[], str | None] | None = None,
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
     wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     validate_prepared_run: Callable[[], None] | None = None,
-    coverage_verifier: CoverageVerifier | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
 ) -> None:
@@ -995,25 +944,18 @@ async def _async_execute_rooms(
             entity_id,
             serial_number,
             rooms,
+            robot=robot,
             cadence_by_room=cadence_by_room,
-            refresh=refresh,
-            active_session=active_session,
-            session_history=session_history,
-            confirm_room_completed=confirm_room_completed,
             managed_user_command=managed_user_command,
             mapped_room_names=mapped_room_names,
             floor_is_current=floor_is_current,
             floor_token=floor_token,
-            session_identity=session_identity,
-            set_activity_run_id=set_activity_run_id,
-            get_activity_run_id=get_activity_run_id,
             recovery=recovery,
             recovered_dispatch=recovered_dispatch,
             handoff_expected_identity=handoff_expected_identity,
             wait_for_leg_outcome=wait_for_leg_outcome,
             _prepared_run_id=run_id,
             validate_prepared_run=validate_prepared_run,
-            coverage_verifier=coverage_verifier,
             entries=entries,
             held_rooms=held_rooms,
         )

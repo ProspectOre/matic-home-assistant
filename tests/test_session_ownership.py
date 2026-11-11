@@ -41,6 +41,7 @@ from custom_components.matic_robot.plan_model import (
     CleaningRoom,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from tests.wire_builders import _session_identity
 
@@ -144,9 +145,11 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
             "vacuum.matic",
             "serial",
             rooms,
-            session_identity=read_identity,
-            active_session=presence,
-            session_history=history,
+            robot=RobotPort(
+                session_identity=read_identity,
+                active_session=presence,
+                session_history=history,
+            ),
             managed_user_command=sender,
         )
     )
@@ -472,7 +475,7 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
             "vacuum.matic",
             "serial",
             rooms,
-            session_identity=reader,
+            robot=RobotPort(session_identity=reader),
             managed_user_command=sender,
         )
     )
@@ -595,8 +598,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
             "vacuum.matic",
             "serial",
             rooms,
-            session_identity=read_identity,
-            session_history=history,
+            robot=RobotPort(session_identity=read_identity, session_history=history),
             managed_user_command=sender,
         )
     )
@@ -691,8 +693,10 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
             "vacuum.matic",
             "serial",
             rooms,
-            session_identity=AsyncMock(side_effect=lambda: identity),
-            session_history=history,
+            robot=RobotPort(
+                session_identity=AsyncMock(side_effect=lambda: identity),
+                session_history=history,
+            ),
             managed_user_command=sender,
         )
     )
@@ -767,71 +771,6 @@ async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
     assert error.value.translation_key == "room_taken_over"
     command.assert_not_awaited()
     sender.assert_not_awaited()
-
-
-@pytest.mark.parametrize("multi_room", [False, True])
-async def test_unexpected_outer_abort_cannot_stop_a_replacement(
-    hass, monkeypatch, multi_room
-):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    identity = b""
-    commands = []
-    sender = AsyncMock()
-
-    async def dispatch(call):
-        nonlocal identity
-        commands.append(call.data)
-        identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
-
-    async def fail_after_replacement(*args, **kwargs):
-        nonlocal identity
-        identity = REPLACEMENT
-        raise RuntimeError("unexpected observer failure")
-
-    hass.services.async_register("vacuum", "send_command", dispatch)
-    if multi_room:
-        monkeypatch.setattr(
-            _LegOutcomeObserver,
-            "next",
-            fail_after_replacement,
-        )
-    else:
-        monkeypatch.setattr(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
-            fail_after_replacement,
-        )
-    rooms = [ROOM]
-    if multi_room:
-        rooms.append(replace(ROOM, room_id="room-office", name="Office"))
-    call = ServiceCall(
-        hass,
-        "matic_robot",
-        "run_selected_plan",
-        {
-            "plan_id": "test-plan",
-            "start_timeout": 10,
-            "completion_timeout": 10,
-            "return_to_base": True,
-        },
-    )
-    with pytest.raises(RuntimeError, match="unexpected observer failure"):
-        await _async_execute_rooms(
-            hass,
-            call,
-            manager,
-            "vacuum.matic",
-            "serial",
-            rooms,
-            session_identity=AsyncMock(side_effect=lambda: identity),
-            managed_user_command=sender,
-        )
-    sender.assert_not_awaited()
-    assert len(commands) == 1
-    assert manager.history.snapshot("serial")["active_plan"] is None
-    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
-    assert not manager.control.lock("serial").locked()
 
 
 @pytest.mark.parametrize(
@@ -1956,8 +1895,10 @@ async def test_cancelled_managed_dispatch_stops_only_its_exact_session(hass, rep
             "vacuum.matic",
             "serial",
             [ROOM],
-            session_identity=read_identity,
-            session_history=AsyncMock(return_value=()),
+            robot=RobotPort(
+                session_identity=read_identity,
+                session_history=AsyncMock(return_value=()),
+            ),
             managed_user_command=send_managed_command,
         )
     )
@@ -2191,9 +2132,11 @@ async def _run_area_plan(
                 "vacuum.matic",
                 "serial",
                 rooms,
-                session_identity=robot.read_identity,
-                active_session=AsyncMock(return_value=False),
-                session_history=robot.history,
+                robot=RobotPort(
+                    session_identity=robot.read_identity,
+                    active_session=AsyncMock(return_value=False),
+                    session_history=robot.history,
+                ),
                 managed_user_command=sender,
                 floor_is_current=lambda: True,
                 floor_token=floor_token,

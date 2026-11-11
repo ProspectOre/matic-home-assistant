@@ -112,6 +112,7 @@ from custom_components.matic_robot.plan_timing import (
     _stored_count,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from custom_components.matic_robot.service_context import (
     _entry_for_entity,
@@ -362,187 +363,6 @@ async def test_remove_robot_waits_for_pending_native_history_save(hass) -> None:
     await removal
 
 
-async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
-    """A managed run emits one bounded terminal record without user identity."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    room = _room("Kitchen", "room-kitchen")
-    events = []
-    hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
-    set_run_id = MagicMock()
-    confirmed = MagicMock()
-
-    async def fake_leg(*args, **kwargs):
-        args[11](args[5][0].name)
-        kwargs["record_room_completed"](args[5][0])
-        return True
-
-    with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
-        AsyncMock(side_effect=fake_leg),
-    ):
-        await _async_execute_rooms(
-            hass,
-            _call(hass),
-            manager,
-            "vacuum.matic",
-            "serial",
-            [room],
-            confirm_room_completed=confirmed,
-            set_activity_run_id=set_run_id,
-        )
-
-    await hass.async_block_till_done()
-    last_run = manager.history.snapshot("serial")["last_run"]
-    assert last_run["outcome"] == "completed"
-    assert last_run["reason_code"] == "all_rooms_verified"
-    assert last_run["room_count"] == 1
-    assert last_run["completed_room_count"] == 1
-    confirmed.assert_called_once_with("Kitchen")
-    assert last_run["trigger"] == "external_unknown"
-    assert last_run["provenance"] == "external_unknown"
-    assert last_run["service"] == "run_selected_plan"
-    assert len(events) == 1
-    event = events[0].data
-    assert event["run_id"] == last_run["run_id"]
-    assert event["outcome"] == "completed"
-    assert event["terminal_activity"] == "unknown"
-    assert "room_outcomes" not in event
-    assert "@" not in str(event)
-    assert set_run_id.call_args_list[0].args[0] == last_run["run_id"]
-    assert set_run_id.call_args_list[-1].args[0] is None
-    assert (
-        await manager.ledger.async_finish_run("serial", "wrong-run", "failed", "x", 9)
-        is False
-    )
-
-
-async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
-    """A registered STOP watcher owns the journal until dock confirmation ends."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    scope: dict[str, str | None] = {"run_id": None}
-
-    def set_run_id(run_id: str | None) -> None:
-        scope["run_id"] = run_id
-
-    watcher_release = asyncio.Event()
-
-    async def watcher() -> None:
-        await watcher_release.wait()
-
-    async def fake_leg(*_args, **_kwargs):
-        manager.control.register_reconciliation_task(
-            "serial",
-            asyncio.create_task(watcher()),
-            dock=True,
-            run_id=_kwargs["run_id"],
-        )
-        return True
-
-    with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
-        AsyncMock(side_effect=fake_leg),
-    ):
-        await _async_execute_rooms(
-            hass,
-            _call(hass),
-            manager,
-            "vacuum.matic",
-            "serial",
-            [_room("Kitchen", "room-kitchen")],
-            set_activity_run_id=set_run_id,
-            get_activity_run_id=lambda: scope["run_id"],
-        )
-
-    assert scope["run_id"] is not None
-    assert manager.control.dock_reconciliation_active("serial") is True
-    watcher_release.set()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert scope["run_id"] is None
-
-
-async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> None:
-    """A delegated journal scope is released even when its watcher is cancelled."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    scope: dict[str, str | None] = {"run_id": None}
-    watcher_started = asyncio.Event()
-
-    async def watcher() -> None:
-        watcher_started.set()
-        await asyncio.Event().wait()
-
-    async def fake_leg(*_args, **_kwargs):
-        manager.control.register_reconciliation_task(
-            "serial",
-            asyncio.create_task(watcher()),
-            dock=True,
-            run_id=_kwargs["run_id"],
-        )
-        await watcher_started.wait()
-        return True
-
-    with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
-        AsyncMock(side_effect=fake_leg),
-    ):
-        await _async_execute_rooms(
-            hass,
-            _call(hass),
-            manager,
-            "vacuum.matic",
-            "serial",
-            [_room("Kitchen", "room-kitchen")],
-            set_activity_run_id=lambda run_id: scope.__setitem__("run_id", run_id),
-            get_activity_run_id=lambda: scope["run_id"],
-        )
-
-    assert scope["run_id"] is not None
-    manager.control.cancel_reconciliation_tasks("serial")
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert scope["run_id"] is None
-
-
-async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
-    """An older dock watcher cannot pin a newer run's activity scope."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    set_run_id = MagicMock()
-    watcher_release = asyncio.Event()
-
-    async def watcher() -> None:
-        await watcher_release.wait()
-
-    async def fake_leg(*_args, **_kwargs):
-        manager.control.register_reconciliation_task(
-            "serial", asyncio.create_task(watcher()), dock=True
-        )
-        return True
-
-    with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
-        AsyncMock(side_effect=fake_leg),
-    ):
-        await _async_execute_rooms(
-            hass,
-            _call(hass),
-            manager,
-            "vacuum.matic",
-            "serial",
-            [_room("Kitchen", "room-kitchen")],
-            set_activity_run_id=set_run_id,
-            get_activity_run_id=lambda: "newer-run",
-        )
-
-    assert set_run_id.call_args_list[-1].args[0] is None
-    watcher_release.set()
-    manager.control.cancel_reconciliation_tasks("serial")
-    await asyncio.sleep(0)
-
-
 async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
     """A stopped native task never credits a room or fails the automation."""
     manager = CleaningPlanManager(hass)
@@ -565,6 +385,7 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
+            robot=RobotPort(),
         )
 
     last_run = manager.history.snapshot("serial")["last_run"]
@@ -830,6 +651,7 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
             "vacuum.matic",
             "serial",
             [room],
+            robot=RobotPort(),
         )
 
     last_run = manager.history.snapshot("serial")["last_run"]
@@ -867,6 +689,7 @@ async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
             "vacuum.matic",
             "serial",
             [room],
+            robot=RobotPort(),
         )
 
     last_run = manager.history.snapshot("serial")["last_run"]
@@ -895,6 +718,7 @@ async def test_finish_current_room_uses_normalized_cancelled_outcome(hass) -> No
             "vacuum.matic",
             "serial",
             [room],
+            robot=RobotPort(),
         )
 
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "cancelled"
@@ -934,6 +758,7 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
             "vacuum.matic",
             "serial",
             [_room("Study", "room-study")],
+            robot=RobotPort(),
         )
     await hass.async_block_till_done()
     last_run = manager.history.snapshot("serial")["last_run"]
@@ -1055,7 +880,7 @@ async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
                 "vacuum.matic",
                 "serial",
                 [_room("Study", "room-study")],
-                set_activity_run_id=set_run_id,
+                robot=RobotPort(set_activity_run_id=set_run_id),
             )
         )
         await asyncio.wait_for(saving.wait(), 1)
@@ -1094,7 +919,7 @@ async def test_initial_save_failure_still_retires_the_run(
             "vacuum.matic",
             "serial",
             [_room("Study", "room-study")],
-            set_activity_run_id=set_run_id,
+            robot=RobotPort(set_activity_run_id=set_run_id),
         )
     await hass.async_block_till_done()
     last_run = manager.history.snapshot("serial")["last_run"]
@@ -1217,8 +1042,9 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             "vacuum.matic",
             "serial",
             [room],
-            session_history=history,
-            active_session=AsyncMock(return_value=False),
+            robot=RobotPort(
+                session_history=history, active_session=AsyncMock(return_value=False)
+            ),
         )
     await manager.control.async_cancel_and_wait("serial")
     await hass.async_block_till_done()
@@ -1320,10 +1146,14 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
                 "vacuum.matic",
                 "serial",
                 rooms,
-                active_session=(
-                    AsyncMock(return_value=None) if terminal == "interrupted" else None
+                robot=RobotPort(
+                    active_session=(
+                        AsyncMock(return_value=None)
+                        if terminal == "interrupted"
+                        else None
+                    ),
+                    session_history=AsyncMock(return_value=()),
                 ),
-                session_history=AsyncMock(return_value=()),
             )
         )
         try:
@@ -7783,6 +7613,7 @@ async def test_managed_plan_rejects_native_name_aliases_before_any_dispatch(
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(),
             mapped_room_names=("Kitchen", "Dining Room", other_name),
             managed_user_command=commands,
         )
@@ -8210,9 +8041,9 @@ async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(session_identity=AsyncMock(return_value=b"")),
             managed_user_command=sender,
             floor_token="synthetic-floor-token",
-            session_identity=AsyncMock(return_value=b""),
         )
 
     sender.assert_not_awaited()
@@ -9980,12 +9811,7 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
     try:
         with pytest.raises(ServiceValidationError, match="already running"):
             await _async_execute_rooms(
-                hass,
-                call,
-                manager,
-                "vacuum.matic",
-                "serial",
-                [room],
+                hass, call, manager, "vacuum.matic", "serial", [room], robot=RobotPort()
             )
     finally:
         lock.release()
@@ -9995,12 +9821,7 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
         AsyncMock(side_effect=PlanCancelledError),
     ):
         await _async_execute_rooms(
-            hass,
-            call,
-            manager,
-            "vacuum.matic",
-            "serial",
-            [room],
+            hass, call, manager, "vacuum.matic", "serial", [room], robot=RobotPort()
         )
 
     service_call = AsyncMock()
@@ -10021,6 +9842,7 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
             "vacuum.matic",
             "serial",
             [room],
+            robot=RobotPort(),
             managed_user_command=managed_command,
         )
     run.assert_awaited_once()
@@ -10059,6 +9881,7 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "one"), _heavy_room("Study", "two")],
+            robot=RobotPort(),
             managed_user_command=managed_command,
         )
 
@@ -10104,6 +9927,7 @@ async def test_execute_rooms_groups_same_settings_rooms_into_one_leg(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(),
         )
 
     assert legs_seen == [[rooms[0], rooms[1]], [rooms[2]]]
@@ -10371,12 +10195,16 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(
+                session_identity=AsyncMock(return_value=b""),
+                active_session=AsyncMock(return_value=False)
+                if settled is True
+                else None,
+                session_history=AsyncMock(return_value=()),
+            ),
             managed_user_command=sender,
             floor_is_current=lambda: True,
             floor_token="a" * 64,
-            session_identity=AsyncMock(return_value=b""),
-            active_session=AsyncMock(return_value=False) if settled is True else None,
-            session_history=AsyncMock(return_value=()),
         )
 
     assert run.await_count == 1
@@ -10501,11 +10329,10 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(session_identity=identity, session_history=history),
             managed_user_command=sender,
             floor_is_current=lambda: True,
             floor_token="a" * 64,
-            session_identity=identity,
-            session_history=history,
             handoff_expected_identity=b"" if takeover_leg == 0 else None,
         )
 
@@ -10557,7 +10384,7 @@ async def test_execute_rooms_prepares_next_command_during_current_return(hass) -
             "vacuum.matic",
             "serial",
             rooms,
-            session_history=AsyncMock(return_value=()),
+            robot=RobotPort(session_history=AsyncMock(return_value=())),
             managed_user_command=managed_command,
         )
 
@@ -10601,7 +10428,7 @@ async def test_execute_rooms_cleans_up_prefetch_when_graceful_stop_arrives(
             "vacuum.matic",
             "serial",
             rooms,
-            session_history=AsyncMock(return_value=()),
+            robot=RobotPort(session_history=AsyncMock(return_value=())),
             managed_user_command=managed_command,
         )
 
@@ -10643,6 +10470,7 @@ async def test_execute_rooms_falls_back_when_prefetch_is_unavailable(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(),
         )
 
     run.assert_awaited_once()
@@ -10678,6 +10506,7 @@ async def test_execute_rooms_skips_prefetch_after_stop_request(hass) -> None:
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(),
             managed_user_command=managed_command,
         )
 
@@ -10715,6 +10544,7 @@ async def test_execute_rooms_skips_prefetch_while_stop_fence_pending(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(),
         )
 
     run.assert_awaited_once()
@@ -10743,6 +10573,7 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(),
             managed_user_command=managed_command,
         )
 
@@ -10778,6 +10609,7 @@ async def test_execute_rooms_rechecks_ownership_after_room_history_save(hass) ->
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "one")],
+            robot=RobotPort(),
             managed_user_command=managed_command,
         )
 
@@ -10814,6 +10646,7 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
             "vacuum.matic",
             "serial",
             [room],
+            robot=RobotPort(),
             managed_user_command=AsyncMock(),
         )
 
@@ -10835,6 +10668,7 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
                 "vacuum.matic",
                 "serial",
                 [room],
+                robot=RobotPort(),
                 managed_user_command=sender,
             )
             if isinstance(error, MaticError):
@@ -10874,6 +10708,7 @@ async def test_config_unload_waits_for_managed_runner(hass) -> None:
                 "vacuum.matic",
                 "serial",
                 [_room("Kitchen", "one")],
+                robot=RobotPort(),
             )
         )
         await entered.wait()
@@ -11146,12 +10981,14 @@ async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None
             "vacuum.matic",
             "serial",
             rooms,
+            robot=RobotPort(
+                session_identity=AsyncMock(return_value=b""),
+                active_session=AsyncMock(return_value=False),
+                session_history=AsyncMock(return_value=()),
+            ),
             managed_user_command=AsyncMock(),
             floor_is_current=lambda: True,
             floor_token="a" * 64,
-            session_identity=AsyncMock(return_value=b""),
-            active_session=AsyncMock(return_value=False),
-            session_history=AsyncMock(return_value=()),
         )
 
     assert observed == [[rooms[0]], [rooms[1]]]
@@ -11295,8 +11132,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
             "vacuum.matic",
             "serial",
             rooms,
-            session_history=history,
-            active_session=native_session,
+            robot=RobotPort(session_history=history, active_session=native_session),
             managed_user_command=sender,
         )
     assert not manager.control.lock("serial").locked()

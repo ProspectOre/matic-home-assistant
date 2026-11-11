@@ -29,6 +29,7 @@ from custom_components.matic_robot.plan_views import (
     MaticPlansView,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
@@ -528,6 +529,7 @@ async def test_executor_fires_room_held_with_the_run_id(hass) -> None:
             "vacuum.matic",
             "serial",
             [STUDY],
+            robot=RobotPort(),
             held_rooms=held,
         )
     await hass.async_block_till_done()

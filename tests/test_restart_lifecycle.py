@@ -19,6 +19,7 @@ from custom_components.matic_robot.managed_run import (
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 
 from .test_restart import recovery_state as recovery_fixture
@@ -164,12 +165,7 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
     ):
         with pytest.raises(error_type):
             await _async_execute_rooms(
-                hass,
-                call,
-                manager,
-                "vacuum.matic",
-                "serial",
-                [room],
+                hass, call, manager, "vacuum.matic", "serial", [room], robot=RobotPort()
             )
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == expected
 
@@ -210,6 +206,7 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
                 "vacuum.matic",
                 "serial",
                 [room],
+                robot=RobotPort(),
                 managed_user_command=stop,
             ),
             "restart lifecycle test",
