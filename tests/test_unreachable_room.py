@@ -222,7 +222,7 @@ async def _run_plan(hass, robot: _Robot):
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 5,

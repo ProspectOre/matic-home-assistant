@@ -15,7 +15,7 @@ async function mountCandidates(page, { duplicate = false } = {}) {
   const bundle = await build({
     stdin: {
       contents: `export { renderRoomCandidates } from "./frontend/map-studio-v4/room-candidates";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
         export { render } from "lit";`,
       resolveDir: process.cwd(),
     },
@@ -121,7 +121,7 @@ test("late room hits do not apply after a plan or room catalog changes", async (
   const bundle = await build({
     stdin: {
       contents: `export { GestureController } from "./frontend/map-studio-v4/gesture-controller";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`,
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`,
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -175,7 +175,7 @@ test("narrow shell restores map focus after room choice and keeps Stop reachable
   await page.setViewportSize({ width: 390, height: 844 });
   const module = await bundledModule(page, "/room-candidate-shell-test.js", `
     export { MaticMapShellV4 } from "./frontend/map-studio-v4/shell";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
     export { reduceWorkspace } from "./frontend/map-studio-v4/state";
   `);
   await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -215,7 +215,7 @@ test("selected area points support accessible numeric editing, keyboard use and 
   const bundle = await build({
     stdin: {
       contents: `export { OutlineEditor } from "./frontend/map-studio-v4/outline-editor";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
         export { reduceWorkspace, captureCoordinateEdit } from "./frontend/map-studio-v4/state";
         export { validOutline, edgeDistance } from "./frontend/map-studio-v4/area-outline";
         export { render } from "lit";`,
@@ -278,7 +278,7 @@ test("Rooms source UI labels the daily cap, reports progress and emits its setti
   const bundle = await build({
     stdin: {
       contents: `export { MaticRoomsViewV4 } from "./frontend/map-studio-v4/rooms-view";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`,
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`,
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -333,7 +333,7 @@ test("saved plan preview describes an unverified daily cap without claiming comp
   const bundle = await build({
     stdin: {
       contents: `export { MaticPlanViewsV4 } from "./frontend/map-studio-v4/plan-views";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`,
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`,
       resolveDir: process.cwd(),
     },
     bundle: true,

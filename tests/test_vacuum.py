@@ -1238,7 +1238,7 @@ async def test_sink_summon_without_a_task_cancels_a_recovering_plan(hass) -> Non
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     await manager.ledger.async_begin_run(
-        serial_number, "plan", "run", 2, trigger="user", service="clean_entire_plan"
+        serial_number, "plan", "run", 2, trigger="user", service="run_selected_plan"
     )
     await manager.recovery.async_set_recovery_checkpoint(
         serial_number, "run", {"version": 1, "phase": "handoff", "leg_index": 1}

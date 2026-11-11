@@ -6,7 +6,7 @@ blueprint:
     rooms in the plan. It starts only when the robot is docked or idle, so it
     never replaces a clean already underway. When anyone comes home, it stops
     the plan and sends the robot to its dock; a room that was interrupted stays
-    due for next time.
+    due for next time. Needs Matic (Unofficial) 0.5.4 or later.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/clean_when_away.yaml
   input:
@@ -86,11 +86,12 @@ actions:
           - condition: template
             value_template: "{{ states(vacuum_entity) in ('docked', 'idle') }}"
         sequence:
-          - action: matic_robot.intelligent_clean
+          - action: matic_robot.run_selected_plan
             target:
               entity_id: !input vacuum
             data: >-
-              {{ {'plan': plan_name | trim} if (plan_name or '') | trim else {} }}
+              {{ dict({'plan': plan_name | trim} if (plan_name or '') | trim else {},
+                      run_behavior='intelligent') }}
       - conditions:
           - condition: trigger
             id: someone_returned

@@ -4,7 +4,7 @@ import { build } from "esbuild";
 const bundle = await build({
   stdin: { contents: `export { WorkspaceSynchronizer } from "./frontend/map-studio-v4/workspace-synchronizer";
     export { WorkspaceStore, CoherenceMachine } from "./frontend/map-studio-v4/state";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() },
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`, resolveDir: process.cwd() },
   bundle: true, format: "esm", write: false,
 });
 
@@ -46,17 +46,17 @@ test.beforeEach(async ({ page, browserName }) => {
     });
     const enable = value => {
       const current = { ...entry, liveWorkspaceTransportEnabled: value };
-      store.patch({ resources: { ...store.value.resources, entry: current,
+      store.replace({ ...store.value, resources: { ...store.value.resources, entry: current,
         catalog: { status: "ready", value: [current], problem: null } } });
     };
     window.activation = { store, sync, pending, starts, enable,
       run: () => sync.sync(projection),
-      mapAvailable: value => store.patch({ map: { ...store.value.map, available: value } }),
+      mapAvailable: value => store.replace({ ...store.value, map: { ...store.value.map, available: value } }),
       owner: changes => { projection = { ...projection, ...changes }; },
       emit: (index, event) => transportCallbacks[index]?.onEvent(event),
       freshCatalog: () => {
         const current = store.value.resources.entry;
-        store.patch({ resources: { ...store.value.resources,
+        store.replace({ ...store.value, resources: { ...store.value.resources,
           catalog: { status: "ready", value: current ? [{ ...current }] : [], problem: null } } });
       },
       catalogStatus: status => {
@@ -64,7 +64,7 @@ test.beforeEach(async ({ page, browserName }) => {
         if (status === "ready") catalogSuccessfulGeneration = catalogRequestGeneration;
         const current = store.value.resources.catalog;
         const value = status === "ready" ? [{ ...(current.value?.[0] ?? entry) }] : current.value;
-        store.patch({ resources: { ...store.value.resources, catalog: { status, value, problem: null } } });
+        store.replace({ ...store.value, resources: { ...store.value.resources, catalog: { status, value, problem: null } } });
       },
       completeRefresh: index => refreshWaiters[index]?.(),
       get boundaryRefreshes() { return boundaryRefreshes; },
@@ -108,7 +108,7 @@ for (const boundary of ["opt-out", "entry", "user", "page", "access", "dispose"]
       if (boundary === "opt-out") h.enable(false);
       if (boundary === "entry") h.owner({ entryKey: "other-entry" });
       if (boundary === "user") h.owner({ userKey: "user-b" });
-      if (boundary === "page") h.store.patch({ pageActive: false });
+      if (boundary === "page") h.store.replace({ ...h.store.value, pageActive: false });
       if (boundary === "access") h.owner({ host: { ...h.store.value.host, administrator: false } });
       if (boundary === "dispose") h.sync.dispose();
       else h.run();

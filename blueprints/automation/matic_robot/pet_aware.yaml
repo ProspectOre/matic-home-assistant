@@ -4,7 +4,8 @@ blueprint:
     Waits until a pet presence sensor has been clear for a time you set, then
     runs a saved plan with the longest-waiting rooms first. It runs at most
     once a day, and only when the robot is docked or idle. Also turn on the
-    pet-waste avoidance switch for an extra safeguard on the robot.
+    pet-waste avoidance switch for an extra safeguard on the robot. Needs Matic
+    (Unofficial) 0.5.4 or later.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/pet_aware.yaml
   input:
@@ -66,8 +67,9 @@ conditions:
          or as_local(this.attributes.last_triggered).date() != now().date() }}
 
 actions:
-  - action: matic_robot.intelligent_clean
+  - action: matic_robot.run_selected_plan
     target:
       entity_id: !input vacuum
     data: >-
-      {{ {'plan': plan_name | trim} if (plan_name or '') | trim else {} }}
+      {{ dict({'plan': plan_name | trim} if (plan_name or '') | trim else {},
+              run_behavior='intelligent') }}

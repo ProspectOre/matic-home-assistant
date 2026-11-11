@@ -192,11 +192,6 @@ class RobotOperationalState:
         return self.charging or self.charging_idle
 
     @property
-    def is_fully_charged(self) -> bool:
-        """Return the official fully-charged battery predicate."""
-        return self.battery_percentage == 100 and self.is_charging
-
-    @property
     def error_names(self) -> tuple[str, ...]:
         """Return readable labels for observed codes and raw labels otherwise.
 
@@ -204,7 +199,7 @@ class RobotOperationalState:
         live firmware uses values such as 207 and 304. The meaning for 207
         is physically confirmed; 220 maps to SolventUnavailable in the exact
         OEM 1.182.1 decoder replay. Unknown codes retain their numeric labels;
-        the activity sensor always exposes raw codes too.
+        the Robot alert sensor always exposes raw codes too.
         """
         return tuple(
             _OBSERVED_ERROR_NAMES.get(code, f"error_code_{code}")

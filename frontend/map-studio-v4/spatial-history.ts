@@ -55,13 +55,12 @@ export class SpatialHistory {
       const activeFloor = state.dataMode === "live"
         ? history.floors.find((floor) => floor.active)
         : selectedFloor;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         resources: {
-          ...this.#store.value.resources,
           history: resource("ready", history),
         },
         floor: {
-          ...this.#store.value.floor,
           classifiedCount: history.floors.length,
           ...(activeFloor && !(state.dataMode === "live" && state.floor.readOnly) ? { displayName: safeFloorName(activeFloor, 1) } : {}),
         },
@@ -86,11 +85,11 @@ export class SpatialHistory {
           if (controller.signal.aborted || !latest || !sameCoherenceGeneration(stamp, latest)
             || this.#store.value.resources.scene.value) return;
           if (!response.scene) continue;
-          const currentState = this.#store.value;
-          this.#store.patch({
-            floor: { ...currentState.floor, readOnly: true, displayName: safeFloorName(saved.floor, 1) },
-            resources: { ...currentState.resources, scene: resource("ready", { ...response.scene, historyRecordId: saved.snapshot.id }), pose: resource("idle", null) },
-            map: { ...currentState.map, available: true, exactPose: false },
+          this.#store.dispatch({
+            type: "result",
+            floor: { readOnly: true, displayName: safeFloorName(saved.floor, 1) },
+            resources: { scene: resource("ready", { ...response.scene, historyRecordId: saved.snapshot.id }), pose: resource("idle", null) },
+            map: { available: true, exactPose: false },
             notice: savedMapNotice(saved.snapshot.createdAt),
           });
           break;
@@ -99,10 +98,10 @@ export class SpatialHistory {
       if (fallbackMissing || (state.dataMode === "history" && (!selectedFloor || !selectedSnapshotExists))) {
         // A removed source must never silently become a different observation.
         this.#callbacks.abortResources(["catalog", "history", "setting-mutation"]);
-        const latest = this.#store.value;
-        this.#store.patch({
-          resources: { ...latest.resources, scene: resource("error", null, "history-source-missing"), pose: resource("idle", null) },
-          map: { ...latest.map, available: false, exactPose: false },
+        this.#store.dispatch({
+          type: "result",
+          resources: { scene: resource("error", null, "history-source-missing"), pose: resource("idle", null) },
+          map: { available: false, exactPose: false },
           historyCameras: {},
           notice: notice("warning", "v4_history_source_missing", "This saved map is no longer available. Choose another map or return to Live."),
         });
@@ -111,9 +110,9 @@ export class SpatialHistory {
       const current = this.#coherence.current();
       if (isAbort(error) || controller.signal.aborted || !current
         || !sameCoherenceGeneration(stamp, current)) return;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         resources: {
-          ...this.#store.value.resources,
           history: resource("error", null, problemCode(error, "history-unavailable")),
         },
       });
@@ -133,17 +132,17 @@ export class SpatialHistory {
       this.#callbacks.clearRecovery();
       this.#callbacks.resetIdentity();
       const state = this.#store.value;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "transition",
         resources: {
-          ...state.resources,
           plans: resource("idle", null),
           areas: resource("idle", null),
           scene: resource("idle", state.resources.scene.value),
           pose: resource("idle", null),
         },
-        map: { ...state.map, available: state.resources.scene.value !== null, exactPose: false },
+        map: { available: state.resources.scene.value !== null, exactPose: false },
         coherence: "verifying",
-        floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
+        floor: { readOnly: state.resources.scene.value !== null },
         workflow: "none",
         precisionOpen: false,
       });
@@ -160,7 +159,8 @@ export class SpatialHistory {
       snapshot?.revision || 0,
     );
     this.#callbacks.abortResources(["catalog", "setting-mutation"]);
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "transition",
       generation: stamp.generation,
       coherence: "current",
       dataMode: "history",
@@ -172,12 +172,10 @@ export class SpatialHistory {
         readOnly: true,
       },
       selection: {
-        ...this.#store.value.selection,
         floorId: floor.id,
         historyId: snapshot?.id || null,
       },
       resources: {
-        ...this.#store.value.resources,
         scene: resource(snapshot ? "loading" : "empty", null),
         pose: resource("idle", null),
         plans: resource("idle", null),
@@ -212,7 +210,8 @@ export class SpatialHistory {
     this.#callbacks.clearRecovery();
     const stamp = this.#coherence.begin(entry.entryId, floor.id, snapshot.id, snapshot.revision);
     this.#callbacks.abortResources(["catalog", "setting-mutation"]);
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "result",
       generation: stamp.generation,
       dataMode: "history",
       ...(this.#store.value.selection.historyId !== snapshot.id ? { historyCameras: {} } : {}),
@@ -222,16 +221,14 @@ export class SpatialHistory {
         readOnly: true,
       },
       selection: {
-        ...this.#store.value.selection,
         floorId: floor.id,
         historyId: snapshot.id,
       },
       resources: {
-        ...this.#store.value.resources,
         scene: resource("loading", null),
         pose: resource("idle", null),
       },
-      map: { ...this.#store.value.map, available: false, exactPose: false },
+      map: { available: false, exactPose: false },
     });
     await this.#loadHistoryScene(snapshot, stamp);
   }
@@ -248,18 +245,18 @@ export class SpatialHistory {
         controller.signal,
       );
       if (controller.signal.aborted || this.#callbacks.disposed() || !this.#coherence.accepts(stamp) || !response.scene) return;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         resources: {
-          ...this.#store.value.resources,
           scene: resource("ready", { ...response.scene, historyRecordId: snapshot.id }),
         },
-        map: { ...this.#store.value.map, available: true, exactPose: false },
+        map: { available: true, exactPose: false },
       });
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed() || !this.#coherence.accepts(stamp)) return;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         resources: {
-          ...this.#store.value.resources,
           scene: resource("error", null, problemCode(error, "history-scene-unavailable")),
         },
       });
@@ -282,7 +279,7 @@ export class SpatialHistory {
     const snapshot = floor?.snapshots.find((candidate) => candidate.id === state.selection.historyId);
     if (!floor) return;
     let stamp = this.#coherence.begin(entry.entryId, floor.id, snapshot?.id ?? floor.id, snapshot?.revision ?? 0);
-    this.#store.patch({ generation: stamp.generation });
+    this.#store.dispatch({ type: "result", generation: stamp.generation });
     await this.loadHistory(entry, stamp);
     if (!this.#coherence.accepts(stamp) || !this.#callbacks.pageActive()
       || this.#store.value.resources.history.status !== "ready") return;
@@ -293,7 +290,7 @@ export class SpatialHistory {
     if (refreshedSnapshot && refreshedSnapshot.revision !== stamp.revision) {
       stamp = this.#coherence.begin(entry.entryId, floor.id, refreshedSnapshot.id, refreshedSnapshot.revision);
     }
-    this.#store.patch({ generation: stamp.generation, coherence: "current" });
+    this.#store.dispatch({ type: "result", generation: stamp.generation, coherence: "current" });
     if (refreshedSnapshot && (!refreshed.resources.scene.value || refreshedSnapshot.revision !== snapshot?.revision)) {
       await this.#loadHistoryScene(refreshedSnapshot, stamp);
     }

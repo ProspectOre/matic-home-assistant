@@ -5,7 +5,7 @@ async function loadSurfaceRenderer(page, { slowDraws = 0 } = {}) {
   const bundle = await build({
     stdin: {
       contents: `export { RendererController } from "./frontend/map-studio-v4/renderer-controller";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
         export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";
         export { PERSPECTIVE_FIELD_OF_VIEW, lookAt, multiply, perspective } from "./frontend/map-studio-v4/renderer-math";`,
       resolveDir: process.cwd(),

@@ -4,7 +4,7 @@ import { build } from "esbuild";
 const bundle = await build({
   stdin: {
     contents: `export { GestureController } from "./frontend/map-studio-v4/gesture-controller";
-export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`,
+export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`,
     resolveDir: process.cwd(),
   },
   bundle: true,

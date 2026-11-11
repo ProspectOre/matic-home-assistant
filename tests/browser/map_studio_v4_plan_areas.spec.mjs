@@ -379,7 +379,7 @@ test.describe("custom area plan saves", () => {
   async function loadPlanEffects(page) {
     const bundle = await build({
       stdin: {
-        contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true, format: "esm", write: false,
@@ -405,7 +405,7 @@ test.describe("custom area plan saves", () => {
         run.effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
         await run.effects.refreshCatalog(true);
         await ticks();
-        store.patch({ map: initial.map, coherence: "current", workflow: initial.workflow, planView: initial.planView,
+        store.replace({ ...store.value, map: initial.map, coherence: "current", workflow: initial.workflow, planView: initial.planView,
           selection: initial.selection, planDraft: initial.planDraft,
           resources: { ...store.value.resources, plans: initial.resources.plans, areas: initial.resources.areas } });
         return run;
@@ -491,10 +491,10 @@ test.describe("custom area plan saves", () => {
       const held = m.selectPrimaryAction(store.value);
       // A clean draft has nothing to save: Done stays available.
       const done = m.selectPrimaryAction({ ...store.value, planDraft: { ...store.value.planDraft, dirty: false } });
-      store.patch({ planDraft: { ...store.value.planDraft, areas: store.value.planDraft.areas.filter((area) => area.areaId !== "porch") } });
+      store.replace({ ...store.value, planDraft: { ...store.value.planDraft, areas: store.value.planDraft.areas.filter((area) => area.areaId !== "porch") } });
       const ready = m.selectPrimaryAction(store.value);
       // Unknown areas (the list not read yet) leave the check to Home Assistant.
-      store.patch({ resources: { ...store.value.resources, areas: { status: "idle", value: null, problem: null } },
+      store.replace({ ...store.value, resources: { ...store.value.resources, areas: { status: "idle", value: null, problem: null } },
         planDraft: { ...store.value.planDraft, areas: [{ areaId: "gone", name: "Gone", cleaningMode: "vacuum", coverageSetting: "quick", slot: 0 }] } });
       const unknown = m.selectPrimaryAction(store.value);
       run.effects.dispose();

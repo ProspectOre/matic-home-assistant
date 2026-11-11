@@ -4,7 +4,7 @@ import { build } from "esbuild";
 test("sampled source detail is disclosed at close zoom and clears on replacement @safety", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'import "./frontend/map-studio-v4/map-canvas"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'import "./frontend/map-studio-v4/map-canvas"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true,

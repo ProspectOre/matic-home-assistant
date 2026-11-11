@@ -128,7 +128,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 10,
@@ -336,7 +336,7 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 10,
@@ -456,7 +456,7 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 10,
@@ -579,7 +579,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 10,
@@ -675,7 +675,7 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 0.03,
@@ -746,7 +746,7 @@ async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 10,
@@ -808,7 +808,7 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 10,
@@ -1368,7 +1368,7 @@ async def test_leg_preserves_two_pause_resume_episodes_during_first_store_wait(
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "test-plan",
             "start_timeout": 10,
@@ -1524,7 +1524,7 @@ async def test_dispatch_retries_a_transient_unknown_baseline(hass, transient, ba
     reader = AsyncMock(side_effect=read_identity)
     identity_observed = []
     call = ServiceCall(
-        hass, "matic_robot", "intelligent_clean", {"plan_id": "test-plan"}
+        hass, "matic_robot", "run_selected_plan", {"plan_id": "test-plan"}
     )
     prepared = await _async_dispatch_leg_command(
         hass,
@@ -1576,7 +1576,7 @@ async def test_successful_dispatch_recovers_transient_post_dispatch_identity_rea
 
     prepared = await _async_dispatch_leg_command(
         hass,
-        ServiceCall(hass, "matic_robot", "intelligent_clean", {}),
+        ServiceCall(hass, "matic_robot", "run_selected_plan", {}),
         "vacuum.matic",
         [ROOM],
         7,
@@ -1645,7 +1645,7 @@ async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
             ServiceCall(
                 hass,
                 "matic_robot",
-                "intelligent_clean",
+                "run_selected_plan",
                 {
                     "plan_id": "synthetic-plan",
                     "start_timeout": 10,
@@ -1727,7 +1727,7 @@ async def test_failed_managed_dispatch_recovers_only_its_exact_session(hass, rep
     with pytest.raises(HomeAssistantError, match=expected_failure):
         await _async_dispatch_leg_command(
             hass,
-            ServiceCall(hass, "matic_robot", "intelligent_clean", {}),
+            ServiceCall(hass, "matic_robot", "run_selected_plan", {}),
             "vacuum.matic",
             [ROOM],
             7,
@@ -1802,7 +1802,7 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "synthetic-plan",
             "start_timeout": 1,
@@ -1870,7 +1870,7 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
             ServiceCall(
                 hass,
                 "matic_robot",
-                "intelligent_clean",
+                "run_selected_plan",
                 {
                     "plan_id": "synthetic-plan",
                     "start_timeout": 1,
@@ -1944,7 +1944,7 @@ async def test_cancelled_managed_dispatch_stops_only_its_exact_session(hass, rep
             ServiceCall(
                 hass,
                 "matic_robot",
-                "intelligent_clean",
+                "run_selected_plan",
                 {
                     "plan_id": "synthetic-plan",
                     "start_timeout": 1,
@@ -2034,7 +2034,7 @@ async def test_successful_managed_dispatch_rejects_a_replaced_or_missing_session
     with pytest.raises(RoomTakenOverError, match=expected_reason):
         await _async_dispatch_leg_command(
             hass,
-            ServiceCall(hass, "matic_robot", "intelligent_clean", {}),
+            ServiceCall(hass, "matic_robot", "run_selected_plan", {}),
             "vacuum.matic",
             [ROOM],
             7,

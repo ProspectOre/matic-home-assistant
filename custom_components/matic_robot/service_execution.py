@@ -33,9 +33,7 @@ from .room_coherence import room_completion_names_are_current
 from .room_sequence import resolve_room_sequence
 from .service_context import ServiceRuntime
 from .service_names import (
-    SERVICE_CLEAN_ENTIRE_PLAN,
     SERVICE_CLEAN_ROOM_SEQUENCE,
-    SERVICE_INTELLIGENT_CLEAN,
     SERVICE_PREVIEW_PLAN,
     SERVICE_PREVIEW_ROOM_SEQUENCE,
     SERVICE_RUN_SELECTED_PLAN,
@@ -423,34 +421,15 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         supports_response=SupportsResponse.ONLY,
     )
 
-    async def async_intelligent_clean(call: ServiceCall) -> None:
-        """Continue with the least recently confirmed cleaning opportunity."""
-        await async_run_saved_plan(call, intelligent=True)
-
-    async def async_clean_entire_plan(call: ServiceCall) -> None:
-        """Clean every room in the plan's saved order."""
-        await async_run_saved_plan(call, intelligent=False)
-
     async def async_run_selected_plan(call: ServiceCall) -> None:
-        """Run a saved plan using its configured default behavior."""
+        """Run a saved plan in its saved cleaning order, or the one asked for."""
+        run_behavior = call.data.get("run_behavior")
         await async_run_saved_plan(
             call,
-            intelligent=None,
+            intelligent=None if run_behavior is None else run_behavior == "intelligent",
             preview_token=call.data.get("preview_token"),
         )
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_INTELLIGENT_CLEAN,
-        context._require_matic_control(hass, async_intelligent_clean),
-        schema=SAVED_PLAN_SERVICE_SCHEMA,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEAN_ENTIRE_PLAN,
-        context._require_matic_control(hass, async_clean_entire_plan),
-        schema=SAVED_PLAN_SERVICE_SCHEMA,
-    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_SELECTED_PLAN,

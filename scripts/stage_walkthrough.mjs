@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stages one owner walkthrough cell live (docs/owner-walkthrough-0.5.md).
+// Stages one interface stage cell live (docs/testing.md#interface-stage).
 //
 //   npm run stage:walkthrough -- --list
 //   npm run stage:walkthrough -- R01-C01            # opens Safari at the cell

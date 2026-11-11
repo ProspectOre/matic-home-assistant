@@ -345,7 +345,7 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
     call = ServiceCall(
         hass,
         DOMAIN,
-        "clean_entire_plan",
+        "run_selected_plan",
         {
             "plan_id": "home",
             "return_to_base": False,
@@ -416,7 +416,7 @@ async def test_restart_restores_frozen_stop_policy_after_saved_plan_edit(hass) -
         "run-frozen",
         1,
         trigger="user",
-        service="clean_entire_plan",
+        service="run_selected_plan",
         finish_current_room=stop_enabled,
         finish_current_room_threshold=stop_threshold,
     )

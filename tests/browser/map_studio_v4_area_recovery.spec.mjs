@@ -6,7 +6,7 @@ const bundle = await build({
     contents: `export { EffectController } from "./frontend/map-studio-v4/effects";
       export { MaticBackend } from "./frontend/map-studio-v4/backend";
       export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-      export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`,
+      export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`,
     resolveDir: process.cwd(),
   },
   bundle: true, format: "esm", write: false,

@@ -54,7 +54,7 @@ def _cleaning_entity(hass, *, cleaning: bool = True):
 async def test_skip_during_a_plan_run_is_noted_for_the_run(hass) -> None:
     entity, coordinator, manager = _cleaning_entity(hass)
     await manager.ledger.async_begin_run(
-        SERIAL, "plan", "run-1", 2, trigger="user", service="clean_entire_plan"
+        SERIAL, "plan", "run-1", 2, trigger="user", service="run_selected_plan"
     )
     token = manager.control.begin_managed_motion(SERIAL)
     events = []
@@ -169,7 +169,7 @@ async def test_queue_change_refused_when_the_clean_ends_while_waiting(hass) -> N
 async def test_queue_change_errors_are_translated(hass, error, kind, key) -> None:
     entity, coordinator, manager = _cleaning_entity(hass)
     await manager.ledger.async_begin_run(
-        SERIAL, "plan", "run-1", 2, trigger="user", service="clean_entire_plan"
+        SERIAL, "plan", "run-1", 2, trigger="user", service="run_selected_plan"
     )
     coordinator.client.async_change_queue.side_effect = error
 
@@ -187,7 +187,7 @@ async def test_a_skipped_room_keeps_its_rotation_turn(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     await manager.ledger.async_begin_run(
-        SERIAL, "plan", "run-1", 1, trigger="user", service="clean_entire_plan"
+        SERIAL, "plan", "run-1", 1, trigger="user", service="run_selected_plan"
     )
     record = manager.ledger.room(SERIAL, "plan", ROOM)
     record["last_opportunity"] = "2026-10-01T00:00:00+00:00"
@@ -220,7 +220,7 @@ async def test_a_skip_from_another_run_is_not_kept(hass) -> None:
     assert manager.ledger.skipped_room_ids(SERIAL, "run-1") == frozenset()
 
     await manager.ledger.async_begin_run(
-        SERIAL, "plan", "run-1", 1, trigger="user", service="clean_entire_plan"
+        SERIAL, "plan", "run-1", 1, trigger="user", service="run_selected_plan"
     )
     assert not await manager.ledger.async_note_room_skipped(SERIAL, "run-2", "room-2")
     assert manager.ledger.skipped_room_ids(SERIAL, "run-2") == frozenset()

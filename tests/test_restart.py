@@ -84,7 +84,7 @@ async def recovery_state(hass):
     entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
     hass.states.async_set(entity.entity_id, "cleaning")
     await manager.ledger.async_begin_run(
-        "serial", "plan", "run", 1, trigger="automation", service="clean_entire_plan"
+        "serial", "plan", "run", 1, trigger="automation", service="run_selected_plan"
     )
     await manager.ledger.async_mark_started("serial", "plan", room, run_id="run")
     data = {
@@ -941,7 +941,7 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
     ):
         await _async_execute_rooms(
             hass,
-            ServiceCall(hass, DOMAIN, "clean_entire_plan", checkpoint["data"]),
+            ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
             checkpoint["entity_id"],
             "serial",
@@ -1046,7 +1046,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
     manager, _, checkpoint, room = recovery_state
     first = CleaningRoom("office", "Office", "mop", "standard")
     await manager.ledger.async_begin_run(
-        "serial", "plan", "run", 2, trigger="automation", service="clean_entire_plan"
+        "serial", "plan", "run", 2, trigger="automation", service="run_selected_plan"
     )
     checkpoint.update(
         rooms=[asdict(first), asdict(room)],
@@ -1072,7 +1072,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
     ) as runner:
         await _async_execute_rooms(
             hass,
-            ServiceCall(hass, DOMAIN, "clean_entire_plan", checkpoint["data"]),
+            ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
             checkpoint["entity_id"],
             "serial",
@@ -1091,7 +1091,7 @@ async def test_new_plan_cannot_replace_pending_recovery(hass, recovery_state):
     with pytest.raises(ServiceValidationError, match="reconnecting"):
         await _async_execute_rooms(
             hass,
-            ServiceCall(hass, DOMAIN, "clean_entire_plan", checkpoint["data"]),
+            ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
             checkpoint["entity_id"],
             "serial",
@@ -1140,7 +1140,7 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
     ):
         await _async_run_leg(
             hass,
-            ServiceCall(hass, DOMAIN, "clean_entire_plan", checkpoint["data"]),
+            ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
             checkpoint["entity_id"],
             "serial",
@@ -1168,7 +1168,7 @@ async def test_cooperative_shutdown_does_not_finalize(hass, recovery_state):
     ):
         await _async_execute_rooms(
             hass,
-            ServiceCall(hass, DOMAIN, "clean_entire_plan", checkpoint["data"]),
+            ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
             checkpoint["entity_id"],
             "serial",
@@ -1303,7 +1303,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
             "run",
             2,
             trigger="automation",
-            service="clean_entire_plan",
+            service="run_selected_plan",
         )
         checkpoint["rooms"] = [asdict(value) for value in rooms]
         await manager.recovery.async_set_recovery_checkpoint(
@@ -1391,7 +1391,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             "run",
             2,
             trigger="automation",
-            service="clean_entire_plan",
+            service="run_selected_plan",
         )
         checkpoint["rooms"] = [asdict(r) for r in rooms]
         await manager.recovery.async_set_recovery_checkpoint(
@@ -1463,7 +1463,7 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
         "run",
         len(rooms),
         trigger="automation",
-        service="clean_entire_plan",
+        service="run_selected_plan",
     )
     checkpoint.update(
         {

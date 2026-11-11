@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadCamera(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController, topView } from "./frontend/map-studio-v4/renderer-controller"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { liveCameraKey, cameraPreferences } from "./frontend/map-studio-v4/camera-preferences"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math"; export { PreferenceStore, parsePreferences } from "./frontend/map-studio-v4/preferences";',
+      contents: 'export { RendererController, topView } from "./frontend/map-studio-v4/renderer-controller"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { liveCameraKey, cameraPreferences } from "./frontend/map-studio-v4/camera-preferences"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math"; export { PreferenceStore, parsePreferences } from "./frontend/map-studio-v4/preferences";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -42,7 +42,7 @@ for (const [view, boundary, mobile] of [
         },
       });
       const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const sync = async (patch = {}) => { store.patch(patch); renderer.setState(store.value); await frame(); };
+      const sync = async (patch = {}) => { store.replace({ ...store.value, ...patch }); renderer.setState(store.value); await frame(); };
       const capture = () => ({ camera: renderer.camera, zoom: renderer.diagnostics().fitDistance / renderer.diagnostics().cameraDistance });
       try {
         await sync();
@@ -126,11 +126,11 @@ test("@safety camera preferences reload only for their verified map and ignore h
     const legacy = parsePreferences({ cameras: { top: preference } });
     const unbound = cameraPreferences({ ...reload, ...legacy });
     const before = store.value.cameras;
-    store.patch({ coherence: "verifying", floor: { ...store.value.floor, readOnly: true } });
+    store.replace({ ...store.value, coherence: "verifying", floor: { ...store.value.floor, readOnly: true } });
     store.dispatch({ type: "set-camera", view: "top", camera: { ...preference, zoom: 3 } });
     const heldUntouched = before === store.value.cameras;
     // A content-only refresh can keep a verified live scene interactive.
-    store.patch({ coherence: "current", floor: { ...store.value.floor, readOnly: false },
+    store.replace({ ...store.value, coherence: "current", floor: { ...store.value.floor, readOnly: false },
       resources: { ...store.value.resources, scene: { ...store.value.resources.scene, status: "loading" } } });
     store.dispatch({ type: "set-camera", view: "top", camera: { ...preference, zoom: 4 } });
     return { same, changed, unbound, heldUntouched, refreshedZoom: store.value.cameras.top.zoom,

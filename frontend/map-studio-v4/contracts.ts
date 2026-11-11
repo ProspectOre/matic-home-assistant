@@ -368,7 +368,8 @@ export function readWorkspaceNotice(value: unknown): WorkspaceNotice | null {
   return values && Object.freeze(notice(tone as NoticeTone, key, fallback, values));
 }
 
-export interface WorkspaceState {
+/** What effects report: the robot, its maps and catalogs, and the command in flight. */
+export interface ReportedState {
   readonly deepMop: RobotSetting | null;
   readonly lastRun: ManagedRunSummary | null;
   readonly nextSchedule: ScheduledRun | null;
@@ -392,7 +393,6 @@ export interface WorkspaceState {
   readonly coherence: CoherenceState;
   readonly dataMode: DataMode;
   readonly activity: RobotActivity;
-  readonly workflow: Workflow;
   readonly command: CommandState;
   /** An unknown plan write stays fenced through its late reply and a fresh read. */
   readonly planWriteBlock: "pending" | "refresh" | null;
@@ -402,6 +402,35 @@ export interface WorkspaceState {
   readonly queuePending: boolean;
   /** Opaque token for the active owner's unconfirmed queue change, if any. */
   readonly queueUncertainToken: string | null;
+  /** The Wi-Fi signal layer; null while hidden. */
+  readonly wifiSignal: WifiSignalLayer | null;
+  /** The carpet and vent layer; null while hidden. */
+  readonly floorTypes: FloorTypesLayer | null;
+  readonly comparisonActive: boolean;
+  readonly historyCameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
+  readonly managedLock: boolean;
+  readonly batteryPercent: number | null;
+  /** The vacuum's `current_area`: the room phrase the robot reports, if any. */
+  readonly currentArea: string | null;
+  readonly robotRun: RobotRunStatus | null;
+  readonly floor: FloorPresentation;
+  readonly map: MapSafetyState;
+  readonly host: HostState;
+  readonly resources: WorkspaceResources;
+  readonly manualRoomPreview: ResourceState<AdmittedManualRoomPreview>;
+  /** The plan service write Home Assistant is handling while `command` is pending. */
+  readonly pendingAction: PendingAction | null;
+  /** This user's home shortcuts for the open robot, in their chosen order (HA frontend user data). */
+  readonly homePins: HomePins;
+  readonly notice: WorkspaceNotice | null;
+  readonly robotLabel: string;
+  readonly robots: readonly RobotChoice[];
+  readonly locale: string;
+}
+
+/** What the user has open: the workflow, its drafts and selection, and the cameras. */
+export interface ViewState {
+  readonly workflow: Workflow;
   readonly fullMap: boolean;
   readonly precisionOpen: boolean;
   readonly dialog: DialogKind | null;
@@ -417,13 +446,8 @@ export interface WorkspaceState {
   readonly view: MapView;
   readonly appearance: MapAppearance;
   readonly labelsVisible: boolean;
-  /** The Wi-Fi signal layer; null while hidden. */
-  readonly wifiSignal: WifiSignalLayer | null;
   readonly wifiScale: WifiScale;
-  /** The carpet and vent layer; null while hidden. */
-  readonly floorTypes: FloorTypesLayer | null;
   readonly followMode: FollowMode;
-  readonly comparisonActive: boolean;
   readonly homePresentation: { readonly view: MapView; readonly appearance: MapAppearance } | null;
   readonly roomCandidates: readonly string[];
   readonly quality: MapQuality;
@@ -432,18 +456,7 @@ export interface WorkspaceState {
   readonly cameraKey: string | null;
   readonly taskCameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   readonly taskCameraKey: string | null;
-  readonly historyCameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
-  readonly managedLock: boolean;
-  readonly batteryPercent: number | null;
-  /** The vacuum's `current_area`: the room phrase the robot reports, if any. */
-  readonly currentArea: string | null;
-  readonly robotRun: RobotRunStatus | null;
-  readonly floor: FloorPresentation;
-  readonly map: MapSafetyState;
-  readonly host: HostState;
   readonly draw: DrawState;
-  readonly resources: WorkspaceResources;
-  readonly manualRoomPreview: ResourceState<AdmittedManualRoomPreview>;
   readonly manualRoomPreviewRetry: number;
   readonly selection: WorkspaceSelection;
   readonly planDraft: PlanDraft;
@@ -451,18 +464,12 @@ export interface WorkspaceState {
   readonly planView: PlanView;
   /** Where the open plan was opened from; Back and Escape from Run return there (plan.md §5 State). */
   readonly planOrigin: PlanOrigin;
-  /** The plan service write Home Assistant is handling while `command` is pending. */
-  readonly pendingAction: PendingAction | null;
   /** The Edit row whose settings are open; one at a time. */
   readonly expandedRoom: string | null;
   readonly areaDraft: AreaDraft;
-  /** This user's home shortcuts for the open robot, in their chosen order (HA frontend user data). */
-  readonly homePins: HomePins;
-  readonly notice: WorkspaceNotice | null;
-  readonly robotLabel: string;
-  readonly robots: readonly RobotChoice[];
-  readonly locale: string;
 }
+
+export interface WorkspaceState extends ReportedState, ViewState {}
 
 export type WorkspaceIntent =
   | { readonly type: "set-host"; readonly host: HostState }

@@ -189,18 +189,6 @@ clean_area:
           translation_key: coverage_setting
           options: [quick, standard, heavy_duty]
 
-intelligent_clean:
-  target: *vacuum_target
-  fields: &optional_plan
-    plan:
-      example: Main floor
-      selector:
-        text:
-
-clean_entire_plan:
-  target: *vacuum_target
-  fields: *optional_plan
-
 run_selected_plan:
   target: *vacuum_target
   fields:
@@ -208,6 +196,11 @@ run_selected_plan:
       example: Main floor
       selector:
         text:
+    run_behavior:
+      selector:
+        select:
+          translation_key: run_behavior
+          options: [intelligent, ordered]
     preview_token:
       advanced: true
       selector:
@@ -215,7 +208,11 @@ run_selected_plan:
 
 preview_plan:
   target: *vacuum_target
-  fields: *optional_plan
+  fields:
+    plan:
+      example: Main floor
+      selector:
+        text:
 
 stop_intelligent_cleaning:
   target: *vacuum_target
@@ -313,7 +310,7 @@ save_plan:
         object:
           translation_key: plan_entry
           multiple: true
-          fields: &plan_entry_fields
+          fields:
             room:
               selector:
                 text:
@@ -382,80 +379,13 @@ save_plan:
           mode: box
 
 delete_plan:
-  target: &plan_target
-    entity:
-      integration: matic_robot
-      domain: vacuum
-  fields: &plan_reference
-    plan:
-      required: true
-      example: Main floor
-      selector:
-        text:
-
-select_plan:
-  target: *plan_target
-  fields: *plan_reference
-
-save_plan_room:
-  target: *plan_target
+  target: *vacuum_target
   fields:
     plan:
       required: true
       example: Main floor
       selector:
         text:
-    room:
-      required: true
-      example:
-        room: Kitchen
-        cleaning_mode: vacuum_and_mop
-        coverage_setting: standard
-      selector:
-        object:
-          translation_key: plan_entry
-          fields: *plan_entry_fields
-
-delete_plan_room:
-  target: *plan_target
-  fields:
-    plan:
-      required: true
-      example: Main floor
-      selector:
-        text:
-    room:
-      example: Kitchen
-      selector:
-        text:
-    area:
-      example: Rug
-      selector:
-        text:
-
-move_plan_room:
-  target: *plan_target
-  fields:
-    plan:
-      required: true
-      example: Main floor
-      selector:
-        text:
-    room:
-      example: Kitchen
-      selector:
-        text:
-    area:
-      example: Rug
-      selector:
-        text:
-    new_position:
-      required: true
-      selector:
-        number:
-          min: 1
-          max: 200
-          mode: box
 
 inspect_hermes_endpoint:
   target: *vacuum_target

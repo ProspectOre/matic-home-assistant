@@ -57,7 +57,7 @@ test("scene parser retains native room labels up to the UTF-8 byte limit", async
 test("precomputes room selection once for the supported 100-room bound", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -151,7 +151,7 @@ test("precomputes room selection once for the supported 100-room bound", async (
 test("all 256 room colors stay distinct by room ID, retain selection and labels, and yield to forced colors", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -368,7 +368,7 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
 test("room labels draw after every room fill so an overlapping room cannot cover a name", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -451,7 +451,7 @@ test("room labels draw after every room fill so an overlapping room cannot cover
 test("a room label that would cover another moves aside instead of disappearing", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -530,7 +530,7 @@ test("a room label that would cover another moves aside instead of disappearing"
 test("a moved room label stays on the canvas", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true,
