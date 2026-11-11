@@ -260,3 +260,77 @@ test("the renderer draws the shapes in WebGL and paints them in 2D only when the
   expect(Math.abs(painted.live[1][3] - 0.22 * 255), "the 2D canvas holds the shade").toBeLessThanOrEqual(2);
   expect(painted.history[1][3]).toBe(0);
 });
+
+test("a saved map fades its photo and keeps its room colors", async ({ page }) => {
+  const bundle = await build({
+    stdin: {
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
+      resolveDir: process.cwd(),
+    },
+    bundle: true, format: "esm", write: false,
+  });
+  await page.route("**/saved-map.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  const result = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = await import("/saved-map.js");
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (kind, options) {
+      return getContext.call(this, kind, kind === "webgl2" ? { ...options, preserveDrawingBuffer: true } : options);
+    };
+    const canvases = Array.from({ length: 2 }, () => {
+      const canvas = document.createElement("canvas");
+      Object.assign(canvas.style, { position: "absolute", width: "400px", height: "300px" });
+      document.body.append(canvas);
+      return canvas;
+    });
+    let layers = "idle";
+    const renderer = new RendererController(...canvases, {
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") layers = status; },
+    });
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const base = createGalleryState("ready");
+    const live = { ...base, optionalUiReady: true, labelsVisible: false, view: "top", quality: "maximum", trail: null,
+      resources: { ...base.resources, pose: { ...base.resources.pose, value: null } } };
+    const saved = { ...live, dataMode: "history", selection: { ...live.selection, historyId: "saved" },
+      resources: { ...live.resources, history: { status: "ready", problem: null, value: { floors: [
+        { id: live.selection.floorId, snapshots: [{ id: "saved", createdAt: "2026-08-25T09:00:00Z" }] }] } } } };
+    const pixels = async (state) => {
+      renderer.setState(state);
+      for (let attempt = 0; attempt < 120 && (layers !== "ready" || renderer.diagnostics().sceneRevision === null); attempt += 1) await frame();
+      renderer.requestRender();
+      await frame();
+      const copy = Object.assign(document.createElement("canvas"), { width: canvases[0].width, height: canvases[0].height });
+      const context = copy.getContext("2d");
+      context.drawImage(canvases[0], 0, 0);
+      return [...context.getImageData(0, 0, copy.width, copy.height).data];
+    };
+    const photo = [await pixels({ ...live, appearance: "photo" }), await pixels({ ...saved, appearance: "photo" })];
+    const rooms = [await pixels({ ...live, appearance: "rooms" }), await pixels({ ...saved, appearance: "rooms" })];
+    const mode = renderer.diagnostics().mode;
+    renderer.dispose();
+    // The largest difference from a saved pixel to the live one faded to 0.35, over the photo's opaque pixels.
+    let photoError = 0, photoPixels = 0, chroma = 0;
+    for (let index = 0; index < photo[0].length; index += 4) {
+      if (photo[0][index + 3] !== 255) continue;
+      const [r, g, b] = photo[0].slice(index, index + 3);
+      const grey = 0.213 * r + 0.715 * g + 0.072 * b;
+      chroma = Math.max(chroma, Math.max(r, g, b) - Math.min(r, g, b));
+      for (let channel = 0; channel < 3; channel += 1) {
+        const expected = grey + (photo[0][index + channel] - grey) * 0.35;
+        photoError = Math.max(photoError, Math.abs(photo[1][index + channel] - expected));
+      }
+      photoPixels += 1;
+    }
+    let roomPixels = 0, roomDifference = 0;
+    for (let index = 0; index < rooms[0].length; index += 1) {
+      if (index % 4 === 3 && rooms[0][index] > 0) roomPixels += 1;
+      roomDifference = Math.max(roomDifference, Math.abs(rooms[0][index] - rooms[1][index]));
+    }
+    return { mode, photoPixels, photoError, chroma, roomPixels, roomDifference };
+  });
+  test.skip(result.mode !== "webgl2", "WebGL2 is unavailable in this browser project");
+  expect(result.photoPixels).toBeGreaterThan(1_000);
+  expect(result.chroma, "the photo has colour to fade").toBeGreaterThan(20);
+  expect(result.photoError, "the saved photo is the live one at 0.35 saturation").toBeLessThanOrEqual(2);
+  expect(result.roomPixels).toBeGreaterThan(1_000);
+  expect(result.roomDifference, "room colors draw as on the live map").toBe(0);
+});

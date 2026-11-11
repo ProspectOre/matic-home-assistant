@@ -34,7 +34,7 @@ same on every machine, with every layer on, in the 3D and the top view.
 | Shader and program calls | 0 | 0 |
 | 2D canvas redraws | 1 | 1 |
 | Draw calls | 37 | 37 |
-| WebGL calls | 358 | 354 to 358 |
+| WebGL calls | 359 | 355 to 359 |
 | Text measurements | 4 | 4 |
 | Median script time | 8 ms | 0.5 ms |
 

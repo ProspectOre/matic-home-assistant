@@ -161,7 +161,6 @@ export class MaticMapCanvasV4 extends LitElement {
        appearance switch steps down to make room (map-surfaces.md §4). */
     .map-chip { position: absolute; inset-block-start: var(--row); inset-inline: 0; margin-inline: auto; inline-size: fit-content; max-inline-size: 100%; padding: var(--ms-space-1) var(--ms-space-3); font-size: var(--ms-t-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
     .map-rail:has(.map-chip) .appearance-switch { inset-block-start: calc(2 * var(--row)); }
-    .map-root:has(.map-chip) .scene-canvas { filter: saturate(0.35); }
 
     .map-dock {
       inset-inline: 0;

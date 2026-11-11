@@ -3,7 +3,7 @@ import { liveCameraKey, mapCameraIdentity } from "./camera-preferences";
 import type { AreaCircle, PoseModel, SceneModel } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import type { RoomIdentityResult } from "./spatial-identity";
-import { forcesTop, topView } from "./state";
+import { forcesTop, savedMapPosition, topView } from "./state";
 import { FrameGovernor } from "./frame-governor";
 import type { CanvasPalette } from "./theme-probe";
 import { RendererCamera, angle, type CameraOrigin, type CameraState, type MapPoint } from "./renderer-camera";
@@ -61,6 +61,9 @@ const sceneContext = (state: WorkspaceState): string => {
 // at full density, 74 ms within this budget), each canvas's backing store.
 const AUTO_TOUCH_POINT_LIMIT = 350_000;
 const AUTO_TOUCH_CANVAS_PIXELS = 1_100_000;
+// A saved map's photo is faded so it is not taken for the live map. Room
+// colors and the shapes over it keep their colour.
+const SAVED_MAP_SATURATION = 0.35;
 
 export class RendererController {
   readonly #sceneCanvas: HTMLCanvasElement;
@@ -753,6 +756,7 @@ export class RendererController {
       return;
     }
     const initializedPoints = Math.min(scene.total, this.#points.initializedPoints);
+    const saturation = this.#state && savedMapPosition(this.#state) ? SAVED_MAP_SATURATION : 1;
     const cellPixels = scene.metadata.metersPerCell * this.#view.viewport.height
       / (2 * this.#view.current.distance * (this.#view.current.orthographic ? 1 : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2)));
     const surfaceNeeded = this.#state?.optionalUiReady === true && cellPixels > 2.5;
@@ -767,7 +771,7 @@ export class RendererController {
           qualityScale: this.#governor.scale,
           adaptiveQuality: this.#state?.quality === "auto",
           maxVisiblePoints: this.#touch && this.#state?.quality === "auto" ? AUTO_TOUCH_POINT_LIMIT : null,
-          camera: this.#view.current });
+          camera: this.#view.current, saturation });
         return;
       } catch {
         this.#surfaceGeometry?.clearDetail();
@@ -782,7 +786,7 @@ export class RendererController {
       this.#touch && auto ? Math.ceil(initializedPoints / AUTO_TOUCH_POINT_LIMIT) : 1,
     );
     this.#renderedPoints = this.#points.drawPoints(scene, this.#view.matrix,
-      this.#sceneCanvas.width, this.#sceneCanvas.height, step, this.#pixelRatio());
+      this.#sceneCanvas.width, this.#sceneCanvas.height, step, this.#pixelRatio(), saturation);
   }
 
   #renderFallback(geometry: import("./overlay-geometry").OverlayGeometry | null): void {

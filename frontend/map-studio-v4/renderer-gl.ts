@@ -119,6 +119,7 @@ export class RendererGl {
   #meters: WebGLUniformLocation | null = null;
   #sampleStep: WebGLUniformLocation | null = null;
   #maxPointPixels: WebGLUniformLocation | null = null;
+  #saturation: WebGLUniformLocation | null = null;
 
   #compile(type: number, source: string): WebGLShader {
     const gl = this.gl;
@@ -188,6 +189,7 @@ export class RendererGl {
     `);
     const fragment = this.#compile(gl.FRAGMENT_SHADER, `#version 300 es
       precision highp float;
+      uniform float uSaturation;
       in vec3 vColor;
       out vec4 outColor;
       void main() {
@@ -196,7 +198,9 @@ export class RendererGl {
         float edgeWidth = max(fwidth(radius), 0.001);
         float edge = 1.0 - smoothstep(1.0 - edgeWidth * 0.5, 1.0 + edgeWidth * 0.5, radius);
         if (edge <= 0.0) discard;
-        outColor = vec4(pow(vColor, vec3(0.94)), edge);
+        vec3 colour = pow(vColor, vec3(0.94));
+        // The weights of CSS saturate().
+        outColor = vec4(mix(vec3(dot(colour, vec3(0.213, 0.715, 0.072))), colour, uSaturation), edge);
       }
     `);
     const program = gl.createProgram();
@@ -214,6 +218,7 @@ export class RendererGl {
     this.#meters = gl.getUniformLocation(program, "uMetersPerCell");
     this.#sampleStep = gl.getUniformLocation(program, "uSampleStep");
     this.#maxPointPixels = gl.getUniformLocation(program, "uMaxPointPixels");
+    this.#saturation = gl.getUniformLocation(program, "uSaturation");
     this.buffer = gl.createBuffer();
     this.vertexArray = gl.createVertexArray();
     gl.bindVertexArray(this.vertexArray);
@@ -397,7 +402,9 @@ export class RendererGl {
   }
 
   /** Draws the packed points with a stride; returns how many were submitted. */
-  drawPoints(scene: SceneModel, matrix: Float32Array, width: number, height: number, step: number, ratio: number): number {
+  /** `saturation` scales the photo's colour, from 0 for grey to 1 as recorded. */
+  drawPoints(scene: SceneModel, matrix: Float32Array, width: number, height: number, step: number, ratio: number,
+    saturation: number): number {
     const gl = this.gl;
     if (!gl || !this.buffer) return 0;
     const initializedPoints = Math.min(scene.total, this.initializedPoints);
@@ -407,6 +414,7 @@ export class RendererGl {
     gl.uniform2f(this.#center, (scene.metadata.span[0] - 1) / 2, (scene.metadata.span[1] - 1) / 2);
     gl.uniform2f(this.#viewportPixels, width, height);
     gl.uniform1f(this.#meters, scene.metadata.metersPerCell);
+    gl.uniform1f(this.#saturation, saturation);
     // Strided points represent a lower-density sample of the packed scene.
     // Grow splats by the square root of the stride to recover some coverage
     // without treating packed order as a regular 2D grid; the existing point

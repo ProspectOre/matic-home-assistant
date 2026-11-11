@@ -1262,7 +1262,7 @@ test.describe("History", () => {
     const box = await chip.boundingBox();
     expect(Math.abs(box.x + box.width / 2 - (root.x + root.width / 2)), "top centre").toBeLessThan(2);
     expect(box.y - root.y).toBeLessThan(root.height / 4);
-    expect(await canvasOf(gallery).locator(".scene-canvas").evaluate((canvas) => getComputedStyle(canvas).filter)).toContain("saturate");
+    expect(await canvasOf(gallery).locator(".scene-canvas").evaluate((canvas) => getComputedStyle(canvas).filter), "the renderer fades only the photo").toBe("none");
     await expect(gallery.getByText("Read only", { exact: true })).toHaveCount(0);
     await gallery.getByRole("button", { name: "Full map", exact: true }).click();
     await expect(gallery.getByRole("button", { name: "Exit full map", exact: true })).toBeVisible();

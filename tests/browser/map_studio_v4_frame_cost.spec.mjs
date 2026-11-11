@@ -18,7 +18,7 @@ const CAMERA_FRAME = {
   // The 2D canvas holds labels and markers, which follow the camera.
   overlayRedraws: 1,
   drawCalls: 37,
-  glCalls: 358,
+  glCalls: 359,
   textMeasures: 4,
 };
 // Median script time of a camera frame, in milliseconds. The container that
