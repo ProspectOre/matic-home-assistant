@@ -5,7 +5,7 @@ const bundle = await build({
   stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects";
     export { WorkspaceStore, canEditCoordinates, canStartMotion } from "./frontend/map-studio-v4/state";
     export { MaticBackend } from "./frontend/map-studio-v4/backend";
-    export { syntheticEntry, syntheticAreas, syntheticHistory, syntheticPlans, syntheticScene } from "./frontend/map-studio-v4/synthetic-fixtures";`, resolveDir: process.cwd() },
+    export { syntheticEntry, syntheticAreas, syntheticHistory, syntheticPlans, syntheticScene } from "./frontend/map-studio-v4-review/synthetic-fixtures";`, resolveDir: process.cwd() },
   bundle: true, format: "esm", write: false,
 });
 
@@ -238,7 +238,7 @@ for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) 
       .toMatchObject({ mopProgress: 1, mopDue: true, nextMopIn: 1 });
     await page.evaluate(() => {
       const h = window.fallbackHarness;
-      h.store.patch({ planDraft: { ...h.store.value.planDraft, name: "My unsaved edit", dirty: true } });
+      h.store.replace({ ...h.store.value, planDraft: { ...h.store.value.planDraft, name: "My unsaved edit", dirty: true } });
       h.updateSavedPlan("Changed elsewhere", "vacuum");
     });
     const draft = await page.evaluate(() => window.fallbackHarness.store.value.planDraft);

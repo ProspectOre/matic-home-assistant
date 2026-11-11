@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const { outputFiles } = await build({
-  stdin: { contents: 'export { statusCopy } from "./shell-presentation"; export { createGalleryState } from "./gallery-state";',
+  stdin: { contents: 'export { statusCopy } from "./shell-presentation"; export { createGalleryState } from "../map-studio-v4-review/gallery-state";',
     resolveDir: fileURLToPath(new URL("../../frontend/map-studio-v4", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "node", format: "esm", target: "es2022",
 });

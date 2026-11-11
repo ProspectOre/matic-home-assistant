@@ -84,7 +84,7 @@ const fixture = () => {
   const entry = entryFor();
   const host = { connected: true, administrator: true, robotConnected: true, robotCount: 1 };
   const stamp = coherence.begin(entry.entryId, entryFloorKey(entry), entryMissionKey(entry), entry.mapRevision);
-  store.patch({
+  store.replace({ ...store.value,
     generation: stamp.generation,
     host: { ...store.value.host, ...host },
     coherence: "current",
@@ -218,7 +218,7 @@ test("a history read from a retired generation cannot replace the current floor 
   });
   const loading = owner.loadHistory(f.entry, f.stamp);
   const next = f.coherence.begin(f.entry.entryId, "other-floor", "other-session", 10);
-  f.store.patch({ generation: next.generation });
+  f.store.replace({ ...f.store.value, generation: next.generation });
   read.resolve({ entryId: f.entry.entryId, floors: [{ id: "stale-floor", snapshots: [] }] });
   await loading;
   assert.equal(f.store.value.resources.history.value, null);
@@ -234,7 +234,7 @@ test("queued pose refresh follows the current generation and expiry belongs to i
   } }, f.coherence, f.requests, { ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {} });
   const first = owner.load(f.entry, f.stamp);
   const next = f.coherence.begin(f.entry.entryId, entryFloorKey(f.entry), entryMissionKey(f.entry), 10);
-  f.store.patch({ generation: next.generation });
+  f.store.replace({ ...f.store.value, generation: next.generation });
   await owner.refreshPose();
   const pose = { floorCoherent: true, mapSessionKey: "session-a", position: [1, 2], freshness: "live", nativeObservationAgeSeconds: 0 };
   reads[0].resolve({ ...pose, position: [99, 99] });
@@ -252,7 +252,7 @@ test("queued pose refresh follows the current generation and expiry belongs to i
 
 test("room previews retain the captured generation when an older request settles late", async () => {
   const f = fixture();
-  f.store.patch({
+  f.store.replace({ ...f.store.value,
     workflow: "rooms",
     selection: { ...f.store.value.selection, roomIds: ["kitchen"], roomSettings: [{ roomId: "kitchen", cleaningMode: "vacuum", coverageSetting: "standard" }] },
     resources: { ...f.store.value.resources, plans: { status: "ready", value: { plans: [] }, problem: null } },
@@ -267,7 +267,7 @@ test("room previews retain the captured generation when an older request settles
   }, previewHelpers);
   owner.reconcile();
   const next = f.coherence.begin(f.entry.entryId, entryFloorKey(f.entry), entryMissionKey(f.entry), 10);
-  f.store.patch({ generation: next.generation });
+  f.store.replace({ ...f.store.value, generation: next.generation });
   owner.reconcile();
   assert.equal(reads.length, 2);
   reads[1].resolve({ entryId: f.entry.entryId, previewToken: "current", rooms: [] });
@@ -281,7 +281,7 @@ test("room previews retain the captured generation when an older request settles
 test("home shortcut reads cannot survive an owner loss and return to the same user and robot", async () => {
   const f = fixture();
   const identity = { userKey: "owner", entryKey: f.entry.entryId };
-  f.store.patch({ owner: identity });
+  f.store.replace({ ...f.store.value, owner: identity });
   const reads = [];
   let planLoads = 0;
   let areaLoads = 0;
@@ -291,9 +291,9 @@ test("home shortcut reads cannot survive an owner loss and return to the same us
   const first = owner.loadHomePins();
   await flush();
   assert.equal(reads.length, 1);
-  f.store.patch({ owner: null });
+  f.store.replace({ ...f.store.value, owner: null });
   owner.syncOwner();
-  f.store.patch({ owner: identity });
+  f.store.replace({ ...f.store.value, owner: identity });
   const second = owner.loadHomePins();
   await flush();
   assert.equal(reads.length, 2);
@@ -310,7 +310,7 @@ test("home shortcut reads cannot survive an owner loss and return to the same us
 
 test("home shortcut reads retain area catalogs only for actual area pins", async () => {
   const f = fixture();
-  f.store.patch({ owner: { userKey: "owner", entryKey: f.entry.entryId } });
+  f.store.replace({ ...f.store.value, owner: { userKey: "owner", entryKey: f.entry.entryId } });
   let areaLoads = 0;
   const owner = new HomePinResources(f.store, {
     sendMessagePromise: async () => ({ value: { version: 2, pins: [{ kind: "area", id: "area-1" }], excluded: [] } }),
@@ -338,12 +338,12 @@ test("catalog area reads wait for an area workflow or an area pin", async () => 
     clearPrivate() {},
     resumePins() {},
   });
-  f.store.patch({ homePins: { status: "ready", pins: [{ kind: "plan", id: "plan-1" }] } });
+  f.store.replace({ ...f.store.value, homePins: { status: "ready", pins: [{ kind: "plan", id: "plan-1" }] } });
   owner.resumeAreas();
   await flush();
   assert.equal(areaReads, 0);
 
-  f.store.patch({ homePins: { status: "ready", pins: [{ kind: "area", id: "area-1" }] } });
+  f.store.replace({ ...f.store.value, homePins: { status: "ready", pins: [{ kind: "area", id: "area-1" }] } });
   owner.resumeAreas();
   await flush();
   assert.equal(areaReads, 1);
@@ -362,11 +362,11 @@ test("a held plan-module import retries for the new user and drops the retired e
   const { owner } = catalogOwner(f, async () => [], {
     loadPlanResources: () => ++imports === 1 ? held.promise : Promise.resolve({ PlanCatalogResources: PlanModule }),
   });
-  f.store.patch({ owner: { entryKey: "robot-a", userKey: "user-a" } });
+  f.store.replace({ ...f.store.value, owner: { entryKey: "robot-a", userKey: "user-a" } });
   let retiredError = 0;
   const oldRequest = owner.loadPlans({ onError: () => { retiredError += 1; } });
   await flush();
-  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-a", userKey: "user-b" } });
+  f.store.replace({ ...f.store.value, generation: f.store.value.generation + 1, owner: { entryKey: "robot-a", userKey: "user-b" } });
   const currentRequest = owner.loadPlans();
   held.resolve({ PlanCatalogResources: PlanModule });
   await Promise.all([oldRequest, currentRequest]);
@@ -384,7 +384,7 @@ test("plan-module import failure reports readback failure once and permits expli
     loadPlanResources: () => ++imports === 1
       ? Promise.reject(new Error("chunk unavailable")) : Promise.resolve({ PlanCatalogResources: PlanModule }),
   });
-  f.store.patch({ owner: { entryKey: "robot-a", userKey: "user-a" } });
+  f.store.replace({ ...f.store.value, owner: { entryKey: "robot-a", userKey: "user-a" } });
   assert.equal(await owner.loadPlans({ onError: () => { reported += 1; } }), null);
   assert.equal(f.store.value.resources.plans.status, "error");
   assert.equal(reported, 1);
@@ -403,11 +403,11 @@ test("a plan-module rejection after page suspension does not publish a stale rea
     pageActive: () => active,
     loadPlanResources: () => held.promise,
   });
-  f.store.patch({ owner: { entryKey: "robot-a", userKey: "user-a" } });
+  f.store.replace({ ...f.store.value, owner: { entryKey: "robot-a", userKey: "user-a" } });
   const request = owner.loadPlans({ onError: () => { reported += 1; } });
   assert.equal(f.store.value.resources.plans.status, "loading");
   active = false;
-  f.store.patch({ resources: { ...f.store.value.resources,
+  f.store.replace({ ...f.store.value, resources: { ...f.store.value.resources,
     plans: { status: "idle", value: null, problem: null } } });
   held.reject(new Error("page suspended"));
   assert.equal(await request, null);
@@ -520,18 +520,18 @@ test("a replacement observation keeps its own deadline when the retained pose wo
 
 test("live trail restore backfills the latest verified pose and rejects owner changes", async () => {
   const f = fixture();
-  f.store.patch({ activity: "cleaning", owner: { entryKey: "robot-a", userKey: "user-a" },
+  f.store.replace({ ...f.store.value, activity: "cleaning", owner: { entryKey: "robot-a", userKey: "user-a" },
     trail: { id: "live", mapSessionKey: "session-a", segments: [[[0, 0]]], },
     resources: { ...f.store.value.resources, pose: { status: "ready", problem: null, value: livePose({ position: [1, 1] }) } } });
   const owner = new RunHistoryResources(f.store, {}, f.requests, { disposed: () => false, pageActive: () => true });
   const restore = owner.restoreLiveTrail();
-  f.store.patch({ resources: { ...f.store.value.resources,
+  f.store.replace({ ...f.store.value, resources: { ...f.store.value.resources,
     pose: { status: "ready", problem: null, value: livePose({ position: [2, 2] }) } } });
   await restore;
   assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
 
   const staleRestore = owner.restoreLiveTrail();
-  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" } });
+  f.store.replace({ ...f.store.value, generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" } });
   await staleRestore;
   assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
   owner.dispose();
@@ -558,7 +558,7 @@ test("a forced catalog refresh cannot promote fallback, unknown-age or stale pos
 
 const changeOwner = (f, userKey, entryId) => {
   const entry = entryFor({ entryId });
-  f.store.patch({
+  f.store.replace({ ...f.store.value,
     owner: { userKey, entryKey: entryId },
     selection: { ...f.store.value.selection, entryId },
     resources: { ...f.store.value.resources, entry },
@@ -661,7 +661,7 @@ test("thumbnail retry cooldowns and timers are retired when ownership changes", 
 test("room preflight cannot dispatch after leaving Rooms or disposing its owner", async () => {
   for (const retire of ["leave", "dispose"]) {
     const f = fixture();
-    f.store.patch({
+    f.store.replace({ ...f.store.value,
       workflow: "rooms", activity: "idle",
       selection: { ...f.store.value.selection, roomIds: ["kitchen"], roomSettings: [{ roomId: "kitchen", cleaningMode: "vacuum", coverageSetting: "standard" }] },
       resources: { ...f.store.value.resources, plans: { status: "ready", value: { plans: [] }, problem: null } },
@@ -682,7 +682,7 @@ test("room preflight cannot dispatch after leaving Rooms or disposing its owner"
     await flush();
     const preflight = owner.clean();
     assert.equal(reads.length, 2);
-    if (retire === "leave") f.store.patch({ workflow: "none" });
+    if (retire === "leave") f.store.replace({ ...f.store.value, workflow: "none" });
     else disposed = true;
     reads[1].resolve({ ...preview, previewToken: "rechecked" });
     await preflight;
@@ -727,12 +727,12 @@ test("a room-module failure after leaving Rooms is reported on return and explic
     host: { ...store.value.host, connected: true, administrator: true, robotConnected: true, robotCount: 1 },
     robots: [], language: "en",
   });
-  store.patch({ workflow: "rooms" });
-  store.patch({ workflow: "none" });
+  store.replace({ ...store.value, workflow: "rooms" });
+  store.replace({ ...store.value, workflow: "none" });
   await flush();
   let publications = 0;
   const unsubscribe = store.subscribe(() => { publications += 1; });
-  store.patch({ workflow: "rooms" });
+  store.replace({ ...store.value, workflow: "rooms" });
   await flush();
   assert.equal(store.value.manualRoomPreview.status, "error");
   assert.ok(publications <= 3, "reporting a cached module failure must not recurse through the store");
@@ -798,7 +798,7 @@ const heldPlanController = async (t, failModule = false) => {
     robots: [], language: "en",
   });
   await flush();
-  store.patch({
+  store.replace({ ...store.value,
     workflow: "plan", activity: "idle", command: "idle",
     selection: { ...store.value.selection, planId: plan.id },
     planDraft: { ...store.value.planDraft, id: plan.id, enabled: true },
@@ -832,9 +832,9 @@ test("a held plan module cannot start after its workflow, draft, generation or o
   for (const retire of ["leave", "draft", "generation", "dispose"]) await t.test(retire, async (subtest) => {
     const f = await heldPlanController(subtest);
     const action = f.effects.executeAction("run-plan");
-    if (retire === "leave") f.store.patch({ workflow: "none" });
-    if (retire === "draft") f.store.patch({ planDraft: { ...f.store.value.planDraft, name: "Changed" } });
-    if (retire === "generation") f.store.patch({ generation: f.store.value.generation + 1, command: "idle" });
+    if (retire === "leave") f.store.replace({ ...f.store.value, workflow: "none" });
+    if (retire === "draft") f.store.replace({ ...f.store.value, planDraft: { ...f.store.value.planDraft, name: "Changed" } });
+    if (retire === "generation") f.store.replace({ ...f.store.value, generation: f.store.value.generation + 1, command: "idle" });
     if (retire === "dispose") f.effects.dispose();
     f.gate.resolve();
     await action;
@@ -847,7 +847,7 @@ test("plan-module failure reports only to the captured workflow", async (t) => {
   for (const leave of [false, true]) await t.test(leave ? "left" : "current", async (subtest) => {
     const f = await heldPlanController(subtest, true);
     const action = f.effects.executeAction("run-plan");
-    if (leave) f.store.patch({ workflow: "none" });
+    if (leave) f.store.replace({ ...f.store.value, workflow: "none" });
     f.gate.resolve();
     await action;
     assert.equal(f.store.value.command, "idle");
@@ -862,7 +862,7 @@ test("settling an old managed start cannot release a newer pending write", async
   f.gate.resolve();
   await waitFor(() => f.calls.includes("run_selected_plan"));
   await f.effects.executeAction("stop");
-  f.store.patch({ command: "pending", pendingAction: "save-plan" });
+  f.store.replace({ ...f.store.value, command: "pending", pendingAction: "save-plan" });
   f.service.resolve();
   await action;
   assert.equal(f.store.value.command, "pending");
@@ -887,7 +887,7 @@ const heldRoomController = async (t, failModule = false) => {
   const result = await build({
     stdin: { contents: `export { EffectController } from "./effects";
       export { WorkspaceStore } from "./state";
-      export { createGalleryState, withGalleryRoomPreview } from "./gallery-state";`, resolveDir, loader: "ts" },
+      export { createGalleryState, withGalleryRoomPreview } from "../map-studio-v4-review/gallery-state";`, resolveDir, loader: "ts" },
     bundle: true, write: false, platform: "node", format: "esm", target: "es2022",
     plugins: [{ name: "held-preview-module", setup(compiler) {
       compiler.onResolve({ filter: /^\.\/room-preview-controller$/ }, () => ({ path: moduleUrl, external: true }));
@@ -966,18 +966,18 @@ test("a room click waiting for its module is retired by changed admission bounda
         f.store.dispatch({ type: "open-workflow", workflow: "rooms" });
       }
       if (retire === "selection-aba") {
-        f.store.patch({ selection: { ...before.selection, roomIds: ["room-b"] } });
-        f.store.patch({ selection: before.selection });
+        f.store.replace({ ...f.store.value, selection: { ...before.selection, roomIds: ["room-b"] } });
+        f.store.replace({ ...f.store.value, selection: before.selection });
       }
       if (retire === "owner-aba") {
-        f.store.patch({ owner: { ...before.owner, userKey: "another-owner" } });
-        f.store.patch({ owner: before.owner });
+        f.store.replace({ ...f.store.value, owner: { ...before.owner, userKey: "another-owner" } });
+        f.store.replace({ ...f.store.value, owner: before.owner });
       }
       if (retire === "entity-aba") {
         f.effects.sync({ ...f.projection, vacuumEntityId: "vacuum.replacement" });
         f.effects.sync(f.projection);
       }
-      if (retire === "generation") f.store.patch({ generation: before.generation + 1 });
+      if (retire === "generation") f.store.replace({ ...f.store.value, generation: before.generation + 1 });
       if (retire === "retry") f.store.dispatch({ type: "retry-room-preview" });
       if (retire === "dispose") f.effects.dispose();
       f.gate.resolve();
@@ -1002,7 +1002,7 @@ test("blocked and empty room admissions never preflight or dispatch after the mo
   for (const denied of ["blocked", "empty"]) await t.test(denied, async (subtest) => {
     const f = await heldRoomController(subtest);
     const resource = f.store.value.manualRoomPreview;
-    f.store.patch({ manualRoomPreview: { ...resource, value: { ...resource.value, preview: {
+    f.store.replace({ ...f.store.value, manualRoomPreview: { ...resource, value: { ...resource.value, preview: {
       ...resource.value.preview,
       ...(denied === "blocked" ? { blocker: "unavailable-room" } : { rooms: [] }),
     } } } });

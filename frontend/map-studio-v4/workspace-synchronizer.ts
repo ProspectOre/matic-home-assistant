@@ -389,13 +389,13 @@ export class WorkspaceSynchronizer {
     const coherent = admittedEntry.mapFloorCoherent && admittedEntry.mapSessionVerified;
     const degraded = admittedEntry.health === "problem" || admittedEntry.health === "limited";
     const spatialRecoveryBlocked = this.#callbacks.spatialRecoveryBlocks(admittedEntry);
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "result",
       managedLock: entryManagedLock(admittedEntry),
       coherence: spatialRecoveryBlocked
         ? "verifying"
         : coherent ? (degraded ? "degraded" : "current") : "verifying",
       map: {
-        ...state.map,
         available: state.resources.scene.value !== null,
         complete: admittedEntry.mapComplete && !admittedEntry.mapTruncated,
         floorCoherent: admittedEntry.mapFloorCoherent,
@@ -403,12 +403,10 @@ export class WorkspaceSynchronizer {
         exactPose: coherent && !spatialRecoveryBlocked ? state.map.exactPose : false,
       },
       floor: {
-        ...state.floor,
         classifiedCount: Math.max(1, admittedEntry.historyFloorCount),
         ...(spatialRecoveryBlocked && state.resources.scene.value ? { readOnly: true } : {}),
       },
       resources: {
-        ...state.resources,
         entry: admittedEntry,
         ...(rows ? { catalog: { ...catalog, value: rows } } : {}),
       },

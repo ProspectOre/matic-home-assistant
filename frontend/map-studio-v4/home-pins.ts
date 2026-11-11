@@ -101,7 +101,7 @@ export const followPins = (
       const nextPins = oldPins.filter((pin) => present.some((existing) => same(existing, pin)));
       mode = "v2";
       host.saveHomePinState(excluded, nextPins);
-      if (nextPins.length !== oldPins.length) store.patch({ homePins: { ...state.homePins, pins: nextPins } });
+      if (nextPins.length !== oldPins.length) store.dispatch({ type: "result", homePins: { ...state.homePins, pins: nextPins } });
       return;
     }
     const readyKinds: HomePin["kind"][] = (["plan", "area"] as const).filter((kind) => catalogReady(state, kind));
@@ -131,7 +131,7 @@ export const followPins = (
         return { kind: kind as HomePin["kind"], id: id.join(":") };
       });
       host.saveHomePinState(nextExcluded, pins);
-      store.patch({ homePins: { ...state.homePins, pins } });
+      store.dispatch({ type: "result", homePins: { ...state.homePins, pins } });
     }
   };
   unsubscribe = store.subscribe(reconcile);
@@ -290,7 +290,7 @@ export class HomePinsPersistence {
             this.#exclusions = [...visible.excluded];
             const state = this.#store.value;
             if (state.homePins.status === "ready") {
-              this.#store.patch({ homePins: { ...state.homePins, pins: [...visible.pins] } });
+              this.#store.dispatch({ type: "result", homePins: { ...state.homePins, pins: [...visible.pins] } });
             }
             this.#reconcileUserMutationOnSettle = false;
           }
@@ -322,7 +322,7 @@ export class HomePinsPersistence {
         if (!next.some((candidate) => same(candidate, pin)) && !nextExclusions.some((candidate) => same(candidate, pin))) next.push(pin);
       }
       return { pins: next, excluded: nextExclusions };
-    }, () => this.#store.patch({ notice: PINS_SAVE_FAILED }), "catalog");
+    }, () => this.#store.dispatch({ type: "result", notice: PINS_SAVE_FAILED }), "catalog");
   }
 
   savePin(pin: HomePin, pinned: boolean, _previous: readonly HomePin[]): void {
@@ -337,7 +337,7 @@ export class HomePinsPersistence {
       if (!pinned) excluded.push(pin);
       return { pins, excluded };
     }, () => {
-      this.#store.patch({ notice: PINS_SAVE_FAILED });
+      this.#store.dispatch({ type: "result", notice: PINS_SAVE_FAILED });
     });
   }
 
@@ -351,7 +351,7 @@ export class HomePinsPersistence {
     const pins = [...previous];
     [pins[index], pins[target]] = [pins[target]!, pins[index]!];
     this.#mutationRevision += 1;
-    this.#store.patch({ homePins: { ...state.homePins, pins } });
+    this.#store.dispatch({ type: "result", homePins: { ...state.homePins, pins } });
     this.#writePins((confirmed) => {
       const next = [...confirmed.pins];
       const currentIndex = next.findIndex((candidate) => same(candidate, pin));
@@ -360,6 +360,6 @@ export class HomePinsPersistence {
         [next[currentIndex], next[nextIndex]] = [next[nextIndex]!, next[currentIndex]!];
       }
       return { pins: next, excluded: [...confirmed.excluded] };
-    }, () => this.#store.patch({ notice: PINS_SAVE_FAILED }));
+    }, () => this.#store.dispatch({ type: "result", notice: PINS_SAVE_FAILED }));
   }
 }

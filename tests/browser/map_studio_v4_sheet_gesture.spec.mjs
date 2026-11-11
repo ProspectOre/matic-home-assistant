@@ -6,7 +6,7 @@ const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
 async function loadNarrowGallery(page, scenario = "ready", { compact = false, delayResize = false, initiallyHidden = false } = {}) {
   const bundle = await build({
     stdin: {
-      contents: 'export * from "./frontend/map-studio-v4/review";',
+      contents: 'export * from "./frontend/map-studio-v4-review/review";',
       resolveDir: process.cwd(),
     },
     bundle: true,

@@ -183,8 +183,9 @@ export class SpatialResources {
     const state = this.#store.value;
     if (this.#callbacks.disposed() || !this.#callbacks.pageActive()
       || state.resources.entry?.entryId !== entry.entryId || !this.#coherence.accepts(stamp)) return;
-    this.#store.patch({
-      resources: { ...state.resources, history: resource("error", state.resources.history.value, "history-unavailable") },
+    this.#store.dispatch({
+      type: "result",
+      resources: { history: resource("error", state.resources.history.value, "history-unavailable") },
     });
   }
 
@@ -223,9 +224,9 @@ export class SpatialResources {
     const generation = this.#coherence.invalidate();
     this.#scene.stop();
     const state = this.#store.value;
-    this.#store.patch({ generation, pageActive, coherence: state.resources.scene.value ? "verifying" : "unavailable",
-      floor: { ...state.floor, readOnly: state.floor.readOnly || state.resources.scene.value !== null },
-      map: { ...state.map, exactPose: false } });
+    this.#store.dispatch({ type: "result", generation, pageActive, coherence: state.resources.scene.value ? "verifying" : "unavailable",
+      floor: { readOnly: state.floor.readOnly || state.resources.scene.value !== null },
+      map: { exactPose: false } });
     // A pose/session mismatch can revoke the generation while a recovery
     // attempt is waiting for its replacement delta long-poll. Release that
     // waiter after advancing the fence and before aborting its request.
@@ -268,8 +269,7 @@ export class SpatialResources {
       && this.#store.value.resources.catalog.status === "loading");
     recoveryController?.abort();
     if (abortingVisibleCatalog) {
-      const resources = this.#store.value.resources;
-      this.#store.patch({ resources: { ...resources, catalog: resource("idle", resources.catalog.value) } });
+      this.#store.dispatch({ type: "result", resources: { catalog: resource("idle", this.#store.value.resources.catalog.value) } });
     }
     if (recovery.attempt?.lease) this.#callbacks.cancelCatalogRecovery(recovery.attempt.lease);
   }
@@ -482,7 +482,8 @@ export class SpatialResources {
     const state = this.#store.value;
     const loadHistory = needsHistoryCatalog(state)
       || (!coherent && !retainedScene && state.resources.scene.problem !== "history-source-missing");
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "transition",
       ...(resetDrafts ? {
         command: state.pendingAction === "set-deep-mop" ? state.command : "idle" as const,
         workflow: "none" as const,
@@ -501,7 +502,6 @@ export class SpatialResources {
       coherence: coherent ? (degraded ? "degraded" : retainedReadOnly ? "verifying" : "current") : "verifying",
       dataMode: "live",
       resources: {
-        ...state.resources,
         entry,
         scene: resource(coherent ? "loading" : "idle", retainedScene),
         pose: resource(coherent ? "loading" : "idle", retainedPose),
@@ -526,14 +526,10 @@ export class SpatialResources {
         readOnly: retainedReadOnly,
       },
       selection: {
-        ...state.selection,
         entryId: entry.entryId,
         floorId: "current",
         historyId: null,
-        roomIds: resetDrafts ? [] : state.selection.roomIds,
-        roomSettings: resetDrafts ? [] : state.selection.roomSettings,
-        planId: resetDrafts ? null : state.selection.planId,
-        areaId: resetDrafts ? null : state.selection.areaId,
+        ...(resetDrafts ? { roomIds: [], roomSettings: [], planId: null, areaId: null } : {}),
       },
     });
     if (loadHistory) void this.loadHistory(entry, stamp);
@@ -563,20 +559,17 @@ export class SpatialResources {
       const state = this.#store.value;
       const coherent = selected.mapFloorCoherent && selected.mapSessionVerified;
       const degraded = selected.health === "problem" || selected.health === "limited";
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
         map: {
-          ...state.map,
           available: state.resources.scene.value !== null,
           complete: selected.mapComplete && !selected.mapTruncated,
           floorCoherent: selected.mapFloorCoherent,
           sessionVerified: selected.mapSessionVerified,
           exactPose: coherent ? state.map.exactPose : false,
         },
-        floor: {
-          ...state.floor,
-          classifiedCount: Math.max(1, selected.historyFloorCount),
-        },
+        floor: { classifiedCount: Math.max(1, selected.historyFloorCount) },
       });
       // The plans endpoint intentionally fails closed while the coordinator
       // is still revalidating the active floor.  A catalog refresh is the
@@ -598,8 +591,7 @@ export class SpatialResources {
         if (stamp) {
           this.#entryIdentity = identity;
           this.#scene.stop();
-          const resources = this.#store.value.resources;
-          this.#store.patch({ resources: { ...resources, scene: resource("loading", resources.scene.value) } });
+          this.#store.dispatch({ type: "result", resources: { scene: resource("loading", this.#store.value.resources.scene.value) } });
           void this.#scene.load(selected, stamp);
         }
       }
@@ -639,7 +631,7 @@ export class SpatialResources {
   #reloadWifiSignalForNewFloor(): void {
     const wifiSignal = this.#store.value.wifiSignal;
     if (!wifiSignal) return;
-    this.#store.patch({ wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
+    this.#store.dispatch({ type: "result", wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
     void this.#loadWifiSignal();
   }
 
@@ -660,10 +652,10 @@ export class SpatialResources {
       && Boolean(this.#store.value.wifiSignal) && this.#store.value.resources.entry?.entryId === entry.entryId;
     try {
       const layer = await this.#backend.wifiSignal(entry.wifiHeatmapUrl, controller.signal);
-      if (current()) this.#store.patch({ wifiSignal: layer });
+      if (current()) this.#store.dispatch({ type: "result", wifiSignal: layer });
     } catch (error) {
       const shown = this.#store.value.wifiSignal;
-      if (!isAbort(error) && current() && shown) this.#store.patch({ wifiSignal: { ...shown, status: "failed" } });
+      if (!isAbort(error) && current() && shown) this.#store.dispatch({ type: "result", wifiSignal: { ...shown, status: "failed" } });
     } finally {
       this.#requests.release("wifi-signal", controller);
     }
@@ -686,7 +678,7 @@ export class SpatialResources {
   #reloadFloorTypesForNewFloor(): void {
     const floorTypes = this.#store.value.floorTypes;
     if (!floorTypes) return;
-    this.#store.patch({ floorTypes: { status: "loading", carpet: [], vent: [] } });
+    this.#store.dispatch({ type: "result", floorTypes: { status: "loading", carpet: [], vent: [] } });
     void this.#loadFloorTypes();
   }
 
@@ -707,11 +699,11 @@ export class SpatialResources {
       && Boolean(this.#store.value.floorTypes) && this.#store.value.resources.entry?.entryId === entry.entryId;
     try {
       const layer = await this.#backend.floorTypes(entry.floorTypesUrl, controller.signal);
-      if (current()) this.#store.patch({ floorTypes: layer });
+      if (current()) this.#store.dispatch({ type: "result", floorTypes: layer });
     } catch (error) {
       const shown = this.#store.value.floorTypes;
       if (!isAbort(error) && current() && shown?.status === "loading") {
-        this.#store.patch({ floorTypes: { ...shown, status: "failed" } });
+        this.#store.dispatch({ type: "result", floorTypes: { ...shown, status: "failed" } });
       }
     } finally {
       this.#requests.release("floor-types", controller);

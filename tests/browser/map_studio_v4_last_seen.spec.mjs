@@ -155,7 +155,7 @@ test("last-seen history read is revoked when map identity becomes unverified", a
     } };
     const resources = new RunHistoryResources(store, backend, new ResourceRequests(), { disposed: () => false, pageActive: () => true });
     await started;
-    store.patch({ resources: { ...store.value.resources,
+    store.replace({ ...store.value, resources: { ...store.value.resources,
       entry: { ...store.value.resources.entry, mapSessionVerified: false } } });
     finishHistory(history);
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -175,7 +175,7 @@ test("last-seen history read is revoked when map identity becomes unverified", a
     const poseResources = new RunHistoryResources(poseStore, poseBackend, new ResourceRequests(),
       { disposed: () => false, pageActive: () => true });
     await poseStarted;
-    poseStore.patch({ resources: { ...poseStore.value.resources,
+    poseStore.replace({ ...poseStore.value, resources: { ...poseStore.value.resources,
       pose: { ...poseStore.value.resources.pose, value: { ...poseStore.value.resources.pose.value, mapSessionKey: "c".repeat(64) } } } });
     finishPoseHistory(history);
     await new Promise((resolve) => setTimeout(resolve, 20));

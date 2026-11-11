@@ -13,12 +13,12 @@ const { WorkspaceStore, initialWorkspaceState, cameraPreferences } = await impor
 
 test("task navigation preserves the overview presentation across task-to-task changes", () => {
   const store = new WorkspaceStore({ ...initialWorkspaceState(), view: "three", appearance: "photo" });
-  store.patch({ workflow: "rooms" });
+  store.replace({ ...store.value, workflow: "rooms" });
   assert.equal(store.value.view, "top");
   assert.equal(store.value.appearance, "rooms");
-  store.patch({ workflow: "plans" });
-  store.patch({ workflow: "draw" });
-  store.patch({ workflow: "none" });
+  store.replace({ ...store.value, workflow: "plans" });
+  store.replace({ ...store.value, workflow: "draw" });
+  store.replace({ ...store.value, workflow: "none" });
   assert.equal(store.value.view, "three");
   assert.equal(store.value.appearance, "photo");
   assert.equal(store.value.homePresentation, null);
@@ -47,28 +47,28 @@ test("task camera preferences stay separate from Home and survive task-to-task n
   store.dispatch({ type: "set-camera", view: "top", camera: homeTop });
   store.dispatch({ type: "set-camera", view: "three", camera: homeThree });
 
-  store.patch({ workflow: "rooms" });
+  store.replace({ ...store.value, workflow: "rooms" });
   assert.equal(store.value.view, "top");
   assert.deepEqual(cameraPreferences(store.value), {});
   const taskTop = { yaw: 0.2, pitch: 1.4, zoom: 2.3, targetX: -1, targetZ: 6 };
   store.dispatch({ type: "set-camera", view: "top", camera: taskTop });
   assert.deepEqual(cameraPreferences(store.value).top, taskTop);
-  store.patch({ workflow: "plan" });
+  store.replace({ ...store.value, workflow: "plan" });
   assert.deepEqual(cameraPreferences(store.value).top, taskTop);
 
-  store.patch({ workflow: "none" });
+  store.replace({ ...store.value, workflow: "none" });
   assert.equal(store.value.view, "three");
   assert.deepEqual(cameraPreferences(store.value), { top: homeTop, three: homeThree });
-  store.patch({ workflow: "rooms" });
+  store.replace({ ...store.value, workflow: "rooms" });
   assert.deepEqual(cameraPreferences(store.value).top, taskTop);
 });
 
 test("losing live authority clears following immediately", () => {
   const state = { ...initialWorkspaceState(), followMode: "ride" };
   const store = new WorkspaceStore(state);
-  store.patch({ dataMode: "history" });
+  store.replace({ ...store.value, dataMode: "history" });
   assert.equal(store.value.followMode, "off");
-  store.patch({ followMode: "follow", dataMode: "live" });
+  store.replace({ ...store.value, followMode: "follow", dataMode: "live" });
   assert.equal(store.value.followMode, "off");
 });
 
@@ -104,10 +104,10 @@ test("a room choice cannot cross task, plan, map, account or catalog changes", (
   ];
   for (const change of changes) {
     const store = new WorkspaceStore(initial);
-    store.patch(change);
+    store.replace({ ...store.value, ...change });
     assert.deepEqual(store.value.roomCandidates, [], JSON.stringify(change));
   }
   const store = new WorkspaceStore(initial);
-  store.patch({ batteryPercent: 70 });
+  store.replace({ ...store.value, batteryPercent: 70 });
   assert.deepEqual(store.value.roomCandidates, ["a", "b"]);
 });

@@ -25,6 +25,7 @@ import {
 import type { AreaCircle, SavedPlan } from "./backend-contracts";
 import { entryFloorKey, entryMissionKey } from "./backend-contracts";
 import { notice, readWorkspaceNotice } from "./contracts";
+import { applyResult, type WorkspaceResult } from "./workspace-result";
 
 /** Task geometry stays top-down; the live overview keeps its own presentation. */
 export const forcesTop = (state: WorkspaceState | null): boolean =>
@@ -378,9 +379,12 @@ const discardPlanDraft = (state: WorkspaceState): WorkspaceState => {
 
 export const reduceWorkspace = (
   state: WorkspaceState,
-  intent: WorkspaceIntent,
+  intent: WorkspaceIntent | WorkspaceResult,
 ): WorkspaceState => {
   switch (intent.type) {
+    case "result":
+    case "transition":
+      return applyResult(state, intent);
     case "set-host":
       return {
         ...state,
@@ -906,7 +910,7 @@ export class WorkspaceStore {
     return this.#state;
   }
 
-  dispatch(intent: WorkspaceIntent): WorkspaceState {
+  dispatch(intent: WorkspaceIntent | WorkspaceResult): WorkspaceState {
     return this.replace(reduceWorkspace(this.#state, intent));
   }
 
@@ -951,10 +955,6 @@ export class WorkspaceStore {
       // to the remaining subscribers.
       if (state !== this.#state) return;
     }
-  }
-
-  patch(patch: Partial<WorkspaceState>): WorkspaceState {
-    return this.replace({ ...this.#state, ...patch });
   }
 
   subscribe(listener: (state: WorkspaceState) => void): () => void {
