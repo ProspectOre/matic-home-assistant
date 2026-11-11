@@ -2879,7 +2879,7 @@ async def test_shutdown_ends_a_setting_readback_without_resending_or_redialing(
         lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(HeldRead())),
     )
     client = MaticHermesClient("192.0.2.1", 16320)
-    dial = client._connection._supervisor._open = AsyncMock(return_value=FakeChannel())
+    dial = client._connection.supervisor._open = AsyncMock(return_value=FakeChannel())
     client._connection._async_send_channel_payload = AsyncMock()
 
     task = asyncio.create_task(getattr(client, method)(*args))

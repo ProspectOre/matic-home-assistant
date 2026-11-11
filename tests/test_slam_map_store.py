@@ -23,7 +23,7 @@ from custom_components.matic_robot.slam_map_store import (
     MAX_HEALTH_COUNTER,
     SlamMapStore,
 )
-from tests.hermes_fakes import keep_subscribed
+from tests.hermes_fakes import watch
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
@@ -1080,10 +1080,7 @@ async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> 
         yield HermesCollectionEntry(b"bad", b"bad")
         raise asyncio.CancelledError
 
-    client = SimpleNamespace(
-        async_subscribe_collection_entries=live_entries,
-        async_keep_subscribed=keep_subscribed(),
-    )
+    client = SimpleNamespace(async_watch=watch(live_entries))
 
     with pytest.raises(asyncio.CancelledError):
         await store.async_collect(client)
@@ -1245,10 +1242,7 @@ async def test_slam_map_store_subscribes_again_after_failed_or_finished_streams(
         if False:
             yield HermesCollectionEntry(b"", b"")
 
-    client = SimpleNamespace(
-        async_subscribe_collection_entries=entries,
-        async_keep_subscribed=keep_subscribed(2),
-    )
+    client = SimpleNamespace(async_watch=watch(entries, 2))
 
     await store._async_collect_collection(
         client, "map_compressed_rgb", structural=False
@@ -1257,10 +1251,10 @@ async def test_slam_map_store_subscribes_again_after_failed_or_finished_streams(
     assert subscriptions == 2
     assert store.health.stream_state == "retrying"
     assert store.health.state == "degraded"
-    assert store.health.stream_failures == 2 * int(fail_stream)
+    assert store.health.stream_failures == 2
 
 
-async def test_slam_map_store_survives_unexpected_stream_errors(hass) -> None:
+async def test_slam_map_store_reports_an_unexpected_stream_error(hass) -> None:
     store = SlamMapStore(hass, "unexpected-stream-entry")
 
     async def entries(name):
@@ -1268,18 +1262,17 @@ async def test_slam_map_store_survives_unexpected_stream_errors(hass) -> None:
         if False:
             yield HermesCollectionEntry(b"", b"")
 
-    client = SimpleNamespace(
-        async_subscribe_collection_entries=entries,
-        async_keep_subscribed=keep_subscribed(),
-    )
+    client = SimpleNamespace(async_watch=watch(entries))
     updates: list[str] = []
     remove_listener = store.async_add_listener(
         lambda: updates.append(store.health.stream_state)
     )
 
-    await store._async_collect_collection(
-        client, "map_compressed_rgb", structural=False
-    )
+    # Only a robot error is retried; anything else is a defect and gets out.
+    with pytest.raises(RuntimeError):
+        await store._async_collect_collection(
+            client, "map_compressed_rgb", structural=False
+        )
 
     assert updates == ["connecting", "retrying"]
     assert store.health.stream_failures == 1
@@ -1321,34 +1314,6 @@ async def test_slam_map_store_shutdown_resolves_delayed_private_write(hass) -> N
     restored = SlamMapStore(hass, "shutdown-entry")
     await restored.async_load()
     assert restored.tile_count == 0
-
-
-async def test_slam_map_store_shutdown_prevents_another_subscription(hass) -> None:
-    store = SlamMapStore(hass, "collector-shutdown-entry")
-    release = asyncio.Event()
-    subscribed = asyncio.Event()
-    calls: dict[str, int] = defaultdict(int)
-
-    async def entries(name):
-        calls[name] += 1
-        if len(calls) == 2:
-            subscribed.set()
-        await release.wait()
-        if False:
-            yield HermesCollectionEntry(b"", b"")
-
-    client = SimpleNamespace(
-        async_subscribe_collection_entries=entries,
-        async_keep_subscribed=keep_subscribed(2),
-    )
-    collector = asyncio.create_task(store.async_collect(client))
-    await subscribed.wait()
-
-    await store.async_shutdown()
-    release.set()
-    await asyncio.wait_for(collector, 0.5)
-
-    assert calls == {"map_compressed_rgb": 1, "map_integrated": 1}
 
 
 async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> None:

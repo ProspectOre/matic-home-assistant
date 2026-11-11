@@ -14,7 +14,7 @@ from .const import DOMAIN
 from .repairs import repair_placeholders
 
 _LOGGER = logging.getLogger(__name__)
-ERROR_CONFIRMATION_POLLS = 2
+ERROR_CONFIRMATION_SAMPLES = 2
 ACTIONABLE_ALERTS = frozenset({"bag_full", "bag_missing"})
 
 
@@ -34,18 +34,26 @@ class RobotHealth:
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self.hass = hass
         self.entry_id = entry_id
-        self._error_code_polls: dict[int, int] = {}
+        self._error_code_samples: dict[int, int] = {}
         self._bag_previous_full: bool | None = None
         self._bag_errors_observed = False
         self._unknown_alert_codes: dict[int, dict[str, str]] = {}
         self._confirmed_error_codes: frozenset[int] = frozenset()
-        # First observation also withdraws Repairs left by a replaced coordinator.
+        # First observation also withdraws Repairs left by a replaced session.
         self._alert_issues: set[str] | None = None
         self._bag_pending_clear = False
         self._bag_full_events = 0
         self._bag_replacement_events = 0
         self._bag_last_full_at: str | None = None
         self._bag_last_replaced_at: str | None = None
+
+    @callback
+    def observe(self, state: RobotOperationalState) -> RobotOperationalState:
+        """Count one sighting of a snapshot's errors; return what to show."""
+        state = self.confirm_errors(self.resolve_bag_capability(state))
+        self.track_bag_state(state)
+        self.track_alerts(state)
+        return state
 
     @callback
     def resolve_bag_capability(
@@ -71,15 +79,15 @@ class RobotHealth:
     def confirm_errors(self, state: RobotOperationalState) -> RobotOperationalState:
         """Confirm new error codes individually and preserve active faults."""
         codes = state.error_codes
-        polls = {code: self._error_code_polls.get(code, 0) + 1 for code in codes}
-        self._error_code_polls = polls
+        samples = {code: self._error_code_samples.get(code, 0) + 1 for code in codes}
+        self._error_code_samples = samples
         exposed = tuple(
-            code for code in codes if polls[code] >= ERROR_CONFIRMATION_POLLS
+            code for code in codes if samples[code] >= ERROR_CONFIRMATION_SAMPLES
         )
         if exposed == codes:
             return state
         _LOGGER.debug(
-            "Waiting for a second poll before exposing robot error codes %s",
+            "Waiting for a second sample before exposing robot error codes %s",
             tuple(code for code in codes if code not in exposed),
         )
         if not exposed:
@@ -128,16 +136,16 @@ class RobotHealth:
     def track_alerts(self, state: RobotOperationalState) -> None:
         """Record unmapped codes and keep one Repair per actionable alert.
 
-        Runs on confirmed codes only, so a one-poll firmware pulse neither
+        Runs on confirmed codes only, so a one-sample firmware pulse neither
         records a code nor raises a Repair. While new codes wait for that
         confirmation, existing Repairs stay as they are.
         """
         if (
             self._alert_issues is None
-            and self._error_code_polls
+            and self._error_code_samples
             and all(
-                polls < ERROR_CONFIRMATION_POLLS
-                for polls in self._error_code_polls.values()
+                samples < ERROR_CONFIRMATION_SAMPLES
+                for samples in self._error_code_samples.values()
             )
         ):
             return

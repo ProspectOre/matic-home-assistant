@@ -75,7 +75,7 @@ the software and hardware versions.
 If **Problem** turns on, its `errors` attribute names the reported conditions,
 and **Robot alert** keeps their numeric codes in `codes`; a condition with no
 known name appears as `error_code_<n>`.
-Each new error needs two normal polls; existing errors stay visible while others change.
+Each new error must be seen twice, 30 seconds apart; existing errors stay visible while others change.
 Code 207's lid meaning is physically confirmed. Matic app 1.182.1 maps
 220 to mopping water unavailable; broader firmware coverage remains unqualified. Recorded activity keeps their numeric codes after clearing.
 

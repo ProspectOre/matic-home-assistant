@@ -13,7 +13,7 @@ from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot.client import tls
+from custom_components.matic_robot.client import supervisor, tls, transport
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.const import (
@@ -126,6 +126,13 @@ def config_entry(
         version=1,
         minor_version=3,
     )
+
+
+@pytest.fixture
+def fast_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ping every 0.2 s, not every minute, and wait 0.2 s for the answer."""
+    monkeypatch.setattr(supervisor, "KEEPALIVE_SECONDS", 0.2)
+    monkeypatch.setattr(transport, "KEEPALIVE_TIMEOUT_SECONDS", 0.2)
 
 
 @pytest.fixture

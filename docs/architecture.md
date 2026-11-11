@@ -12,6 +12,7 @@ out their own.
 | Part | Owns | Must not |
 | --- | --- | --- |
 | Protocol client | The pinned connection and the vetted commands | Hold Home Assistant workflows or policy |
+| Robot session | The client, the robot's live state and whether the robot is reachable | Let anything but the state watch write robot state |
 | Coordinator | The floor the robot reports and its matching floor plan | Treat a cached floor as current after a floor change |
 | Map store | Which map data is admitted as live, and its size limits | Restore a floor's identity from old geometry |
 | Cleaning policy | Rotation, room schedules, effective settings and their explanations | Send commands or decide that a room is done |
@@ -38,11 +39,25 @@ the connection itself replaces it. Bounded telemetry decoders handle robot
 state and native cleaning summaries.
 [Discovery](../custom_components/matic_robot/config_flow_discovery.py) selects
 a certificate-bound address; [vacuum catalogs](../custom_components/matic_robot/vacuum_catalog.py)
-map Home Assistant areas to floor-scoped rooms. The
-[coordinator](../custom_components/matic_robot/coordinator.py) publishes robot,
-floor and session snapshots; [robot health](../custom_components/matic_robot/robot_health.py)
-derives confirmed errors and alerts. Cached geometry alone cannot establish
-the current floor.
+map Home Assistant areas to floor-scoped rooms.
+
+Each config entry has one [robot session](../custom_components/matic_robot/session.py).
+It reads identity and state once at setup; after that a `kabuki_state` watch,
+reopened by the supervisor whenever it ends, is the only writer of its state
+store, at most one snapshot a second. [Robot health](../custom_components/matic_robot/robot_health.py)
+shows an error code or bag flag once two samples 30 seconds apart carry it. A
+failed dial, or 10 seconds with no live state subscription, makes the robot
+and every entity unavailable until the next snapshot; the keepalive ping ends
+a silent connection. The session also raises the identity Repair, starts
+reauthentication when a dial or the state subscription is refused, and closes
+the client on unload and when Home Assistant stops.
+
+The [coordinator](../custom_components/matic_robot/coordinator.py) is what
+entities read. It joins the session's state with what the robot does not push
+to it yet: the floor plan, pose, telemetry and run progress, read on a
+heartbeat every 5 minutes while the robot is docked and every 30 seconds while
+it is out. It never reads robot state, and a heartbeat fails while the robot
+is unreachable. Cached geometry alone cannot establish the current floor.
 
 ## Plans and completion
 
