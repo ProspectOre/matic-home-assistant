@@ -6,12 +6,8 @@ import type { PropertyValues } from "lit";
 import type { DateFormat, Localize, WorkspaceAction, WorkspaceState } from "../map-studio-v4/contracts";
 import { isWorkspaceIntent } from "../map-studio-v4/contracts";
 import { SHELL_TAG } from "../map-studio-v4/element-tags";
-import {
-  createGalleryState,
-  GALLERY_SCENARIOS,
-  withGalleryRoomPreview,
-  type GalleryScenario,
-} from "./gallery-state";
+import { GALLERY_SCENARIOS, type GalleryScenario } from "./gallery-scenarios";
+import { createGalleryState, withGalleryRoomPreview } from "./gallery-state";
 import "../map-studio-v4/shell";
 import { WorkspaceStore, areaSelection } from "../map-studio-v4/state";
 
