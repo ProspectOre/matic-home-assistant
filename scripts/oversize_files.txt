@@ -1,7 +1,6 @@
 custom_components/matic_robot/area_binding_geometry.py 1930
 custom_components/matic_robot/client/hermes_commands.py 1053
 custom_components/matic_robot/config_flow.py 1634
-custom_components/matic_robot/managed_executor.py 1021
 custom_components/matic_robot/managed_observation.py 1177
 custom_components/matic_robot/native_history.py 1241
 custom_components/matic_robot/plan_cadence.py 1178
@@ -40,10 +39,10 @@ tests/test_llm.py 3263
 tests/test_mixed_coverage.py 2120
 tests/test_photo_patrol.py 1645
 tests/test_plan_entries.py 1122
-tests/test_plans.py 12026
-tests/test_restart.py 1753
-tests/test_services.py 6789
-tests/test_session_ownership.py 2804
+tests/test_plans.py 11862
+tests/test_restart.py 1622
+tests/test_services.py 6682
+tests/test_session_ownership.py 2747
 tests/test_slam_history.py 1103
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1826

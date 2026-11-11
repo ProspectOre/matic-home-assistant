@@ -27,6 +27,7 @@ from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.native_history import _global_room
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
 from tests.test_entities import _entry
 from tests.test_plans import _call, _leg_manager, _leg_record, _room
@@ -286,7 +287,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
                 "vacuum.matic",
                 "serial",
                 rooms,
-                session_history=AsyncMock(return_value=()),
+                robot=RobotPort(session_history=AsyncMock(return_value=())),
             ),
             timeout=8,
         )

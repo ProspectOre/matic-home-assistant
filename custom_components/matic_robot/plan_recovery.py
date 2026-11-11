@@ -40,6 +40,7 @@ from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
 )
+from .run_machine import RunPhase
 
 if TYPE_CHECKING:
     from .run_control import RunControl
@@ -119,13 +120,13 @@ class PlanRecovery:
                 if (
                     evidence is not None
                     and normalized_checkpoint.get("phase")
-                    in {"starting", "accepted", "verifying"}
+                    in {RunPhase.STARTING, RunPhase.ACCEPTED, RunPhase.VERIFYING}
                     and all(
                         normalized_checkpoint.get(key) == existing.get(key)
                         for key in ("floor_token", "leg_index", "rooms")
                     )
                     and (
-                        existing.get("phase") == "dispatching"
+                        existing.get("phase") == RunPhase.DISPATCHING
                         or all(
                             existing.get(key) is None
                             or normalized_checkpoint.get(key) == existing.get(key)
@@ -196,7 +197,7 @@ class PlanRecovery:
                     or run.get("run_id") != run_id
                     or run.get("outcome") != "running"
                     or not isinstance(checkpoint, dict)
-                    or checkpoint.get("phase") != "dispatching"
+                    or checkpoint.get("phase") != RunPhase.DISPATCHING
                     or checkpoint.get("floor_token") != plan_floor_token(floor_plan)
                     or receipt.floor_hash != coverage_floor_hash(floor_plan)
                     or receipt.session_hash
@@ -296,7 +297,7 @@ class PlanRecovery:
                     or run.get("run_id") != run_id
                     or run.get("outcome") != "running"
                     or not isinstance(checkpoint, dict)
-                    or checkpoint.get("phase") != "dispatching"
+                    or checkpoint.get("phase") != RunPhase.DISPATCHING
                     or checkpoint.get("mixed_settings") is not True
                     or not _dispatching_room_leg(checkpoint)
                 ):
@@ -323,7 +324,7 @@ class PlanRecovery:
             or run.get("run_id") != run_id
             or run.get("outcome") != "running"
             or not isinstance(checkpoint, dict)
-            or checkpoint.get("phase") != "dispatching"
+            or checkpoint.get("phase") != RunPhase.DISPATCHING
             or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
             or checkpoint.get("stop_intent") not in {None, "after_room"}
         ):

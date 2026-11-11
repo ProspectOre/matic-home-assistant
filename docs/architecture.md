@@ -79,13 +79,13 @@ these owners around one repository:
 [storage migrations](../custom_components/matic_robot/plan_storage.py) and
 [timing](../custom_components/matic_robot/plan_timing.py) support those owners.
 The [managed executor](../custom_components/matic_robot/managed_executor.py)
-orchestrates runs; its dispatch, room, grouped-leg, area, observation and
-reconciliation modules hold the corresponding execution steps. Native history
-and [grouped reconciliation](../custom_components/matic_robot/grouped_native_reconciliation.py)
+orchestrates runs through its dispatch, room, grouped-leg, area, observation
+and reconciliation modules. The [run machine](../custom_components/matic_robot/run_machine.py) moves a run through its
+queue and says what to checkpoint; the run reads the robot through a
+[robot port](../custom_components/matic_robot/robot_port.py). Native history and [grouped reconciliation](../custom_components/matic_robot/grouped_native_reconciliation.py)
 match room evidence to an owned session. Completion and cadence credit require
 their own evidence; a UI update or an unnamed area summary is not room proof.
-See the [plan run contract](e2e-contract.md) and
-[cleaning results](native-cleaning-results.md).
+See the [plan run contract](e2e-contract.md) and [cleaning results](native-cleaning-results.md).
 
 ## Home Assistant interfaces
 

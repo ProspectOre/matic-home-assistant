@@ -33,6 +33,7 @@ from custom_components.matic_robot.native_completion import (
 )
 from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_history import run_ending, run_rooms
 from tests.wire_builders import _session_identity
 
@@ -240,9 +241,11 @@ async def _run_plan(hass, robot: _Robot):
                 "vacuum.matic",
                 "serial",
                 [KITCHEN, STUDY],
-                session_identity=robot.read_identity,
-                active_session=AsyncMock(return_value=False),
-                session_history=robot.history,
+                robot=RobotPort(
+                    session_identity=robot.read_identity,
+                    active_session=AsyncMock(return_value=False),
+                    session_history=robot.history,
+                ),
                 managed_user_command=AsyncMock(),
             ),
             3,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from google.protobuf.message import DecodeError
@@ -34,7 +33,9 @@ from .managed_observation import (
 )
 from .managed_run import _PreparedRoomDispatch
 from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
+from .robot_port import RobotPort
 from .room_coherence import current_floor_plan, room_completion_names_are_current
+from .run_machine import RunPhase
 from .service_names import SERVICE_RUN_SELECTED_PLAN
 
 if TYPE_CHECKING:
@@ -251,18 +252,19 @@ async def async_recover_managed_run(
         phase = checkpoint.get("phase")
         mixed_initial_hash = checkpoint.get("mixed_initial_session_hash")
         mixed_dispatch = (
-            phase == "dispatching"
+            phase == RunPhase.DISPATCHING
             and checkpoint.get("mixed_settings") is True
             and isinstance(mixed_initial_hash, str)
             and len(mixed_initial_hash) == 64
             and all(char in "0123456789abcdef" for char in mixed_initial_hash)
         )
         if checkpoint.get("version") != 1 or (
-            phase not in {"accepted", "verifying", "handoff"} and not mixed_dispatch
+            phase not in {RunPhase.ACCEPTED, RunPhase.VERIFYING, RunPhase.HANDOFF}
+            and not mixed_dispatch
         ):
             return
-        verifying = phase == "verifying"
-        handoff = phase == "handoff"
+        verifying = phase == RunPhase.VERIFYING
+        handoff = phase == RunPhase.HANDOFF
         if handoff and checkpoint.get("stop_intent") == "after_room":
             # The preceding leg is already credited. A persisted graceful
             # stop must not wait for native settlement or resume the queue.
@@ -485,24 +487,13 @@ async def async_recover_managed_run(
                 entity_id,
                 serial_number,
                 rooms,
-                refresh=runtime.session.heartbeat.async_request_refresh,
-                active_session=runtime.client.async_get_active_cleaning_session_state,
-                session_history=partial(
-                    runtime.client.async_get_cleaning_session_records, strict=True
-                ),
-                session_identity=runtime.client.async_get_cleaning_session_identity,
-                coverage_verifier=getattr(
-                    runtime.client, "async_confirm_coverage_receipt", None
-                ),
-                confirm_room_completed=runtime.session.heartbeat.async_confirm_room_completed,
+                robot=RobotPort.for_entry(entry),
                 managed_user_command=command,
                 mapped_room_names=tuple(
                     room.name for room in current_floor_plan(entry).rooms
                 ),
                 floor_is_current=completion_is_current,
                 floor_token=checkpoint["floor_token"],
-                set_activity_run_id=runtime.client.activity_journal.set_run_id,
-                get_activity_run_id=runtime.client.activity_journal.current_run_id,
                 recovery=run,
                 recovered_dispatch=None,
                 handoff_expected_identity=handoff_identity or b"",
@@ -651,24 +642,13 @@ async def async_recover_managed_run(
             entity_id,
             serial_number,
             rooms,
-            refresh=runtime.session.heartbeat.async_request_refresh,
-            active_session=runtime.client.async_get_active_cleaning_session_state,
-            session_history=partial(
-                runtime.client.async_get_cleaning_session_records, strict=True
-            ),
-            session_identity=runtime.client.async_get_cleaning_session_identity,
-            coverage_verifier=getattr(
-                runtime.client, "async_confirm_coverage_receipt", None
-            ),
-            confirm_room_completed=runtime.session.heartbeat.async_confirm_room_completed,
+            robot=RobotPort.for_entry(entry),
             managed_user_command=command,
             mapped_room_names=tuple(
                 room.name for room in current_floor_plan(entry).rooms
             ),
             floor_is_current=completion_is_current,
             floor_token=checkpoint["floor_token"],
-            set_activity_run_id=runtime.client.activity_journal.set_run_id,
-            get_activity_run_id=runtime.client.activity_journal.current_run_id,
             recovery=run,
             recovered_dispatch=_PreparedRoomDispatch(
                 () if isinstance(leg, AreaLeg) else tuple(leg),
@@ -712,7 +692,7 @@ async def async_recover_managed_run(
                 or reason == "restart_stop_requested"
                 or checkpoint.get("stop_intent") in {"immediate", "not_running"}
                 or (
-                    checkpoint.get("phase") in {"verifying", "handoff"}
+                    checkpoint.get("phase") in {RunPhase.VERIFYING, RunPhase.HANDOFF}
                     and checkpoint.get("stop_intent") == "after_room"
                     and not completed
                 )

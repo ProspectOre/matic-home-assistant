@@ -17,6 +17,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.plan_model import CleaningRoom, _managed_stop_policy
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
+from custom_components.matic_robot.robot_port import RobotPort
 from tests.test_restart import recovery_state as restart_recovery_fixture
 
 
@@ -93,12 +94,7 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
     ):
         task = asyncio.create_task(
             _async_execute_rooms(
-                hass,
-                call,
-                manager,
-                "vacuum.test",
-                "serial",
-                rooms,
+                hass, call, manager, "vacuum.test", "serial", rooms, robot=RobotPort()
             )
         )
         await entered.wait()
@@ -244,6 +240,7 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
                 "vacuum.test",
                 "serial",
                 [room_b],
+                robot=RobotPort(),
                 cadence_by_room=cadence,
             )
         )
@@ -365,12 +362,7 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
     ):
         task = asyncio.create_task(
             _async_execute_rooms(
-                hass,
-                call,
-                manager,
-                "vacuum.test",
-                "serial",
-                [room],
+                hass, call, manager, "vacuum.test", "serial", [room], robot=RobotPort()
             )
         )
         await entered.wait()
@@ -537,6 +529,7 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
             "vacuum.test",
             "serial",
             [CleaningRoom("room-b", "Room B", "vacuum", "standard")],
+            robot=RobotPort(),
         )
 
     stop_settlement.assert_not_awaited()
@@ -765,8 +758,8 @@ async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
             "vacuum.test",
             "serial",
             [CleaningRoom("room-a", "Room A", "vacuum", "standard")],
+            robot=RobotPort(session_identity=AsyncMock(return_value=b"native-session")),
             floor_token="synthetic-floor-token",
-            session_identity=AsyncMock(return_value=b"native-session"),
             validate_prepared_run=reject_after_checkpoint,
         )
 

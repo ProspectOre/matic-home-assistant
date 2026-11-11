@@ -37,6 +37,7 @@ PLAN_CORE = frozenset(
         "daily_room_limit",
         "plan_model",
         "room_identity",
+        "run_machine",
     )
 )
 # Home Assistant loads an entity platform through its async_setup_entry.
