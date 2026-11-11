@@ -7,6 +7,7 @@ import type { MapPoint } from "./renderer-camera";
 import { roomAt } from "./renderer-hit-test";
 import { pointInPolygon } from "./renderer-math";
 import { trailVisible } from "./renderer-overlays";
+import type { TrailPoint } from "./run-history-data";
 import { statusCopy } from "./shell-presentation";
 import { canFollowRobot, canSelectRooms, canShowExactPose, selectGlobalPrimaryAction } from "./state";
 import { rgba, type CanvasPalette } from "./theme-probe";
@@ -19,7 +20,7 @@ export type Inspected =
   | { readonly kind: "robot" }
   | { readonly kind: "room"; readonly roomId: string; readonly at: MapPoint }
   | { readonly kind: "zone"; readonly zone: MapZoneOverlay; readonly at: MapPoint }
-  | { readonly kind: "trail"; readonly segment: number; readonly index: number };
+  | { readonly kind: "trail"; readonly point: TrailPoint };
 
 /** Taps inspect the live map on home and in Cleaning history; the other workflows use them to pick. */
 export const canInspect = (state: WorkspaceState): boolean =>
@@ -43,28 +44,23 @@ export const inspectAt = (
   toScreen: (point: MapPoint) => MapPoint | null,
 ): Inspected | null => {
   if (!canInspect(state)) return null;
-  // The map's scale at the tap: the mean of a metre east and a metre north.
-  // Without one, as when a metre away falls behind the camera, only zones and
-  // rooms can be hit.
+  // Measured on screen, since a tilted view squeezes the far side of the map.
+  // A point that does not project, as behind the camera, is out of reach.
   const here = toScreen(at);
-  const scales = [{ x: at.x + 1, y: at.y }, { x: at.x, y: at.y + 1 }].flatMap((point) => {
-    const there = toScreen(point);
-    return here && there ? [Math.hypot(there.x - here.x, there.y - here.y)] : [];
-  });
-  const pixels = scales.reduce((sum, value) => sum + value, 0);
-  const reach = pixels > 0 ? REACH_PIXELS * scales.length / pixels : 0;
+  const pixels = (x: number, y: number): number => {
+    const there = here && toScreen({ x, y });
+    return here && there ? Math.hypot(there.x - here.x, there.y - here.y) : Infinity;
+  };
   const position = canShowExactPose(state) ? state.resources.pose.value?.position : null;
-  if (position && Math.hypot(position[0] - at.x, position[1] - at.y) < reach) return { kind: "robot" };
+  if (position && pixels(position[0], position[1]) < REACH_PIXELS) return { kind: "robot" };
   if (trailVisible(state)) {
-    let nearest: Inspected | null = null;
-    let best = reach;
-    for (const [segment, points] of state.trail!.segments.entries()) {
-      for (const [index, [x, y]] of points.entries()) {
-        const distance = Math.hypot(x - at.x, y - at.y);
-        if (distance < best) [nearest, best] = [{ kind: "trail", segment, index }, distance];
-      }
+    let nearest: TrailPoint | null = null;
+    let best = REACH_PIXELS;
+    for (const point of state.trail!.segments.flat()) {
+      const distance = pixels(point[0], point[1]);
+      if (distance < best) [nearest, best] = [point, distance];
     }
-    if (nearest) return nearest;
+    if (nearest) return { kind: "trail", point: nearest };
   }
   const zone = state.resources.areas.value?.zones.find((candidate) => insideZone(candidate, at));
   if (zone) return { kind: "zone", zone, at };
@@ -75,15 +71,22 @@ export const inspectAt = (
   return rooms.length === 1 ? { kind: "room", roomId: rooms[0]!.id, at } : null;
 };
 
-/** The trail point on show, or null once the trail no longer has it. */
-const trailPoint = (state: WorkspaceState, inspected: Inspected) =>
-  inspected.kind === "trail" && trailVisible(state)
-    ? state.trail!.segments[inspected.segment]?.[inspected.index] ?? null : null;
+/**
+ * Where the inspected point sits along the trail, or null once the trail no
+ * longer holds it. A point keeps its identity while the live trail grows and
+ * drops its oldest points; a reloaded trail closes the card.
+ */
+const trailPlace = (state: WorkspaceState, inspected: Inspected) => {
+  if (inspected.kind !== "trail" || !trailVisible(state)) return null;
+  const points = state.trail!.segments.flat();
+  const position = points.indexOf(inspected.point);
+  return position < 0 ? null : { points, position };
+};
 
 /** The map point the inspect marker rings: a trail point only, since the rest name themselves. */
 export const inspectMarker = (state: WorkspaceState, inspected: Inspected | null): MapPoint | null => {
-  const point = inspected && trailPoint(state, inspected);
-  return point ? { x: point[0], y: point[1] } : null;
+  return inspected?.kind === "trail" && trailPlace(state, inspected)
+    ? { x: inspected.point[0], y: inspected.point[1] } : null;
 };
 
 /** False once what was inspected left the map, so the panel closes. */
@@ -93,7 +96,7 @@ export const stillInspectable = (state: WorkspaceState, inspected: Inspected): b
     case "robot": return canShowExactPose(state) && !!state.resources.pose.value?.position;
     case "room": return !!state.resources.scene.value?.metadata.rooms.some((room) => room.id === inspected.roomId);
     case "zone": return !!state.resources.areas.value?.zones.includes(inspected.zone);
-    case "trail": return trailPoint(state, inspected) !== null;
+    case "trail": return trailPlace(state, inspected) !== null;
   }
 };
 
@@ -193,22 +196,17 @@ const zoneDetails = (context: InspectContext, { zone }: Extract<Inspected, { kin
 
 const trailDetails = (context: InspectContext, inspected: Extract<Inspected, { kind: "trail" }>): Details | null => {
   const { state, t, dates, inspect } = context;
-  const segments = state.trail!.segments;
-  const points = segments.flat();
-  const position = segments.slice(0, inspected.segment).reduce((sum, list) => sum + list.length, 0) + inspected.index;
-  const point = points[position];
-  if (!point) return null;
-  const at = point[2];
+  const place = trailPlace(state, inspected);
+  if (!place) return null;
+  const { points, position } = place;
+  const at = inspected.point[2];
   const first = points.find((candidate) => candidate[2] !== undefined)?.[2];
   const time = at === undefined ? t("v4_inspect_time_unknown", "Not recorded")
     : new Intl.DateTimeFormat(dates?.language ?? state.locale, { dateStyle: "medium", timeStyle: "medium", timeZone: dates?.timeZone })
       .format(at * 1000);
   const step = (offset: number) => {
-    let next = position + offset;
-    for (const [segment, list] of segments.entries()) {
-      if (next < list.length) return inspect({ kind: "trail", segment, index: next });
-      next -= list.length;
-    }
+    const point = points[position + offset];
+    if (point) inspect({ kind: "trail", point });
   };
   return {
     title: t("v4_inspect_trail_point", "Trail point"),

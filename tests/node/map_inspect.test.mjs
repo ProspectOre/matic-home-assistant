@@ -36,8 +36,8 @@ const at = (x, y, current = state()) => inspectAt(current, scene, { x, y }, toSc
 
 test("a tap picks the robot, then the nearest trail point, then a zone, then a room", () => {
   assert.deepEqual(at(4.4, 3.4), { kind: "robot" });
-  assert.deepEqual(at(3.15, 1.05), { kind: "trail", segment: 0, index: 1 });
-  assert.deepEqual(at(3.5, 1), { kind: "trail", segment: 1, index: 0 });
+  assert.deepEqual(at(3.15, 1.05), { kind: "trail", point: trail.segments[0][1] });
+  assert.deepEqual(at(3.5, 1), { kind: "trail", point: trail.segments[1][0] });
   assert.deepEqual(at(1.2, 1.2), { kind: "zone", zone, at: { x: 1.2, y: 1.2 } });
   assert.deepEqual(at(1.55, 1.45), { kind: "room", roomId: "room-a", at: { x: 1.55, y: 1.45 } }, "a zone's hole is the room");
   assert.equal(at(4.2, 0.2), null, "no room, zone or trail");
@@ -45,7 +45,7 @@ test("a tap picks the robot, then the nearest trail point, then a zone, then a r
 
 test("the reach follows the map's scale", () => {
   assert.deepEqual(inspectAt(state(), scene, { x: 3.5, y: 1 }, ({ x, y }) => ({ x: x * 10, y: y * 10 })),
-    { kind: "trail", segment: 1, index: 0 });
+    { kind: "trail", point: trail.segments[1][0] });
   assert.deepEqual(inspectAt(state(), scene, { x: 3.4, y: 1.3 }, ({ x, y }) => ({ x: x * 400, y: y * 400 })),
     { kind: "room", roomId: "room-a", at: { x: 3.4, y: 1.3 } });
 });
@@ -53,6 +53,23 @@ test("the reach follows the map's scale", () => {
 test("a tap the map can't scale hits only rooms and zones", () => {
   assert.deepEqual(inspectAt(state(), scene, { x: 4.475, y: 3.475 }, () => null), null);
   assert.deepEqual(inspectAt(state(), scene, { x: 1.2, y: 1.2 }, () => null), { kind: "zone", zone, at: { x: 1.2, y: 1.2 } });
+});
+
+test("in a tilted view the reach is measured on screen", () => {
+  // Rows further up the map are drawn closer together, as in a tilted 3D view:
+  // the trail point 0.6 m north of the tap is 12 px away on screen.
+  const tilted = ({ x, y }) => ({ x: x * 100, y: y * 20 });
+  assert.deepEqual(inspectAt(state(), scene, { x: 3.6, y: 0.4 }, tilted), { kind: "trail", point: trail.segments[1][0] });
+});
+
+test("an inspected trail point stays the same observation as the live trail drops its oldest", () => {
+  const point = { kind: "trail", point: trail.segments[0][1] };
+  const shifted = state({ trail: { ...trail, segments: [[trail.segments[0][1]], trail.segments[1]] } });
+  assert.deepEqual(inspectMarker(shifted, point), { x: 3.2, y: 1 });
+  const evicted = state({ trail: { ...trail, segments: [[], trail.segments[1]] } });
+  assert.equal(stillInspectable(evicted, point), false);
+  const reloaded = state({ trail: { ...trail, segments: trail.segments.map((points) => points.map((each) => [...each])) } });
+  assert.equal(stillInspectable(reloaded, point), false, "a reloaded trail closes the card");
 });
 
 test("taps pick rooms instead in the rooms workflow, and saved maps and other floors inspect nothing", () => {
@@ -63,7 +80,7 @@ test("taps pick rooms instead in the rooms workflow, and saved maps and other fl
 });
 
 test("a trail point is ringed while the trail still holds it", () => {
-  const point = { kind: "trail", segment: 0, index: 1 };
+  const point = { kind: "trail", point: trail.segments[0][1] };
   assert.deepEqual(inspectMarker(state(), point), { x: 3.2, y: 1 });
   assert.equal(inspectMarker(state(), { kind: "robot" }), null);
   assert.equal(stillInspectable(state(), point), true);
