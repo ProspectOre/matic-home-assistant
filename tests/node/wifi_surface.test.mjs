@@ -64,6 +64,14 @@ test("the surface is the weighted mean, clipped to the reading's own room", () =
   assert.equal(at(edge, 2, -0.05).alpha, 0);
 });
 
+test("a reading by a wall stays in its own room when its texel's centre is across the wall", () => {
+  const cells = [cell(3.98, 2, -50)];
+  const surface = wifiSurface(cells, metadata(), NOW);
+  assert.ok(at(surface, 3.5, 2).alpha > 0);
+  assert.equal(at(surface, 4.5, 2).alpha, 0);
+  assert.equal(wifiReadingAt(cells, metadata(), { x: 4.5, y: 2 }, NOW), null);
+});
+
 test("few and old readings are drawn fainter than many fresh ones", () => {
   const alpha = (reading) => at(wifiSurface([reading], metadata(), NOW), reading.x, reading.y).alpha;
   const fresh = alpha(cell(2, 2, -60, 5));

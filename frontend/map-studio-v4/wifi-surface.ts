@@ -61,7 +61,8 @@ export const wifiSurface = (cells: readonly WifiSignalCell[], metadata: Metadata
   for (const cell of cells) {
     const column = Math.floor((cell.x - x0) / texel);
     const row = Math.floor((cell.y - y0) / texel);
-    const home = room[row * width + column];
+    // The reading's own room, not its texel's: a texel centre can lie across a wall.
+    const home = roomAt(metadata, cell.x, cell.y);
     if (!home) continue;
     const confidence = wifiConfidence(cell, nowSeconds);
     for (let j = Math.max(0, row - reach); j <= Math.min(height - 1, row + reach); j += 1) {
@@ -92,15 +93,12 @@ export const wifiSurface = (cells: readonly WifiSignalCell[], metadata: Metadata
 /** The estimate at a map point, with the readings it rests on; null where nothing is in reach. */
 export const wifiReadingAt = (cells: readonly WifiSignalCell[], metadata: Metadata, point: { readonly x: number; readonly y: number },
   nowSeconds: number): WifiReading | null => {
-  const roomOf = (x: number, y: number) => metadata.rooms.length
-    ? metadata.rooms.find((room) => pointInPolygon(x / metadata.metersPerCell - metadata.origin[0],
-      y / metadata.metersPerCell - metadata.origin[1], room.boundary)) : null;
-  const home = roomOf(point.x, point.y);
-  if (home === undefined) return null;
+  const home = roomAt(metadata, point.x, point.y);
+  if (!home) return null;
   let weight = 0, sum = 0, samples = 0, updatedAt = 0;
   for (const cell of cells) {
     const reach = wifiKernel(Math.hypot(cell.x - point.x, cell.y - point.y));
-    if (!reach || roomOf(cell.x, cell.y) !== home) continue;
+    if (!reach || roomAt(metadata, cell.x, cell.y) !== home) continue;
     const k = reach * wifiConfidence(cell, nowSeconds);
     weight += k;
     sum += k * cell.dbm;
@@ -109,6 +107,10 @@ export const wifiReadingAt = (cells: readonly WifiSignalCell[], metadata: Metada
   }
   return weight ? { dbm: sum / weight, samples, updatedAt } : null;
 };
+
+/** The room at a map point, numbered as in the mask. */
+const roomAt = ({ rooms, metersPerCell: meters, origin }: Metadata, x: number, y: number): number => rooms.length
+  ? rooms.findIndex((room) => pointInPolygon(x / meters - origin[0], y / meters - origin[1], room.boundary)) + 1 : 1;
 
 /** Each texel's room, numbered from 1; 0 is outside every room. The first room listed wins an overlap. */
 const roomMask = (metadata: Metadata, x0: number, y0: number, texel: number, width: number, height: number): Uint16Array => {
