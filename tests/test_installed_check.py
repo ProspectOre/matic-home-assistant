@@ -215,119 +215,34 @@ def _statuses(receipt: dict[str, Any]) -> dict[str, str]:
 
 
 class EntityCheckHomeAssistant:
-    def __init__(self, history: dict[str, Any] | None = None) -> None:
+    def __init__(self, sensor_state: str | None) -> None:
         self.registry = [
-            {
-                "entity_id": ROBOT,
-                "platform": "matic_robot",
-                "disabled_by": None,
-                "config_entry_id": "entry-a",
-                "unique_id": "serial_vacuum",
-            },
-            {
-                "entity_id": "button.renamed_stop",
-                "platform": "matic_robot",
-                "disabled_by": None,
-                "config_entry_id": "entry-a",
-                "unique_id": "serial_stop_intelligent_cleaning",
-            },
-            {
-                "entity_id": "sensor.renamed_history",
-                "platform": "matic_robot",
-                "disabled_by": None,
-                "config_entry_id": "entry-a",
-                "unique_id": "serial_cleaning_history",
-            },
+            {"entity_id": entity_id, "platform": "matic_robot", "disabled_by": None}
+            for entity_id in (ROBOT, "sensor.battery")
         ]
-        self.states = [
-            {"entity_id": ROBOT, "state": "docked"},
-            {"entity_id": "button.renamed_stop", "state": "unavailable"},
-        ]
-        if history is not None:
-            self.states.append({"entity_id": "sensor.renamed_history", **history})
+        self.states = [{"entity_id": ROBOT, "state": "docked"}]
+        if sensor_state is not None:
+            self.states.append({"entity_id": "sensor.battery", "state": sensor_state})
 
     async def call(self, method: str) -> Any:
         return self.registry if method == "config/entity_registry/list" else self.states
 
 
-async def test_entities_accepts_idle_stop_when_history_confirms_idle() -> None:
+async def test_entities_count_enabled_entities_and_read_the_robot_state() -> None:
+    check = InstalledCheck(EntityCheckHomeAssistant("87"), _candidate(), Options())  # type: ignore[arg-type]
+    assert await check.entities() == {"enabled": 2, "robot_state": "docked"}
+
+
+@pytest.mark.parametrize("sensor_state", ["unavailable", None])
+async def test_entities_fail_an_enabled_entity_without_an_available_state(
+    sensor_state: str | None,
+) -> None:
     check = InstalledCheck(
-        EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}}),
+        EntityCheckHomeAssistant(sensor_state),  # type: ignore[arg-type]
         _candidate(),
         Options(),
-    )  # type: ignore[arg-type]
-    evidence = await check.entities()
-    assert evidence["enabled"] == 3
-    assert evidence["expected_unavailable"] == ["button.renamed_stop"]
-
-
-async def test_entities_reports_no_expected_unavailable_for_available_stop() -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.states[1]["state"] = "unknown"
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    assert (await check.entities())["expected_unavailable"] == []
-
-
-@pytest.mark.parametrize(
-    "history",
-    [
-        {"state": "0", "attributes": {"plan_running": True}},
-        {"state": "0", "attributes": {"plan_running": None}},
-        {"state": "unknown", "attributes": {"plan_running": False}},
-        {"state": "unavailable", "attributes": {"plan_running": False}},
-        None,
-    ],
-)
-async def test_entities_fail_stop_button_without_explicit_available_idle_state(
-    history: dict[str, Any] | None,
-) -> None:
-    check = InstalledCheck(EntityCheckHomeAssistant(history), _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed, match=r"button\.renamed_stop"):
-        await check.entities()
-
-
-async def test_entities_do_not_use_idle_sensor_from_another_entry() -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.registry[-1]["config_entry_id"] = "entry-b"
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed, match=r"button\.renamed_stop"):
-        await check.entities()
-
-
-@pytest.mark.parametrize(
-    ("button_entity", "history_entity"),
-    [
-        ("sensor.stop_like", "sensor.renamed_history"),
-        ("button.renamed_stop", "binary_sensor.history_like"),
-    ],
-)
-async def test_entities_require_button_and_sensor_domains_for_exception(
-    button_entity: str, history_entity: str
-) -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.registry[1]["entity_id"] = button_entity
-    ha.registry[2]["entity_id"] = history_entity
-    ha.states[1]["entity_id"] = button_entity
-    ha.states[2]["entity_id"] = history_entity
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed):
-        await check.entities()
-
-
-async def test_entities_still_fail_other_unavailable_buttons() -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.registry.append(
-        {
-            "entity_id": "button.other",
-            "platform": "matic_robot",
-            "disabled_by": None,
-            "config_entry_id": "entry-a",
-            "unique_id": "serial_other_button",
-        }
     )
-    ha.states.append({"entity_id": "button.other", "state": "unavailable"})
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed, match=r"button\.other"):
+    with pytest.raises(CheckFailed, match=r"sensor\.battery"):
         await check.entities()
 
 

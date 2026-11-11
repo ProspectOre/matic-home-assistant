@@ -1,6 +1,7 @@
 # Matic 0.6 beta 1
 
 Unpublished candidate from `release/0.6`; publication needs owner testing and approval.
+Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and [entities](entities.md).
 
 ## Highlights
 
@@ -90,14 +91,13 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 
 - **Robot schedules.** `calendar.matic_native_schedules` shows each enabled
   weekly schedule from the Matic app, with its rooms and cleaning mode. Schedule
-  details stay out of Recorder. The 0.5.1 fixes preserve every acknowledged
-  schedule, Monday-first weekdays, enabled state and ordered/unordered room lists.
+  details stay out of Recorder.
 - **Robot alert.** The alert sensor names a full or missing bag, and either one
   raises a Repair with the fix until the robot stops reporting it. Confirmed
   faults stay visible when other codes change; 207/220 use reporter-observed labels.
 - **Maintenance suggested.** On while the robot's newest monthly recap suggests
-  maintenance, with a Repair naming the month. The recap doesn't say which part
-  yet, so check the brush roll, side brush, mop roll, caster and wedge.
+  maintenance; its `recap_month` attribute names the month. The recap doesn't say
+  which part yet, so check the brush roll, side brush, mop roll, caster and wedge.
 - **Bag pass ends.** Shows when an active bag pass runs out.
 - **Robot camera photos.** **Take photo** asks the robot to take a picture,
   and **Latest photo** shows the newest one, including photos taken in the
@@ -112,8 +112,7 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 - **Room statistics.** Completed room results reported by the robot can update sensors
   for app-started and scheduled cleans. Late corrections retract only the affected
   mode; plan schedules and daily completion counts keep their separate rules.
-  Contributor credits are in the [0.5.1 notes](release-notes-0.5.1.md).
-
+  Credits: [0.5.1 notes](https://github.com/ProspectOre/matic-home-assistant/releases/tag/v0.5.1).
 - **Plans give way.** When the app, the robot's button, voice or a robot
   schedule takes over, a running plan ends as taken over and never sends a
   command to win the robot back.
@@ -126,24 +125,63 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
 
 ## Assistant tools
 
-- **Sink and rooms.** Assist and MCP can send the robot to the sink or to a
-  room.
+- **Sink and rooms.** Assist and MCP can send the robot to the sink or a room.
 - **Recent runs, schedules and zones.** New read-only tools list recent cleans
   and why each ended, the robot's schedules with the runs coming up, and the
   no-go zones with the rooms they cover.
+
+## Removed in 0.6
+
+Matic 0.6 removes 14 entities, 6 actions and 2 attributes that repeated
+something else. Matic 0.5.4 warned about them in Settings > Repairs. On its
+first start, 0.6 deletes the 14 entities from Home Assistant, enabled or not,
+and a call to a removed action fails. Update the automations, scripts,
+dashboards and templates that still use one.
+
+- **Cleaning order for one run.** Run plan (`run_selected_plan`) takes an
+  optional `run_behavior`: `intelligent` for Smart Order or `ordered` for Saved
+  order. Leave it out to use the order saved with the plan.
+- **Error names.** The Problem sensor's `errors` attribute names the robot's
+  current errors.
+- **Imported blueprints.** A Matic cleaning blueprint imported before 0.5.4
+  calls a removed action. The Repair **Matic blueprints need an update** has a
+  Submit button that switches your copies to Run plan with the same cleaning
+  order and reloads your automations.
+- **Runs in progress.** A plan run that was started with a removed action
+  carries on after the update as a Run plan run.
+- **Two more attributes later.** The `current_area` and `low_charge` attributes
+  of `vacuum.matic` go in a later 0.6 change. Switch to
+  `sensor.matic_current_area` and `binary_sensor.matic_low_charge` now.
+
+Entity IDs assume a robot named "Matic".
+
+| Removed | Use instead |
+| --- | --- |
+| `intelligent_clean` (Run Smart Order) | `run_selected_plan` with `run_behavior: intelligent` |
+| `clean_entire_plan` (Run saved order) | `run_selected_plan` with `run_behavior: ordered` |
+| `select_plan` | `select.select_option` on `select.matic_saved_cleaning_plan` (Default cleaning plan), which is off until you enable it |
+| `save_plan_room`, `move_plan_room`, `delete_plan_room` | `save_plan` with the plan's whole room list, or the plan editor in Matic Map |
+| `button.matic_intelligent_clean`, `button.matic_clean_entire_plan` | `button.matic_run_selected_plan` (Run plan), or `run_selected_plan` with `run_behavior` |
+| `button.matic_stop_intelligent_cleaning` | `vacuum.stop` on `vacuum.matic` |
+| `binary_sensor.matic_paused`, `binary_sensor.matic_returning` | `vacuum.matic` in state `paused` or `returning` |
+| `sensor.matic_activity` | The state of `vacuum.matic`: `ready` reads `idle`, and `charging` reads `docked` with `binary_sensor.matic_charging` on. Its `errors` are on `binary_sensor.matic_problem`, where the first item is what `primary_error` held. Its error codes are the `codes` attribute of `sensor.matic_robot_alert`, and `current_area` is `sensor.matic_current_area` |
+| `binary_sensor.matic_fully_charged` | `sensor.matic_battery` at 100 while `binary_sensor.matic_charging` is on |
+| `sensor.matic_rooms` | The `rooms` attribute of `vacuum.matic`, which maps each room ID to its name |
+| `sensor.matic_update_state`, `sensor.matic_update_channel` | The `update_state` and `update_channel` attributes of `update.matic_firmware` |
+| `sensor.matic_scheduled_cleanings` | `calendar.matic_native_schedules` (Robot schedules) |
+| `sensor.matic_protocol_version`, `sensor.matic_dock_detections`, `sensor.matic_sink_summon_locations` | The device page's Download diagnostics file. Automations cannot read it |
+| Attributes `charging` and `problem` of `vacuum.matic` | `binary_sensor.matic_charging` and `binary_sensor.matic_problem` |
 
 ## Before you update
 
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
-- Keep a matching 0.5.0 backup before installing. The isolated
-  [upgrade and rollback drill](upgrade-drill.md) checks synthetic plans, areas,
-  schedules and history; the owner's snapshot and host restore remain
-  unqualified. The [installed check](installed-check.md) needs the owner's go.
-- The finer Wi-Fi survey upgrades its storage to version 2 while retaining
-  older one-metre readings. Older integration versions cannot read that store;
-  rolling back requires the matching pre-upgrade backup. A restore also returns
-  the survey to the readings captured in that backup.
+- Make a Home Assistant backup before installing. 0.6 stores saved maps and
+  the Wi-Fi survey in a new format that 0.5 can't read, so going back means
+  restoring that backup, which also returns both to what the backup held. The
+  survey keeps its older one-metre readings when it upgrades.
+- Restoring a backup on a real Home Assistant host has not been tried yet. The
+  [upgrade and rollback drill](upgrade-drill.md) covers it on test data only.
 
 ## Checks still needed
 
@@ -151,5 +189,3 @@ Interior phase labels are inferred from one capture; follow/run-map pictures nee
 The photo trial used equivalent manual commands; Photo patrol has not run installed.
 Beta 1 is blocked pending live-stream/map-update reconnect, loss/order, authorization, polling, host and device qualification.
 Push starts automatically when supported (no user toggle); older backends use polling, and Matic keeps checking status on a schedule. This may add network traffic and Home Assistant load; the hoped-for 70% reduction in requests has not been shown.
-
-See [Matic Map and features](features.md), [Actions](actions.md) and [Entities](entities.md).

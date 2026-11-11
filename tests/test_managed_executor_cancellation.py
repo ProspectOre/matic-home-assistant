@@ -109,7 +109,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     call = ServiceCall(
         hass,
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "synthetic-plan",
             "start_timeout": 1,

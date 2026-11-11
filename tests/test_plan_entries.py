@@ -41,9 +41,6 @@ from custom_components.matic_robot.service_plans import (
     _plan_request_error,
 )
 from custom_components.matic_robot.service_schemas import (
-    DELETE_PLAN_ROOM_SCHEMA,
-    MOVE_PLAN_ROOM_SCHEMA,
-    SAVE_PLAN_ROOM_SCHEMA,
     SAVE_PLAN_SCHEMA,
 )
 from tests.test_services import _registered_handler, _registered_services
@@ -703,25 +700,6 @@ def test_entry_schemas_keep_room_and_area_exclusive() -> None:
             SAVE_PLAN_SCHEMA({**base, "rooms": [invalid]})
     with pytest.raises(probatio.Invalid):
         SAVE_PLAN_SCHEMA({**base, "rooms": []})
-    with pytest.raises(probatio.Invalid):
-        SAVE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Home",
-                "room": {"room": "Kitchen", "area": "Rug"},
-            }
-        )
-    target = {"entity_id": ["vacuum.test"], "plan": "Home"}
-    for schema, extra in (
-        (DELETE_PLAN_ROOM_SCHEMA, {}),
-        (MOVE_PLAN_ROOM_SCHEMA, {"new_position": 1}),
-    ):
-        assert schema({**target, **extra, "area": "Rug"})["area"] == "Rug"
-        assert schema({**target, **extra, "room": "Kitchen"})["room"] == "Kitchen"
-        with pytest.raises(probatio.Invalid):
-            schema({**target, **extra})
-        with pytest.raises(probatio.Invalid):
-            schema({**target, **extra, "room": "Kitchen", "area": "Rug"})
 
 
 async def test_save_plan_service_stores_areas_with_their_settings(hass) -> None:
@@ -793,264 +771,6 @@ async def test_save_plan_service_rejects_unusable_areas(
     assert manager.catalog.plans(SERIAL) == {}
 
 
-async def test_plan_area_crud_services_edit_one_ordered_list(hass) -> None:
-    manager = await _manager(hass)
-    await _handler(
-        hass,
-        manager,
-        "save_plan",
-        SAVE_PLAN_SCHEMA,
-        {"name": "Home", "rooms": [{"room": "Kitchen"}, {"room": "Study"}]},
-    )
-
-    added = await _handler(
-        hass,
-        manager,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "room": {"area": "Rug"}},
-    )
-    assert added == {
-        "plan_id": "home",
-        "position": 3,
-        "area": _area_entry("rug", "vacuum", "standard"),
-    }
-    updated = await _handler(
-        hass,
-        manager,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "room": {"area": "rug", "cleaning_mode": "mop"}},
-    )
-    assert updated["position"] == 3
-    assert updated["area"]["cleaning_mode"] == "mop"
-
-    moved = await _handler(
-        hass,
-        manager,
-        "move_plan_room",
-        MOVE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "area": "Rug", "new_position": 1},
-    )
-    assert moved == {
-        "plan_id": "home",
-        "previous_position": 3,
-        "position": 1,
-        "area": _area_entry("rug", "mop", "standard"),
-    }
-    moved_room = await _handler(
-        hass,
-        manager,
-        "move_plan_room",
-        MOVE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "room": "Study", "new_position": 1},
-    )
-    assert moved_room["previous_position"] == 3
-    assert moved_room["room"]["room_id"] == "room-study"
-    plan = manager.catalog.plan(SERIAL, "home")
-    assert plan["entries"] == [
-        _room_entry("room-study"),
-        _area_entry("rug", "mop", "standard"),
-        _room_entry("room-kitchen"),
-    ]
-    assert [room["room_id"] for room in plan["rooms"]] == [
-        "room-study",
-        "room-kitchen",
-    ]
-
-    added_room = await _handler(
-        hass,
-        manager,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "room": {"room": "Hall"}},
-    )
-    assert added_room["position"] == 4
-    assert added_room["room"]["room_id"] == "room-hall"
-
-    removed = await _handler(
-        hass,
-        manager,
-        "delete_plan_room",
-        DELETE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "area": "Rug"},
-    )
-    assert removed == {
-        "plan_id": "home",
-        "deleted": _area_entry("rug", "mop", "standard"),
-    }
-    for room in ("Study", "Kitchen", "Hall"):
-        await _handler(
-            hass,
-            manager,
-            "delete_plan_room",
-            DELETE_PLAN_ROOM_SCHEMA,
-            {"plan": "Home", "room": room},
-        )
-    emptied = manager.catalog.plan(SERIAL, "home")
-    assert emptied["entries"] == []
-    assert emptied["rooms"] == []
-    assert emptied["enabled"] is False
-
-
-async def test_removing_the_last_room_keeps_an_area_plan_enabled(hass) -> None:
-    manager = await _manager(hass)
-    await _handler(
-        hass,
-        manager,
-        "save_plan",
-        SAVE_PLAN_SCHEMA,
-        {"name": "Home", "rooms": [{"room": "Kitchen"}, {"area": "Rug"}]},
-    )
-
-    await _handler(
-        hass,
-        manager,
-        "delete_plan_room",
-        DELETE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "room": "Kitchen"},
-    )
-
-    plan = manager.catalog.plan(SERIAL, "home")
-    assert plan["enabled"] is True
-    assert plan["entries"] == [_area_entry("rug", "vacuum", "standard")]
-
-
-@pytest.mark.parametrize(
-    ("service", "schema", "data", "key"),
-    [
-        (
-            "delete_plan_room",
-            DELETE_PLAN_ROOM_SCHEMA,
-            {"area": "Mat"},
-            "area_not_in_plan",
-        ),
-        (
-            "delete_plan_room",
-            DELETE_PLAN_ROOM_SCHEMA,
-            {"area": "Missing"},
-            "unknown_area",
-        ),
-        (
-            "move_plan_room",
-            MOVE_PLAN_ROOM_SCHEMA,
-            {"area": "Mat", "new_position": 1},
-            "area_not_in_plan",
-        ),
-        (
-            "move_plan_room",
-            MOVE_PLAN_ROOM_SCHEMA,
-            {"area": "Rug", "new_position": 3},
-            "invalid_room_position",
-        ),
-        (
-            "save_plan_room",
-            SAVE_PLAN_ROOM_SCHEMA,
-            {"room": {"area": "Missing"}},
-            "unknown_area",
-        ),
-    ],
-)
-async def test_plan_area_crud_reports_unknown_areas_and_positions(
-    hass, service: str, schema, data: dict, key: str
-) -> None:
-    manager = await _manager(hass)
-    await _handler(
-        hass,
-        manager,
-        "save_plan",
-        SAVE_PLAN_SCHEMA,
-        {"name": "Home", "rooms": [{"room": "Kitchen"}, {"area": "Rug"}]},
-    )
-    before = manager.catalog.plan(SERIAL, "home")
-
-    with pytest.raises(ServiceValidationError) as raised:
-        await _handler(hass, manager, service, schema, {"plan": "Home", **data})
-
-    assert raised.value.translation_key == key
-    assert manager.catalog.plan(SERIAL, "home") == before
-
-
-async def test_plan_area_crud_reaches_a_deleted_area_by_its_id(hass) -> None:
-    manager = await _manager(hass)
-    await _handler(
-        hass,
-        manager,
-        "save_plan",
-        SAVE_PLAN_SCHEMA,
-        {"name": "Home", "rooms": [{"room": "Kitchen"}, {"area": "Rug"}]},
-    )
-    # A store written by another tool can still name an area that is gone.
-    manager.repository.robot(SERIAL)["areas"].pop("rug")
-
-    removed = await _handler(
-        hass,
-        manager,
-        "delete_plan_room",
-        DELETE_PLAN_ROOM_SCHEMA,
-        {"plan": "Home", "area": "rug"},
-    )
-
-    assert removed["deleted"]["area_id"] == "rug"
-    assert manager.catalog.plan(SERIAL, "home")["entries"] == [
-        _room_entry("room-kitchen")
-    ]
-
-
-@pytest.mark.parametrize(
-    ("service", "schema", "data"),
-    [
-        ("delete_plan_room", DELETE_PLAN_ROOM_SCHEMA, {"area": "rug"}),
-        ("move_plan_room", MOVE_PLAN_ROOM_SCHEMA, {"area": "rug", "new_position": 1}),
-    ],
-)
-async def test_plan_edits_report_another_missing_area(
-    hass, service: str, schema, data: dict
-) -> None:
-    manager = await _manager(hass)
-    await _handler(
-        hass,
-        manager,
-        "save_plan",
-        SAVE_PLAN_SCHEMA,
-        {
-            "name": "Home",
-            "rooms": [{"room": "Kitchen"}, {"area": "Rug"}, {"area": "Mat"}],
-        },
-    )
-    manager.repository.robot(SERIAL)["areas"].pop("mat")
-    before = manager.catalog.plan(SERIAL, "home")
-
-    with pytest.raises(ServiceValidationError) as raised:
-        await _handler(hass, manager, service, schema, {"plan": "Home", **data})
-
-    assert raised.value.translation_key == "plan_area_missing"
-    assert manager.catalog.plan(SERIAL, "home") == before
-
-
-async def test_plan_edits_report_a_corrupt_entry_order(hass) -> None:
-    manager = await _manager(hass)
-    await _handler(
-        hass,
-        manager,
-        "save_plan",
-        SAVE_PLAN_SCHEMA,
-        {"name": "Home", "rooms": [{"room": "Kitchen"}]},
-    )
-    manager.repository.robot(SERIAL)["plans"]["home"]["entries"] = []
-
-    with pytest.raises(ServiceValidationError) as raised:
-        await _handler(
-            hass,
-            manager,
-            "delete_plan_room",
-            DELETE_PLAN_ROOM_SCHEMA,
-            {"plan": "Home", "room": "Kitchen"},
-        )
-
-    assert raised.value.translation_key == "invalid_plan"
-
-
 def test_plan_request_errors_translate_area_failures() -> None:
     assert _plan_request_error(PlanAreaMissingError("x")).translation_key == (
         "plan_area_missing"
@@ -1067,11 +787,11 @@ def test_plan_request_errors_translate_area_failures() -> None:
 
 
 @pytest.mark.parametrize(
-    "service", ["run_selected_plan", "intelligent_clean", "clean_entire_plan"]
+    "cleaning_order", [{}, {"run_behavior": "intelligent"}, {"run_behavior": "ordered"}]
 )
 @pytest.mark.parametrize("plan", ["Mixed", "Spots"])
 async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
-    hass, service: str, plan: str
+    hass, cleaning_order: dict[str, str], plan: str
 ) -> None:
     floor = _floor()
     manager = await _mixed_manager(hass, floor)
@@ -1107,8 +827,8 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
             AsyncMock(),
         ) as execute,
     ):
-        await _registered_handler(services, service)(
-            _call(hass, service, {"plan": plan})
+        await _registered_handler(services, "run_selected_plan")(
+            _call(hass, "run_selected_plan", {"plan": plan, **cleaning_order})
         )
 
     execute.assert_awaited_once()
@@ -1193,15 +913,6 @@ async def test_preview_plan_service_returns_typed_entries(hass) -> None:
         "room",
     ]
     assert len(preview["preview_token"]) == 64
-
-
-def test_move_reaches_every_position_of_a_full_mixed_plan() -> None:
-    # The room limit and as many custom areas again.
-    full = 2 * MAX_ROOM_SEQUENCE_SIZE
-    move = {"entity_id": "vacuum.matic", "plan": "Home", "area": "rug"}
-    assert MOVE_PLAN_ROOM_SCHEMA({**move, "new_position": full})["new_position"] == full
-    with pytest.raises(probatio.Invalid):
-        MOVE_PLAN_ROOM_SCHEMA({**move, "new_position": full + 1})
 
 
 # Run legs ------------------------------------------------------------------

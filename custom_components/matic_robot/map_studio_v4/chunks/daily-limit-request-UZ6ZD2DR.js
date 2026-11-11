@@ -1,0 +1,1 @@
+import"./chunk-BY7YZ6Q5.js";function i(i,t,o,n,e){if(!i||!t||!o||null!==n&&(!Number.isInteger(n)||n<1||n>100))throw e();return{path:`/api/matic_robot/plans/${encodeURIComponent(i)}/daily_limit`,init:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({room_id:o,floor_token:t,limit:n})}}}export{i as dailyLimitRequest};

@@ -35,12 +35,29 @@ from .managed_observation import (
 from .managed_run import _PreparedRoomDispatch
 from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
 from .room_coherence import current_floor_plan, room_completion_names_are_current
+from .service_names import SERVICE_RUN_SELECTED_PLAN
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
 
 RECOVERY_ATTEMPTS = 60
 RECOVERY_RETRY_SECONDS = 2
+# Actions 0.6 removed, and the Run plan cleaning order each one stood for.
+_REMOVED_RUN_BEHAVIOR = {
+    "intelligent_clean": "intelligent",
+    "clean_entire_plan": "ordered",
+}
+
+
+def _recovered_call(
+    hass: HomeAssistant, run: dict[str, Any], checkpoint: dict[str, Any]
+) -> ServiceCall:
+    """Rebuild the action call that started a run, as 0.6 names it."""
+    service, data = run["service"], checkpoint["data"]
+    if run_behavior := _REMOVED_RUN_BEHAVIOR.get(service):
+        service = SERVICE_RUN_SELECTED_PLAN
+        data = {**data, "run_behavior": run_behavior}
+    return ServiceCall(hass, DOMAIN, service, data)
 
 
 def _matches_mixed_session_hash(identity: bytes, expected_hash: object) -> bool:
@@ -463,7 +480,7 @@ async def async_recover_managed_run(
                 return
             await _async_execute_rooms(
                 hass,
-                ServiceCall(hass, DOMAIN, run["service"], checkpoint["data"]),
+                _recovered_call(hass, run, checkpoint),
                 manager,
                 entity_id,
                 serial_number,
@@ -629,7 +646,7 @@ async def async_recover_managed_run(
 
         await _async_execute_rooms(
             hass,
-            ServiceCall(hass, DOMAIN, run["service"], checkpoint["data"]),
+            _recovered_call(hass, run, checkpoint),
             manager,
             entity_id,
             serial_number,

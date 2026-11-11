@@ -26,7 +26,8 @@ export default defineConfig({
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: {
     baseURL: "http://127.0.0.1:4173",
-    trace: "off",
+    // Only CI retries; it uploads the traces when a shard fails.
+    trace: "on-first-retry",
   },
   projects: [
     {

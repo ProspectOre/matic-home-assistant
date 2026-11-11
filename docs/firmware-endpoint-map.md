@@ -1,13 +1,13 @@
-# Protocol endpoint reference
+# Robot protocol map
 
-[Entities](entities.md) · [Actions](actions.md) · [Firmware compatibility](firmware-compatibility.md)
+[Protocol notes](protocol-notes.md) · [Working alongside the Matic app](coexistence.md) ·
+[Advanced actions](actions.md#advanced-actions)
 
-Use this reference to connect Home Assistant features to their local protocol
-endpoints. For inspection actions, see the [action reference](actions.md).
-
+Which part of the robot's local protocol each Home Assistant feature uses.
 Hermes is Matic's local gRPC protocol. The registry in
 [endpoints.py](../custom_components/matic_robot/client/endpoints.py) defines the
-40 non-credential endpoints available to inspection and firmware snapshots.
+40 non-credential endpoints that inspection and firmware snapshots can read.
+[Protocol notes](protocol-notes.md) has the decoded fields.
 
 ## gRPC methods
 
@@ -70,4 +70,15 @@ fingerprints and value-free wire shapes; it does not decode these into entities.
 | `wifi_scan_command` | One Wi-Fi scan for the opt-in signal survey; empty payload, result read from `wifi_status` |
 
 New commands follow [Contributing](../CONTRIBUTING.md#changes-and-pull-requests).
-[Recording endpoints](recording-protocol.md) are outside the integration.
+
+## Recording names the integration does not use
+
+These names were seen in the protocol. The integration never reads or sends
+them: its map cameras draw the map, and it offers no recordings, clips or live
+video. Matic's [recording guide](https://support.maticrobots.com/how-to-take-a-recording-from-matics-point-of-view)
+and [privacy policy](https://maticrobots.com/privacy-policy) cover them.
+
+| Kind | Names |
+| --- | --- |
+| State and collections | `auto_record_voice_enabled_state`, `rolling_recordings_config_state`, `user_audio_recording_state`, `scratch_recordings`, `recording_thumbnails`, `recording_videos` |
+| Command channels | `auto_record_voice_enabled_command`, `toggle_rolling_recordings`, `recording_command`, `user_audio_recording_command`, `recording_upload_confirmation` |

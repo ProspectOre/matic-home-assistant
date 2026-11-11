@@ -1,6 +1,6 @@
 # Cleaning and maps
 
-[Documentation](README.md) · [Automations](automation.md)
+[All guides](README.md) · [Matic Map](map.md) · [Automations](automation.md)
 
 Open **Matic Map** in the Home Assistant sidebar to plan, clean and browse maps.
 
@@ -90,13 +90,15 @@ Pause and resume keep the plan; a separate clean, Stop or Dock replaces it.
 
 ## Matic Map
 
-See [map controls](map-controls.md) for navigation, map history and floor views.
+See [Matic Map](map.md) for moving around, map options, cleaning history and
+saved maps.
 
 ## One-time cleaning
 
 Choose **Clean rooms**, then tick rooms on the map or in the list. **Cleaning
 settings** picks vacuum, mop or both, and the vacuum coverage for the whole
-clean; **Settings for {room}** changes one room. Vacuum coverage is **Quick**,
+clean; **Settings for {room}** changes one room, including its
+[daily clean limit](room-schedules.md#daily-clean-limit). Vacuum coverage is **Quick**,
 **Optimal** or **Heavy duty** and doesn't change mopping; use the robot's
 **Double-pass mopping** setting for an extra mop pass. When a room's schedule
 has work due, **Use room schedules** is on and the clean includes it; turn it

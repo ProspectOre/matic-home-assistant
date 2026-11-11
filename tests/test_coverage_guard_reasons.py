@@ -273,7 +273,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
     call = ServiceCall(
         hass,
         DOMAIN,
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "synthetic-plan",
             "start_timeout": 1,

@@ -34,6 +34,7 @@ from .hermes_sim import (
     RESUME_PAYLOAD,
     STOP_PAYLOAD,
     Phase,
+    RunningSimulator,
     SimulatedRobot,
 )
 
@@ -156,13 +157,13 @@ async def test_robot_errors_surface_after_confirmation_poll(
 
 
 async def test_unreachable_robot_marks_entities_unavailable_then_recovers(
-    hass: HomeAssistant, loaded_entry: MockConfigEntry, robot: SimulatedRobot
+    hass: HomeAssistant, loaded_entry: MockConfigEntry, simulator: RunningSimulator
 ) -> None:
-    robot.offline = True
+    simulator.link.cut()
     await _poll(hass, loaded_entry)
     assert _state(hass, VACUUM) == STATE_UNAVAILABLE
 
-    robot.offline = False
+    simulator.link.restore()
     await _poll(hass, loaded_entry)
     assert _state(hass, VACUUM) == VacuumActivity.DOCKED
 

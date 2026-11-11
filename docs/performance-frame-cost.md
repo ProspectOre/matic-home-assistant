@@ -93,7 +93,7 @@ and, per view, frames a second, interval percentiles and the detail Auto ended
 on. It contacts no Home Assistant, robot or external origin.
 
 `node scripts/measure_android_latency.mjs` measures touch-to-present latency on
-the same scene ([Android touch latency](performance-0.5-android.md)).
+the same scene, on an Android device attached over USB.
 
 ## Container receipt
 
@@ -109,7 +109,7 @@ the path works. It is not a device frame rate.
 ## Open
 
 - Frame rate on a supported phone and a reference desktop, with the command
-  above. The targets carried from 0.5 are 30 and 55 frames a second.
+  above. The 0.5 targets were 30 and 55 frames a second.
 - The agreed limits: the script-time ceiling and the Auto values above.
 - WebKit and Firefox run the frame-cost spec nowhere; the counts are the
   renderer's own calls and do not depend on the engine.

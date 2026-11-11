@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.components.recorder.history import get_last_state_changes
@@ -37,13 +37,7 @@ from custom_components.matic_robot.plans import (
 )
 from tests.test_entities import _entry
 
-BUTTONS = (
-    "run_selected_plan",
-    "intelligent_clean",
-    "clean_entire_plan",
-    "stop_intelligent_cleaning",
-    "clean_selected_area",
-)
+BUTTONS = ("run_selected_plan", "clean_selected_area")
 PLATFORMS = ["button", "select", "vacuum", "switch", "number"]
 
 
@@ -205,13 +199,9 @@ async def test_button_press_reaches_owned_vacuum_service(
         calls.append(call)
 
     hass.services.async_register(DOMAIN, service, record)
-    snapshot = platforms.manager.history.snapshot(platforms.serial)
-    if button == "stop_intelligent_cleaning":
-        snapshot["active_plan"] = {"plan_id": "two"}
-    with patch.object(platforms.manager.history, "snapshot", return_value=snapshot):
-        await hass.services.async_call(
-            "button", "press", {"entity_id": platforms.entities[button]}, blocking=True
-        )
+    await hass.services.async_call(
+        "button", "press", {"entity_id": platforms.entities[button]}, blocking=True
+    )
     assert len(calls) == 1
     expected: dict[str, Any] = {"entity_id": platforms.entities["vacuum"]}
     if service == "clean_area":

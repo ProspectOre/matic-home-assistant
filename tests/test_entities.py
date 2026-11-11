@@ -400,23 +400,23 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 67 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 53 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
-        "binary_sensor": 14,
-        "button": 7,
+        "binary_sensor": 11,
+        "button": 4,
         "calendar": 1,
         "camera": 2,
         "event": 1,
         "image": 1,
         "number": 1,
         "select": 4,
-        "sensor": 33,
+        "sensor": 25,
         "switch": 5,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 71
-    assert len({entity.unique_id for entity in entities}) == 71
+    assert len(entities) == 57
+    assert len({entity.unique_id for entity in entities}) == 57
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -436,9 +436,6 @@ async def test_renamed_entities_keep_their_entity_ids(hass) -> None:
     }  # unique_id is "<serial>_<key>"
     for key in (
         "run_selected_plan",
-        "intelligent_clean",
-        "clean_entire_plan",
-        "stop_intelligent_cleaning",
         "current_area",
         "cleaning_history",
         "last_run_duration",
@@ -1258,37 +1255,9 @@ async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
 def test_sensor_and_binary_sensor_values() -> None:
     entry = _entry()
     assert MaticEntity(entry).suggested_object_id is None
-    fully_charged = next(
-        description
-        for description in binary_sensor.DESCRIPTIONS
-        if description.key == "fully_charged"
-    )
-    assert fully_charged.device_class is None
-    assert fully_charged.icon is None  # icons come from icons.json
-    sensors = [
-        sensor.MaticActivitySensor(entry),
-        sensor.MaticBatterySensor(entry),
-        sensor.MaticRoomsSensor(entry),
-    ]
-
-    assert [item.native_value for item in sensors] == [
-        "cleaning",
-        82,
-        2,
-    ]
-    assert sensors[1].suggested_object_id == "battery"
-    assert sensors[0].extra_state_attributes == {
-        "hermes_state_codes": [1, 2],
-        "hermes_error_codes": [],
-        "errors": [],
-        "primary_error": None,
-        "current_area": None,
-    }
-    assert sensors[2].extra_state_attributes == {
-        "room_names": ["Kitchen", "Study"],
-        "segments": {"room-1": "Kitchen", "room-2": "Study"},
-    }
-    assert "room_names" in sensor.MaticRoomsSensor._unrecorded_attributes
+    battery = sensor.MaticBatterySensor(entry)
+    assert battery.native_value == 82
+    assert battery.suggested_object_id == "battery"
     history = sensor.MaticCleaningHistorySensor(entry)
     assert history.available is True
     assert history.native_value == 0
@@ -1309,10 +1278,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         for description in binary_sensor.DESCRIPTIONS
     ] == [
         False,
-        False,
         True,
-        False,
-        False,
         False,
         False,
         None,
@@ -1328,33 +1294,15 @@ def test_sensor_and_binary_sensor_values() -> None:
         for description in sensor.STATE_DESCRIPTIONS
         if description.entity_registry_enabled_default is False
     } == {
-        "protocol_version",
-        "update_channel",
         "wifi_state",
-        "scheduled_cleanings",
         "local_cleaning_sessions",
-        "dock_detections",
-        "sink_summon_locations",
         "coverage_time",
         "wifi_signal",
     }
     assert vacuum.MaticVacuum(entry).suggested_object_id is None
 
-    no_map = sensor.MaticRoomsSensor(_entry(with_floor_plan=False))
-    assert no_map.native_value is None
-    assert no_map.extra_state_attributes is None
     no_map_next = sensor.MaticNextCleaningRoomSensor(_entry(with_floor_plan=False))
     assert no_map_next.native_value is None
-    no_map_schedules = sensor.MaticStateSensor(
-        _entry(with_floor_plan=False),
-        next(
-            description
-            for description in sensor.STATE_DESCRIPTIONS
-            if description.key == "scheduled_cleanings"
-        ),
-    ).extra_state_attributes
-    assert no_map_schedules is not None
-    assert no_map_schedules["schedules"][0]["rooms"] == []
 
     compatibility = sensor.MaticFirmwareCompatibilitySensor(entry)
     assert compatibility.native_value == "baseline"
@@ -1367,15 +1315,9 @@ def test_sensor_and_binary_sensor_values() -> None:
     ] == [
         None,
         None,
-        25,
         None,
-        "stable",
-        "idle",
         "connected",
-        3,
         7,
-        4,
-        1,
         600,
         None,
         None,
@@ -1398,22 +1340,6 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert wifi["ssid"] == "Test LAN"
     assert "networks" not in wifi
     assert "ssid" in sensor.MaticStateSensor._unrecorded_attributes
-    schedules = state_sensors["scheduled_cleanings"].extra_state_attributes
-    assert schedules == {
-        "schedules": [
-            {
-                "name": "Morning",
-                "weekdays": ["monday"],
-                "time": "08:30",
-                "timezone": "Etc/UTC",
-                "ordered": True,
-                "enabled": True,
-                "cleaning_mode": None,
-                "rooms": ["Kitchen"],
-                "room_ids": ["protocol-1"],
-            }
-        ]
-    }
     sessions = state_sensors["local_cleaning_sessions"].extra_state_attributes
     assert sessions is not None
     assert sessions["latest_duration_seconds"] == 600
@@ -1421,7 +1347,7 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert sessions["latest_completed_rooms"] == ["Kitchen"]
     assert sessions["latest_room_durations"] == {"Kitchen": 600}
     assert sessions["latest_stop_reason"] is None
-    assert state_sensors["protocol_version"].extra_state_attributes is None
+    assert state_sensors["coverage_time"].extra_state_attributes is None
 
 
 def test_session_attributes_require_a_recorded_session() -> None:
@@ -1464,7 +1390,7 @@ def test_plan_entities_preview_custom_areas_on_the_current_map() -> None:
     floor = entry.runtime_data.coordinator.data.floor_plan
     preview = entry.runtime_data.cleaning_plans.planning.preview
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
-    plan_button = button.MaticPlanButton(entry, "run_selected_plan")
+    plan_button = button.MaticPlanButton(entry)
 
     # A plan can start with a custom area, or hold areas alone.
     preview.return_value = {
@@ -1768,7 +1694,7 @@ async def test_saved_plan_select_and_native_button() -> None:
         "synthetic-serial", "whole_home"
     )
 
-    plan_button = button.MaticPlanButton(entry, "intelligent_clean")
+    plan_button = button.MaticPlanButton(entry)
     assert plan_button.available is True
     local_hass = SimpleNamespace(services=SimpleNamespace(async_call=AsyncMock()))
     plan_button.hass = local_hass
@@ -1778,7 +1704,7 @@ async def test_saved_plan_select_and_native_button() -> None:
         await plan_button.async_press()
     local_hass.services.async_call.assert_awaited_once_with(
         "matic_robot",
-        "intelligent_clean",
+        "run_selected_plan",
         {"entity_id": "vacuum.test_robot"},
         blocking=True,
     )
@@ -1889,23 +1815,14 @@ async def test_custom_area_select_and_native_button() -> None:
         area_button._vacuum_entity_id()
 
 
-async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
+async def test_plan_button_disables_an_impossible_run_and_refreshes() -> None:
     entry = _entry()
     history = entry.runtime_data.cleaning_plans
-    start_button = button.MaticPlanButton(entry, "run_selected_plan")
-    stop_button = button.MaticPlanButton(entry, "stop_intelligent_cleaning")
+    start_button = button.MaticPlanButton(entry)
 
     entry.runtime_data.coordinator.last_update_success = False
     assert start_button.available is False
     entry.runtime_data.coordinator.last_update_success = True
-
-    assert stop_button.available is False
-    snapshot = history.history.snapshot.return_value
-    history.history.snapshot.return_value = {
-        **snapshot,
-        "active_plan": {"room_id": "room-1"},
-    }
-    assert stop_button.available is True
 
     history.planning.preview.side_effect = KeyError("missing")
     assert start_button.available is False
@@ -1913,12 +1830,7 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
     assert start_button.available is False
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
-    assert (
-        button.MaticPlanButton(
-            _entry(with_floor_plan=False), "run_selected_plan"
-        ).available
-        is False
-    )
+    assert button.MaticPlanButton(_entry(with_floor_plan=False)).available is False
 
     start_button.async_write_ha_state = MagicMock()
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
@@ -1938,10 +1850,6 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
         start_button._handle_coordinator_update()
     parent_update.assert_called_once_with()
-
-    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
-        await stop_button.async_added_to_hass()
-    assert entry.runtime_data.slam_map.async_add_listener.call_count == 1
 
 
 async def test_saved_plan_select_rerenders_when_plans_change() -> None:
@@ -2536,7 +2444,34 @@ async def test_paused_vacuum_with_latched_warning_reports_paused_and_problem() -
     entity = vacuum.MaticVacuum(entry)
 
     assert entity.activity is VacuumActivity.PAUSED, entity.activity
-    assert entity.extra_state_attributes["problem"] is True
+    problem = next(
+        description
+        for description in binary_sensor.DESCRIPTIONS
+        if description.key == "problem"
+    )
+    assert binary_sensor.MaticBinarySensor(entry, problem).is_on is True
+
+
+def test_problem_sensor_names_the_current_errors() -> None:
+    """The Problem sensor is where an automation reads the robot's error names."""
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, error_codes=(220, 326)),
+    )
+
+    attributes = {
+        description.key: binary_sensor.MaticBinarySensor(
+            entry, description
+        ).extra_state_attributes
+        for description in binary_sensor.DESCRIPTIONS
+    }
+
+    assert attributes["problem"] == {
+        "errors": ["Mopping water unavailable", "error_code_326"]
+    }
+    assert attributes["charging"] is None
 
 
 async def test_clean_action_supports_the_complete_verified_option_matrix() -> None:
@@ -2589,9 +2524,7 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
         "low_charge": False,
-        "charging": False,
         "recharge_and_resume": False,
-        "problem": False,
         "current_area": None,
         "previous_area": None,
         "cleaning_phase": None,
@@ -2622,9 +2555,7 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     assert bare.extra_state_attributes == {
         "matic_entry_id": "entry",
         "low_charge": False,
-        "charging": False,
         "recharge_and_resume": False,
-        "problem": False,
         "current_area": None,
         "previous_area": None,
         "cleaning_phase": CleaningPhase.EDGES,
@@ -3070,17 +3001,7 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
     entry.runtime_data.slam_map = store
     await store.async_add(synthetic_slam_entry(mission_id=7))
     await store.async_add_structure(synthetic_structure_entry(mission_id=7))
-    buttons = [
-        button.MaticAreaButton(entry),
-        *(
-            button.MaticPlanButton(entry, service)
-            for service in (
-                "clean_entire_plan",
-                "run_selected_plan",
-                "intelligent_clean",
-            )
-        ),
-    ]
+    buttons = [button.MaticAreaButton(entry), button.MaticPlanButton(entry)]
     writes: list[tuple[int, bool]] = []
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         for index, entity in enumerate(buttons):
@@ -3098,7 +3019,7 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
     ):
         for page_x in range(100):
             await add(fixture(mission_id=2, page_x=page_x))
-    assert sorted(writes) == [(index, False) for index in range(4)]
+    assert sorted(writes) == [(index, False) for index in range(2)]
     with patch(
         "custom_components.matic_robot.slam_map_store.monotonic",
         return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
@@ -3106,11 +3027,11 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
         await store.async_add(synthetic_slam_entry(mission_id=7))
         await store.async_add_structure(synthetic_structure_entry(mission_id=7))
         assert all(entity.available for entity in buttons)
-        assert sorted(writes[4:]) == [(index, True) for index in range(4)]
+        assert sorted(writes[2:]) == [(index, True) for index in range(2)]
         writes.clear()
         for page_x in range(100):
             await add(fixture(mission_id=2, page_x=page_x))
-        assert sorted(writes) == [(index, False) for index in range(4)]
+        assert sorted(writes) == [(index, False) for index in range(2)]
         assert not any(entity.available for entity in buttons)
         # Independent active-layer evidence restores the current floor.
         await store.async_add(synthetic_slam_entry(mission_id=7))
@@ -3119,7 +3040,7 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
         writes.clear()
         # Fresh content from the alternative floor disables every action.
         await add(fixture(mission_id=2, page_x=100))
-        assert sorted(writes) == [(index, False) for index in range(4)]
+        assert sorted(writes) == [(index, False) for index in range(2)]
         assert not any(entity.available for entity in buttons)
     await store.async_shutdown()
 
@@ -3146,15 +3067,12 @@ def test_enum_sensors_list_every_translated_state() -> None:
     descriptions = {
         description.key: description
         for description in (
-            sensor.ACTIVITY_DESCRIPTION,
             sensor.FIRMWARE_COMPATIBILITY_DESCRIPTION,
             *sensor.STATE_DESCRIPTIONS,
         )
     }
     expected = {
-        "activity": 7,
         "wifi_state": 6,
-        "update_state": 6,
         "firmware_compatibility": 5,
         "cues_voice_status": 6,
         "cues_gesture_status": 6,
@@ -3168,9 +3086,7 @@ def test_enum_sensors_list_every_translated_state() -> None:
     assert {key: len(value.options or ()) for key, value in enums.items()} == expected
     for key, description in enums.items():
         assert list(strings["sensor"][key]["state"]) == list(description.options or ())
-        expected_category = (
-            None if key in {"activity", "cleaning_phase"} else "diagnostic"
-        )
+        expected_category = None if key == "cleaning_phase" else "diagnostic"
         assert description.entity_category == expected_category
     assert descriptions["coverage_time"].device_class == "duration"
     assert descriptions["coverage_time"].native_unit_of_measurement == "s"
@@ -3182,9 +3098,6 @@ def test_rarely_useful_entities_are_off_by_default() -> None:
         for description in binary_sensor.DESCRIPTIONS
         if description.entity_registry_enabled_default is False
     } == {
-        "paused",
-        "returning",
-        "fully_charged",
         "matter_pairing_mode",
         "ssh_tunnel_permission",
         "diagnostic_upload",
@@ -3194,16 +3107,7 @@ def test_rarely_useful_entities_are_off_by_default() -> None:
         == "\N{MULTIPLICATION SIGN}"
     )
     entry = _entry()
-    for service in (
-        "run_selected_plan",
-        "intelligent_clean",
-        "clean_entire_plan",
-        "stop_intelligent_cleaning",
-    ):
-        assert (
-            button.MaticPlanButton(entry, service).entity_registry_enabled_default
-            is False
-        )
+    assert button.MaticPlanButton(entry).entity_registry_enabled_default is False
     assert button.MaticAreaButton(entry).entity_registry_enabled_default is False
     assert select.MaticSavedPlanSelect(entry).entity_registry_enabled_default is False
     assert select.MaticCustomAreaSelect(entry).entity_registry_enabled_default is False

@@ -12,7 +12,7 @@ const activityForVacuum = (
   state: string,
   attributes: Readonly<Record<string, unknown>> | undefined,
 ): RobotActivity => {
-  if (attributes?.recharge_and_resume === true && attributes?.charging === true) {
+  if (attributes?.recharge_and_resume === true) {
     return "recharging";
   }
   switch (state) {
