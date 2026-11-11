@@ -132,6 +132,48 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
   and why each ended, the robot's schedules with the runs coming up, and the
   no-go zones with the rooms they cover.
 
+## Removed in 0.6
+
+Matic 0.6 removes 14 entities, 6 actions and 2 attributes that repeated
+something else. Matic 0.5.4 warned about them in Settings > Repairs. On its
+first start, 0.6 deletes the 14 entities from Home Assistant, enabled or not,
+and a call to a removed action fails. Update the automations, scripts,
+dashboards and templates that still use one.
+
+- **Cleaning order for one run.** Run plan (`run_selected_plan`) takes an
+  optional `run_behavior`: `intelligent` for Smart Order or `ordered` for Saved
+  order. Leave it out to use the order saved with the plan.
+- **Error names.** The Problem sensor's `errors` attribute names the robot's
+  current errors.
+- **Imported blueprints.** A Matic cleaning blueprint imported before 0.5.4
+  calls a removed action. The Repair **Matic blueprints need an update** has a
+  Submit button that switches your copies to Run plan with the same cleaning
+  order and reloads your automations.
+- **Runs in progress.** A plan run that was started with a removed action
+  carries on after the update as a Run plan run.
+- **Two more attributes later.** The `current_area` and `low_charge` attributes
+  of `vacuum.matic` go in a later 0.6 change. Switch to
+  `sensor.matic_current_area` and `binary_sensor.matic_low_charge` now.
+
+Entity IDs assume a robot named "Matic".
+
+| Removed | Use instead |
+| --- | --- |
+| `intelligent_clean` (Run Smart Order) | `run_selected_plan` with `run_behavior: intelligent` |
+| `clean_entire_plan` (Run saved order) | `run_selected_plan` with `run_behavior: ordered` |
+| `select_plan` | `select.select_option` on `select.matic_saved_cleaning_plan` (Default cleaning plan), which is off until you enable it |
+| `save_plan_room`, `move_plan_room`, `delete_plan_room` | `save_plan` with the plan's whole room list, or the plan editor in Matic Map |
+| `button.matic_intelligent_clean`, `button.matic_clean_entire_plan` | `button.matic_run_selected_plan` (Run plan), or `run_selected_plan` with `run_behavior` |
+| `button.matic_stop_intelligent_cleaning` | `vacuum.stop` on `vacuum.matic` |
+| `binary_sensor.matic_paused`, `binary_sensor.matic_returning` | `vacuum.matic` in state `paused` or `returning` |
+| `sensor.matic_activity` | The state of `vacuum.matic`: `ready` reads `idle`, and `charging` reads `docked` with `binary_sensor.matic_charging` on. Its `errors` are on `binary_sensor.matic_problem`, where the first item is what `primary_error` held. Its error codes are the `codes` attribute of `sensor.matic_robot_alert`, and `current_area` is `sensor.matic_current_area` |
+| `binary_sensor.matic_fully_charged` | `sensor.matic_battery` at 100 while `binary_sensor.matic_charging` is on |
+| `sensor.matic_rooms` | The `rooms` attribute of `vacuum.matic`, which maps each room ID to its name |
+| `sensor.matic_update_state`, `sensor.matic_update_channel` | The `update_state` and `update_channel` attributes of `update.matic_firmware` |
+| `sensor.matic_scheduled_cleanings` | `calendar.matic_native_schedules` (Robot schedules) |
+| `sensor.matic_protocol_version`, `sensor.matic_dock_detections`, `sensor.matic_sink_summon_locations` | The device page's Download diagnostics file. Automations cannot read it |
+| Attributes `charging` and `problem` of `vacuum.matic` | `binary_sensor.matic_charging` and `binary_sensor.matic_problem` |
+
 ## Before you update
 
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room

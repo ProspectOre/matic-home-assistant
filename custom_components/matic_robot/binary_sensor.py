@@ -26,6 +26,7 @@ class MaticBinarySensorDescription(BinarySensorEntityDescription):
     """Describe a Matic state predicate."""
 
     value_fn: Callable[[RobotState], bool | None]
+    attributes_fn: Callable[[RobotState], dict[str, object]] | None = None
 
 
 DESCRIPTIONS = (
@@ -36,23 +37,10 @@ DESCRIPTIONS = (
         value_fn=lambda state: state.operational.is_charging,
     ),
     MaticBinarySensorDescription(
-        key="paused",
-        translation_key="paused",
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.operational.paused,
-    ),
-    MaticBinarySensorDescription(
         key="cleaning",
         translation_key="cleaning",
         device_class=BinarySensorDeviceClass.RUNNING,
         value_fn=lambda state: state.operational.cleaning,
-    ),
-    MaticBinarySensorDescription(
-        key="returning",
-        translation_key="returning",
-        device_class=BinarySensorDeviceClass.RUNNING,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.operational.returning,
     ),
     MaticBinarySensorDescription(
         key="low_charge",
@@ -61,16 +49,11 @@ DESCRIPTIONS = (
         value_fn=lambda state: state.operational.low_charge,
     ),
     MaticBinarySensorDescription(
-        key="fully_charged",
-        translation_key="fully_charged",
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.operational.is_fully_charged,
-    ),
-    MaticBinarySensorDescription(
         key="problem",
         translation_key="problem",
         device_class=BinarySensorDeviceClass.PROBLEM,
         value_fn=lambda state: bool(state.operational.error_codes),
+        attributes_fn=lambda state: {"errors": list(state.operational.error_names)},
     ),
     MaticBinarySensorDescription(
         key="bag_full",
@@ -155,3 +138,9 @@ class MaticBinarySensor(MaticEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return the current predicate value."""
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return the description's attributes, if it has any."""
+        attributes_fn = self.entity_description.attributes_fn
+        return attributes_fn(self.coordinator.data) if attributes_fn else None

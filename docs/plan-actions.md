@@ -9,11 +9,7 @@
 | List cleaning plans (`list_plans`) | Returns saved plans with their rooms, custom areas, settings and IDs, and the default plan. |
 | Preview next plan run (`preview_plan`) | Returns `plan`'s next order and settings, its `entries` (rooms and custom areas in run order) and a `preview_token` for Run plan, without running it. |
 | Create or replace cleaning plan (`save_plan`) | Saves `name` and `rooms` (rooms and custom areas, in order). The ID comes from the name unless you pass `plan_id`; saving an existing ID replaces that plan. |
-| Set default cleaning plan (`select_plan`) | Makes `plan` the default. |
 | Delete cleaning plan (`delete_plan`) | Deletes `plan`; refused while it runs. |
-| Add or update plan room or area (`save_plan_room`) | Adds `room` (a room or an area entry) to the end of `plan`, or updates its settings where it is. |
-| Move room or area in plan (`move_plan_room`) | Moves `room` or `area` in `plan` to `new_position` (1 is the top). |
-| Remove room or area from plan (`delete_plan_room`) | Removes `room` or `area` from `plan`. |
 | Reset room cleaning history (`reset_plan_history`) | Clears which rooms `plan` has cleaned, or every plan with `all_plans: true`. |
 | Reset room schedule progress (`reset_room_cadence`) | Resets mopping, vacuum rotation or both (`modes`) for one `room_id`, or every scheduled room, in the required `plan`. |
 | Delete shared room schedule (`delete_room_schedule`) | Removes one room's shared schedule from every plan that uses it, given its `room_id` and current `expected_token` from Matic Map. Usual cleaning settings and cleaning history remain. |
@@ -27,6 +23,12 @@
 `binary_sensor` overrides; see [occupied rooms](cleaning.md#occupied-rooms))
 and `select` (make it the default plan, default `true`). Room items default to
 `vacuum_and_mop` and `standard`.
+
+Matic 0.6 removed `select_plan`, `save_plan_room`, `move_plan_room` and
+`delete_plan_room`. To change a plan's rooms, save the plan again with its whole
+list or edit it in Matic Map. To change the default plan, use
+`select.select_option` on **Default cleaning plan**. See
+[Removed in 0.6](release-notes-0.6.0-beta1.md#removed-in-06).
 
 ### Custom areas in plans
 

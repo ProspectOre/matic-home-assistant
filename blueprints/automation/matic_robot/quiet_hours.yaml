@@ -5,7 +5,7 @@ blueprint:
     first, only when the robot is docked or idle. If you choose a battery
     sensor, it also skips cleaning when the battery is at or below a level you
     set (40% by default). Use Quick coverage for rooms where a shorter
-    overnight run is preferred.
+    overnight run is preferred. Needs Matic (Unofficial) 0.5.4 or later.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/quiet_hours.yaml
   input:
@@ -76,8 +76,9 @@ conditions:
          or states(battery_entity) | float(0) > minimum_level | float(0) }}
 
 actions:
-  - action: matic_robot.intelligent_clean
+  - action: matic_robot.run_selected_plan
     target:
       entity_id: !input vacuum
     data: >-
-      {{ {'plan': plan_name | trim} if (plan_name or '') | trim else {} }}
+      {{ dict({'plan': plan_name | trim} if (plan_name or '') | trim else {},
+              run_behavior='intelligent') }}

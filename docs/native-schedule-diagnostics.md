@@ -1,9 +1,9 @@
 # Native schedule diagnostics
 
-**Scheduled cleanings** reads the schedule records returned by the robot. In
+**Robot schedules** reads the schedule records returned by the robot. In
 0.5.1, the reader acknowledges each record so the stream can advance. Weekdays
 use Monday through Sunday; room lists follow both ordered and unordered goals.
-The sensor does not change schedules in the Matic app.
+The calendar does not change schedules in the Matic app.
 
 [Issue #384](https://github.com/ProspectOre/matic-home-assistant/issues/384)
 identified incorrect weekdays, missing records, empty room lists and unknown

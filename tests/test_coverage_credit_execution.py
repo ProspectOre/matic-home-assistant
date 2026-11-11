@@ -126,7 +126,7 @@ def _call(hass, plan_id: str = "home") -> ServiceCall:
     return ServiceCall(
         hass,
         DOMAIN,
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": plan_id,
             "start_timeout": 30,

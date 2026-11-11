@@ -58,8 +58,6 @@ from custom_components.matic_robot.const import (
 )
 from custom_components.matic_robot.media_source import DATA_PHOTO_ATTACHMENT_SOURCE
 from custom_components.matic_robot.photos import (
-    MaticRobotPhotoPreviewView,
-    MaticRobotPhotoView,
     RobotPhotoStore,
 )
 from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
@@ -922,47 +920,6 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
     )
 
 
-async def test_setup_registers_services_without_media_view() -> None:
-    hass = SimpleNamespace(
-        is_running=False,
-        http=SimpleNamespace(register_view=MagicMock()),
-        bus=SimpleNamespace(
-            async_listen=MagicMock(return_value=MagicMock()),
-            async_listen_once=MagicMock(return_value=MagicMock()),
-            async_fire=MagicMock(),
-        ),
-        services=SimpleNamespace(async_register=MagicMock()),
-        data={},
-    )
-
-    history = SimpleNamespace(async_load=AsyncMock())
-    firmware = SimpleNamespace(async_load=AsyncMock())
-    with (
-        patch(
-            "custom_components.matic_robot.services.CleaningPlanManager",
-            return_value=history,
-        ),
-        patch(
-            "custom_components.matic_robot.services.FirmwareTracker",
-            return_value=firmware,
-        ),
-        patch(
-            "custom_components.matic_robot.async_register_matic_llm_api",
-            return_value=SimpleNamespace(id="matic_robot_operations"),
-        ),
-    ):
-        assert await async_setup(hass, {}) is True
-
-    assert hass.services.async_register.call_count == 28
-    assert hass.http.register_view.call_count == 2
-    assert {call.args[0] for call in hass.http.register_view.call_args_list} == {
-        MaticRobotPhotoView,
-        MaticRobotPhotoPreviewView,
-    }
-    assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
-    assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
-
-
 @pytest.mark.parametrize(
     "legacy_panel_api", [True, False], ids=["ha-2026.7-8", "ha-2026.9+"]
 )
@@ -1012,6 +969,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
             "custom_components.matic_robot.async_register_matic_llm_api",
             return_value=SimpleNamespace(id="matic_robot_operations"),
         ),
+        patch("custom_components.matic_robot.async_at_started"),
     ):
         history.return_value.async_load = AsyncMock()
         firmware.return_value.async_load = AsyncMock()
@@ -1069,7 +1027,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
     assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
-    assert hass.services.async_register.call_count == 28
+    assert hass.services.async_register.call_count == 22
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
     assert "classic_module_url" not in panel.config

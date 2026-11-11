@@ -6859,7 +6859,6 @@ test.describe("Map Studio v0.4 foundation", () => {
               matic_entry_id: "entry-a",
               friendly_name: "First",
               battery_level: 18,
-              charging: true,
               recharge_and_resume: true,
             },
           },

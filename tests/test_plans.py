@@ -149,7 +149,7 @@ def _call(hass, *, return_to_base: bool = False) -> ServiceCall:
     return ServiceCall(
         hass,
         DOMAIN,
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "away",
             "start_timeout": 120,
@@ -401,7 +401,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     confirmed.assert_called_once_with("Kitchen")
     assert last_run["trigger"] == "external_unknown"
     assert last_run["provenance"] == "external_unknown"
-    assert last_run["service"] == "intelligent_clean"
+    assert last_run["service"] == "run_selected_plan"
     assert len(events) == 1
     event = events[0].data
     assert event["run_id"] == last_run["run_id"]
@@ -8171,7 +8171,7 @@ def _leg_call(hass, *, start_timeout: int = 120, completion_timeout: int = 21600
     return ServiceCall(
         hass,
         DOMAIN,
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "away",
             "start_timeout": start_timeout,

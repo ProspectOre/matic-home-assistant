@@ -251,14 +251,13 @@ test("low-charge suspension stays visible when settled and yields to live chargi
   } });
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const status = page.locator(fixture.panelTag).locator(".status-copy");
-  const updateActivity = (state, charging = false) => page.evaluate(({ state, charging }) => {
+  const updateActivity = (state, recharging = false) => page.evaluate(({ state, recharging }) => {
     const panel = document.querySelector(window.__panelFixture.panelTag);
     const states = structuredClone(panel.hass.states);
     states["vacuum.synthetic"].state = state;
-    states["vacuum.synthetic"].attributes.charging = charging;
-    states["vacuum.synthetic"].attributes.recharge_and_resume = charging;
+    states["vacuum.synthetic"].attributes.recharge_and_resume = recharging;
     panel.hass = { ...panel.hass, states };
-  }, { state, charging });
+  }, { state, recharging });
   await expect(status.locator("strong")).toHaveText("Last run did not finish");
   await expect(status.locator("small")).toHaveText("1 of 3 rooms confirmed");
   await updateActivity("idle");
