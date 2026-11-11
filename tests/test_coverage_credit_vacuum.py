@@ -36,7 +36,7 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     selected = floor.rooms[: 2 if mixed else 1]
     rooms = [
         CleaningRoom(room.id, room.name, "vacuum", "quick" if i == 0 else "heavy_duty")
@@ -78,7 +78,7 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
             )
         return receipt
 
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     sender = AsyncMock(side_effect=dispatch)
     if mixed:
         client.async_start_mixed_coverage = sender

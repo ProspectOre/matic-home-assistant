@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import struct
-from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -201,7 +200,9 @@ def test_maintenance_binary_sensor_follows_the_newest_recap() -> None:
     )
 
     def value(telemetry: RobotTelemetry) -> bool | None:
-        return description.value_fn(SimpleNamespace(telemetry=telemetry))  # type: ignore[arg-type]
+        return description.value_fn(
+            SimpleNamespace(telemetry=SimpleNamespace(value=telemetry))
+        )  # type: ignore[arg-type]
 
     assert value(RobotTelemetry()) is None
     assert value(RobotTelemetry(maintenance_suggestions=())) is False
@@ -210,12 +211,9 @@ def test_maintenance_binary_sensor_follows_the_newest_recap() -> None:
 
 def test_maintenance_binary_sensor_names_the_recap_month() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=RobotTelemetry(
-            maintenance_recap_month="2026-10", maintenance_suggestions=(1,)
-        ),
+    session = entry.runtime_data.session
+    session.telemetry.set(
+        RobotTelemetry(maintenance_recap_month="2026-10", maintenance_suggestions=(1,))
     )
     sensors = {item.key: MaticBinarySensor(entry, item) for item in DESCRIPTIONS}
 

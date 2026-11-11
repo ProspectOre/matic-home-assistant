@@ -2,7 +2,7 @@
 
 [Documentation](README.md) · [Plan run contract](e2e-contract.md) · [Contributing](../CONTRIBUTING.md)
 
-`tests/e2e` runs Home Assistant Core, the config entry, its coordinator and
+`tests/e2e` runs Home Assistant Core, the config entry, its robot session and
 platforms, and the real Hermes client against a simulated robot. Nothing
 between Home Assistant and the network is mocked: the client dials the robot's
 mDNS name, completes TLS, pins the certificate, authenticates, and speaks gRPC

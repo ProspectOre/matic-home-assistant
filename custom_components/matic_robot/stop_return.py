@@ -32,7 +32,7 @@ from .plans import CleaningPlanManager
 DOCK_SETTLE_POLL_SECONDS = 3
 DOCK_SETTLE_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
 DOCK_CONFIRM_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
-# Coordinator state can still show the pre-STOP task for one refresh. Keep
+# Pushed state can still show the pre-STOP task for one publish. Keep
 # that stale edge from abandoning the settlement watcher, but stop waiting if
 # cleaning or pause persists long enough to be replacement work.
 DOCK_SETTLE_TRANSITION_GRACE_SECONDS = 60

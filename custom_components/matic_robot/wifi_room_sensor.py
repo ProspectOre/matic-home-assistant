@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -16,6 +17,7 @@ from homeassistant.util import slugify
 from . import MaticConfigEntry
 from .client.models import Room
 from .entity import MaticEntity
+from .stores import Store
 from .wifi_survey import RoomSignal
 
 ROOM_WIFI_SIGNAL_DESCRIPTION = SensorEntityDescription(
@@ -41,6 +43,9 @@ class MaticRoomWifiSignalSensor(MaticEntity, SensorEntity):
         self._attr_unique_id = f"{self._matic_serial}_room_{room.id}_wifi_signal"
         self._attr_translation_placeholders = {"room": room.name}
 
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.floor,)
+
     async def async_added_to_hass(self) -> None:
         """Publish again whenever the survey's cells change."""
         await super().async_added_to_hass()
@@ -55,7 +60,7 @@ class MaticRoomWifiSignalSensor(MaticEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Follow the robot, and retire a room the current map no longer has."""
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         return (
             super().available
             and floor_plan is not None
@@ -63,7 +68,7 @@ class MaticRoomWifiSignalSensor(MaticEntity, SensorEntity):
         )
 
     def _signal(self) -> RoomSignal | None:
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         if floor_plan is None:
             return None
         survey = self._config_entry.runtime_data.wifi_survey

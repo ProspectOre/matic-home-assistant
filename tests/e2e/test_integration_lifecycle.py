@@ -1,7 +1,7 @@
 """The integration set up in Home Assistant against the simulated robot.
 
-These tests run Home Assistant Core, the config entry, its coordinator and
-platforms, and the real Hermes client over TLS and gRPC. Only the robot is
+These tests run Home Assistant Core, the config entry, its robot session
+and platforms, and the real Hermes client over TLS and gRPC. Only the robot is
 simulated.
 """
 

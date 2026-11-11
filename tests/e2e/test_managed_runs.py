@@ -126,7 +126,7 @@ async def test_return_home_stops_the_run_then_docks(
 
     finished = await plan.outcome()
     # The activity is the vacuum entity's state when the run closes, which can
-    # be read before or after the coordinator has seen the robot stop.
+    # be read before or after the session has seen the robot stop.
     expect_finished(finished, "cancelled", "managed_replaced", 0, "cleaning", "idle")
     assert robot.received()[-2:] == [STOP_PAYLOAD, DOCK_PAYLOAD]
     async with asyncio.timeout(10):

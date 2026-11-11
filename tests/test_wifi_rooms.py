@@ -6,6 +6,7 @@ from dataclasses import replace
 from unittest.mock import MagicMock
 
 from custom_components.matic_robot import sensor
+from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.wifi_room_sensor import MaticRoomWifiSignalSensor
 from custom_components.matic_robot.wifi_survey import (
@@ -29,7 +30,7 @@ def _entry_with_survey(hass):
 
 def test_rooms_summarise_the_cells_inside_them(hass) -> None:
     entry, survey = _entry_with_survey(hass)
-    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    floor_plan = entry.runtime_data.session.floor.value
     for x, dbm in ((0.5, -50), (0.5, -50), (1.5, -70), (9.0, -40)):
         survey.add_sample(7, FRAME, x, 1.0, dbm, 100.0)
 
@@ -39,7 +40,7 @@ def test_rooms_summarise_the_cells_inside_them(hass) -> None:
 
 def test_room_summaries_are_reused_until_the_cells_or_plan_change(hass) -> None:
     entry, survey = _entry_with_survey(hass)
-    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    floor_plan = entry.runtime_data.session.floor.value
     survey.add_sample(7, FRAME, 3.0, 1.0, -60, 100.0)
     first = survey.room_signals(floor_plan)
 
@@ -84,40 +85,35 @@ async def test_each_room_gets_an_opt_in_wifi_sensor(hass) -> None:
 
 def test_room_wifi_sensor_follows_the_robot_and_the_map(hass) -> None:
     entry, _ = _entry_with_survey(hass)
-    coordinator = entry.runtime_data.coordinator
-    floor_plan = coordinator.data.floor_plan
+    session = entry.runtime_data.session
+    floor_plan = session.floor.value
     kitchen = MaticRoomWifiSignalSensor(entry, floor_plan.rooms[0])
     assert kitchen.available is True
 
-    coordinator.last_update_success = False
+    session.error.set(CannotConnectError("offline"))
     assert kitchen.available is False
-    coordinator.last_update_success = True
+    session.error.set(None)
 
-    coordinator.data = replace(
-        coordinator.data, floor_plan=replace(floor_plan, rooms=floor_plan.rooms[1:])
-    )
+    session.floor.set(replace(floor_plan, rooms=floor_plan.rooms[1:]))
     assert kitchen.available is False
-    coordinator.data = replace(coordinator.data, floor_plan=None)
+    session.floor.set(None)
     assert kitchen.available is False
     assert kitchen.native_value is None
 
 
 async def test_room_wifi_sensor_publishes_survey_changes_until_removed(hass) -> None:
     entry, survey = _entry_with_survey(hass)
-    kitchen = MaticRoomWifiSignalSensor(
-        entry, entry.runtime_data.coordinator.data.floor_plan.rooms[0]
-    )
-    remove = MagicMock()
-    entry.runtime_data.coordinator.async_add_listener = MagicMock(return_value=remove)
+    session = entry.runtime_data.session
+    kitchen = MaticRoomWifiSignalSensor(entry, session.floor.value.rooms[0])
     kitchen.async_write_ha_state = MagicMock()
 
     await kitchen.async_added_to_hass()
     survey.add_sample(7, FRAME, 1.0, 1.0, -64, 100.0)
     survey.clear()
-    assert kitchen.async_write_ha_state.call_count == 2
+    session.floor.set(replace(session.floor.value, floor_label="Upstairs"))
+    assert kitchen.async_write_ha_state.call_count == 3
 
     kitchen._call_on_remove_callbacks()
     survey.add_sample(7, FRAME, 1.0, 1.0, -64, 101.0)
-    assert kitchen.async_write_ha_state.call_count == 2
-    entry.runtime_data.coordinator.async_add_listener.assert_called_once()
-    remove.assert_called_once_with()
+    session.floor.set(replace(session.floor.value, floor_label="Downstairs"))
+    assert kitchen.async_write_ha_state.call_count == 3

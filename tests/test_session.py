@@ -25,6 +25,7 @@ from custom_components.matic_robot.client.models import (
     RobotInfo,
     RobotOperationalState,
     RobotPose,
+    RobotTelemetry,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.session import (
@@ -64,6 +65,8 @@ def _client() -> AsyncMock:
         "test",
     )
     client.async_get_state.return_value = DOCKED
+    client.async_get_floor_plan.return_value = None
+    client.async_get_telemetry.return_value = RobotTelemetry()
     client.add_connection_listener = MagicMock()
     client.connection_error = None
     client.connected = True
@@ -73,6 +76,7 @@ def _client() -> AsyncMock:
 def _entry(hass) -> SimpleNamespace:
     return SimpleNamespace(
         entry_id="entry",
+        pref_disable_polling=False,
         async_on_unload=MagicMock(),
         async_start_reauth=MagicMock(),
         async_create_background_task=lambda hass, target, name: hass.async_create_task(

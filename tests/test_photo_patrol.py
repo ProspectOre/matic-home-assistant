@@ -106,8 +106,12 @@ def _entry(
         runtime_data=SimpleNamespace(
             client=client,
             photos=store,
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(operational=operational, floor_plan=None)
+            session=SimpleNamespace(
+                state=SimpleNamespace(value=SimpleNamespace(operational=operational)),
+                floor=SimpleNamespace(value=None),
+                telemetry=SimpleNamespace(value=None),
+                error=SimpleNamespace(value=None),
+                heartbeat=SimpleNamespace(async_request_refresh=AsyncMock()),
             ),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
@@ -122,7 +126,7 @@ def _entry(
         )
         for name in ("Kitchen", "Dining", "Den", "Hall", "Study", "Living room")
     ]
-    entry.runtime_data.coordinator.data.floor_plan = SimpleNamespace(
+    entry.runtime_data.session.floor.value = SimpleNamespace(
         rooms=[
             room
             if hasattr(room, "protocol_id")
@@ -130,7 +134,7 @@ def _entry(
             for room in mapped_rooms
         ]
     )
-    entry.runtime_data.coordinator.data.telemetry = SimpleNamespace(
+    entry.runtime_data.session.telemetry.value = SimpleNamespace(
         schedules=(), timezone=None
     )
     entry.runtime_data.slam_map = SimpleNamespace(
@@ -623,7 +627,7 @@ async def test_patrol_fails_closed_when_saved_no_photo_room_is_stale() -> None:
 async def test_manual_snap_obeys_no_photo_room_policy() -> None:
     entry = _entry([], _Photos())
     entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
-    entry.runtime_data.coordinator.data.operational.current_area = "Kitchen"
+    entry.runtime_data.session.state.value.operational.current_area = "Kitchen"
 
     with pytest.raises(HomeAssistantError) as raised:
         photo_patrol.ensure_current_room_allows_photo(entry)
@@ -637,7 +641,7 @@ async def test_patrol_stops_if_native_schedule_overlaps() -> None:
     hass = _hass()
     entry = _entry([DOCKED], _Photos())
     now = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
-    entry.runtime_data.coordinator.data.telemetry.schedules = (
+    entry.runtime_data.session.telemetry.value.schedules = (
         CleaningSchedule(
             name="Scheduled run",
             weekdays=("saturday",),
@@ -1282,32 +1286,24 @@ def test_manual_snap_requires_current_known_room_when_blocklist_is_configured() 
     assert stale_map.value.translation_key == "photo_patrol_rooms_unavailable"
 
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
-    entry.runtime_data.coordinator.data.operational.current_area = "unknown"
+    entry.runtime_data.session.state.value.operational.current_area = "unknown"
     with pytest.raises(HomeAssistantError) as unknown_room:
         photo_patrol.ensure_current_room_allows_photo(entry)
     assert unknown_room.value.translation_key == "photo_patrol_rooms_unavailable"
 
 
-def test_schedule_guard_rejects_missing_state_or_schedules() -> None:
-    entry = _entry([], _Photos())
-    entry.runtime_data.coordinator.data = None
-    assert photo_patrol._schedule_conflict(entry, START) is True
-
-
-@pytest.mark.parametrize("failure", ["raises", "timeout", "stale", "unknown"])
+@pytest.mark.parametrize("failure", ["raises", "timeout", "unreachable"])
 async def test_schedule_refresh_must_be_fresh_and_complete(failure) -> None:
     entry = _entry([], _Photos())
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     if failure in {"raises", "timeout"}:
-        coordinator.async_request_refresh = AsyncMock(
+        session.heartbeat.async_request_refresh = AsyncMock(
             side_effect=TimeoutError
             if failure == "timeout"
             else RuntimeError("offline")
         )
-    elif failure == "stale":
-        coordinator.last_update_success = False
     else:
-        coordinator.data.telemetry.schedules = None
+        session.error.value = RuntimeError("offline")
 
     with pytest.raises(HomeAssistantError) as raised:
         await photo_patrol._async_check_schedule(entry)
@@ -1459,7 +1455,7 @@ def test_manual_snap_allows_any_room_when_no_blocklist_is_configured() -> None:
 def test_manual_snap_rejects_stale_blocklist_ids() -> None:
     entry = _entry([], _Photos())
     entry.options["photo_patrol_no_photo_rooms"] = ["removed-room"]
-    entry.runtime_data.coordinator.data.operational.current_area = "Kitchen"
+    entry.runtime_data.session.state.value.operational.current_area = "Kitchen"
     with pytest.raises(HomeAssistantError) as raised:
         photo_patrol.ensure_current_room_allows_photo(entry)
     assert raised.value.translation_key == "photo_patrol_rooms_unavailable"
@@ -1645,5 +1641,5 @@ def test_patrol_permission_allows_empty_room_check(monkeypatch) -> None:
 def test_manual_snap_allows_a_room_outside_the_blocklist() -> None:
     entry = _entry([], _Photos())
     entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
-    entry.runtime_data.coordinator.data.operational.current_area = "Dining"
+    entry.runtime_data.session.state.value.operational.current_area = "Dining"
     photo_patrol.ensure_current_room_allows_photo(entry)

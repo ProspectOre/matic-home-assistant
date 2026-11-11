@@ -31,7 +31,6 @@ from .http import (
 )
 
 if TYPE_CHECKING:
-    from .coordinator import MaticCoordinator
     from .session import RobotSession
 
 _LOGGER = logging.getLogger(__name__)
@@ -259,9 +258,7 @@ class WifiSurveyStore:
         self._rooms = (self._revision, floor_plan, signals)
         return signals
 
-    async def async_collect(
-        self, session: RobotSession, coordinator: MaticCoordinator
-    ) -> None:
+    async def async_collect(self, session: RobotSession) -> None:
         """Scan at a fixed pace while the survey is on and the robot is out."""
         loop = asyncio.get_running_loop()
         deadline = loop.time()
@@ -270,18 +267,14 @@ class WifiSurveyStore:
             deadline = max(deadline + SAMPLE_INTERVAL_SECONDS, loop.time())
             await asyncio.sleep(deadline - loop.time())
             if self._enabled and not self._closed:
-                await self._async_sample(session, coordinator)
+                await self._async_sample(session)
 
-    async def _async_sample(
-        self, session: RobotSession, coordinator: MaticCoordinator
-    ) -> None:
-        state = coordinator.data
-        floor_plan = state.floor_plan if state is not None else None
+    async def _async_sample(self, session: RobotSession) -> None:
+        floor_plan = session.floor.value
         if (
-            state is None
-            or state.operational.is_charging
+            session.state.value.operational.is_charging
             or floor_plan is None
-            or coordinator.expected_floor_mission_id != floor_plan.mission_id
+            or session.heartbeat.expected_floor_mission_id != floor_plan.mission_id
         ):
             return
         mission_id = floor_plan.mission_id
@@ -305,8 +298,7 @@ class WifiSurveyStore:
             return
         # The frame can change during the scan; a stale fingerprint would wipe
         # the new frame's cells.
-        state = coordinator.data
-        current = state.floor_plan if state is not None else None
+        current = session.floor.value
         if (
             current is None
             or current.mission_id != mission_id
@@ -471,7 +463,7 @@ class MaticWifiHeatmapView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         survey = runtime.wifi_survey
-        floor_plan = runtime.coordinator.data.floor_plan
+        floor_plan = runtime.session.floor.value
         if floor_plan is None:
             cells: list[dict[str, float | int]] = []
             rooms: list[dict[str, str | float | int]] = []

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.components.vacuum.const import (
     ATTR_PARAMS,
@@ -19,6 +22,7 @@ from .const import DOMAIN
 from .entity import MaticEntity
 from .occupancy import entry_vacuum_entity_id
 from .plan_model import plan_floor_token, room_cadence_identity
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -47,7 +51,7 @@ class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
         self._published_floor_coherent = self._floor_coherent()
 
     def _floor_coherent(self) -> bool:
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         return bool(
             floor_plan is not None
             and floor_plan.rooms
@@ -65,11 +69,14 @@ class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
             )
         )
 
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.floor,)
+
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Remember coherence already published by a coordinator refresh."""
+    def _handle_store_update(self) -> None:
+        """Remember the coherence this write publishes."""
         self._published_floor_coherent = self._floor_coherent()
-        super()._handle_coordinator_update()
+        super()._handle_store_update()
 
     @callback
     def _async_floor_coherence_updated(self) -> None:
@@ -91,7 +98,7 @@ class MaticPlanButton(_MaticFloorBoundButton):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._plans = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_run_selected_plan"
 
@@ -113,7 +120,7 @@ class MaticPlanButton(_MaticFloorBoundButton):
         """Offer the button only while the default plan can run."""
         if not super().available:
             return False
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         if not self._floor_coherent() or floor_plan is None:
             return False
         room_map = {room.id: room.name for room in floor_plan.rooms}
@@ -163,7 +170,7 @@ class MaticAreaButton(_MaticFloorBoundButton):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._areas = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_clean_selected_area"
 
@@ -227,9 +234,10 @@ class MaticWifiSurveyClearButton(MaticEntity, ButtonEntity):
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._survey = entry.runtime_data.wifi_survey
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_clear_wifi_survey"
-        )
+        self._attr_unique_id = f"{self.session.info.serial_number}_clear_wifi_survey"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     async def async_press(self) -> None:
         """Delete every stored signal cell."""
@@ -244,7 +252,10 @@ class MaticTakePhotoButton(MaticEntity, ButtonEntity):
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._photos = entry.runtime_data.photos
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_take_photo"
+        self._attr_unique_id = f"{self.session.info.serial_number}_take_photo"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     async def async_press(self) -> None:
         """Send the snap emote, then read the photo once the robot saves it."""

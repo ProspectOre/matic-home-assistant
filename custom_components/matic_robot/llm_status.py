@@ -90,10 +90,12 @@ class MaticGetSchedulesTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
         entry = self.resolve_entry(hass, llm_context, args.get("robot"))
-        state = entry.runtime_data.coordinator.data
+        session = entry.runtime_data.session
+        floor_plan = session.floor.value
+        telemetry = session.telemetry.value
         room_names = (
-            {room.protocol_id: room.name for room in state.floor_plan.rooms}
-            if state.floor_plan is not None
+            {room.protocol_id: room.name for room in floor_plan.rooms}
+            if floor_plan is not None
             else {}
         )
         now = dt_util.now()
@@ -102,7 +104,7 @@ class MaticGetSchedulesTool(_MaticTool):
         upcoming = [
             event
             for event in schedule_occurrences(
-                state, now, now + timedelta(days=args["days"])
+                telemetry, floor_plan, now, now + timedelta(days=args["days"])
             )
             if event.start >= now
         ]
@@ -112,7 +114,7 @@ class MaticGetSchedulesTool(_MaticTool):
                 "robot": _entry_name(entry),
                 # The schedule count is unknown when the robot's schedule list
                 # couldn't be read, so empty lists then mean unknown, not none.
-                "schedules_readable": state.telemetry.scheduled_cleanings is not None,
+                "schedules_readable": telemetry.scheduled_cleanings is not None,
                 "schedules": [
                     cast(
                         JsonObjectType,
@@ -121,7 +123,7 @@ class MaticGetSchedulesTool(_MaticTool):
                             "enabled": schedule.enabled,
                             "weekdays": list(schedule.weekdays),
                             "time": schedule.time,
-                            "timezone": schedule.timezone or state.telemetry.timezone,
+                            "timezone": schedule.timezone or telemetry.timezone,
                             "cleaning_mode": schedule.cleaning_mode,
                             "rooms": [
                                 room_names.get(room_id, "Unknown room")
@@ -130,7 +132,7 @@ class MaticGetSchedulesTool(_MaticTool):
                             "rooms_in_order": schedule.ordered,
                         },
                     )
-                    for schedule in state.telemetry.schedules[:MAX_SCHEDULE_RESULTS]
+                    for schedule in telemetry.schedules[:MAX_SCHEDULE_RESULTS]
                 ],
                 "upcoming": [
                     cast(
@@ -167,11 +169,12 @@ class MaticGetZonesTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
         entry = self.resolve_entry(hass, llm_context, args.get("robot"))
-        state = entry.runtime_data.coordinator.data
-        floor_plan = state.floor_plan
+        session = entry.runtime_data.session
+        floor_plan = session.floor.value
+        all_zones = session.telemetry.value.zones
         zones = [
             zone
-            for zone in state.telemetry.zones
+            for zone in all_zones
             if floor_plan is not None and zone.mission_id == floor_plan.mission_id
         ]
         return llm.ToolResult(
@@ -198,9 +201,7 @@ class MaticGetZonesTool(_MaticTool):
                     if floor_plan is not None
                 ],
                 "zones_on_other_maps": (
-                    len(state.telemetry.zones) - len(zones)
-                    if floor_plan is not None
-                    else None
+                    len(all_zones) - len(zones) if floor_plan is not None else None
                 ),
             }
         )
@@ -210,8 +211,8 @@ def _sampled_room_timing(
     hass: HomeAssistant, entry: ConfigEntry[Any], snapshot: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Read the registered active-time entity's shared sample, without a clock tick."""
-    coordinator = entry.runtime_data.coordinator
-    if not coordinator.last_update_success:
+    session = entry.runtime_data.session
+    if session.error.value is not None:
         return None
     active = snapshot.get("active_plan")
     run = snapshot.get("last_run")
@@ -220,7 +221,7 @@ def _sampled_room_timing(
     entity_id = er.async_get(hass).async_get_entity_id(
         "sensor",
         DOMAIN,
-        f"{coordinator.data.info.serial_number}_current_room_active_time",
+        f"{session.info.serial_number}_current_room_active_time",
     )
     state = hass.states.get(entity_id) if entity_id else None
     if state is None or state.state in {"unknown", "unavailable"}:
@@ -281,36 +282,35 @@ def _sampled_room_timing(
 def _robot_summary(hass: HomeAssistant, entry: ConfigEntry[Any]) -> JsonObjectType:
     """Build one bounded robot and plan-run snapshot."""
     runtime = entry.runtime_data
-    state = runtime.coordinator.data
-    serial_number = state.info.serial_number
+    session = runtime.session
+    live = session.state.value
+    operational = live.operational
+    serial_number = session.info.serial_number
     manager = runtime.cleaning_plans
     snapshot = manager.history.snapshot(serial_number)
     robot_summary: dict[str, object] = {
-        "activity": state.operational.activity.value,
-        "battery_percentage": state.operational.battery_percentage,
-        "current_room": state.operational.current_area,
-        "previous_room": state.operational.previous_area,
-        "error_codes": list(state.operational.error_codes),
-        "bag_full": state.operational.bag_full,
-        "bag_missing": state.operational.bag_missing,
-        "native_session_active": state.telemetry.active_cleaning_session,
+        "activity": operational.activity.value,
+        "battery_percentage": operational.battery_percentage,
+        "current_room": operational.current_area,
+        "previous_room": operational.previous_area,
+        "error_codes": list(operational.error_codes),
+        "bag_full": operational.bag_full,
+        "bag_missing": operational.bag_missing,
+        "native_session_active": live.session_active,
         "software_version": (
-            state.telemetry.software_version or state.operational.software_version
+            session.telemetry.value.software_version or operational.software_version
         ),
+        # The session keeps this bounded, read-only observation state even
+        # while public bag entities remain withheld pending real-world
+        # validation.
+        "bag_observation": session.health.bag_observation(operational),
     }
-    # The coordinator keeps this bounded, read-only observation state even
-    # while public bag entities remain withheld pending real-world validation.
-    robot_health = getattr(runtime.coordinator, "robot_health", None)
-    observe_bag = getattr(robot_health, "bag_observation", None)
-    if callable(observe_bag):
-        bag_observation = observe_bag(state.operational)
-        robot_summary["bag_observation"] = bag_observation
     return cast(
         JsonObjectType,
         {
             "name": _entry_name(entry),
             "entry_id": entry.entry_id,
-            "coordinator_available": bool(runtime.coordinator.last_update_success),
+            "robot_reachable": session.error.value is None,
             "robot": robot_summary,
             "managed_runner": {
                 "lock_held": manager.control.lock(serial_number).locked(),

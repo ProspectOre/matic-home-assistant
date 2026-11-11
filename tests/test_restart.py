@@ -125,14 +125,14 @@ async def recovery_state(hass):
             current_run_id=MagicMock(side_effect=lambda: journal_scope["run_id"]),
         ),
     )
+    heartbeat = SimpleNamespace(
+        async_request_refresh=AsyncMock(), async_confirm_room_completed=MagicMock()
+    )
+    session = SimpleNamespace(floor=SimpleNamespace(value=floor), heartbeat=heartbeat)
     runtime = SimpleNamespace(
         client=client,
         cleaning_plans=manager,
-        coordinator=SimpleNamespace(
-            data=SimpleNamespace(floor_plan=floor),
-            async_request_refresh=AsyncMock(),
-            async_confirm_room_completed=MagicMock(),
-        ),
+        session=session,
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
     )
     return manager, SimpleNamespace(runtime_data=runtime), checkpoint, room
@@ -381,8 +381,8 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
             "serial", "run", checkpoint
         )
     if renamed:
-        floor = entry.runtime_data.coordinator.data.floor_plan
-        entry.runtime_data.coordinator.data.floor_plan = replace(
+        floor = entry.runtime_data.session.floor.value
+        entry.runtime_data.session.floor.value = replace(
             floor,
             rooms=tuple(replace(room, name="The Kitchen") for room in floor.rooms),
         )
@@ -695,7 +695,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
     """A same-floor rename cannot authorize a queued leg or completion credit."""
     manager, entry, checkpoint, room = recovery_state
     runtime = entry.runtime_data
-    floor = runtime.coordinator.data.floor_plan
+    floor = runtime.session.floor.value
     renamed = replace(
         floor,
         rooms=(
@@ -734,12 +734,12 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
 
     async def history(**_kwargs):
         if rename_timing == "during_history":
-            runtime.coordinator.data.floor_plan = renamed
+            runtime.session.floor.value = renamed
         return ()
 
     runtime.client.async_get_cleaning_session_records.side_effect = history
     if rename_timing == "before_recovery":
-        runtime.coordinator.data.floor_plan = renamed
+        runtime.session.floor.value = renamed
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
         patch(
@@ -760,7 +760,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
     execute.assert_not_awaited()
     verify.assert_not_awaited()
     runtime.client.async_send_user_command.assert_not_awaited()
-    runtime.coordinator.async_confirm_room_completed.assert_not_called()
+    runtime.session.heartbeat.async_confirm_room_completed.assert_not_called()
     run = manager.history.snapshot("serial")["last_run"]
     assert run["outcome"] == "unverified"
     assert run["completed_room_count"] == before_count
@@ -1497,7 +1497,7 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
         call.kwargs["run_id"] == "run"
         for call in manager.ledger.async_mark_completed.await_args_list
     )
-    entry.runtime_data.coordinator.async_confirm_room_completed.assert_not_called()
+    entry.runtime_data.session.heartbeat.async_confirm_room_completed.assert_not_called()
     await hass.async_block_till_done()
     assert completed_events == []
     run = manager.history.snapshot("serial")["last_run"]

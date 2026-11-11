@@ -26,7 +26,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
 
     @property
     def _serial_number(self) -> str:
-        return str(self.config_entry.runtime_data.coordinator.data.info.serial_number)
+        return str(self.config_entry.runtime_data.session.info.serial_number)
 
     @property
     def _manager(self) -> CleaningPlanManager:
@@ -117,7 +117,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         if not self._is_loaded():
             return self._entry_unavailable()
         options = dict(self.config_entry.options)
-        floor_plan = self.config_entry.runtime_data.coordinator.data.floor_plan
+        floor_plan = self.config_entry.runtime_data.session.floor.value
         current_rooms = (
             {room.id: room.name for room in floor_plan.rooms}
             if floor_plan is not None

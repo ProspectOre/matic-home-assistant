@@ -76,9 +76,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
 
         def floor_is_current() -> bool:
             """Keep every native room dispatch bound to the starting map."""
-            floor_plan: FloorPlan | None = (
-                entry.runtime_data.coordinator.data.floor_plan
-            )
+            floor_plan: FloorPlan | None = entry.runtime_data.session.floor.value
             return (
                 floor_plan is not None
                 and plan_floor_token(floor_plan) == execution_floor_token
@@ -182,7 +180,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             serial_number,
             rooms,
             cadence_by_room=cadence_by_room,
-            refresh=entry.runtime_data.coordinator.async_request_refresh,
+            refresh=entry.runtime_data.session.heartbeat.async_request_refresh,
             active_session=(
                 entry.runtime_data.client.async_get_active_cleaning_session_state
             ),
@@ -197,7 +195,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 entry.runtime_data.client, "async_confirm_coverage_receipt", None
             ),
             confirm_room_completed=(
-                entry.runtime_data.coordinator.async_confirm_room_completed
+                entry.runtime_data.session.heartbeat.async_confirm_room_completed
             ),
             managed_user_command=async_managed_command,
             mapped_room_names=tuple(room_map.values()),
@@ -258,9 +256,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         cadence_by_room = resolved["cadence_by_room"]
 
         def floor_is_current() -> bool:
-            floor_plan: FloorPlan | None = (
-                entry.runtime_data.coordinator.data.floor_plan
-            )
+            floor_plan: FloorPlan | None = entry.runtime_data.session.floor.value
             return (
                 floor_plan is not None
                 and plan_floor_token(floor_plan) == execution_floor_token
@@ -335,7 +331,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 serial_number,
                 rooms,
                 cadence_by_room=cadence_by_room,
-                refresh=entry.runtime_data.coordinator.async_request_refresh,
+                refresh=entry.runtime_data.session.heartbeat.async_request_refresh,
                 active_session=(
                     entry.runtime_data.client.async_get_active_cleaning_session_state
                 ),
@@ -350,7 +346,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                     entry.runtime_data.client, "async_confirm_coverage_receipt", None
                 ),
                 confirm_room_completed=(
-                    entry.runtime_data.coordinator.async_confirm_room_completed
+                    entry.runtime_data.session.heartbeat.async_confirm_room_completed
                 ),
                 managed_user_command=async_managed_command,
                 mapped_room_names=tuple(room_map.values()),
@@ -552,7 +548,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             and manager.control.stop_request_generation(serial_number)
             == expected_stop_generation
         ):
-            entry.runtime_data.coordinator.async_discard_current_room()
+            entry.runtime_data.session.heartbeat.async_discard_current_room()
         try:
             with manager.control.managed_stop_dispatch(
                 serial_number,

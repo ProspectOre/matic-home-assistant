@@ -1106,7 +1106,7 @@ async def _async_wait_for_vacuum_state(
 ) -> str:
     """Wait for an expected state and optional target-room confirmation.
 
-    A coordinator refresh can make an entity briefly unavailable even after the
+    A dropped connection can make an entity briefly unavailable even after the
     robot accepted a command.  Keep waiting through that transport condition;
     the enclosing timeout remains the hard limit.  The vacuum ``error`` state,
     by contrast, comes from verified robot error codes and is terminal.  When a

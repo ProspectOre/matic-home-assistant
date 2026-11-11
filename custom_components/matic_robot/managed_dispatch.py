@@ -89,7 +89,7 @@ async def _async_managed_user_command(
             await manager.control.async_mark_stop_pending(
                 serial_number, run_id=stop_run_id
             )
-        await runtime.coordinator.async_request_refresh()
+        await runtime.session.heartbeat.async_request_refresh()
     if command is UserCommand.STOP:
         _schedule_managed_dock_after_stop(
             hass, entry, manager, serial_number, entity_id, stop_run_id, context
@@ -113,7 +113,7 @@ def _schedule_managed_dock_after_stop(
     schedule_dock_after_stop(
         hass,
         client=runtime.client,
-        refresh=runtime.coordinator.async_request_refresh,
+        refresh=runtime.session.heartbeat.async_request_refresh,
         manager=manager,
         serial_number=serial_number,
         entity_id=entity_id,

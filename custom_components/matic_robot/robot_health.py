@@ -155,8 +155,8 @@ class RobotHealth:
             frozenset(state.error_codes),
         )
         # Sightings change only when a code starts, which also changes the
-        # error codes in RobotState, so the sensor is notified without a
-        # separate refresh.
+        # error codes in the session's state store, so the sensor is notified
+        # without a separate refresh.
         for code in self._confirmed_error_codes - previous:
             if code in ROBOT_ALERTS:
                 continue

@@ -44,7 +44,7 @@ async def sighting(entry: MockConfigEntry, robot: SimulatedRobot) -> None:
         while (session._pending or session._raw) != state:  # noqa: ASYNC110
             await asyncio.sleep(0.01)
     session._async_sample_health(None)
-    await entry.runtime_data.coordinator.async_refresh()
+    await session.heartbeat.async_refresh()
 
 
 async def poll(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -44,6 +44,7 @@ from .stop_return import (
     async_clear_ownerless_stop_if_settled,
     schedule_dock_after_stop,
 )
+from .stores import Store
 from .vacuum_catalog import FloorSegmentCatalog
 
 PARALLEL_UPDATES = 1
@@ -108,48 +109,42 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_vacuum"
+        self._attr_unique_id = f"{self.session.info.serial_number}_vacuum"
         self._segment_catalog = FloorSegmentCatalog()
         self._plans = entry.runtime_data.cleaning_plans
 
     async def async_added_to_hass(self) -> None:
         """Auto-link unconfigured robot rooms to matching Home Assistant Areas."""
         await super().async_added_to_hass()
-        self._segment_catalog.reconcile(
-            self.hass,
-            self.entity_id,
-            self.coordinator.data.floor_plan,
-            self.async_create_segments_issue,
-        )
-        self._segment_catalog.auto_map(
-            self.hass, self.entity_id, self.coordinator.data.floor_plan
-        )
+        self._sync_segments()
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.state, self.session.floor, self.session.progress)
 
     @callback
-    def _handle_coordinator_update(self) -> None:
+    def _handle_store_update(self) -> None:
+        self._sync_segments()
+        super()._handle_store_update()
+
+    def _sync_segments(self) -> None:
         """Detect room changes and retry safe exact-name auto-mapping."""
+        floor_plan = self.session.floor.value
         self._segment_catalog.reconcile(
-            self.hass,
-            self.entity_id,
-            self.coordinator.data.floor_plan,
-            self.async_create_segments_issue,
+            self.hass, self.entity_id, floor_plan, self.async_create_segments_issue
         )
-        self._segment_catalog.auto_map(
-            self.hass, self.entity_id, self.coordinator.data.floor_plan
-        )
-        super()._handle_coordinator_update()
+        self._segment_catalog.auto_map(self.hass, self.entity_id, floor_plan)
 
     @property
     def activity(self) -> VacuumActivity:
         """Return the verified high-level robot activity."""
-        return ACTIVITY_MAP[self.coordinator.data.operational.activity]
+        return ACTIVITY_MAP[self.session.state.value.operational.activity]
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose compact verified status for automations and templates."""
-        state = self.coordinator.data.operational
-        floor_plan = self.coordinator.data.floor_plan
-        progress = self.coordinator.data.telemetry.run_progress
+        state = self.session.state.value.operational
+        floor_plan = self.session.floor.value
+        progress = self.session.progress.value
         return {
             "matic_entry_id": self._config_entry.entry_id,
             "low_charge": state.low_charge,
@@ -199,7 +194,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         self, floor_plan: FloorPlan, rooms: list[Room], *, tracked: bool
     ) -> None:
         """Keep untracked or exhausted room requests from bypassing limits."""
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         for room in rooms:
             if not self._plans.cadence.has_daily_limit(serial_number, room.id):
                 continue
@@ -223,7 +218,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def _async_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         if command is UserCommand.RESUME:
             self._require_no_pending_stop_dispatch(serial_number)
         generation = self._plans.control.motion_generation(serial_number)
@@ -250,13 +245,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         self, command: UserCommand, *, run_id: str | None
     ) -> None:
         """Dispatch a command while the caller owns its command-lock lease."""
-        serial_number = self.coordinator.data.info.serial_number
-        await self.coordinator.client.async_send_user_command(command)
+        serial_number = self.session.info.serial_number
+        await self.session.client.async_send_user_command(command)
         if command is UserCommand.STOP:
             await self._plans.control.async_mark_stop_pending(
                 serial_number, run_id=run_id
             )
-        await self.coordinator.async_request_refresh()
+        await self.session.heartbeat.async_request_refresh()
 
     async def _async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
@@ -265,8 +260,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
         if self.entity_id is not None and await async_clear_ownerless_stop_if_settled(
             self.hass,
-            native_active=self.coordinator.client.async_get_active_cleaning_session_state,
-            fresh_state=self.coordinator.client.async_get_state,
+            native_active=self.session.client.async_get_active_cleaning_session_state,
+            fresh_state=self.session.client.async_get_state,
             manager=self._plans,
             serial_number=serial_number,
             entity_id=self.entity_id,
@@ -279,7 +274,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         )
 
     def _floor_plan(self) -> FloorPlan:
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         if floor_plan is None or not floor_plan.rooms:
             raise _validation_error(
                 "The robot's room map is unavailable", "room_plan_unavailable"
@@ -331,7 +326,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             floor_plan, rooms, tracked=motion_token is not None
         )
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         request_generation = self._plans.control.motion_generation(serial_number)
         request_stop_generation = self._plans.control.stop_request_generation(
             serial_number
@@ -446,7 +441,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         )
 
                 try:
-                    receipt = await self.coordinator.client.async_start_mixed_coverage(
+                    receipt = await self.session.client.async_start_mixed_coverage(
                         floor_plan,
                         [room.protocol_id for room in rooms],
                         room_coverage,
@@ -476,10 +471,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     ) from err
             else:
                 command_rooms = [room.protocol_id for room in rooms]
-                mode = cleaning_mode or self.coordinator.cleaning_mode
-                setting = coverage_setting or self.coordinator.coverage_setting
+                mode = cleaning_mode or self._config_entry.runtime_data.cleaning_mode
+                setting = (
+                    coverage_setting or self._config_entry.runtime_data.coverage_setting
+                )
                 if motion_token is not None:
-                    receipt = await self.coordinator.client.async_start_coverage(
+                    receipt = await self.session.client.async_start_coverage(
                         floor_plan,
                         command_rooms,
                         cleaning_mode=mode,
@@ -498,7 +495,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         serial_number, str(direct_session_id)
                     )
                     require_current_dispatch()
-                    await self.coordinator.client.async_start_coverage(
+                    await self.session.client.async_start_coverage(
                         floor_plan,
                         command_rooms,
                         cleaning_mode=mode,
@@ -522,7 +519,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     room_ids=[room.id for room in rooms],
                     session_id=managed_session_id,
                 )
-            await self.coordinator.async_request_refresh()
+            await self.session.heartbeat.async_request_refresh()
 
     async def _async_clean_plan_area(
         self,
@@ -540,7 +537,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         The area is checked again under the managed command lock: it must
         still be the geometry the run was prepared with, on the current map.
         """
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         request_generation = self._plans.control.motion_generation(serial_number)
         request_admission_epoch = self._plans.control.command_admission_epoch(
             serial_number
@@ -589,7 +586,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     )
 
             try:
-                await self.coordinator.client.async_start_custom_coverage(
+                await self.session.client.async_start_custom_coverage(
                     floor_plan,
                     circles,
                     cleaning_mode=cleaning_mode,
@@ -609,11 +606,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     translation_domain=DOMAIN,
                     translation_key="robot_command_failed",
                 ) from err
-            await self.coordinator.async_request_refresh()
+            await self.session.heartbeat.async_request_refresh()
 
     async def async_start(self, **kwargs: object) -> None:
         """Resume a paused task or start a full-floor clean."""
-        if self.coordinator.data.operational.paused:
+        if self.session.state.value.operational.paused:
             await self._async_command(UserCommand.RESUME)
             return
         await self._async_clean_rooms(list(self._floor_plan().rooms))
@@ -624,7 +621,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_stop(self, **kwargs: object) -> None:
         """Stop now or finish the active room according to the plan policy."""
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         run_id: str | None = None
         async with self._plans.control.external_command(serial_number):
             active_run_id = getattr(self._plans.ledger, "active_run_id", None)
@@ -652,16 +649,16 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             self._require_stop_request_generation(
                 serial_number, expected_stop_generation
             )
-            self.coordinator.async_discard_current_room()
+            self.session.heartbeat.async_discard_current_room()
             await self._async_dispatch_admitted_command(UserCommand.STOP, run_id=run_id)
         self._schedule_dock_after_stop(serial_number, run_id=run_id)
 
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         active_run_id = getattr(self._plans.ledger, "active_run_id", None)
         run_id = active_run_id(serial_number) if callable(active_run_id) else None
-        operational = self.coordinator.data.operational
+        operational = self.session.state.value.operational
         # Display activity gives charging precedence; native task flags still
         # require STOP so DOCK cannot resume retained cleaning or paused work.
         stop_before_dock = (
@@ -712,16 +709,16 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 # STOP owns the end of the task.  A watcher then docks the robot
                 # as soon as that task actually settles instead of waiting out
                 # firmware's ten-minute countdown.
-                self.coordinator.async_discard_current_room()
-                await self.coordinator.client.async_send_user_command(UserCommand.STOP)
+                self.session.heartbeat.async_discard_current_room()
+                await self.session.client.async_send_user_command(UserCommand.STOP)
                 await self._plans.control.async_mark_stop_pending(
                     serial_number, run_id=run_id
                 )
-                await self.coordinator.async_request_refresh()
+                await self.session.heartbeat.async_request_refresh()
                 stopped = True
             else:
-                await self.coordinator.client.async_send_user_command(UserCommand.DOCK)
-                await self.coordinator.async_request_refresh()
+                await self.session.client.async_send_user_command(UserCommand.DOCK)
+                await self.session.heartbeat.async_request_refresh()
                 stopped = False
         if stopped:
             self._schedule_dock_after_stop(serial_number, run_id=run_id)
@@ -731,9 +728,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
         async def resolve(floor_plan: FloorPlan) -> _Navigation:
             try:
-                posture = await self.coordinator.client.async_get_sink_posture(
-                    floor_plan
-                )
+                posture = await self.session.client.async_get_sink_posture(floor_plan)
             except SinkLocationUnavailableError as err:
                 raise _validation_error(
                     "No sink location is saved for this floor",
@@ -741,7 +736,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 ) from err
             except (MaticError, ValueError) as err:
                 raise _navigation_failed("sink") from err
-            return lambda current: self.coordinator.client.async_sink_summon(
+            return lambda current: self.session.client.async_sink_summon(
                 current, posture
             )
 
@@ -751,7 +746,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_redo_last_clean(self) -> None:
         """Clean the most recent finished clean again, as the Matic app does."""
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         if self._plans.cadence.has_any_daily_limit(serial_number):
             raise _validation_error(
                 "Use a managed room sequence to respect room daily limits",
@@ -776,7 +771,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "redo_robot_busy",
             )
         try:
-            records = await self.coordinator.client.async_get_cleaning_session_records()
+            records = await self.session.client.async_get_cleaning_session_records()
         except MaticError as err:
             raise HomeAssistantError(
                 "The robot's cleaning history could not be read",
@@ -812,23 +807,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     "daily_room_limit_requires_managed",
                 )
             try:
-                await self.coordinator.client.async_redo_clean(latest.key)
+                await self.session.client.async_redo_clean(latest.key)
             except (MaticError, ValueError) as err:
                 raise HomeAssistantError(
                     "The robot could not clean again",
                     translation_domain=DOMAIN,
                     translation_key="robot_command_failed",
                 ) from err
-            await self.coordinator.async_request_refresh()
+            await self.session.heartbeat.async_request_refresh()
 
     async def async_go_to_room(self, room: str) -> None:
         """Send the robot to one named room on this floor without cleaning it."""
 
         async def resolve(floor_plan: FloorPlan) -> _Navigation:
             target = _resolve_one_room(room, floor_plan)
-            return lambda current: self.coordinator.client.async_go_to_room(
-                current, target
-            )
+            return lambda current: self.session.client.async_go_to_room(current, target)
 
         await self._async_navigate(
             resolve, destination="room", task_changed=_room_task_changed
@@ -843,14 +836,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         coverage_setting: CoverageSetting | None = None,
     ) -> None:
         """Skip, bring forward or repeat a room in the clean that is running."""
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         floor_plan = self._current_floor_plan()
         target = _resolve_one_room(room, floor_plan)
-        if not self.coordinator.data.operational.cleaning:
+        if not self.session.state.value.operational.cleaning:
             raise _queue_error("no_clean_running", target)
         # The robot keeps the task, so the plan run driving it keeps ownership.
         async with self._plans.control.external_command(serial_number):
-            if not self.coordinator.data.operational.cleaning:
+            if not self.session.state.value.operational.cleaning:
                 raise _queue_error("no_clean_running", target)
             if action is not QueueAction.SKIP:
                 self._require_daily_room_dispatch(
@@ -859,7 +852,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     tracked=False,
                 )
             try:
-                await self.coordinator.client.async_change_queue(
+                await self.session.client.async_change_queue(
                     self._current_floor_plan(plan_floor_token(floor_plan)),
                     action,
                     target,
@@ -890,7 +883,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "run_id": run_id,
             },
         )
-        await self.coordinator.async_request_refresh()
+        await self.session.heartbeat.async_request_refresh()
 
     async def _async_navigate(
         self,
@@ -900,7 +893,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         task_changed: Callable[[], HomeAssistantError],
     ) -> None:
         """Send one navigation command under the sink summon's ownership rules."""
-        serial_number = self.coordinator.data.info.serial_number
+        serial_number = self.session.info.serial_number
         request_generation = self._plans.control.motion_generation(serial_number)
         request_stop_generation = self._plans.control.stop_request_generation(
             serial_number
@@ -950,11 +943,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 await send(floor_plan)
             except (MaticError, ValueError) as err:
                 raise _navigation_failed(destination) from err
-            await self.coordinator.async_request_refresh()
+            await self.session.heartbeat.async_request_refresh()
 
     def _holds_task(self) -> bool:
         """Return whether the robot holds a task a sink summon would join."""
-        operational = self.coordinator.data.operational
+        operational = self.session.state.value.operational
         return operational.cleaning or operational.paused or operational.returning
 
     def _schedule_dock_after_stop(
@@ -985,19 +978,19 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             on_docked = mark_docked
         schedule_dock_after_stop(
             self.hass,
-            client=self.coordinator.client,
-            refresh=self.coordinator.async_request_refresh,
+            client=self.session.client,
+            refresh=self.session.heartbeat.async_request_refresh,
             manager=self._plans,
             serial_number=serial_number,
             entity_id=self.entity_id,
             run_id=run_id,
             set_run_id=getattr(
-                getattr(self.coordinator.client, "activity_journal", None),
+                getattr(self.session.client, "activity_journal", None),
                 "set_run_id",
                 None,
             ),
             get_run_id=getattr(
-                getattr(self.coordinator.client, "activity_journal", None),
+                getattr(self.session.client, "activity_journal", None),
                 "current_run_id",
                 None,
             ),
@@ -1010,7 +1003,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     def _current_segments(self) -> list[Segment]:
         """Return the currently available local room segments."""
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         if floor_plan is None:
             return []
         return [
@@ -1227,14 +1220,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> dict[str, Any]:
         if not isinstance(params, dict):
             return {}
+        runtime = self._config_entry.runtime_data
         try:
             mode = _enum_option(
-                CleaningMode,
-                params.get("cleaning_mode", self.coordinator.cleaning_mode),
+                CleaningMode, params.get("cleaning_mode", runtime.cleaning_mode)
             )
             coverage = _enum_option(
-                CoverageSetting,
-                params.get("coverage", self.coordinator.coverage_setting),
+                CoverageSetting, params.get("coverage", runtime.coverage_setting)
             )
         except ValueError as err:
             raise _validation_error(

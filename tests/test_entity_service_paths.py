@@ -5,7 +5,6 @@ not physical cleaning or the separate production managed-executor handlers.
 """
 
 from collections.abc import AsyncIterator
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -35,6 +34,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     async_get_plan_manager,
 )
+from tests.session_fakes import set_operational
 from tests.test_entities import _entry
 
 BUTTONS = ("run_selected_plan", "clean_selected_area")
@@ -62,21 +62,18 @@ def mock_recorder_before_hass(
 async def platforms(hass: HomeAssistant) -> AsyncIterator[SimpleNamespace]:
     """Load production platforms into HA; fake only the robot dependency."""
     dependency = _entry(idle=True)
-    coordinator = dependency.runtime_data.coordinator
-    coordinator.hass = hass
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(
-            coordinator.data.operational, charging=True, charging_idle=True
-        ),
-    )
-    coordinator.client.async_get_active_cleaning_session_state = AsyncMock(
+    session = dependency.runtime_data.session
+    session.hass = hass
+    set_operational(session, charging=True, charging_idle=True)
+    session.client.async_get_active_cleaning_session_state = AsyncMock(
         return_value=False
     )
-    coordinator.client.async_get_state = AsyncMock(side_effect=lambda: coordinator.data)
+    session.client.async_get_state = AsyncMock(
+        side_effect=lambda: session.state.value.operational
+    )
     assert await async_setup_component(hass, DOMAIN, {})
     manager = await async_get_plan_manager(hass)
-    serial = coordinator.data.info.serial_number
+    serial = session.info.serial_number
     for plan_id, name in (("one", "First plan"), ("two", "Second plan")):
         await manager.catalog.async_save_plan(
             serial,
@@ -130,7 +127,7 @@ async def platforms(hass: HomeAssistant) -> AsyncIterator[SimpleNamespace]:
     )
     yield SimpleNamespace(
         entry=entry,
-        coordinator=coordinator,
+        session=session,
         manager=manager,
         serial=serial,
         entities=entities,
@@ -182,7 +179,7 @@ async def test_config_select_service_updates_entry_and_native_preference(
             blocking=True,
         )
         assert hass.states.get(entity_id).state == option
-        assert getattr(platforms.coordinator, option_key) == enum_value
+        assert getattr(platforms.entry.runtime_data, option_key) == enum_value
         assert platforms.entry.options[option_key] == option
         assert er.async_get(hass).async_get(entity_id).entity_category.value == "config"
 
@@ -224,9 +221,7 @@ async def test_vacuum_service_reaches_transport_once(
     await hass.services.async_call(
         "vacuum", service, {"entity_id": platforms.entities["vacuum"]}, blocking=True
     )
-    platforms.coordinator.client.async_send_user_command.assert_awaited_once_with(
-        command
-    )
+    platforms.session.client.async_send_user_command.assert_awaited_once_with(command)
 
 
 async def test_vacuum_start_and_named_room_validation(
@@ -234,7 +229,7 @@ async def test_vacuum_start_and_named_room_validation(
 ) -> None:
     """Native dispatcher selects real protocol rooms and rejects missing names."""
     target = {"entity_id": platforms.entities["vacuum"]}
-    client = platforms.coordinator.client
+    client = platforms.session.client
     await hass.services.async_call("vacuum", "start", target, blocking=True)
     assert client.async_start_coverage.await_args.args[1] == [
         "protocol-1",
@@ -278,19 +273,19 @@ async def test_switch_services_reach_verified_setting_adapter(
             {"entity_id": platforms.entities[suffix]},
             blocking=True,
         )
-        client = platforms.coordinator.client
+        client = platforms.session.client
         if setting == "deep_mop":
             client.async_set_deep_mop.assert_awaited_with(enabled)
         else:
             client.async_set_binary_setting.assert_awaited_with(setting, enabled)
-    assert platforms.coordinator.async_request_full_refresh.await_count == 2
+    assert platforms.session.heartbeat.async_request_full_refresh.await_count == 2
 
 
 async def test_number_service_rejects_out_of_range_before_transport(
     hass: HomeAssistant, platforms: SimpleNamespace
 ) -> None:
     target = {"entity_id": platforms.entities["water_flow"]}
-    client = platforms.coordinator.client
+    client = platforms.session.client
     await hass.services.async_call(
         "number", "set_value", {**target, "value": 1.5}, blocking=True
     )

@@ -83,13 +83,13 @@ async def test_room_area_room_plan_uses_verified_native_handoffs(
     floor: SimFloor,
 ) -> None:
     """Each requested leg gets its own session, evidence, and room or area credit."""
-    coordinator = plan.entry.runtime_data.coordinator
-    await _poll_until(plan, lambda: coordinator.data.floor_plan is not None)
-    floor_plan = coordinator.data.floor_plan
+    session = plan.entry.runtime_data.session
+    await _poll_until(plan, lambda: session.floor.value is not None)
+    floor_plan = session.floor.value
     assert floor_plan is not None
     circles = [{"x": 1.0, "y": 0.75, "radius": 0.25}]
     await plan.entry.runtime_data.cleaning_plans.catalog.async_save_area(
-        coordinator.data.info.serial_number,
+        session.info.serial_number,
         AREA_ID,
         {
             "schema_version": AREA_SCHEMA_VERSION,
@@ -114,7 +114,7 @@ async def test_room_area_room_plan_uses_verified_native_handoffs(
     )
 
     manager = plan.entry.runtime_data.cleaning_plans
-    serial = coordinator.data.info.serial_number
+    serial = session.info.serial_number
     before = manager.repository.robot(serial)
     room_ids = [str(room["room_id"]) for room in before["plans"][PLAN]["rooms"]]
     room_counts_before = {

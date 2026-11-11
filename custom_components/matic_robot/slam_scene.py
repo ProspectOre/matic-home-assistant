@@ -241,10 +241,9 @@ class MaticSlamSceneView(HomeAssistantView):
             if cached is not None and cached is not queued_after:
                 return cached
             for _attempt in range(SCENE_ENCODE_ATTEMPTS):
-                data = runtime.coordinator.data
                 map_revision = runtime.slam_map.revision
                 identity = runtime.slam_map.mission_identity
-                floor_plan = data.floor_plan
+                floor_plan = runtime.session.floor.value
                 key = (map_revision, identity, floor_plan)
                 if (
                     getattr(runtime.slam_map, "live_session_verified", False)
@@ -386,12 +385,10 @@ class MaticSlamDeltaView(HomeAssistantView):
             )
         if current.revision == since:
             changed = asyncio.Event()
-            remove_listeners = [runtime.slam_map.async_add_listener(changed.set)]
-            coordinator_subscribe = getattr(
-                runtime.coordinator, "async_add_listener", None
-            )
-            if callable(coordinator_subscribe):
-                remove_listeners.append(coordinator_subscribe(changed.set))
+            remove_listeners = [
+                runtime.slam_map.async_add_listener(changed.set),
+                runtime.session.floor.subscribe(changed.set),
+            ]
             try:
                 if current.revision == since:
                     try:
@@ -518,7 +515,7 @@ def _scene_snapshot_is_publishable(
     return (
         getattr(runtime.slam_map, "live_session_verified", False) is True
         and runtime.slam_map.mission_identity == identity
-        and runtime.coordinator.data.floor_plan == floor_plan
+        and runtime.session.floor.value == floor_plan
         and runtime.slam_map.floor_plan_is_current(floor_plan) == floor_plan_coherent
     )
 
@@ -528,7 +525,7 @@ def _scene_snapshot_key(runtime: MaticRuntimeData) -> _SceneKey:
     return (
         runtime.slam_map.revision,
         runtime.slam_map.mission_identity,
-        runtime.coordinator.data.floor_plan,
+        runtime.session.floor.value,
     )
 
 

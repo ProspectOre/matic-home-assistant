@@ -98,19 +98,32 @@ async def test_state_stream_recovers_from_a_fault_mid_stream(
 async def test_malformed_floor_frame_costs_only_the_floor_read(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, robot: SimulatedRobot
 ) -> None:
-    coordinator = loaded_entry.runtime_data.coordinator
-    floor_plan = coordinator.data.floor_plan
+    robot_session = loaded_entry.runtime_data.session
+    floor_plan = robot_session.floor.value
     assert floor_plan is not None
+    # The firmware snapshot taken after setup reads every endpoint, the floor
+    # among them; let it finish so only the heartbeat's read is counted.
+    tracker = loaded_entry.runtime_data.firmware_tracker
+    telemetry = robot_session.telemetry.value
+    version = (
+        telemetry.software_version
+        or robot_session.state.value.operational.software_version
+    )
+    entry_id = loaded_entry.entry_id
+    async with asyncio.timeout(10):
+        # The tracker announces no finished snapshot.
+        while tracker.needs_snapshot(entry_id, version, telemetry.protocol_version):  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
 
     robot.faults.corrupt("coverage_plan", frame=True)
     reads = robot.reads["coverage_plan"]
-    await coordinator.async_request_full_refresh()
+    await robot_session.heartbeat.async_request_full_refresh()
     await hass.async_block_till_done()
 
     # The read happened and failed; the robot stays available on its last map.
     assert robot.reads["coverage_plan"] == reads + 1
     assert _state(hass, VACUUM) == "docked"
-    assert coordinator.data.floor_plan == floor_plan
+    assert robot_session.floor.value == floor_plan
 
 
 @pytest.mark.usefixtures("fast_keepalive")
@@ -126,14 +139,14 @@ async def test_keepalive_finds_a_silent_link_and_the_pushes_come_back(
     monkeypatch.setattr(hermes_collections, "_RPC_TIMEOUT", 0.2)
     monkeypatch.setattr(hermes_connection, "_RPC_TIMEOUT", 0.2)
     monkeypatch.setattr(session, "UNREACHABLE_AFTER_SECONDS", 0.2)
-    coordinator = loaded_entry.runtime_data.coordinator
-    heartbeat = AsyncMock(wraps=coordinator._async_update_data)
-    monkeypatch.setattr(coordinator, "_async_update_data", heartbeat)
+    heartbeat = loaded_entry.runtime_data.session.heartbeat
+    reads = AsyncMock(wraps=heartbeat._async_read)
+    monkeypatch.setattr(heartbeat, "_async_read", reads)
 
     # Nothing asks the robot anything: the unanswered ping ends the link.
     simulator.link.stall()
     await state_becomes(hass, VACUUM, STATE_UNAVAILABLE)
-    heartbeat.assert_not_awaited()
+    reads.assert_not_awaited()
 
     simulator.link.restore()
     await state_becomes(hass, VACUUM, "docked")

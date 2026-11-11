@@ -72,8 +72,7 @@ class MaticDailyLimitView(HomeAssistantView):
         ):
             return self._json_error(HTTPStatus.BAD_REQUEST, "invalid_request")
 
-        coordinator_data = getattr(runtime.coordinator, "data", None)
-        floor_plan = getattr(coordinator_data, "floor_plan", None)
+        floor_plan = runtime.session.floor.value
         if (
             floor_plan is None
             or not runtime.slam_map.floor_plan_is_current(floor_plan)
@@ -87,8 +86,7 @@ class MaticDailyLimitView(HomeAssistantView):
 
         def require_current() -> bool:
             """Recheck both accepted map revision and target room identity."""
-            current_data = getattr(runtime.coordinator, "data", None)
-            current = getattr(current_data, "floor_plan", None)
+            current = runtime.session.floor.value
             if (
                 current is None
                 or not runtime.slam_map.floor_plan_is_current(current)
@@ -102,7 +100,7 @@ class MaticDailyLimitView(HomeAssistantView):
 
         try:
             state = await runtime.cleaning_plans.cadence.async_set_daily_limit(
-                str(runtime.coordinator.data.info.serial_number),
+                str(runtime.session.info.serial_number),
                 room_id,
                 room_identity=identity,
                 limit=limit,

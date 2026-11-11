@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from homeassistant.components.sensor import (
     RestoreSensor,
@@ -36,13 +36,14 @@ from .client.models import (
     CuesVoiceStatus,
     FloorPlan,
     RobotActivity,
-    RobotState,
     Room,
 )
 from .entity import MaticEntity
 from .native_completion import native_room_key
 from .plan_model import plan_floor_token, room_cadence_identity
 from .room_statistics import native_statistics_have_ambiguous_floor
+from .session import RobotSession
+from .stores import Store
 from .wifi_room_sensor import MaticRoomWifiSignalSensor
 
 PARALLEL_UPDATES = 0
@@ -161,9 +162,10 @@ BAG_LAST_REPLACED_DESCRIPTION = SensorEntityDescription(
 
 @dataclass(frozen=True, kw_only=True)
 class MaticStateSensorDescription(SensorEntityDescription):
-    """Describe one stable field on the coordinated robot state."""
+    """Describe one stable field read from one of the session's stores."""
 
-    value_fn: Callable[[RobotState], str | int | datetime | None]
+    store: Literal["state", "telemetry", "progress", "history"]
+    value_fn: Callable[[RobotSession], str | int | datetime | None]
 
 
 STATE_DESCRIPTIONS = (
@@ -173,7 +175,8 @@ STATE_DESCRIPTIONS = (
         device_class=SensorDeviceClass.ENUM,
         options=[status.value for status in CuesVoiceStatus],
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda state: state.operational.cues_voice_status,
+        store="state",
+        value_fn=lambda session: session.state.value.operational.cues_voice_status,
     ),
     MaticStateSensorDescription(
         key="cues_gesture_status",
@@ -181,12 +184,14 @@ STATE_DESCRIPTIONS = (
         device_class=SensorDeviceClass.ENUM,
         options=[status.value for status in CuesGestureStatus],
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda state: state.operational.cues_gesture_status,
+        store="state",
+        value_fn=lambda session: session.state.value.operational.cues_gesture_status,
     ),
     MaticStateSensorDescription(
         key="current_area",
         translation_key="current_area",
-        value_fn=lambda state: state.operational.current_area,
+        store="state",
+        value_fn=lambda session: session.state.value.operational.current_area,
     ),
     MaticStateSensorDescription(
         key="wifi_state",
@@ -202,14 +207,16 @@ STATE_DESCRIPTIONS = (
         ],
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda state: state.telemetry.wifi_state,
+        store="telemetry",
+        value_fn=lambda session: session.telemetry.value.wifi_state,
     ),
     MaticStateSensorDescription(
         key="local_cleaning_sessions",
         translation_key="local_cleaning_sessions",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda state: state.telemetry.local_cleaning_sessions,
+        store="telemetry",
+        value_fn=lambda session: session.telemetry.value.local_cleaning_sessions,
     ),
     MaticStateSensorDescription(
         key="coverage_time",
@@ -219,22 +226,25 @@ STATE_DESCRIPTIONS = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         suggested_unit_of_measurement=UnitOfTime.MINUTES,
-        value_fn=lambda state: state.telemetry.coverage_time_seconds,
+        store="telemetry",
+        value_fn=lambda session: session.telemetry.value.coverage_time_seconds,
     ),
     MaticStateSensorDescription(
         key="cleaning_phase",
         translation_key="cleaning_phase",
         device_class=SensorDeviceClass.ENUM,
         options=[phase.value for phase in CleaningPhase],
-        value_fn=lambda state: state.operational.cleaning_phase,
+        store="state",
+        value_fn=lambda session: session.state.value.operational.cleaning_phase,
     ),
     MaticStateSensorDescription(
         key="run_progress",
         translation_key="run_progress",
         native_unit_of_measurement=PERCENTAGE,
-        value_fn=lambda state: (
-            state.telemetry.run_progress.percent
-            if state.telemetry.run_progress is not None
+        store="progress",
+        value_fn=lambda session: (
+            session.progress.value.percent
+            if session.progress.value is not None
             else None
         ),
     ),
@@ -244,9 +254,10 @@ STATE_DESCRIPTIONS = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         suggested_unit_of_measurement=UnitOfTime.MINUTES,
-        value_fn=lambda state: (
-            state.telemetry.run_progress.remaining_seconds
-            if state.telemetry.run_progress is not None
+        store="progress",
+        value_fn=lambda session: (
+            session.progress.value.remaining_seconds
+            if session.progress.value is not None
             else None
         ),
     ),
@@ -257,9 +268,10 @@ STATE_DESCRIPTIONS = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         suggested_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda state: (
-            state.telemetry.latest_session.duration_seconds
-            if state.telemetry.latest_session is not None
+        store="history",
+        value_fn=lambda session: (
+            session.history.value.latest_session.duration_seconds
+            if session.history.value.latest_session is not None
             else None
         ),
     ),
@@ -271,13 +283,15 @@ STATE_DESCRIPTIONS = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda state: state.telemetry.wifi_signal_dbm,
+        store="telemetry",
+        value_fn=lambda session: session.telemetry.value.wifi_signal_dbm,
     ),
     MaticStateSensorDescription(
         key="bag_pass_expires",
         translation_key="bag_pass_expires",
         device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda state: state.telemetry.bag_pass_expires_at,
+        store="telemetry",
+        value_fn=lambda session: session.telemetry.value.bag_pass_expires_at,
     ),
 )
 
@@ -292,26 +306,23 @@ async def async_setup_entry(
     Bag statistics classes below are intentionally latent until a real robot
     transition verifies the native signal; they are not registered here yet.
     """
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     room_timing = _RoomTimingPublisher(hass, entry)
     known_rooms: set[str] = set()
 
     def _new_room_entities() -> list[SensorEntity]:
         """Build opt-in statistics and Wi-Fi sensors for rooms not yet seen."""
-        floor_plan = coordinator.data.floor_plan
+        floor_plan = session.floor.value
         if floor_plan is None:
             return []
         new_rooms = [room for room in floor_plan.rooms if room.id not in known_rooms]
         known_rooms.update(room.id for room in new_rooms)
-        return [
-            entity
-            for room in new_rooms
-            for entity in (
-                MaticRoomDurationSensor(entry, room),
-                MaticRoomLastCleanedSensor(entry, room),
-                MaticRoomWifiSignalSensor(entry, room),
-            )
-        ]
+        kinds = (
+            MaticRoomDurationSensor,
+            MaticRoomLastCleanedSensor,
+            MaticRoomWifiSignalSensor,
+        )
+        return [kind(entry, room) for room in new_rooms for kind in kinds]
 
     async_add_entities(
         [
@@ -343,7 +354,7 @@ async def async_setup_entry(
         if new_entities := _new_room_entities():
             async_add_entities(new_entities)
 
-    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_rooms))
+    entry.async_on_unload(session.floor.subscribe(_async_add_new_rooms))
 
 
 class MaticBatterySensor(MaticEntity, SensorEntity):
@@ -353,12 +364,12 @@ class MaticBatterySensor(MaticEntity, SensorEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_battery"
+        self._attr_unique_id = f"{self.session.info.serial_number}_battery"
 
     @property
     def native_value(self) -> int | None:
         """Return the verified battery percentage."""
-        return self.coordinator.data.operational.battery_percentage
+        return self.session.state.value.operational.battery_percentage
 
 
 class MaticRobotAlertSensor(MaticEntity, SensorEntity):
@@ -368,21 +379,21 @@ class MaticRobotAlertSensor(MaticEntity, SensorEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_robot_alert"
+        self._attr_unique_id = f"{self.session.info.serial_number}_robot_alert"
 
     @property
     def native_value(self) -> str:
         """Return the first named alert, ``unknown``, or ``none``."""
-        return self.coordinator.data.operational.alert
+        return self.session.state.value.operational.alert
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose every active alert and when unmapped codes were seen."""
-        operational = self.coordinator.data.operational
+        operational = self.session.state.value.operational
         return {
             "alerts": list(operational.alerts),
             "codes": list(operational.error_codes),
-            "unknown_codes_seen": self.coordinator.robot_health.unknown_alert_codes,
+            "unknown_codes_seen": self.session.health.unknown_alert_codes,
         }
 
 
@@ -399,7 +410,7 @@ class MaticFirmwareCompatibilitySensor(MaticEntity, SensorEntity):
         self._entry_id = entry.entry_id
         self._tracker = entry.runtime_data.firmware_tracker
         self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_firmware_compatibility"
+            f"{self.session.info.serial_number}_firmware_compatibility"
         )
 
     async def async_added_to_hass(self) -> None:
@@ -410,6 +421,9 @@ class MaticFirmwareCompatibilitySensor(MaticEntity, SensorEntity):
                 self._entry_id, self._async_firmware_updated
             )
         )
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     @callback
     def _async_firmware_updated(self) -> None:
@@ -452,24 +466,29 @@ class MaticStateSensor(MaticEntity, SensorEntity):
     ) -> None:
         super().__init__(entry)
         self.entity_description = description
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_{description.key}"
-        )
+        self._attr_unique_id = f"{self.session.info.serial_number}_{description.key}"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        stores: list[Store[Any]] = [
+            getattr(self.session, self.entity_description.store)
+        ]
+        if self.entity_description.key == "local_cleaning_sessions":
+            stores.append(self.session.history)
+        return stores
 
     @property
     def native_value(self) -> str | int | datetime | None:
         """Return the decoded field."""
-        return self.entity_description.value_fn(self.coordinator.data)
+        return self.entity_description.value_fn(self.session)
 
     @property
     def extra_state_attributes(self) -> dict[str, object] | None:
         """Return context only where it materially improves automation."""
-        state = self.coordinator.data
         key = self.entity_description.key
         if key == "current_area":
-            return {"previous_area": state.operational.previous_area}
+            return {"previous_area": self.session.state.value.operational.previous_area}
         if key == "wifi_state":
-            telemetry = state.telemetry
+            telemetry = self.session.telemetry.value
             return {
                 "ssid": telemetry.wifi_ssid,
                 "signal_dbm": telemetry.wifi_signal_dbm,
@@ -479,7 +498,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
                 "visible_networks": len(telemetry.wifi_networks),
             }
         if key == "local_cleaning_sessions":
-            latest = state.telemetry.latest_session
+            latest = self.session.history.value.latest_session
             if latest is None:
                 return None
             attributes: dict[str, object] = {
@@ -527,7 +546,7 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._history = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_cleaning_history"
 
@@ -539,6 +558,9 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
                 self._serial_number, self._async_history_updated
             )
         )
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     @callback
     def _async_history_updated(self) -> None:
@@ -573,7 +595,7 @@ class _MaticPlanSensor(MaticEntity, SensorEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._history = entry.runtime_data.cleaning_plans
 
     async def async_added_to_hass(self) -> None:
@@ -584,6 +606,9 @@ class _MaticPlanSensor(MaticEntity, SensorEntity):
                 self._serial_number, self._async_history_updated
             )
         )
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     @callback
     def _async_history_updated(self) -> None:
@@ -604,10 +629,12 @@ class _RoomTimingPublisher:
         self._closed = False
         self.data: dict[str, Any] | None = None
         self.refresh()
+        session = entry.runtime_data.session
         removers = (
-            entry.runtime_data.coordinator.async_add_listener(self.refresh),
+            session.state.subscribe(self.refresh),
+            session.error.subscribe(self.refresh),
             entry.runtime_data.cleaning_plans.repository.async_add_listener(
-                entry.runtime_data.coordinator.data.info.serial_number, self.refresh
+                session.info.serial_number, self.refresh
             ),
             async_track_time_interval(
                 hass, self.refresh, timedelta(seconds=5), cancel_on_shutdown=True
@@ -633,14 +660,14 @@ class _RoomTimingPublisher:
         """Re-read ownership on every tick; never keep another run's estimate."""
         if self._closed:
             return
-        coordinator = self._entry.runtime_data.coordinator
+        session = self._entry.runtime_data.session
         data = None
-        if coordinator.last_update_success:
-            state = coordinator.data.operational
+        if session.error.value is None:
+            state = session.state.value.operational
             if state.activity in {RobotActivity.CLEANING, RobotActivity.PAUSED}:
                 candidate = (
                     self._entry.runtime_data.cleaning_plans.history.current_room_timing(
-                        coordinator.data.info.serial_number
+                        session.info.serial_number
                     )
                 )
                 if candidate is not None:
@@ -698,6 +725,9 @@ class MaticCurrentRoomTimingSensor(MaticEntity, SensorEntity):
         await super().async_added_to_hass()
         self.async_on_remove(self._publisher.add_listener(self.async_write_ha_state))
 
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
+
     @property
     def native_value(self) -> int | None:
         return (self._publisher.data or {}).get(self._field)
@@ -744,8 +774,11 @@ class MaticNextCleaningRoomSensor(_MaticPlanSensor):
         super().__init__(entry)
         self._attr_unique_id = f"{self._serial_number}_next_cleaning_room"
 
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.floor,)
+
     def _preview(self) -> dict[str, Any] | None:
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         if floor_plan is None:
             return None
         if not self._config_entry.runtime_data.slam_map.floor_plan_is_current(
@@ -787,26 +820,24 @@ class _MaticBagStatisticsSensor(MaticEntity, RestoreSensor):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._previous_full: bool | None = None
         self._pending_clear = False
 
     async def async_added_to_hass(self) -> None:
         """Restore the value and subscribe to bag transitions."""
         await super().async_added_to_hass()
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self._async_coordinator_updated)
-        )
+        self.async_on_remove(self.session.state.subscribe(self._async_state_updated))
 
     @callback
-    def _async_coordinator_updated(self) -> None:
+    def _async_state_updated(self) -> None:
         """Apply one new full/not-full observation.
 
-        This mirrors the coordinator's ``_async_track_bag_state``; the two must
-        agree on what counts as a replacement or the same robot behaviour
-        produces two different statistics.
+        This mirrors ``RobotHealth.track_bag_state``; the two must agree on
+        what counts as a replacement or the same robot behaviour produces two
+        different statistics.
         """
-        operational = self.coordinator.data.operational
+        operational = self.session.state.value.operational
         current = getattr(operational, "bag_full", None)
         if current is None:
             return
@@ -862,7 +893,7 @@ class MaticBagFullCountSensor(_MaticBagStatisticsSensor, SensorEntity):
         data = await self.async_get_last_sensor_data()
         if data is not None and isinstance(data.native_value, (int, float)):
             self._count = max(0, round(data.native_value))
-        self._async_coordinator_updated()
+        self._async_state_updated()
 
     @callback
     def _async_apply_full_transition(self) -> None:
@@ -888,7 +919,7 @@ class MaticBagLastFullSensor(_MaticBagStatisticsSensor, SensorEntity):
         data = await self.async_get_last_sensor_data()
         if data is not None and isinstance(data.native_value, datetime):
             self._last_full = data.native_value
-        self._async_coordinator_updated()
+        self._async_state_updated()
 
     @callback
     def _async_apply_full_transition(self) -> None:
@@ -914,7 +945,7 @@ class MaticBagReplacementCountSensor(_MaticBagStatisticsSensor, SensorEntity):
         data = await self.async_get_last_sensor_data()
         if data is not None and isinstance(data.native_value, (int, float)):
             self._count = max(0, round(data.native_value))
-        self._async_coordinator_updated()
+        self._async_state_updated()
 
     @callback
     def _async_apply_replacement_transition(self) -> None:
@@ -940,7 +971,7 @@ class MaticBagLastReplacedSensor(_MaticBagStatisticsSensor, SensorEntity):
         data = await self.async_get_last_sensor_data()
         if data is not None and isinstance(data.native_value, datetime):
             self._last_replaced = data.native_value
-        self._async_coordinator_updated()
+        self._async_state_updated()
 
     @callback
     def _async_apply_replacement_transition(self) -> None:
@@ -962,7 +993,7 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         super().__init__(entry)
         self._room_id = room.id
         self._history = entry.runtime_data.cleaning_plans
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._attr_translation_placeholders = {"room": room.name}
         self._suggested_suffix = room.name
 
@@ -989,7 +1020,7 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
     @property
     def available(self) -> bool:
         """Keep history offline, but retire rooms removed from the active map."""
-        floor_plan = self.coordinator.data.floor_plan
+        floor_plan = self.session.floor.value
         return floor_plan is None or any(
             room.id == self._room_id for room in floor_plan.rooms
         )
@@ -1000,11 +1031,11 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
 
     def _room_session_result(self) -> tuple[bool, tuple[str, int] | None]:
         """Return whether a managed run owns the session and its room result."""
-        state = self.coordinator.data
+        floor_plan = self.session.floor.value
         snapshot = self._history.history.snapshot(self._serial_number)
         managed_historical = _managed_room_history_value(snapshot, self._room_id)
         native_historical = _robot_reported_room_history_value(
-            snapshot, self._room_id, state.floor_plan
+            snapshot, self._room_id, floor_plan
         )
         if _native_room_history_matches_managed_room(snapshot, self._room_id):
             native_historical = None
@@ -1012,13 +1043,13 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
             managed_historical, native_historical
         )
         ineligible_native = _native_room_history_is_ineligible(
-            snapshot, self._room_id, state.floor_plan
+            snapshot, self._room_id, floor_plan
         )
-        session = state.telemetry.latest_session
-        if session is None or session.ended_at is None or state.floor_plan is None:
+        session = self.session.history.value.latest_session
+        if session is None or session.ended_at is None or floor_plan is None:
             return historical is not None or ineligible_native, historical
         room = next(
-            (item for item in state.floor_plan.rooms if item.id == self._room_id),
+            (item for item in floor_plan.rooms if item.id == self._room_id),
             None,
         )
         if room is None:
@@ -1048,11 +1079,11 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
     @property
     def extra_state_attributes(self) -> dict[str, str]:
         """Identify the value's source and explain withheld app-started results."""
-        state = self.coordinator.data
+        floor_plan = self.session.floor.value
         snapshot = self._history.history.snapshot(self._serial_number)
         managed_value = _managed_room_history_value(snapshot, self._room_id)
         native_value = _robot_reported_room_history_value(
-            snapshot, self._room_id, state.floor_plan
+            snapshot, self._room_id, floor_plan
         )
         managed_session, value = self._room_session_result()
         source = _room_statistics_source(
@@ -1069,8 +1100,8 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         )
         attributes = {"statistics_source": source} if source is not None else {}
         if (
-            state.floor_plan is not None
-            and native_statistics_have_ambiguous_floor(state.floor_plan)
+            floor_plan is not None
+            and native_statistics_have_ambiguous_floor(floor_plan)
             and native_value is None
         ):
             attributes["native_statistics_blocked_reason"] = (
@@ -1083,10 +1114,13 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
     def _async_apply_session(self) -> None:
         """Apply the latest finished session that included this room."""
 
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.floor, self.session.history)
+
     @callback
-    def _handle_coordinator_update(self) -> None:
+    def _handle_store_update(self) -> None:
         self._async_apply_session()
-        super()._handle_coordinator_update()
+        super()._handle_store_update()
 
 
 class MaticRoomDurationSensor(_MaticRoomStatisticsSensor):
