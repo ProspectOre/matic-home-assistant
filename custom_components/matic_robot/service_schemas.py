@@ -169,6 +169,7 @@ RUN_SELECTED_PLAN_SCHEMA = cv.make_entity_service_schema(
             cv.string,
             probatio.Match(r"^[0-9a-f]{64}$"),
         ),
+        probatio.Optional("run_behavior"): probatio.In(("intelligent", "ordered")),
     }
 )
 
@@ -288,51 +289,6 @@ PLAN_REFERENCE_SCHEMA = cv.make_entity_service_schema(
             cv.string, probatio.Length(min=1, max=128)
         )
     }
-)
-
-SAVE_PLAN_ROOM_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("plan"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Required("room"): saved_plan_entry,
-    }
-)
-
-_PLAN_ENTRY_TARGET = {
-    probatio.Exclusive("room", "plan_entry"): cv.string,
-    probatio.Exclusive("area", "plan_entry"): probatio.All(
-        cv.string, probatio.Length(min=1, max=128)
-    ),
-}
-
-DELETE_PLAN_ROOM_SCHEMA = probatio.All(
-    cv.make_entity_service_schema(
-        {
-            probatio.Required("plan"): probatio.All(
-                cv.string, probatio.Length(min=1, max=128)
-            ),
-            **_PLAN_ENTRY_TARGET,
-        }
-    ),
-    cv.has_at_least_one_key("room", "area"),
-)
-
-MOVE_PLAN_ROOM_SCHEMA = probatio.All(
-    cv.make_entity_service_schema(
-        {
-            probatio.Required("plan"): probatio.All(
-                cv.string, probatio.Length(min=1, max=128)
-            ),
-            **_PLAN_ENTRY_TARGET,
-            # A plan holds up to the room limit and as many custom areas again.
-            probatio.Required("new_position"): probatio.All(
-                probatio.Coerce(int),
-                probatio.Range(min=1, max=2 * MAX_ROOM_SEQUENCE_SIZE),
-            ),
-        }
-    ),
-    cv.has_at_least_one_key("room", "area"),
 )
 
 INSPECT_ENDPOINT_SERVICE_SCHEMA = cv.make_entity_service_schema(

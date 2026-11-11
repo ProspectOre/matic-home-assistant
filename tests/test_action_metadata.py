@@ -33,8 +33,6 @@ def test_action_names_follow_the_glossary() -> None:
     names = {key: service["name"] for key, service in STRINGS["services"].items()}
     assert {key: names[key] for key in ADVANCED_ACTIONS} == ADVANCED_ACTIONS
     assert names["run_selected_plan"] == "Run plan"
-    assert names["intelligent_clean"] == "Run Smart Order"
-    assert names["clean_entire_plan"] == "Run saved order"
     assert names["stop_intelligent_cleaning"] == "Stop cleaning"
     assert names["reset_plan_history"] == "Reset room cleaning history"
     ordinary = set(names) - set(ADVANCED_ACTIONS)
@@ -68,7 +66,7 @@ def test_id_fields_are_advanced_and_plan_fields_hint_the_default() -> None:
         for key, service in SERVICES.items()
         if "plan" in (service or {}).get("fields", {})
     ]
-    assert len(plan_fields) == 11
+    assert len(plan_fields) == 5
     for key, field in plan_fields:
         assert field["example"] == "Main floor"
         description = STRINGS["services"][key]["fields"]["plan"]["description"]
@@ -95,18 +93,12 @@ def test_room_objects_declare_their_fields() -> None:
 
 def test_plan_entry_objects_offer_a_room_or_an_area() -> None:
     entry_fields = ["room", "area", "cleaning_mode", "coverage_setting"]
-    for key, field in (("save_plan", "rooms"), ("save_plan_room", "room")):
-        selector = SERVICES[key]["fields"][field]["selector"]["object"]
-        assert list(selector["fields"]) == entry_fields
-        assert not any(item.get("required") for item in selector["fields"].values())
-        assert selector.get("multiple", False) is (field == "rooms")
-        assert selector["translation_key"] == "plan_entry"
+    selector = SERVICES["save_plan"]["fields"]["rooms"]["selector"]["object"]
+    assert list(selector["fields"]) == entry_fields
+    assert not any(item.get("required") for item in selector["fields"].values())
+    assert selector["multiple"] is True
+    assert selector["translation_key"] == "plan_entry"
     assert list(STRINGS["selector"]["plan_entry"]["fields"]) == entry_fields
-    for key in ("delete_plan_room", "move_plan_room"):
-        fields = SERVICES[key]["fields"]
-        assert "required" not in fields["room"]
-        assert "required" not in fields["area"]
-        assert set(STRINGS["services"][key]["fields"]) == set(fields)
 
 
 def _selects() -> list[dict]:

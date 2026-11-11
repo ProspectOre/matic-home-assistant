@@ -220,7 +220,6 @@ def test_decode_verified_build_and_area_fields() -> None:
     assert state.previous_area == "Kitchen"
     assert state.current_area == "Study"
     assert state.robot_profile == "abc"
-    assert state.is_fully_charged is True
 
 
 def test_live_and_future_error_codes_remain_truthful_and_automation_safe() -> None:

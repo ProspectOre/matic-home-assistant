@@ -55,7 +55,7 @@ async def setup_blueprint(
     async def record(call: ServiceCall) -> None:
         calls.append(call)
 
-    for service in ("intelligent_clean", "stop_intelligent_cleaning"):
+    for service in ("run_selected_plan", "stop_intelligent_cleaning"):
         hass.services.async_register("matic_robot", service, record)
     substituted["id"] = filename
     substituted["alias"] = "blueprint under test"
@@ -100,13 +100,14 @@ async def test_named_zone_counts_as_away_and_blank_plan_is_omitted(
     assert calls == []
     await advance(hass, minutes=6)
 
-    assert [call.service for call in calls] == ["intelligent_clean"]
+    assert [call.service for call in calls] == ["run_selected_plan"]
+    assert calls[0].data["run_behavior"] == "intelligent"
     assert "plan" not in calls[0].data
 
     hass.states.async_set(PEOPLE[1], "home")
     await hass.async_block_till_done()
     assert [call.service for call in calls] == [
-        "intelligent_clean",
+        "run_selected_plan",
         "stop_intelligent_cleaning",
     ]
 

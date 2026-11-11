@@ -54,7 +54,7 @@ async def test_dispatch_does_not_consume_the_separate_completion_budget(hass):
     dispatch = await _async_dispatch_leg_command(
         hass,
         ServiceCall(
-            hass, "matic_robot", "clean_entire_plan", {"completion_timeout": 100}
+            hass, "matic_robot", "run_selected_plan", {"completion_timeout": 100}
         ),
         "vacuum.matic",
         [CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")],
@@ -157,7 +157,7 @@ async def test_expired_recovery_budget_stops_only_owned_mission(
             "run",
             2,
             trigger="automation",
-            service="clean_entire_plan",
+            service="run_selected_plan",
         )
         checkpoint["rooms"] = [
             asdict(room),
@@ -189,7 +189,7 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
             "run",
             2,
             trigger="automation",
-            service="clean_entire_plan",
+            service="run_selected_plan",
         )
         checkpoint["rooms"] = [
             asdict(room),

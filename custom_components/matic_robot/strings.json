@@ -1270,28 +1270,11 @@
       "charging": {
         "name": "Charging"
       },
-      "paused": {
-        "name": "Paused",
-        "state": {
-          "off": "Not paused",
-          "on": "Paused"
-        }
-      },
       "cleaning": {
         "name": "Cleaning"
       },
-      "returning": {
-        "name": "Returning to dock"
-      },
       "low_charge": {
         "name": "Low charge"
-      },
-      "fully_charged": {
-        "name": "Fully charged",
-        "state": {
-          "off": "Not fully charged",
-          "on": "Fully charged"
-        }
       },
       "matter_pairing_mode": {
         "name": "Matter pairing mode",
@@ -1333,15 +1316,6 @@
     "button": {
       "run_selected_plan": {
         "name": "Run plan"
-      },
-      "intelligent_clean": {
-        "name": "Run Smart Order"
-      },
-      "clean_entire_plan": {
-        "name": "Run saved order"
-      },
-      "stop_intelligent_cleaning": {
-        "name": "Stop cleaning"
       },
       "clean_selected_area": {
         "name": "Clean custom area"
@@ -1406,18 +1380,6 @@
       }
     },
     "sensor": {
-      "activity": {
-        "name": "Activity",
-        "state": {
-          "error": "Error",
-          "paused": "Paused",
-          "cleaning": "Cleaning",
-          "returning": "Returning to dock",
-          "charging": "Charging",
-          "docked": "Docked",
-          "ready": "Ready"
-        }
-      },
       "battery": {
         "name": "Battery"
       },
@@ -1478,20 +1440,8 @@
       "time_remaining": {
         "name": "Time remaining"
       },
-      "dock_detections": {
-        "name": "Dock detections"
-      },
       "local_cleaning_sessions": {
         "name": "Robot cleaning runs"
-      },
-      "protocol_version": {
-        "name": "Protocol version"
-      },
-      "rooms": {
-        "name": "Rooms"
-      },
-      "scheduled_cleanings": {
-        "name": "Scheduled cleanings"
       },
       "firmware_compatibility": {
         "name": "Firmware check status",
@@ -1501,23 +1451,6 @@
           "compatible": "Compatible",
           "regression": "Some robot reads are failing",
           "current": "Up to date"
-        }
-      },
-      "sink_summon_locations": {
-        "name": "Sink summon locations"
-      },
-      "update_channel": {
-        "name": "Update channel"
-      },
-      "update_state": {
-        "name": "Update status",
-        "state": {
-          "idle": "Idle",
-          "busy": "Busy",
-          "progress": "Updating",
-          "error": "Error",
-          "complete": "Complete",
-          "available": "Available"
         }
       },
       "wifi_state": {
@@ -1850,17 +1783,11 @@
     "duplicate_area": {
       "message": "Each custom area can appear only once in a plan. Remove repeated areas, then try again."
     },
-    "area_not_in_plan": {
-      "message": "{area} isn't in this plan. Check the name, or choose an area from the plan."
-    },
     "plan_area_missing": {
       "message": "A custom area in this plan was deleted. Open the plan in Matic Map, save it again, then try again."
     },
     "plan_area_limit": {
       "message": "A plan can include up to {limit} custom areas. Remove some areas and try again."
-    },
-    "invalid_room_position": {
-      "message": "Choose a position from 1 to {count}, then try again."
     },
     "plan_preview_changed": {
       "message": "The plan changed after you previewed it. Preview it again, then run the plan."
@@ -2030,6 +1957,17 @@
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
+    },
+    "blueprints_use_removed_action": {
+      "title": "Matic blueprints need an update",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Update Matic blueprints",
+            "description": "These blueprints call `matic_robot.intelligent_clean`, which Matic (Unofficial) 0.6 removed, so their automations can't start a clean: {blueprints}. Submit to switch them to `matic_robot.run_selected_plan` with the same cleaning order, which rewrites their files and reloads your automations."
+          }
+        }
+      }
     }
   },
   "services": {
@@ -2179,26 +2117,6 @@
         }
       }
     },
-    "intelligent_clean": {
-      "name": "Run Smart Order",
-      "description": "Cleans the rooms in a plan, starting with the ones that have waited longest, and keeps going until you stop it or every room is done. Rooms that were started but not finished stay due for the next run.",
-      "fields": {
-        "plan": {
-          "name": "Cleaning plan",
-          "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
-        }
-      }
-    },
-    "clean_entire_plan": {
-      "name": "Run saved order",
-      "description": "Runs the default or named plan once from top to bottom, using each room's saved settings.",
-      "fields": {
-        "plan": {
-          "name": "Cleaning plan",
-          "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
-        }
-      }
-    },
     "run_selected_plan": {
       "name": "Run plan",
       "description": "Runs the default or named plan the way it is saved: in saved order, or by rotation starting with the rooms that have waited longest.",
@@ -2206,6 +2124,10 @@
         "plan": {
           "name": "Cleaning plan",
           "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
+        },
+        "run_behavior": {
+          "name": "Cleaning order",
+          "description": "Smart Order cleans the rooms that have waited longest first. Saved order cleans every room from top to bottom. Leave empty to use the order saved with the plan."
         },
         "preview_token": {
           "name": "Preview ID",
@@ -2343,70 +2265,6 @@
         "plan": {
           "name": "Cleaning plan",
           "description": "Plan name or ID. Find IDs with List cleaning plans."
-        }
-      }
-    },
-    "select_plan": {
-      "name": "Set default cleaning plan",
-      "description": "Sets the plan used when an action, entity, or button does not name one.",
-      "fields": {
-        "plan": {
-          "name": "Cleaning plan",
-          "description": "Plan name or ID. Find IDs with List cleaning plans."
-        }
-      }
-    },
-    "save_plan_room": {
-      "name": "Add or update plan room or area",
-      "description": "Adds one mapped room or saved custom area to the end of a plan, or updates its settings where it is.",
-      "fields": {
-        "plan": {
-          "name": "Cleaning plan",
-          "description": "Plan name or ID. Find IDs with List cleaning plans."
-        },
-        "room": {
-          "name": "Room or area and settings",
-          "description": "A mapped room name or room ID, or a saved custom area name, with its cleaning mode and vacuum coverage. If a value matches both an ID and a name, the ID wins."
-        }
-      }
-    },
-    "delete_plan_room": {
-      "name": "Remove room or area from plan",
-      "description": "Removes one mapped room or saved custom area, and its settings, from a plan.",
-      "fields": {
-        "plan": {
-          "name": "Cleaning plan",
-          "description": "Plan name or ID. Find IDs with List cleaning plans."
-        },
-        "room": {
-          "name": "Room",
-          "description": "Mapped room name or room ID. Fill in a room or an area, not both. If a value matches both an ID and a name, the ID wins."
-        },
-        "area": {
-          "name": "Custom area",
-          "description": "Saved custom area name. Fill in a room or an area, not both."
-        }
-      }
-    },
-    "move_plan_room": {
-      "name": "Move room or area in plan",
-      "description": "Changes one mapped room's or saved custom area's position in a plan.",
-      "fields": {
-        "plan": {
-          "name": "Cleaning plan",
-          "description": "Plan name or ID. Find IDs with List cleaning plans."
-        },
-        "room": {
-          "name": "Room",
-          "description": "Mapped room name or room ID. Fill in a room or an area, not both. If a value matches both an ID and a name, the ID wins."
-        },
-        "area": {
-          "name": "Custom area",
-          "description": "Saved custom area name. Fill in a room or an area, not both."
-        },
-        "new_position": {
-          "name": "New position",
-          "description": "New position in the plan's list of rooms and areas, where 1 is the top."
         }
       }
     },

@@ -422,11 +422,7 @@ class _PanelRobot:
         state = hass.states.get(entity_id)
         # `activityForVacuum` and `robotConnected` in `hass-adapter.ts`.
         self.activity = state.state if state is not None else STATE_UNAVAILABLE
-        if (
-            state is not None
-            and state.attributes.get("recharge_and_resume") is True
-            and state.attributes.get("charging") is True
-        ):
+        if state is not None and state.attributes.get("recharge_and_resume") is True:
             self.activity = "recharging"
         self.connected = self.activity not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
         self.projection = catalog_entry_projection(entry.entry_id, entry.runtime_data)

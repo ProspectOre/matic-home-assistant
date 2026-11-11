@@ -5,12 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant import config_entries
-from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
+from homeassistant.components.repairs import (
+    ConfirmRepairFlow,
+    RepairsFlow,
+    RepairsFlowResult,
+)
 from homeassistant.components.repairs.const import FlowType
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr
 
+from .blueprint_update import BLUEPRINT_ISSUE_ID, async_update_blueprints
 from .const import DOMAIN
 
 FALLBACK_ROBOT_NAME = "Matic (Unofficial)"
@@ -66,12 +71,26 @@ class RobotIdentityRepairFlow(RepairsFlow):
         )
 
 
+class BlueprintRepairFlow(ConfirmRepairFlow):
+    """Switch imported Matic blueprints off the action that 0.6 removed."""
+
+    async def async_step_confirm(
+        self, user_input: dict[str, str] | None = None
+    ) -> RepairsFlowResult:
+        """Name the blueprints, then rewrite them once the user confirms."""
+        if user_input is not None:
+            await async_update_blueprints(self.hass, save=True)
+        return await super().async_step_confirm(user_input)
+
+
 async def async_create_fix_flow(
     hass: HomeAssistant,
     issue_id: str,
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
     """Create the fix flow for a fixable Matic Repair."""
-    del hass, issue_id
+    del hass
+    if issue_id == BLUEPRINT_ISSUE_ID:
+        return BlueprintRepairFlow()
     assert data is not None
     return RobotIdentityRepairFlow(str(data["entry_id"]))

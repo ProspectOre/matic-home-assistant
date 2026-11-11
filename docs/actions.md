@@ -21,10 +21,13 @@ Assistant user settings. The full schema is in
 | Clean room sequence (`clean_room_sequence`) | Required `rooms` (up to 100, in order), each a `room` with optional `cleaning_mode` (default `vacuum_and_mop`) and `coverage_setting` (default `standard`); optional `return_to_base` (default `true`). Matic Map's **Clean rooms** uses this action. |
 | Preview room sequence (`preview_room_sequence`) | Takes the same fields and returns each room's effective settings and due work, and a `preview_token`, without starting cleaning. Administrators only. |
 | Clean custom area (`clean_area`) | Required `area` (name or ID); optional `cleaning_mode` and `coverage_setting` override the area's saved settings. |
-| Run plan (`run_selected_plan`) | Runs `plan`, or the default plan, the way it is saved. Optional `preview_token` from Preview next plan run refuses the run if the plan changed since. |
-| Run Smart Order (`intelligent_clean`) | Runs `plan` starting with the rooms and custom areas that have waited longest, whatever its saved order. |
-| Run saved order (`clean_entire_plan`) | Runs `plan` once, top to bottom, with each room's saved settings. |
+| Run plan (`run_selected_plan`) | Runs `plan`, or the default plan, the way it is saved. Optional `run_behavior` picks the order for this run instead: `intelligent` (Smart Order) starts with the rooms and custom areas that have waited longest, and `ordered` (Saved order) goes top to bottom. Optional `preview_token` from Preview next plan run refuses the run if the plan changed since, or if `run_behavior` asks for a different order than the preview showed. |
 | Stop cleaning (`stop_intelligent_cleaning`) | Stops the running plan and docks, following its Smart Stop setting. See [stopping a plan](#stopping-a-plan). |
+
+Matic 0.6 removed Run Smart Order (`intelligent_clean`) and Run saved order
+(`clean_entire_plan`); call Run plan with `run_behavior` instead.
+[Removed in 0.6](release-notes-0.6.0-beta1.md#removed-in-06) lists every removed
+action and entity with its replacement.
 
 Both sequence actions also take `use_room_schedule` (**Use room schedules** in
 Matic Map, default `false`), which adds the work shared room schedules say is
