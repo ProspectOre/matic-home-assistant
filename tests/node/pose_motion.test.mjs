@@ -20,12 +20,15 @@ test("the robot steps to each sample over the time between samples, then rests o
   motion.push(first, 0);
   // The first sample has nothing to step from.
   assert.equal(motion.at(0), first);
+  assert.equal(motion.moving(0), false);
   const second = pose(0.5, 0.25, 0.4);
   motion.push(second, 100);
   assert.deepEqual(motion.at(100).position, [0, 0]);
   assert.deepEqual(motion.at(150).position, [0.25, 0.125]);
   assert.ok(Math.abs(motion.at(150).heading - 0.2) < 1e-9);
   assert.equal(motion.at(200), second);
+  assert.equal(motion.moving(199), true);
+  assert.equal(motion.moving(200), false);
   // A sample mid-step starts from where the robot is drawn.
   motion.push(pose(1, 0.25, 0.4), 250);
   motion.push(pose(1, 0.5, 0.4), 325);

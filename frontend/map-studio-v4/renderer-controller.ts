@@ -724,7 +724,8 @@ export class RendererController {
     this.#frame = null;
     if (this.#disposed || this.#state?.pageActive === false) return;
     if (this.#governor.begin(time, this.#state?.quality === "auto" && this.#mode === "webgl2")) this.#sceneDirty = true;
-    const moving = this.#move(time);
+    // The frame that draws the end of a step asks for no other.
+    const moving = this.#move(time) && this.#motion?.moving(time) === true;
     const drawn = this.#sceneDirty || this.#overlayDirty ? this.#render() : null;
     if (this.#governor.end(time, drawn === true, drawn === null) || moving) this.#requestFrame();
   };
