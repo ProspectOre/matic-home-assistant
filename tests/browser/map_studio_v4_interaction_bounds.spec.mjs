@@ -166,7 +166,7 @@ test("flushes a previous user's pending camera before loading the next user", as
 test("history slider previews on input and loads only on settled change, including keyboard", async ({ page }) => {
   const module = await bundledModule(page, "interaction-bounds-workflow.js", `
     export { MaticMapWorkflowV4 } from "./frontend/map-studio-v4/workflow-panel";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
   `);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(async (path) => {
@@ -204,7 +204,7 @@ test("keeps keyboard dismissal on the shell after unfocused Full map activation"
   const module = await bundledModule(page, "interaction-bounds-shell-focus.js", `
     export { MaticMapShellV4 } from "./frontend/map-studio-v4/shell";
     export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
   `);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(async (path) => {
@@ -236,7 +236,7 @@ test("keeps keyboard dismissal on the shell after unfocused Full map activation"
 test("shows one saved-floor read-only explanation with the live-map recovery action", async ({ page }) => {
   const module = await bundledModule(page, "interaction-bounds-shell-history.js", `
     export { MaticMapShellV4 } from "./frontend/map-studio-v4/shell";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
   `);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(async (path) => {
@@ -261,7 +261,7 @@ test("shows one saved-floor read-only explanation with the live-map recovery act
 test("outline state changes render in one Lit update", async ({ page }) => {
   const module = await bundledModule(page, "interaction-bounds-canvas.js", `
     export { MaticMapCanvasV4 } from "./frontend/map-studio-v4/map-canvas";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
   `);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(async (path) => {

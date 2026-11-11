@@ -64,7 +64,7 @@ async function loadQualityModules(page) {
   const bundle = await build({
     stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects";
       export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-      export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";
+      export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4-review/gallery-state";
       export { PreferenceStore, preferencesKey } from "./frontend/map-studio-v4/preferences";
       export { PLAN_TOOLS_TAG, PLAN_VIEWS_TAG, SHELL_TAG, WORKFLOW_TAG } from "./frontend/map-studio-v4/element-tags";
       import "./frontend/map-studio-v4/shell";`, resolveDir: process.cwd() },

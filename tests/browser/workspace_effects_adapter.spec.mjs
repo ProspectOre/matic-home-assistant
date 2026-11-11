@@ -6,7 +6,7 @@ const bundle = await build({
     export { WorkspaceStore } from "./frontend/map-studio-v4/state";
     export { canEditCoordinates, canStartMotion } from "./frontend/map-studio-v4/state";
     export { BackendError } from "./frontend/map-studio-v4/backend";
-    export { syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } from "./frontend/map-studio-v4/synthetic-fixtures";`, resolveDir: process.cwd() },
+    export { syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } from "./frontend/map-studio-v4-review/synthetic-fixtures";`, resolveDir: process.cwd() },
   bundle: true, format: "esm", write: false,
 });
 

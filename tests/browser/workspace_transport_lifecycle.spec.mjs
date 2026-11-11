@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
 const bundle = await build({
-  stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { syntheticEntry } from "./frontend/map-studio-v4/synthetic-fixtures";', resolveDir: process.cwd() },
+  stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { syntheticEntry } from "./frontend/map-studio-v4-review/synthetic-fixtures";', resolveDir: process.cwd() },
   bundle: true, format: "esm", write: false,
 });
 

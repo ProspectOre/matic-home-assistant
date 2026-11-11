@@ -887,7 +887,7 @@ const heldRoomController = async (t, failModule = false) => {
   const result = await build({
     stdin: { contents: `export { EffectController } from "./effects";
       export { WorkspaceStore } from "./state";
-      export { createGalleryState, withGalleryRoomPreview } from "./gallery-state";`, resolveDir, loader: "ts" },
+      export { createGalleryState, withGalleryRoomPreview } from "../map-studio-v4-review/gallery-state";`, resolveDir, loader: "ts" },
     bundle: true, write: false, platform: "node", format: "esm", target: "es2022",
     plugins: [{ name: "held-preview-module", setup(compiler) {
       compiler.onResolve({ filter: /^\.\/room-preview-controller$/ }, () => ({ path: moduleUrl, external: true }));

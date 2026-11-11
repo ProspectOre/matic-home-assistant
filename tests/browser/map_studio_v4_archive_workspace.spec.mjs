@@ -9,7 +9,7 @@ const { outputFiles } = await build({
     import { MAP_CANVAS_TAG } from "./element-tags";
     import { EffectController } from "./effects";
     import { WorkspaceStore } from "./state";
-    import { syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans } from "./synthetic-fixtures";
+    import { syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans } from "../map-studio-v4-review/synthetic-fixtures";
     window.archiveHarness = { EffectController, WorkspaceStore, syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans, MAP_CANVAS_TAG };
   `, resolveDir: fileURLToPath(new URL("../../frontend/map-studio-v4", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm", target: "es2022",

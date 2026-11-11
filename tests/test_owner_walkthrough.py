@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 CELLS = json.loads((ROOT / "scripts" / "walkthrough_cells.json").read_text())
 DOC = (ROOT / "docs" / "owner-walkthrough-0.5.md").read_text()
-GALLERY = (ROOT / "frontend" / "map-studio-v4" / "gallery-state.ts").read_text()
+GALLERY = (ROOT / "frontend" / "map-studio-v4-review" / "gallery-state.ts").read_text()
 
 
 def _quoted_list(name: str) -> set[str]:

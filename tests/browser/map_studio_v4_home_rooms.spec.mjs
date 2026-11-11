@@ -34,7 +34,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, viewport 
 async function loadStoreHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { WorkspaceStore, canSelectRooms } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail, watchRuns } from "./frontend/map-studio-v4/run-history-data";',
+      contents: 'export { WorkspaceStore, canSelectRooms } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4-review/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail, watchRuns } from "./frontend/map-studio-v4/run-history-data";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,

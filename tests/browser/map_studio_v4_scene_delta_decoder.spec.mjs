@@ -12,7 +12,7 @@ async function loadModule(page, { fallback = false, backend = false, effects = f
     ? `export { MaticBackend } from "./frontend/map-studio-v4/backend";
       export { EffectController } from "./frontend/map-studio-v4/effects";
       export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-      export { syntheticEntry } from "./frontend/map-studio-v4/synthetic-fixtures";`
+      export { syntheticEntry } from "./frontend/map-studio-v4-review/synthetic-fixtures";`
     : backend
     ? 'export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { SceneParser } from "./frontend/map-studio-v4/scene-parser";'
     : 'export { SceneParser } from "./frontend/map-studio-v4/scene-parser";';

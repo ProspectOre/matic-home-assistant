@@ -9,8 +9,8 @@ const bundle = await build({
       export { MAX_ROOM_SEQUENCE_SIZE } from "./frontend/map-studio-v4/contracts";
       export { WorkspaceStore, manualRoomPreviewKey, selectGoToRoomAction } from "./frontend/map-studio-v4/state";
       export { notice } from "./frontend/map-studio-v4/contracts";
-      export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
-      export { syntheticEntry } from "./frontend/map-studio-v4/synthetic-fixtures";`,
+      export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
+      export { syntheticEntry } from "./frontend/map-studio-v4-review/synthetic-fixtures";`,
     resolveDir: process.cwd(),
   },
   bundle: true, format: "esm", write: false,

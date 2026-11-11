@@ -75,7 +75,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, beforeMou
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController, layerDepth } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController, layerDepth } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4-review/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -3817,7 +3817,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("fits the complete 3D scene inside the perspective viewport", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/geometry-fit-contract.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const gallery = await loadGallery(page, { scenario: "ready" });
@@ -3857,7 +3857,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("WebGL point sprites retain an opaque core and feathered alpha edge", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -3981,7 +3981,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("WebGL point footprint follows the projected world sample spacing", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -4087,7 +4087,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("WebGL splats remain visible when a sample neighbor crosses the camera near plane", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -4230,7 +4230,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("Auto map detail recovers after sustained fast frames and Maximum ignores slow frames", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -4418,7 +4418,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("preserves navigation when a live scene revision arrives", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-preservation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4474,7 +4474,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("rebases the navigation target when live scene bounds move", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-rebase.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4550,7 +4550,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("rebases inactive preferences when the active view is still fitted", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-fit-rebase.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4602,7 +4602,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   for (const [transition, destinationFit] of ["three-top", "top-three", "enter-draw", "leave-draw"]
     .flatMap(transition => [false, true].map(fit => [transition, fit]))) {
     test(`preserves rebased camera ownership during ${transition} fit=${destinationFit}`, async ({ page }) => {
-      const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+      const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { sceneGeometryBounds } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
       await page.route("**/camera-transition.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
       await page.goto("/");
       const result = await page.evaluate(async ({ transition, destinationFit }) => {
@@ -4719,7 +4719,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   }
 
   test("draw zoom control follows the rebased destination without feedback jumps", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/draw-camera-authority.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4798,7 +4798,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-generation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4963,7 +4963,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("explains pending stop recovery in room and plan actions without mislabeling the map", async ({ page }) => {
     const sourceBundle = await build({
-      entryPoints: ["frontend/map-studio-v4/review.ts"],
+      entryPoints: ["frontend/map-studio-v4-review/review.ts"],
       bundle: true,
       format: "esm",
       target: "es2022",
@@ -9011,7 +9011,7 @@ test("zone perimeter closes automatically and supports extending dragging insert
 });
 
 test("renderer hides a new pose until the read-only scene is replaced", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/pose-readonly.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const results = await page.evaluate(async () => {
@@ -9046,7 +9046,7 @@ test("renderer hides a new pose until the read-only scene is replaced", async ({
 });
 
 async function installRobotRenderer(page) {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { readCanvasPalette } from "./frontend/map-studio-v4/theme-probe"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { readCanvasPalette } from "./frontend/map-studio-v4/theme-probe"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/pose-heading.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -9179,7 +9179,7 @@ test("renderer keeps the vector model when the atlas fails and in forced colours
 });
 
 test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-projection.js", route => route.fulfill({contentType:"text/javascript",body:bundle.outputFiles[0].text}));
   await page.goto("/");
   const results = await page.evaluate(async () => {
@@ -9332,7 +9332,7 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
 });
 
 test("live scene recovers from a transient failure on an unchanged catalog", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/scene-recovery-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -9368,7 +9368,7 @@ test("live scene recovers from a transient failure on an unchanged catalog", asy
 });
 
 for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene recovers after a rejected ${rejectedScene} response`, async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/scene-recovery-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async (rejectedScene) => {
@@ -9416,7 +9416,7 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
 });
 
 test("saved areas recover when Draw opens before the live scene is ready", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd(), loader: "ts" }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`, resolveDir: process.cwd(), loader: "ts" }, bundle: true, format: "esm", write: false });
   await page.route("**/area-loading-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -9468,7 +9468,7 @@ test("saved areas recover when Draw opens before the live scene is ready", async
 });
 
 test("zone geometry and saved perimeter survive the authenticated backend round trip", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { insideOutline, outlineCircles } from "./frontend/map-studio-v4/outline-editor"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { insideOutline, outlineCircles } from "./frontend/map-studio-v4/outline-editor"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-contract.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const result = await page.evaluate(async () => {
@@ -10789,7 +10789,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
     export { RendererController } from "./frontend/map-studio-v4/renderer-controller";
     export { GestureController } from "./frontend/map-studio-v4/gesture-controller";
     export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
   `, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/room-taps.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");

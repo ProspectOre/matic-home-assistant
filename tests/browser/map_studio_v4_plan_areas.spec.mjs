@@ -379,7 +379,7 @@ test.describe("custom area plan saves", () => {
   async function loadPlanEffects(page) {
     const bundle = await build({
       stdin: {
-        contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true, format: "esm", write: false,

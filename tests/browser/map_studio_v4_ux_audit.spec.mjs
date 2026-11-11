@@ -91,7 +91,7 @@ async function loadSourceStamp() {
 // test also verifies that bundle exposes the same lists (see `assertFreshBundle`).
 const sourceModule = await build({
   stdin: {
-    contents: 'export { GALLERY_SCENARIOS, GALLERY_DIALOGS, GALLERY_NOTICE_TONES } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { GALLERY_SCENARIOS, GALLERY_DIALOGS, GALLERY_NOTICE_TONES } from "./frontend/map-studio-v4-review/gallery-state";',
     resolveDir: REPOSITORY_ROOT,
   },
   bundle: true,

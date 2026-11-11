@@ -9,7 +9,7 @@ import { installPanelFixture, openPlanPicker } from "./map_studio_v4_panel_fixtu
 async function loadHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export * from "./frontend/map-studio-v4/plan-cadence"; export { translate } from "./frontend/map-studio-v4/localize"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export * from "./frontend/map-studio-v4/plan-cadence"; export { translate } from "./frontend/map-studio-v4/localize"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,

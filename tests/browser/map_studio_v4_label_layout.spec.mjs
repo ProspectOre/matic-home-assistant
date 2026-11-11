@@ -11,7 +11,7 @@ for (const [width, height, count, expected, mobile] of [
   test(`room labels stay readable at ${width}x${height}${mobile ? " @mobile" : ""}`, async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true, format: "esm", write: false,
@@ -208,7 +208,7 @@ for (const [width, height, count, expected, mobile] of [
 test("room labels move continuously with small map pans", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -270,7 +270,7 @@ test("room labels move continuously with small map pans", async ({ page }) => {
 test("room names wait for first-map admission, retain live/history comparison labels, and report failure", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { scheduleAfterMapAdmission } from "./frontend/map-studio-v4/map-admission-gate";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { scheduleAfterMapAdmission } from "./frontend/map-studio-v4/map-admission-gate";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,

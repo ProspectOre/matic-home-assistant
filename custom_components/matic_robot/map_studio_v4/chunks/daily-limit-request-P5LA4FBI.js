@@ -1,1 +1,0 @@
-function i(i,t,o,e,n){if(!i||!t||!o||null!==e&&(!Number.isInteger(e)||e<1||e>100))throw n();return{path:`/api/matic_robot/plans/${encodeURIComponent(i)}/daily_limit`,init:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({room_id:o,floor_token:t,limit:e})}}}export{i as dailyLimitRequest};

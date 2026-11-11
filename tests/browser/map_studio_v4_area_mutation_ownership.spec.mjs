@@ -7,7 +7,7 @@ async function loadAreaMutationHarness(page) {
       contents: `
         export { EffectController } from "./frontend/map-studio-v4/effects";
         export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
       `,
       resolveDir: process.cwd(),
     },

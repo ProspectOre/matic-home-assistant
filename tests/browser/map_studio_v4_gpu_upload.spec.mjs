@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadRenderer(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { WorkspaceStore, topView } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { WorkspaceStore, topView } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true,

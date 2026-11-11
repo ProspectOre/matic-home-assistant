@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadCamera(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController, topView } from "./frontend/map-studio-v4/renderer-controller"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { liveCameraKey, cameraPreferences } from "./frontend/map-studio-v4/camera-preferences"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math"; export { PreferenceStore, parsePreferences } from "./frontend/map-studio-v4/preferences";',
+      contents: 'export { RendererController, topView } from "./frontend/map-studio-v4/renderer-controller"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { liveCameraKey, cameraPreferences } from "./frontend/map-studio-v4/camera-preferences"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math"; export { PreferenceStore, parsePreferences } from "./frontend/map-studio-v4/preferences";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,

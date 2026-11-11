@@ -61,7 +61,7 @@ test("Your areas notes a saved area that reaches into a no-go zone", async ({ pa
 });
 
 test("renderer shades no-go zones, only outlines robot-made zones and skips history maps", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zones-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const result = await page.evaluate(async (outline) => {

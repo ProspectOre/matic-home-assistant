@@ -4,7 +4,7 @@ import { build } from "esbuild";
 const bundle = await build({
   stdin: { contents: `export { WorkspaceSynchronizer } from "./frontend/map-studio-v4/workspace-synchronizer";
     export { WorkspaceStore, CoherenceMachine } from "./frontend/map-studio-v4/state";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() },
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`, resolveDir: process.cwd() },
   bundle: true, format: "esm", write: false,
 });
 

@@ -3,7 +3,7 @@ import { build } from "esbuild";
 
 for (const [width, height, span] of [[400, 400, [10, 10]], [1000, 400, [40, 10]], [100, 900, [10, 40]]]) {
   test(`@safety scale and brush match projected meters at ${width}x${height}`, async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { mapScale } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { mapScale } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/projected-scale.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const results = await page.evaluate(async ({ width, height, span }) => {
