@@ -54,12 +54,15 @@ export class SpatialPose {
     const state = this.#store.value;
     const entry = state.resources.entry;
     const now = performance.now();
-    if (!received || received.entryId !== entry?.entryId || now - received.at > POSE_FRESH_MS
+    if (!received || received.entryId !== entry?.entryId
       || this.#callbacks.disposed() || !this.#callbacks.pageActive() || !this.#coherence.current()
       || state.selection.floorId !== "current" || !entry.mapFloorCoherent || !entry.mapSessionVerified
       || !state.map.floorCoherent) return;
     const { pose } = received;
+    // Past the freshness window a pose only keeps a matching map session.
+    const stale = now - received.at > POSE_FRESH_MS;
     if (!pose.floorCoherent || pose.mapSessionKey === null || pose.mapSessionKey !== entry.mapSessionKey) {
+      if (stale) return;
       // A pose bound to an older revision of this scene says nothing about
       // the newer map admitted since; only a current mismatch revokes it.
       if (pose.sceneEpoch != null && pose.sceneEpoch === entry.mapSceneEpoch
@@ -71,16 +74,17 @@ export class SpatialPose {
       this.#callbacks.failed(entry);
       return;
     }
-    this.#callbacks.recovered(entry);
+    if (!stale) this.#callbacks.recovered(entry);
     const freshMs = POSE_FRESH_MS - Math.max(0, pose.ageSeconds ?? 0) * 1_000 - (now - received.at);
     const exact = pose.position !== null && pose.ageSeconds !== null && freshMs > 0;
-    this.#show(pose, exact);
-    if (!exact) return;
     // An expired pose no longer places the robot, but its verified map
     // session still admits the last-seen marker until the next pose.
+    const expired = { ...pose, position: null, heading: null };
+    this.#show(freshMs > 0 ? pose : expired, exact);
+    if (!exact) return;
     this.#expiry = window.setTimeout(() => {
       this.#expiry = null;
-      this.#show({ ...pose, position: null, heading: null }, false);
+      this.#show(expired, false);
     }, freshMs);
   }
 

@@ -492,10 +492,10 @@ test("a pose's freshness counts its age when sent and the time since it arrived"
   assert.equal(f.store.value.map.exactPose, true);
   t.mock.timers.tick(1);
   assert.equal(f.store.value.map.exactPose, false);
-  // Once the observation is older than the window, it no longer counts at all.
-  now = 5_001;
+  now = 5_001; // Viewing a saved floor clears the pose; back on Live its session returns without a position.
+  f.store.replace({ ...f.store.value, resources: { ...f.store.value.resources, pose: { status: "idle", problem: null, value: null } } });
   owner.admit();
-  assert.deepEqual([f.store.value.resources.pose.value.position, f.store.value.map.exactPose], [null, false]);
+  assert.deepEqual([f.store.value.resources.pose.value?.mapSessionKey, f.store.value.resources.pose.value?.position, f.store.value.map.exactPose], ["session-a", null, false]);
 });
 
 test("a catalog refresh re-admits the newest pose without extending its deadline", async (t) => {
@@ -535,8 +535,8 @@ test("a catalog refresh cannot promote an unknown-age or stale pose to exact", a
     assert.equal(f.store.value.map.exactPose, false);
     owner.admitCatalog(f.entry, f.entry, true, false, false);
     await flush();
-    assert.equal(f.store.value.resources.pose.value, retained);
-    assert.equal(f.store.value.map.exactPose, false);
+    assert.equal(f.store.value.map.exactPose, false); // An observation older than the window keeps only its session:
+    assert.deepEqual(f.store.value.resources.pose.value, retained.ageSeconds === null ? retained : { ...retained, position: null, heading: null });
   }
 });
 
