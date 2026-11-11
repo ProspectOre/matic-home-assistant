@@ -79,5 +79,5 @@ modules.
 ## Writing
 
 Write comments, commits, pull request text and docs plainly and specifically:
-no filler, hype or restated summaries. Name branches by purpose. AI
-attribution trailers are optional and nothing checks for them.
+no filler, hype or restated summaries. Name branches by purpose. Never add AI
+or tool attribution or co-author trailers.
