@@ -739,7 +739,9 @@ for (const cadence of [1, 8]) test(`@safety changed-layout updates every ${caden
       return { ...source, buffer, revision, total, floorCount: total - 200_000,
         surfaceCount: 200_000 };
     };
-    const stateFor = (scene) => ({ ...base,
+    // Auto quality times the frames that move the camera, and fitting each new layout
+    // moves it: on a slow engine Auto would thin the scene this test counts in full.
+    const stateFor = (scene) => ({ ...base, quality: "maximum",
       resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } } });
     const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
     canvases.forEach((canvas) => document.body.append(canvas));
@@ -770,7 +772,7 @@ for (const cadence of [1, 8]) test(`@safety changed-layout updates every ${caden
       const front = [...context.vertexArrayBuffers.values()][0];
       const actual = context.buffers.get(front?.id);
       const expected = new Uint8Array(latest.buffer, latest.pointOffset, latest.total * 8);
-      return { initialComplete, latestComplete, frames, buffers: context.liveBufferCount,
+      return { initialComplete, latestComplete, settled: renderer.diagnostics(), frames, buffers: context.liveBufferCount,
         exact: Boolean(actual && actual.length === expected.length && actual.every((value, index) => value === expected[index])),
         validDraws: context.calls.filter((call) => call.type === "draw").every((call) => call.valid) };
     } finally {
@@ -785,7 +787,7 @@ for (const cadence of [1, 8]) test(`@safety changed-layout updates every ${caden
   }
   if (cadence === 1) expect(outcome.frames.every((frame) => frame.sceneRevision === 90)).toBe(true);
   else expect(new Set(outcome.frames.map((frame) => frame.sceneRevision)).size).toBeGreaterThan(2);
-  expect(outcome.latestComplete).toBe(true);
+  expect(outcome.latestComplete, JSON.stringify(outcome.settled)).toBe(true);
   expect(outcome.exact).toBe(true);
   expect(outcome.validDraws).toBe(true);
   expect(outcome.buffers).toBe(2);
