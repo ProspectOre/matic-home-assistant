@@ -69,6 +69,23 @@ your supplied settings while retaining compatible completion accounting.
 Each room may appear only once in a room sequence. Repeated IDs or room-name
 aliases are rejected because completion and recovery are recorded per room.
 
+## Daily clean limit
+
+A room can also cap how often it's cleaned in a day. In **Clean rooms**, open
+**Settings for {room}** and set **Daily clean limit** to 1 to 100 per day, or
+**No daily limit**.
+
+- Each confirmed, completed clean of the room counts once, on the Home
+  Assistant local day it ended. Stopped, partial and skipped cleans don't.
+- A plan or one-time clean leaves out a room at its limit and shows **Daily
+  limit reached**. If every selected room is held, the clean doesn't start.
+- When Home Assistant can't confirm a room's count for the day, it holds the
+  room and says why.
+- Start a room that has a limit from Matic Map or a saved plan, so the clean
+  can be counted; other Home Assistant starts are refused. Completed cleans
+  from the Matic app or a robot schedule count too, but the limit never stops
+  them.
+
 ## Understand progress and results
 
 Only confirmed completed room work advances progress. Partial, failed, stopped,

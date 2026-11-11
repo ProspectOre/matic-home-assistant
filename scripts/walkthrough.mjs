@@ -1,4 +1,4 @@
-// The owner walkthrough matrix (docs/owner-walkthrough-0.5.md): cell IDs,
+// The interface stage matrix (docs/testing.md#interface-stage): cell IDs,
 // the hash that stages each cell, and a staging server for the CLI
 // (scripts/stage_walkthrough.mjs) and the browser spec.
 import { readFileSync } from "node:fs";

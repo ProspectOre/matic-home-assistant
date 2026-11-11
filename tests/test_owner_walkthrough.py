@@ -1,4 +1,4 @@
-"""The owner walkthrough matrix: one cell list for the doc, the script and the stage."""
+"""The interface stage matrix: one cell list for the script, the stage and the guide."""
 
 import json
 import re
@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 CELLS = json.loads((ROOT / "scripts" / "walkthrough_cells.json").read_text())
-DOC = (ROOT / "docs" / "owner-walkthrough-0.5.md").read_text()
+DOC = " ".join((ROOT / "docs" / "testing.md").read_text().split())
 GALLERY = (ROOT / "frontend" / "map-studio-v4" / "gallery-state.ts").read_text()
 
 
@@ -17,18 +17,10 @@ def _quoted_list(name: str) -> set[str]:
     return set(re.findall(r'"([^"]+)"', match.group(1)))
 
 
-def _table_rows(heading: str) -> list[list[str]]:
-    """The body rows of the first Markdown table under a level-2 heading."""
-    section = DOC.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
-    lines = [line for line in section.splitlines() if line.startswith("|")]
-    return [[cell.strip() for cell in line.strip("|").split("|")] for line in lines[2:]]
-
-
 def test_matrix_is_thirteen_journeys_by_nine_setups() -> None:
     # UX9 appended R12 (Your areas) and R13 (Home shortcuts); earlier IDs stay.
     assert [row["id"] for row in CELLS["rows"]] == [f"R{n:02}" for n in range(1, 14)]
     assert [col["id"] for col in CELLS["columns"]] == [f"C{n:02}" for n in range(1, 10)]
-    assert "117 cells" in DOC
 
 
 def test_every_step_names_a_gallery_scenario_and_dialog() -> None:
@@ -41,24 +33,19 @@ def test_every_step_names_a_gallery_scenario_and_dialog() -> None:
             assert not dialog or dialog in dialogs, (row["id"], step)
 
 
-def test_doc_tables_match_the_cell_list() -> None:
-    rows = _table_rows("Journeys (rows)")
-    assert [(r[0], r[1], r[2]) for r in rows] == [
-        (row["id"], row["journey"], f"`steps={','.join(row['steps'])}`")
-        for row in CELLS["rows"]
-    ]
-    columns = _table_rows("Setups (columns)")
-    assert [(c[0], c[1], c[2]) for c in columns] == [
-        (col["id"], col["setup"], f"`{col['hash']}`") for col in CELLS["columns"]
-    ]
+def test_every_cell_says_what_to_check() -> None:
+    """The cell list replaced the guide's tables, so it must stand alone."""
+    for row in CELLS["rows"]:
+        assert row["journey"].strip() and row["check"].strip(), row["id"]
+    for column in CELLS["columns"]:
+        assert column["setup"].strip() and column["hash"].strip(), column["id"]
 
 
-def test_sign_off_rule_and_links() -> None:
-    assert "does not require one owner response per cell" in DOC
+def test_testing_guide_matches_the_cell_list_and_the_command() -> None:
+    rows, columns = len(CELLS["rows"]), len(CELLS["columns"])
+    assert f"{rows} journeys and {columns} setups, {rows * columns} cells" in DOC
     assert "npm run stage:walkthrough -- R01-C01" in DOC
+    assert "scripts/walkthrough_cells.json" in DOC
     package = json.loads((ROOT / "package.json").read_text())
     script = package["scripts"]["stage:walkthrough"]
     assert script == "node scripts/stage_walkthrough.mjs"
-    acceptance = (ROOT / "docs" / "acceptance-0.5.md").read_text()
-    gate = next(line for line in acceptance.splitlines() if line.startswith("| E6 — "))
-    assert "(owner-walkthrough-0.5.md)" in gate
