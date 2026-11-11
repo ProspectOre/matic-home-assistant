@@ -53,23 +53,11 @@ BATTERY_DESCRIPTION = SensorEntityDescription(
     native_unit_of_measurement=PERCENTAGE,
 )
 
-ACTIVITY_DESCRIPTION = SensorEntityDescription(
-    key="activity",
-    translation_key="activity",
-    device_class=SensorDeviceClass.ENUM,
-    options=[activity.value for activity in RobotActivity],
-)
-
 ROBOT_ALERT_DESCRIPTION = SensorEntityDescription(
     key="robot_alert",
     translation_key="robot_alert",
     device_class=SensorDeviceClass.ENUM,
     options=list(ROBOT_ALERT_OPTIONS),
-)
-
-ROOMS_DESCRIPTION = SensorEntityDescription(
-    key="rooms",
-    translation_key="rooms",
 )
 
 HISTORY_DESCRIPTION = SensorEntityDescription(
@@ -195,33 +183,9 @@ STATE_DESCRIPTIONS = (
         value_fn=lambda state: state.operational.cues_gesture_status,
     ),
     MaticStateSensorDescription(
-        key="protocol_version",
-        translation_key="protocol_version",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.telemetry.protocol_version,
-    ),
-    MaticStateSensorDescription(
         key="current_area",
         translation_key="current_area",
         value_fn=lambda state: state.operational.current_area,
-    ),
-    MaticStateSensorDescription(
-        key="update_channel",
-        translation_key="update_channel",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: (
-            state.telemetry.update_channel or state.operational.release_channel
-        ),
-    ),
-    MaticStateSensorDescription(
-        key="update_state",
-        translation_key="update_state",
-        device_class=SensorDeviceClass.ENUM,
-        options=["idle", "busy", "progress", "error", "complete", "available"],
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda state: state.telemetry.update_state,
     ),
     MaticStateSensorDescription(
         key="wifi_state",
@@ -240,32 +204,11 @@ STATE_DESCRIPTIONS = (
         value_fn=lambda state: state.telemetry.wifi_state,
     ),
     MaticStateSensorDescription(
-        key="scheduled_cleanings",
-        translation_key="scheduled_cleanings",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.telemetry.scheduled_cleanings,
-    ),
-    MaticStateSensorDescription(
         key="local_cleaning_sessions",
         translation_key="local_cleaning_sessions",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.local_cleaning_sessions,
-    ),
-    MaticStateSensorDescription(
-        key="dock_detections",
-        translation_key="dock_detections",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.telemetry.dock_detections,
-    ),
-    MaticStateSensorDescription(
-        key="sink_summon_locations",
-        translation_key="sink_summon_locations",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.telemetry.sink_summon_locations,
     ),
     MaticStateSensorDescription(
         key="coverage_time",
@@ -370,10 +313,8 @@ async def async_setup_entry(
 
     async_add_entities(
         [
-            MaticActivitySensor(entry),
             MaticRobotAlertSensor(entry),
             MaticBatterySensor(entry),
-            MaticRoomsSensor(entry),
             MaticCleaningHistorySensor(entry),
             MaticActiveCleaningPlanSensor(entry),
             *(
@@ -416,33 +357,6 @@ class MaticBatterySensor(MaticEntity, SensorEntity):
     def native_value(self) -> int | None:
         """Return the verified battery percentage."""
         return self.coordinator.data.operational.battery_percentage
-
-
-class MaticActivitySensor(MaticEntity, SensorEntity):
-    """Conservative high-level Matic activity."""
-
-    entity_description = ACTIVITY_DESCRIPTION
-
-    def __init__(self, entry: MaticConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_activity"
-
-    @property
-    def native_value(self) -> str:
-        """Return the high-level activity."""
-        return self.coordinator.data.operational.activity
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose protocol codes for transparent diagnostics."""
-        state = self.coordinator.data.operational
-        return {
-            "hermes_state_codes": list(state.state_codes),
-            "hermes_error_codes": list(state.error_codes),
-            "errors": list(state.error_names),
-            "primary_error": state.error_names[0] if state.error_names else None,
-            "current_area": state.current_area,
-        }
 
 
 class MaticRobotAlertSensor(MaticEntity, SensorEntity):
@@ -522,7 +436,6 @@ class MaticStateSensor(MaticEntity, SensorEntity):
     _unrecorded_attributes = frozenset(
         {
             "ssid",
-            "schedules",
             "latest_rooms",
             "latest_completed_rooms",
             "latest_room_durations",
@@ -563,36 +476,6 @@ class MaticStateSensor(MaticEntity, SensorEntity):
                 ),
                 "visible_networks": len(telemetry.wifi_networks),
             }
-        if key == "scheduled_cleanings":
-            room_names = (
-                {room.protocol_id: room.name for room in state.floor_plan.rooms}
-                if state.floor_plan is not None
-                else {}
-            )
-            return {
-                "schedules": [
-                    {
-                        "name": schedule.name,
-                        "weekdays": list(schedule.weekdays),
-                        "time": schedule.time,
-                        "timezone": schedule.timezone,
-                        "ordered": schedule.ordered,
-                        "enabled": schedule.enabled,
-                        "cleaning_mode": schedule.cleaning_mode,
-                        "rooms": [
-                            room_names[room_id]
-                            for room_id in schedule.room_ids
-                            if room_id in room_names
-                        ],
-                        "room_ids": [
-                            room_id
-                            for room_id in schedule.room_ids
-                            if room_id in room_names
-                        ],
-                    }
-                    for schedule in state.telemetry.schedules
-                ]
-            }
         if key == "local_cleaning_sessions":
             latest = state.telemetry.latest_session
             if latest is None:
@@ -619,34 +502,6 @@ class MaticStateSensor(MaticEntity, SensorEntity):
                 ]
             return attributes
         return None
-
-
-class MaticRoomsSensor(MaticEntity, SensorEntity):
-    """Expose the active floor's room inventory."""
-
-    entity_description = ROOMS_DESCRIPTION
-    _unrecorded_attributes = frozenset({"room_names", "segments"})
-
-    def __init__(self, entry: MaticConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_rooms"
-
-    @property
-    def native_value(self) -> int | None:
-        """Return the number of rooms on the active floor."""
-        floor_plan = self.coordinator.data.floor_plan
-        return len(floor_plan.rooms) if floor_plan is not None else None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object] | None:
-        """Return names and stable segment identifiers."""
-        floor_plan = self.coordinator.data.floor_plan
-        if floor_plan is None:
-            return None
-        return {
-            "room_names": [room.name for room in floor_plan.rooms],
-            "segments": {room.id: room.name for room in floor_plan.rooms},
-        }
 
 
 class MaticCleaningHistorySensor(MaticEntity, SensorEntity):

@@ -112,14 +112,11 @@ from custom_components.matic_robot.service_schemas import (
     CLEAN_AREA_SERVICE_SCHEMA,
     CLEAN_ROOM_SEQUENCE_SCHEMA,
     CLEAN_SERVICE_SCHEMA,
-    DELETE_PLAN_ROOM_SCHEMA,
     DELETE_ROOM_SCHEDULE_SCHEMA,
-    MOVE_PLAN_ROOM_SCHEMA,
     PLAN_REFERENCE_SCHEMA,
     PREVIEW_ROOM_SEQUENCE_SCHEMA,
     ROOM_CADENCE_SCHEMA,
     RUN_SELECTED_PLAN_SCHEMA,
-    SAVE_PLAN_ROOM_SCHEMA,
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
 )
@@ -365,7 +362,7 @@ def _execution_call(hass) -> ServiceCall:
     return ServiceCall(
         hass,
         DOMAIN,
-        "intelligent_clean",
+        "run_selected_plan",
         {
             "plan_id": "away",
             "start_timeout": 120,
@@ -2700,17 +2697,19 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
     update = ServiceCall(
         hass,
         DOMAIN,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA(
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
             {
                 "entity_id": ["vacuum.test"],
-                "plan": "Home",
-                "room": {
-                    "room": room.id,
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                    "cadence": {"scope": "shared", "mop_every_n": 5},
-                },
+                "name": "Home",
+                "rooms": [
+                    {
+                        "room": room.id,
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "quick",
+                        "cadence": {"scope": "shared", "mop_every_n": 5},
+                    }
+                ],
             }
         ),
     )
@@ -2722,7 +2721,7 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
         ),
         pytest.raises(OSError, match="disk unavailable"),
     ):
-        await _registered_handler(services, "save_plan_room")(update)
+        await _registered_handler(services, "save_plan")(update)
 
     assert (
         manager.catalog.plan("serial", "home")["rooms"][0]["cadence"]["mop_every_n"]
@@ -3275,12 +3274,12 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
     execute.assert_awaited_once()
 
 
-@pytest.mark.parametrize("service", ["intelligent_clean", "clean_entire_plan"])
+@pytest.mark.parametrize("run_behavior", ["intelligent", "ordered"])
 @pytest.mark.parametrize("changed_input", ["plan", "map", "cadence"])
-async def test_legacy_saved_run_revalidates_after_stop_settlement(
-    hass, service: str, changed_input: str
+async def test_run_without_preview_revalidates_after_stop_settlement(
+    hass, run_behavior: str, changed_input: str
 ) -> None:
-    """Legacy saved-plan actions reject changed authority before room dispatch."""
+    """A run started without a preview rejects changed authority before dispatch."""
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     floor_plan = _area_floor_plan()
@@ -3331,8 +3330,14 @@ async def test_legacy_saved_run_revalidates_after_stop_settlement(
     call = ServiceCall(
         hass,
         DOMAIN,
-        service,
-        SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Home"}),
+        "run_selected_plan",
+        RUN_SELECTED_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan": "Home",
+                "run_behavior": run_behavior,
+            }
+        ),
     )
     services = await _registered_services(hass, manager)
     settlement_started = asyncio.Event()
@@ -3366,7 +3371,9 @@ async def test_legacy_saved_run_revalidates_after_stop_settlement(
             execute,
         ),
     ):
-        pending = asyncio.create_task(_registered_handler(services, service)(call))
+        pending = asyncio.create_task(
+            _registered_handler(services, "run_selected_plan")(call)
+        )
         await settlement_started.wait()
         mutate_authority()
         finish_settlement.set()
@@ -3453,14 +3460,14 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         {"room-study": "Study", "room-office": "Office"},
     )
 
-    def service_call(service: str) -> ServiceCall:
+    plan = {"entity_id": ["vacuum.test"], "plan": "Upstairs"}
+
+    def run_call(**options: str) -> ServiceCall:
         return ServiceCall(
             hass,
             DOMAIN,
-            service,
-            SAVED_PLAN_SERVICE_SCHEMA(
-                {"entity_id": ["vacuum.test"], "plan": "Upstairs"}
-            ),
+            "run_selected_plan",
+            RUN_SELECTED_PLAN_SCHEMA({**plan, **options}),
         )
 
     async def exercise_managed_command(*_args, **kwargs) -> None:
@@ -3480,17 +3487,16 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             AsyncMock(side_effect=exercise_managed_command),
         ) as execute,
     ):
-        await _registered_handler(services, "intelligent_clean")(
-            service_call("intelligent_clean")
-        )
-        await _registered_handler(services, "clean_entire_plan")(
-            service_call("clean_entire_plan")
-        )
-        await _registered_handler(services, "run_selected_plan")(
-            service_call("run_selected_plan")
-        )
+        for options in (
+            {"run_behavior": "intelligent"},
+            {"run_behavior": "ordered"},
+            {},
+        ):
+            await _registered_handler(services, "run_selected_plan")(
+                run_call(**options)
+            )
         preview = await _registered_handler(services, "preview_plan")(
-            service_call("preview_plan")
+            ServiceCall(hass, DOMAIN, "preview_plan", SAVED_PLAN_SERVICE_SCHEMA(plan))
         )
 
     assert execute.await_count == 3
@@ -3515,11 +3521,8 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             ("room-office", "mop", "heavy_duty"),
         ],
     ]
-    assert [args.args[1].service for args in execute.await_args_list] == [
-        "intelligent_clean",
-        "clean_entire_plan",
-        "run_selected_plan",
-    ]
+    with pytest.raises(probatio.Invalid):
+        run_call(run_behavior="fastest")
     assert "intelligent" not in execute.await_args_list[0].kwargs
     assert execute.await_args_list[0].kwargs["refresh"] is (
         coordinator.async_request_refresh
@@ -3592,6 +3595,23 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     ):
         await _registered_handler(services, "run_selected_plan")(token_call)
     token_execute.assert_awaited_once()
+
+    # A preview covers the saved order only, so another order needs a new one.
+    with (
+        patch(
+            "custom_components.matic_robot.service_context._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            AsyncMock(),
+        ) as other_order_execute,
+        pytest.raises(ServiceValidationError, match="preview is stale"),
+    ):
+        await _registered_handler(services, "run_selected_plan")(
+            run_call(preview_token=preview["preview_token"], run_behavior="intelligent")
+        )
+    other_order_execute.assert_not_awaited()
 
     async def mutate_saved_plan_before_dispatch(*_args, **kwargs) -> None:
         manager.repository.robot("serial")["plans"]["upstairs"]["return_to_base"] = (
@@ -3854,7 +3874,7 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
         with pytest.raises(ServiceValidationError, match="Unknown"):
             await _registered_handler(services, "preview_plan")(missing)
         with pytest.raises(ServiceValidationError, match="Unknown"):
-            await _registered_handler(services, "intelligent_clean")(missing)
+            await _registered_handler(services, "run_selected_plan")(missing)
         with pytest.raises(ServiceValidationError, match="Unknown"):
             await _registered_handler(services, "reset_plan_history")(reset_missing)
         with pytest.raises(ServiceValidationError, match="turned off"):
@@ -4137,7 +4157,7 @@ async def test_delete_room_schedule_service_rejects_room_missing_from_current_ma
     delete.assert_not_awaited()
 
 
-async def test_save_services_return_manager_normalized_shared_cadence(hass) -> None:
+async def test_save_plan_returns_manager_normalized_shared_cadence(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     floor_plan = _area_floor_plan()
@@ -4168,9 +4188,6 @@ async def test_save_services_return_manager_normalized_shared_cadence(hass) -> N
         floor_token=floor_token,
         room_identities=room_identities,
     )
-    await manager.catalog.async_save_plan(
-        "serial", "target", {"name": "Target", "rooms": []}, select=False
-    )
     services = await _registered_services(hass, manager)
     context = ("vacuum.test", entry, "serial", {room.id: room.name})
 
@@ -4193,39 +4210,17 @@ async def test_save_services_return_manager_normalized_shared_cadence(hass) -> N
             }
         ),
     )
-    add = ServiceCall(
-        hass,
-        DOMAIN,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Target",
-                "room": {
-                    "room": room.id,
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                    "cadence": {"scope": "shared", "mop_every_n": 7},
-                },
-            }
-        ),
-    )
     with patch(
         "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         saved = await _registered_handler(services, "save_plan")(save)
-        added = await _registered_handler(services, "save_plan_room")(add)
 
-    persisted_joined = manager.catalog.plan("serial", "joined")
-    persisted_target = manager.catalog.plan("serial", "target")
-    assert saved["plan"] == persisted_joined
+    assert saved["plan"] == manager.catalog.plan("serial", "joined")
     assert saved["plan"]["rooms"][0]["cadence"]["mop_every_n"] == 3
-    assert added["room"] == persisted_target["rooms"][0]
-    assert added["room"]["cadence"]["mop_every_n"] == 3
 
 
-async def test_room_native_plan_crud_is_complete(hass) -> None:
+async def test_plan_crud_is_complete(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     services = await _registered_services(hass, manager)
@@ -4233,11 +4228,7 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
         "vacuum.test",
         SimpleNamespace(),
         "serial",
-        {
-            "room-kitchen": "Kitchen",
-            "room-study": "Study",
-            "other-room": "room-study",
-        },
+        {"room-kitchen": "Kitchen", "room-study": "Study"},
     )
     save = ServiceCall(
         hass,
@@ -4249,90 +4240,20 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
                 "name": "Away cleaning",
                 "rooms": [
                     {
+                        "room": "room-study",
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "quick",
+                    },
+                    {
                         "room": "Kitchen",
                         "cleaning_mode": "vacuum_and_mop",
                         "coverage_setting": "standard",
-                    }
+                    },
                 ],
             }
         ),
     )
-    with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
-        return_value=context,
-    ):
-        saved = await _registered_handler(services, "save_plan")(save)
-    assert saved["plan"]["id"] == "away_cleaning"
-    assert saved["plan"]["rooms"][0]["room_id"] == "room-kitchen"
-
-    add = ServiceCall(
-        hass,
-        DOMAIN,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Away cleaning",
-                "room": {
-                    "room": "room-study",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                },
-            }
-        ),
-    )
-    with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
-        return_value=context,
-    ):
-        added = await _registered_handler(services, "save_plan_room")(add)
-    assert added["position"] == 2
-
-    move = ServiceCall(
-        hass,
-        DOMAIN,
-        "move_plan_room",
-        MOVE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "away_cleaning",
-                "room": "Study",
-                "new_position": 1,
-            }
-        ),
-    )
     listing = ServiceCall(hass, DOMAIN, "list_plans", {"entity_id": ["vacuum.test"]})
-    with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
-        return_value=context,
-    ):
-        moved = await _registered_handler(services, "move_plan_room")(move)
-        plans = await _registered_handler(services, "list_plans")(listing)
-    assert moved["room"]["room_id"] == "room-study"
-    assert [room["room_id"] for room in plans["plans"][0]["rooms"]] == [
-        "room-study",
-        "room-kitchen",
-    ]
-    assert moved["room"] == plans["plans"][0]["rooms"][0]
-
-    remove = ServiceCall(
-        hass,
-        DOMAIN,
-        "delete_plan_room",
-        DELETE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Away cleaning",
-                "room": "Kitchen",
-            }
-        ),
-    )
-    select = ServiceCall(
-        hass,
-        DOMAIN,
-        "select_plan",
-        PLAN_REFERENCE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Away cleaning"}),
-    )
     delete = ServiceCall(
         hass,
         DOMAIN,
@@ -4343,115 +4264,17 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
         "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
-        removed = await _registered_handler(services, "delete_plan_room")(remove)
-        selected = await _registered_handler(services, "select_plan")(select)
+        saved = await _registered_handler(services, "save_plan")(save)
+        plans = await _registered_handler(services, "list_plans")(listing)
         deleted = await _registered_handler(services, "delete_plan")(delete)
-    assert removed["deleted"]["room_id"] == "room-kitchen"
-    assert selected["selected_plan_id"] == "away_cleaning"
+    assert saved["plan"]["id"] == "away_cleaning"
+    assert [room["room_id"] for room in plans["plans"][0]["rooms"]] == [
+        "room-study",
+        "room-kitchen",
+    ]
+    assert plans["selected_plan"] == "away_cleaning"
     assert deleted["deleted_plan_id"] == "away_cleaning"
     assert manager.catalog.plans("serial") == {}
-
-
-async def test_incremental_plan_save_rejects_the_101st_room_atomically(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    rooms = [
-        {
-            "room_id": f"room-{index}",
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        }
-        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 1)
-    ]
-    await manager.catalog.async_save_plan(
-        "serial", "home", {"name": "Home", "rooms": rooms}
-    )
-    manager.repository.store.async_save.reset_mock()
-    room_map = {
-        f"room-{index}": f"Room {index}"
-        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 2)
-    }
-    services = await _registered_services(hass, manager)
-    call = ServiceCall(
-        hass,
-        DOMAIN,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Home",
-                "room": {
-                    "room": f"Room {MAX_ROOM_SEQUENCE_SIZE + 1}",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "standard",
-                },
-            }
-        ),
-    )
-
-    with (
-        patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
-            return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
-        ),
-        pytest.raises(ServiceValidationError) as raised,
-    ):
-        await _registered_handler(services, "save_plan_room")(call)
-
-    assert raised.value.translation_key == "room_sequence_limit"
-    assert (
-        len(manager.catalog.plan("serial", "home")["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
-    )
-    manager.repository.store.async_save.assert_not_awaited()
-
-
-async def test_legacy_plan_can_be_pruned_one_room_at_a_time(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    rooms = [
-        {
-            "room_id": f"room-{index}",
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        }
-        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 3)
-    ]
-    manager.repository.robot("serial")["plans"]["legacy"] = {
-        "name": "Legacy",
-        "enabled": True,
-        "run_behavior": "ordered",
-        "rooms": rooms,
-        "room_order": [room["room_id"] for room in rooms],
-    }
-    room_map = {f"room-{index}": f"Room {index}" for index in range(1, len(rooms) + 1)}
-    services = await _registered_services(hass, manager)
-
-    with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
-        return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
-    ):
-        for index in (1, 2):
-            call = ServiceCall(
-                hass,
-                DOMAIN,
-                "delete_plan_room",
-                DELETE_PLAN_ROOM_SCHEMA(
-                    {
-                        "entity_id": ["vacuum.test"],
-                        "plan": "Legacy",
-                        "room": f"Room {index}",
-                    }
-                ),
-            )
-            await _registered_handler(services, "delete_plan_room")(call)
-
-    reduced = manager.catalog.plan("serial", "legacy")
-    assert len(reduced["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
-    assert (
-        len(manager.planning.preview("serial", room_map, "legacy")["rooms"])
-        == MAX_ROOM_SEQUENCE_SIZE
-    )
-    assert manager.repository.store.async_save.await_count == 2
 
 
 async def test_save_plan_allows_only_strict_legacy_room_reductions(hass) -> None:
@@ -4729,108 +4552,38 @@ async def test_delete_plan_translates_running_plan_lock(hass) -> None:
     assert manager.catalog.plan("serial", "home")["name"] == "Home"
 
 
-async def test_room_crud_rejects_unknown_rooms_membership_and_positions(hass) -> None:
+async def test_plan_edits_reject_unknown_rooms_and_plans(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    await manager.catalog.async_save_plan(
-        "serial",
-        "test",
-        {
-            "name": "Test",
-            "rooms": [
-                {
-                    "room_id": "room-kitchen",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                }
-            ],
-        },
-    )
     services = await _registered_services(hass, manager)
-    context = (
-        "vacuum.test",
-        SimpleNamespace(),
-        "serial",
-        {"room-kitchen": "Kitchen", "room-study": "Study"},
-    )
+    context = ("vacuum.test", SimpleNamespace(), "serial", {"room-kitchen": "Kitchen"})
     bad_room = ServiceCall(
         hass,
         DOMAIN,
-        "save_plan_room",
-        SAVE_PLAN_ROOM_SCHEMA(
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
             {
                 "entity_id": ["vacuum.test"],
-                "plan": "Test",
-                "room": {"room": "Missing"},
+                "name": "Test",
+                "rooms": [{"room": "Missing"}],
             }
         ),
     )
-    bad_delete = ServiceCall(
+    unknown = ServiceCall(
         hass,
         DOMAIN,
-        "delete_plan_room",
-        DELETE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Test",
-                "room": "Study",
-            }
-        ),
-    )
-    bad_move = ServiceCall(
-        hass,
-        DOMAIN,
-        "move_plan_room",
-        MOVE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Test",
-                "room": "Kitchen",
-                "new_position": 2,
-            }
-        ),
+        "delete_plan",
+        PLAN_REFERENCE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Missing"}),
     )
     with patch(
         "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         with pytest.raises(ServiceValidationError, match="Unknown Matic room"):
-            await _registered_handler(services, "save_plan_room")(bad_room)
-        with pytest.raises(ServiceValidationError, match="not part"):
-            await _registered_handler(services, "delete_plan_room")(bad_delete)
-        with pytest.raises(ServiceValidationError, match="position 2 is invalid"):
-            await _registered_handler(services, "move_plan_room")(bad_move)
-
-        update = ServiceCall(
-            hass,
-            DOMAIN,
-            "save_plan_room",
-            SAVE_PLAN_ROOM_SCHEMA(
-                {
-                    "entity_id": ["vacuum.test"],
-                    "plan": "Test",
-                    "room": {
-                        "room": "Kitchen",
-                        "cleaning_mode": "mop",
-                        "coverage_setting": "standard",
-                    },
-                }
-            ),
-        )
-        result = await _registered_handler(services, "save_plan_room")(update)
-        assert result["position"] == 1
-        assert (
-            manager.catalog.plan("serial", "test")["rooms"][0]["cleaning_mode"] == "mop"
-        )
-
-        unknown = ServiceCall(
-            hass,
-            DOMAIN,
-            "select_plan",
-            PLAN_REFERENCE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Missing"}),
-        )
+            await _registered_handler(services, "save_plan")(bad_room)
         with pytest.raises(ServiceValidationError, match="Unknown Matic cleaning"):
-            await _registered_handler(services, "select_plan")(unknown)
+            await _registered_handler(services, "delete_plan")(unknown)
+    assert manager.catalog.plans("serial") == {}
 
 
 def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
@@ -5633,7 +5386,7 @@ async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> No
     disabled = ServiceCall(
         hass,
         DOMAIN,
-        "intelligent_clean",
+        "run_selected_plan",
         SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Disabled"}),
     )
     missing = ServiceCall(
@@ -5647,7 +5400,7 @@ async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> No
         return_value=context,
     ):
         with pytest.raises(ServiceValidationError, match="turned off"):
-            await _registered_handler(services, "intelligent_clean")(disabled)
+            await _registered_handler(services, "run_selected_plan")(disabled)
         with pytest.raises(ServiceValidationError, match="Unknown Matic cleaning"):
             await _registered_handler(services, "run_selected_plan")(missing)
 
@@ -5680,106 +5433,6 @@ async def test_save_plan_rejects_names_that_produce_no_plan_id(hass) -> None:
     assert excinfo.value.translation_key == "plan_name_unusable"
     assert excinfo.value.translation_placeholders is None
     assert manager.catalog.plans("serial") == {}
-
-
-async def test_deleting_the_last_room_disables_the_plan(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    await manager.catalog.async_save_plan(
-        "serial",
-        "solo",
-        {
-            "name": "Solo",
-            "enabled": True,
-            "occupancy_aware": True,
-            "occupancy_sensors": {"room-kitchen": "binary_sensor.kitchen"},
-            "rooms": [
-                {
-                    "room_id": "room-kitchen",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                }
-            ],
-        },
-    )
-    services = await _registered_services(hass, manager)
-    context = ("vacuum.test", SimpleNamespace(), "serial", {"room-kitchen": "Kitchen"})
-    call = ServiceCall(
-        hass,
-        DOMAIN,
-        "delete_plan_room",
-        DELETE_PLAN_ROOM_SCHEMA(
-            {"entity_id": ["vacuum.test"], "plan": "Solo", "room": "Kitchen"}
-        ),
-    )
-    with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
-        return_value=context,
-    ):
-        removed = await _registered_handler(services, "delete_plan_room")(call)
-    assert removed["deleted"]["room_id"] == "room-kitchen"
-    saved = manager.catalog.plan("serial", "solo")
-    assert saved["rooms"] == []
-    assert saved["enabled"] is False
-    assert saved["occupancy_sensors"] == {}
-
-
-async def test_room_edits_reject_rooms_outside_the_plan_or_map(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    await manager.catalog.async_save_plan(
-        "serial",
-        "test",
-        {
-            "name": "Test",
-            "rooms": [
-                {
-                    "room_id": "room-kitchen",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                }
-            ],
-        },
-    )
-    services = await _registered_services(hass, manager)
-    context = (
-        "vacuum.test",
-        SimpleNamespace(),
-        "serial",
-        {"room-kitchen": "Kitchen", "room-study": "Study"},
-    )
-    outside_plan = ServiceCall(
-        hass,
-        DOMAIN,
-        "move_plan_room",
-        MOVE_PLAN_ROOM_SCHEMA(
-            {
-                "entity_id": ["vacuum.test"],
-                "plan": "Test",
-                "room": "Study",
-                "new_position": 1,
-            }
-        ),
-    )
-    unmapped = ServiceCall(
-        hass,
-        DOMAIN,
-        "delete_plan_room",
-        DELETE_PLAN_ROOM_SCHEMA(
-            {"entity_id": ["vacuum.test"], "plan": "Test", "room": "Nowhere"}
-        ),
-    )
-    with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
-        return_value=context,
-    ):
-        with pytest.raises(ServiceValidationError, match="not part of this plan"):
-            await _registered_handler(services, "move_plan_room")(outside_plan)
-        with pytest.raises(ServiceValidationError, match="Unknown Matic room: Nowhere"):
-            await _registered_handler(services, "delete_plan_room")(unmapped)
-    assert (
-        manager.catalog.plan("serial", "test")["rooms"][0]["room_id"] == "room-kitchen"
-    )
 
 
 async def test_room_cancellation_records_history_and_reraises() -> None:
@@ -6592,7 +6245,7 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set(hass) -> 
     call = ServiceCall(
         hass,
         DOMAIN,
-        "clean_entire_plan",
+        "run_selected_plan",
         {
             "plan_id": "away",
             "start_timeout": 120,
@@ -6865,8 +6518,7 @@ async def test_plan_save_service_rejects_write_queued_when_unload_closes_admissi
     assert persisted == [original_persisted]
 
 
-@pytest.mark.parametrize("service_name", ("delete_plan", "select_plan"))
-async def test_plan_reference_services_report_unavailable_metadata(service_name, hass):
+async def test_delete_plan_reports_unavailable_metadata(hass) -> None:
     manager = CleaningPlanManager(hass)
     persisted: list[dict] = []
 
@@ -6899,7 +6551,7 @@ async def test_plan_reference_services_report_unavailable_metadata(service_name,
     call = ServiceCall(
         hass,
         DOMAIN,
-        service_name,
+        "delete_plan",
         PLAN_REFERENCE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "home"}),
     )
     await manager.repository.async_close_metadata_admission_and_wait("serial")
@@ -6910,7 +6562,7 @@ async def test_plan_reference_services_report_unavailable_metadata(service_name,
         ),
         pytest.raises(MetadataAdmissionClosedError),
     ):
-        await _registered_handler(services, service_name)(call)
+        await _registered_handler(services, "delete_plan")(call)
 
     assert manager.catalog.plan("serial", "home")["name"] == "Original"
     assert persisted == [original_persisted]

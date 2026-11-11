@@ -628,16 +628,21 @@ def test_action_metadata_matches_the_room_native_public_api() -> None:
     services = yaml.safe_load((INTEGRATION / "services.yaml").read_text())
 
     assert set(strings["services"]) == set(services)
-    assert {
+    assert len(services) == 22
+    # 0.6 removed these; the release notes name each replacement.
+    assert not {
         "intelligent_clean",
         "clean_entire_plan",
-        "run_selected_plan",
-        "stop_intelligent_cleaning",
+        "select_plan",
         "save_plan_room",
         "delete_plan_room",
         "move_plan_room",
-    } <= set(services)
-    assert "count" not in services["intelligent_clean"].get("fields", {})
+    } & set(services)
+    assert list(services["run_selected_plan"]["fields"]) == [
+        "plan",
+        "run_behavior",
+        "preview_token",
+    ]
 
 
 def test_user_copy_matches_pairing_and_plan_behavior() -> None:
@@ -671,10 +676,6 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert entities["ssh_tunnel_permission"]["name"] == (
             "Support tunnel permission"
         )
-        assert entities["paused"]["state"] == {
-            "off": "Not paused",
-            "on": "Paused",
-        }
         assert not {"update_available", "active_cleaning_session"} & set(entities)
         assert translations["entity"]["number"]["water_flow"]["name"] == (
             "Mopping water flow"
@@ -687,9 +688,6 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             for key, value in translations["entity"]["button"].items()
         } == {
             "run_selected_plan": "Run plan",
-            "intelligent_clean": "Run Smart Order",
-            "clean_entire_plan": "Run saved order",
-            "stop_intelligent_cleaning": "Stop cleaning",
             "clean_selected_area": "Clean custom area",
             "clear_wifi_survey": "Clear Wi-Fi survey",
             "take_photo": "Take photo",
@@ -715,12 +713,12 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         )
 
         services = translations["services"]
-        intelligent = services["intelligent_clean"]["description"]
-        assert "starting with the ones that have waited longest" in intelligent
-        assert "keeps going until you stop it or every room is done" in intelligent
-        assert "started but not finished stay due" in intelligent
-        assert "top to bottom" in services["clean_entire_plan"]["description"]
-        assert "the way it is saved" in services["run_selected_plan"]["description"]
+        run_plan = services["run_selected_plan"]
+        assert "the way it is saved" in run_plan["description"]
+        cleaning_order = run_plan["fields"]["run_behavior"]["description"]
+        assert "waited longest first" in cleaning_order
+        assert "top to bottom" in cleaning_order
+        assert "Leave empty to use the order saved with the plan" in cleaning_order
         assert (
             "after all selected rooms finish."
             in services["save_plan"]["fields"]["return_to_base"]["description"]
@@ -733,8 +731,6 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             key: services[key]["name"]
             for key in (
                 "run_selected_plan",
-                "intelligent_clean",
-                "clean_entire_plan",
                 "stop_intelligent_cleaning",
                 "reset_plan_history",
                 "inspect_hermes_endpoint",
@@ -744,8 +740,6 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             )
         } == {
             "run_selected_plan": "Run plan",
-            "intelligent_clean": "Run Smart Order",
-            "clean_entire_plan": "Run saved order",
             "stop_intelligent_cleaning": "Stop cleaning",
             "reset_plan_history": "Reset room cleaning history",
             "inspect_hermes_endpoint": "Advanced: Inspect robot data",
@@ -835,5 +829,6 @@ def test_away_blueprint_starts_and_stops_intelligent_cleaning() -> None:
     assert "id: someone_returned" in blueprint
     assert "vacuum_entity: !input vacuum" in blueprint
     assert "states(vacuum_entity) in ('docked', 'idle')" in blueprint
-    assert "action: matic_robot.intelligent_clean" in blueprint
+    assert "action: matic_robot.run_selected_plan" in blueprint
+    assert "run_behavior='intelligent'" in blueprint
     assert "action: matic_robot.stop_intelligent_cleaning" in blueprint

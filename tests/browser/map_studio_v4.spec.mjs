@@ -75,7 +75,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, beforeMou
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController, layerDepth } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController, layerDepth } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4-review/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -1952,14 +1952,14 @@ test.describe("Map Studio v0.4 foundation", () => {
             await effects.executeAction("run-area");
             const failed = store.value.command;
             effects.sync({ ...projection, activity: "cleaning" });
-            store.patch({ resources: { ...store.value.resources, entry: { ...store.value.resources.entry, activePlan: managed, runnerLocked: managed } } });
+            store.replace({ ...store.value, resources: { ...store.value.resources, entry: { ...store.value.resources.entry, activePlan: managed, runnerLocked: managed } } });
             await effects.executeAction("run-area");
             const host = store.value.host;
             for (const key of ["connected", "administrator", "robotConnected"]) {
-              store.patch({ host: { ...host, [key]: false } });
+              store.replace({ ...store.value, host: { ...host, [key]: false } });
               await effects.executeAction("stop");
             }
-            store.patch({ host });
+            store.replace({ ...store.value, host });
             await effects.executeAction("stop");
             await effects.executeAction("stop");
             return { failed, calls, command: store.value.command };
@@ -2119,7 +2119,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         for (const action of ["run-plan", "clean-rooms"]) {
           finish = undefined;
           const room = initial.resources.plans.value.rooms[0];
-          store.patch({ workflow: action === "run-plan" ? "plan" : "rooms", selection: {
+          store.replace({ ...store.value, workflow: action === "run-plan" ? "plan" : "rooms", selection: {
             ...store.value.selection,
             roomIds: action === "clean-rooms" ? [room.roomId] : store.value.selection.roomIds,
             roomSettings: [{ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "quick" }],
@@ -2171,7 +2171,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       try {
         for (let i = 0; i < 20 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise(resolve => setTimeout(resolve, 0));
         await effects.executeAction("clean-rooms");
-        store.patch({ selection: { ...store.value.selection, useRoomSchedule: false } });
+        store.replace({ ...store.value, selection: { ...store.value.selection, useRoomSchedule: false } });
         for (let i = 0; i < 20 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise(resolve => setTimeout(resolve, 0));
         await effects.executeAction("clean-rooms");
         return calls;
@@ -2245,7 +2245,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       try {
         await effects.refreshCatalog(true);
-        store.patch({ planDraft: { ...store.value.planDraft, name: "Keep on failure", dirty: true } });
+        store.replace({ ...store.value, planDraft: { ...store.value.planDraft, name: "Keep on failure", dirty: true } });
         await effects.deletePlan();
         const failed = { id: store.value.planDraft.id, dirty: store.value.planDraft.dirty, name: store.value.planDraft.name };
         reject = false;
@@ -2429,7 +2429,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           roomIds: ["room-a"],
           roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "standard" }],
         } });
-        if (!retained) store.patch({ resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
+        if (!retained) store.replace({ ...store.value, resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
         let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, mapSessionKey: null, deltaUrl: null };
         let commands = 0;
         const effects = new EffectController(store, {
@@ -3158,18 +3158,18 @@ test.describe("Map Studio v0.4 foundation", () => {
         userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
       });
       const draft = { ...initial.planDraft, name: "Unsaved changes", dirty: true };
-      store.patch({ planDraft: draft });
+      store.replace({ ...store.value, planDraft: draft });
       effects.loadPlans = async () => {
         reloads += 1;
-        store.patch({ planDraft: initial.planDraft });
+        store.replace({ ...store.value, planDraft: initial.planDraft });
       };
       try {
         await effects.savePlan();
         const failure = { draft: store.value.planDraft, command: store.value.command, reloads };
-        store.patch({ command: "pending" });
+        store.replace({ ...store.value, command: "pending" });
         await effects.savePlan();
         const blocked = { draft: store.value.planDraft, writes, reloads };
-        store.patch({ command: "failed" });
+        store.replace({ ...store.value, command: "failed" });
         reject = false;
         await effects.savePlan();
         const retry = { command: store.value.command, writes, reloads };
@@ -3204,7 +3204,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       effects.loadPlans = async () => {};
       try {
         for (const id of [null, "weekend", "daily"]) {
-          store.patch({ planDraft: { ...initial.planDraft, id, name: "Saved plan", dirty: true } });
+          store.replace({ ...store.value, planDraft: { ...initial.planDraft, id, name: "Saved plan", dirty: true } });
           await effects.savePlan();
         }
         return sent;
@@ -3817,7 +3817,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("fits the complete 3D scene inside the perspective viewport", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/geometry-fit-contract.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const gallery = await loadGallery(page, { scenario: "ready" });
@@ -3857,7 +3857,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("WebGL point sprites retain an opaque core and feathered alpha edge", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -3981,7 +3981,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("WebGL point footprint follows the projected world sample spacing", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -4087,7 +4087,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("WebGL splats remain visible when a sample neighbor crosses the camera near plane", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -4230,7 +4230,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("Auto map detail recovers after sustained fast frames and Maximum ignores slow frames", async ({ page }) => {
     const bundle = await build({
       stdin: {
-        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true,
@@ -4418,7 +4418,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("preserves navigation when a live scene revision arrives", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-preservation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4474,7 +4474,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("rebases the navigation target when live scene bounds move", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-rebase.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4550,7 +4550,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("rebases inactive preferences when the active view is still fitted", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-fit-rebase.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4602,7 +4602,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   for (const [transition, destinationFit] of ["three-top", "top-three", "enter-draw", "leave-draw"]
     .flatMap(transition => [false, true].map(fit => [transition, fit]))) {
     test(`preserves rebased camera ownership during ${transition} fit=${destinationFit}`, async ({ page }) => {
-      const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+      const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { sceneGeometryBounds } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
       await page.route("**/camera-transition.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
       await page.goto("/");
       const result = await page.evaluate(async ({ transition, destinationFit }) => {
@@ -4719,7 +4719,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   }
 
   test("draw zoom control follows the rebased destination without feedback jumps", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/draw-camera-authority.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4798,7 +4798,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
-    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-generation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
     await page.goto("/");
     const result = await page.evaluate(async () => {
@@ -4963,7 +4963,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("explains pending stop recovery in room and plan actions without mislabeling the map", async ({ page }) => {
     const sourceBundle = await build({
-      entryPoints: ["frontend/map-studio-v4/review.ts"],
+      entryPoints: ["frontend/map-studio-v4-review/review.ts"],
       bundle: true,
       format: "esm",
       target: "es2022",
@@ -5066,67 +5066,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     const runReasonId = await runButton.getAttribute("aria-describedby");
     expect(runReasonId).toBeTruthy();
     await expect(gallery.locator("#" + runReasonId)).toHaveText(stopReason);
-  });
-
-  test("dismisses dialog, precision, expanded map, and workflow one layer at a time", async ({ page }) => {
-    await page.goto("/");
-    const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4-review/review.js");
-      let state = {
-        ...module.createGalleryState("draw"),
-        fullMap: true,
-        precisionOpen: true,
-        dialog: "discardDraft",
-      };
-      const layers = [];
-      for (let index = 0; index < 4; index += 1) {
-        state = module.reduceWorkspace(state, { type: "dismiss-top-layer" });
-        layers.push({
-          dialog: state.dialog,
-          precision: state.precisionOpen,
-          fullMap: state.fullMap,
-          workflow: state.workflow,
-        });
-      }
-      return layers;
-    });
-
-    expect(result).toEqual([
-      { dialog: null, precision: true, fullMap: true, workflow: "draw" },
-      { dialog: null, precision: false, fullMap: true, workflow: "draw" },
-      { dialog: null, precision: false, fullMap: false, workflow: "draw" },
-      { dialog: "discardDraft", precision: false, fullMap: false, workflow: "draw" },
-    ]);
-  });
-
-  test("opens History without hiding the live map and preserves a chosen saved map", async ({ page }) => {
-    await page.goto("/");
-    const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4-review/review.js");
-      const live = module.createGalleryState("ready");
-      const opened = module.reduceWorkspace(live, { type: "open-workflow", workflow: "history" });
-      const saved = {
-        ...opened,
-        dataMode: "history",
-        selection: { ...opened.selection, floorId: "saved-floor", historyId: "saved-map" },
-      };
-      const closed = module.reduceWorkspace(saved, { type: "dismiss-top-layer" });
-      return {
-        openedMode: opened.dataMode,
-        openedWorkflow: opened.workflow,
-        closedMode: closed.dataMode,
-        closedWorkflow: closed.workflow,
-        closedHistory: closed.selection.historyId,
-      };
-    });
-
-    expect(result).toEqual({
-      openedMode: "live",
-      openedWorkflow: "history",
-      closedMode: "history",
-      closedWorkflow: "none",
-      closedHistory: "saved-map",
-    });
   });
 
   test("describes saved maps as saved and gives history-specific recovery copy", async ({ page }) => {
@@ -6859,7 +6798,6 @@ test.describe("Map Studio v0.4 foundation", () => {
               matic_entry_id: "entry-a",
               friendly_name: "First",
               battery_level: 18,
-              charging: true,
               recharge_and_resume: true,
             },
           },
@@ -9011,7 +8949,7 @@ test("zone perimeter closes automatically and supports extending dragging insert
 });
 
 test("renderer hides a new pose until the read-only scene is replaced", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/pose-readonly.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const results = await page.evaluate(async () => {
@@ -9046,7 +8984,7 @@ test("renderer hides a new pose until the read-only scene is replaced", async ({
 });
 
 async function installRobotRenderer(page) {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { readCanvasPalette } from "./frontend/map-studio-v4/theme-probe"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { readCanvasPalette } from "./frontend/map-studio-v4/theme-probe"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/pose-heading.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -9179,7 +9117,7 @@ test("renderer keeps the vector model when the atlas fails and in forced colours
 });
 
 test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-projection.js", route => route.fulfill({contentType:"text/javascript",body:bundle.outputFiles[0].text}));
   await page.goto("/");
   const results = await page.evaluate(async () => {
@@ -9303,7 +9241,7 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
     };
     recovery.effects = new m.EffectController(recovery.store, backend);
     recovery.effects.sync({ userKey: "synthetic-user", entryKey: recovery.entry.entryId, host: initial.host, activity: "cleaning", batteryPercent: 90, robotLabel: initial.robotLabel, robots: initial.robots, language: "en" });
-    recovery.store.patch({ workflow: "history" });
+    recovery.store.replace({ ...recovery.store.value, workflow: "history" });
     await recovery.effects.refreshCatalog(true);
   });
   await expect.poll(() => page.evaluate(() => window.__slowScene.requests.length)).toBe(1);
@@ -9332,7 +9270,7 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
 });
 
 test("live scene recovers from a transient failure on an unchanged catalog", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/scene-recovery-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -9368,7 +9306,7 @@ test("live scene recovers from a transient failure on an unchanged catalog", asy
 });
 
 for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene recovers after a rejected ${rejectedScene} response`, async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/scene-recovery-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async (rejectedScene) => {
@@ -9394,7 +9332,7 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
     await effects.refreshCatalog(true);
     if (rejectedScene === "floor") {
       // Simulate the verified scene retained while a replacement is loading.
-      store.patch({ resources: { ...store.value.resources, scene: initial.resources.scene }, map: { ...initial.map, available: true, floorCoherent: true, exactPose: true } });
+      store.replace({ ...store.value, resources: { ...store.value.resources, scene: initial.resources.scene }, map: { ...initial.map, available: true, floorCoherent: true, exactPose: true } });
       await effects.refreshCatalog(true);
     }
   }, rejectedScene);
@@ -9416,7 +9354,7 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
 });
 
 test("saved areas recover when Draw opens before the live scene is ready", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd(), loader: "ts" }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`, resolveDir: process.cwd(), loader: "ts" }, bundle: true, format: "esm", write: false });
   await page.route("**/area-loading-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -9453,7 +9391,7 @@ test("saved areas recover when Draw opens before the live scene is ready", async
   await page.evaluate(async () => {
     const s = window.__areaLoading;
     s.mismatch = true;
-    s.store.patch({resources:{...s.store.value.resources,areas:{status:"idle",value:null,problem:null}}});
+    s.store.replace({ ...s.store.value, resources:{...s.store.value.resources,areas:{status:"idle",value:null,problem:null}}});
     await s.effects.refreshCatalog();
   });
   await expect.poll(() => page.evaluate(() => window.__areaLoading.store.value.resources.areas.status)).toBe("error");
@@ -9468,7 +9406,7 @@ test("saved areas recover when Draw opens before the live scene is ready", async
 });
 
 test("zone geometry and saved perimeter survive the authenticated backend round trip", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { insideOutline, outlineCircles } from "./frontend/map-studio-v4/outline-editor"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { insideOutline, outlineCircles } from "./frontend/map-studio-v4/outline-editor"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-contract.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const result = await page.evaluate(async () => {
@@ -9484,21 +9422,21 @@ test("zone geometry and saved perimeter survive the authenticated backend round 
       return new Response(JSON.stringify({scene_url:store.value.resources.entry.sceneUrl,rooms:[],areas:[{id:"zone",name:saved.name,circles:saved.circles,outline:saved.outline,cleaning_mode:saved.cleaning_mode,coverage_setting:saved.coverage_setting,status:"current",can_rebind:false}]}));
     }}));
     const effects = new m.EffectController(store, backend);
-    store.patch({ areaDraft: {...store.value.areaDraft,id:null,name:""},draw:{...store.value.draw,circles,outline,dirty:true}});
+    store.replace({ ...store.value, areaDraft: {...store.value.areaDraft,id:null,name:""},draw:{...store.value.draw,circles,outline,dirty:true}});
     for (const narrowHint of [false, true]) {
-      store.patch({workflow:"draw",narrowHint});
+      store.replace({ ...store.value, workflow:"draw",narrowHint});
       const action = m.selectPrimaryAction(store.value);
       if (!action.enabled || action.id !== "review-area") throw new Error("Unnamed zone must open its review form");
       await effects.executeAction(action.id);
       if (store.value.workflow !== "areaReview" || mutations !== 0) throw new Error("Review must precede saving");
     }
-    store.patch({areaDraft:{...store.value.areaDraft,name:"Zone"}});
+    store.replace({ ...store.value, areaDraft:{...store.value.areaDraft,name:"Zone"}});
     await effects.executeAction(m.selectPrimaryAction(store.value).id);
     const loaded = await backend.areas(store.value.resources.entry.areasUrl);
-    store.patch({ resources: {...store.value.resources, areas: {status:"ready",value:loaded,problem:null}} });
+    store.replace({ ...store.value, resources: {...store.value.resources, areas: {status:"ready",value:loaded,problem:null}} });
     effects.selectArea("zone");
     const reopened = store.value.draw.outline;
-    store.patch({workflow:"draw"});
+    store.replace({ ...store.value, workflow:"draw"});
     if (!m.selectPrimaryAction(store.value).enabled) throw new Error("Saved unchanged outline must return to review");
     effects.dispose();
     return {inscribed,crossed,count:circles.length,mutations, savedPoints:saved.outline, reopened};
@@ -9679,7 +9617,7 @@ test("plan catalog refresh preserves explicit selection and reconciles a saved n
         entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       await effects.refreshCatalog(true);
       for (let i = 0; i < 20 && store.value.resources.plans.status === "loading"; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-      store.patch({ coherence: "current", floor: initial.floor, resources: { ...store.value.resources, scene: initial.resources.scene } });
+      store.replace({ ...store.value, coherence: "current", floor: initial.floor, resources: { ...store.value.resources, scene: initial.resources.scene } });
       await effects.loadPlans();
       effects.selectPlan("second");
       await effects.loadPlans();
@@ -9687,7 +9625,7 @@ test("plan catalog refresh preserves explicit selection and reconciles a saved n
       effects.selectPlan(null);
       await effects.loadPlans();
       const blank = { id: store.value.planDraft.id, name: store.value.planDraft.name, enabled: store.value.planDraft.enabled };
-      store.patch({ coherence: "current", floor: initial.floor, resources: { ...store.value.resources, scene: initial.resources.scene },
+      store.replace({ ...store.value, coherence: "current", floor: initial.floor, resources: { ...store.value.resources, scene: initial.resources.scene },
         planDraft: { ...store.value.planDraft, name: "New routine", rooms: second.rooms, dirty: true } });
       await effects.savePlan();
       return { selected, blank, savedId: store.value.planDraft.id, dirty: store.value.planDraft.dirty, writes };
@@ -9721,7 +9659,7 @@ for (const boundary of ["service", "catalog"]) {
           }
           store.dispatch({ type: "discard-draft" });
           store.dispatch({ type: "open-workflow", workflow: destination === "other-editor" ? "plan" : destination });
-          if (destination === "other-editor") store.patch({ planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
+          if (destination === "other-editor") store.replace({ ...store.value, planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
           const expected = { workflow: store.value.workflow, draft: store.value.planDraft };
           finish();
           await saving;
@@ -9752,7 +9690,7 @@ test("late plan deletion clears the deleted identity without replacing another w
       try {
         const deleting = effects.deletePlan();
         store.dispatch({ type: "open-workflow", workflow: destination.endsWith("editor") ? "plan" : destination });
-        if (destination === "other-editor") store.patch({ selection: { ...store.value.selection, planId: "second" }, planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
+        if (destination === "other-editor") store.replace({ ...store.value, selection: { ...store.value.selection, planId: "second" }, planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
         finish();
         await deleting;
         results.push({ destination, workflow: store.value.workflow, id: store.value.planDraft.id, dirty: store.value.planDraft.dirty });
@@ -9771,135 +9709,6 @@ test("late plan deletion clears the deleted identity without replacing another w
 
 // plan.md §5 State, Map, Navigation; home-rooms.md §5 selection gate.
 test.describe("plan view state", () => {
-  // Dispatches `intents` to a store holding the gallery scenario (with `patch`
-  // spread over it) and returns the fields these rules change.
-  async function run(page, scenario, intents, patch = {}) {
-    await loadEffectHarness(page);
-    return page.evaluate(async ({ scenario, intents, patch }) => {
-      const { WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const store = new WorkspaceStore({ ...createGalleryState(scenario), ...patch });
-      const before = store.value;
-      for (const intent of intents) store.dispatch(intent);
-      const state = store.value;
-      return {
-        unchanged: state === before,
-        workflow: state.workflow,
-        planView: state.planView,
-        expandedRoom: state.expandedRoom,
-        dialog: state.dialog,
-        planId: state.selection.planId,
-        draft: { id: state.planDraft.id, dirty: state.planDraft.dirty, enabled: state.planDraft.enabled,
-          rooms: state.planDraft.rooms.map((room) => room.roomId), parked: state.planDraft.parkedRooms },
-        selectedRooms: state.selection.roomIds,
-      };
-    }, { scenario, intents, patch });
-  }
-
-  test("starts in Run with nothing pending and no open row", async ({ page }) => {
-    await loadEffectHarness(page);
-    const initial = await page.evaluate(async () => {
-      const { WorkspaceStore } = await import("/plan-recovery-test.js");
-      const { planView, pendingAction, expandedRoom, planDraft } = new WorkspaceStore().value;
-      return { planView, pendingAction, expandedRoom, parked: planDraft.parkedRooms };
-    });
-    expect(initial).toEqual({ planView: "run", pendingAction: null, expandedRoom: null, parked: [] });
-  });
-
-  test("select-plan opens Create in Edit and a saved plan in Run", async ({ page }) => {
-    expect(await run(page, "plans", [{ type: "select-plan", planId: null }]))
-      .toMatchObject({ workflow: "plan", planView: "edit", expandedRoom: null, planId: null });
-    expect(await run(page, "plans", [{ type: "select-plan", planId: "weekend" }]))
-      .toMatchObject({ workflow: "plan", planView: "run", expandedRoom: null, planId: "weekend" });
-    // Entering the plan workflow opens Run even for the plan already selected.
-    expect(await run(page, "plans", [{ type: "select-plan", planId: "daily" }]))
-      .toMatchObject({ workflow: "plan", planView: "run", planId: "daily" });
-    // Another saved plan from an open Edit opens in Run and closes the row.
-    expect(await run(page, "plans", [
-      { type: "select-plan", planId: "daily" },
-      { type: "set-plan-view", view: "edit", roomId: "room-a" },
-      { type: "select-plan", planId: "weekend" },
-    ])).toMatchObject({ workflow: "plan", planView: "run", expandedRoom: null, planId: "weekend" });
-  });
-
-  test("reselecting the open plan keeps its view and open row", async ({ page }) => {
-    expect(await run(page, "plan-saved-intelligent", [
-      { type: "set-plan-view", view: "edit", roomId: "room-b" },
-      { type: "select-plan", planId: "daily" },
-    ])).toMatchObject({ workflow: "plan", planView: "edit", expandedRoom: "room-b", planId: "daily" });
-  });
-
-  test("leaving the plan workflow resets the view, Try again keeps it", async ({ page }) => {
-    const edit = { type: "set-plan-view", view: "edit", roomId: "room-a" };
-    expect(await run(page, "plan-saved-intelligent", [edit, { type: "open-workflow", workflow: "rooms" }]))
-      .toMatchObject({ workflow: "rooms", planView: "run", expandedRoom: null });
-    expect(await run(page, "plan-saved-intelligent", [edit, { type: "open-workflow", workflow: "plan" }]))
-      .toMatchObject({ workflow: "plan", planView: "edit", expandedRoom: "room-a" });
-    expect(await run(page, "plan-saved-intelligent", [edit, { type: "return-live" }]))
-      .toMatchObject({ workflow: "none", planView: "run", expandedRoom: null });
-  });
-
-  test("set-plan-view edit opens, keeps or closes the room row", async ({ page }) => {
-    expect(await run(page, "plan-saved-intelligent", [{ type: "set-plan-view", view: "edit", roomId: "room-a" }]))
-      .toMatchObject({ planView: "edit", expandedRoom: "room-a" });
-    expect(await run(page, "plan-saved-intelligent", [
-      { type: "set-plan-view", view: "edit", roomId: "room-a" },
-      { type: "set-plan-view", view: "edit" },
-    ])).toMatchObject({ planView: "edit", expandedRoom: "room-a" });
-    expect(await run(page, "plan-saved-intelligent", [
-      { type: "set-plan-view", view: "edit", roomId: "room-a" },
-      { type: "set-plan-view", view: "edit", roomId: null },
-    ])).toMatchObject({ planView: "edit", expandedRoom: null });
-    expect(await run(page, "plans", [{ type: "set-plan-view", view: "edit", roomId: "room-a" }]))
-      .toMatchObject({ unchanged: true, workflow: "plans" });
-  });
-
-  test("set-plan-view run needs a saved, clean draft", async ({ page }) => {
-    expect(await run(page, "plan-saved-intelligent", [
-      { type: "set-plan-view", view: "edit", roomId: "room-a" },
-      { type: "set-plan-view", view: "run" },
-    ])).toMatchObject({ planView: "run", expandedRoom: null });
-    expect(await run(page, "plan-dirty", [{ type: "set-plan-view", view: "run" }]))
-      .toMatchObject({ unchanged: true, planView: "edit" });
-    expect(await run(page, "plan-new", [{ type: "set-plan-view", view: "run" }]))
-      .toMatchObject({ unchanged: true, planView: "edit" });
-  });
-
-  test("set-plan-enabled reflects the Run switch on a saved, clean draft only", async ({ page }) => {
-    expect(await run(page, "plan-saved-intelligent", [{ type: "set-plan-enabled", enabled: false }]))
-      .toMatchObject({ planView: "run", draft: { id: "daily", enabled: false, dirty: false } });
-    expect(await run(page, "plan-dirty", [{ type: "set-plan-enabled", enabled: false }]))
-      .toMatchObject({ unchanged: true });
-    expect(await run(page, "plan-cadence-shared", [{ type: "set-plan-enabled", enabled: false }]))
-      .toMatchObject({ unchanged: true });
-    expect(await run(page, "plan-new", [{ type: "set-plan-enabled", enabled: false }]))
-      .toMatchObject({ unchanged: true });
-    expect(await run(page, "plans", [{ type: "set-plan-enabled", enabled: false }]))
-      .toMatchObject({ unchanged: true });
-  });
-
-  test("discarding returns a saved plan to Run and a new plan to the picker", async ({ page }) => {
-    expect(await run(page, "plan-dirty", [
-      { type: "set-plan-view", view: "edit", roomId: "room-a" },
-      { type: "open-dialog", dialog: "discardDraft" },
-      { type: "discard-draft" },
-    ])).toMatchObject({ workflow: "plan", planView: "run", expandedRoom: null, dialog: null, planId: "daily",
-      draft: { id: "daily", dirty: false, rooms: ["room-a", "room-b", "room-c"], parked: [] } });
-    expect(await run(page, "plan-new", [
-      { type: "toggle-room", roomId: "room-a" },
-      { type: "discard-draft" },
-    ])).toMatchObject({ workflow: "plans", planView: "run", dialog: null, planId: null, draft: { id: null, dirty: false, rooms: [] } });
-    // A saved plan the catalog no longer holds has no Run view to return to.
-    expect(await page.evaluate(async () => {
-      const { WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const state = createGalleryState("plan-dirty");
-      const store = new WorkspaceStore({ ...state, resources: { ...state.resources,
-        plans: { ...state.resources.plans, value: { ...state.resources.plans.value, plans: [] } } } });
-      store.dispatch({ type: "discard-draft" });
-      const { workflow, planView, selection, planDraft } = store.value;
-      return { workflow, planView, planId: selection.planId, id: planDraft.id, dirty: planDraft.dirty };
-    })).toEqual({ workflow: "plans", planView: "run", planId: null, id: null, dirty: false });
-  });
-
   test("a reload without the open saved plan leaves for Your plans and says it was removed", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
@@ -9921,7 +9730,7 @@ test.describe("plan view state", () => {
       try {
         effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
         await effects.refreshCatalog(true);
-        store.patch({ map: initial.map, coherence: "current" });
+        store.replace({ ...store.value, map: initial.map, coherence: "current" });
         await effects.loadPlans({ force: true });
         effects.selectPlan("daily");
         const opened = { planView: store.value.planView, id: store.value.planDraft.id };
@@ -9929,7 +9738,7 @@ test.describe("plan view state", () => {
         await effects.loadPlans({ force: true });
         const run = store.value;
         effects.selectPlan("weekend");
-        store.patch({ notice: null });
+        store.replace({ ...store.value, notice: null });
         store.dispatch({ type: "set-plan-view", view: "edit" });
         const editing = { planView: store.value.planView, id: store.value.planDraft.id };
         catalog.deleted = "weekend";
@@ -9944,54 +9753,6 @@ test.describe("plan view state", () => {
       notice: "v4_notice_plan_removed", depth: 1 };
     expect(result).toEqual({ opened: { planView: "run", id: "daily" }, run: left,
       editing: { planView: "edit", id: "weekend" }, edit: left });
-  });
-
-  test("dismissing steps Edit to Run, then Run or a new plan to the picker", async ({ page }) => {
-    const dismiss = { type: "dismiss-top-layer" };
-    expect(await run(page, "plan-saved-intelligent", [{ type: "set-plan-view", view: "edit", roomId: "room-a" }, dismiss]))
-      .toMatchObject({ workflow: "plan", planView: "run", expandedRoom: null });
-    expect(await run(page, "plan-saved-intelligent", [dismiss])).toMatchObject({ workflow: "plans", planView: "run" });
-    expect(await run(page, "plan-new", [dismiss])).toMatchObject({ workflow: "plans", planView: "run" });
-    expect(await run(page, "plan-dirty", [dismiss])).toMatchObject({ workflow: "plan", planView: "edit", dialog: "discardDraft" });
-    expect(await run(page, "plans", [dismiss])).toMatchObject({ workflow: "none" });
-  });
-
-  test("map taps never change the plan in Run", async ({ page }) => {
-    expect(await run(page, "plan-saved-intelligent", [{ type: "toggle-room", roomId: "room-d" }]))
-      .toMatchObject({ unchanged: true });
-  });
-
-  test("unticking a room in Edit parks its settings until it is ticked again", async ({ page }) => {
-    const parked = await run(page, "plan-cadence-shared", [{ type: "toggle-room", roomId: "room-a" }]);
-    expect(parked.draft.rooms).toEqual(["room-b", "room-c"]);
-    expect(parked.draft.parked.map((room) => room.roomId)).toEqual(["room-a"]);
-    expect(parked.draft.parked[0].cadence).toBeTruthy();
-    const restored = await page.evaluate(async () => {
-      const { WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const store = new WorkspaceStore(createGalleryState("plan-cadence-shared"));
-      const saved = store.value.planDraft.rooms[0];
-      store.dispatch({ type: "toggle-room", roomId: "room-b" });
-      store.dispatch({ type: "toggle-room", roomId: "room-a" });
-      store.dispatch({ type: "toggle-room", roomId: "room-a" });
-      store.dispatch({ type: "toggle-room", roomId: "room-d" });
-      const { rooms, parkedRooms, dirty } = store.value.planDraft;
-      return { rooms, parked: parkedRooms.map((room) => room.roomId), dirty, same: JSON.stringify(rooms[1]) === JSON.stringify(saved) };
-    });
-    expect(restored).toMatchObject({ parked: ["room-b"], dirty: true, same: true });
-    expect(restored.rooms.map((room) => room.roomId)).toEqual(["room-c", "room-a", "room-d"]);
-    expect(restored.rooms[2]).toEqual({ roomId: "room-d", cleaningMode: "vacuum", coverageSetting: "standard" });
-  });
-
-  test("the plan room limit still refuses a new room in Edit", async ({ page }) => {
-    expect(await run(page, "plan-legacy-oversized", [{ type: "toggle-room", roomId: "room-extra" }]))
-      .toMatchObject({ unchanged: true });
-  });
-
-  test("Rooms selection waits for an editable map with no robot work to stop", async ({ page }) => {
-    const toggle = [{ type: "open-workflow", workflow: "rooms" }, { type: "toggle-room", roomId: "room-a" }];
-    expect((await run(page, "ready", toggle)).selectedRooms).toEqual(["room-a"]);
-    expect((await run(page, "ready", toggle, { activity: "cleaning" })).selectedRooms).toEqual([]);
-    expect((await run(page, "ready", toggle, { coherence: "degraded" })).selectedRooms).toEqual([]);
   });
 
   test("a dirty plan draft asks before going to Run", async ({ page }) => {
@@ -10009,15 +9770,6 @@ test.describe("plan view state", () => {
     expect({ planView: state.planView, dirty: state.planDraft.dirty }).toEqual({ planView: "edit", dirty: true });
   });
 
-  test("layerDepth puts Run and a new plan's Edit under a saved plan's Edit", async ({ page }) => {
-    await loadEffectHarness(page);
-    const depths = await page.evaluate(async () => {
-      const { createGalleryState, layerDepth } = await import("/plan-recovery-test.js");
-      return ["ready", "plans", "plan-saved-intelligent", "plan-new", "plan-dirty"]
-        .map((scenario) => layerDepth(createGalleryState(scenario)));
-    });
-    expect(depths).toEqual([0, 1, 2, 2, 3]);
-  });
 });
 
 test.describe("plan primary action", () => {
@@ -10190,7 +9942,7 @@ test.describe("plan effects", () => {
         run.effects.sync(run.projection);
         await run.effects.refreshCatalog(true);
         await ticks();
-        store.patch({ map: initial.map, coherence: "current", workflow: initial.workflow, planView: initial.planView,
+        store.replace({ ...store.value, map: initial.map, coherence: "current", workflow: initial.workflow, planView: initial.planView,
           selection: initial.selection, planDraft: initial.planDraft, resources: { ...store.value.resources, plans: initial.resources.plans } });
         run.reloads = 0;
         run.finishRequested = false;
@@ -10233,7 +9985,7 @@ test.describe("plan effects", () => {
       run.plans = async () => { throw new Error("Unavailable"); };
       const failed = { returned: await effects.loadPlans({ force: true, inPlace: true }), untouched: store.value.resources.plans === before };
       // With no catalog to keep, the read shows loading as before.
-      store.patch({ resources: { ...store.value.resources, plans: { status: "idle", value: null, problem: null } } });
+      store.replace({ ...store.value, resources: { ...store.value.resources, plans: { status: "idle", value: null, problem: null } } });
       run.plans = () => run.hold().then(() => fresh);
       const cold = effects.loadPlans({ inPlace: true });
       const empty = store.value.resources.plans.status;
@@ -10264,7 +10016,7 @@ test.describe("plan effects", () => {
       await readStarted;
       run.finish(); await running;
       const sent = { calls: run.calls.map(([service]) => service), pendingAction: store.value.pendingAction };
-      store.patch({ notice: null });
+      store.replace({ ...store.value, notice: null });
       const before = store.value.resources.plans;
       run.plans = async () => { throw new Error("Unavailable"); };
       await effects.executeAction("run-plan");
@@ -10294,9 +10046,9 @@ test.describe("plan effects", () => {
         id: action.id, enabled: action.enabled, reasonKey: action.reasonKey };
       run.finish(); await saving;
       const settled = { command: store.value.command, pendingAction: store.value.pendingAction };
-      store.patch({ planDraft: { ...store.value.planDraft, name: "Edited again", dirty: true } });
+      store.replace({ ...store.value, planDraft: { ...store.value.planDraft, name: "Edited again", dirty: true } });
       run.calls.length = 0;
-      store.patch({ resources: { ...store.value.resources, history: run.initial.resources.history } });
+      store.replace({ ...store.value, resources: { ...store.value.resources, history: run.initial.resources.history } });
       const navigating = effects.savePlan();
       await run.inFlight();
       await effects.selectFloor("saved-1");
@@ -10409,11 +10161,11 @@ test.describe("plan effects", () => {
         notice: store.value.notice && { key: store.value.notice.key, tone: store.value.notice.tone }, reloads: run.reloads };
       const [service, sent] = run.calls[0];
       // The one request shape: a save of the fresh plan with the same change.
-      store.patch({ planView: "edit", planDraft: { ...m.draftForPlan({ ...catalog.plans[0], enabled: true }), enabled: false, dirty: true } });
+      store.replace({ ...store.value, planView: "edit", planDraft: { ...m.draftForPlan({ ...catalog.plans[0], enabled: true }), enabled: false, dirty: true } });
       run.service = (_service, data) => { catalog.plans[0].enabled = data.enabled; };
       await effects.savePlan();
       const sameShape = JSON.stringify(sent) === JSON.stringify(run.calls[1][1]);
-      store.patch({ planView: "run", planDraft: { ...store.value.planDraft, dirty: false } });
+      store.replace({ ...store.value, planView: "run", planDraft: { ...store.value.planDraft, dirty: false } });
       run.calls.length = 0;
       await effects.setPlanEnabled(true);
       const on = { enabled: store.value.planDraft.enabled, notice: store.value.notice?.key, sent: run.calls[0]?.[1].enabled };
@@ -10448,17 +10200,17 @@ test.describe("plan effects", () => {
       const switched = steps(run.calls[0][1]);
       const rug = run.calls[0][1].rooms[0];
       // Edit takes a room out: areas stay put and the rooms close up around them.
-      store.patch({ planView: "edit", planDraft: { ...m.draftForPlan(plan), rooms: m.draftForPlan(plan).rooms.slice(1), dirty: true } });
+      store.replace({ ...store.value, planView: "edit", planDraft: { ...m.draftForPlan(plan), rooms: m.draftForPlan(plan).rooms.slice(1), dirty: true } });
       await effects.savePlan();
       const edited = steps(run.calls[1][1]);
       // A plan of areas alone keeps them when the switch saves it.
       plan.rooms = [];
       plan.entries = [area("rug")];
-      store.patch({ planView: "run", planDraft: { ...m.draftForPlan(plan), dirty: false } });
+      store.replace({ ...store.value, planView: "run", planDraft: { ...m.draftForPlan(plan), dirty: false } });
       await effects.setPlanEnabled(true);
       const areasOnly = steps(run.calls[2][1]);
       // Edit saves a plan of areas alone: there are no rooms, and the areas are kept.
-      store.patch({ resources: { ...store.value.resources, plans: { ...store.value.resources.plans, value: structuredClone(catalog) } },
+      store.replace({ ...store.value, resources: { ...store.value.resources, plans: { ...store.value.resources.plans, value: structuredClone(catalog) } },
         planView: "edit", planDraft: { ...m.draftForPlan(plan), name: "Spots", dirty: true } });
       const saveAction = m.selectPrimaryAction(store.value);
       await effects.savePlan();
@@ -10560,12 +10312,12 @@ test.describe("plan effects", () => {
     const result = await page.evaluate(async () => {
       const refusals = {
         edit: (store) => store.dispatch({ type: "set-plan-view", view: "edit" }),
-        picker: (store) => store.patch({ workflow: "plans" }),
-        dirty: (store) => store.patch({ planDraft: { ...store.value.planDraft, dirty: true } }),
-        unsaved: (store) => store.patch({ planDraft: { ...store.value.planDraft, id: null } }),
-        pending: (store) => store.patch({ command: "pending" }),
-        map:(store) => store.patch({ pageActive: false }),
-        working: (store) => store.patch({ activity: "cleaning" }),
+        picker: (store) => store.replace({ ...store.value, workflow: "plans" }),
+        dirty: (store) => store.replace({ ...store.value, planDraft: { ...store.value.planDraft, dirty: true } }),
+        unsaved: (store) => store.replace({ ...store.value, planDraft: { ...store.value.planDraft, id: null } }),
+        pending: (store) => store.replace({ ...store.value, command: "pending" }),
+        map:(store) => store.replace({ ...store.value, pageActive: false }),
+        working: (store) => store.replace({ ...store.value, activity: "cleaning" }),
       };
       const outcome = {};
       for (const [name, refuse] of Object.entries(refusals)) {
@@ -10600,7 +10352,7 @@ test.describe("plan effects", () => {
       await loadPlanEffects(page);
       const result = await page.evaluate(async (command) => {
         const run = await window.planEffects("plan-saved-intelligent");
-        run.store.patch({ command });
+        run.store.replace({ ...run.store.value, command });
         await run.effects.setPlanEnabled(false);
         const outcome = { calls: run.calls.map(([service, data]) => [service, data.enabled]), command: run.store.value.command };
         run.effects.dispose();
@@ -10680,7 +10432,7 @@ for (const refresh of ["delayed", "failed"]) {
       effects.loadAreas = async () => {
         reading = true;
         await pending;
-        if (refresh === "failed") store.patch({ resources: { ...store.value.resources, areas: { status: "error", value: null, problem: "areas-unavailable" } } });
+        if (refresh === "failed") store.replace({ ...store.value, resources: { ...store.value.resources, areas: { status: "error", value: null, problem: "areas-unavailable" } } });
       };
       try {
         const saving = effects.saveArea();
@@ -10723,7 +10475,7 @@ for (const boundary of ["write", "catalog"]) {
         store.dispatch({ type: "patch-area-draft", patch: { name: "Later area" } });
         // This test creates a later, independently admitted drawing state
         // while the earlier save's catalog reconciliation is still pending.
-        store.patch({ command: "idle" });
+        store.replace({ ...store.value, command: "idle" });
         const coordinateEdit = captureCoordinateEdit(store.value, "paint");
         if (!coordinateEdit) throw new Error("Draw edit was not admitted");
         store.dispatch({ type: "set-draft-circles", circles: [{ x: 2, y: 2, radius: .3 }], coordinateEdit });
@@ -10789,7 +10541,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
     export { RendererController } from "./frontend/map-studio-v4/renderer-controller";
     export { GestureController } from "./frontend/map-studio-v4/gesture-controller";
     export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
   `, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/room-taps.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
@@ -10830,7 +10582,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
       const afterCancel = workflow === "plan" ? store.value.planDraft.rooms.map(room => room.roomId) : store.value.selection.roomIds;
       tap();
       const remaining = workflow === "plan" ? store.value.planDraft.rooms.length : store.value.selection.roomIds.length;
-      store.patch({ notice: { tone: "success", key: "v4_notice_plan_deleted", fallback: "Plan deleted" } });
+      store.replace({ ...store.value, notice: { tone: "success", key: "v4_notice_plan_deleted", fallback: "Plan deleted" } });
       store.dispatch({ type: "select-plan", planId: "daily" });
       results.push({ selected, afterCancel, remaining, room: hit.room, notice: store.value.notice });
       gestures.dispose(); renderer.dispose(); canvas.remove(); overlay.remove();

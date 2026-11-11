@@ -104,7 +104,7 @@ const markQueueUncertain = (ledger: QueueLedger, helpers: CatalogWriteHelpers, o
   const state = store?.value;
   if (store && ledger.activeOwner !== null && ledger.activeKey === operation.key && state?.host.connected && state.host.administrator
     && state.host.robotConnected && state.pageActive) {
-    store.patch({ notice: queueChangeNotice(helpers.notice, operation.action, new Error("queue-acknowledgement-timeout")) });
+    store.dispatch({ type: "result", notice: queueChangeNotice(helpers.notice, operation.action, new Error("queue-acknowledgement-timeout")) });
   }
 };
 
@@ -128,7 +128,7 @@ const settleQueueOperation = (
     && room?.name === operation.action.room;
   removeQueueOperation(ledger, operation);
   if (store && shouldNotice && sameCapturedFloor) {
-    store.patch({ notice: queueChangeNotice(helpers.notice, operation.action, error) });
+    store.dispatch({ type: "result", notice: queueChangeNotice(helpers.notice, operation.action, error) });
   }
 };
 
@@ -206,7 +206,7 @@ export class QueueActionController {
     this.#scope = this.#readScope(this.#store.value);
     this.#scopeRevision = Math.max(nextQueueScopeRevision, this.#store.value.queueScopeRevision) + 1;
     nextQueueScopeRevision = this.#scopeRevision;
-    this.#store.patch({ queueScopeRevision: this.#scopeRevision });
+    this.#store.dispatch({ type: "result", queueScopeRevision: this.#scopeRevision });
     this.#ledgerListener = () => this.#syncVisible();
     this.#ledgerListenerRef = new WeakRef(this.#ledgerListener);
     this.#unsubscribe = this.#store.subscribe(() => this.#syncVisible());
@@ -224,7 +224,7 @@ export class QueueActionController {
     const key = queueKey(identity);
     if (this.#ledger.operations.has(key)) return;
     if (this.#ledger.operations.size >= MAX_UNRESOLVED_QUEUE_OPERATIONS) {
-      this.#store.patch({ notice: this.#helpers.notice("warning", "v4_notice_queue_limit",
+      this.#store.dispatch({ type: "result", notice: this.#helpers.notice("warning", "v4_notice_queue_limit",
         "Several room changes are still waiting. Wait for one to finish before trying again.") });
       return;
     }
@@ -238,7 +238,7 @@ export class QueueActionController {
     const ledger = this.#ledger;
     const helpers = this.#helpers;
     ledger.operations.set(key, operation);
-    this.#store.patch({ notice: null });
+    this.#store.dispatch({ type: "result", notice: null });
     notifyLedger(ledger);
     const request = this.#backend.service("matic_robot", action.change, { room: action.roomId }, identity.entityId);
     operation.timer = setTimeout(() => markQueueUncertain(ledger, helpers, operation), QUEUE_CONFIRMATION_WINDOW_MS);
@@ -269,7 +269,7 @@ export class QueueActionController {
     const operation = this.#ledger.operations.get(key);
     if (!operation || operation.status !== "uncertain" || operation.token !== action.token) return;
     this.#remove(operation);
-    if (this.#visibleIdentityMatches(operation)) this.#store.patch({ notice: null });
+    if (this.#visibleIdentityMatches(operation)) this.#store.dispatch({ type: "result", notice: null });
   }
 
   dispose(): void {
@@ -380,7 +380,7 @@ export class QueueActionController {
     }
     this.#scope = next;
     this.#scopeRevision = ++nextQueueScopeRevision;
-    this.#store.patch({ queueScopeRevision: this.#scopeRevision });
+    this.#store.dispatch({ type: "result", queueScopeRevision: this.#scopeRevision });
   }
 
   #syncVisible(): void {
@@ -394,7 +394,7 @@ export class QueueActionController {
     const queueUncertainToken = operation?.status === "uncertain" ? operation.token : null;
     const state = this.#store.value;
     if (state.queuePending !== queuePending || state.queueUncertainToken !== queueUncertainToken) {
-      this.#store.patch({ queuePending, queueUncertainToken });
+      this.#store.dispatch({ type: "result", queuePending, queueUncertainToken });
     }
   }
 

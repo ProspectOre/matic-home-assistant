@@ -9,7 +9,7 @@ const { outputFiles } = await build({
     import { MAP_CANVAS_TAG } from "./element-tags";
     import { EffectController } from "./effects";
     import { WorkspaceStore } from "./state";
-    import { syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans } from "./synthetic-fixtures";
+    import { syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans } from "../map-studio-v4-review/synthetic-fixtures";
     window.archiveHarness = { EffectController, WorkspaceStore, syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans, MAP_CANVAS_TAG };
   `, resolveDir: fileURLToPath(new URL("../../frontend/map-studio-v4", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm", target: "es2022",
@@ -255,7 +255,7 @@ test("a pending invalidation readback is cancelled and cannot replace a new owne
     effects.refreshHistory();
     control.releaseOldRead = () => releaseOld?.();
     control.oldReadStarted = () => oldStarted;
-    control.changeOwner = () => store.patch({ owner: { ...store.value.owner, userKey: "owner-b" } });
+    control.changeOwner = () => store.replace({ ...store.value, owner: { ...store.value.owner, userKey: "owner-b" } });
   });
   await expect.poll(() => page.evaluate(() => window.archiveRun.control.oldReadStarted())).toBe(true);
   await page.evaluate(() => window.archiveRun.control.changeOwner());
@@ -390,7 +390,7 @@ test("@safety an export belonging to a retired owner cannot create a download or
   await expect.poll(() => page.evaluate(() => Boolean(window.archiveRun.control.exportGate))).toBe(true);
   await page.evaluate(async () => {
     const { store, element, control } = window.archiveRun;
-    store.patch({ owner: { ...store.value.owner, userKey: "owner-b" } });
+    store.replace({ ...store.value, owner: { ...store.value.owner, userKey: "owner-b" } });
     await element.updateComplete;
     control.exportGate({ format: "matic-map-archive", version: 1, records: [{ source_id: "1".padStart(32, "0"),
       created_at: "2026-10-31T10:00:00Z", name: null, sha256: "a".repeat(64), scene_zlib_base64: "eA==", frame: null }] });
@@ -428,7 +428,7 @@ test("@safety revoked access clears both loaded comparison panes", async ({ page
   await expect(page.getByText("These maps can be viewed side by side. They don't line up, so differences can't be counted.", { exact: true })).toBeVisible();
   await page.evaluate(() => {
     const store = window.archiveRun.store;
-    store.patch({ host: { ...store.value.host, administrator: false } });
+    store.replace({ ...store.value, host: { ...store.value.host, administrator: false } });
   });
   await expect(page.locator("matic-map-comparison-v4")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.archiveRun.element._pair)).toBeNull();
@@ -467,7 +467,7 @@ test("@safety an old catalog denial cannot clear a new owner before the next ren
     const suspended = new Promise((resolve) => { release = resolve; });
     element.scheduleUpdate = async () => { await suspended; return schedule.call(element); };
     try {
-      store.patch({ owner: { ...store.value.owner, userKey: "owner-b" } });
+      store.replace({ ...store.value, owner: { ...store.value.owner, userKey: "owner-b" } });
       control.catalogReject(Object.assign(new Error("old owner denied"), { status: 403 }));
       await new Promise((resolve) => setTimeout(resolve, 0));
       return {
@@ -527,7 +527,7 @@ test("@safety deleting the Live fallback source externally clears it without sub
       ...snapshot, createdAt: `2026-10-${30 + index}T10:00:00Z`,
     }));
     backend.history = async () => ({ ...history, floors: [{ ...history.floors[0], snapshots }] });
-    store.patch({ dataMode: "live", selection: { ...store.value.selection, floorId: "current", historyId: null },
+    store.replace({ ...store.value, dataMode: "live", selection: { ...store.value.selection, floorId: "current", historyId: null },
       resources: { ...store.value.resources, scene: { status: "idle", value: null, problem: null } },
       map: { ...store.value.map, available: false, exactPose: false } });
     await effects.refreshHistory();

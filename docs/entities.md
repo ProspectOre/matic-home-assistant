@@ -16,21 +16,18 @@ See the [entity reference](entity-reference.md) for names, IDs, defaults and sen
 Use Matic Map for plans, room selection, and custom areas, or the standard vacuum
 controls for a full-floor clean, pause/resume, Stop, and dock; the vacuum's Stop
 follows a running plan's Smart Stop setting. Default mode and coverage appear
-under **Configuration**. The five specialized buttons and the plan/area selectors
-are opt-in dashboard and automation shortcuts; existing enabled choices and
-entity IDs are preserved.
+under **Configuration**. The **Run plan** and **Clean custom area** buttons and
+the plan/area selectors are opt-in dashboard and automation shortcuts; existing
+enabled choices and entity IDs are preserved.
 
-The plan buttons have the same names as their actions: **Run plan** runs the
-default plan the way it is saved, **Run Smart Order** cleans the rooms and
-custom areas that have waited longest first, and **Run saved order** cleans
-them top to bottom; a plan runs in one or more [parts](cleaning.md#how-a-plan-runs).
-They are unavailable until the map is ready and the default plan can run. **Stop
-cleaning** is available only while a plan or a one-time room clean from Matic
-Map runs, and never asks for confirmation; the plan's Smart Stop setting decides
-whether the current room finishes first. **Clean custom area** cleans the area
-chosen in **Custom cleaning area**, so enable both. **Next room to clean** names
-the first room or custom area of the default plan's next run; its `preview`
-attribute holds the whole preview.
+**Run plan** runs the default plan the way it is saved, in one or more
+[parts](cleaning.md#how-a-plan-runs). It is unavailable until the map is ready
+and the default plan can run. To pick Smart Order or Saved order for one run,
+call the Run plan action with [`run_behavior`](actions.md#cleaning). To stop a
+plan from a dashboard, use the vacuum's Stop. **Clean custom area** cleans the
+area chosen in **Custom cleaning area**, so enable both. **Next room to clean**
+names the first room or custom area of the default plan's next run; its
+`preview` attribute holds the whole preview.
 
 ## Maps
 
@@ -75,9 +72,9 @@ the first stays skipped. With no installed version, Home Assistant shows the
 update's state as unknown, so there is nothing to skip. The device page shows
 the software and hardware versions.
 
-If **Problem** turns on, `sensor.matic_activity` names the reported conditions
-in `errors` and `primary_error` and keeps their numeric codes in
-`hermes_error_codes`; a code with no known meaning appears as `error_code_<n>`.
+If **Problem** turns on, its `errors` attribute names the reported conditions,
+and **Robot alert** keeps their numeric codes in `codes`; a condition with no
+known name appears as `error_code_<n>`.
 Each new error needs two normal polls; existing errors stay visible while others change.
 Code 207's lid meaning is physically confirmed. Matic app 1.182.1 maps
 220 to mopping water unavailable; broader firmware coverage remains unqualified. Recorded activity keeps their numeric codes after clearing.
@@ -94,7 +91,7 @@ robot stops reporting it.
 Enable each room's **Last cleaned** and **Last clean duration** for completed app-started cleans.
 Check `native_statistics_blocked_reason` for withheld app results and `statistics_source` for displayed evidence.
 See [cleaning results](native-cleaning-results.md) for floor limits. Robot-wide duration is recorded by default.
-For missing **Scheduled cleanings** records or on/off details, see [schedule diagnostics](native-schedule-diagnostics.md).
+For missing **Robot schedules** records or on/off details, see [schedule diagnostics](native-schedule-diagnostics.md).
 
 Room lists, SSID, schedules, detailed run results, and plan history remain
 available to templates through `state_attr()` but are excluded from Recorder
@@ -120,6 +117,8 @@ switch also activates [Matic's voice processing](privacy.md#matic-cues).
 The one-time 0.2 migration renamed older numbered IDs where possible. 0.5
 removed four duplicate entities once, on its first start; see the
 [release notes](release-notes-0.5.0.md#before-you-update) for replacements.
+0.6 removed 14 more the same way, enabled or not; see
+[Removed in 0.6](release-notes-0.6.0-beta1.md#removed-in-06).
 User-assigned names and IDs are preserved.
 ## Assistant tools
 

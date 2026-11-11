@@ -49,8 +49,7 @@ export class PlanCatalogResources {
     const shown = !inPlace || this.#store.value.resources.plans.status !== "ready";
     if (!this.#callbacks.pageActive()) {
       this.#requests.current("plans")?.abort();
-      const resources = this.#store.value.resources;
-      if (shown) this.#store.patch({ resources: { ...resources, plans: resource("idle", resources.plans.value) } });
+      if (shown) this.#store.dispatch({ type: "result", resources: { plans: resource("idle", this.#store.value.resources.plans.value) } });
       return null;
     }
     const entry = this.#store.value.resources.entry;
@@ -58,23 +57,25 @@ export class PlanCatalogResources {
     if (!force && this.#requests.has("plans")) return null;
     const boundary = entryBoundaryKey(entry);
     const controller = this.#requests.begin("plans");
-    if (shown) this.#store.patch({
-      resources: { ...this.#store.value.resources, plans: resource("loading", this.#store.value.resources.plans.value) },
+    if (shown) this.#store.dispatch({
+      type: "result",
+      resources: { plans: resource("loading", this.#store.value.resources.plans.value) },
     });
     const releaseWriteFence = this.#store.value.planWriteBlock === "refresh";
     try {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
       if (controller.signal.aborted || this.#callbacks.disposed() || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return null;
-      if (releaseWriteFence && this.#store.value.planWriteBlock === "refresh") this.#store.patch({ planWriteBlock: null });
+      if (releaseWriteFence && this.#store.value.planWriteBlock === "refresh") this.#store.dispatch({ type: "result", planWriteBlock: null });
       const state = this.#store.value;
       if (state.workflow === "plan" && state.planDraft.id && !state.planDraft.dirty
         && !plans.plans.some((candidate) => candidate.id === state.planDraft.id)) {
-        this.#store.patch({
-          resources: { ...this.#store.value.resources, plans: resource("ready", plans) },
+        this.#store.dispatch({
+          type: "transition",
+          resources: { plans: resource("ready", plans) },
           workflow: "plans",
           precisionOpen: false,
-          selection: { ...this.#store.value.selection, planId: null },
+          selection: { planId: null },
           planDraft: initialWorkspaceState().planDraft,
           notice: planRemovedNotice,
         });
@@ -82,15 +83,16 @@ export class PlanCatalogResources {
       }
       if (state.planDraft.dirty || (state.workflow === "plan"
         && (!state.planDraft.id || state.command === "pending"))) {
-        this.#store.patch({ resources: { ...this.#store.value.resources, plans: resource("ready", plans) } });
+        this.#store.dispatch({ type: "result", resources: { plans: resource("ready", plans) } });
         return plans;
       }
       const planId = state.workflow === "plan"
         ? state.selection.planId : plans.selectedPlan || plans.plans[0]?.id || null;
       const plan = plans.plans.find((candidate) => candidate.id === planId);
-      this.#store.patch({
-        resources: { ...this.#store.value.resources, plans: resource("ready", plans) },
-        selection: { ...this.#store.value.selection, planId },
+      this.#store.dispatch({
+        type: "transition",
+        resources: { plans: resource("ready", plans) },
+        selection: { planId },
         planDraft: plan ? draftForPlan(plan) : {
           ...this.#store.value.planDraft,
           id: null,
@@ -108,8 +110,9 @@ export class PlanCatalogResources {
         || entryBoundaryKey(currentEntry) !== boundary) return null;
       const problem = error instanceof BackendError && error.code === "map-rechecking"
         ? "map-rechecking" : problemCode(error, "plans-unavailable");
-      if (shown) this.#store.patch({
-        resources: { ...this.#store.value.resources, plans: resource("error", this.#store.value.resources.plans.value, problem) },
+      if (shown) this.#store.dispatch({
+        type: "result",
+        resources: { plans: resource("error", this.#store.value.resources.plans.value, problem) },
       });
       onError?.();
       return null;

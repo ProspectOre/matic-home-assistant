@@ -18,8 +18,12 @@ shown on your robot's device page.
 | Matic: Photograph room on alert | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Fphoto_on_alert.yaml) |
 
 - Every cleaning blueprint starts only when the robot is docked or idle, and
-  uses Run Smart Order, so the longest-waiting rooms and custom areas go first
-  whatever the plan's saved order. Leave Plan empty to run the default plan.
+  runs the plan in Smart Order, so the longest-waiting rooms and custom areas go
+  first whatever the plan's saved order. Leave Plan empty to run the default plan.
+- A cleaning blueprint imported before Matic 0.5.4 calls Run Smart Order
+  (`intelligent_clean`), which 0.6 removed, so its automations can't start a
+  clean. Open Settings > Repairs and press Submit on **Matic blueprints need an
+  update** to switch your copies to Run plan with the same cleaning order.
 - A household member is away unless their state is `home`, `unknown` or
   `unavailable`, so someone in a named zone such as Work counts as away. When
   anyone comes home, Clean when everyone leaves calls Stop cleaning.
@@ -54,11 +58,24 @@ actions:
 Create a plan in [Matic Map](cleaning.md#saved-plans), then call Run plan
 (`matic_robot.run_selected_plan`) with a `plan` name or ID, or none for the
 default plan. Preview next plan run (`matic_robot.preview_plan`) returns the
-next order and settings without starting. Run Smart Order (`intelligent_clean`)
-starts with what has waited longest; Run saved order (`clean_entire_plan`)
-keeps the saved order. Stop cleaning (`stop_intelligent_cleaning`) applies the
-plan's [stop setting](cleaning.md#stopping-a-plan). To run, pause or change a
-plan in Matic Map, see [plan Run and Edit](cleaning.md#run-and-edit).
+next order and settings without starting. `run_behavior: intelligent` starts
+with what has waited longest and `run_behavior: ordered` keeps the saved order,
+whatever the plan's own setting. They replace Run Smart Order
+(`intelligent_clean`) and Run saved order (`clean_entire_plan`), which
+[0.6 removed](release-notes-0.6.0-beta1.md#removed-in-06). Stop cleaning
+(`stop_intelligent_cleaning`) applies the plan's
+[stop setting](cleaning.md#stopping-a-plan). To run, pause or change a plan in
+Matic Map, see [plan Run and Edit](cleaning.md#run-and-edit).
+
+```yaml
+actions:
+  - action: matic_robot.run_selected_plan
+    target:
+      entity_id: vacuum.matic
+    data:
+      plan: Downstairs
+      run_behavior: intelligent
+```
 
 See [how a plan runs](cleaning.md#how-a-plan-runs) for room and area ordering.
 

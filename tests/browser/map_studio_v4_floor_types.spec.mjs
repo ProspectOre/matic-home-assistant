@@ -109,7 +109,7 @@ test("the row stays hidden without the endpoint", async ({ page }) => {
 });
 
 test("renderer fills carpet even-odd and vents on the live floor only", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { parseFloorTypes } from "./frontend/map-studio-v4/floor-types";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseFloorTypes } from "./frontend/map-studio-v4/floor-types";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/floor-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const result = await page.evaluate(async (layers) => {

@@ -761,7 +761,7 @@ test.describe("home shortcuts in Home Assistant's user data", () => {
 test.describe("home-pins loading", () => {
   test("loading a new record leaves catalog reconciliation to the owner-bound follower", async ({ page }) => {
     const bundle = await build({
-      stdin: { contents: 'export { loadPins } from "./frontend/map-studio-v4/home-pins"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() },
+      stdin: { contents: 'export { loadPins } from "./frontend/map-studio-v4/home-pins"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() },
       bundle: true, format: "esm", write: false,
     });
     await page.route("**/home-pins-test.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

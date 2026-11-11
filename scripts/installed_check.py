@@ -545,69 +545,28 @@ class InstalledCheck:
         return {"files": len(self.candidate.files)}
 
     async def entities(self) -> dict[str, Any]:
-        """Check enabled entities and record the narrowly proven idle Stop state."""
+        """Check that every enabled entity reports an available state."""
         registry = await self.ha.call("config/entity_registry/list")
-        enabled_entries = [
-            entry
+        enabled = [
+            entry["entity_id"]
             for entry in registry
             if entry["platform"] == DOMAIN and entry["disabled_by"] is None
         ]
-        enabled = [entry["entity_id"] for entry in enabled_entries]
         vacuums = [entity for entity in enabled if entity.startswith("vacuum.")]
         if len(vacuums) != 1:
             raise CheckFailed(f"expected one Matic vacuum, found {len(vacuums)}")
         self.robot = vacuums[0]
-        state_records = {
-            state["entity_id"]: state for state in await self.ha.call("get_states")
+        states = {
+            state["entity_id"]: state["state"]
+            for state in await self.ha.call("get_states")
         }
-        states = {entity: state["state"] for entity, state in state_records.items()}
         missing = sorted(entity for entity in enabled if entity not in states)
         unavailable = sorted(
             entity for entity in enabled if states.get(entity) == "unavailable"
         )
-        # The stop button is intentionally unavailable while no managed plan is
-        # running. Accept that state only with an available history sensor from
-        # the same config entry explicitly confirming the idle state.
-        idle_stop_buttons: set[str] = set()
-        for button in enabled_entries:
-            if not button["entity_id"].startswith("button.") or not button.get(
-                "unique_id", ""
-            ).endswith("_stop_intelligent_cleaning"):
-                continue
-            entry_id = button.get("config_entry_id")
-            if not entry_id:
-                continue
-            history_sensors = [
-                entry
-                for entry in enabled_entries
-                if entry["entity_id"].startswith("sensor.")
-                and entry.get("config_entry_id") == entry_id
-                and entry.get("unique_id", "").endswith("_cleaning_history")
-            ]
-            if len(history_sensors) != 1:
-                continue
-            history_id = history_sensors[0]["entity_id"]
-            history_state = states.get(history_id)
-            if (
-                history_state is not None
-                and history_state not in {"unknown", "unavailable"}
-                and state_records[history_id].get("attributes", {}).get("plan_running")
-                is False
-            ):
-                idle_stop_buttons.add(button["entity_id"])
-        expected_unavailable = sorted(
-            entity for entity in unavailable if entity in idle_stop_buttons
-        )
-        unavailable = [
-            entity for entity in unavailable if entity not in idle_stop_buttons
-        ]
         if missing or unavailable:
             raise CheckFailed(f"missing {missing}, unavailable {unavailable}")
-        return {
-            "enabled": len(enabled),
-            "robot_state": states[self.robot],
-            "expected_unavailable": expected_unavailable,
-        }
+        return {"enabled": len(enabled), "robot_state": states[self.robot]}
 
     async def actions(self) -> dict[str, Any]:
         """Check the registered actions match services.yaml at the tag."""

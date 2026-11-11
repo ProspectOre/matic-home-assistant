@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadEffects(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, captureCoordinateEdit, hasCoordinateEditAdmission, canEditCoordinates } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, captureCoordinateEdit, hasCoordinateEditAdmission, canEditCoordinates } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true,

@@ -7,7 +7,7 @@ async function loadMutationHarness(page) {
       contents: `
         export { EffectController } from "./frontend/map-studio-v4/effects";
         export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions";
-        export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+        export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
         export { MaticBackend } from "./frontend/map-studio-v4/backend";
       `,
       resolveDir: process.cwd(),
@@ -85,7 +85,8 @@ async function createPendingMutation(page, kind, { planId = "daily", planName = 
     if (kind === "area" || kind === "area-update") {
       const current = store.value;
       const updating = kind === "area-update";
-      store.patch({
+      store.replace({
+        ...store.value,
         workflow: "areaReview",
         selection: { ...current.selection, areaId: updating ? "entryway" : null },
         ...(updating ? {
@@ -146,7 +147,8 @@ async function createPendingMutation(page, kind, { planId = "daily", planName = 
           rooms: [staleRoom],
         }],
       };
-      store.patch({
+      store.replace({
+        ...store.value,
         workflow: "plan",
         selection: { ...current.selection, planId: "daily" },
         resources: {
@@ -164,7 +166,8 @@ async function createPendingMutation(page, kind, { planId = "daily", planName = 
       run.prewriteRead = run.effects.loadPlans();
       // Keep the stale, previously admitted catalog available while the
       // independent pre-write read is outstanding.
-      store.patch({
+      store.replace({
+        ...store.value,
         resources: {
           ...store.value.resources,
           plans: { ...store.value.resources.plans, value: run.planCatalog },
@@ -174,7 +177,8 @@ async function createPendingMutation(page, kind, { planId = "daily", planName = 
         id: "reset-room-cadence", planId: "daily", roomId: "room-a", mode: "mop",
       });
     } else {
-      store.patch({
+      store.replace({
+        ...store.value,
         workflow: "plan",
         planDraft: { ...base.planDraft, id: planId, name: planName, dirty: true },
       });

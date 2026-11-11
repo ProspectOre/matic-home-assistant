@@ -51,7 +51,7 @@ export class HomePinResources {
     // resumed workspace to read that owner's persisted shortcuts again.
     this.invalidate();
     if (this.#store.value.homePins.status !== "idle" || this.#store.value.homePins.pins.length) {
-      this.#store.patch({ homePins: { status: "idle", pins: [] } });
+      this.#store.dispatch({ type: "result", homePins: { status: "idle", pins: [] } });
     }
   }
 
@@ -81,10 +81,10 @@ export class HomePinResources {
     const current = (): boolean => !this.#callbacks.disposed() && token === this.#pinsToken
       && owner === this.#pinsOwner && this.#currentPinsOwner() === owner;
     if (!owner || !entryId || !connection?.sendMessagePromise) {
-      this.#store.patch({ homePins: { status: "unavailable", pins: [] } });
+      this.#store.dispatch({ type: "result", homePins: { status: "unavailable", pins: [] } });
       return;
     }
-    this.#store.patch({ homePins: { status: "loading", pins: [] } });
+    this.#store.dispatch({ type: "result", homePins: { status: "loading", pins: [] } });
     try {
       const module = await import("./home-pins");
       if (!current()) return;
@@ -99,7 +99,7 @@ export class HomePinResources {
       const loaded = await module.loadPins(connection, this.#store, entryId, current);
       if (!current()) return;
       this.#homePinsPersistence.setExclusions(loaded.excluded, loaded.pins);
-      this.#store.patch({ homePins: { status: "ready", pins: loaded.pins } });
+      this.#store.dispatch({ type: "result", homePins: { status: "ready", pins: loaded.pins } });
       module.followPins(this.#store, this, entryId, current, loaded.mode);
       this.#discoverDefaults = loaded.mode !== "v2";
       if (this.#discoverDefaults) await this.#loadDefaultCatalogs();
@@ -114,7 +114,7 @@ export class HomePinResources {
     } catch (error) {
       if (!current()) return;
       this.#callbacks.requestFailed(error);
-      if (current()) this.#store.patch({ homePins: { status: "error", pins: [] } });
+      if (current()) this.#store.dispatch({ type: "result", homePins: { status: "error", pins: [] } });
     }
   }
 

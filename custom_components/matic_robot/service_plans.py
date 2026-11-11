@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 
 from .area_binding import AreaBindingStatus, area_binding_status
@@ -27,7 +27,6 @@ from .plan_model import (
     PlanDisabledError,
     PlanRoomsHeldError,
     RoomSequenceLimitError,
-    plan_entries,
     plan_floor_token,
     resolve_room_reference,
     resolve_rooms,
@@ -296,65 +295,6 @@ def _normalize_saved_area(
     }
 
 
-def _saved_plan_entries(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Read a plan's ordered entries for an edit, or explain why it can't."""
-    try:
-        return plan_entries(plan)
-    except ValueError as err:
-        raise _plan_request_error(err) from err
-
-
-def _plan_entry_position(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    room_map: Mapping[str, str],
-    call: ServiceCall,
-    entries: Sequence[Mapping[str, Any]],
-) -> int:
-    """Find the zero-based entry named by an action's room or area field."""
-    if "area" not in call.data:
-        room_id = _resolve_room_id(call.data["room"], room_map)
-        position = next(
-            (
-                index
-                for index, saved in enumerate(entries)
-                if saved["kind"] == "room" and saved["room_id"] == room_id
-            ),
-            None,
-        )
-        if position is None:
-            raise _validation_error(
-                f"Room is not part of this plan: {call.data['room']}",
-                "unknown_rooms",
-                {"rooms": str(call.data["room"])},
-            )
-        return position
-    reference = str(call.data["area"])
-    area_ids = [saved["area_id"] for saved in entries if saved["kind"] == "area"]
-    try:
-        area_id = str(manager.catalog.area(serial_number, reference)["id"])
-    except KeyError as err:
-        # An entry can still name an area that a store edit removed.
-        if reference not in area_ids:
-            raise _validation_error(
-                f"Unknown Matic custom area: {reference}",
-                "unknown_area",
-                {"area": reference},
-            ) from err
-        area_id = reference
-    if area_id not in area_ids:
-        raise _validation_error(
-            f"Custom area is not part of this plan: {reference}",
-            "area_not_in_plan",
-            {"area": reference},
-        )
-    return next(
-        index
-        for index, saved in enumerate(entries)
-        if saved["kind"] == "area" and saved["area_id"] == area_id
-    )
-
-
 def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
     """Resolve one live room ID or unambiguous display name."""
     try:
@@ -372,11 +312,3 @@ def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
             {"rooms": identifier},
         ) from err
     return room_id
-
-
-def _invalid_room_position(position: int, room_count: int) -> ServiceValidationError:
-    return _validation_error(
-        f"Room position {position} is invalid; expected 1 through {room_count}",
-        "invalid_room_position",
-        {"count": str(room_count)},
-    )
