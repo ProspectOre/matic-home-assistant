@@ -54,19 +54,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip
+      # uv.lock pins every tool, and a stale lockfile fails the install.
+      - run: |
+          python -m pip install uv
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
         if: ${{ !fromJSON(env.RECHECK) }}
-      - run: python -m pip install -e '.[test]'
-        if: ${{ !fromJSON(env.RECHECK) }}
-      - run: pytest --cov=custom_components/matic_robot --cov-report=term-missing
-        if: ${{ !fromJSON(env.RECHECK) }}
-      - run: ruff check .
-        if: ${{ !fromJSON(env.RECHECK) }}
-      - run: ruff format --check .
-        if: ${{ !fromJSON(env.RECHECK) }}
-      - run: mypy custom_components/matic_robot
-        if: ${{ !fromJSON(env.RECHECK) }}
-      - run: python scripts/check_public_tree.py
+      - run: python scripts/check.py --all
         if: ${{ !fromJSON(env.RECHECK) }}
       - run: python -m build
         if: ${{ !fromJSON(env.RECHECK) }}
@@ -105,9 +99,9 @@ jobs:
       # usb) at startup. It does that reliably into an active virtual
       # environment; on the bare setup-python interpreter it left them missing.
       - run: |
-          python -m venv .venv
+          python -m pip install uv
+          uv sync --locked
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-          .venv/bin/python -m pip install -e '.[test]'
         if: ${{ !fromJSON(env.RECHECK) }}
       - run: npm ci
         if: ${{ !fromJSON(env.RECHECK) }}
