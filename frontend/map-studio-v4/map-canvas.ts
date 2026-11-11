@@ -13,6 +13,7 @@ import { MAP_CANVAS_TAG } from "./element-tags";
 import { POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
 import { RendererController, topView, type CameraState, type RendererDiagnostics, type RendererModuleName, type RendererModuleStatus, type RendererSurfaceDetail } from "./renderer-controller";
+import type { MapPoint } from "./renderer-camera";
 import { layersNeeded } from "./renderer-overlays";
 import {
   canSelectRooms,
@@ -286,6 +287,8 @@ export class MaticMapCanvasV4 extends LitElement {
   #cameraFollowStatus: RendererModuleStatus = "idle";
   #surfaceGeometryStatus: RendererModuleStatus = "idle";
   #surfaceDetail: RendererSurfaceDetail = null;
+  /** The map point last tapped while the Wi-Fi layer is on. */
+  #wifiSpot: MapPoint | null = null;
   #unwatchTheme: (() => void) | null = null;
   #paletteFrame: number | null = null;
   #paletteTimer: number | null = null;
@@ -383,6 +386,11 @@ export class MaticMapCanvasV4 extends LitElement {
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
       onRoomCandidates: (roomIds) => this.#intent({ type: "show-room-candidates", roomIds }),
       onCameraGesture: () => this.#unfollow(),
+      onTap: (point) => {
+        if (!this.state.wifiSignal) return;
+        this.#wifiSpot = point;
+        this.requestUpdate();
+      },
     });
     this.#renderer.setState(this.state);
     this.dispatchEvent(new CustomEvent(POSE_MOTION_EVENT, {
@@ -415,6 +423,7 @@ export class MaticMapCanvasV4 extends LitElement {
   get drawingReady(): boolean { return this.#drawToolsReady(); }
 
   protected override willUpdate(changed: PropertyValues<this>): void {
+    if (!this.state.wifiSignal) this.#wifiSpot = null;
     if (changed.has("outlineEditor")) this.outlineEditor?.attach(this, () => this.#renderer, (intent) => this.#intent(intent));
     // The editor's own rules (outline-editor.ts) arrive with it and are
     // adopted before its handles render, so startup does not carry them.
@@ -807,6 +816,10 @@ export class MaticMapCanvasV4 extends LitElement {
         ` : nothing}
 
         ${this.#renderDock(showScene)}
+        ${showScene && state.dataMode === "live" && !state.floor.readOnly && state.selection.floorId === "current"
+          && state.wifiSignal?.status === "ready" && state.resources.scene.value && this.#renderer?.layers
+          ? this.#renderer.layers.wifiLegend({ layer: state.wifiSignal, scene: state.resources.scene.value, spot: this.#wifiSpot,
+            locale: state.locale, t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }) : nothing}
 
         ${message ? html`
           <div class="map-message ms-surface ms-surface--floating"><strong>${message}</strong></div>

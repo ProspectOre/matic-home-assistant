@@ -50,7 +50,7 @@ async function loadGeometry(page) {
       const state = {
         labelsVisible: false, view: "top", appearance: "photo", workflow: "home", dataMode: "live",
         floor: { readOnly: false }, selection: { floorId: "current", roomIds: [] }, planDraft: { rooms: [] },
-        floorTypes: null, wifiSignal: null, wifiScale: "fixed", trail: null,
+        floorTypes: null, wifiSignal: null, trail: null,
         resources: { entry: { mapSessionKey: "session" }, plans: { value: null }, areas: { value: { rooms: [], zones: [] } } },
         ...patch,
       };
@@ -143,23 +143,28 @@ test("the travel path is the accent on a light edge, stops at a gap and marks a 
   }
 });
 
-test("Wi-Fi heat fades from each sample to nothing without rings, over the room colour", async ({ page }) => {
+test("the Wi-Fi surface fades from a reading to nothing at its reach and stops at the room's outline", async ({ page }) => {
   const rooms = [{ id: "room", roomId: "room", name: "Room", center: [20, 20], boundary: [[4, 4], [36, 4], [36, 36], [4, 36]] }];
-  const wifiSignal = { status: "ready", cells: [{ x: 2, y: 2, dbm: -50, size: 0.3 }] };
-  // The sample's footprint is 0.45 m, 22.5 px.
-  const offsets = [0, 3, 6, 9, 12, 15, 18, 21, 24, 40];
-  const pixels = await sample(page, rooms, { appearance: "rooms", wifiSignal }, offsets.map((offset) => [100 + offset, 100]));
+  const now = Date.now() / 1000;
+  const wifiSignal = { status: "ready", rooms: [], cells: [
+    { x: 1.5, y: 3, dbm: -50, samples: 5, updatedAt: now }, { x: 3.4, y: 0.6, dbm: -50, samples: 5, updatedAt: now },
+  ] };
+  // The reach is 1.5 m, 75 px. The room ends at 3.6 m, 180 px, inside the half texel that filtering blends.
+  const offsets = [0, 10, 20, 30, 40, 50, 60, 70, 80];
+  const pixels = await sample(page, rooms, { wifiSignal },
+    [...offsets.map((offset) => [75 + offset, 150]), [176, 30], [184, 30]]);
   for (const path of ["webgl", "canvas"]) {
-    const room = pixels.at(-1)[path];
-    const heat = pixels.map((pixel) => Math.hypot(...pixel[path].map((value, channel) => value - room[channel])));
-    expect(heat[0], `${path} sample`).toBeGreaterThan(60);
-    for (let index = 1; index < heat.length; index += 1) {
+    const heat = pixels.map((pixel) => Math.hypot(...pixel[path].map((value, channel) => value - GREY[channel])));
+    expect(heat[0], `${path} reading`).toBeGreaterThan(60);
+    for (let index = 1; index < offsets.length; index += 1) {
       expect(heat[index], `${path} fades at ${offsets[index]} px`).toBeLessThanOrEqual(heat[index - 1] + 1.5);
     }
-    expect(heat.at(-2), `${path} past the footprint`).toBe(0);
+    expect(heat[offsets.length - 1], `${path} past the reach`).toBe(0);
+    expect(heat.at(-2), `${path} just inside the outline`).toBeGreaterThan(20);
+    expect(heat.at(-1), `${path} just outside the outline`).toBe(0);
   }
   for (const [index, pixel] of pixels.entries()) {
-    expectColour(pixel.webgl, pixel.canvas, 3, `WebGL matches Canvas 2D ${offsets[index]} px from the sample`);
+    expectColour(pixel.webgl, pixel.canvas, 3, `WebGL matches Canvas 2D at point ${index}`);
   }
 });
 

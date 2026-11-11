@@ -18,8 +18,8 @@ const CAMERA_FRAME = {
   // The 2D canvas holds labels and markers, which follow the camera.
   overlayRedraws: 1,
   // The robot's mesh is one draw call and six WebGL calls.
-  drawCalls: 38,
-  glCalls: 365,
+  drawCalls: 40,
+  glCalls: 385,
   textMeasures: 4,
 };
 // Median script time of a camera frame, in milliseconds. The container that
@@ -116,12 +116,12 @@ async function loadRenderer(page) {
     const ring = (x, y, width, height) => [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
     const cells = [];
     for (let x = 0; x < 8; x += 1) for (let y = 0; y < 5; y += 1) {
-      cells.push({ x: 4.6 + x * 0.5, y: 3.9 + y * 0.5, dbm: -45 - x * 4 - y * 3, size: 0.5 });
+      cells.push({ x: 4.6 + x * 0.5, y: 3.9 + y * 0.5, dbm: -45 - x * 4 - y * 3, samples: 5, updatedAt: Date.now() / 1000 });
     }
     const state = {
       ...base, pageActive: true, optionalUiReady: true, labelsVisible: true, appearance: "photo", quality: "maximum",
       floorTypes: { status: "ready", carpet: [ring(1, 1, 2.2, 1.4), ring(1.5, 1.3, 0.6, 0.5)], vent: [ring(7.6, 0.8, 0.4, 0.25)] },
-      wifiSignal: { status: "ready", surveying: false, cellSize: 0.5, cells },
+      wifiSignal: { status: "ready", surveying: false, cells, rooms: [] },
       trail: { id: "live", mapSessionKey: key, segments: [
         Array.from({ length: 160 }, (_, index) => [0.9 + index * 0.045, 2 + Math.sin(index / 7) * 0.9 + index * 0.02]),
         [[8.2, 2.2]],

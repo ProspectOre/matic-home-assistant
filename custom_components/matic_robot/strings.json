@@ -251,14 +251,22 @@
     "v4_floor_types_legend": "Brown is carpet, blue is a vent",
     "v4_floor_types_empty": "None mapped yet · the robot finds them while cleaning",
     "v4_wifi_signal_failed": "Couldn't load the survey",
-    "v4_wifi_samples_note": "Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured.",
-    "v4_wifi_scale_heading": "Wi-Fi colors",
-    "v4_wifi_scale_absolute": "Signal strength",
-    "v4_wifi_scale_relative": "Compare sampled spots",
-    "v4_wifi_absolute_note": "Colors show signal strength.",
-    "v4_wifi_relative_note": "Colors compare sampled spots, not absolute quality.",
-    "v4_wifi_scale_legend": "Color scale",
-    "v4_wifi_sampled_range": "Sampled range",
+    "v4_wifi_samples_note": "Estimates within {distance} of a reading. Blank areas are unmeasured.",
+    "v4_wifi_band_strong": "Strong",
+    "v4_wifi_band_good": "Good",
+    "v4_wifi_band_weak": "Weak",
+    "v4_wifi_band_dead": "Dead zone",
+    "v4_wifi_band_from": "{dbm} dBm and up",
+    "v4_wifi_band_between": "{low} to {high} dBm",
+    "v4_wifi_band_below": "Below {dbm} dBm",
+    "v4_wifi_dbm": "{dbm} dBm",
+    "v4_wifi_weakest_room": "Weakest room",
+    "v4_wifi_tap_hint": "Tap or click a spot on the map to read it.",
+    "v4_wifi_spot": "Selected spot",
+    "v4_wifi_readings_one": "{count} reading",
+    "v4_wifi_readings_other": "{count} readings",
+    "v4_wifi_spot_empty": "No readings near this spot.",
+    "v4_wifi_every_room": "Every room",
     "v4_wifi_signal_waiting": "No samples yet · they arrive during cleaning",
     "v4_wifi_signal_off": "Turn on Wi-Fi survey in the robot's settings",
     "v4_room_limit_reached": "Up to {limit} rooms fit in one clean, so remove one to add another.",
@@ -1472,6 +1480,17 @@
       },
       "room_last_cleaned": {
         "name": "{room} last cleaned"
+      },
+      "room_wifi_signal": {
+        "name": "{room} Wi-Fi signal",
+        "state_attributes": {
+          "weakest_dbm": {
+            "name": "Weakest spot"
+          },
+          "samples": {
+            "name": "Readings"
+          }
+        }
       },
       "last_run_duration": {
         "name": "Last clean duration"

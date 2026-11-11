@@ -44,6 +44,7 @@ from .plan_model import plan_floor_token, room_cadence_identity
 from .room_statistics import native_statistics_have_ambiguous_floor
 from .session import RobotSession
 from .stores import Store
+from .wifi_room_sensor import MaticRoomWifiSignalSensor
 
 PARALLEL_UPDATES = 0
 
@@ -310,20 +311,18 @@ async def async_setup_entry(
     known_rooms: set[str] = set()
 
     def _new_room_entities() -> list[SensorEntity]:
-        """Build opt-in statistics sensors for rooms not yet seen."""
+        """Build opt-in statistics and Wi-Fi sensors for rooms not yet seen."""
         floor_plan = session.floor.value
         if floor_plan is None:
             return []
         new_rooms = [room for room in floor_plan.rooms if room.id not in known_rooms]
         known_rooms.update(room.id for room in new_rooms)
-        return [
-            entity
-            for room in new_rooms
-            for entity in (
-                MaticRoomDurationSensor(entry, room),
-                MaticRoomLastCleanedSensor(entry, room),
-            )
-        ]
+        kinds = (
+            MaticRoomDurationSensor,
+            MaticRoomLastCleanedSensor,
+            MaticRoomWifiSignalSensor,
+        )
+        return [kind(entry, room) for room in new_rooms for kind in kinds]
 
     async_add_entities(
         [

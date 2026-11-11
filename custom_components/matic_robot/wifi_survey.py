@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from bisect import bisect
+from collections import defaultdict
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from http import HTTPStatus
@@ -19,7 +22,7 @@ from homeassistant.helpers.storage import Store
 
 from .client.exceptions import MaticError
 from .client.floor_plan import MAX_MAP_COORDINATE, pose_observation_is_current
-from .client.models import RobotPose
+from .client.models import FloorPlan, RobotPose
 from .const import DOMAIN
 from .http import (
     PRIVATE_NO_STORE_HEADERS,
@@ -63,6 +66,15 @@ class SignalCell:
     dbm: float
     samples: int
     updated_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class RoomSignal:
+    """One room's cells: their mean and weakest signal, and the readings behind them."""
+
+    dbm: float
+    weakest: float
+    samples: int
 
 
 type _CellKey = tuple[int, int, float]
@@ -112,6 +124,10 @@ class WifiSurveyStore:
         # Bumped by clear() and by turning the survey off, so a scan that
         # straddles either is discarded.
         self._epoch = 0
+        # Bumped by every change to the cells; keys the room summary cache.
+        self._revision = 0
+        self._rooms: tuple[int, FloorPlan, dict[str, RoomSignal]] | None = None
+        self._listeners: list[Callable[[], None]] = []
 
     @property
     def enabled(self) -> bool:
@@ -130,7 +146,18 @@ class WifiSurveyStore:
             for mission, cells in _decode_floors(stored.get("floors")).items()
             if mission in self._frames
         }
+        self._revision += 1
         self._closed = False
+
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Call `listener` after every change to the cells; return its removal."""
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener)
+
+    def _changed(self) -> None:
+        self._revision += 1
+        for listener in list(self._listeners):
+            listener()
 
     def set_enabled(self, enabled: bool) -> None:
         """Turn sampling on or off."""
@@ -144,6 +171,7 @@ class WifiSurveyStore:
         self._floors.clear()
         self._frames.clear()
         self._epoch += 1
+        self._changed()
         self._schedule_save()
 
     def add_sample(
@@ -181,6 +209,7 @@ class WifiSurveyStore:
             cell.samples += 1
             cell.dbm += (dbm - cell.dbm) / min(cell.samples, FADE_SAMPLES)
             cell.updated_at = at
+        self._changed()
         self._schedule_save()
         return True
 
@@ -199,6 +228,35 @@ class WifiSurveyStore:
             }
             for (ix, iy, size), cell in sorted(self._floors.get(mission_id, {}).items())
         ]
+
+    def room_signals(self, floor_plan: FloorPlan) -> dict[str, RoomSignal]:
+        """Summarise, by room id, the cells whose centre lies inside each room."""
+        cached = self._rooms
+        if (
+            cached is not None
+            and cached[0] == self._revision
+            and cached[1] == floor_plan
+        ):
+            return cached[2]
+        rows: defaultdict[float, list[tuple[float, SignalCell]]] = defaultdict(list)
+        if self._frames.get(floor_plan.mission_id) == survey_frame(
+            floor_plan.partition_id_wire
+        ):
+            for (ix, iy, size), cell in self._floors.get(
+                floor_plan.mission_id, {}
+            ).items():
+                rows[(iy + 0.5) * size].append(((ix + 0.5) * size, cell))
+        signals: dict[str, RoomSignal] = {}
+        for room in floor_plan.rooms:
+            inside = list(_cells_inside(room.boundary, rows))
+            if inside:
+                signals[room.id] = RoomSignal(
+                    round(sum(cell.dbm for cell in inside) / len(inside), 1),
+                    round(min(cell.dbm for cell in inside), 1),
+                    sum(cell.samples for cell in inside),
+                )
+        self._rooms = (self._revision, floor_plan, signals)
+        return signals
 
     async def async_collect(self, session: RobotSession) -> None:
         """Scan at a fixed pace while the survey is on and the robot is out."""
@@ -295,6 +353,23 @@ def _poses_agree(before: RobotPose, after: RobotPose) -> bool:
     )
 
 
+def _cells_inside(
+    boundary: tuple[tuple[float, float], ...],
+    rows: dict[float, list[tuple[float, SignalCell]]],
+) -> Iterator[SignalCell]:
+    """Yield the cells whose centre lies inside the boundary, by the even-odd rule."""
+    if len(boundary) < 3:
+        return
+    edges = list(zip(boundary, boundary[1:] + boundary[:1], strict=True))
+    for y, row in rows.items():
+        crossings = sorted(
+            x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            for (x1, y1), (x2, y2) in edges
+            if (y1 <= y) != (y2 <= y)
+        )
+        yield from (cell for x, cell in row if bisect(crossings, x) % 2)
+
+
 def _latest(cells: dict[_CellKey, SignalCell]) -> float:
     return max((cell.updated_at for cell in cells.values()), default=0.0)
 
@@ -389,18 +464,30 @@ class MaticWifiHeatmapView(HomeAssistantView):
             )
         survey = runtime.wifi_survey
         floor_plan = runtime.session.floor.value
+        if floor_plan is None:
+            cells: list[dict[str, float | int]] = []
+            rooms: list[dict[str, str | float | int]] = []
+        else:
+            cells = survey.cells(
+                floor_plan.mission_id, survey_frame(floor_plan.partition_id_wire)
+            )
+            signals = survey.room_signals(floor_plan)
+            rooms = [
+                {
+                    "name": room.name,
+                    "dbm": signal.dbm,
+                    "weakest": signal.weakest,
+                    "samples": signal.samples,
+                }
+                for room in floor_plan.rooms
+                if (signal := signals.get(room.id)) is not None
+            ]
         return self.json(
             {
                 "enabled": survey.enabled,
                 "cell_size": CELL_SIZE_METERS,
-                "cells": (
-                    survey.cells(
-                        floor_plan.mission_id,
-                        survey_frame(floor_plan.partition_id_wire),
-                    )
-                    if floor_plan is not None
-                    else []
-                ),
+                "cells": cells,
+                "rooms": rooms,
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )

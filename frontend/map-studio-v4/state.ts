@@ -95,7 +95,6 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   appearance: "photo",
   labelsVisible: true,
   wifiSignal: null,
-  wifiScale: "absolute",
   floorTypes: null,
   followMode: "off",
   comparisonActive: false,
@@ -200,6 +199,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   robotLabel: "Robot",
   robots: [],
   locale: "en",
+  imperial: false,
 });
 
 /** Saved plans load for their editor, room selector, or pinned home shortcuts. */
@@ -430,9 +430,7 @@ export const reduceWorkspace = (
     case "toggle-labels":
       return { ...state, labelsVisible: !state.labelsVisible };
     case "toggle-wifi-signal":
-      return { ...state, wifiSignal: state.wifiSignal ? null : { status: "loading", surveying: false, cellSize: 0, cells: [] } };
-    case "set-wifi-scale":
-      return { ...state, wifiScale: intent.scale === "relative" ? "relative" : "absolute" };
+      return { ...state, wifiSignal: state.wifiSignal ? null : { status: "loading", surveying: false, cells: [], rooms: [] } };
     case "set-follow-mode":
       if (intent.mode !== "off" && !canFollowRobot(state, intent.mode)) return state;
       return state.followMode === intent.mode ? state : {

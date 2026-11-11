@@ -4,6 +4,7 @@ import { overlayShapes, type OverlayShape, type Ring } from "./overlay-shapes";
 import type { MapPoint } from "./renderer-camera";
 import { roomColours, trailVisible } from "./renderer-overlays";
 import { rgba, type CanvasPalette } from "./theme-probe";
+import { WIFI_BANDS, wifiBand } from "./wifi-scale";
 
 const HEAD = `#version 300 es
 precision highp float;
@@ -100,28 +101,28 @@ void main() {
     || distanceTo(point, vEnd, vNext) < distance : alpha < 1.0) discard;
   outColor = vec4(uColor.rgb, uColor.a * alpha);
 }`;
-const DISC_VERTEX = `${HEAD}${PROJECT}layout(location=0) in vec3 aDisc;
-layout(location=1) in vec3 aColor;
-out vec2 vOffset;
-out vec3 vColor;
+const SURFACE_VERTEX = `${HEAD}${PROJECT}layout(location=0) in vec2 aPoint;
+out vec2 vTexel;
 void main() {
-  vOffset = vec2(gl_VertexID & 1, gl_VertexID >> 1) * 2.0 - 1.0;
-  vColor = aColor;
-  gl_Position = project(aDisc.xy + vOffset * aDisc.z);
+  vTexel = vec2(gl_VertexID & 1, gl_VertexID >> 1);
+  gl_Position = project(aPoint);
 }`;
-// The same falloff as the 2D gradient: .65 at the sample, .4 at 65 % of the
-// radius, clear at the edge.
-const DISC_FRAGMENT = `${HEAD}in vec2 vOffset;
-in vec3 vColor;
+// Filtering the premultiplied mean between texels and banding it per pixel
+// keeps band edges smooth; a band starts half a dBm early, as rounding does.
+const SURFACE_FRAGMENT = `${HEAD}uniform sampler2D uImage;
+in vec2 vTexel;
 out vec4 outColor;
 void main() {
-  float radius = length(vOffset);
-  if (radius >= 1.0) discard;
-  outColor = vec4(vColor, radius < 0.65 ? mix(0.65, 0.4, radius / 0.65) : mix(0.4, 0.0, (radius - 0.65) / 0.35));
+  vec2 value = texture(uImage, vTexel).rg;
+  if (value.g <= 0.0) discard;
+  float dbm = value.r / value.g;
+  outColor = vec4(${WIFI_BANDS.map(({ from, colour }) => `${Number.isFinite(from) ? `dbm >= ${(from - 0.5).toFixed(1)} ? ` : ""}vec3(${colour.map((channel) => (channel / 255).toFixed(4)).join(", ")})`).join(" : ")}, value.g);
 }`;
+// The 2D painter maps each square of this many texels on its own, so a tilted
+// view bends the image only at their seams.
+const TILE = 32;
 
 const STROKE_FLOATS = 10;
-const DISC_FLOATS = 6;
 // Fills use the stencil's top bit for the even-odd rule; strokes number
 // themselves in the other seven.
 const FILL_BIT = 0x80;
@@ -187,7 +188,10 @@ export class OverlayGeometry {
   readonly #gl: WebGL2RenderingContext | null;
   #fill: Program | null = null;
   #stroke: Program | null = null;
-  #discs: Program | null = null;
+  #surface: Program | null = null;
+  #texture: WebGLTexture | null = null;
+  /** The surface for the 2D painter, and its tiles that hold any colour. */
+  #image: { readonly canvas: HTMLCanvasElement; readonly tiles: readonly (readonly [number, number])[] } | null = null;
   #shapes: readonly OverlayShape[] = [];
   #commands: Command[] = [];
   #inputs: unknown[] = [];
@@ -200,10 +204,16 @@ export class OverlayGeometry {
     try {
       this.#fill = createProgram(gl, FILL_VERTEX, FILL_FRAGMENT, [2]);
       this.#stroke = createProgram(gl, STROKE_VERTEX, STROKE_FRAGMENT, [4, 4, 2]);
-      this.#discs = createProgram(gl, DISC_VERTEX, DISC_FRAGMENT, [3, 3]);
+      this.#surface = createProgram(gl, SURFACE_VERTEX, SURFACE_FRAGMENT, [2]);
     } catch (error) {
       this.dispose();
       throw error;
+    }
+    this.#texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.#texture);
+    for (const [name, value] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+      [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]] as const) {
+      gl.texParameteri(gl.TEXTURE_2D, name, value);
     }
   }
 
@@ -217,7 +227,7 @@ export class OverlayGeometry {
     const next = this.#next;
     next.length = 0;
     next.push(scene.metadata, palette, state.labelsVisible, roomColours(state), state.dataMode, state.floor.readOnly,
-      state.selection.floorId, state.floorTypes, state.wifiSignal, state.wifiScale,
+      state.selection.floorId, state.floorTypes, state.wifiSignal,
       state.resources.areas.value?.zones, trailVisible(state) ? state.trail : null, state.workflow,
       state.selection.roomIds, state.planDraft.rooms, state.resources.plans.value?.rooms,
       state.resources.areas.value?.rooms);
@@ -226,19 +236,22 @@ export class OverlayGeometry {
     this.#inputs = next;
     this.#shapes = overlayShapes(scene, state, palette);
     if (this.#gl) this.#upload(this.#gl);
+    else this.#image = paintable(this.#shapes);
   }
 
   #upload(gl: WebGL2RenderingContext): void {
     const fills: number[] = [];
     const strokes: number[] = [];
-    const discs: number[] = [];
+    const surface: number[] = [];
     // The travel path's two strokes share one set of segments.
     const stroked = new Map<readonly Ring[], { readonly first: number; readonly count: number }>();
     this.#commands = this.#shapes.map((shape) => {
-      if (shape.kind === "discs") {
-        const first = discs.length / DISC_FLOATS;
-        for (const value of shape.discs) discs.push(value);
-        return { shape, first, count: shape.discs.length / DISC_FLOATS };
+      if (shape.kind === "surface") {
+        const [x, z, rowX, rowZ, columnX, columnZ] = shape.corners;
+        surface.push(x!, z!, rowX!, rowZ!, columnX!, columnZ!, rowX! + columnX! - x!, rowZ! + columnZ! - z!);
+        gl.bindTexture(gl.TEXTURE_2D, this.#texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, shape.columns, shape.rows, 0, gl.RG, gl.FLOAT, shape.values);
+        return { shape, first: 0, count: 4 };
       }
       if (shape.kind === "fill") {
         const first = fills.length / 2;
@@ -273,7 +286,7 @@ export class OverlayGeometry {
       }
       return { shape, ...range };
     });
-    for (const [program, data] of [[this.#fill, fills], [this.#stroke, strokes], [this.#discs, discs]] as const) {
+    for (const [program, data] of [[this.#fill, fills], [this.#stroke, strokes], [this.#surface, surface]] as const) {
       gl.bindBuffer(gl.ARRAY_BUFFER, program!.buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
     }
@@ -293,7 +306,7 @@ export class OverlayGeometry {
     let strokeId = 0;
     for (const { shape, first, count } of this.#commands) {
       if (!count) continue;
-      const program = (shape.kind === "fill" ? this.#fill : shape.kind === "stroke" ? this.#stroke : this.#discs)!;
+      const program = (shape.kind === "fill" ? this.#fill : shape.kind === "stroke" ? this.#stroke : this.#surface)!;
       if (program !== bound) {
         bound = program;
         gl.useProgram(program.program);
@@ -302,12 +315,11 @@ export class OverlayGeometry {
         gl.uniformMatrix4fv(program.uniform("uViewProjection"), false, matrix);
       }
       gl.uniform1f(program.uniform("uHeight"), shape.height);
-      if (shape.kind === "discs") {
+      if (shape.kind === "surface") {
         gl.stencilMask(0);
         gl.stencilFunc(gl.ALWAYS, 0, 0);
-        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, DISC_FLOATS * 4, first * DISC_FLOATS * 4);
-        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, DISC_FLOATS * 4, first * DISC_FLOATS * 4 + 12);
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+        gl.bindTexture(gl.TEXTURE_2D, this.#texture);
+        gl.drawArrays(gl.TRIANGLE_STRIP, first, count);
         continue;
       }
       const [red, green, blue] = shape.colour;
@@ -357,27 +369,20 @@ export class OverlayGeometry {
   paint(context: CanvasRenderingContext2D, project: (x: number, height: number, z: number) => MapPoint | null): void {
     context.save();
     for (const shape of this.#shapes) {
-      if (shape.kind === "discs") {
-        const { discs, height } = shape;
-        for (let offset = 0; offset < discs.length; offset += DISC_FLOATS) {
-          const [x, z, radius] = [discs[offset]!, discs[offset + 1]!, discs[offset + 2]!];
-          // Derive the local projection near the sample. Projecting the full
-          // footprint can cross behind the camera at close zoom and hide it.
-          const step = 0.01;
-          const centre = project(x, height, z);
-          const east = project(x + step, height, z);
-          const north = project(x, height, z + step);
-          if (!centre || !east || !north) continue;
-          const colour = [0, 1, 2].map((channel) => Math.round(discs[offset + 3 + channel]! * 255)).join(",");
+      if (shape.kind === "surface") {
+        if (!this.#image) continue;
+        const { corners, columns, rows, height } = shape;
+        const at = (column: number, row: number): MapPoint | null => project(
+          corners[0]! + (corners[2]! - corners[0]!) * column / columns + (corners[4]! - corners[0]!) * row / rows, height,
+          corners[1]! + (corners[3]! - corners[1]!) * column / columns + (corners[5]! - corners[1]!) * row / rows);
+        for (const [column, row] of this.#image.tiles) {
+          const [width, depth] = [Math.min(TILE, columns - column), Math.min(TILE, rows - row)];
+          const [origin, across, down] = [at(column, row), at(column + width, row), at(column, row + depth)];
+          if (!origin || !across || !down) continue;
           context.save();
-          context.transform((east.x - centre.x) * radius / step, (east.y - centre.y) * radius / step,
-            (north.x - centre.x) * radius / step, (north.y - centre.y) * radius / step, centre.x, centre.y);
-          const gradient = context.createRadialGradient(0, 0, 0, 0, 0, 1);
-          gradient.addColorStop(0, `rgba(${colour},.65)`);
-          gradient.addColorStop(0.65, `rgba(${colour},.4)`);
-          gradient.addColorStop(1, `rgba(${colour},0)`);
-          context.fillStyle = gradient;
-          context.fillRect(-1, -1, 2, 2);
+          context.transform((across.x - origin.x) / width, (across.y - origin.y) / width,
+            (down.x - origin.x) / depth, (down.y - origin.y) / depth, origin.x, origin.y);
+          context.drawImage(this.#image.canvas, column, row, width, depth, 0, 0, width, depth);
           context.restore();
         }
         continue;
@@ -415,11 +420,38 @@ export class OverlayGeometry {
 
   dispose(): void {
     const gl = this.#gl;
-    for (const program of [this.#fill, this.#stroke, this.#discs]) {
+    for (const program of [this.#fill, this.#stroke, this.#surface]) {
       if (!gl || !program) continue;
       gl.deleteProgram(program.program);
       gl.deleteVertexArray(program.vertexArray);
       gl.deleteBuffer(program.buffer);
     }
+    gl?.deleteTexture(this.#texture);
+    this.#image = null;
   }
 }
+
+/** The surface as a canvas the 2D painter can draw from, with its tiles that hold any colour. */
+const paintable = (shapes: readonly OverlayShape[]): { canvas: HTMLCanvasElement; tiles: [number, number][] } | null => {
+  const surface = shapes.find((shape) => shape.kind === "surface");
+  if (!surface) return null;
+  const { values, columns, rows } = surface;
+  const pixels = new Uint8ClampedArray(columns * rows * 4);
+  for (let index = 0; index < columns * rows; index += 1) {
+    const alpha = values[index * 2 + 1]!;
+    if (alpha) pixels.set([...wifiBand(values[index * 2]! / alpha).colour, alpha * 255], index * 4);
+  }
+  const canvas = Object.assign(document.createElement("canvas"), { width: columns, height: rows });
+  canvas.getContext("2d")?.putImageData(new ImageData(pixels, columns, rows), 0, 0);
+  const tiles: [number, number][] = [];
+  for (let row = 0; row < rows; row += TILE) {
+    for (let column = 0; column < columns; column += TILE) {
+      let filled = false;
+      for (let j = row; j < Math.min(rows, row + TILE) && !filled; j += 1) {
+        for (let i = column; i < Math.min(columns, column + TILE) && !filled; i += 1) filled = pixels[(j * columns + i) * 4 + 3]! > 0;
+      }
+      if (filled) tiles.push([column, row]);
+    }
+  }
+  return { canvas, tiles };
+};

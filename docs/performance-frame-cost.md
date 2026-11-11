@@ -8,11 +8,12 @@ come from a container and are labelled so.
 
 WebGL draws the scene's points or close-zoom surfaces, every floor-plane
 layer (room colors, room outlines, the selection, zones, floor types, the
-travel path and the Wi-Fi map) and the robot, a mesh that walls in front of it
-hide. The 2D canvas above it holds what follows the camera in screen space:
-room names, the last-seen mark and the drawing tools. A browser without
-WebGL2, or one whose overlay programs do not link, paints the same shapes on
-the 2D canvas; so do forced colours for the robot.
+travel path and the Wi-Fi map, which is interpolated once into a texture when
+its readings change) and the robot, a mesh that walls in front of it hide. The
+2D canvas above it holds what follows the camera in screen space: room names,
+the last-seen mark and the drawing tools. A browser without WebGL2, or one
+whose overlay programs do not link, paints the same shapes on the 2D canvas;
+so do forced colours for the robot.
 
 A frame reads no layout: the resize observer caches the canvas size, and only
 input measures the canvas, for its position. Matrices and overlay buffers are
@@ -40,8 +41,8 @@ view.
 | Buffer and texture uploads | 0 | 0 |
 | Shader and program calls | 0 | 0 |
 | 2D canvas redraws | 1 | 1 |
-| Draw calls | 38 | 38 |
-| WebGL calls | 365 | 361 to 365 |
+| Draw calls | 40 | 40 |
+| WebGL calls | 385 | 381 to 385 |
 | Text measurements | 4 | 4 |
 | Median script time | 8 ms | 0.5 ms |
 

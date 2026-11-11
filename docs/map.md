@@ -34,11 +34,15 @@ what the map shows. On a phone it also holds the 2D appearance and room names.
   turns it off. **Ride along in 3D** also turns the view with the robot. Both
   need a live position, and Ride along needs the robot's heading. Neither shows
   video from the robot's camera.
-- **Wi-Fi signal** colors the spots the robot has sampled, from green for
-  strong to red for weak. Turn on the robot's **Wi-Fi survey** switch first:
-  the robot then scans every 30 seconds while it's away from the dock. Rings
-  mark older, coarser readings and blank areas are unmeasured. **Clear Wi-Fi
-  survey** starts over, for example after you move your router.
+- **Wi-Fi signal** estimates the signal up to 1.5 m (5 ft) from each reading,
+  within the reading's own room, in four bands: strong (-55 dBm and up), good
+  (-67 to -56), weak (-80 to -68) and dead zone (below -80), which is also
+  outlined. Areas with few or old readings are fainter; blank areas are
+  unmeasured. The legend on the map names the weakest room and lists every
+  room; tap or click a spot to read its estimate, how many readings it rests
+  on and how old they are. Turn on the robot's **Wi-Fi survey** switch first:
+  the robot then scans every 30 seconds while it's away from the dock.
+  **Clear Wi-Fi survey** starts over, for example after you move your router.
 - **Carpet and vents** outlines the rugs and floor vents the robot has found,
   carpet in brown and vents in blue.
 

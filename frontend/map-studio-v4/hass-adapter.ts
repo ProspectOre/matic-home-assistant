@@ -213,6 +213,7 @@ export class HassAdapter {
       currentArea,
       robotRun,
       language,
+      imperial: hass?.config?.unit_system?.length === "mi",
       dates,
       userKey,
       vacuumEntityId: selectedVacuumEntityId,
