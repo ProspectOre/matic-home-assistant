@@ -76,9 +76,11 @@ export class SpatialPose {
     const exact = pose.position !== null && pose.ageSeconds !== null && freshMs > 0;
     this.#show(pose, exact);
     if (!exact) return;
+    // An expired pose no longer places the robot, but its verified map
+    // session still admits the last-seen marker until the next pose.
     this.#expiry = window.setTimeout(() => {
       this.#expiry = null;
-      this.#show(null, false);
+      this.#show({ ...pose, position: null, heading: null }, false);
     }, freshMs);
   }
 
