@@ -10,7 +10,7 @@ test("run pictures retry a failed read and keep the newest twelve", async ({ pag
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const { readRunThumbnail } = await import("/run-thumbnails.js");
-    const store = { value: { runThumbnails: {} }, patch(next) { this.value = { ...this.value, ...next }; } };
+    const store = { value: { runThumbnails: {} }, dispatch({ type: _type, ...next }) { this.value = { ...this.value, ...next }; } };
     const responses = { transient: [503, 200], later: [404, 200] };
     const calls = [];
     const backend = {

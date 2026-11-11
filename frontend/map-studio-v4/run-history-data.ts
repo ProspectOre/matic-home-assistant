@@ -180,13 +180,13 @@ export const readRuns = async (
   },
 ): Promise<void> => {
   const show = (runs: ReturnType<typeof resource<RunHistory>>): void => {
-    store.patch({ resources: { ...store.value.resources, runs } });
+    store.dispatch({ type: "result", resources: { runs } });
   };
   if (!trail) show(resource("loading", store.value.resources.runs.value));
   try {
     const value = await backend.runs(entry.entryId, trail, signal);
     if (signal.aborted) return;
-    if (trail) store.patch({ trail: parseRunTrail(value) });
+    if (trail) store.dispatch({ type: "result", trail: parseRunTrail(value) });
     else show(resource("ready", parseRunHistory(value)));
   } catch (error) {
     if (signal.aborted) return;
@@ -197,9 +197,9 @@ export const readRuns = async (
       return;
     }
     const key = store.value.resources.entry?.mapSessionKey;
-    store.patch(trail === "live" && key && failure.status === 404
+    store.dispatch({ type: "result", ...(trail === "live" && key && failure.status === 404
       ? { trail: { id: trail, mapSessionKey: key, segments: [[]] } }
-      : { trail: null, notice: unavailable });
+      : { trail: null, notice: unavailable }) });
   }
 };
 
@@ -229,7 +229,7 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   const last = segment.at(-1);
   const [x, y] = pose.position;
   if (last && Math.hypot(x - last[0], y - last[1]) < 0.15) return;
-  store.patch({ trail: { ...trail, segments: [...trail.segments.slice(0, -1), [...segment, [x, y] as const].slice(-MAX_POINTS)] } });
+  store.dispatch({ type: "result", trail: { ...trail, segments: [...trail.segments.slice(0, -1), [...segment, [x, y] as const].slice(-MAX_POINTS)] } });
 };
 
 /**
@@ -329,7 +329,7 @@ export const readRunThumbnail = async (
     // Re-render then, so a Cleaning history still showing the run asks again.
     const timer = window.setTimeout(() => {
       pending.timers?.delete(timer);
-      if (!retired()) store.patch({ runThumbnails: { ...store.value.runThumbnails } });
+      if (!retired()) store.dispatch({ type: "result", runThumbnails: { ...store.value.runThumbnails } });
     }, 60_000);
     pending.timers?.add(timer);
     return;
@@ -342,5 +342,5 @@ export const readRunThumbnail = async (
   }
   const kept = Object.entries(store.value.runThumbnails);
   for (const [, old] of kept.slice(0, Math.max(0, kept.length - RUN_THUMBNAILS_KEPT + 1))) URL.revokeObjectURL(old);
-  store.patch({ runThumbnails: Object.fromEntries([...kept.slice(-RUN_THUMBNAILS_KEPT + 1), [id, url]]) });
+  store.dispatch({ type: "result", runThumbnails: Object.fromEntries([...kept.slice(-RUN_THUMBNAILS_KEPT + 1), [id, url]]) });
 };

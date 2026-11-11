@@ -431,7 +431,7 @@ test("a changed shared schedule closes its stale confirmation without writing @s
     const store = new WorkspaceStore(panel.getWorkspaceSnapshot());
     const state = store.value;
     const resource = state.resources.plans;
-    store.patch({ resources: { ...state.resources, plans: { ...resource,
+    store.replace({ ...store.value, resources: { ...state.resources, plans: { ...resource,
       value: { ...resource.value, rooms: resource.value.rooms.map((room) => ({ ...room, sharedDeleteToken: "b".repeat(64) })) },
     } } });
     return { dialog: store.value.dialog, request: store.value.scheduleDeleteRequest };

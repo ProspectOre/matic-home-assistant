@@ -9,6 +9,9 @@ import { materialIconImports, materialIconModules, isMaterialIconInput, writeMat
 const root = fileURLToPath(new URL("../", import.meta.url));
 const production = resolve(root, "custom_components/matic_robot/map_studio_v4");
 const review = resolve(root, "tests/browser/.generated/map-studio-v4-review");
+const panel = "frontend/map-studio-v4/index.ts";
+// The import() targets outside the startup graph, found by the first pass.
+const lazyEntries = new Set();
 // Developer notes stay beside their rules as CSS comments in the sources.
 // esbuild keeps template text verbatim, so the build drops each comment that
 // fills its own lines in a css`` template instead of shipping it. A comment
@@ -21,8 +24,8 @@ const review = resolve(root, "tests/browser/.generated/map-studio-v4-review");
 const styleComments = {
   name: "style-comments",
   setup(compiler) {
-    compiler.onLoad({ filter: /frontend[\\/]map-studio-v4[\\/][^\\/]+\.ts$/ }, async ({ path }) => {
-      const source = materialIconImports(await readFile(path, "utf8"));
+    compiler.onLoad({ filter: /frontend[\\/]map-studio-v4(?:-review)?[\\/][^\\/]+\.ts$/ }, async ({ path }) => {
+      const source = (lazyEntries.has(path) ? 'import "./index";' : "") + materialIconImports(await readFile(path, "utf8"));
       const contents = source.replace(/\bcss`[^`]*`/gu, (template) => template.replace(
         /\n[ \t]*\/\*(?:(?!\$\{)[\s\S])*?\*\/[ \t]*(?=\n)/gu, "",
       ).split(/("[^"\n]*"|'[^'\n]*'|url\([^)]*\)|\$\{[^}]*\})/u).map((part, index) => index % 2 ? part : part
@@ -36,19 +39,42 @@ const styleComments = {
 };
 // One compilation gives the review harness the exact same component chunks
 // as the installed panel. Only the production entry's reachable graph ships.
-const result = await build({
+const options = {
   plugins: [materialIconModules, styleComments],
   absWorkingDir: root,
   entryPoints: {
-    index: "frontend/map-studio-v4/index.ts",
-    review: "frontend/map-studio-v4/review.ts",
-    mockups: "frontend/map-studio-v4/mockups.ts",
-    stage: "frontend/map-studio-v4/stage.ts",
+    index: panel,
+    review: "frontend/map-studio-v4-review/review.ts",
+    mockups: "frontend/map-studio-v4-review/mockups.ts",
+    stage: "frontend/map-studio-v4-review/stage.ts",
   },
   bundle: true, format: "esm", target: "es2022", charset: "ascii", minify: true,
   splitting: true, legalComments: "linked", entryNames: "[name]", chunkNames: "chunks/[name]-[hash]",
   outdir: production, write: false, metafile: true,
-});
+};
+// esbuild gives the modules shared by each distinct set of entries a chunk of
+// their own, which split the startup graph into thirteen files that gzip
+// compressed apart. A lazy chunk loads only after the panel, so a first pass
+// finds the import() targets outside the startup graph and the second has each
+// import the panel entry: every startup module is then shared by all entries
+// and lands in one chunk.
+const modules = (await build(options)).metafile.inputs;
+const startup = new Set();
+const reach = (path) => {
+  if (startup.has(path)) return;
+  startup.add(path);
+  for (const dependency of modules[path].imports) {
+    // esbuild lists an import it dropped, one of types only for example, as external.
+    if (dependency.kind !== "dynamic-import" && !dependency.external) reach(dependency.path);
+  }
+};
+reach(panel);
+for (const { imports } of Object.values(modules)) {
+  for (const { kind, path } of imports) {
+    if (kind === "dynamic-import" && !startup.has(path)) lazyEntries.add(resolve(root, path));
+  }
+}
+const result = await build(options);
 const graph = new Map(Object.entries(result.metafile.outputs).map(([path, metadata]) => [resolve(root, path), metadata]));
 const shipped = new Set();
 function visit(path) {

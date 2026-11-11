@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadRenderer(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { SurfaceGeometry as RealSurfaceGeometry } from "./frontend/map-studio-v4/surface-geometry";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { SurfaceGeometry as RealSurfaceGeometry } from "./frontend/map-studio-v4/surface-geometry";',
       resolveDir: process.cwd(),
     },
     bundle: true,
