@@ -8,7 +8,7 @@ Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Eve
 
 - Inherit the shared [AGENTS.md](https://github.com/ProspectOre/dev-workspace/blob/main/AGENTS.md) (`/Users/alec/Dev/AGENTS.md` when present; native `xcode-tools` preference included); this file adds repository facts only.
 - Before substantive work, at material milestones and at handoff, follow the canonical [Linear work-tracking workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/linear-work-tracking.md). When local ancestor or wiki files are absent, read the linked canonical sources through existing authorized session connectors as that workflow requires; report unavailable routes separately.
-- Write commits, PR text, reviews, comments and docs as plain, specific, human-quality prose: no AI slop such as filler, hype, restated summaries or decorative emoji. Attribution trailers and tool footers are tolerated here, overriding the shared rule, and nothing checks for them. Commit as the account owner; name branches by purpose.
+- Write commits, PR text, reviews, comments and docs as plain, specific, human-quality prose: no AI slop such as filler, hype, restated summaries or decorative emoji. Never add AI/tool attribution or co-author trailers. Commit as the account owner; name branches by purpose.
 
 ## OEM app and protocol research
 
