@@ -20,18 +20,22 @@ async function installRobot(page) {
       document.body.append(canvas);
     }
     // Copy the scene after every frame that draws it, before the browser
-    // composites and clears it.
-    let drew = false, draws = 0, vectors = 0, points = 0;
-    const pixels = new Uint8Array(width * height * 4);
+    // composites and clears it. The buffer has device pixels: WebKit's
+    // desktop profile runs at a device scale of 2.
+    let drew = false, vectors = 0, points = 0, columns = 0, pixels = new Uint8Array(0);
     const nativeFrame = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = (callback) => nativeFrame((time) => {
       drew = false;
       callback(time);
       const gl = scene.getContext("webgl2");
-      if (drew && gl && !gl.isContextLost()) gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      if (!drew || !gl || gl.isContextLost()) return;
+      columns = gl.drawingBufferWidth;
+      const size = columns * gl.drawingBufferHeight * 4;
+      if (pixels.length !== size) pixels = new Uint8Array(size);
+      gl.readPixels(0, 0, columns, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     });
     const clear = WebGL2RenderingContext.prototype.clear;
-    WebGL2RenderingContext.prototype.clear = function(...args) { drew = true; draws++; return clear.apply(this, args); };
+    WebGL2RenderingContext.prototype.clear = function(...args) { drew = true; return clear.apply(this, args); };
     // The 2D robot's body is filled in its body or forced accent colour.
     const context = overlay.getContext("2d");
     const { moveTo, lineTo, fill } = context;
@@ -75,27 +79,31 @@ async function installRobot(page) {
     const robot = async (heading, camera, sceneName = "open") => {
       renderer.setState(state(null, sceneName));
       view(...camera);
-      const start = draws;
       await frame();
-      const without = pixels.slice(), between = draws;
+      const without = pixels.slice();
       vectors = 0;
       renderer.setState(state(heading, sceneName));
       await frame();
-      const redrawn = [between - start, draws - between];
       let count = 0, sumX = 0, sumY = 0, xx = 0, yy = 0, xy = 0;
       const changed = [];
-      for (let index = 0; index < width * height; index++) {
+      for (let index = 0; index < pixels.length / 4; index++) {
         const offset = index * 4;
         if ([0, 1, 2, 3].every(channel => Math.abs(pixels[offset + channel] - without[offset + channel]) <= 32)) continue;
-        const [x, y] = [index % width, Math.floor(index / width)];
+        const [x, y] = [index % columns, Math.floor(index / columns)];
         changed.push([x, y]);
         count++; sumX += x; sumY += y;
       }
       const [cx, cy] = [sumX / count, sumY / count];
       for (const [x, y] of changed) { xx += (x - cx) ** 2; yy += (y - cy) ** 2; xy += (x - cx) * (y - cy); }
       const angle = Math.atan2(2 * xy, xx - yy) / 2;
-      const along = changed.map(([x, y]) => (x - cx) * Math.cos(angle) + (y - cy) * Math.sin(angle));
-      return { count, angle, length: count ? Math.max(...along) - Math.min(...along) : 0, vectors, redrawn };
+      let [low, high] = [Infinity, -Infinity];
+      for (const [x, y] of changed) {
+        const along = (x - cx) * Math.cos(angle) + (y - cy) * Math.sin(angle);
+        [low, high] = [Math.min(low, along), Math.max(high, along)];
+      }
+      // Counts and lengths in CSS pixels.
+      const scale = columns / width;
+      return { count: count / scale ** 2, angle, length: count ? (high - low) / scale : 0, vectors };
     };
     window.__robot = {
       robot,
