@@ -34,6 +34,8 @@ export class RendererModules {
   cameraFollowStatus: RendererModuleStatus = "idle";
   surface: typeof import("./surface-geometry") | null = null;
   surfaceStatus: RendererModuleStatus = "idle";
+  robot: typeof import("./robot-model") | null = null;
+  #robotRequested = false;
   #surfaceNeeded = false;
   #surfaceSupported = true;
   #timeouts = new Map<RendererModuleName, OptionalModuleLoad>();
@@ -59,6 +61,17 @@ export class RendererModules {
     if (this.surfaceStatus !== "idle" || this.#host.disposed()) return;
     this.#load("surface-geometry", this.#callbacks.loadSurfaceGeometry ?? (() => import("./surface-geometry")),
       (module) => { this.surface = module; });
+  }
+
+  /** The robot model, once a heading needs it; a dot stands in until it loads, or if it fails. */
+  loadRobot(): void {
+    if (this.#robotRequested || this.#host.disposed()) return;
+    this.#robotRequested = true;
+    import("./robot-model").then((robot) => {
+      if (this.#host.disposed()) return;
+      this.robot = robot;
+      this.#host.requestRender();
+    }, () => undefined);
   }
 
   loadCameraFollow(): Promise<typeof import("./camera-follow")> {

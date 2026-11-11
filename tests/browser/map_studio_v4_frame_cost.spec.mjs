@@ -17,8 +17,9 @@ const CAMERA_FRAME = {
   programCalls: 0,
   // The 2D canvas holds labels and markers, which follow the camera.
   overlayRedraws: 1,
-  drawCalls: 37,
-  glCalls: 359,
+  // The robot's mesh is one draw call and six WebGL calls.
+  drawCalls: 38,
+  glCalls: 365,
   textMeasures: 4,
 };
 // Median script time of a camera frame, in milliseconds. The container that
@@ -127,6 +128,8 @@ async function loadRenderer(page) {
       ] },
       resources: { ...base.resources,
         entry: base.resources.entry && { ...base.resources.entry, mapSessionKey: key },
+        // A heading turns the robot's dot into its mesh.
+        pose: { ...base.resources.pose, value: { ...base.resources.pose.value, heading: 0.6 } },
         areas: { ...base.resources.areas, value: { ...base.resources.areas.value, zones: [
           { kind: "no_go", outline: ring(5.2, 1, 1.6, 1.2), holes: [[[5.6, 1.3], [6.2, 1.3], [5.9, 1.8]]], roomIds: [], areaIds: [] },
           { kind: "unknown", outline: ring(1, 4, 1.6, 1.4), holes: [], roomIds: [], areaIds: [] },
@@ -222,7 +225,7 @@ test("frames that only advance a scene upload leave the 2D canvas alone", async 
   for (const frame of result.upload) expect(frame.layoutReads).toBe(0);
 });
 
-test("a moving robot redraws only the 2D canvas, and a robot that stops draws nothing", async ({ page }) => {
+test("a moving robot redraws the scene at a camera frame's cost, and a robot that stops draws nothing", async ({ page }) => {
   await loadRenderer(page);
   const result = await page.evaluate(async () => {
     const { renderer, state, settle, measure, PoseMotion } = window.__frameCost;
@@ -244,8 +247,12 @@ test("a moving robot redraws only the 2D canvas, and a robot that stops draws no
   });
   expect(result.moving.length).toBeGreaterThanOrEqual(25);
   test.info().annotations.push({ type: "motion frame counts", description: JSON.stringify(result.moving[0]) });
+  // The robot is a mesh in the scene, so each frame that moves it redraws the
+  // scene as a camera frame does, and uploads nothing.
   for (const frame of result.moving) {
-    expect(frame).toMatchObject({ glCalls: 0, overlayRedraws: 1, layoutReads: 0, typedArrays: 0, bufferUploads: 0 });
+    expect(frame).toMatchObject({ drawCalls: CAMERA_FRAME.drawCalls, overlayRedraws: 1, layoutReads: 0, typedArrays: 0,
+      bufferUploads: 0, programCalls: 0 });
+    expect(frame.glCalls).toBeLessThanOrEqual(CAMERA_FRAME.glCalls);
   }
   expect(result.still, "samples where the robot already is draw nothing").toEqual([]);
 });

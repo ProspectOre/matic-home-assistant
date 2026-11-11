@@ -6,12 +6,13 @@ come from a container and are labelled so.
 
 ## What a frame draws
 
-WebGL draws the scene's points or close-zoom surfaces and every floor-plane
-layer: room colors, room outlines, the selection, zones, floor types, the
-travel path and the Wi-Fi map. The 2D canvas above it holds what follows the
-camera in screen space: room names, the robot, the last-seen mark and the
-drawing tools. A browser without WebGL2, or one whose overlay programs do not
-link, paints the same shapes on the 2D canvas.
+WebGL draws the scene's points or close-zoom surfaces, every floor-plane
+layer (room colors, room outlines, the selection, zones, floor types, the
+travel path and the Wi-Fi map) and the robot, a mesh that walls in front of it
+hide. The 2D canvas above it holds what follows the camera in screen space:
+room names, the last-seen mark and the drawing tools. A browser without
+WebGL2, or one whose overlay programs do not link, paints the same shapes on
+the 2D canvas; so do forced colours for the robot.
 
 A frame reads no layout: the resize observer caches the canvas size, and only
 input measures the canvas, for its position. Matrices and overlay buffers are
@@ -20,15 +21,17 @@ camera moves. A pointer that only moves the cursor mark redraws the 2D canvas
 and leaves WebGL alone. A still map draws nothing.
 
 The robot moves on every frame between the poses Home Assistant pushes: each
-frame places it between the last two, over the time between them, and redraws
-only the 2D canvas. A robot that has stopped draws nothing.
+frame places it between the last two, over the time between them. Its mesh is
+part of the scene, so such a frame redraws the scene as a camera frame does,
+uploading nothing. A robot that has stopped draws nothing.
 
 ## CI gate
 
 `tests/browser/map_studio_v4_frame_cost.spec.mjs` runs in the Browser UI
 workflow's Chromium project. How long a frame takes on a runner's software GL
 says little about a phone, so the gate counts what a frame does, which is the
-same on every machine, with every layer on, in the 3D and the top view.
+same on every machine, with every layer and the robot on, in the 3D and the top
+view.
 
 | Per camera frame | Limit | Measured |
 |---|---:|---:|
@@ -37,8 +40,8 @@ same on every machine, with every layer on, in the 3D and the top view.
 | Buffer and texture uploads | 0 | 0 |
 | Shader and program calls | 0 | 0 |
 | 2D canvas redraws | 1 | 1 |
-| Draw calls | 37 | 37 |
-| WebGL calls | 359 | 355 to 359 |
+| Draw calls | 38 | 38 |
+| WebGL calls | 365 | 361 to 365 |
 | Text measurements | 4 | 4 |
 | Median script time | 8 ms | 0.5 ms |
 
@@ -50,9 +53,10 @@ ceiling, half a 60 Hz frame, is a proposal until the owner agrees a limit.
 
 The same spec checks that a still map draws nothing, that a cursor move makes
 no WebGL call, and that the frames of a 400,000-point upload redraw the 2D
-canvas at most twice and read no layout. A frame of a moving robot makes no
-WebGL call, one 2D canvas redraw and four text measurements, reads no layout
-and creates no typed array; a pose where the robot already is draws nothing.
+canvas at most twice and read no layout. A frame of a moving robot makes the
+draw calls of a camera frame and no more WebGL calls, one 2D canvas redraw, no
+upload or program call, reads no layout and creates no typed array; a pose
+where the robot already is draws nothing.
 
 ## Auto quality
 
