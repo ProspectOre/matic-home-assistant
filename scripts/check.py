@@ -14,7 +14,7 @@ import ast
 import re
 import subprocess
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Container, Iterable, Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -54,8 +54,11 @@ def module_name(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
-def imported(root: Path, path: Path) -> set[str]:
-    """Return the modules a Python file imports, relative imports resolved."""
+def imported(root: Path, path: Path, removed: Container[str] = ()) -> set[str]:
+    """Return the modules a Python file imports, relative imports resolved.
+
+    `removed` names modules whose files are gone but may still be imported.
+    """
     package = path.parent.parts
     found = set()
     for node in ast.walk(ast.parse((root / path).read_bytes())):
@@ -66,9 +69,14 @@ def imported(root: Path, path: Path) -> set[str]:
             base += node.module.split(".") if node.module else []
             for alias in node.names:
                 # `from package import name` targets a submodule when one exists.
+                name = ".".join([*base, alias.name])
                 target = root.joinpath(*base, alias.name)
-                submodule = target.with_suffix(".py").is_file() or target.is_dir()
-                found.add(".".join([*base, alias.name] if submodule else base))
+                submodule = (
+                    name in removed
+                    or target.with_suffix(".py").is_file()
+                    or target.is_dir()
+                )
+                found.add(name if submodule else ".".join(base))
     return found
 
 
@@ -156,8 +164,9 @@ def _baseline() -> dict[str, int]:
 def changed_files() -> list[Path] | None:
     """Return files changed since the nearest main or release branch.
 
-    Deleted files are included: their tests still have to run. None means no
-    such branch is known, so every test should run.
+    Deleted files are included, and a renamed file under both names: their
+    tests still have to run. None means no such branch is known, so every test
+    should run.
     """
     refs = _git("for-each-ref", "--format=%(refname)", "refs/remotes")
     bases = [
@@ -171,7 +180,7 @@ def changed_files() -> list[Path] | None:
     nearest = min(
         bases, key=lambda base: int(_git("rev-list", "--count", f"{base}..HEAD")[0])
     )
-    names = _git("diff", "--name-only", nearest)
+    names = _git("diff", "--name-only", "--no-renames", nearest)
     names += _git("ls-files", "--others", "--exclude-standard")
     return [Path(name) for name in names]
 
@@ -179,12 +188,12 @@ def changed_files() -> list[Path] | None:
 def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
     """Return the test files whose imports or conftests reach a changed file."""
     touched = set(changed)
+    reached = {module_name(path) for path in touched if path.suffix == ".py"}
     imports = {
-        path.relative_to(root): imported(root, path.relative_to(root))
+        path.relative_to(root): imported(root, path.relative_to(root), reached)
         for directory in ("custom_components", "tests")
         for path in root.glob(f"{directory}/**/*.py")
     }
-    reached = {module_name(path) for path in touched if path.suffix == ".py"}
     # A changed package initializer runs on every import beneath the package.
     beneath = tuple(
         f"{module_name(path)}." for path in touched if path.name == "__init__.py"

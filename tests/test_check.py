@@ -147,12 +147,16 @@ def test_file_sizes_are_held_to_the_ceiling_or_their_record(
             f"{PACKAGE}/__init__.py",
             [
                 "tests/test_deleted.py",
+                "tests/test_deleted_name.py",
                 "tests/test_direct.py",
                 "tests/test_domain.py",
                 "tests/test_package.py",
             ],
         ),
-        (f"{PACKAGE}/deleted.py", ["tests/test_deleted.py"]),
+        (
+            f"{PACKAGE}/deleted.py",
+            ["tests/test_deleted.py", "tests/test_deleted_name.py"],
+        ),
         ("tests/e2e/simulator.py", ["tests/e2e/test_run.py"]),
         ("tests/e2e/mission.py", ["tests/e2e/test_run.py"]),
         ("tests/e2e/conftest.py", ["tests/e2e/test_run.py", "tests/e2e/test_stop.py"]),
@@ -179,6 +183,7 @@ def test_tests_follow_the_changed_file(
             "tests/test_package.py": f"from {INTEGRATION} import plans\n",
             "tests/test_domain.py": f"from {INTEGRATION} import DOMAIN\n",
             "tests/test_deleted.py": f"from {INTEGRATION}.deleted import gone\n",
+            "tests/test_deleted_name.py": f"from {INTEGRATION} import deleted\n",
             "tests/e2e/test_run.py": "from .simulator import start\n",
             "tests/e2e/test_stop.py": "",
         },
@@ -187,7 +192,9 @@ def test_tests_follow_the_changed_file(
     assert check.tests_for([Path(changed)], tmp_path) == selected
 
 
-def test_deleted_files_count_as_changed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deleted_and_renamed_files_count_as_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     answers = {
         "for-each-ref": ["refs/remotes/origin/release/0.6"],
         "merge-base": ["base"],
@@ -195,13 +202,21 @@ def test_deleted_files_count_as_changed(monkeypatch: pytest.MonkeyPatch) -> None
         "diff": ["deleted.py", "edited.py"],
         "ls-files": ["new.py"],
     }
-    monkeypatch.setattr(check, "_git", lambda command, *_: answers[command])
+    calls = []
+
+    def git(command: str, *arguments: str) -> list[str]:
+        calls.append((command, *arguments))
+        return answers[command]
+
+    monkeypatch.setattr(check, "_git", git)
 
     assert check.changed_files() == [
         Path("deleted.py"),
         Path("edited.py"),
         Path("new.py"),
     ]
+    # With rename detection git lists a moved file under its new name only.
+    assert ("diff", "--name-only", "--no-renames", "base") in calls
 
 
 @pytest.mark.parametrize(
