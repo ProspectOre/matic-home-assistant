@@ -42,17 +42,15 @@ a certificate-bound address; [vacuum catalogs](../custom_components/matic_robot/
 map Home Assistant areas to floor-scoped rooms.
 
 Each config entry has one [robot session](../custom_components/matic_robot/session.py).
-It reads the robot's identity and state once at setup. After that a watch of
-`kabuki_state`, a subscription the supervisor reopens whenever it ends, is the
-only writer of its state store, publishing at most one snapshot a second.
-[Robot health](../custom_components/matic_robot/robot_health.py) shows an error
-code or bag flag once two samples of that snapshot, 30 seconds apart, carry it.
-The robot is unreachable, and every entity unavailable, from a failed dial or
-after 10 seconds without a live state subscription until the next snapshot;
-the keepalive ping is what ends a silent connection. The session also raises
-the Repair for a changed robot identity, starts reauthentication when a dial
-or the state subscription is refused, and closes the client on unload and
-when Home Assistant stops.
+It reads identity and state once at setup; after that a `kabuki_state` watch,
+reopened by the supervisor whenever it ends, is the only writer of its state
+store, at most one snapshot a second. [Robot health](../custom_components/matic_robot/robot_health.py)
+shows an error code or bag flag once two samples 30 seconds apart carry it. A
+failed dial, or 10 seconds with no live state subscription, makes the robot
+and every entity unavailable until the next snapshot; the keepalive ping ends
+a silent connection. The session also raises the identity Repair, starts
+reauthentication when a dial or the state subscription is refused, and closes
+the client on unload and when Home Assistant stops.
 
 The [coordinator](../custom_components/matic_robot/coordinator.py) is what
 entities read. It joins the session's state with what the robot does not push
