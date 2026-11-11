@@ -739,8 +739,6 @@ for (const cadence of [1, 8]) test(`@safety changed-layout updates every ${caden
       return { ...source, buffer, revision, total, floorCount: total - 200_000,
         surfaceCount: 200_000 };
     };
-    // Auto quality times the frames that move the camera, and fitting each new layout
-    // moves it: on a slow engine Auto would thin the scene this test counts in full.
     const stateFor = (scene) => ({ ...base, quality: "maximum",
       resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } } });
     const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
