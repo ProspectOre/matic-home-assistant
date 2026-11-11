@@ -400,8 +400,7 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 53 fixed entities plus three opt-in sensors per mapped room: two
-    # statistics and the room's Wi-Fi signal.
+    # 53 fixed entities plus two statistics and one Wi-Fi sensor per mapped room.
     assert platform_counts == {
         "binary_sensor": 11,
         "button": 4,
