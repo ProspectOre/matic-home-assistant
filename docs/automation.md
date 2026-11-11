@@ -17,8 +17,8 @@ shown on your robot's device page.
 | Matic: Send firmware alerts | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Ffirmware_intelligence.yaml) |
 
 - Every cleaning blueprint starts only when the robot is docked or idle, and
-  uses Run Smart Order, so the longest-waiting rooms and custom areas go first
-  whatever the plan's saved order. Leave Plan empty to run the default plan.
+  runs the plan in Smart Order, so the longest-waiting rooms and custom areas go
+  first whatever the plan's saved order. Leave Plan empty to run the default plan.
 - A household member is away unless their state is `home`, `unknown` or
   `unavailable`, so someone in a named zone such as Work counts as away. When
   anyone comes home, Clean when everyone leaves calls Stop cleaning.
@@ -47,11 +47,11 @@ actions:
 Create a plan in [Matic Map](cleaning.md#saved-plans), then call Run plan
 (`matic_robot.run_selected_plan`) with a `plan` name or ID, or none for the
 default plan. Preview next plan run (`matic_robot.preview_plan`) returns the
-next order and settings without starting. Run Smart Order (`intelligent_clean`)
-starts with what has waited longest; Run saved order (`clean_entire_plan`)
-keeps the saved order. Stop cleaning (`stop_intelligent_cleaning`) applies the
-plan's [stop setting](cleaning.md#stopping-a-plan). To run, pause or change a
-plan in Matic Map, see [plan Run and Edit](cleaning.md#run-and-edit).
+next order and settings without starting. `run_behavior: intelligent` starts
+with what has waited longest and `run_behavior: ordered` keeps the saved order,
+whatever the plan's own setting. Stop cleaning (`stop_intelligent_cleaning`)
+applies the plan's [stop setting](cleaning.md#stopping-a-plan). To run, pause or
+change a plan in Matic Map, see [plan Run and Edit](cleaning.md#run-and-edit).
 
 A plan runs in [one or more parts](cleaning.md#how-a-plan-runs). Rooms next to
 each other share a part, each with its own settings, and the robot docks between

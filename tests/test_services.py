@@ -3049,6 +3049,98 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
     execute.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("run_behavior", "order"),
+    [
+        (None, ["room-study", "room-office"]),
+        ("ordered", ["room-study", "room-office"]),
+        ("intelligent", ["room-office", "room-study"]),
+    ],
+)
+async def test_run_plan_cleaning_order_overrides_the_saved_order(
+    hass, run_behavior: str | None, order: list[str]
+) -> None:
+    """Run plan covers both retired run actions through `run_behavior`."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    study = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    office = CleaningRoom("room-office", "Office", "mop", "heavy_duty")
+    await manager.async_save_plan(
+        "serial",
+        "upstairs",
+        {
+            "name": "Upstairs",
+            "run_behavior": "ordered",
+            "rooms": [
+                {
+                    "room_id": room.room_id,
+                    "cleaning_mode": room.cleaning_mode,
+                    "coverage_setting": room.coverage_setting,
+                }
+                for room in (study, office)
+            ],
+        },
+    )
+    await manager.async_mark_started("serial", "upstairs", study)
+    await manager.async_mark_completed("serial", "upstairs", study)
+    services = await _registered_services(hass, manager)
+    boundary = _area_floor_plan().rooms[0].boundary
+    floor_plan = replace(
+        _area_floor_plan(),
+        rooms=(
+            Room("room-study", "Study", "protocol-study", b"study", boundary),
+            Room("room-office", "Office", "protocol-office", b"office", boundary),
+        ),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(floor_plan=floor_plan),
+                async_request_refresh=AsyncMock(),
+                async_confirm_room_completed=MagicMock(),
+            ),
+            client=SimpleNamespace(
+                async_get_active_cleaning_session_state=AsyncMock(),
+                async_get_cleaning_session_records=AsyncMock(),
+                async_get_cleaning_session_keys=None,
+                async_get_idle_cleaning_session_revision=None,
+                async_get_cleaning_session_identity=AsyncMock(),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    context = (
+        "vacuum.test",
+        entry,
+        "serial",
+        {"room-study": "Study", "room-office": "Office"},
+    )
+    data = {"entity_id": ["vacuum.test"], "plan": "Upstairs"}
+    if run_behavior is not None:
+        data["run_behavior"] = run_behavior
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms", AsyncMock()
+        ) as execute,
+    ):
+        await _registered_handler(services, "run_selected_plan")(
+            ServiceCall(
+                hass, DOMAIN, "run_selected_plan", RUN_SELECTED_PLAN_SCHEMA(data)
+            )
+        )
+
+    assert [room.room_id for room in execute.await_args.args[5]] == order
+    with pytest.raises(probatio.Invalid):
+        RUN_SELECTED_PLAN_SCHEMA({**data, "run_behavior": "fastest"})
+
+
 @pytest.mark.parametrize("service", ["intelligent_clean", "clean_entire_plan"])
 @pytest.mark.parametrize("changed_input", ["plan", "map", "cadence"])
 async def test_legacy_saved_run_revalidates_after_stop_settlement(
@@ -3619,7 +3711,9 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
         with pytest.raises(ServiceValidationError, match="Unknown"):
             await _registered_handler(services, "preview_plan")(missing)
         with pytest.raises(ServiceValidationError, match="Unknown"):
-            await _registered_handler(services, "intelligent_clean")(missing)
+            await _registered_handler(services, "intelligent_clean")(
+                ServiceCall(hass, DOMAIN, "intelligent_clean", missing.data)
+            )
         with pytest.raises(ServiceValidationError, match="Unknown"):
             await _registered_handler(services, "reset_plan_history")(reset_missing)
         with pytest.raises(ServiceValidationError, match="turned off"):

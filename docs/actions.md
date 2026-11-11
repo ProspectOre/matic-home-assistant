@@ -21,9 +21,9 @@ Assistant user settings. The full schema is in
 | Clean room sequence (`clean_room_sequence`) | Required `rooms` (up to 100, in order), each a `room` with optional `cleaning_mode` (default `vacuum_and_mop`) and `coverage_setting` (default `standard`); optional `return_to_base` (default `true`). Matic Map's **Clean rooms** uses this action. |
 | Preview room sequence (`preview_room_sequence`) | Takes the same fields and returns each room's effective settings and due work, and a `preview_token`, without starting cleaning. Administrators only. |
 | Clean custom area (`clean_area`) | Required `area` (name or ID); optional `cleaning_mode` and `coverage_setting` override the area's saved settings. |
-| Run plan (`run_selected_plan`) | Runs `plan`, or the default plan, the way it is saved. Optional `preview_token` from Preview next plan run refuses the run if the plan changed since. |
-| Run Smart Order (`intelligent_clean`) | Runs `plan` starting with the rooms and custom areas that have waited longest, whatever its saved order. |
-| Run saved order (`clean_entire_plan`) | Runs `plan` once, top to bottom, with each room's saved settings. |
+| Run plan (`run_selected_plan`) | Runs `plan`, or the default plan, the way it is saved. Optional `run_behavior` (`intelligent` for Smart Order, `ordered` for Saved order) picks the order for this run instead. Optional `preview_token` from Preview next plan run refuses the run if the plan changed since. |
+| Run Smart Order (`intelligent_clean`) | [Removed in 0.6](release-notes-0.5.4.md#removed-in-06): use Run plan with `run_behavior: intelligent`. Runs `plan` starting with the rooms and custom areas that have waited longest, whatever its saved order. |
+| Run saved order (`clean_entire_plan`) | [Removed in 0.6](release-notes-0.5.4.md#removed-in-06): use Run plan with `run_behavior: ordered`. Runs `plan` once, top to bottom, with each room's saved settings. |
 | Stop cleaning (`stop_intelligent_cleaning`) | Stops the running plan and docks, following its Smart Stop setting. See [stopping a plan](#stopping-a-plan). |
 
 Both sequence actions also take `use_room_schedule` (**Use room schedules** in
@@ -56,11 +56,11 @@ clean, or one started in the Matic app, when no plan is running.
 | List cleaning plans (`list_plans`) | Returns saved plans with their rooms, custom areas, settings and IDs, and the default plan. |
 | Preview next plan run (`preview_plan`) | Returns `plan`'s next order and settings, its `entries` (rooms and custom areas in run order) and a `preview_token` for Run plan, without running it. |
 | Create or replace cleaning plan (`save_plan`) | Saves `name` and `rooms` (rooms and custom areas, in order). The ID comes from the name unless you pass `plan_id`; saving an existing ID replaces that plan. |
-| Set default cleaning plan (`select_plan`) | Makes `plan` the default. |
+| Set default cleaning plan (`select_plan`) | Makes `plan` the default. [Removed in 0.6](release-notes-0.5.4.md#removed-in-06): use `select.select_option` on the Default cleaning plan entity. |
 | Delete cleaning plan (`delete_plan`) | Deletes `plan`; refused while it runs. |
-| Add or update plan room or area (`save_plan_room`) | Adds `room` (a room or an area entry) to the end of `plan`, or updates its settings where it is. |
-| Move room or area in plan (`move_plan_room`) | Moves `room` or `area` in `plan` to `new_position` (1 is the top). |
-| Remove room or area from plan (`delete_plan_room`) | Removes `room` or `area` from `plan`. |
+| Add or update plan room or area (`save_plan_room`) | Adds `room` (a room or an area entry) to the end of `plan`, or updates its settings where it is. [Removed in 0.6](release-notes-0.5.4.md#removed-in-06): use `save_plan` or Matic Map. |
+| Move room or area in plan (`move_plan_room`) | Moves `room` or `area` in `plan` to `new_position` (1 is the top). [Removed in 0.6](release-notes-0.5.4.md#removed-in-06): use `save_plan` or Matic Map. |
+| Remove room or area from plan (`delete_plan_room`) | Removes `room` or `area` from `plan`. [Removed in 0.6](release-notes-0.5.4.md#removed-in-06): use `save_plan` or Matic Map. |
 | Reset room cleaning history (`reset_plan_history`) | Clears which rooms `plan` has cleaned, or every plan with `all_plans: true`. |
 | Reset room schedule progress (`reset_room_cadence`) | Resets mopping, vacuum rotation or both (`modes`) for one `room_id`, or every scheduled room, in the required `plan`. |
 | Delete shared room schedule (`delete_room_schedule`) | Removes one room's shared schedule from every plan that uses it, given its `room_id` and current `expected_token` from Matic Map. Usual cleaning settings and cleaning history remain. |
