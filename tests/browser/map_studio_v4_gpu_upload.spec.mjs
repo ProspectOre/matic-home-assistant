@@ -37,6 +37,7 @@ async function loadRenderer(page) {
     const originalGetContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (kind, options) {
       if (kind !== "webgl2") return originalGetContext.call(this, kind, options);
+      let objects = 0;
       const context = {
         id: contexts.length + 1,
         calls: [],
@@ -56,12 +57,12 @@ async function loadRenderer(page) {
             this.failNextCreateBuffer = false;
             return null;
           }
-          const buffer = { context: this.id, id: `${this.id}:${this.calls.length}` };
+          const buffer = { context: this.id, id: `${this.id}:${objects += 1}` };
           this.initializedBytes.set(buffer.id, 0);
           this.buffers.set(buffer.id, new Uint8Array());
           return buffer;
         },
-        createVertexArray() { return { id: `${this.id}:vao:${this.calls.length}` }; },
+        createVertexArray() { return { id: `${this.id}:vao:${objects += 1}` }; },
         createShader() { return {}; },
         createProgram() { return {}; },
         getShaderParameter() { return true; },
@@ -86,15 +87,14 @@ async function loadRenderer(page) {
             this.vertexArrayAttributes.set(this.currentVertexArray.id, attributes);
           }
         },
-        bufferData(target, data, usage) {
-          const bytes = typeof data === "number" ? data : data.byteLength;
+        bufferData(target, bytes, usage) {
+          // Point storage is allocated by size; the overlay geometry's own buffers take whole arrays and are not counted.
+          if (typeof bytes !== "number") return void this.buffers.delete(this.boundBuffer?.id);
           if (this.failNextAllocation) {
             this.failNextAllocation = false;
             this.errors.push(constants.OUT_OF_MEMORY);
           } else {
-            const storage = new Uint8Array(bytes);
-            if (typeof data !== "number") storage.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-            this.buffers.set(this.boundBuffer?.id, storage);
+            this.buffers.set(this.boundBuffer?.id, new Uint8Array(bytes));
           }
           this.initializedBytes.set(this.boundBuffer?.id, 0);
           this.calls.push({ type: "allocate", buffer: this.boundBuffer?.id, bytes, frame });
@@ -128,6 +128,7 @@ async function loadRenderer(page) {
         getError() { return this.errors.shift() ?? constants.NO_ERROR; },
         get liveBufferCount() { return this.buffers.size; },
         drawArrays(mode, first, count) {
+          if (mode !== constants.POINTS) return; // The overlay geometry draws triangles, not the uploaded scene.
           const buffer = this.vertexArrayBuffers.get(this.currentVertexArray?.id);
           const initialized = this.initializedBytes.get(buffer?.id) ?? 0;
           const { stride = 8, offset = 0 } = this.vertexArrayLayouts.get(this.currentVertexArray?.id) ?? {};
@@ -1630,7 +1631,7 @@ for (const [quality, step, coarse] of [["maximum", 1, false], ["balanced", 2, fa
       const base = createGalleryState("ready");
       // Four successive tile regions in each range; a prefix budget loses
       // later floor regions and all surfaces when floors dominate the scene.
-      const floorCount = coarse ? 720_001 : 120_001;
+      const floorCount = coarse ? 720_001 : 240_001;
       const surfaceCount = coarse ? 207_074 : 12_001;
       const total = floorCount + surfaceCount;
       const pointOffset = 64;
@@ -1649,10 +1650,12 @@ for (const [quality, step, coarse] of [["maximum", 1, false], ["balanced", 2, fa
         document.body.append(element);
       }
       const renderer = new RendererController(canvas, overlay);
-      const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
-      if (quality === "auto" && !coarse) {
+      const frames = window.requestAnimationFrame;
+      const governed = quality === "auto" && !coarse;
+      if (governed) {
+        // Auto quality times the animation frames that move the camera; every one of these is late.
         let clock = 0;
-        Object.defineProperty(performance, "now", { configurable: true, value: () => { clock += 20; return clock; } });
+        window.requestAnimationFrame = (callback) => frames(() => callback(clock += 34));
       }
       try {
         renderer.setState({ ...base, quality, resources: { ...base.resources,
@@ -1660,7 +1663,7 @@ for (const [quality, step, coarse] of [["maximum", 1, false], ["balanced", 2, fa
         const gl = contexts.at(-1);
         const expected = Math.ceil(floorCount / step) + Math.ceil(surfaceCount / step);
         for (let i = 0; i < 120 && renderer.diagnostics().renderedPoints !== expected; i += 1) {
-          renderer.requestRender();
+          if (governed) renderer.panBy(i % 2 ? -1 : 1, 0); else renderer.requestRender();
           await new Promise(resolve => requestAnimationFrame(resolve));
         }
         const draws = gl.calls.filter(call => call.type === "draw");
@@ -1682,10 +1685,7 @@ for (const [quality, step, coarse] of [["maximum", 1, false], ["balanced", 2, fa
           invalid: draws.filter(call => !call.valid).length,
           allocations: gl.calls.filter(call => call.type === "allocate").length };
       } finally {
-        if (quality === "auto" && !coarse) {
-          if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
-          else delete performance.now;
-        }
+        window.requestAnimationFrame = frames;
         renderer.dispose(); canvas.remove(); overlay.remove();
       }
     }, { quality, step, coarse });

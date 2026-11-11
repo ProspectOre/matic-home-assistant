@@ -42,10 +42,16 @@ test("without an answer from Home Assistant the device decides", async ({ page }
 });
 
 test("switching Home Assistant's theme switches the panel", async ({ page }) => {
-  // Every colour the map canvas paints with, from the canvases on the page
-  // (the theme probe's own canvases are never attached).
+  // Every colour the map canvases paint with, from the canvases on the page
+  // (the theme probe's own canvases are never attached). Room shapes are
+  // drawn in WebGL, or on the 2D canvas where WebGL2 is missing.
   await page.addInitScript(() => {
     window.__canvasColours = new Set();
+    const uniform4f = window.WebGL2RenderingContext?.prototype.uniform4f;
+    if (uniform4f) WebGL2RenderingContext.prototype.uniform4f = function (location, ...colour) {
+      window.__canvasColours.add(`rgba(${colour.slice(0, 3).map((value) => Math.round(value * 255))},${colour[3]})`);
+      return uniform4f.call(this, location, ...colour);
+    };
     for (const name of ["fillStyle", "strokeStyle"]) {
       const native = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, name);
       Object.defineProperty(CanvasRenderingContext2D.prototype, name, {
@@ -64,9 +70,8 @@ test("switching Home Assistant's theme switches the panel", async ({ page }) => 
     sceneRooms: [room],
   });
   await expect.poll(() => background(app)).toBe(LIGHT_APP);
-  // The theme probe records Canvas2D palette writes. Give the 2D renderer a
-  // real room selection so the test observes an overlay stroke; the default
-  // 3D home map has no Canvas2D overlay to repaint.
+  // A selected room in the top view gives the map an accent stroke to
+  // repaint; the default 3D home map draws nothing in the accent.
   await app.getByRole("button", { name: "2D", exact: true }).click();
   await app.getByRole("button", { name: /^Clean rooms/ }).click();
   const shell = page.locator("matic-map-shell-v4");

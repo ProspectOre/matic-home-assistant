@@ -140,6 +140,8 @@ export class RendererGl {
       alpha: true,
       antialias: true,
       depth: true,
+      // The overlay geometry counts fill rule and stroke coverage in it.
+      stencil: true,
       powerPreference: "high-performance",
     });
     const gl = this.gl;

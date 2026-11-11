@@ -4244,23 +4244,20 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
       const { RendererController, createGalleryState } = await import("/auto-quality-contract.js");
-      let frameDurationMs = 0;
+      // Auto times the renderer's animation frames; this clock sets how far apart they arrive.
+      let frameDurationMs = 16;
       let frameClockMs = 0;
-      Object.defineProperty(performance, "now", {
-        configurable: true,
-        value: () => {
-          const value = frameClockMs;
-          frameClockMs += frameDurationMs;
-          return value;
-        },
-      });
+      const nativeFrame = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (callback) => nativeFrame(() => callback(frameClockMs += frameDurationMs));
       const sceneCanvas = document.createElement("canvas");
       const overlayCanvas = document.createElement("canvas");
       for (const canvas of [sceneCanvas, overlayCanvas]) {
-        Object.assign(canvas.style, { position: "absolute", width: "256px", height: "256px" });
+        // Small, so software GL draws the scene's points in a few milliseconds.
+        Object.assign(canvas.style, { position: "absolute", width: "32px", height: "32px" });
         document.body.append(canvas);
       }
-      const count = 120;
+      // Auto leaves a scene under 50,000 points whole, so this one can be halved.
+      const count = 120_000;
       const metadata = new TextEncoder().encode(JSON.stringify({
         meters_per_cell: 0.05,
         origin_cells: [0, 0],
@@ -4282,7 +4279,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       for (let index = 0; index < count; index += 1) {
         const offset = index * 8;
         points.setUint16(offset, 40 + (index % 12) * 10, true);
-        points.setUint16(offset + 2, 40 + Math.floor(index / 12) * 10, true);
+        points.setUint16(offset + 2, 40 + Math.floor(index / 12) % 12 * 10, true);
         points.setUint8(offset + 4, 0);
         points.setUint8(offset + 5, 180);
         points.setUint8(offset + 6, 140);
@@ -4318,9 +4315,11 @@ test.describe("Map Studio v0.4 foundation", () => {
       };
       const renderer = new RendererController(sceneCanvas, overlayCanvas);
       renderer.setState(initial);
+      let frames = 0;
+      // Only frames that move the camera are timed.
       const frame = async () => {
-        renderer.requestRender();
-        await new Promise(resolve => requestAnimationFrame(resolve));
+        renderer.panBy((frames += 1) % 2 ? 1 : -1, 0);
+        await new Promise(resolve => nativeFrame(resolve));
         return renderer.diagnostics();
       };
       let diagnostics = renderer.diagnostics();
@@ -4330,21 +4329,22 @@ test.describe("Map Studio v0.4 foundation", () => {
       }
       const mode = renderer.diagnostics().mode;
       const initialPoints = renderer.diagnostics().renderedPoints;
-      frameDurationMs = 20;
+      frameDurationMs = 34;
       for (let index = 0; index < 2; index += 1) diagnostics = await frame();
       const afterShortSlowRun = diagnostics.renderedPoints;
-      for (let index = 0; index < 10 && diagnostics.renderedPoints === initialPoints; index += 1) {
+      // Two slow samples of four frames reduce detail; the first sample may hold earlier frames.
+      for (let index = 0; index < 16 && diagnostics.renderedPoints === initialPoints; index += 1) {
         diagnostics = await frame();
       }
       const afterSlow = diagnostics.renderedPoints;
 
-      frameDurationMs = 5;
+      frameDurationMs = 16;
       for (let index = 0; index < 119; index += 1) diagnostics = await frame();
       const beforeRecoveryThreshold = diagnostics.renderedPoints;
       for (let index = 0; index < 3; index += 1) diagnostics = await frame();
       const afterRecovery = diagnostics.renderedPoints;
 
-      frameDurationMs = 20;
+      frameDurationMs = 34;
       for (let index = 0; index < 2; index += 1) diagnostics = await frame();
       const afterSecondShortSlowRun = diagnostics.renderedPoints;
       renderer.setState({ ...initial, quality: "maximum" });
@@ -4353,6 +4353,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       renderer.dispose();
       sceneCanvas.remove();
       overlayCanvas.remove();
+      window.requestAnimationFrame = nativeFrame;
       return {
         mode,
         initialPoints,
@@ -4365,7 +4366,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       };
     });
     test.skip(result.mode !== "webgl2", "WebGL2 is unavailable in this browser project");
-    expect(result.initialPoints).toBe(120);
+    expect(result.initialPoints).toBe(120_000);
     expect(result.afterShortSlowRun).toBe(result.initialPoints);
     expect(result.afterSlow).toBeLessThan(result.initialPoints);
     expect(result.beforeRecoveryThreshold).toBe(result.afterSlow);
@@ -4888,18 +4889,28 @@ test.describe("Map Studio v0.4 foundation", () => {
       await scene.dblclick({ position: { x: box.width / 2, y: box.height / 2 } });
     }
 
-    const overlay = gallery.locator("matic-map-canvas-v4 .overlay-canvas");
-    await expect.poll(async () => overlay.evaluate((canvas) => {
-      const context = canvas.getContext("2d");
-      if (!context) return false;
-      const samples = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
-      return samples.every(([x, y]) => context.getImageData(
-        Math.floor(canvas.width * x),
-        Math.floor(canvas.height * y),
-        1,
-        1,
-      ).data[3] > 0);
-    })).toBe(true);
+    // Room colors are drawn in WebGL, whose canvas holds a frame only until it is shown.
+    // They replace the photo's points, so nothing else covers these pixels.
+    const sceneCanvas = gallery.locator("matic-map-canvas-v4 .scene-canvas");
+    await expect.poll(async () => sceneCanvas.evaluate((canvas) => new Promise((resolve) => {
+      const map = canvas.getRootNode().host;
+      map.rendererController.requestRender();
+      requestAnimationFrame(() => {
+        if (map.rendererDiagnostics().renderedPoints !== 0) return resolve(false);
+        const copy = document.createElement("canvas");
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        const context = copy.getContext("2d");
+        context.drawImage(canvas, 0, 0);
+        const samples = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+        resolve(samples.every(([x, y]) => context.getImageData(
+          Math.floor(canvas.width * x),
+          Math.floor(canvas.height * y),
+          1,
+          1,
+        ).data[3] > 0));
+      });
+    }))).toBe(true);
   });
 
   test("upgrades a pre-existing shell without a blank first render", async ({ page }) => {
@@ -8848,10 +8859,14 @@ for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "u
       const diagnostics = element.rendererDiagnostics();
       const canvas = element.renderRoot.querySelector(".scene-canvas");
       return {
+        // True, or the values that were off, so that a failure prints them (PRO-186).
         published: Boolean(scene && diagnostics
           && diagnostics.sceneRevision === scene.revision
           && diagnostics.sourcePoints === scene.total
-          && diagnostics.renderedPoints === scene.total),
+          && diagnostics.renderedPoints === scene.total)
+          || { mode: diagnostics?.mode ?? null, sceneRevision: diagnostics?.sceneRevision ?? null,
+            sourcePoints: diagnostics?.sourcePoints ?? null, renderedPoints: diagnostics?.renderedPoints ?? null,
+            revision: scene?.revision ?? null, total: scene?.total ?? null },
         cameraEcho: hidden || Boolean(diagnostics && state.draw.zoomPercent === Math.max(100, Math.min(1000,
           Math.round(diagnostics.fitDistance / diagnostics.cameraDistance * 100)))),
         sized: !hidden || (canvas.width === 1 && canvas.height === 1),

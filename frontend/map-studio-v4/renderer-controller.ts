@@ -4,12 +4,13 @@ import type { AreaCircle, PoseModel, SceneModel } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import type { RoomIdentityResult } from "./spatial-identity";
 import { forcesTop, topView } from "./state";
+import { FrameGovernor } from "./frame-governor";
 import type { CanvasPalette } from "./theme-probe";
 import { RendererCamera, angle, type CameraOrigin, type CameraState, type MapPoint } from "./renderer-camera";
 import { RendererGl, advanceUpload, samePointLayout, validDeltaBlocks, type GpuUpload } from "./renderer-gl";
 import { containsMapPoint, roomAt, roomCandidatesAt } from "./renderer-hit-test";
 import { RendererModules, type ModuleCallbacks } from "./renderer-modules";
-import { FallbackRaster, RendererOverlay, roomColours } from "./renderer-overlays";
+import { FallbackRaster, RendererOverlay, layersNeeded, roomColours } from "./renderer-overlays";
 
 export type { CameraOrigin, CameraState, MapPoint } from "./renderer-camera";
 export type { RendererModuleName, RendererModuleStatus } from "./renderer-modules";
@@ -21,8 +22,8 @@ export interface RendererDiagnostics {
   readonly sceneRevision: number | null;
   readonly sourcePoints: number;
   readonly renderedPoints: number;
-  readonly lastFrameMs: number;
-  readonly slowFrames: number;
+  readonly frameMs: number;
+  readonly detailScale: number;
   readonly cameraDistance: number;
   readonly fitDistance: number;
   readonly fitActive: boolean;
@@ -60,13 +61,6 @@ const sceneContext = (state: WorkspaceState): string => {
 // at full density, 74 ms within this budget), each canvas's backing store.
 const AUTO_TOUCH_POINT_LIMIT = 350_000;
 const AUTO_TOUCH_CANVAS_PIXELS = 1_100_000;
-const AUTO_QUALITY_SLOW_FRAME_MS = 18;
-const AUTO_QUALITY_FAST_FRAME_MS = 12;
-const AUTO_QUALITY_SLOW_FRAMES_TO_REDUCE = 3;
-const AUTO_QUALITY_FAST_FRAMES_TO_RECOVER = 120;
-const AUTO_QUALITY_REDUCTION_RATIO = 0.75;
-const AUTO_QUALITY_RECOVERY_STEP = 0.25;
-const AUTO_QUALITY_MIN_SCALE = 0.25;
 
 export class RendererController {
   readonly #sceneCanvas: HTMLCanvasElement;
@@ -84,20 +78,24 @@ export class RendererController {
   #admittedContext: string | null = null;
   #upload: GpuUpload | null = null;
   #frame: number | null = null;
-  #roomNameAdmissionFrame: number | null = null;
+  // What the next frame redraws. A frame that only advances an upload leaves
+  // the 2D canvas alone; one that only moves the cursor leaves the scene.
+  #sceneDirty = false;
+  #overlayDirty = false;
+  #layersFrame: number | null = null;
   #resizeObserver: ResizeObserver;
   #mode: RendererDiagnostics["mode"] = "unavailable";
   #modeReported = false;
   #contextGeneration = 0;
   #renderedPoints = 0;
-  #lastFrameMs = 0;
-  #slowFrames = 0;
-  #fastFrames = 0;
-  #qualityScale = 1;
   readonly #touch = window.matchMedia("(any-pointer: coarse)").matches;
+  readonly #governor = new FrameGovernor(this.#touch);
+  /** The view-projection the scene was last drawn with. */
+  readonly #drawnMatrix = new Float32Array(16);
   #disposed = false;
   #cameraFollow: import("./camera-follow").CameraFollowController | null = null;
   #surfaceGeometry: import("./surface-geometry").SurfaceGeometry | null = null;
+  #geometry: import("./overlay-geometry").OverlayGeometry | null = null;
   #pendingFollow: {
     readonly pose: PoseModel | null;
     readonly mode: "off" | "follow" | "ride";
@@ -133,13 +131,15 @@ export class RendererController {
       state: () => this.#state,
       fallback: () => this.#mode === "canvas2d",
       pixelRatio: () => this.#pixelRatio(),
-      requestRender,
-      scheduleRoomNames: () => this.#scheduleRoomNameLayers(),
+      requestRender: (scene) => this.requestRender(scene),
+      scheduleLayers: () => this.#scheduleLayers(),
     });
     this.#sceneCanvas.addEventListener("webglcontextlost", this.#contextLost);
     this.#sceneCanvas.addEventListener("webglcontextrestored", this.#contextRestored);
     this.#initWebGl();
     this.#resizeObserver = new ResizeObserver(() => {
+      // Layout is clean here, so frames use this size instead of measuring.
+      this.#view.measureViewport();
       const previousThree = this.#view.homeThree;
       const previousTop = this.#view.homeTop;
       this.#view.updateHomeDistances();
@@ -232,10 +232,10 @@ export class RendererController {
     const admittedBefore = this.#admittedScene;
     const admittedContextBefore = this.#admittedContext;
     this.#state = state;
-    if (!state.pageActive || !state.labelsVisible) this.#cancelRoomNameAdmission();
-    if (!state.pageActive && this.#frame !== null) {
-      window.cancelAnimationFrame(this.#frame);
+    if (!state.pageActive) {
+      if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
       this.#frame = null;
+      this.#governor.pause();
     }
     const scene = state.resources.scene.value;
     const holdingScene = state.dataMode === "live" && state.floor.readOnly && scene !== null && scene === this.#scene
@@ -330,11 +330,7 @@ export class RendererController {
     } else if (this.#scene !== null || this.#upload !== null || this.#points.stagingBuffer !== null) {
       this.#clearSceneOwnership();
     }
-    if (!previous || previous.quality !== state.quality) {
-      this.#qualityScale = qualityScale(state.quality);
-      this.#slowFrames = 0;
-      this.#fastFrames = 0;
-    }
+    if (!previous || previous.quality !== state.quality) this.#governor.reset(qualityScale(state.quality));
     // Leaving the area review gives back the camera the user had before it
     // framed the area (map-surfaces.md §5): live when Draw follows, else as
     // the top view's saved preference, so the 3D view is untouched.
@@ -509,7 +505,7 @@ export class RendererController {
       this.#points.initializedPoints = 0;
       this.#renderedPoints = 0;
     }
-    this.requestRender();
+    this.requestRender(true, false);
   }
 
   #advanceGpuUpload(
@@ -522,7 +518,7 @@ export class RendererController {
     if (!upload || upload.context !== context || upload.contextGeneration !== this.#contextGeneration
       || !samePointLayout(upload.scene, scene)
       || !advanceUpload(upload, scene, state.generation, dirtyBlocks)) return false;
-    this.requestRender();
+    this.requestRender(true, false);
     return true;
   }
 
@@ -583,7 +579,7 @@ export class RendererController {
       return;
     }
     if (upload.frontierBytes < byteLength || upload.dirtyBlocks.length > 0) {
-      this.requestRender();
+      this.requestRender(true, false);
       return;
     }
     if (upload.staging) {
@@ -659,9 +655,10 @@ export class RendererController {
     return Math.min(ratio, Math.max(1, Math.sqrt(AUTO_TOUCH_CANVAS_PIXELS / area)));
   }
 
-  #resize(): void {
+  /** Sizes both canvases to the cached viewport; true when either changed. */
+  #resize(): boolean {
     let resized = false;
-    const bounds = this.#view.measureViewport();
+    const bounds = this.#view.size();
     const ratio = this.#pixelRatio();
     const width = Math.max(1, Math.round(bounds.width * ratio));
     const height = Math.max(1, Math.round(bounds.height * ratio));
@@ -673,75 +670,84 @@ export class RendererController {
       }
     }
     if (resized) this.#callbacks.onViewport?.();
+    return resized;
   }
 
-  requestRender(): void {
+  requestRender(scene = true, overlay = true): void {
+    this.#sceneDirty ||= scene;
+    this.#overlayDirty ||= overlay;
+    this.#requestFrame();
+  }
+
+  #requestFrame(): void {
     if (this.#frame !== null || this.#disposed || this.#state?.pageActive === false) return;
-    this.#frame = window.requestAnimationFrame(() => {
-      this.#frame = null;
-      this.#render();
-    });
+    this.#frame = window.requestAnimationFrame(this.#onFrame);
   }
 
-  #render(): void {
+  readonly #onFrame = (time: number): void => {
+    this.#frame = null;
     if (this.#disposed || this.#state?.pageActive === false) return;
-    const started = performance.now();
+    if (this.#governor.begin(time, this.#state?.quality === "auto" && this.#mode === "webgl2")) this.#sceneDirty = true;
+    const drawn = this.#sceneDirty || this.#overlayDirty ? this.#render() : null;
+    if (this.#governor.end(time, drawn === true, drawn === null)) this.#requestFrame();
+  };
+
+  /** Draws what is dirty; true when that drew the scene from a camera that moved. */
+  #render(): boolean {
+    let scene = this.#sceneDirty;
+    let overlay = this.#overlayDirty;
+    this.#sceneDirty = false;
+    this.#overlayDirty = false;
     this.#uploadGpuChunk();
-    this.#resize();
-    this.#view.matrix = this.#view.cameraMatrix();
-    if (this.#mode === "webgl2") this.#renderWebGl();
-    else this.#renderFallback();
-    this.#overlay.render();
-    this.#lastFrameMs = performance.now() - started;
-    this.#updateAdaptiveQuality(this.#lastFrameMs);
+    if (this.#resize()) scene = overlay = true;
+    const matrix = this.#view.cameraMatrix(this.#view.current, this.#view.matrix);
+    const moved = scene && matrix.some((value, index) => value !== this.#drawnMatrix[index]);
+    if (moved) this.#drawnMatrix.set(matrix);
+    const geometry = this.#overlayGeometry();
+    if (scene && this.#mode === "webgl2") this.#renderWebGl(geometry);
+    else if (scene) this.#renderFallback(geometry);
+    if (overlay) this.#overlay.render(geometry);
+    return moved;
   }
 
-  #updateAdaptiveQuality(frameMs: number): void {
-    if (this.#state?.quality !== "auto" || this.#mode !== "webgl2") {
-      this.#slowFrames = 0;
-      this.#fastFrames = 0;
-      return;
-    }
-    const previousScale = this.#qualityScale;
-    if (frameMs > AUTO_QUALITY_SLOW_FRAME_MS) {
-      this.#slowFrames += 1;
-      this.#fastFrames = 0;
-      if (this.#slowFrames >= AUTO_QUALITY_SLOW_FRAMES_TO_REDUCE) {
-        this.#qualityScale = Math.max(
-          AUTO_QUALITY_MIN_SCALE,
-          this.#qualityScale * AUTO_QUALITY_REDUCTION_RATIO,
-        );
-        this.#slowFrames = 0;
+  /** The floor-plane shapes for this frame; null until their chunk and a scene are here. */
+  #overlayGeometry(): import("./overlay-geometry").OverlayGeometry | null {
+    const layers = this.#modules.layers;
+    if (!layers || !this.#scene || !this.#state) return null;
+    if (!this.#geometry) {
+      // A context that cannot build the programs leaves the shapes to Canvas 2D.
+      try {
+        this.#geometry = new layers.OverlayGeometry(this.#points.gl);
+      } catch {
+        this.#geometry = new layers.OverlayGeometry(null);
       }
-    } else if (frameMs < AUTO_QUALITY_FAST_FRAME_MS) {
-      this.#fastFrames += 1;
-      this.#slowFrames = 0;
-      if (this.#fastFrames >= AUTO_QUALITY_FAST_FRAMES_TO_RECOVER) {
-        this.#qualityScale = Math.min(1, this.#qualityScale + AUTO_QUALITY_RECOVERY_STEP);
-        this.#fastFrames = 0;
-      }
-    } else {
-      // The 12–18 ms band is inconclusive; break both consecutive-frame runs
-      // instead of letting noisy boundary measurements flap the detail tier.
-      this.#slowFrames = 0;
-      this.#fastFrames = 0;
     }
-    if (this.#qualityScale !== previousScale) this.requestRender();
+    this.#geometry.update(this.#scene, this.#state, this.#overlay.palette);
+    return this.#geometry;
   }
 
-  #renderWebGl(): void {
+  #renderWebGl(geometry: import("./overlay-geometry").OverlayGeometry | null): void {
     const gl = this.#points.gl;
-    const scene = this.#scene;
     if (!gl) return;
-    gl.viewport(0, 0, this.#sceneCanvas.width, this.#sceneCanvas.height);
+    const { width, height } = this.#sceneCanvas;
+    gl.viewport(0, 0, width, height);
     gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+    this.#drawScenePoints(gl, geometry !== null && roomColours(this.#state));
+    const camera = this.#view.current;
+    geometry?.draw(this.#view.matrix, width, height, this.#pixelRatio(),
+      height / (2 * camera.distance * (camera.orthographic ? 1 : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2))));
+  }
+
+  /** Room colors replace the photo once the chunk that draws them is here. */
+  #drawScenePoints(gl: WebGL2RenderingContext, roomColours: boolean): void {
+    const scene = this.#scene;
     const { buffer, vertexArray } = this.#points;
     if (!scene || !this.#points.ready || !buffer || !vertexArray) {
       this.#setSurfaceNeeded(false);
       return;
     }
-    if (roomColours(this.#state)) {
+    if (roomColours) {
       this.#setSurfaceNeeded(false);
       this.#renderedPoints = 0;
       return;
@@ -758,7 +764,7 @@ export class RendererController {
         this.#surfaceGeometry ??= new this.#modules.surface.SurfaceGeometry(gl, this.#callbacks.onSurfaceDetail);
         this.#renderedPoints = this.#surfaceGeometry.draw({ scene, matrix: this.#view.matrix,
           buffer, vertexArray, initializedPoints,
-          qualityScale: this.#qualityScale,
+          qualityScale: this.#governor.scale,
           adaptiveQuality: this.#state?.quality === "auto",
           maxVisiblePoints: this.#touch && this.#state?.quality === "auto" ? AUTO_TOUCH_POINT_LIMIT : null,
           camera: this.#view.current });
@@ -770,19 +776,18 @@ export class RendererController {
         this.#modules.setStatus("surface-geometry", "failed");
       }
     }
+    const auto = this.#state?.quality === "auto";
     const step = Math.max(
-      Math.ceil(1 / this.#qualityScale),
-      this.#touch && this.#state?.quality === "auto"
-        ? Math.ceil(initializedPoints / AUTO_TOUCH_POINT_LIMIT) : 1,
+      auto ? this.#governor.stride(initializedPoints) : Math.ceil(1 / this.#governor.scale),
+      this.#touch && auto ? Math.ceil(initializedPoints / AUTO_TOUCH_POINT_LIMIT) : 1,
     );
     this.#renderedPoints = this.#points.drawPoints(scene, this.#view.matrix,
       this.#sceneCanvas.width, this.#sceneCanvas.height, step, this.#pixelRatio());
   }
 
-  #renderFallback(): void {
+  #renderFallback(geometry: import("./overlay-geometry").OverlayGeometry | null): void {
     const scene = this.#scene;
-    if (this.#mode !== "canvas2d" || !scene
-      || roomColours(this.#state)) {
+    if (this.#mode !== "canvas2d" || !scene || (geometry && roomColours(this.#state))) {
       this.#raster.cancel();
       this.#renderedPoints = 0;
       return;
@@ -795,22 +800,15 @@ export class RendererController {
     this.#modules.setSurfaceNeeded(needed, supported);
   }
 
-  #scheduleRoomNameLayers(): void {
-    if (this.#modules.layersStatus !== "idle" || this.#roomNameAdmissionFrame !== null || this.#disposed) return;
+  #scheduleLayers(): void {
+    if (this.#modules.layersStatus !== "idle" || this.#layersFrame !== null || this.#disposed) return;
     // Let the late-admitted map get one paint opportunity before requesting
-    // its optional label code (the bounded no-map UI fallback may have fired).
-    this.#roomNameAdmissionFrame = window.requestAnimationFrame(() => {
-      this.#roomNameAdmissionFrame = null;
+    // its outlines and labels (the bounded no-map UI fallback may have fired).
+    this.#layersFrame = window.requestAnimationFrame(() => {
+      this.#layersFrame = null;
       const state = this.#state;
-      if (this.#disposed || !state?.pageActive || !state.map.available || !state.optionalUiReady
-        || !state.labelsVisible || !this.#scene?.metadata.rooms.length) return;
-      this.#modules.loadLayers();
+      if (!this.#disposed && state?.pageActive && layersNeeded(state, this.#scene)) this.#modules.loadLayers();
     });
-  }
-
-  #cancelRoomNameAdmission(): void {
-    if (this.#roomNameAdmissionFrame !== null) window.cancelAnimationFrame(this.#roomNameAdmissionFrame);
-    this.#roomNameAdmissionFrame = null;
   }
 
   diagnostics(): RendererDiagnostics {
@@ -820,8 +818,8 @@ export class RendererController {
       sceneRevision: this.#scene?.revision ?? null,
       sourcePoints: this.#scene?.total ?? 0,
       renderedPoints: this.#renderedPoints,
-      lastFrameMs: Math.round(this.#lastFrameMs * 100) / 100,
-      slowFrames: this.#slowFrames,
+      frameMs: Math.round(this.#governor.frameMs * 100) / 100,
+      detailScale: this.#governor.scale,
       cameraDistance: this.#view.current.distance,
       fitDistance: this.#view.current.orthographic ? this.#view.homeTop : this.#view.homeThree,
       fitActive: this.#view.fitActive,
@@ -873,6 +871,8 @@ export class RendererController {
     if (!this.#disposed) this.#surfaceGeometry?.clearDetail();
     this.#surfaceGeometry?.dispose();
     this.#surfaceGeometry = null;
+    this.#geometry?.dispose();
+    this.#geometry = null;
     this.#setSurfaceNeeded(false);
     if (this.#modules.surface && this.#modules.surfaceStatus === "failed") this.#modules.surfaceStatus = "ready";
     this.#points.release();
@@ -890,7 +890,7 @@ export class RendererController {
     this.#pendingFollow = null;
     this.#modules.dispose();
     this.#cameraFollow?.dispose();
-    this.#cancelRoomNameAdmission();
+    if (this.#layersFrame !== null) window.cancelAnimationFrame(this.#layersFrame);
     this.#releaseWebGl();
     this.#raster.dispose();
     this.#overlay.dispose();

@@ -12,6 +12,7 @@ import type { OutlineEditor } from "./outline-editor";
 import { MAP_CANVAS_TAG } from "./element-tags";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
 import { RendererController, topView, type CameraState, type RendererDiagnostics, type RendererModuleName, type RendererModuleStatus, type RendererSurfaceDetail } from "./renderer-controller";
+import { layersNeeded } from "./renderer-overlays";
 import {
   canSelectRooms,
   canShowExactPose,
@@ -503,17 +504,9 @@ export class MaticMapCanvasV4 extends LitElement {
 
   #rendererStatus(showScene: boolean) {
     const state = this.state;
-    const currentFloor = state.dataMode === "live" && !state.floor.readOnly
-      && state.selection.floorId === "current";
-    const trail = state.trail;
-    const trailVisible = Boolean(trail && state.dataMode === "live"
-      && (trail.id === "live" || state.workflow === "runs")
-      && trail.mapSessionKey === state.resources.entry?.mapSessionKey);
-    const roomNamesNeeded = Boolean(showScene && state.optionalUiReady && state.labelsVisible
-      && (state.resources.scene.value?.metadata.rooms.length ?? 0) > 0);
-    const layersNeeded = Boolean(roomNamesNeeded || (currentFloor && (state.wifiSignal || state.floorTypes)) || trailVisible);
+    const needed = layersNeeded(state, state.resources.scene.value);
     const retry = (event: Event) => this.retry ? this.retry(event) : window.location.reload();
-    const layers = layersNeeded && this.#rendererLayersStatus !== "idle"
+    const layers = (needed === "now" || (needed && showScene)) && this.#rendererLayersStatus !== "idle"
       ? chunkStatus(this.#rendererLayersStatus, this.localize, retry, {
         loading: { key: "v4_renderer_layers_loading", fallback: "Loading map details and room names…" },
         failed: { key: "v4_renderer_layers_failed", fallback: "Some map details or room names aren't available, so they aren't shown. Reload the page to try again." },

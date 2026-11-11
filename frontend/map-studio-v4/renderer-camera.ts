@@ -157,7 +157,13 @@ export class RendererCamera {
   radius = 4;
   fitActive = true;
   viewport: ViewportBounds = { width: 1, height: 1, left: 0, top: 0 };
-  matrix: Float32Array<ArrayBufferLike> = new Float32Array(16);
+  /** False until the canvas has been measured once. */
+  #measured = false;
+  /** The view-projection of the frame being drawn. */
+  readonly matrix: Float32Array = new Float32Array(16);
+  readonly #view = new Float32Array(16);
+  readonly #projection = new Float32Array(16);
+  readonly #scratch = new Float32Array(16);
   readonly #geometryBoundsCache = new WeakMap<SceneModel, ReturnType<typeof sceneGeometryBounds>>();
 
   constructor(canvas: HTMLCanvasElement, host: CameraHost) {
@@ -266,7 +272,7 @@ export class RendererCamera {
       }
     }
     if (!Number.isFinite(minX)) return;
-    const viewport = this.measureViewport();
+    const viewport = this.size();
     const aspect = Math.max(0.2, viewport.width / Math.max(1, viewport.height));
     const distance = Math.max((maxZ - minZ) / 2, (maxX - minX) / (2 * aspect)) * 1.12;
     this.set({
@@ -354,7 +360,7 @@ export class RendererCamera {
     const meters = scene.metadata.metersPerCell;
     const width = Math.max(1, bounds.maxX - bounds.minX + 1) * meters;
     const depth = Math.max(1, bounds.maxY - bounds.minY + 1) * meters;
-    const viewport = this.measureViewport();
+    const viewport = this.size();
     const aspect = Math.max(0.2, viewport.width / Math.max(1, viewport.height));
     // A high three-quarter angle keeps a recognisable floor overview while
     // preserving the complete admitted scene footprint on first launch.
@@ -382,8 +388,18 @@ export class RendererCamera {
     return bounds;
   }
 
+  /** The canvas's size as the resize observer last reported it, measured once before its first report. */
+  size(): ViewportBounds {
+    return this.#measured ? this.viewport : this.measureViewport();
+  }
+
+  /**
+   * Reads the canvas's box. Only the resize observer and input, which needs
+   * the current position, measure; everything else uses the cached size.
+   */
   measureViewport(): ViewportBounds {
     const bounds = this.#canvas.getBoundingClientRect();
+    this.#measured = true;
     this.viewport = {
       width: bounds.width,
       height: bounds.height,
@@ -393,28 +409,23 @@ export class RendererCamera {
     return this.viewport;
   }
 
-  cameraMatrix(camera: CameraState = this.current): Float32Array {
+  /**
+   * The camera's view-projection. Without `out` the result is a scratch
+   * matrix, valid until the next call.
+   */
+  cameraMatrix(camera: CameraState = this.current, out: Float32Array = this.#scratch): Float32Array {
     const bounds = this.viewport;
     const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
     const horizontal = Math.cos(camera.pitch) * camera.distance;
-    const eye = [
-      camera.targetX + Math.sin(camera.yaw) * horizontal,
-      Math.sin(camera.pitch) * camera.distance,
-      camera.targetZ + Math.cos(camera.yaw) * horizontal,
-    ];
-    const target = [camera.targetX, 0, camera.targetZ];
-    const view = lookAt(eye, target);
-    const projection = camera.orthographic
-      ? orthographic(
-        -camera.distance * aspect,
-        camera.distance * aspect,
-        -camera.distance,
-        camera.distance,
-        -this.radius * 4,
-        this.radius * 4,
-      )
-      : perspective(PERSPECTIVE_FIELD_OF_VIEW, aspect, 0.02, Math.max(60, this.radius * 12));
-    return multiply(projection, view);
+    lookAt(this.#view, camera.targetX + Math.sin(camera.yaw) * horizontal, Math.sin(camera.pitch) * camera.distance,
+      camera.targetZ + Math.cos(camera.yaw) * horizontal, camera.targetX, 0, camera.targetZ);
+    if (camera.orthographic) {
+      orthographic(this.#projection, -camera.distance * aspect, camera.distance * aspect,
+        -camera.distance, camera.distance, -this.radius * 4, this.radius * 4);
+    } else {
+      perspective(this.#projection, PERSPECTIVE_FIELD_OF_VIEW, aspect, 0.02, Math.max(60, this.radius * 12));
+    }
+    return multiply(out, this.#projection, this.#view);
   }
 
   #worldForCell(x: number, y: number, height = 0): readonly [number, number, number] | null {
@@ -430,8 +441,12 @@ export class RendererCamera {
   projectCell(x: number, y: number, height = 0, clipToViewport = true, matrix = this.matrix,
     bounds: Pick<ViewportBounds, "width" | "height"> = this.viewport): MapPoint | null {
     const world = this.#worldForCell(x, y, height);
-    if (!world) return null;
-    const [worldX, worldY, worldZ] = world;
+    return world && this.projectWorld(world[0], world[1], world[2], clipToViewport, matrix, bounds);
+  }
+
+  /** Projects a world position in metres to CSS pixels in the viewport. */
+  projectWorld(worldX: number, worldY: number, worldZ: number, clipToViewport = true, matrix = this.matrix,
+    bounds: Pick<ViewportBounds, "width" | "height"> = this.viewport): MapPoint | null {
     const clipX = (matrix[0] ?? 0) * worldX + (matrix[4] ?? 0) * worldY + (matrix[8] ?? 0) * worldZ + (matrix[12] ?? 0);
     const clipY = (matrix[1] ?? 0) * worldX + (matrix[5] ?? 0) * worldY + (matrix[9] ?? 0) * worldZ + (matrix[13] ?? 0);
     const clipW = (matrix[3] ?? 0) * worldX + (matrix[7] ?? 0) * worldY + (matrix[11] ?? 0) * worldZ + (matrix[15] ?? 0);
@@ -457,7 +472,7 @@ export class RendererCamera {
 
   mapToScreen(point: MapPoint): MapPoint | null {
     if (!this.#host.scene()) return null;
-    const bounds = this.measureViewport();
+    const bounds = this.size();
     if (!bounds.width || !bounds.height) return null;
     return this.projectMeters(point.x, point.y, 0, false, this.cameraMatrix());
   }

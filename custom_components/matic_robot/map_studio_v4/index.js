@@ -1,1 +1,1 @@
-import{A}from"./chunks/chunk-YPOXDB4K.js";export{A as MATIC_MAP_PANEL_TAG};
+import{A}from"./chunks/chunk-5J5N5PDK.js";export{A as MATIC_MAP_PANEL_TAG};
