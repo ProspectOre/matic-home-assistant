@@ -43,6 +43,9 @@ PAIRING_METHOD_IMPORT: Final = "import"
 
 DEFAULT_PORT: Final = 16320
 SERVICE_TYPE: Final = "_matic_hermes._tcp.local."
+# The heartbeat reads what the robot does not push: this often while it is
+# off its dock, and at the slow interval on it. Telemetry is cached for the
+# slow interval and the floor plan for the map interval.
 UPDATE_INTERVAL_SECONDS: Final = 30
 SLOW_UPDATE_INTERVAL_SECONDS: Final = 300
 MAP_UPDATE_INTERVAL_SECONDS: Final = 900

@@ -21,7 +21,7 @@ from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.client.snaps import decode_instamatic_snap
 from custom_components.matic_robot.photos import RobotPhotoStore
-from tests.hermes_fakes import keep_subscribed
+from tests.hermes_fakes import watch
 from tests.test_entities import _entry as _entities_entry
 from tests.wire_builders import _bfield, _session_identity, _vfield
 
@@ -130,8 +130,7 @@ def test_rejects_oversized_and_oversized_pixel_images() -> None:
 def _client(*, entries=(), stream=None, subscriptions: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
         async_get_tracked_collection_entries=AsyncMock(return_value=tuple(entries)),
-        async_subscribe_collection_entries=stream or MagicMock(),
-        async_keep_subscribed=keep_subscribed(subscriptions),
+        async_watch=watch(stream or MagicMock(), subscriptions),
     )
 
 

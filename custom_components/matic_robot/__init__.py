@@ -60,6 +60,7 @@ from .restart import async_recover_managed_run
 from .robot_health import async_delete_robot_alert_issues
 from .run_history import RunTrails
 from .services import async_register_services
+from .session import RobotSession
 from .slam_history import SlamHistoryStore
 from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapIdentity, SlamMapStore
@@ -84,6 +85,7 @@ class MaticRuntimeData:
     """Runtime data held by the config entry."""
 
     client: MaticHermesClient
+    session: RobotSession
     coordinator: MaticCoordinator
     cleaning_plans: CleaningPlanManager
     firmware_tracker: FirmwareTracker
@@ -214,14 +216,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         timezone_identifier=hass.config.time_zone,
         seconds_from_gmt=int(offset.total_seconds()) if offset is not None else 0,
     )
+    session = RobotSession(hass, entry, client)
     slam_map: SlamMapStore | None = None
     slam_history: SlamHistoryStore | None = None
     wifi_survey: WifiSurveyStore | None = None
     try:
+        await session.async_start()
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         coordinator = MaticCoordinator(
             hass,
-            client,
+            session,
             entry,
             cleaning_mode=CleaningMode(
                 entry.options.get(CONF_CLEANING_MODE, CleaningMode.BOTH)
@@ -313,6 +317,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await wifi_survey.async_load()
         runtime_data = MaticRuntimeData(
             client,
+            session,
             coordinator,
             plans,
             firmware_tracker,
@@ -342,11 +347,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 async_recover_managed_run(hass, entry, serial_number),
                 f"{DOMAIN} managed run recovery",
             )
-        entry.async_create_background_task(
-            hass,
-            coordinator.async_watch_state(),
-            f"{DOMAIN} operational state collector",
-        )
         entry.async_create_background_task(
             hass,
             coordinator.async_watch_floor_plan(),
@@ -460,7 +460,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             await slam_history.async_shutdown()
         if slam_map is not None:
             await slam_map.async_shutdown()
-        await client.async_shutdown()
+        await session.async_stop()
         raise
     photo_source = hass.data.get(DOMAIN, {}).get(DATA_PHOTO_ATTACHMENT_SOURCE)
     activate_photo_entry = getattr(photo_source, "activate_entry", None)
@@ -880,7 +880,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
-        await entry.runtime_data.client.async_shutdown()
+        await entry.runtime_data.session.async_stop()
     return unload_ok
 
 

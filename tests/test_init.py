@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -65,6 +66,18 @@ from custom_components.matic_robot.plan_storage import STOP_FENCE_EXPIRES_AT
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
+
+
+@pytest.fixture(autouse=True)
+def session_start() -> Iterator[AsyncMock]:
+    """Put a fake session over the fake client; return its ``async_start``."""
+    start = AsyncMock()
+
+    def session(_hass, _entry, client) -> SimpleNamespace:
+        return SimpleNamespace(async_start=start, async_stop=client.async_shutdown)
+
+    with patch("custom_components.matic_robot.RobotSession", session):
+        yield start
 
 
 def _wifi_survey() -> SimpleNamespace:
@@ -1038,6 +1051,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
 @pytest.mark.parametrize("recovering_stop", [False, True])
 @pytest.mark.parametrize("initial_floor_present", [False, True])
 async def test_setup_refreshes_before_forwarding_platforms(
+    session_start: AsyncMock,
     native_history_error: bool,
     recovering_run: bool,
     recovering_stop: bool,
@@ -1098,7 +1112,6 @@ async def test_setup_refreshes_before_forwarding_platforms(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
-        async_watch_state=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
         displayed_floor_mission_id=None,
         data=SimpleNamespace(
@@ -1314,11 +1327,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.run_trails is run_trails.return_value
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 8 + (
+    assert entry.async_create_background_task.call_count == 7 + (
         recovering_run or recovering_stop
     )
     assert isinstance(entry.runtime_data.photos, RobotPhotoStore)
-    coordinator.async_watch_state.assert_called_once_with()
+    session_start.assert_awaited_once_with()
     coordinator.async_watch_floor_plan.assert_called_once_with()
     assert (
         entry.runtime_data.firmware_tracker
@@ -1415,7 +1428,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.repository.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 11 + (
+    assert entry.async_create_background_task.call_count == 10 + (
         recovering_run or recovering_stop
     )
     assert plans.catalog.async_upgrade_area_bindings.await_count == 5
@@ -1537,7 +1550,6 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
-        async_watch_state=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
         displayed_floor_mission_id=None,
         data=SimpleNamespace(floor_plan=initial),
@@ -1690,7 +1702,9 @@ async def test_setup_closes_client_when_first_refresh_fails() -> None:
     client.async_shutdown.assert_awaited_once_with()
 
 
-async def test_revoked_credential_enters_reauthentication_before_setup() -> None:
+async def test_revoked_credential_enters_reauthentication_before_setup(
+    session_start: AsyncMock,
+) -> None:
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
@@ -1703,18 +1717,11 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
     )
     entry = _entry()
     client = MagicMock(async_shutdown=AsyncMock())
-    coordinator = SimpleNamespace(
-        async_config_entry_first_refresh=AsyncMock(
-            side_effect=ConfigEntryAuthFailed("credential rejected")
-        )
-    )
+    session_start.side_effect = ConfigEntryAuthFailed("credential rejected")
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
-        patch(
-            "custom_components.matic_robot.MaticCoordinator",
-            return_value=coordinator,
-        ),
+        patch("custom_components.matic_robot.MaticCoordinator") as coordinator,
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
         patch("custom_components.matic_robot.SlamMapStore") as slam_store,
         patch("custom_components.matic_robot.SlamHistoryStore") as history_store,
@@ -1724,6 +1731,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
         await async_setup_entry(hass, entry)
 
     client.async_shutdown.assert_awaited_once_with()
+    coordinator.assert_not_called()
     hass.config_entries.async_forward_entry_setups.assert_not_awaited()
     slam_store.assert_not_called()
     history_store.assert_not_called()
@@ -1829,7 +1837,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         disabled_by="user" if disabled else None,
         data={CONF_SERIAL_NUMBER: "synthetic-serial"},
         runtime_data=SimpleNamespace(
-            client=client,
+            session=SimpleNamespace(async_stop=client.async_shutdown),
             slam_map=slam_map,
             slam_history=slam_history,
             run_trails=run_trails,
@@ -1932,7 +1940,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
         data={CONF_SERIAL_NUMBER: serial},
         runtime_data=SimpleNamespace(
             cleaning_plans=manager,
-            client=client,
+            session=SimpleNamespace(async_stop=client.async_shutdown),
             slam_map=slam_map,
             slam_history=slam_history,
             run_trails=run_trails,

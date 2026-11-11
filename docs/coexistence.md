@@ -7,8 +7,9 @@ command follows them, and its pull request says which rules it touches.
 
 ## The robot holds the truth
 
-Rooms, zones, schedules, settings and maps are read from the robot on every
-poll or push. Home Assistant keeps no copy that could override them. When the
+Rooms, zones, schedules, settings and maps are read from the robot, as it
+pushes them or on a heartbeat. Home Assistant keeps no copy that could
+override them. When the
 floor plan or room set changes in the app, saved plans are checked again and
 missing rooms are reported, as custom areas already are.
 
