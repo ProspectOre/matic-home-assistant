@@ -21,7 +21,7 @@ async function installRobot(page) {
     }
     // Copy the scene after every frame that draws it, before the browser
     // composites and clears it.
-    let drew = false, vectors = 0, points = 0;
+    let drew = false, draws = 0, vectors = 0, points = 0;
     const pixels = new Uint8Array(width * height * 4);
     const nativeFrame = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = (callback) => nativeFrame((time) => {
@@ -31,7 +31,7 @@ async function installRobot(page) {
       if (drew && gl && !gl.isContextLost()) gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     });
     const clear = WebGL2RenderingContext.prototype.clear;
-    WebGL2RenderingContext.prototype.clear = function(...args) { drew = true; return clear.apply(this, args); };
+    WebGL2RenderingContext.prototype.clear = function(...args) { drew = true; draws++; return clear.apply(this, args); };
     // The 2D robot's body is filled in its body or forced accent colour.
     const context = overlay.getContext("2d");
     const { moveTo, lineTo, fill } = context;
@@ -75,11 +75,13 @@ async function installRobot(page) {
     const robot = async (heading, camera, sceneName = "open") => {
       renderer.setState(state(null, sceneName));
       view(...camera);
+      const start = draws;
       await frame();
-      const without = pixels.slice();
+      const without = pixels.slice(), between = draws;
       vectors = 0;
       renderer.setState(state(heading, sceneName));
       await frame();
+      const redrawn = [between - start, draws - between];
       let count = 0, sumX = 0, sumY = 0, xx = 0, yy = 0, xy = 0;
       const changed = [];
       for (let index = 0; index < width * height; index++) {
@@ -93,7 +95,7 @@ async function installRobot(page) {
       for (const [x, y] of changed) { xx += (x - cx) ** 2; yy += (y - cy) ** 2; xy += (x - cx) * (y - cy); }
       const angle = Math.atan2(2 * xy, xx - yy) / 2;
       const along = changed.map(([x, y]) => (x - cx) * Math.cos(angle) + (y - cy) * Math.sin(angle));
-      return { count, angle, length: count ? Math.max(...along) - Math.min(...along) : 0, vectors };
+      return { count, angle, length: count ? Math.max(...along) - Math.min(...along) : 0, vectors, redrawn };
     };
     window.__robot = {
       robot,
@@ -118,9 +120,10 @@ test("the robot turns continuously with its heading and the camera and keeps its
   const ahead = await robot(0, [90, 0, 1]);
   expect(ahead.vectors, "WebGL draws the robot, not the 2D canvas").toBe(0);
   // The atlas turned in steps of 11.25 degrees; 0.1 rad is 5.7.
-  expect(turn(ahead.angle, (await robot(0.1, [90, 0, 1])).angle)).toBeCloseTo(0.1, 1);
-  expect(turn(ahead.angle, (await robot(0.6, [90, 0, 1])).angle)).toBeCloseTo(0.6, 1);
-  expect(turn(ahead.angle, (await robot(0, [90, 0.1, 1])).angle)).toBeCloseTo(0.1, 1);
+  for (const [heading, yaw] of [[0.1, 0], [0.6, 0], [0, 0.1]]) {
+    const turned = await robot(heading, [90, yaw, 1]);
+    expect(turn(ahead.angle, turned.angle), JSON.stringify({ ahead, turned })).toBeCloseTo(heading + yaw, 1);
+  }
   // Close up it grows with the zoom; zoomed out it stays 18 CSS pixels long
   // (the shadow adds a little).
   const close = await robot(0, [90, 0, 0.3]);
