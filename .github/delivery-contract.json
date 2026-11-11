@@ -3,6 +3,7 @@
     "test.yml": "ci",
     "browser.yml": "ci",
     "validate.yml": "ci",
+    "nightly.yml": "nightly",
     "windows-assistive-qualification.yml": "dispatch"
   },
   "hosted": true,
