@@ -102,11 +102,12 @@ def test_browser_ci_image_matches_the_locked_playwright_runtime() -> None:
         assert lock["packages"][f"node_modules/{dependency}"]["version"] == version
 
     commands = [step["run"] for step in browser["steps"] if "run" in step]
-    assert "npm run test:browser" in commands
     assert package["scripts"]["test:browser"] == "playwright test"
     assert not any("playwright install" in command for command in commands)
     browser_test = next(
-        step for step in browser["steps"] if step.get("run") == "npm run test:browser"
+        step
+        for step in browser["steps"]
+        if step.get("run", "").startswith("npm run test:browser ")
     )
     assert browser_test["env"]["HOME"] == "/root"
 

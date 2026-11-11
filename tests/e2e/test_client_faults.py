@@ -114,11 +114,15 @@ async def test_stalled_stream_times_out_until_it_is_released(
     assert simulator.link.connections == 1
 
 
-async def test_reset_part_way_through_a_snapshot_fails_that_read(
-    client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
+@pytest.mark.parametrize("after", [1, len(SCHEDULES)])
+async def test_reset_before_a_snapshot_completes_fails_that_read(
+    client: MaticHermesClient,
+    robot: SimulatedRobot,
+    simulator: RunningSimulator,
+    after: int,
 ) -> None:
     robot.set_collection("schedule_events", SCHEDULES)
-    robot.faults.reset("schedule_events", after=1)
+    robot.faults.reset("schedule_events", after=after)
     with pytest.raises(TransportError, match="connection failed"):
         await client.async_get_collection_entries("schedule_events")
 

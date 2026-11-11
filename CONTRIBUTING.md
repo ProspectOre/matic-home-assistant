@@ -21,9 +21,9 @@ stable release on `main`.
 ## Check your change
 
 `uv run scripts/check.py` runs the formatter, linter, type checker, layer and
-size rules, privacy scan, and the tests that import a changed file or a module
-that imports one. CI runs the same command with `--all`, which runs every test
-and requires 100% line coverage. `uv run ruff format .` fixes formatting.
+size rules, privacy scan, and the tests whose imports lead to a changed file.
+CI runs the same command with `--all`, which runs every test and requires 100%
+line coverage. `uv run ruff format .` fixes formatting.
 
 Without uv, install the `test` extra into a Python 3.14 environment and run
 `python scripts/check.py`.
