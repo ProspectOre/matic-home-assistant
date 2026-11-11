@@ -77,6 +77,21 @@ test("pose age is kept only inside the server's freshness window", async ({ page
   expect(result).toEqual([0, 4, 5, -2, null, null, null, null, null, null]);
 });
 
+test("a placed pose keeps the robot's own time of it", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async () => {
+    const { parsePose } = await import("/backend-contracts.js");
+    const base = {
+      position: [1, 2], source: "exact_pose", scene_revision: null, scene_epoch: null,
+      map_floor_coherent: true, map_session_key: null, pose_age_seconds: 0,
+    };
+    const values = [1_800_000_000.25, 0, -1, 5e9, NaN, "1", null, undefined];
+    return [...values.map(value => parsePose({ ...base, observed_at: value }).observedAt),
+      parsePose({ ...base, position: null, observed_at: 1_800_000_000 }).observedAt];
+  });
+  expect(result).toEqual([1_800_000_000.25, null, null, null, null, null, null, null, null]);
+});
+
 test("the area catalog names the selected custom area, or none", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async () => {

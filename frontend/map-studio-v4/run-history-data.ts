@@ -46,7 +46,11 @@ export interface RunHistory {
   readonly runs: readonly RunRecord[];
 }
 
-export type TrailPoint = readonly [number, number];
+/**
+ * Map metres, then the robot's own time of that pose in epoch seconds
+ * (run_history.py). Trails saved before times were kept have none.
+ */
+export type TrailPoint = readonly [x: number, y: number, at?: number];
 
 export interface RunTrail {
   readonly id: string;
@@ -133,9 +137,11 @@ export const parseRunTrail = (value: unknown): RunTrail => {
     mapSessionKey: text(payload.map_session_key, 128, "invalid-trail"),
     segments: segments.map((segment) => {
       if (!Array.isArray(segment) || segment.length > MAX_POINTS) return fail("invalid-trail");
-      return segment.map((point) => {
-        if (!Array.isArray(point) || point.length !== 2) return fail("invalid-trail");
-        return [coordinate(point[0]), coordinate(point[1])] as const;
+      return segment.map((point): TrailPoint => {
+        if (!Array.isArray(point) || (point.length !== 2 && point.length !== 3)) return fail("invalid-trail");
+        const [x, y, at] = point as unknown[];
+        if (point.length === 2) return [coordinate(x), coordinate(y)];
+        return typeof at === "number" && at > 0 && at < 4_102_444_800 ? [coordinate(x), coordinate(y), at] : fail("invalid-trail");
       });
     }),
   };
@@ -158,7 +164,7 @@ export const lastSeenDuringLatestRun = (
   const segment = [...trail.segments].reverse().find((points) => points.length > 0);
   const point = segment?.at(-1);
   if (!point) return null;
-  return { entryId, mapSessionKey, position: point };
+  return { entryId, mapSessionKey, position: [point[0], point[1]] };
 };
 
 const resource = <T>(status: "loading" | "ready" | "error", value: T | null, problem: string | null = null) =>
@@ -229,7 +235,13 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   const last = segment.at(-1);
   const [x, y] = pose.position;
   if (last && Math.hypot(x - last[0], y - last[1]) < 0.15) return;
-  store.dispatch({ type: "result", trail: { ...trail, segments: [...trail.segments.slice(0, -1), [...segment, [x, y] as const].slice(-MAX_POINTS)] } });
+  // Whole seconds, as the server keeps them.
+  const point: TrailPoint = pose.observedAt ? [x, y, Math.round(pose.observedAt)] : [x, y];
+  // Past the limit keep every other point, as the server's recorder does, so
+  // the run's first point and its time stay.
+  const points = segment.length < MAX_POINTS ? [...segment, point]
+    : [...segment.filter((_, index) => index % 2 === 0), point];
+  store.dispatch({ type: "result", trail: { ...trail, segments: [...trail.segments.slice(0, -1), points] } });
 };
 
 /**

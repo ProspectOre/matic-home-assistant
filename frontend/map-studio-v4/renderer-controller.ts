@@ -192,6 +192,10 @@ export class RendererController {
     this.#overlay.setCursor(point);
   }
 
+  setInspectMarker(point: MapPoint | null): void {
+    this.#overlay.setMarker(point);
+  }
+
   mapToScreen(point: MapPoint): MapPoint | null {
     return this.#view.mapToScreen(point);
   }

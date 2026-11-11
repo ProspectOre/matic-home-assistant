@@ -59,7 +59,8 @@ def observe_trail(runtime: MaticRuntimeData) -> None:
         if runtime.slam_map.floor_plan_is_current(session.floor.value)
         else None
     )
-    position = resolve_robot_map_position(floor_plan, session.pose_on(floor_plan), None)
+    pose = session.pose_on(floor_plan)
+    position = resolve_robot_map_position(floor_plan, pose, None)
     trails.observe(
         run_id=runtime.cleaning_plans.ledger.active_run_id(
             str(session.info.serial_number)
@@ -67,6 +68,7 @@ def observe_trail(runtime: MaticRuntimeData) -> None:
         native_active=session.state.value.session_active,
         map_key=_map_session_key(runtime),
         point=position[:2] if position is not None else None,
+        observed_at=pose.observed_at if pose is not None else None,
     )
 
 
@@ -115,6 +117,14 @@ def pose_projection(
         "map_floor_coherent": coherent,
         "map_session_key": _map_session_key(runtime) if coherent else None,
         "pose_age_seconds": round(age, 3) if age is not None else None,
+        # The robot's own time of this pose, which the live trail keeps.
+        "observed_at": (
+            round(pose.observed_at, 3)
+            if position is not None
+            and pose is not None
+            and pose.observed_at is not None
+            else None
+        ),
     }
 
 

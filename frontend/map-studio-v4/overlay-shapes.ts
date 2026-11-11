@@ -64,6 +64,41 @@ const hsl = (hue: number, saturation: number, lightness: number): Channel => {
 export const CARPET = hsl(28, .55, .42);
 export const VENT = hsl(205, .8, .5);
 
+/** A map point in metres; a trail point may carry its time third. */
+type MapMetres = readonly [number, number, number?];
+
+// Chevrons along the trail point the way the robot went: one every
+// CHEVRON_SPACING metres of path, with arms CHEVRON_ARM metres long.
+const CHEVRON_SPACING = 1.2;
+const CHEVRON_ARM = 0.16;
+const CHEVRON_COS = Math.cos(Math.PI / 5);
+const CHEVRON_SIN = Math.sin(Math.PI / 5);
+
+/** Each chevron as [wing, tip, wing] in map metres, in travel order. */
+export const chevrons = (points: readonly MapMetres[]): [number, number][][] => {
+  const result: [number, number][][] = [];
+  let next = CHEVRON_SPACING / 2;
+  let travelled = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const [fromX, fromY] = points[index - 1]!;
+    const [toX, toY] = points[index]!;
+    const length = Math.hypot(toX - fromX, toY - fromY);
+    if (!length) continue;
+    const [alongX, alongY] = [(toX - fromX) / length, (toY - fromY) / length];
+    for (; next <= travelled + length; next += CHEVRON_SPACING) {
+      const tipX = fromX + alongX * (next - travelled);
+      const tipY = fromY + alongY * (next - travelled);
+      const wing = (side: number): [number, number] => [
+        tipX - CHEVRON_ARM * (alongX * CHEVRON_COS - side * alongY * CHEVRON_SIN),
+        tipY - CHEVRON_ARM * (alongY * CHEVRON_COS + side * alongX * CHEVRON_SIN),
+      ];
+      result.push([wing(1), [tipX, tipY], wing(-1)]);
+    }
+    travelled += length;
+  }
+  return result;
+};
+
 /**
  * Everything drawn on the floor plane, in paint order: rooms, floor types,
  * Wi-Fi signal, zones, then the travel path.
@@ -80,7 +115,7 @@ export const overlayShapes = (scene: SceneModel, state: WorkspaceState, palette:
     }
     return ring;
   };
-  const fromMeters = (points: readonly (readonly [number, number])[]): Ring => {
+  const fromMeters = (points: readonly MapMetres[]): Ring => {
     const ring = new Float32Array(points.length * 2);
     points.forEach(([x, y], index) => {
       ring[index * 2] = worldX(x / meters - origin[0]);
@@ -159,7 +194,9 @@ export const overlayShapes = (scene: SceneModel, state: WorkspaceState, palette:
         // A long gap contains no evidence of the path between observations;
         // an observation with no neighbour within a metre is drawn as a dot.
         if (Math.hypot(x - previousX, y - previousY) <= 1) continue;
-        rings.push(fromMeters(segment.slice(start, index)));
+        const run = segment.slice(start, index);
+        rings.push(fromMeters(run));
+        for (const chevron of chevrons(run)) rings.push(fromMeters(chevron));
         start = index;
       }
     }

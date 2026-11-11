@@ -176,6 +176,7 @@ export class RendererOverlay {
   readonly #host: OverlayHost;
   #circlePreview: { readonly circles: readonly AreaCircle[]; readonly capture: CoordinateEditCapture } | null = null;
   #cursor: MapPoint | null = null;
+  #marker: MapPoint | null = null;
   palette: CanvasPalette = DEFAULT_PALETTE;
   #labelOffsets = new Map<string, readonly [x: number, y: number]>();
 
@@ -199,6 +200,13 @@ export class RendererOverlay {
 
   setCursor(point: MapPoint | null): void {
     this.#cursor = point;
+    this.#host.requestRender(false);
+  }
+
+  /** Rings the map point the user is inspecting (map-inspect.ts). */
+  setMarker(point: MapPoint | null): void {
+    if (point?.x === this.#marker?.x && point?.y === this.#marker?.y) return;
+    this.#marker = point;
     this.#host.requestRender(false);
   }
 
@@ -255,6 +263,10 @@ export class RendererOverlay {
     this.#modules.drawOverlays?.drawTaskOverlays(context, state, circles, this.#cursor, palette,
       bounds.width, bounds.height,
       (x, y, height, clip) => camera.projectMeters(x, y, height, clip));
+    if (this.#marker) {
+      this.#modules.layers?.drawInspectMarker(context, this.#marker, palette,
+        (x, y) => camera.projectMeters(x, y, 0, false));
+    }
     const pose = state.resources.pose.value;
     if (state.seen) {
       this.#modules.layers?.drawLastSeenDuringRun(context, state, palette,

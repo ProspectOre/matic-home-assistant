@@ -42,6 +42,25 @@ The choices stay in this browser; another browser or device keeps its own.
 The **Map key** on the map names what the carpet, vent, zone and trail
 outlines mean, for whichever of them the map is showing.
 
+## Details
+
+On the live map, tap or click the robot, a trail point, a zone or a room for a
+details card; with the map focused, **Enter** shows what is in its middle.
+The card's actions match what the robot is doing:
+
+- **Robot**: its status, the same **Stop** or **Resume cleaning** as the panel,
+  and **Follow the robot**.
+- **Room**: its size, whether the robot is in it, carpet or vent under your tap
+  while **Carpet and vents** is on, and **Choose for a clean** while a clean
+  can start.
+- **Zone**: its kind, size and the rooms it lies in.
+- **Trail point**: when the robot was there, by the robot's own clock, how far
+  into the clean that was, and **Earlier point** and **Later point** to step
+  along the path, which a ring marks. Arrows along the trail point the way the
+  robot went. Trails recorded by an earlier version have no times. The
+  robot doesn't report its cleaning mode with its position, so the trail can't
+  show vacuuming and mopping apart.
+
 - **Follow the robot** keeps the live robot centered; moving the map yourself
   turns it off. **Ride along in 3D** also turns the view with the robot. Both
   need a live position, and Ride along needs the robot's heading. Neither shows

@@ -35,6 +35,8 @@ MAX_TRAIL_SEGMENTS = 8
 MIN_SAVED_TRAIL_POINTS = 3
 TRAIL_STEP_METERS = 0.15
 MAX_TRAIL_COORDINATE = 10_000.0
+# Year 2100 in epoch seconds: a later pose time is a damaged record.
+MAX_TRAIL_TIME = 4_102_444_800
 LIVE_TRAIL_ID = "live"
 _OPEN_END = "9999-12-31T23:59:59+00:00"
 
@@ -59,7 +61,9 @@ _AREA_RESULTS = {
     "running": "running",
 }
 
-type TrailPoint = tuple[float, float]
+# Map metres, then the robot's own observation time of that pose in epoch
+# seconds (latest_pose field 5). Points saved before times were kept have none.
+type TrailPoint = tuple[float, float] | tuple[float, float, int]
 
 
 def run_history(robot: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -506,9 +510,10 @@ class RunTrails:
         run_id: str | None,
         native_active: bool | None,
         map_key: str | None,
-        point: TrailPoint | None,
+        point: tuple[float, float] | None,
+        observed_at: float | None = None,
     ) -> None:
-        """Track run boundaries and add one verified position."""
+        """Track run boundaries and add one verified position and its time."""
         key = f"run:{run_id}" if run_id else "robot" if native_active else None
         live = self._live
         if live is not None and (
@@ -523,9 +528,14 @@ class RunTrails:
         if self._live is None:
             self._live = _LiveTrail(key, run_id, map_key, dt_util.utcnow().isoformat())
         points = self._live.points
-        if points and math.dist(points[-1], point) < TRAIL_STEP_METERS:
+        if points and math.dist(points[-1][:2], point) < TRAIL_STEP_METERS:
             return
-        points.append((round(point[0], 2), round(point[1], 2)))
+        x, y = round(point[0], 2), round(point[1], 2)
+        points.append(
+            (x, y, round(observed_at))
+            if observed_at is not None and _valid_time(observed_at)
+            else (x, y)
+        )
         if len(points) > MAX_LIVE_TRAIL_POINTS:
             self._live.points = [*points[:-1:2], points[-1]]
         self._schedule_save()
@@ -658,17 +668,27 @@ class RunTrails:
         }
 
 
+def _valid_time(value: object) -> bool:
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0 < value < MAX_TRAIL_TIME
+    )
+
+
 def _valid_point(point: object) -> bool:
     return (
         isinstance(point, list | tuple)
-        and len(point) == 2
+        and len(point) in (2, 3)
         and all(
             isinstance(value, int | float)
             and not isinstance(value, bool)
             and math.isfinite(value)
             and abs(value) <= MAX_TRAIL_COORDINATE
-            for value in point
+            for value in point[:2]
         )
+        and (len(point) == 2 or _valid_time(point[2]))
     )
 
 

@@ -14,6 +14,7 @@ import { POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
 import { RendererController, topView, type CameraState, type RendererDiagnostics, type RendererModuleName, type RendererModuleStatus, type RendererSurfaceDetail } from "./renderer-controller";
 import type { MapPoint } from "./renderer-camera";
+import type { Inspected } from "./map-inspect";
 import { layersNeeded } from "./renderer-overlays";
 import {
   canSelectRooms,
@@ -291,6 +292,8 @@ export class MaticMapCanvasV4 extends LitElement {
   #surfaceDetail: RendererSurfaceDetail = null;
   /** The map point last tapped while the Wi-Fi layer is on. */
   #wifiSpot: MapPoint | null = null;
+  /** What the last tap on the live map picked, shown in a details card. */
+  #inspected: Inspected | null = null;
   #unwatchTheme: (() => void) | null = null;
   #paletteFrame: number | null = null;
   #paletteTimer: number | null = null;
@@ -389,9 +392,8 @@ export class MaticMapCanvasV4 extends LitElement {
       onRoomCandidates: (roomIds) => this.#intent({ type: "show-room-candidates", roomIds }),
       onCameraGesture: () => this.#unfollow(),
       onTap: (point) => {
-        if (!this.state.wifiSignal) return;
-        this.#wifiSpot = point;
-        this.requestUpdate();
+        if (this.state.wifiSignal) this.#wifiSpot = point;
+        this.#inspectAt(point);
       },
     });
     this.#renderer.setState(this.state);
@@ -426,6 +428,8 @@ export class MaticMapCanvasV4 extends LitElement {
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (!this.state.wifiSignal) this.#wifiSpot = null;
+    const layers = this.#renderer?.layers;
+    if (this.#inspected && !layers?.stillInspectable(this.state, this.#inspected)) this.#inspected = null;
     if (changed.has("outlineEditor")) this.outlineEditor?.attach(this, () => this.#renderer, (intent) => this.#intent(intent));
     // The editor's own rules (outline-editor.ts) arrive with it and are
     // adopted before its handles render, so startup does not carry them.
@@ -442,6 +446,20 @@ export class MaticMapCanvasV4 extends LitElement {
     this.outlineEditor?.observeState(this.state);
     this.#renderer?.setState(this.state);
     this.#follow();
+    this.#renderer?.setInspectMarker(this.#renderer.layers?.inspectMarker(this.state, this.#inspected) ?? null);
+  }
+
+  #inspectAt(point: MapPoint | null): void {
+    const renderer = this.#renderer;
+    const scene = this.state.resources.scene.value;
+    this.#inspect(point && renderer?.layers && scene
+      ? renderer.layers.inspectAt(this.state, scene, point, (at) => renderer.mapToScreen(at)) : null);
+  }
+
+  #inspect(inspected: Inspected | null): void {
+    this.#inspected = inspected;
+    this.#renderer?.setInspectMarker(this.#renderer.layers?.inspectMarker(this.state, inspected) ?? null);
+    this.requestUpdate();
   }
 
   // Camera motion is transient; the renderer validates pose/frame admission.
@@ -548,6 +566,25 @@ export class MaticMapCanvasV4 extends LitElement {
     return html`<div class="renderer-status">${simplified}${surface}${limited}${layers}${following}</div>`;
   }
 
+  #legends() {
+    const layers = this.#renderer?.layers;
+    const state = this.state;
+    const scene = state.resources.scene.value;
+    const t = (key: string, fallback: string, placeholders?: NoticePlaceholders) => this.#t(key, fallback, placeholders);
+    const inspected = this.#inspected;
+    return layers?.mapLegends({ state, scene, spot: this.#wifiSpot, t,
+      marked: layers.inspectMarker(state, inspected) !== null,
+      inspect: inspected && scene ? layers.inspectPanel({ state, scene, inspected, t, localize: this.localize, dates: this.dates,
+        intent: (intent) => this.#intent(intent), action: (id) => this.#action(id),
+        inspect: (next) => this.#inspect(next), close: () => this.#closeInspect() }) : nothing }) ?? nothing;
+  }
+
+  // Focus goes back to the map, since the card's buttons leave with it.
+  #closeInspect(): void {
+    this.#inspect(null);
+    this.renderRoot.querySelector<HTMLElement>(".map-root")?.focus({ preventScroll: true });
+  }
+
   #action(id: string): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
       detail: { id },
@@ -581,8 +618,17 @@ export class MaticMapCanvasV4 extends LitElement {
         this.#toggleHelp(event);
         return;
       }
+      if (this.#inspected) {
+        this.#closeInspect();
+        return;
+      }
       this.#intent({ type: "dismiss-top-layer" });
       return;
+    }
+    // Enter on the map itself inspects what sits under the middle of the view.
+    if (event.key === "Enter" && event.target === event.currentTarget && this.state.workflow !== "draw") {
+      const box = this.renderRoot.querySelector(".scene-window")?.getBoundingClientRect();
+      if (box) this.#inspectAt(this.#renderer?.screenToMap(box.left + box.width / 2, box.top + box.height / 2) ?? null);
     }
   }
 
@@ -788,6 +834,7 @@ export class MaticMapCanvasV4 extends LitElement {
         tabindex="0"
         aria-label=${this.#t("map_viewport_aria", "Interactive Matic 3D map")}
         aria-describedby=${showDraw ? (state.draw.tool === "outline" ? "zone-keyboard-help" : state.draw.tool === "pan" ? "keyboard-draw-pan-help" : "keyboard-draw-help") : nothing}
+        aria-keyshortcuts=${state.workflow === "none" || state.workflow === "runs" ? "Enter" : nothing}
         data-full-map=${String(state.fullMap)}
         data-workflow=${state.workflow}
         data-draw-tool=${state.draw.tool}
@@ -820,8 +867,7 @@ export class MaticMapCanvasV4 extends LitElement {
         ` : nothing}
 
         ${this.#renderDock(showScene)}
-        ${showScene ? this.#renderer?.layers?.mapLegends({ state, scene: state.resources.scene.value, spot: this.#wifiSpot,
-          t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }) ?? nothing : nothing}
+        ${showScene ? this.#legends() : nothing}
 
         ${message ? html`
           <div class="map-message ms-surface ms-surface--floating"><strong>${message}</strong></div>

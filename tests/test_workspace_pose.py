@@ -53,6 +53,8 @@ def test_pose_projection_places_the_newest_pose_on_the_current_scene() -> None:
     pose = pose_projection("entry", runtime, scene_view)
 
     assert 0 <= pose.pop("pose_age_seconds") < 1
+    observed_at = runtime.session.pose_on(runtime.session.floor.value).observed_at
+    assert pose.pop("observed_at") == round(observed_at, 3)
     assert pose == {
         "position": [0.1, 0.2],
         "heading": 0.5,
@@ -73,6 +75,7 @@ def test_pose_projection_places_the_newest_pose_on_the_current_scene() -> None:
         "map_floor_coherent": True,
         "map_session_key": None,
         "pose_age_seconds": None,
+        "observed_at": None,
     }
 
 
