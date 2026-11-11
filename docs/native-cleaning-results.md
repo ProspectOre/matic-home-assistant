@@ -1,139 +1,112 @@
 # Cleaning results
 
-[Documentation](README.md) · [Automation events](automation.md#events-and-observability)
+[All guides](README.md) · [Automation events](automation.md#events-and-observability) ·
+[Interrupted cleaning](activity-diagnostics.md)
 
-Use room results to build completion notifications and last-cleaned dashboards.
-History keeps separate vacuum and mop results for each room: **completed**,
-**partial**, **unattempted**, or unknown, with a duration for each mode.
-An absent result does not explain why a room was skipped.
+The robot records a vacuum result and a mop result for every room it is sent
+to: **completed**, **partial**, **unattempted** or unknown, each with a
+duration. The integration counts a room as cleaned only from that record.
 
-A vacuum-and-mop clean needs both modes completed with positive durations.
-Vacuum-only and mop-only runs need the corresponding mode. Visiting a room,
-docking, or ending the overall mission does not mark a room cleaned.
+## What counts as cleaned
 
-Managed plans match results to their own run. A partially completed mission
-credits only verified completed rooms. Older saved history is not rewritten.
+- A vacuum-and-mop clean needs both modes completed with a duration above zero.
+  A vacuum-only or mop-only clean needs that one mode.
+- Visiting a room, docking or the whole clean ending does not mark a room
+  cleaned. A missing result does not say why a room was skipped.
+- A stop followed by docking can succeed while unfinished rooms stay due. The
+  robot can report a stopped room as completed, so a plan also checks that it
+  still owned the clean and how the clean ended
+  ([interrupted cleaning](activity-diagnostics.md)).
+- Partial or completed work changes a room's place in the rotation;
+  unattempted work does not.
 
-A plan runs as one or more native missions: consecutive rooms share one, each
-custom area is its own, and with Smart Stop on each room is its own. Each room
-is checked against the robot's record of its own mission. The robot's summary
-of a drawn area carries no room or area name, so the integration does not use
-it: an area counts as finished when the mission the run started for it,
-identified by the session ID the integration generated, ends normally while
-the run still owns the robot. A finished area updates that area's history,
-never a room's mop or vacuum schedule. **Plan finished** reports `completed`
-only when every room is verified and every area's mission has finished.
+For completion automations, use `matic_robot_room_completed` or the room's
+**Last cleaned** sensor. The `latest_mode_results` attribute is live only and
+is not recorded.
 
-Partial or completed work affects rotation priority; unattempted work does not.
-For completion automations, use `matic_robot_room_completed` or **Last cleaned**.
-The `latest_mode_results` sensor attribute is available live but excluded from
-Recorder. Administrator-only MCP history includes the same per-mode detail.
+## Plans
 
-For MCP history, supply `cleaning_mode` so the completion flags and durations
-match the work requested. Without one, native per-mode results have unspecified
-scope and nullable completion flags. Finished events retain their existing native
-room summary, explicitly labeled as such, and provide separate positive-duration
-vacuum, mop, and combined completion counts. The native summary does not identify
-the mode requested by a plan.
+A plan runs in one or more parts ([how a plan runs](cleaning.md#how-a-plan-runs)):
+consecutive rooms share one, each custom area gets its own, and with Smart Stop
+on each room gets its own. Each room is checked against the robot's record of
+the part that plan started, so a partly finished part counts only its completed
+rooms.
 
-Room **Last cleaned** and **Last clean duration** also accept app-started and
-app-scheduled cleans when the robot reports an explicit completed vacuum or
-mop result with a positive duration. Both completed modes contribute to that
-room's duration; incomplete or ambiguous modes do not. These statistics do not
-create managed plan runs or advance plan-only schedules.
+The robot's summary of a custom area names no room or area. An area counts as
+finished when the part the plan started for it ends normally while the plan
+still owns the robot. A finished area updates that area's history, never a
+room's schedule. **Plan finished** reports `completed` only when every room is
+confirmed and every area's part has finished.
 
-Canonical history uses the robot's mission, partition and room UUIDs. Verified
-saved-floor bindings allow delayed records to update the correct shared schedule
-while another floor is active. It can
-resolve a room across multiple saved floors and room renames; an unknown UUID
-never falls back to a name. Legacy records without this identity remain limited
-to a unique room-name match on a single known floor. Both sensors explain
-withheld statistics through `native_statistics_blocked_reason`.
+## Cleans started outside Home Assistant
 
-The integration setting **App-started cleanings** is enabled by default. It
-lets successful external room cleanings advance shared room schedules. Counting
-starts when the option is first activated or re-enabled, without historical
-backfill. Turning it off preserves earlier credit; subsequent corrections to
-already counted records still retract or revise it. Creating or rebinding a
-shared schedule also starts a new counting boundary.
+Room **Last cleaned** and **Last clean duration** also count cleans started in
+the Matic app or by a robot schedule, when the robot reports a completed mode
+with a duration above zero. These cleans never create a plan run.
 
-Each room retains at most 1,024 completion and reset records. If more history
-cannot be counted safely, progress becomes unverified and dependent shared
-schedules wait for a full counter reset. Retained records remain correctable.
-Reset both room-schedule counters to start a new counting boundary; saved plans
-and managed run history remain intact.
+**App-started cleanings**, on by default in the integration's options, also
+lets them advance [room schedules](room-schedules.md):
 
-Credit requires a known initiator, matching floor/room identities, a completed
-modern summary, a finished stop reason, and positive completed-mode durations.
-Cancelled, partial, ambiguous and malformed records cannot earn this credit.
-The integration reserves its own session IDs before sending managed commands,
-including plan-only runs, direct HA starts and custom areas, so their native
-history cannot be counted again as an app-started clean.
-Native cleans do not satisfy a requested vacuum strength without setting proof
-or clear an explicit next-clean request. Shared resets remain effective after
-replay. Saved plan run history and managed completion counts stay separate.
+- Counting starts when the option is turned on, with no backfill. Turning it
+  off keeps earlier counts. Creating or rebinding a shared schedule starts a
+  new count.
+- A clean counts only with a known starter, matching floor and room, a finished
+  ending and completed modes with durations. Cancelled, partial and unclear
+  records never count.
+- Cleans Home Assistant started are never counted a second time this way.
+- A clean from the app counts as a scheduled vacuum level only when its record
+  shows that level, and it never clears a one-time request such as **Mop on
+  the next clean**.
+- Each room keeps up to 1,024 completion and reset records. Past that, progress
+  can't be confirmed and its shared schedules wait until you reset both
+  room-schedule counters. Saved plans and run history are kept.
 
-`statistics_source` distinguishes canonical robot identity matching, legacy
-name matching, managed results and restored values. Repeated reads do not
-count work twice. Corrections to one session can add or retract a mode, while
-an unrelated newer partial run does not erase an older successful clean.
-The [OEM replay evidence](native-history-floor-evidence.md) establishes parser
-semantics. The installed Home Assistant runtime remains `v0.5.1-beta1`
-(`63c143c6`); source changes here are not deployment evidence.
+History matches the robot's own IDs for the clean, the floor and the room, so a
+late record updates the right room while another floor is active and a renamed
+room keeps its history. An unknown room ID never falls back to a name. Older
+records without IDs match only a unique room name on a single known floor.
+`statistics_source` on each sensor says which kind of match was used, and
+`native_statistics_blocked_reason` says why a statistic is withheld. Reading
+history twice never counts work twice, and a newer partial clean does not erase
+an older completed one.
 
 ## Rooms the robot could not reach
 
-When a plan sends the robot to a room it cannot reach, such as one behind a
-closed door, the robot ends its mission and docks without entering the room.
-The integration does not treat that as a takeover. It reads the robot's record
-of the mission it started: a new single-room record with the stop reason
-`finished` and every requested mode **unattempted** means the room was
-unreachable. The room closes as **Couldn't reach** without credit, keeps its
-place in the rotation so it stays due, and the plan moves on to the next room.
-`matic_robot_room_skipped` fires with `reason_code: room_unreachable` and
-`cause: robot`.
+When a plan sends the robot to a room it cannot enter, such as one behind a
+closed door, the robot ends that clean and docks. The integration reads the
+record of the clean it started: a single-room record that finished with every
+requested mode **unattempted** means the room was unreachable. The Matic app
+shows the same record as **Area inaccessible**.
 
-Any other ending is not unreachable. A mission the owner cancelled, one the
-robot cancelled, one with no stop reason, or one where the robot reached the
-room ends the plan as before, with `reason_code: native_task_ended`. Only a
-different active native task is reported as `native_task_taken_over`.
+The room closes as **Couldn't reach** without credit and stays due, and the
+plan moves on to the next room. `matic_robot_room_skipped` fires with
+`reason_code: room_unreachable` and `cause: robot`.
 
-The Matic app shows the same record as **Area inaccessible**. In the installed
-app (1.183.1, build 108; base APK SHA-256 `15f1ec48…c979fc546`, arm64 split
-`e7907cb2…dab2e43`), the native `sessionstopreason_title` binding returns
-"Area inaccessible" for `SessionStopReason.Finished`, "Stopped unexpectedly"
-for `BotCancelled`, and "Cancelled" for `UserCancelled`. The reported mission
-showed that title above its unattempted room. The robot's history keeps
-`Finished` at stop-reason field `5`, which the integration already decodes.
-How the app chooses where to show the title was not traced.
+Any other ending still ends the plan with `reason_code: native_task_ended`: a
+clean the user or the robot cancelled, one with no stop reason, or one where
+the robot got into the room. Only a different active task is reported as
+`native_task_taken_over`. [Protocol notes](protocol-notes.md#cleaning-history-coverage_session_history)
+has the fields behind this.
 
-## Physical observations
+## Durations and estimates
 
-On November 1, 2026, two separately observed normal vacuum cleans completed on
-floor A and floor B, lasting 379 and 259 seconds respectively. The robot returned
-to its original dock with no reported errors. These physical observations are
-independent of the offline OEM decoder replay and do not qualify integration
-history parsing, runtime deployment, or managed-run completion. Household room
-names and raw device evidence remain private.
+- A room's **Last clean duration** uses the robot's work time for that room
+  when the result has it, otherwise the active time Home Assistant tracked.
+  The newest result wins, and a plan's result wins a tie.
+- The robot's own **Last clean duration** is the latest clean from start to
+  end, so it can differ from the room figures.
+- Durations are stored in seconds. Rooms show minutes and whole cleans hours by
+  default; changing the unit changes nothing else.
+- **Current room expected duration** is the median of up to the last seven
+  confirmed durations for that room with the same cleaning mode and coverage.
+  It and **Current room estimated progress** stay unknown until three exist.
+  Progress stops at 100% and never marks a room finished.
 
-For a managed result, **Last clean duration** uses native per-room work time
-when supplied by completion, otherwise tracked active room time. The room
-sensors prefer the newest result, with managed evidence preferred on a tie.
-The whole-robot **Last clean duration** uses the latest session timing;
-Home Assistant can prefer a matching locally tracked active session when the
-native summary lacks mode results. Native MCP history separately reports the
-session's start-to-end duration and each mode's work duration. These measurements
-can differ. Durations are stored in seconds; room durations display in minutes
-and whole cleans in hours by default, and changing display units does not
-change their scope.
+## History for assistants
 
-**Current room expected duration** is the median of up to the last seven verified
-durations for that room with the same cleaning mode and coverage, across plans.
-It and **Current room estimated progress** stay unknown until three such
-durations exist. Estimated progress measures active time against that
-estimate, stops at 100%, and never marks a room finished.
-
-Modern native history separates why a mission stopped from mode completion.
-Firmware can report a stopped room as completed; managed plans also verify
-ownership and the terminal transition. A requested stop followed by docking can succeed while unfinished
-rooms remain due. See [activity diagnostics](activity-diagnostics.md).
+The administrator-only assistant history has the same per-mode detail. Supply
+`cleaning_mode` so the completion flags and durations match the work that was
+asked for; without it the flags can be empty. A finished event keeps the
+robot's own room summary, labelled as such, beside separate vacuum, mop and
+combined completion counts. That summary does not say which mode a plan asked
+for.

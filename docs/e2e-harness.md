@@ -11,6 +11,8 @@ over HTTP/2 to `tests/e2e/hermes_sim.py`.
 The tests run in the normal `pytest` command, so the Test workflow's `ci` job
 covers them on hosted `ubuntu-latest`.
 
+## Live and development server
+
 `tests/live` puts Matic Map in front of the same simulator. `server.py` writes
 a throwaway, already onboarded Home Assistant configuration with the robot
 paired, runs Home Assistant Core and its frontend in-process on 127.0.0.1:8123,
@@ -19,12 +21,18 @@ workflow's `live` job runs `npx playwright test --config
 playwright.live.config.mjs` against it; `ci` requires both jobs. Locally, run
 the same command after `npm ci` and `pip install -e '.[test]'`.
 
+`python tests/live/server.py` is also the development server: open
+http://127.0.0.1:8123 (loopback is signed in as the owner) and move the robot
+with `curl -X POST http://127.0.0.1:8124/step/<name>` for a name in `STEPS`;
+`GET /state` returns the phase, queued rooms and commands received.
+
 ## What is simulated
 
 | Part | Simulator behavior |
 | --- | --- |
 | TLS identity | A CA and `robot_server` leaf with Matic's DirectoryName SAN, generated per test. The test points `MATIC_INTERMEDIATE_CA` at that CA; pinning code is unchanged. |
 | Name resolution | The robot's `.local` name resolves to loopback. |
+| Network path | A loopback relay in front of the server, which tests reset, cut or silence. TLS passes through it, so pinning still sees the robot. |
 | `HermesDiscoveryRPC` | `GetBotInfo` returns the simulated identity. |
 | `HermesAuth` | `AuthToken` issues a credential only while `pairing_open` is set. |
 | `Hermes` | `Handshake` and `FetchCollection` require a credential the robot issued. Properties answer snapshots; tracked subscriptions wait for each sequence acknowledgment and then push changes. Unserved names return `UNIMPLEMENTED`. |
@@ -35,11 +43,40 @@ the same command after `npm ci` and `pip install -e '.[test]'`.
 
 Tests move the robot with explicit scripted steps such
 as `start_cleaning`, `finish_room`, `finish_session`, `arrive_at_dock`,
-`low_charge_recharge`, `fault`, `app_takes_over`, `refilled` and `offline`,
+`low_charge_recharge`, `fault`, `app_takes_over` and `refilled`,
 then await the integration's accepted state before advancing. History timestamps use
 the wall clock because the integration binds a record to the dispatch time.
 A few tests shorten a wait constant (the dock-after-stop poll, the history
 window) rather than wait minutes; the logic is unchanged.
+
+## Faults
+
+`robot.faults` breaks the streams of one collection or channel, by name;
+`simulator.link` breaks the connection. Both are in `tests/e2e/sim_faults.py`.
+A `reset` or `corrupt` acts once, on the first stream that has handled `after`
+messages, so the retry succeeds; an open subscription takes it at once.
+
+| Control | Effect |
+| --- | --- |
+| `faults.delay(name, seconds)` | Every response or command acknowledgment on `name` waits first, until `faults.clear()`. |
+| `faults.stall(name)` | Nothing more is sent on `name` until `faults.clear()`; a command is applied and never acknowledged. |
+| `faults.reset(name, after=n)` | One stream is reset after `n` messages. On a channel, 0 loses the command and 1 loses only its acknowledgment. |
+| `faults.corrupt(name)` | One response carries a value that is not a protobuf message; with `frame=True` the gRPC message is not a `CollectionResponse`. |
+| `link.drop()` | Every open connection is reset; the next dial succeeds. |
+| `link.cut()` | Connections and new dials are reset until `link.restore()`. |
+| `link.stall()` | Connections stay open and nothing is delivered until `link.restore()`. |
+
+## Recorded responses
+
+`tests/e2e/recordings` holds robot responses as bytes, one file per firmware
+version and moment, with the facts a correct decoder reads from them.
+`test_recorded_responses.py` replays each file to the real client and to a
+loaded config entry, so a decoder that stops agreeing with the bytes fails.
+Both files today are `"origin": "synthetic"`: assembled once from the wire
+shapes the decoders and simulator document for firmware 181.10, with invented
+rooms and times. They are not evidence of what a robot sends. A `recorded`
+file needs a read-only capture with names, identifiers, networks and maps
+replaced before it is committed.
 
 ## Covered today
 
@@ -81,11 +118,14 @@ window) rather than wait minutes; the logic is unchanged.
   arrival and capture freshness, wrong or unknown rooms, takeover, opt-in,
   cooldown, blocked-room manual snapshots, preview bytes, authentication and
   the 16-photo memory limit.
-- An unreachable robot makes entities unavailable and they recover.
+- Entities go unavailable while the robot is off the network or silent, then
+  recover. A reset or an undecodable value makes the state stream resubscribe.
+- A plan start that is lost or never acknowledged fails the run and is not
+  sent again. Known gap (strict `xfail`, PRO-165): a gRPC message that is not
+  a `CollectionResponse` ends the state stream until reload.
 - A revoked credential starts reauthentication.
 - Client level: pairing window, unknown credentials, fingerprint and serial
   pinning, snapshot, tracked and pushed collections, unsupported endpoints.
-
 - In a browser against Home Assistant: choosing Kitchen and Study sends one
   coverage command, the panel follows the robot and returns to ready at the
   dock. Open history reflects delayed completion without a page reload.

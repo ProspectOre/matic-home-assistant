@@ -15,7 +15,7 @@ the queue sheet in the Matic app does. Each takes the target vacuum and one
 Clean room again keeps the room's modes and vacuum coverage unless you pass
 `cleaning_mode` or `coverage_setting` (`coverage` in `params` for
 `vacuum.send_command`). When the robot's plan no longer holds the room, for
-example a room from an earlier mission of a plan run, pass both.
+example a room from an earlier part of a plan run, pass both.
 
 ```yaml
 actions:
@@ -38,7 +38,7 @@ clean**: pick a room (it starts on the room being cleaned) and choose Skip,
 Clean next or Clean again. The buttons wait while the robot confirms, and the
 notice under the heading says what changed or why the robot refused. The room
 list contains all mapped rooms; Skip and Clean next are limited to the current
-mission. Clean again there always keeps the room's modes and coverage.
+part of the clean. Clean again there always keeps the room's modes and coverage.
 
 ## Plan runs
 
@@ -58,8 +58,8 @@ setting (for example, Heavy Duty).
   rooms or in a space outside the map, try again once it is in a room.
 - A clean that includes a custom area is refused; use the Matic app.
 - A room the robot hasn't been asked to clean can't be skipped or moved. In a
-  plan run with rooms split into several missions, only the rooms in the
-  current mission can be changed.
+  plan run split into several parts, only the rooms in the current part can
+  be changed ([how a plan runs](cleaning.md#how-a-plan-runs)).
 - Skipping the only room left is refused; stop the clean instead.
 - Skip and Clean room again match recordings of the Matic app's own changes on
   a live robot. Clean room next matches the app's encoder but has not yet been
