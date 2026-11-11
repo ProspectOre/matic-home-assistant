@@ -977,7 +977,6 @@ test("a failed area module waits for explicit retry", async ({ page }) => {
   await expect.poll(() => resumedPanel.evaluate((element) => element.getWorkspaceSnapshot().workflow)).toBe("areas");
   await expect.poll(() => areaModuleAttempts).toBe(2);
   await expect.poll(() => resumedPanel.evaluate((element) => element.getWorkspaceSnapshot().resources.areas.status)).toBe("ready");
-  // The workflow and the map pins may each read the catalog; neither writes.
   expect(new Set(await page.evaluate(() => window.__panelFixture.areaRequests.map(({ method }) => method)))).toEqual(new Set(["GET"]));
 });
 
