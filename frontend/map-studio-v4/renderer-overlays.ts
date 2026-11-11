@@ -2,7 +2,6 @@ import type { AreaCircle, SceneModel } from "./backend-contracts";
 import type { CoordinateEditCapture, WorkspaceState } from "./contracts";
 import { canShowExactPose, hasCoordinateEditAdmission, topView } from "./state";
 import { rgba, type CanvasPalette } from "./theme-probe";
-import type { drawRobot as DrawRobot } from "./robot-model";
 import type { OverlayGeometry } from "./overlay-geometry";
 import type { MapPoint, RendererCamera } from "./renderer-camera";
 import { selectedRoomNames } from "./renderer-hit-test";
@@ -159,6 +158,8 @@ interface OverlayHost {
   readonly scene: () => SceneModel | null;
   readonly state: () => WorkspaceState | null;
   readonly fallback: () => boolean;
+  /** WebGL draws the robot, so this canvas leaves it out. */
+  readonly robotInScene: () => boolean;
   readonly pixelRatio: () => number;
   /** `scene` is false when only this canvas changed. */
   readonly requestRender: (scene: boolean) => void;
@@ -174,8 +175,6 @@ export class RendererOverlay {
   readonly #host: OverlayHost;
   #circlePreview: { readonly circles: readonly AreaCircle[]; readonly capture: CoordinateEditCapture } | null = null;
   #cursor: MapPoint | null = null;
-  /** undefined until a heading needs it, null while loading or after a failed load. */
-  #robotModel: typeof DrawRobot | null | undefined;
   palette: CanvasPalette = DEFAULT_PALETTE;
   #labelOffsets = new Map<string, readonly [x: number, y: number]>();
 
@@ -267,23 +266,16 @@ export class RendererOverlay {
       const marker = camera.projectMeters(pose.position[0], pose.position[1], 3);
       const heading = pose.heading;
       if (marker && typeof heading === "number") {
-        if (this.#robotModel === undefined) {
-          // Heading rendering stays in a lazy chunk; a dot stands in if the
-          // chunk itself is unavailable. The chunk owns the vector fallback.
-          this.#robotModel = null;
-          import("./robot-model").then(({ drawRobot }) => {
-            this.#robotModel = drawRobot;
-            this.#host.requestRender(false);
-          }, () => undefined);
-        }
+        this.#modules.loadRobot();
+        if (this.#host.robotInScene()) return;
         const [x, y] = pose.position;
         const metersPerCell = scene.metadata.metersPerCell;
-        if (this.#robotModel?.(context, (forward, left, height) => camera.projectMeters(
+        if (this.#modules.robot?.drawVectorRobot(context, (forward, left, height) => camera.projectMeters(
           x + forward * Math.cos(heading) - left * Math.sin(heading),
           y + forward * Math.sin(heading) + left * Math.cos(heading),
           height / metersPerCell,
           false,
-        ), heading, palette, camera.current.pitch, () => this.#host.requestRender(false))) return;
+        ), heading, palette)) return;
       }
       if (marker) {
         context.beginPath();

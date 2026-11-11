@@ -105,8 +105,8 @@ controllers own [workspace synchronization](../frontend/map-studio-v4/workspace-
 [motion](../frontend/map-studio-v4/robot-motion-controller.ts), room previews,
 home shortcuts and run history. The [sheet controller](../frontend/map-studio-v4/sheet-controller.ts)
 owns sheet interaction. The [renderer](../frontend/map-studio-v4/renderer-controller.ts)
-owns the canvases and the frame loop; its camera, GPU resources, overlays and
-hit-testing are modules beside it, held to a [frame cost](performance-frame-cost.md).
+owns the canvases and the frame loop; its camera, GPU resources, overlays,
+robot mesh and hit-testing are modules beside it, held to a [frame cost](performance-frame-cost.md).
 The [gesture controller](../frontend/map-studio-v4/gesture-controller.ts)
 owns map interaction. Workflow, history and drawing assets load on demand.
 

@@ -102,7 +102,6 @@ def test_privacy_scan_rejects_household_map_artifacts(
     "relative",
     (
         "custom_components/matic_robot/brand/icon.png",
-        "custom_components/matic_robot/map_studio_v4/assets/robot-atlas.webp",
         "docs/images/matic-map.png",
     ),
 )

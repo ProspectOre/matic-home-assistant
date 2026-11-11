@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { STAMP_FILE, hashSources } from "./source_stamp.mjs";
@@ -87,10 +87,7 @@ function visit(path) {
   }
 }
 visit(resolve(production, "index.js"));
-// Blender owns assets/; rebuilding JavaScript must preserve its checked-in atlas.
-for (const name of await readdir(production)) {
-  if (name !== "assets") await rm(resolve(production, name), { recursive: true, force: true });
-}
+await rm(production, { recursive: true, force: true });
 await rm(review, { recursive: true, force: true });
 for (const output of result.outputFiles) {
   const name = relative(production, output.path);
@@ -127,9 +124,6 @@ const inputs = [...new Set([...Object.keys(result.metafile.inputs).filter((path)
   ...MATERIAL_ICON_INPUTS.map((path) => relative(root, path)),
   "scripts/normalize_map_studio_bundle.mjs", "scripts/source_stamp.mjs",
   "package.json", "package-lock.json",
-  "custom_components/matic_robot/map_studio_v4/assets/robot-atlas.json",
-  "custom_components/matic_robot/map_studio_v4/assets/robot-atlas.webp",
-  "scripts/robot_model/build_robot.py",
 ])].sort();
 await writeFile(
   resolve(review, STAMP_FILE),

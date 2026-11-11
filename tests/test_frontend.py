@@ -231,6 +231,15 @@ def test_catalog_writes_ship_in_their_own_lazy_chunk() -> None:
         assert marker in writes
 
 
+def test_robot_model_ships_in_its_own_lazy_chunk() -> None:
+    """The robot's mesh loads with the first heading, in under 30 KB."""
+    chunks = sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("robot-model-*.js"))
+    assert len(chunks) == 1
+    assert chunks[0].stat().st_size < 30 * 1024
+    assert "robot-program-failed" in chunks[0].read_text(encoding="utf-8")
+    assert "robot-program-failed" not in _startup_source()
+
+
 def test_outline_fill_ships_in_the_lazy_outline_chunk() -> None:
     """Only the outline editor turns an outline into circles, so it loads with Draw."""
     startup = _startup_source()
