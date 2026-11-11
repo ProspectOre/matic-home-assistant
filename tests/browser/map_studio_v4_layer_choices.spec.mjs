@@ -61,7 +61,7 @@ test("the live trail is saved too, and the key names it", async ({ page }) => {
   let panel = await mount(page);
   await quick(panel, "trail").click();
   await expect.poll(() => shown(panel)).toMatchObject({ trail: "live" });
-  await expect.poll(() => keyRows(panel)).toEqual(["Robot trail"]);
+  await expect.poll(() => keyRows(panel)).toEqual(["Robot trail", "Direction of travel"]);
   await expect.poll(() => saved(page)).toEqual({ "synthetic-entry": { trail: true, wifi: false, floorTypes: false } });
 
   panel = await mount(page);

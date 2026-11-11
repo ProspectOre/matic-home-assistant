@@ -155,6 +155,7 @@ def test_each_pose_on_the_current_map_feeds_the_trail_recorder() -> None:
         native_active=False,
         map_key=_browser_session_key(runtime),
         point=(0.1, 0.2),
+        observed_at=runtime.session.pose_on(runtime.session.floor.value).observed_at,
     )
 
     runtime.slam_map.mission_identity = None
@@ -164,6 +165,7 @@ def test_each_pose_on_the_current_map_feeds_the_trail_recorder() -> None:
         "native_active": False,
         "map_key": None,
         "point": None,
+        "observed_at": None,
     }
 
     without_pose = _runtime(pose=False)
@@ -171,6 +173,7 @@ def test_each_pose_on_the_current_map_feeds_the_trail_recorder() -> None:
     without_pose.cleaning_plans.ledger.active_run_id = MagicMock(return_value=None)
     observe_trail(without_pose)
     assert without_pose.run_trails.observe.call_args.kwargs["point"] is None
+    assert without_pose.run_trails.observe.call_args.kwargs["observed_at"] is None
     observe_trail(_runtime())
 
 

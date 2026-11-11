@@ -234,6 +234,7 @@ export const syntheticPose = (): PoseModel => ({
   mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
   ageSeconds: 0.2,
   heading: null,
+  observedAt: null,
 });
 
 // Cleaning history: the last run stopped early, an earlier one finished with a

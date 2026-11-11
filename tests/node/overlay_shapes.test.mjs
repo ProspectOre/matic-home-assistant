@@ -5,13 +5,13 @@ import { build } from "esbuild";
 
 const { outputFiles } = await build({
   stdin: {
-    contents: 'export { overlayShapes } from "./overlay-shapes";',
+    contents: 'export { chevrons, overlayShapes } from "./overlay-shapes";',
     resolveDir: fileURLToPath(new URL("../../frontend/map-studio-v4", import.meta.url)),
     loader: "ts",
   },
   bundle: true, write: false, platform: "node", format: "esm", target: "es2022",
 });
-const { overlayShapes } = await import(
+const { chevrons, overlayShapes } = await import(
   `data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString("base64")}`,
 );
 
@@ -154,12 +154,27 @@ test("the travel path breaks at gaps over a metre and keeps a lone observation a
     { kind: "stroke", colour: PALETTE.accent, width: 2, closed: false, dashed: false },
   ]);
   assert.equal(shapes[0].rings, shapes[1].rings, "both strokes share one set of segments");
-  assert.deepEqual(shapes[0].rings.map((ring) => ring.length / 2), [3, 2, 1, 1]);
+  // The first run is a metre long, so it carries one chevron after its three points.
+  assert.deepEqual(shapes[0].rings.map((ring) => ring.length / 2), [3, 3, 2, 1, 1]);
   assert.deepEqual(overlayShapes(scene(), state({ trail: { ...trail, mapSessionKey: "other" } }), PALETTE), [],
     "a trail from another map session is not drawn");
   assert.deepEqual(overlayShapes(scene(), state({ trail: { ...trail, id: "run-1" } }), PALETTE), [],
     "a past run's trail waits for Cleaning history");
   assert.equal(overlayShapes(scene(), state({ trail: { ...trail, id: "run-1" }, workflow: "runs" }), PALETTE).length, 2);
+});
+
+test("trail chevrons sit every 1.2 m along the path and point the way it went", () => {
+  const east = chevrons([[0, 0], [1, 0], [2.5, 0, 1_800_000_000]]);
+  assert.deepEqual(east.map(([, tip]) => tip.map((value) => Math.round(value * 100) / 100)), [[0.6, 0], [1.8, 0]]);
+  for (const [first, [tipX, tipY], second] of east) {
+    // Both wings trail behind the tip, one either side of the path.
+    assert.ok(first[0] < tipX && second[0] < tipX);
+    assert.ok(Math.sign(first[1] - tipY) === -Math.sign(second[1] - tipY));
+  }
+  const [[wing, tip]] = chevrons([[3, 0], [0, 0]]);
+  assert.ok(wing[0] > tip[0], "a path running west points west");
+  assert.deepEqual(chevrons([[0, 0], [0.5, 0]]), [], "a path shorter than half the spacing has none");
+  assert.deepEqual(chevrons([[0, 0], [0, 0]]), []);
 });
 
 test("shapes come in paint order: rooms, floor types, Wi-Fi, zones, travel path", () => {

@@ -482,6 +482,37 @@ async def test_trail_records_verified_points_per_run(hass: HomeAssistant) -> Non
     assert trails.trail_id(None, run_id="run-1") is None
 
 
+async def test_trail_points_keep_the_robots_pose_time(hass: HomeAssistant) -> None:
+    trails = RunTrails(hass, "entry")
+    for point, observed_at in (
+        ((0.0, 0.0), 1_800_000_000.4),
+        ((0.5, 0.0), float("nan")),
+        ((1.0, 0.0), 5e9),
+        ((1.5, 0.0), None),
+        ((2.0, 0.0), 1_800_000_009.6),
+    ):
+        trails.observe(
+            run_id="run-1",
+            native_active=True,
+            map_key=MAP,
+            point=point,
+            observed_at=observed_at,
+        )
+    assert trails.live(MAP) == [
+        [
+            (0.0, 0.0, 1_800_000_000),
+            (0.5, 0.0),
+            (1.0, 0.0),
+            (1.5, 0.0),
+            (2.0, 0.0, 1_800_000_010),
+        ]
+    ]
+    trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
+    saved = trails.segments(trails.trail_id(MAP, run_id="run-1"), MAP)
+    assert saved == trails._data()["trails"][0]["segments"]
+    assert saved[0][0] == (0.0, 0.0, 1_800_000_000)
+
+
 async def test_trail_splits_on_map_change_and_merges_a_runs_segments(
     hass: HomeAssistant,
 ) -> None:
@@ -583,7 +614,7 @@ async def test_trails_reload_and_reject_damaged_storage(
         "map_key": MAP,
         "started_at": STARTED,
         "ended_at": ENDED,
-        "segments": [[[0, 0], [1, 1], [2, 2]]],
+        "segments": [[[0, 0], [1, 1, 1_800_000_000], [2, 2]]],
     }
     bad = [
         "junk",
@@ -595,6 +626,8 @@ async def test_trails_reload_and_reject_damaged_storage(
         {**good, "segments": [[[0, 0]]] * (MAX_TRAIL_SEGMENTS + 1)},
         {**good, "segments": ["x"]},
         {**good, "segments": [[[0, 0, 0]]]},
+        {**good, "segments": [[[0, 0, 5e9]]]},
+        {**good, "segments": [[[0, 0, 1, 1]]]},
         {**good, "segments": [[[True, 0]]]},
         {**good, "segments": [[[float("nan"), 0]]]},
         {**good, "segments": [[[2e4, 0]]]},
@@ -618,8 +651,9 @@ async def test_trails_reload_and_reject_damaged_storage(
     assert trails._data()["trails"] == [good]
     assert trails.trail_id(MAP, run_id="run-2") == LIVE_TRAIL_ID
     trails.observe(run_id="run-2", native_active=True, map_key=MAP, point=(5, 5))
-    assert trails.live(MAP) == [[(0, 0), (1, 1), (2, 2), (5, 5)]]
-    assert trails._data()["live"]["segments"] == [[(0, 0), (1, 1), (2, 2), (5, 5)]]
+    reloaded_points = [(0, 0), (1, 1, 1_800_000_000), (2, 2), (5, 5)]
+    assert trails.live(MAP) == [reloaded_points]
+    assert trails._data()["live"]["segments"] == [reloaded_points]
 
     hass_storage["matic_robot.run_trails.entry"]["data"] = {
         "trails": "junk",

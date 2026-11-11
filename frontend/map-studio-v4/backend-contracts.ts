@@ -167,6 +167,8 @@ export interface PoseModel {
   readonly ageSeconds: number | null;
   /** Map-frame yaw in radians when the pose carried a rotation. */
   readonly heading: number | null;
+  /** The robot's own time of a placed pose, in epoch seconds. */
+  readonly observedAt: number | null;
 }
 
 export interface HistorySnapshot {
@@ -654,6 +656,8 @@ export const parsePose = (value: unknown): PoseModel => {
       && Math.abs(payload.heading) <= Math.PI + 1e-3
       ? payload.heading
       : null,
+    observedAt: position !== null && typeof payload.observed_at === "number"
+      && payload.observed_at > 0 && payload.observed_at < 4_102_444_800 ? payload.observed_at : null,
   };
 };
 

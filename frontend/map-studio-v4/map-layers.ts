@@ -1,5 +1,5 @@
 import { mdiMapMarkerPath, mdiRug, mdiWifi } from "@mdi/js";
-import { html, nothing } from "lit";
+import { html, nothing, type TemplateResult } from "lit";
 import type { SceneModel } from "./backend-contracts";
 import type { NoticePlaceholders, WorkspaceIntent, WorkspaceState } from "./contracts";
 import { icon } from "./icons";
@@ -13,6 +13,11 @@ type Translate = (key: string, fallback: string, placeholders?: NoticePlaceholde
 export interface MapLayersContext {
   readonly state: WorkspaceState;
   readonly t: Translate;
+}
+
+interface MapKeyContext extends MapLayersContext {
+  /** A trail point is ringed for inspection (map-inspect.ts). */
+  readonly marked: boolean;
 }
 
 /**
@@ -37,7 +42,7 @@ export const layerToggles = ({ state, t, intent }: MapLayersContext & { readonly
 const rgb = (colour: readonly number[], alpha = 1): string => `rgb(${colour.join(" ")} / ${alpha})`;
 
 /** Keys for what the live map draws besides rooms, in the overlay's colours (overlay-shapes.ts). */
-const mapKey = ({ state, t }: MapLayersContext) => {
+const mapKey = ({ state, t, marked }: MapKeyContext) => {
   if (state.dataMode !== "live" || state.selection.floorId !== "current") return nothing;
   const floorTypes = !state.floor.readOnly && state.floorTypes?.status === "ready" ? state.floorTypes : null;
   const zones = state.resources.areas.value?.zones ?? [];
@@ -47,6 +52,8 @@ const mapKey = ({ state, t }: MapLayersContext) => {
     zones.some(({ kind }) => kind === "no_go") ? ["no-go", "", t("v4_key_no_go", "No-go zone")] : null,
     zones.some(({ kind }) => kind !== "no_go") ? ["zone", "", t("v4_key_robot_zone", "Robot zone, purpose unknown")] : null,
     trailVisible(state) ? ["trail", "", t("v4_robot_trail", "Robot trail")] : null,
+    trailVisible(state) ? ["direction", "", t("v4_key_direction", "Direction of travel")] : null,
+    marked ? ["marked", "", t("v4_key_marked", "Point you're inspecting")] : null,
   ].filter((row): row is string[] => row !== null);
   if (!rows.length) return nothing;
   return html`<details class="map-key ms-surface ms-surface--floating" open>
@@ -55,20 +62,22 @@ const mapKey = ({ state, t }: MapLayersContext) => {
   </details>`;
 };
 
-export interface MapLegendsContext extends MapLayersContext {
+export interface MapLegendsContext extends MapKeyContext {
   readonly scene: SceneModel | null;
   /** The map point the user last tapped, if any. */
   readonly spot: MapPoint | null;
+  /** The details card for what the user tapped (map-inspect.ts). */
+  readonly inspect: TemplateResult | typeof nothing;
 }
 
-/** The map key and the Wi-Fi legend, stacked in the map's lower start corner. */
+/** The details card, map key and Wi-Fi legend, stacked in the map's lower start corner. */
 export const mapLegends = (context: MapLegendsContext) => {
-  const { state, scene, spot, t } = context;
+  const { state, scene, spot, t, inspect } = context;
   const key = mapKey(context);
   const wifi = scene && state.dataMode === "live" && !state.floor.readOnly && state.selection.floorId === "current"
     && state.wifiSignal?.status === "ready"
     ? wifiLegend({ layer: state.wifiSignal, scene, spot, locale: state.locale, t }) : nothing;
-  if (key === nothing && wifi === nothing) return nothing;
+  if (key === nothing && wifi === nothing && inspect === nothing) return nothing;
   return html`
     <style>
       .map-legends { position: absolute; z-index: 4; inset-inline-start: max(0.75rem, var(--ms-safe-left, 0px)); inset-block-end: calc(4.5rem + var(--map-sheet-offset, 0px)); display: flex; flex-direction: column; align-items: start; gap: var(--ms-space-2); inline-size: min(17rem, calc(100% - 1.5rem)); max-block-size: calc(100% - 9rem - var(--map-sheet-offset, 0px)); overflow-y: auto; pointer-events: none; }
@@ -81,8 +90,10 @@ export const mapLegends = (context: MapLegendsContext) => {
       [data-key=no-go] .key-swatch { background: color-mix(in srgb, var(--ms-text) 22%, transparent); border: 1.5px solid var(--ms-text); }
       [data-key=zone] .key-swatch { border: 1.5px dashed var(--ms-text); }
       [data-key=trail] .key-swatch { block-size: 0.25rem; border-radius: 0.125rem; background: var(--ms-resolved-indicator, var(--ms-accent)); box-shadow: 0 0 0 1px var(--ms-resolved-on-indicator, var(--ms-on-accent)); }
+      [data-key=direction] .key-swatch { inline-size: 0.625rem; margin-inline: 0.3125rem; border: solid var(--ms-resolved-indicator, var(--ms-accent)); border-width: 2px 2px 0 0; transform: rotate(45deg); }
+      [data-key=marked] .key-swatch { inline-size: 0.875rem; block-size: 0.875rem; margin-inline: 0.1875rem; border: 2.5px solid var(--ms-text); border-radius: 50%; box-shadow: 0 0 0 1px var(--ms-surface-card, Canvas); }
       @media (forced-colors: active) { .key-swatch { forced-color-adjust: none; } }
     </style>
-    <div class="map-legends">${key}${wifi}</div>
+    <div class="map-legends">${inspect}${key}${wifi}</div>
   `;
 };
