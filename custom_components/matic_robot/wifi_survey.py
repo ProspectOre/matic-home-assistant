@@ -7,7 +7,7 @@ import logging
 import math
 from bisect import bisect
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from http import HTTPStatus
@@ -128,6 +128,7 @@ class WifiSurveyStore:
         # Bumped by every change to the cells; keys the room summary cache.
         self._revision = 0
         self._rooms: tuple[int, FloorPlan, dict[str, RoomSignal]] | None = None
+        self._listeners: list[Callable[[], None]] = []
 
     @property
     def enabled(self) -> bool:
@@ -149,6 +150,16 @@ class WifiSurveyStore:
         self._revision += 1
         self._closed = False
 
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Call `listener` after every change to the cells; return its removal."""
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener)
+
+    def _changed(self) -> None:
+        self._revision += 1
+        for listener in list(self._listeners):
+            listener()
+
     def set_enabled(self, enabled: bool) -> None:
         """Turn sampling on or off."""
         self._enabled = enabled
@@ -161,7 +172,7 @@ class WifiSurveyStore:
         self._floors.clear()
         self._frames.clear()
         self._epoch += 1
-        self._revision += 1
+        self._changed()
         self._schedule_save()
 
     def add_sample(
@@ -199,7 +210,7 @@ class WifiSurveyStore:
             cell.samples += 1
             cell.dbm += (dbm - cell.dbm) / min(cell.samples, FADE_SAMPLES)
             cell.updated_at = at
-        self._revision += 1
+        self._changed()
         self._schedule_save()
         return True
 

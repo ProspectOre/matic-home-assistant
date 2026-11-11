@@ -41,6 +41,12 @@ class MaticRoomWifiSignalSensor(MaticEntity, SensorEntity):
         self._attr_unique_id = f"{self._matic_serial}_room_{room.id}_wifi_signal"
         self._attr_translation_placeholders = {"room": room.name}
 
+    async def async_added_to_hass(self) -> None:
+        """Publish again whenever the survey's cells change."""
+        await super().async_added_to_hass()
+        survey = self._config_entry.runtime_data.wifi_survey
+        self.async_on_remove(survey.add_listener(self.async_write_ha_state))
+
     @property
     def suggested_object_id(self) -> str | None:
         """Name the entity after the room, not its opaque identifier."""

@@ -102,16 +102,22 @@ def test_room_wifi_sensor_follows_the_robot_and_the_map(hass) -> None:
     assert kitchen.native_value is None
 
 
-async def test_room_wifi_sensor_releases_its_listener_on_removal(hass) -> None:
-    entry, _ = _entry_with_survey(hass)
+async def test_room_wifi_sensor_publishes_survey_changes_until_removed(hass) -> None:
+    entry, survey = _entry_with_survey(hass)
     kitchen = MaticRoomWifiSignalSensor(
         entry, entry.runtime_data.coordinator.data.floor_plan.rooms[0]
     )
     remove = MagicMock()
     entry.runtime_data.coordinator.async_add_listener = MagicMock(return_value=remove)
+    kitchen.async_write_ha_state = MagicMock()
 
     await kitchen.async_added_to_hass()
-    kitchen._call_on_remove_callbacks()
+    survey.add_sample(7, FRAME, 1.0, 1.0, -64, 100.0)
+    survey.clear()
+    assert kitchen.async_write_ha_state.call_count == 2
 
+    kitchen._call_on_remove_callbacks()
+    survey.add_sample(7, FRAME, 1.0, 1.0, -64, 101.0)
+    assert kitchen.async_write_ha_state.call_count == 2
     entry.runtime_data.coordinator.async_add_listener.assert_called_once()
     remove.assert_called_once_with()
