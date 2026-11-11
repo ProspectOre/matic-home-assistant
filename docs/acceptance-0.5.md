@@ -1,46 +1,42 @@
 # Matic 0.5 evidence matrix
-
-This is the historical 0.5.0 candidate matrix. The [qualification summary](verification-0.5-stable.md)
-records the RC43/RC44 evidence and its limits. Candidate-specific rows and open
-labels below retain their original scope; they are not a current release hold or
-an assessment of later hotfixes. See [releases](https://github.com/ProspectOre/matic-home-assistant/releases)
-for the published version and current release notes.
-
+For the RC43-based stable candidate, start with the [current qualification
+summary](verification-0.5-stable.md). The candidate-specific rows below retain
+their historical scope; their open labels are not a fresh RC43 assessment.
+The summary records current evidence, remaining limits, and the owner release hold.
 Use the public repository's free standard hosted CI route described in
 [Contributing](../CONTRIBUTING.md#ci-routing); a local Linux runner is not a gate.
-
-At the time of this matrix, stable was `v0.4.8`; desktop comparison control: `v0.4.5`; authority `architecture-0.5.md`.
+Current stable: `v0.4.8`; desktop comparison control: `v0.4.5`; authority `architecture-0.5.md`.
 Historical RC5 receipt: `v0.5.0-rc5` at `699a1bb` was installed through HACS. Its exact 91-file digest matched before and after restart; the prior RC4 rollback copy, config entry, saved plans, and automations are preserved. Fresh startup recovered a coherent ready map and live verified pose; operations are docked/idle with the runner unlocked. Native Safari shows the live Map Studio, verified position, `Docked/Ready`, and the plan, custom-area, and history entry points. A separate owner-authorized bounded one-room Map Studio attempt returned `coverage_activity_unavailable` before the managed client sent `START_COVERAGE`; 0/1 rooms were verified and no cadence credit was applied. Activity state was stale during the attempt. A later administrator operations read at 18:43:07–18:43:09 UTC reported docked, native-inactive, and runner-unlocked; it cannot establish state or movement during the attempt. The saved plan was unchanged, and schedules were not edited. A private receipt records the attempt and evidence limits.
 “Preserved and verified” covers verified prior stable regressions; it is not blanket 0.5 acceptance. Implementation gaps, runtime/device/owner gates, and explicitly out-of-scope items remain distinct.
-
 ## Review-process migration — 2026-10-06
-
-The [review-process history](acceptance-0.5-review-history.md) preserves the
-October 6 migration, October 11 reconciliation and historical receipt gaps.
-
+October 11 reconciliation: [RC22 qualification](verification-0.5-rc22.md) records
+the runtime identity repair, RC21 installation and scoped RC19 active Stop evidence; the [final-candidate receipt](verification-0.5-final-candidate.md)
+retains installed RC16 and earlier evidence. PR #138 is merged; its old hold is retired. The
+owner has also retired the request coordinator. Complete exact-head regular
+review and CI remain required. The owner authorized bounded physical acceptance
+on October 8; workspace status/activity push
+is withheld pending qualification; its owner-facing option is removed. Map deltas,
+pose updates and catalog polling remain available.
+The owner approved retiring the bespoke status gate while preserving authentic
+complete head/base review, findings dispositions, required CI, native protections
+and designated-owner manual merges. See [the replacement process](maintenance-reviews.md).
+Historical custom-gate and one-off exception receipts below remain historical;
+19 original #216 event runs lack receipt proof, and the #219 gap remains recorded.
+Their preservation does not impose the retired custom workflow as a new merge
+prerequisite or establish missing historical coverage. Runtime, physical and
+stable-publication gates remain independent.
 ## Source qualification and historical runtime evidence
-
 [Named automated contracts](verification-0.5-automated.md) identify automated evidence and its limits. The RC9 installation receipts below are historical. An October 5 read-only journey loaded panel asset `0.4.7-55fdd0680408`; no fresh backend/process/tree fingerprint was collected. It does not qualify the current candidate. Installed-runtime, device and owner checks remain independent.
-
 Historical PR #207 head `a9f5e4d` passed Test, Browser, and Validate, and the `066ba7e` suspension-repair snapshot had its own earlier results. Those receipts and the admission/suspension findings below apply only to their named revisions, not the current candidate or an installed runtime.
-
 At the historical `a9f5e4d` head, unload/admission finding [5420174821](https://github.com/ProspectOre/matic-home-assistant/pull/207#pullrequestreview-5420174821) was repaired and source-reviewed; that revision fenced new/queued commands before teardown awaits and drained accepted external owners. Its provider response was abbreviated-OID only. Historical event acknowledgement proof remains incomplete under the migration above; no status override is acceptance evidence.
-
 The historical suspension repair addressed [finding 4189399062](https://github.com/ProspectOre/matic-home-assistant/pull/207#discussion_r4189399062): paused→low-charge return is one episode. Its `066ba7e` checks, blocked-Store regression, and bundle regeneration are prior-source receipts; they do not qualify a later candidate. Workspace push remains withheld pending installed qualification.
-
 [PR #207](https://github.com/ProspectOre/matic-home-assistant/pull/207) merged the sole Map Studio UI and lifecycle repairs as `338fd52f81371577aa2d3dc8ac36dc0a726d9872` on October 5, 2026 at 9:56 PM Pacific. Its final source head `f90c44d88f7cd3b90157d73349450debacb59c83` passed Test [37408206418](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37408206418): 3,896 tests, 100% of 16,514 statements, static/privacy/package/fresh-import checks. Browser [37408206387](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37408206387) passed 1,031 cases, one existing capability skip, and bundle parity; Validate [37408206451](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37408206451) passed HACS and Hassfest. All ten finding threads were resolved. [Single-UI qualification](verification-0.5-single-ui.md) records the removed editors and preserved maintenance paths.
 Post-merge `338fd52f` also passed [Test](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37416127374), [Browser](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37416127345), and [Validate](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37416127341).
-
 The finding-free [Codex comment 6008704755](https://github.com/ProspectOre/matic-home-assistant/pull/207#issuecomment-6008704755) has an abbreviated reviewed-commit footer. The owner explicitly authorized this exact merge despite the missing full-scope native review artifact and pending historical-event gate. Administrator enforcement was temporarily disabled for the fenced merge and the complete protection configuration was restored exactly afterward. This is a one-off merge exception, not a clean review-gate result or installed/release acceptance. Earlier performance receipts retain their original source scope.
-
 The October 6 source reconciliation supersedes the old open-PR inventory. Policy PR #206 is closed; the bespoke gate was retired through merged [#216](https://github.com/ProspectOre/matic-home-assistant/pull/216) on main and [#222](https://github.com/ProspectOre/matic-home-assistant/pull/222) on maintenance. Firmware PR #209 is closed and superseded by merged [#211](https://github.com/ProspectOre/matic-home-assistant/pull/211) at `6329b4ce66796024c08c1e2b17ba9ad82e5437ef`. Historical review gaps remain recorded above.
-
 Main also contains the bounded coverage parser [#214](https://github.com/ProspectOre/matic-home-assistant/pull/214), queued-clean/Stop ordering [#215](https://github.com/ProspectOre/matic-home-assistant/pull/215), first-room mixed start [#217](https://github.com/ProspectOre/matic-home-assistant/pull/217), timeout diagnostics [#219](https://github.com/ProspectOre/matic-home-assistant/pull/219), and selected-floor coverage repair [#221](https://github.com/ProspectOre/matic-home-assistant/pull/221). Each PR's final comparison, CI and merge record bounds its source evidence. Use [#213](https://github.com/ProspectOre/matic-home-assistant/pull/213)'s final comparison and merge record for administrator-demotion delivery. Freeze and qualify the combined RC before installation; none of these source receipts establishes the loaded runtime.
-
 Issue [#218](https://github.com/ProspectOre/matic-home-assistant/issues/218) is closed: the reporter confirmed a natural five-room mixed-mode RC2 completion with all rooms credited, recharge recovery and docking; stable `v0.4.8` is published. This does not qualify 0.5 cadence. Issue #65's selected-floor rejection is repaired in source, while device confirmation and separate map-completeness symptoms remain open. Stable v0.4.7 included the safe-area and numeric-label fixes; #202 has affected-device confirmation and is closed. Affected-2026.8 startup confirmation (#198), stale-bond device recovery (#139), and the candidate acceptance scenarios below remain open. Bluetooth proxy pairing (#171) remains outside 0.5 scope.
-
 Historical installed candidate: RC9 at `c5daa6d`. The 91 installed integration files matched the reviewed tree before and after restart; the loaded panel fingerprint was `fea378f99e6d`. A complete coherent live map and exact pose were read back. Plans, Areas, selection, and private/shared cadence settings remained unchanged. The Stop check preserved all eight protected non-plan files. After the restart/natural-completion run, seven of eight remained byte-identical; the HA auth-file hash changed, while plan run bookkeeping changed as expected. No secret material is recorded. These receipts apply to that installed RC9 only and do not qualify the merged #207 source or the next combined release candidate. RC16 (`bdb52e0db654d54174b3330efd1f974b4eb4f0fa`) was also installed: its 92 files match, rollback/state preservation, new startup/version diagnostics, compiled caches, map/live pose, five setter change/restore confirmations and idle reload pass. The prior unload cancellation warning was absent; the observer saw one new-runtime identification write, no retired-runtime writes and no motion/settings. See the [final candidate receipt](verification-0.5-final-candidate.md) for exact review/CI and scope limits; compiled caches are not direct in-process code-hash proof.
-
 - One bounded tracked Vacuum/Quick run survived an HA restart and naturally completed on RC9: one room verified; native vacuum completed at 336 s, 451 s total; managed outcome all_rooms_verified, terminal state docked. Managed room-completed and plan-finished events correlated to the same run; native per-room status independently reported completed. No cadence policy was enabled, so this proves tracked completion, not cadence progression.
 - During that same run, active restart recovered the managed run, native identity, floor, and frozen cadence snapshot. The retained post-restart command journal has no START/STOP/DOCK. The checkpoint preceded the first room-start deadline assignment: baseline phase was starting with no deadline; after room start the recovered snapshot was accepted with a deadline. Deadline equality across restart was not observed or proven. No duplicate credit occurred.
 - A separate bounded partial-run stop check sent one STOP and received correlated DOCK. It settled stopped/docked with zero completion credit and cleared the motion fence 44.805 seconds after STOP; Clean controls were enabled on the same map. No replacement clean was issued during that Stop check.
@@ -48,7 +44,6 @@ Historical installed candidate: RC9 at `c5daa6d`. The 91 installed integration f
 - On the installed panel, saved-floor history stayed read-only and pose-free until Return to Live; Full Map → Escape exited and restored focus. These checks cover those flows only.
 - The scene-content correction matches polling in the paired synthetic fixture (catalog/full-scene/delta reads: 3/2/201); workspace push remains withheld pending installed qualification. Live loss/reconnect/fallback and resource budgets remain open. Long Tasks, mobile/frame/GPU, sustained-memory and latency gates remain open; see performance-0.5.md.
 - Periodic vacuum coverage now has a source implementation using echoed goal/session receipts at dispatch and fresh retained-goal verification after the matching native completion. Missing or changed evidence leaves it due. Installed completion and private/shared cadence qualification remain open; this is not an approved scope deferral. No cadence policy was enabled in the RC9 runs. PR #138 is merged in main; merge does not by itself establish any separate deployment or runtime evidence. RC16 source and installed evidence are recorded in the final candidate receipt; full product and physical acceptance remain separate. Stable publication is authorized after completed qualification and owner walkthrough/signoff.
-
 | Requirement | Contract disposition | 0.5 evidence status | Evidence required; current gap |
 |---|---|---|---|
 | One Map Studio UI, mounted canvas, and gesture stack for map, rooms, plans, Areas, and Full map | Implemented and merged; source contracts verified, runtime acceptance open | #207 removes the competing Configure editors, selectors, loader and assets; native preferences/default/history maintenance remain. [Qualification](verification-0.5-single-ui.md) records 3,896 Python tests/100%, hosted browser parity and startup checks | Merge used the explicit review exception above. Shared geometry, maintenance/services/data and registration have regression evidence. Installed canvas/gesture identity through Areas, Full map, remount, resize and context loss remains open. |
@@ -87,14 +82,11 @@ Historical installed candidate: RC9 at `c5daa6d`. The 91 installed integration f
 | Mockup sign-off | Signed | The owner accepted all 24 decisions of the [0.5 UX spec](ux-spec-0.5.md) and its mockups on 2026-10-11 ([#247](https://github.com/ProspectOre/matic-home-assistant/pull/247)); each build PR cites the spec it follows. | A change to a signed decision needs a new dated owner decision in the spec. |
 | Copy parity test | Implemented; passes on the UX8 head | `tests/test_frontend_translations.py` ([#248](https://github.com/ProspectOre/matic-home-assistant/pull/248)): every key the panel uses exists in `strings.json` `common` with an equal English fallback, and no `v4_*` key is orphaned; `strings.json` equals `translations/en.json`; the [copy style](copy-style-0.5.md) denylist test ([#249](https://github.com/ProspectOre/matic-home-assistant/pull/249)) covers every string category. | Stays green on the final head. |
 | Visual matrix inspection | Autonomous inspection; source-bound results required | The [owner walkthrough](owner-walkthrough-0.5.md) has 117 cells (13 journeys × 9 setups). The owner superseded per-cell prompting with autonomous E2E inspection and reconfirmed it on October 15. The [ledger](owner-walkthrough-0.5-ledger.json) preserves actual owner replies separately from automated results. | Inspect all candidate cells/steps, resolve findings and refresh affected evidence after interface changes. The historical 2/117 verdict count does not require 115 more owner replies. Device/physical and final release acceptance remain separate. |
-
 ## Inherited scenario coverage
-
 The broad requirements above are dispositions, not blanket proof. Prior RC1–RC4
 fingerprint/restart readbacks and focused RC4 read-only workflows are recorded; the
 RC9 fingerprint/restart and runtime readbacks are recorded above and at Gate F; earlier RC receipts remain historical. Scenario families remain open as listed. Rows refer to the review matrix and
 quality plan.
-
 | Scenario family | Contract disposition | 0.5 evidence status | Required evidence and source rows |
 |---|---|---|---|
 | Resource/map failures | Preserved and verified (baseline) | RC9 exact-head automated contracts pass for named subcases; broader runtime/owner matrix remains open | Stale catalog/scene/delta/pose/history, delta-base expiry, incomplete/truncated/limited maps, degraded stream, new mission on the same floor, absent pose, older-generation pose, and an empty unverified initial snapshot racing a retained coherent REST map; ordered fault injection verifies fencing, disabled controls, catalog recovery, and later invalidation. Review rows 163–173. |
@@ -107,11 +99,8 @@ quality plan.
 | Renderer, worker, decompression, CPU, GPU, and large-scene faults | Preserved and verified (baseline) | RC9 exact-head automated contracts pass for named subcases; broader runtime/owner matrix remains open | WebGL unavailable/context loss, GPU pressure, slow CPU/network, very large scene, worker unavailable, and decompression unavailable; fallback, progressive upload, memory/GPU stability, and seeded large-scene evidence. Review rows 185–190 and 220–222. |
 | Touch, keyboard, assistive technology, RTL, zoom, and draft input | Preserved and verified (baseline) | RC9 exact-head Playwright covers packaged keyboard/focus/drafts, RTL/localization, forced colors, reduced motion and effective-viewport reflow. Native Safari 200% proof remains historical RC4; actual Android/iOS, native 400% zoom, screen readers/switch and owner acceptance remain open. | Pointer cancellation, pinch handoff, Draw precision, wheel/Space navigation, accidental paint, draft exit/transition, locale/RTL, 200/400% zoom, screen reader, keyboard/switch, reduced motion, and forced colors; public-contract browser, VoiceOver/NVDA, and visual evidence. Review rows 194–201 and 213–217. |
 | Performance, privacy, delivery, runtime, rollback, and physical acceptance | Preserved and verified (baseline) | PR #191 exact-head review/CI and RC9 91-file runtime fingerprints are historical evidence; rollback and saved settings were preserved with the protected/auth-file distinction above. Scoped Stop settlement and active-restart completion pass. Earlier five-cycle live projection/cursor parity remains evidence; live stress/resource and broader physical gates remain open. | HA firehose with zero unrelated work, privacy-safe support, install/update/rollback, reconnect/loss/fallback/resource bounds, verified changed flow, and current→second classified map→current physical proof with labels/pose/history/actions and no repeated Repair. Review rows 218–220; quality plan rows 265–281. |
-
 ## Gate sequence and release receipts
-
 The roadmap gates are independent and ordered; test counts, screenshots, a merge, download success, or one synthetic transition do not close a gate.
-
 | Gate | Closing evidence |
 |---|---|
 | A — Baseline/budgets | Reproducible v0.4.5 and Samsung-tablet measurements for latency, traffic, reconnect, stalls, memory, GPU, and recovery; numerical budgets and known physical gaps recorded. |
@@ -123,14 +112,9 @@ The roadmap gates are independent and ordered; test counts, screenshots, a merge
 | E5 — Independent product/architecture review | [RC22 review](review-0.5-product.md) remains historical. The [post-interface review](review-0.5-product-rc25.md) covers RC24's 170 handwritten files and RC25's Bluetooth repairs, including the follow-up legacy-recovery P1 and concurrent-bond P2. Final regular review/CI still bind the assembled PR head. Source review does not qualify runtime, device, physical or owner acceptance. Historical #207's one-off merge exception remains separate. |
 | E6 — Interface inspection and device acceptance | Inspect every cell of the [owner walkthrough](owner-walkthrough-0.5.md) autonomously, with source-bound results and findings resolved; no per-cell owner prompts. Historical replies remain scoped to their source. On the installed RC, verify iPhone Safari, iPad Safari and Android Chrome, actual VoiceOver/NVDA and Windows High Contrast; record limitations and retain final release acceptance separately. |
 | F — Exact candidate/runtime | [RC24 qualification](verification-0.5-rc24.md) passes HACS install, exact files/assets, restart, scoped in-process code identity, preservation, idle reload and five setting change/restore confirmations. The [independent product review](review-0.5-product-rc25.md) found a Bluetooth bond-deletion defect repaired for RC25; RC25 requires fresh review/CI, installation and runtime readback. Remaining: Stop reachability and supervised execution; setter timeout/cancellation/reconnect and broader fault guards; sustained performance/workspace push (withheld); causal coverage and private/shared cadence physical proof; device/accessibility, map transitions and owner walkthrough/signoff. Stable publication is authorized only after completed qualification. |
-
 The owner authorized bounded physical acceptance on October 8; each run still requires pre/post plan/operations/history, idle automations/scripts, bounded scope, STOP settlement/correlated DOCK, guarded-failure evidence and cleanup. Exact-head review/CI, prerelease install/readback, runtime and physical acceptance remain separate. RC9 Stop settlement passed the scoped partial-run check; coverage causality, guarded failure, transport resources, device/accessibility and owner acceptance, broader map-transition proof, and final candidate review under the replacement checklist remain open. Security review is separate from regular review. Stable publication remains held for completed qualification and owner walkthrough/signoff.
-
 Binding sources: Matic Map Studio Roadmap, Matic Map Studio Independent Review, the full 2026-08-29 review, and [managed-run contract](e2e-contract.md).
-
-The roadmap’s v0.4.4 metadata and former 22-open-security-PR inventory are historical. The historical RC5 receipt predates stable v0.4.7; stable was v0.4.8 when this matrix was written. The paired desktop comparison uses `v0.4.5` at `f15dfa2` as its performance control. Earlier statements about the pre-implementation open-item inventory are historical. The wiki card links to this contract and matrix and identifies the active branch; it is not release proof.
-
+The roadmap’s v0.4.4 metadata and former 22-open-security-PR inventory are historical. The historical RC5 receipt predates stable v0.4.7; the current stable release is v0.4.8. The paired desktop comparison uses `v0.4.5` at `f15dfa2` as its performance control. Earlier statements about the pre-implementation open-item inventory are historical. The wiki card links to this contract and matrix and identifies the active branch; it is not release proof.
 ## Performance and privacy rules
-
 The 90/30 KiB, ≤100 ms input p95, 50 ms main-thread task, 55/30 fps, 12/48 MiB,
 queue, and memory values are budgets, not claims; suggested one-second status p95, three-second resync p95, and 70% fewer control requests remain hypotheses until the baseline justifies them. Timings stay local and omit maps, coordinates, names, credentials, addresses, serials, and identifiers.

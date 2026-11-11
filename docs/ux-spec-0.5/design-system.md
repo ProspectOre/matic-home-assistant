@@ -1,5 +1,4 @@
 # Map Studio 0.5 design system: `ms-*` refinement spec
-
 Refines `frontend/map-studio-v4/tokens.ts`, `controls.ts`, `shell-styles.ts` and the component style blocks. Paths are relative to `frontend/map-studio-v4/` unless prefixed; measured numbers come from `tests/browser/ux-audit-tools/*.mjs` (named per claim) on synthetic gallery fixtures, and contrast values are computed with the WCAG formula from HA's default palette (`ha_theme_axe.mjs:8-21`). `plan.md`, `room-schedule.md`, `home-rooms.md`, `shell.md` and `map-surfaces.md` cite the token names, sizes and detent numbers below as final.
 ## 1. Scope
 - Covers tokens, control primitives, type, spacing and nesting, contrast, forced colors, motion, RTL, focus rules, and sheet/inspector geometry for every Map Studio surface. Per-state behaviour and copy belong to `shell.md`; the plan and room layouts belong to `plan.md` and `home-rooms.md`.
@@ -33,7 +32,6 @@ Tokens (tokens.ts:20-131; 58 today, 67 after this spec). HA variables are read, 
 | Elevation, motion | `--ms-shadow-1` to `-3`; `--ms-fast` 120 ms, `--ms-base` 180 ms, `--ms-ease` | remove `--ms-slow` (0 uses) |
 - **Dark mapping.** Each tint is one `light-dark(<12% mix>, <20% mix>)` colour pair, never a switched percentage (MS-HOME-11). Only the shell host sets `color-scheme` (`light dark`, following the OS as the tokens.ts:81 query does today), so every shadow root inherits it; Decision 3 sets it from HA instead. Where `light-dark()` is unsupported (before Chrome 123, Firefox 120 and Safari 17.5 per MDN, not verified against Home Assistant's supported browsers or the companion-app WebViews), both fallback sets sit only inside `@supports not (color: light-dark(#000, #fff))`: the 12% mixes, then the 20% mixes in a nested `prefers-color-scheme: dark` query; the unconditional dark block (tokens.ts:81-99) is untouched. Text on a tint is `--ms-text` (≥8.6:1) or the row second-line mix (controls.ts:109, ≥6.6:1 on the accent tint), never `--ms-text-quiet` (4.42:1 on the dark warning tint).
 - **Token rules.** No `--ms-*` token assigns an HA variable, and no HA variable is overridden unconditionally. `:host` holds only surface-independent values (tokens.ts:7-16); tints mix against `--ms-surface-card`, never `--ms-local`, so they qualify.
-
 Controls (controls.ts unless noted; every class is CSS on native elements, per controls.ts:7-18):
 | Class | Before (evidence) | After |
 |---|---|---|
@@ -86,7 +84,6 @@ W = workspace height (viewport minus app bar); C = sheet chrome (grip + tools + 
 - **Regular sheet detents:** peek = min(C, half); half = min(full, max(min(0.48 W, 26rem), C + 3.75rem)), which leaves at least one 52 px row plus 8 px of body; full = min(0.72 W, W − 12rem). Starting detents are `shell.md`'s: they replace `DEFAULT_DETENT` (shell.ts:188-197; `plans` and plan Run go from full to half; support stays full under 600 px wide and goes to half from 600) and re-apply on a `planView` change, which shell.ts:543-548 does not do today.
 - **Compact sheet detents:** peek and full only, with no `half` step for the toggle or for drag snapping. The app bar is `--ms-bar-compact` (48 px), and the action bar moves into the grip row at 44 px. A disabled primary's reason (`.action-reason`, shell-styles.ts:197) then renders as one `--ms-t-xs` line (16 px plus a 4 px gap, ellipsis) directly under the grip row, inside C, and stays the button's `aria-describedby` (`C-OneAction`); the action summary is dropped (home-rooms.md:102). peek = C = 72 px (60 px grip row + 0.75rem), 92 px with a reason. In Draw, C adds one icon-only row of 44 px tools plus a 4 px gap (map-surfaces.md:36; no vertical Draw rail): peek ≈120 px, 140 with a reason; where the 380 px row is wider than the sheet (320×256), it scrolls inline rather than wrapping. full = 0.72 W. Budget at 844×390 (W = 342, derived as 390 − 48 from responsive-a11y.md:14): peek leaves a ≥250 px map (≥202 in Draw), full a 96 px one; at full, the grip row and the pinned `h2` (36 px) leave a 150 px body, which is two 52 px rows, or one under a one-line notice (two at 768×432). When the grip row runs out of space (320×256), the status line truncates first, then shrinks to its glyph; back, the toggle and the action buttons never shrink below 44 px or their one-line label.
 - **All layouts:** min-block-size is 0 on `.app`, `.narrow .app` and `.map-root` (shell-styles.ts:41, 256; map-canvas.ts:78), so no viewport scrolls the page.
-
 | Viewport | Layout · detents | Pinned / scrolls | Measured today → fix |
 |---|---|---|---|
 | 320×844 | regular sheet; bar 56; title always visible; robot picker shows its glyph + name ending in an ellipsis | grip and action bar pinned; body scrolls | title squeezed to 12 px by the picker (`responsive.mjs`, RESP-07) → the title keeps its min-content width, and the picker takes the rest; Display appears only in the entry state (RESP-05) → Map options rows |
@@ -114,10 +111,35 @@ W = workspace height (viewport minus app bar); C = sheet chrome (grip + tools + 
 3. **Dark-mode source.** *Recommended:* the shell sets its host's `color-scheme` from `hass.themes.darkMode` (the OS when absent), so tints and native controls follow HA's own dark setting, and map-canvas repaints on that change as well as on its OS query (map-canvas.ts:426); no HA variable changes. *Alternative:* keep following the OS (today), which mis-shades whenever HA's theme and the OS disagree.
 - **Owner decisions (2026-10-11):** all recommendations accepted. D1 contrast-resolved colours in 5% steps wherever HA's value misses its ratio (the six §4 tokens take the resolved values); D2 the 768-landscape row is not amended; D3 dark mode follows `hass.themes.darkMode`.
 ## 11. Resolves
-
-The [design-system audit resolutions](design-system-audit-resolution.md) map
-each finding to its specification rule and retain the measured evidence and limits.
-
+| Audit ID | How this spec resolves it |
+|---|---|
+| MS-RESP-01 | Compact layout: min-block floors are removed, and the action bar sits in the grip row, so the primary stays inside the viewport (§7). |
+| MS-RESP-02 | The compact Draw peek is the grip row plus one 44 px icon row (map-surfaces.md:36): ≈120 px (140 with a reason) of 342 at 844×390, against 304.8 of 394.4 today. |
+| MS-RESP-03, MS-PLAN-10, MS-STATUS-03 | Compact sheet: 48 px bar, peek and full only, `shell.md`'s starting detents, and full = 0.72 W (two 52 px rows under the pinned `h2`, one under a one-line notice at 844×390). Stop or the primary, with its reason, sits in the grip area at load. |
+| MS-RESP-04 | The 320 px compact inspector at 768–1023 px landscape with height ≥480; amending the row is Decision 2. |
+| MS-RESP-05 | Menus hold rows only; Map options gains `home-rooms.md`'s Map display group (Photo and Room colors radio rows, a Room names switch row) in every workflow. "Room colors" uses `v4_room_colours` on the rail and in the menu (map-canvas.ts:593 shows "Floor plan" today, under the retired `map_style_room_colours`). |
+| MS-RESP-06 | full = min(0.72 W, W − 12rem): the map is ≥221 px at 390 and ≥271 px at 600 and 768; the picker and Run view start at half (`shell.md`). |
+| MS-RESP-07, MS-HOME-09 | One 320 rule: the title stays at its min-content width, and the picker shows its glyph + name ending in an ellipsis; at ≥360 the picker sizes to the robot name. `home-rooms.md` and `shell.md` name the robot in the strip. |
+| MS-RESP-08 | 400% zoom uses the compact layout with no min-block floors, so the page scrolls 0 px vertically (`reflow.mjs`). |
+| MS-RESP-09 | `.ms-range` sets `margin: 0`, removing Chromium's 2 px UA range margin and the 2 px overflow (responsive-a11y.md:74). |
+| MS-TOUCH-01, -02, -03, MS-DS-07 | `.ms-check` and `.ms-disclosure` are full-row 44 px targets, with one glyph size (`--ms-icon`). |
+| MS-TOUCH-04, MS-DS-09 | `--sm` is 36 px visual on a fine pointer and 44 px under `(any-pointer: coarse)`, never on icon buttons; `.ms-range` is 44 px. |
+| MS-AXE-01, MS-ROOMS-10 | Nameable-role rule; the container at workflow-panel.ts:267 and its key go (§8). |
+| MS-AXE-02 | Overflowing scroll bodies become focusable labelled regions (§8). |
+| MS-AXE-03, MS-DS-03 | The contrast rule and resolver cover fills, the indicator and danger text; adoption is Decision 1. The notice text fix applies regardless. |
+| MS-KEY-01 | The launcher is recorded on every workflow entry and restored on exit. |
+| MS-KEY-02 | Menus have no native selects, and opening one focuses its first row; the select guard stays. |
+| MS-KEY-03 | Dialogs restore focus to the workflow heading when no launcher exists; `shell.md` retires `confirmStop` (MS-DLG-01). |
+| MS-DS-01, MS-PLAN-11, MS-STATUS-08 | `forced-color-adjust: none` with Highlight/HighlightText on primary and danger fills. |
+| MS-DS-02 | No change; checked under Windows High Contrast in the build PR. |
+| MS-DS-04 | Use `--ms-w-bold`; no semibold token. |
+| MS-DS-05 | Four dead tokens are removed, and the map-canvas literals are tokenised (§5). |
+| MS-DS-06, MS-HOME-10 | Two body steps plus `.ms-section-heading`, with sentence case everywhere. |
+| MS-DS-08, MS-PLAN-14 | One bordered level; `.plan-options` loses its border; one spacing rhythm. |
+| MS-PLAN-13, MS-STATUS-09 | Disabled buttons keep the variant's border with a `--ms-text-disabled` glyph; reorder arrows and stepper ends at a limit are disabled with a reason and stay focusable, never hidden; only the sheet toggle hides its unavailable direction. |
+| MS-PLAN-20, MS-DRAW-06 | Logical knob offset; `.ms-icon--dir` mirroring. |
+| MS-PLAN-23 | `.ms-disclosure` uses the `ms-*` chevron. |
+| MS-HOME-11 | `--ms-tint-*` tokens: 12% light, 20% dark, switched by `color-scheme` (the OS until Decision 3). |
 ## 12. Invariants kept / out of scope
 - One canvas, one status strip, one contextual primary action, fail-closed selectors, room/list parity, reversible Full map and read-only history are untouched; this spec changes styling and geometry only.
 - HA variables are read and never written. There is no `ha-*`/`mwc` rewrite and no iOS skin. Controls stay CSS on native elements, `ms-stepper` included.
