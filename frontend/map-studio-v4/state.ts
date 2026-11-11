@@ -103,6 +103,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   quality: "auto",
   cameras: {},
   cameraKey: null,
+  layerChoices: {},
   taskCameras: {},
   taskCameraKey: null,
   historyCameras: {},

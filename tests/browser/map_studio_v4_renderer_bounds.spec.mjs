@@ -155,10 +155,18 @@ test("precomputes room selection once for the supported 100-room bound", async (
 
   expect(result.selectedIdsMapCalls).toBe(1);
   expect(result.roomFillStyles).toHaveLength(100);
-  expect(new Set(result.roomFillStyles).size).toBe(100);
+  // A one-cell gap makes every room in the grid a neighbour of the eight around it.
+  for (let index = 0; index < 100; index += 1) {
+    for (const [dx, dy] of [[1, 0], [0, 1], [1, 1], [-1, 1]]) {
+      const column = index % 10 + dx, row = Math.floor(index / 10) + dy;
+      if (column < 0 || column > 9 || row > 9) continue;
+      expect(result.roomFillStyles[row * 10 + column]).not.toBe(result.roomFillStyles[index]);
+    }
+  }
+  expect(new Set(result.roomFillStyles).size).toBeLessThanOrEqual(9);
 });
 
-test("all 256 room colors stay distinct by room ID, retain selection and labels, and yield to forced colors", async ({ page }) => {
+test("neighbours among 256 rooms never share a color, colors follow room IDs, retain selection and labels, and yield to forced colors", async ({ page }) => {
   await paintOverlayOnCanvas(page);
   const bundle = await build({
     stdin: {
@@ -326,7 +334,7 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
   expect(result.first.widths[selectedIndex]).toBe(3);
   expect(result.first.widths.slice(0, 256).filter((_, index) => index !== selectedIndex).every((width) => width === 2)).toBe(true);
   expect(result.first.strokes.slice(0, 256).filter((_, index) => index !== selectedIndex).every((style) => style === "#141e28")).toBe(true);
-  // Perceptual separation for the first sixteen rooms, beyond byte uniqueness.
+  // Perceptual separation between neighbours, beyond byte inequality.
   const oklab = (style) => {
     const [r, g, b] = style.match(/rgba\((\d+), (\d+), (\d+),/).slice(1, 4).map(Number)
       .map((value) => value > 10 ? ((value / 255 + .055) / 1.055) ** 2.4 : value / 3294.6);
@@ -337,21 +345,16 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
       1.9779984951 * l - 2.428592205 * m + .4505937099 * s,
       .0259040371 * l + .7827717662 * m - .808675766 * s];
   };
-  const ids = Object.keys(result.firstById).sort().slice(0, 16);
+  const roomCount = Object.keys(result.firstById).length;
+  expect(roomCount).toBe(256);
+  // The rooms stand in a row two cells apart, so each touches the next.
   for (const fills of [result.first.fills, result.dark.fills]) {
-    const order = Object.keys(result.firstById);
-    const colors = ids.map((id) => oklab(fills[order.indexOf(id)]));
-    const distances = colors.flatMap((color, index) => colors.slice(index + 1)
-      .map((other) => Math.hypot(...color.map((value, channel) => value - other[channel]))));
+    const colors = fills.slice(0, roomCount).map(oklab);
+    const distances = colors.slice(1).map((color, index) => Math.hypot(...color.map((value, channel) => value - colors[index][channel])));
     expect(Math.min(...distances)).toBeGreaterThan(.10);
   }
-  const roomCount = Object.keys(result.firstById).length;
   const roomFills = result.first.fills.slice(0, roomCount);
-  const unselectedFills = roomFills.filter((_, index) => index !== selectedIndex);
-  expect(roomCount).toBe(256);
-  expect(new Set(roomFills).size).toBe(roomCount);
   expect(result.firstById).toEqual(result.reorderedById);
-  expect(new Set(unselectedFills).size).toBe(roomCount - 1);
   expect(result.labeled.textCount).toBeGreaterThan(0);
   expect(result.first.textCount).toBe(0);
   expect(result.labeled.fills).toEqual(result.first.fills);
@@ -359,7 +362,6 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
   expect(darkSelectedIndex).toBe(selectedIndex);
   expect(result.dark.strokes[darkSelectedIndex]).toBe("#0c78c8");
   const darkUnselected = result.dark.fills.slice(0, roomCount).filter((_, index) => index !== darkSelectedIndex);
-  expect(new Set(darkUnselected).size).toBe(roomCount - 1);
   const channelMean = (style) => style.match(/rgba\((\d+), (\d+), (\d+),/).slice(1, 4)
     .reduce((sum, channel) => sum + Number(channel), 0) / 3;
   const lightUnselected = roomFills.filter((_, index) => index !== selectedIndex);

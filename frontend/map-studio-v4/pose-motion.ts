@@ -60,6 +60,11 @@ export class PoseMotion {
     };
   }
 
+  /** Whether a step is still under way at `now`. */
+  moving(now: number): boolean {
+    return Boolean(this.#from?.position && this.#to?.position) && (now - this.#start) / this.#duration < 1;
+  }
+
   clear(): void {
     if (!this.#to) return;
     this.#from = this.#to = null;

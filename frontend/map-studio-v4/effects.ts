@@ -45,7 +45,7 @@ import {
   needsHistoryCatalog,
   needsPlanCatalog,
 } from "./state";
-import { PreferenceStore, type MapPreferences } from "./preferences";
+import { PreferenceStore, preferencesOf, samePreferences, type MapPreferences } from "./preferences";
 import type { WorkspaceConnection } from "./workspace-transport";
 import { scheduleAfterMapAdmission } from "./map-admission-gate";
 import { PageLifecycle } from "./page-lifecycle";
@@ -443,21 +443,10 @@ export class EffectController {
 
   #observePreferences(state: WorkspaceState): void {
     if (!state.owner) return;
-    const next: MapPreferences = {
-      version: 4,
-      view: state.homePresentation?.view ?? state.view,
-      appearance: state.homePresentation?.appearance ?? state.appearance,
-      labels: state.labelsVisible,
-      quality: state.quality,
-      cameras: state.cameras,
-      cameraKey: state.cameraKey,
-    };
+    const next = preferencesOf(state);
     const previous = this.#preferenceSnapshot;
     this.#preferenceSnapshot = next;
-    if (!previous || (previous.view === next.view && previous.appearance === next.appearance
-      && previous.labels === next.labels && previous.quality === next.quality
-      && previous.cameras === next.cameras && previous.cameraKey === next.cameraKey)) return;
-    this.#preferences.schedule(next);
+    if (previous && !samePreferences(previous, next)) this.#preferences.schedule(next);
   }
 
   sync(projection: HassProjection): void {
@@ -525,6 +514,7 @@ export class EffectController {
         quality: loadedPreferences.quality,
         cameras: loadedPreferences.cameras,
         cameraKey: loadedPreferences.cameraKey,
+        layerChoices: loadedPreferences.layers,
       } : {}),
     });
     // A new user or robot owns its own home shortcuts from this moment: the

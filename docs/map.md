@@ -9,7 +9,9 @@ Picture Entity card.
 ## Move around
 
 Choose **3D** for the photographic map or **2D** for a top-down view, which
-can show the photo or room colors.
+can show the photo or room colors. Room colors never give two neighbouring
+rooms the same color, and the colors stay apart for the common kinds of color
+blindness; rooms that don't touch can share one, so the names tell them apart.
 
 | Input | Move | Zoom | Turn or tilt |
 | --- | --- | --- | --- |
@@ -29,6 +31,16 @@ full map** in a small bar over the map.
 
 The **Layers** button at the top of the page opens Map options, which holds
 what the map shows. On a phone it also holds the 2D appearance and room names.
+**Robot trail**, **Wi-Fi signal** and **Carpet and vents** are also one tap
+away under **Fit map** on the live map.
+
+This browser remembers which of those three layers you left on for each
+robot, and turns them back on when you open the map again or switch back to
+that robot. A robot you haven't changed them for starts with all three off.
+The choices stay in this browser; another browser or device keeps its own.
+
+The **Map key** on the map names what the carpet, vent, zone and trail
+outlines mean, for whichever of them the map is showing.
 
 - **Follow the robot** keeps the live robot centered; moving the map yourself
   turns it off. **Ride along in 3D** also turns the view with the robot. Both

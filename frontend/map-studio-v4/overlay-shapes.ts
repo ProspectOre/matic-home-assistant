@@ -3,6 +3,7 @@ import type { WorkspaceState } from "./contracts";
 import type { CanvasPalette, Channel } from "./theme-probe";
 import { selectedRoomNames } from "./renderer-hit-test";
 import { roomColours, trailVisible } from "./renderer-overlays";
+import { ROOM_PALETTE, roomSlots } from "./room-palette";
 import { wifiSurface } from "./wifi-surface";
 
 /** Floor-plane vertices as world [x, z] pairs, in metres from the scene centre. */
@@ -45,23 +46,12 @@ export interface SurfaceShape {
 
 export type OverlayShape = FillShape | StrokeShape | SurfaceShape;
 
-// Put clearly separated hues first for ordinary homes. Larger maps retain a
-// unique color for every supported room; IDs, rather than metadata order,
-// determine the palette position. Boundaries and labels also identify rooms.
-const ROOM_COLORS: readonly Channel[] = [
-  [47, 158, 220], [13, 255, 13], [255, 13, 13], [215, 13, 255],
-  [255, 185, 115], [7, 140, 7], [13, 53, 255], [140, 63, 115],
-  [11, 217, 182], [255, 115, 185], [178, 129, 80], [35, 105, 140],
-  [137, 98, 217], [217, 11, 148], [150, 178, 9], [140, 74, 7],
-];
-const roomColor = (index: number, palette: CanvasPalette): Channel => {
-  if (palette.forced) return palette.roomFill;
-  const slot = ((index - ROOM_COLORS.length) * 149 + 53) & 255;
-  const color = ROOM_COLORS[index] ?? [40 + Math.floor(slot / 32) * 30,
-    40 + Math.floor(slot / 4) % 8 * 30, 40 + slot % 4 * 70];
-  return color.map((value, channel) => Math.round(value * .8
+// Neighbouring rooms never share a colour (room-palette.ts); names and
+// outlines tell apart rooms that do. A fifth of the theme's room fill tones
+// the palette down on a dark map.
+const roomColor = (slot: number, palette: CanvasPalette): Channel => palette.forced ? palette.roomFill
+  : ROOM_PALETTE[slot]!.map((value, channel) => Math.round(value * .8
     + (palette.roomFill[channel] ?? 0) * .2)) as unknown as Channel;
-};
 
 const hsl = (hue: number, saturation: number, lightness: number): Channel => {
   const amplitude = saturation * Math.min(lightness, 1 - lightness);
@@ -71,8 +61,8 @@ const hsl = (hue: number, saturation: number, lightness: number): Channel => {
   };
   return [channel(0), channel(8), channel(4)];
 };
-const CARPET = hsl(28, .55, .42);
-const VENT = hsl(205, .8, .5);
+export const CARPET = hsl(28, .55, .42);
+export const VENT = hsl(205, .8, .5);
 
 /**
  * Everything drawn on the floor plane, in paint order: rooms, floor types,
@@ -109,16 +99,14 @@ export const overlayShapes = (scene: SceneModel, state: WorkspaceState, palette:
   // the selected ones (home-rooms.md §5 Parity, R9).
   const allRooms = state.labelsVisible || colours;
   if (allRooms || selectedNames.size) {
-    // IDs keep each room's hue stable when scene metadata is reordered.
-    const roomIndexes = new Map(scene.metadata.rooms.map((room) => room.id).sort()
-      .map((id, index) => [id, index]));
+    const slots = colours ? roomSlots(scene.metadata.rooms, meters) : null;
     const height = 0.2 * meters;
     for (const room of scene.metadata.rooms) {
       const selected = selectedNames.has(room.name.toLocaleLowerCase());
       if (!allRooms && !selected) continue;
       const rings = [fromCells(room.boundary, Math.max(1, Math.ceil(room.boundary.length / 512)))];
       shapes.push(colours
-        ? { kind: "fill", rings, colour: roomColor(roomIndexes.get(room.id) ?? 0, palette), alpha: .94, height }
+        ? { kind: "fill", rings, colour: roomColor(slots?.get(room.id) ?? 0, palette), alpha: .94, height }
         : selected ? { kind: "fill", rings, colour: palette.accent, alpha: .26, height }
           : { kind: "fill", rings, colour: palette.plate, alpha: .04, height });
       if (selected) outline(rings, palette.accent, 1, 3, height);

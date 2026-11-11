@@ -226,6 +226,8 @@ async def test_stale_dock_is_noop_and_matching_dock_commits(hass, monkeypatch) -
     assert not await manager.ledger.async_mark_run_docked(
         SERIAL, "current-run", stop_fence_token=token + 1
     )
+    # The bus runs `events.append` on an executor thread, so wait for it.
+    await hass.async_block_till_done()
     assert saves == 0
     assert events == []
     assert manager.history.snapshot(SERIAL) == before
@@ -233,6 +235,7 @@ async def test_stale_dock_is_noop_and_matching_dock_commits(hass, monkeypatch) -
     assert await manager.ledger.async_mark_run_docked(
         SERIAL, "current-run", stop_fence_token=token
     )
+    await hass.async_block_till_done()
     assert saves == 1
     assert len(events) == 2
     assert events[0] == "listener"

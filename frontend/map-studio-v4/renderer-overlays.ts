@@ -23,14 +23,15 @@ export const trailVisible = (state: WorkspaceState): boolean => {
 
 /**
  * Why the map needs the layers chunk: "now" for a layer the user turned on,
- * "soon" for the outlines every map draws, which wait for the first map to
- * be admitted so its first frames carry the startup graph alone.
+ * "soon" for the outlines every map draws and the live map's layer toggles,
+ * which wait for the first map to be admitted so its first frames carry the
+ * startup graph alone.
  */
 export const layersNeeded = (state: WorkspaceState, scene: SceneModel | null): "now" | "soon" | null => {
   const live = state.dataMode === "live" && state.selection.floorId === "current";
   if (state.seen || trailVisible(state)
     || (live && !state.floor.readOnly && (state.wifiSignal || state.floorTypes))) return "now";
-  return state.optionalUiReady && state.map.available && (live && state.resources.areas.value?.zones.length
+  return state.optionalUiReady && state.map.available && (live
     || scene?.metadata.rooms.length
       && (state.labelsVisible || roomColours(state) || selectedRoomNames(state).size)) ? "soon" : null;
 };

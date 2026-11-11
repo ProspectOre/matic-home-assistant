@@ -43,7 +43,7 @@ let cached: { readonly layer: WifiSignalLayer; readonly spot: MapPoint; readonly
 
 /**
  * The Wi-Fi legend on the map: the four bands, the weakest room, the reading
- * under the last tap and every room's summary. It loads with the layers chunk.
+ * under the last tap and every room's summary. map-layers.ts places it.
  */
 export const wifiLegend = ({ layer, scene, spot, locale, t }: WifiLegendContext) => {
   if (!layer.cells.length) return nothing;
@@ -60,7 +60,7 @@ export const wifiLegend = ({ layer, scene, spot, locale, t }: WifiLegendContext)
   const count = reading?.samples ?? 0;
   return html`
     <style>
-      .wifi-legend { position: absolute; z-index: 4; inset-inline-start: max(0.75rem, var(--ms-safe-left, 0px)); inset-block-end: calc(4.5rem + var(--map-sheet-offset, 0px)); inline-size: min(17rem, calc(100% - 1.5rem)); max-block-size: calc(100% - 9rem - var(--map-sheet-offset, 0px)); overflow-y: auto; padding: var(--ms-space-2) var(--ms-space-3); font-size: var(--ms-t-sm); }
+      .wifi-legend { inline-size: 100%; padding: var(--ms-space-2) var(--ms-space-3); font-size: var(--ms-t-sm); }
       .wifi-legend:not([open]) { inline-size: fit-content; }
       .wifi-legend > * + * { margin-block-start: var(--ms-space-2); }
       .wifi-legend > summary + * { margin-block-start: var(--ms-space-1); }

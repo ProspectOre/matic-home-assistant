@@ -30,6 +30,14 @@ export interface RobotChoice {
   readonly label: string;
 }
 
+/** The switchable map layers one robot shows, as its user last left them. */
+export interface LayerChoice {
+  /** The trail of the run in progress. */
+  readonly trail: boolean;
+  readonly wifi: boolean;
+  readonly floorTypes: boolean;
+}
+
 export interface CameraPreference {
   readonly yaw: number;
   readonly pitch: number;
@@ -462,6 +470,8 @@ export interface ViewState {
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   /** Only preferences belonging to the verified live map can be restored. */
   readonly cameraKey: string | null;
+  /** Saved layer choices by robot entry id (layer-choices.ts). */
+  readonly layerChoices: Readonly<Record<string, LayerChoice>>;
   readonly taskCameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   readonly taskCameraKey: string | null;
   readonly draw: DrawState;

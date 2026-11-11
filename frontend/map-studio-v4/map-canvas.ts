@@ -134,7 +134,7 @@ export class MaticMapCanvasV4 extends LitElement {
     .map-context { position: absolute; inset-block-start: 0; inset-inline-start: 0; display: flex; gap: var(--ms-space-2); align-items: center; max-inline-size: calc(100% - 60px); }
     ::slotted(.floor-switcher) { min-inline-size: 0; inline-size: 9rem; min-block-size: 44px; background-color: var(--ms-surface-card); color: var(--ms-text); }
     .view-switch { flex: none; }
-    .map-tools { position: absolute; inset-block-start: 0; inset-inline-end: 0; }
+    .map-tools { position: absolute; inset-block-start: 0; inset-inline-end: 0; flex-direction: column; }
     .map-extras { position: absolute; inset-block-end: calc(var(--map-sheet-offset, 0px) + 52px); inset-inline-end: 0; display: flex; }
     .appearance-switch { position: absolute; inset-block-start: var(--row); inset-inline-start: 0; }
     .camera-steps { position: absolute; inset-block-end: var(--map-sheet-offset, 0px); inset-inline-end: 0; }
@@ -155,6 +155,8 @@ export class MaticMapCanvasV4 extends LitElement {
       inset-inline: auto 52px;
     }
     :host([data-short]) .camera-steps { display: none; }
+    /* A phone's full sheet leaves no room under Fit for the layer toggles; Map options keeps them. */
+    :host([data-sheet-full]) [data-quick-layer] { display: none; }
 
     .map-tools, .view-switch, .appearance-switch, .camera-steps { display: flex; }
 
@@ -711,6 +713,8 @@ export class MaticMapCanvasV4 extends LitElement {
                 }}
                 title=${this.#t("v4_fit_map", "Fit map")}
               >${icon(iconFit)}<span class="ms-btn__label">${this.#t("v4_fit_map", "Fit map")}</span></button>
+              ${showView ? this.#renderer?.layers?.layerToggles({ state, intent: (intent) => this.#intent(intent),
+                t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }) ?? nothing : nothing}
           </div>
         <div ?hidden=${this.comparisonMode} class="map-extras ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_display", "Map display")}>
               ${showLabels ? html`
@@ -816,10 +820,8 @@ export class MaticMapCanvasV4 extends LitElement {
         ` : nothing}
 
         ${this.#renderDock(showScene)}
-        ${showScene && state.dataMode === "live" && !state.floor.readOnly && state.selection.floorId === "current"
-          && state.wifiSignal?.status === "ready" && state.resources.scene.value && this.#renderer?.layers
-          ? this.#renderer.layers.wifiLegend({ layer: state.wifiSignal, scene: state.resources.scene.value, spot: this.#wifiSpot,
-            locale: state.locale, t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }) : nothing}
+        ${showScene ? this.#renderer?.layers?.mapLegends({ state, scene: state.resources.scene.value, spot: this.#wifiSpot,
+          t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }) ?? nothing : nothing}
 
         ${message ? html`
           <div class="map-message ms-surface ms-surface--floating"><strong>${message}</strong></div>

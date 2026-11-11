@@ -10,6 +10,7 @@ import type {
   PanelLike,
   RouteLike,
   WorkspaceAction,
+  WorkspaceIntent,
   WorkspaceState,
 } from "./contracts";
 import { isWorkspaceIntent } from "./contracts";
@@ -18,6 +19,7 @@ import { HassAdapter } from "./hass-adapter";
 import { MaticBackend } from "./backend";
 import { EffectController } from "./effects";
 import { LayerHistoryController } from "./layer-history";
+import { LayerRestore, rememberLayer } from "./layer-choices";
 import { PoseMotion, POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
@@ -72,6 +74,7 @@ export class MaticMapPanelV4 extends LitElement {
   #backend: MaticBackend | null = null;
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
+  #layerRestore: LayerRestore | null = null;
   // Outlives the controllers, so the map canvas keeps it across a reconnect.
   readonly #poseMotion = new PoseMotion();
   #stopViewport: (() => void) | null = null;
@@ -199,6 +202,7 @@ export class MaticMapPanelV4 extends LitElement {
     this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null, undefined, this.#poseMotion);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
+    this.#layerRestore = new LayerRestore(this.#store, this.#route);
     if (this.#projection) {
       this.#effects.sync(this.#projection);
       // A detached panel keeps its last verified workspace state, but its
@@ -216,6 +220,8 @@ export class MaticMapPanelV4 extends LitElement {
   }
 
   #stopControllers(): void {
+    this.#layerRestore?.dispose();
+    this.#layerRestore = null;
     this.#layers?.dispose();
     this.#layers = null;
     this.#effects?.dispose();
@@ -258,7 +264,12 @@ export class MaticMapPanelV4 extends LitElement {
   #intent(event: CustomEvent<unknown>): void {
     if (!isWorkspaceIntent(event.detail)) return;
     event.stopPropagation();
-    const intent = event.detail;
+    this.#route(event.detail);
+  }
+
+  readonly #route = (intent: WorkspaceIntent): void => {
+    const layerChoices = rememberLayer(this.#store.value, intent);
+    if (layerChoices) this.#store.dispatch({ type: "transition", layerChoices });
     if (intent.type === "dismiss-top-layer" || intent.type === "exit-full-map") {
       if (!this.#layers?.dismissTop()) this.#store.dispatch(intent);
       return;
@@ -351,7 +362,7 @@ export class MaticMapPanelV4 extends LitElement {
       return;
     }
     this.#store.dispatch(intent);
-  }
+  };
 
   #action(event: CustomEvent<WorkspaceAction>): void {
     event.stopPropagation();
