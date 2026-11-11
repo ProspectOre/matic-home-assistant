@@ -3,7 +3,8 @@ import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 for (const moduleSource of ["typescript", "packaged"]) {
   test(`@safety request diagnostics are passive and scoped to the mounted controller (${moduleSource})`, async ({ page }) => {
-    await installPanelFixture(page, { moduleSource });
+    // Without a websocket, so only HTTP requests are counted.
+    await installPanelFixture(page, { moduleSource, userData: null });
     await page.evaluate(() => {
       const panel = window.__panelFixture.createPanel();
       window.diagnosticsPanel = panel;
@@ -45,7 +46,8 @@ for (const moduleSource of ["typescript", "packaged"]) {
 }
 
 test("20 admitted panel lifecycles release resources and ignore late history scenes", async ({ page }) => {
-  const fixtureInfo = await installPanelFixture(page);
+  // Without a websocket: the workspace transport's catalog refresh would add a scene read.
+  const fixtureInfo = await installPanelFixture(page, { userData: null });
   const result = await page.evaluate(async ({ panelTag }) => {
     await customElements.whenDefined(panelTag);
     const fixture = window.__panelFixture;

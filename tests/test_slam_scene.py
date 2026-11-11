@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from http import HTTPStatus
 from time import time
 from types import SimpleNamespace
@@ -29,7 +30,6 @@ from custom_components.matic_robot.area_views import (
     MaticAreasView,
 )
 from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
-from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
     MappedFloor,
@@ -54,7 +54,6 @@ from custom_components.matic_robot.http import (
     HISTORY_MANAGE_API_URL,
     HISTORY_SCENE_API_URL,
     PLANS_API_URL,
-    POSE_API_URL,
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,
     areas_api_url,
@@ -62,7 +61,6 @@ from custom_components.matic_robot.http import (
     history_api_url,
     history_scene_api_url,
     plans_api_url,
-    pose_api_url,
     scene_api_url,
 )
 from custom_components.matic_robot.plan_model import (
@@ -78,6 +76,7 @@ from custom_components.matic_robot.plan_views import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
+from custom_components.matic_robot.session import RobotSession, Store
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_history import HistoryReadCapacityError
@@ -92,7 +91,6 @@ from custom_components.matic_robot.slam_history_view import (
     _read_json_object,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_pose_view import MaticSlamPoseView
 from custom_components.matic_robot.slam_scene import (
     MaticSlamDeltaView,
     MaticSlamSceneView,
@@ -100,6 +98,7 @@ from custom_components.matic_robot.slam_scene import (
 from custom_components.matic_robot.slam_view_data import (
     _map_session_key,
     catalog_entry_projection,
+    pose_projection,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
 from tests.test_slam_map import synthetic_slam_entry
@@ -126,6 +125,12 @@ def _floor_plan() -> FloorPlan:
 
 def _fresh_pose(x: float, y: float, z: float) -> RobotPose:
     return RobotPose(x, y, z, mission_id=1, observed_at=time(), heading=0.5)
+
+
+def _pose_session(pose: RobotPose | None) -> SimpleNamespace:
+    session = SimpleNamespace(poses=Store({} if pose is None else {1: pose}))
+    session.pose_on = partial(RobotSession.pose_on, session)
+    return session
 
 
 def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
@@ -175,7 +180,8 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
         )
     )
     return SimpleNamespace(
-        client=SimpleNamespace(async_get_pose=AsyncMock(return_value=robot_pose)),
+        client=SimpleNamespace(),
+        session=_pose_session(robot_pose),
         slam_map=slam_map,
         coordinator=SimpleNamespace(
             async_add_listener=MagicMock(return_value=MagicMock()),
@@ -381,7 +387,7 @@ async def test_scene_withholds_floor_overlays_until_mission_identity_matches() -
     hass = _hass(_entry(runtime))
 
     response = await MaticSlamSceneView().get(_request(hass), "entry")
-    pose = await MaticSlamPoseView().get(_request(hass), "entry")
+    pose = pose_projection("entry", runtime)
     areas_get = await MaticAreasView().get(_request(hass), "entry")
     areas_post = await MaticAreasView().post(
         _json_request(
@@ -400,8 +406,8 @@ async def test_scene_withholds_floor_overlays_until_mission_identity_matches() -
     assert response.status == HTTPStatus.OK
     assert response.headers["X-Matic-Floor-Coherent"] == "0"
     assert _scene_metadata(response.body)["rooms"] == []
-    assert json.loads(pose.body)["position"] is None
-    assert json.loads(pose.body)["map_floor_coherent"] is False
+    assert pose["position"] is None
+    assert pose["map_floor_coherent"] is False
     assert areas_get.status == HTTPStatus.CONFLICT
     assert areas_post.status == HTTPStatus.CONFLICT
     runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
@@ -913,403 +919,6 @@ async def test_scene_view_hides_missing_wrong_or_unloaded_entries(entry) -> None
     )
 
 
-async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-
-    with (
-        patch(
-            "custom_components.matic_robot.slam_pose_view.monotonic",
-            side_effect=(10.0, 10.0, 10.0, 10.0, 10.0, 10.25, 10.25, 10.25),
-        ),
-        patch(
-            "custom_components.matic_robot.slam_pose_view.time",
-            return_value=runtime.coordinator.data.pose.observed_at,
-        ),
-    ):
-        exact = await view.get(_request(hass), "entry")
-        cached = await view.get(_request(hass), "entry")
-    assert exact.status == HTTPStatus.OK
-    assert json.loads(exact.body) == {
-        "position": [0.1, 0.2],
-        "heading": 0.5,
-        "source": "exact_pose",
-        "revision": 7,
-        "scene_revision": None,
-        "scene_epoch": None,
-        "map_floor_coherent": True,
-        "pose_revision": 1,
-        "pose_age_seconds": 0.0,
-        "pose_processing_seconds": 0.0,
-        "pose_fetch_age_seconds": 0.0,
-        "pose_observation_current": True,
-        "pose_freshness": "live",
-        "map_session_key": _browser_session_key(runtime),
-    }
-    assert json.loads(cached.body)["pose_fetch_age_seconds"] == 0.25
-    assert json.loads(cached.body)["pose_age_seconds"] == 0.0
-    runtime.client.async_get_pose.assert_awaited_with(expected_mission_id=1)
-    runtime.client.async_get_pose.assert_awaited_once()
-    assert exact.headers["Cache-Control"] == PRIVATE_NO_STORE_HEADERS["Cache-Control"]
-
-    fallback_runtime = _runtime(pose=False)
-    fallback_runtime.client.async_get_pose.side_effect = CannotConnectError("offline")
-    fallback_hass = _hass(_entry(fallback_runtime))
-    with patch(
-        "custom_components.matic_robot.slam_pose_view.monotonic", return_value=20.0
-    ):
-        fallback = await MaticSlamPoseView().get(_request(fallback_hass), "entry")
-    fallback_payload = json.loads(fallback.body)
-    assert fallback_payload["position"] is None
-    assert fallback_payload["heading"] is None
-    assert fallback_payload["source"] == "current_area"
-    assert fallback_payload["pose_freshness"] == "coordinator_fallback"
-    assert fallback_payload["map_session_key"] == _browser_session_key(fallback_runtime)
-
-    unavailable_runtime = _runtime(pose=False)
-    unavailable_runtime.coordinator.data.floor_plan = None
-    unavailable_hass = _hass(_entry(unavailable_runtime))
-    with patch(
-        "custom_components.matic_robot.slam_pose_view.monotonic", return_value=30.0
-    ):
-        unavailable = await MaticSlamPoseView().get(_request(unavailable_hass), "entry")
-    assert json.loads(unavailable.body) == {
-        "position": None,
-        "heading": None,
-        "source": "unavailable",
-        "revision": 7,
-        "scene_revision": None,
-        "scene_epoch": None,
-        "map_floor_coherent": False,
-        "pose_revision": 0,
-        "pose_age_seconds": None,
-        "pose_fetch_age_seconds": None,
-        "pose_observation_current": False,
-        "pose_freshness": "coordinator_fallback",
-        "map_session_key": None,
-    }
-
-
-async def test_pose_processing_time_excludes_wait_after_age_measurement() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    clock = [10.0]
-
-    async def delayed_pose(**_kwargs):
-        clock[0] += 4.25
-        return runtime.coordinator.data.pose
-
-    def wall_time():
-        # Time spent after the age reference must remain in the client budget.
-        clock[0] += 3.0
-        return runtime.coordinator.data.pose.observed_at
-
-    runtime.client.async_get_pose.side_effect = delayed_pose
-    with (
-        patch(
-            "custom_components.matic_robot.slam_pose_view.monotonic",
-            side_effect=lambda: clock[0],
-        ),
-        patch(
-            "custom_components.matic_robot.slam_pose_view.time",
-            side_effect=wall_time,
-        ),
-    ):
-        response = await MaticSlamPoseView().get(_request(hass), "entry")
-    payload = json.loads(response.body)
-    assert payload["pose_processing_seconds"] == 4.25
-    assert payload["pose_age_seconds"] == 0.0
-    assert payload["pose_observation_current"] is True
-
-
-@pytest.mark.parametrize(
-    "mission_id,observed_at,expected_age",
-    [
-        (None, 999.0, 1.0),
-        (2, 999.0, 1.0),
-        (1, None, None),
-        (1, 0.0, None),
-        (1, float("nan"), None),
-        (1, 994.0, 6.0),
-        (1, 1003.0, -3.0),
-    ],
-)
-async def test_pose_successful_fetch_does_not_certify_native_observation(
-    mission_id, observed_at, expected_age
-) -> None:
-    runtime = _runtime()
-    runtime.client.async_get_pose.return_value = RobotPose(
-        0.1, 0.2, 0.0, mission_id=mission_id, observed_at=observed_at
-    )
-    with (
-        patch("custom_components.matic_robot.slam_pose_view.time", return_value=1000.0),
-        patch(
-            "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
-        ),
-    ):
-        response = await MaticSlamPoseView().get(
-            _request(_hass(_entry(runtime))), "entry"
-        )
-    payload = json.loads(response.body)
-    assert payload["position"] is None
-    assert payload["source"] == "current_area"
-    assert payload["pose_observation_current"] is False
-    assert payload["pose_age_seconds"] == expected_age
-    assert payload["pose_fetch_age_seconds"] == 0.0
-    assert payload["pose_freshness"] == "live"
-
-
-async def test_pose_native_age_expires_inside_transport_cache() -> None:
-    runtime = _runtime()
-    runtime.client.async_get_pose.return_value = RobotPose(
-        0.1, 0.2, 0.0, mission_id=1, observed_at=1000.0
-    )
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-    with (
-        patch(
-            "custom_components.matic_robot.slam_pose_view.time",
-            side_effect=(1004.99, 1005.01),
-        ),
-        patch(
-            "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
-        ),
-    ):
-        current = json.loads((await view.get(_request(hass), "entry")).body)
-        expired = json.loads((await view.get(_request(hass), "entry")).body)
-    assert current["position"] == [0.1, 0.2]
-    assert current["pose_observation_current"] is True
-    assert expired["position"] is None
-    assert expired["pose_observation_current"] is False
-    assert expired["pose_age_seconds"] == 5.01
-    assert expired["pose_fetch_age_seconds"] == 0.0
-    runtime.client.async_get_pose.assert_awaited_once_with(expected_mission_id=1)
-
-
-async def test_pose_read_failure_does_not_present_coordinator_point_as_current() -> (
-    None
-):
-    runtime = _runtime()
-    runtime.client.async_get_pose.side_effect = CannotConnectError("offline")
-    response = await MaticSlamPoseView().get(_request(_hass(_entry(runtime))), "entry")
-    payload = json.loads(response.body)
-    assert payload["position"] is None
-    assert payload["pose_observation_current"] is False
-    assert payload["pose_freshness"] == "coordinator_fallback"
-
-
-async def test_pose_revision_shares_catalog_counter_and_rotates_epoch() -> None:
-    runtime = _runtime(revision=7)
-    hass = _hass(_entry(runtime))
-    scene_view = MaticSlamSceneView()
-    pose_view = MaticSlamPoseView(scene_view)
-    catalog_before = catalog_entry_projection("entry", runtime, scene_view)
-
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan, floor_label="Renamed floor"
-    )
-    catalog_after = catalog_entry_projection("entry", runtime, scene_view)
-    response = await pose_view.get(_request(hass), "entry")
-    payload = json.loads(response.body)
-
-    assert payload["revision"] == 7
-    assert payload["scene_revision"] == catalog_after["map_revision"]
-    assert payload["scene_revision"] > payload["revision"]
-    assert payload["scene_epoch"] == catalog_after["map_scene_epoch"]
-    assert catalog_after["map_scene_epoch"] == catalog_before["map_scene_epoch"]
-
-    scene_view.clear_entry("entry")
-    reset_catalog = catalog_entry_projection("entry", runtime, scene_view)
-    assert reset_catalog["map_revision"] == 7
-    assert reset_catalog["map_scene_epoch"] != catalog_after["map_scene_epoch"]
-
-
-async def test_pose_frame_revocation_uses_current_scene_revision_after_await() -> None:
-    runtime = _runtime(revision=7)
-    hass = _hass(_entry(runtime))
-    scene_view = MaticSlamSceneView()
-    pose_view = MaticSlamPoseView(scene_view)
-    initial_revision = scene_view.current_revision("entry", runtime)
-    initial_epoch = scene_view.scene_epoch("entry")
-    pose_started = asyncio.Event()
-    release_pose = asyncio.Event()
-
-    async def delayed_pose(**_kwargs):
-        pose_started.set()
-        await release_pose.wait()
-        return _fresh_pose(0.1, 0.2, 0.0)
-
-    runtime.client.async_get_pose.side_effect = delayed_pose
-    pending = asyncio.create_task(pose_view.get(_request(hass), "entry"))
-    await asyncio.wait_for(pose_started.wait(), timeout=1)
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan, mission_id=2
-    )
-    release_pose.set()
-    response = await asyncio.wait_for(pending, timeout=1)
-    payload = json.loads(response.body)
-
-    assert payload["map_floor_coherent"] is False
-    assert payload["scene_epoch"] == initial_epoch
-    assert payload["scene_revision"] > initial_revision
-
-
-async def test_pose_view_coalesces_concurrent_live_reads_and_rechecks_runtime() -> None:
-    runtime = _runtime()
-    entry = _entry(runtime)
-    hass = _hass(entry)
-    view = MaticSlamPoseView()
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def delayed_pose(**_kwargs):
-        started.set()
-        await release.wait()
-        return _fresh_pose(0.2, 0.3, 0.0)
-
-    runtime.client.async_get_pose.side_effect = delayed_pose
-    first = asyncio.create_task(view.get(_request(hass), "entry"))
-    await started.wait()
-    second = asyncio.create_task(view.get(_request(hass), "entry"))
-    await asyncio.sleep(0)
-    release.set()
-
-    first_response, second_response = await asyncio.gather(first, second)
-
-    assert first_response.status == HTTPStatus.OK
-    assert second_response.status == HTTPStatus.OK
-    runtime.client.async_get_pose.assert_awaited_once()
-
-    replacement = _runtime()
-    entry.runtime_data = replacement
-    stale_runtime_response = await view.get(_request(hass), "entry")
-    assert stale_runtime_response.status == HTTPStatus.OK
-    replacement.client.async_get_pose.assert_awaited_once()
-
-
-async def test_pose_view_cancellation_releases_waiter_for_next_live_read() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-    first_started = asyncio.Event()
-    first_cancelled = asyncio.Event()
-    attempts = 0
-
-    async def read_pose(**_kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            first_started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                first_cancelled.set()
-                raise
-        return _fresh_pose(0.2, 0.3, 0.0)
-
-    runtime.client.async_get_pose.side_effect = read_pose
-    first = asyncio.create_task(view.get(_request(hass), "entry"))
-    second = None
-    try:
-        await asyncio.wait_for(first_started.wait(), timeout=1)
-        second = asyncio.create_task(view.get(_request(hass), "entry"))
-        await asyncio.sleep(0)
-        first.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await first
-        assert first_cancelled.is_set()
-
-        second_response = await asyncio.wait_for(second, timeout=1)
-        assert second_response.status == HTTPStatus.OK
-    finally:
-        for task in (first, second):
-            if task is None:
-                continue
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    assert attempts == 2
-
-
-async def test_pose_view_discards_result_if_entry_unloads_during_read() -> None:
-    runtime = _runtime()
-    entry = _entry(runtime)
-    hass = _hass(entry)
-    view = MaticSlamPoseView()
-
-    async def unload_during_read(**_kwargs):
-        entry.state = ConfigEntryState.NOT_LOADED
-        return _fresh_pose(0.2, 0.3, 0.0)
-
-    runtime.client.async_get_pose.side_effect = unload_during_read
-
-    response = await view.get(_request(hass), "entry")
-
-    assert response.status == HTTPStatus.NOT_FOUND
-    assert view._cache == {}
-
-
-async def test_pose_purge_during_live_read_does_not_retain_private_pose() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-
-    async def purge_while_reading(**_kwargs):
-        view.clear_entry("entry")
-        return _fresh_pose(0.2, 0.3, 0.0)
-
-    runtime.client.async_get_pose.side_effect = purge_while_reading
-
-    response = await view.get(_request(hass), "entry")
-
-    assert response.status == HTTPStatus.NOT_FOUND
-    assert view._cache == {}
-    assert view._locks == {}
-
-
-async def test_pose_purge_rejects_reads_waiting_on_an_invalidated_lock() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def delayed_pose(**_kwargs):
-        started.set()
-        await release.wait()
-        return _fresh_pose(0.2, 0.3, 0.0)
-
-    runtime.client.async_get_pose.side_effect = delayed_pose
-    first = asyncio.create_task(view.get(_request(hass), "entry"))
-    await started.wait()
-    waiting = asyncio.create_task(view.get(_request(hass), "entry"))
-    await asyncio.sleep(0)
-    view.clear_entry("entry")
-    release.set()
-
-    first_response, waiting_response = await asyncio.gather(first, waiting)
-
-    assert first_response.status == HTTPStatus.NOT_FOUND
-    assert waiting_response.status == HTTPStatus.NOT_FOUND
-    runtime.client.async_get_pose.assert_awaited_once()
-    assert view._cache == {}
-    assert view._locks == {}
-
-
-async def test_pose_view_hides_missing_entry_and_requires_admin() -> None:
-    hass = _hass(None)
-    view = MaticSlamPoseView()
-
-    assert (await view.get(_request(hass), "entry")).status == HTTPStatus.NOT_FOUND
-    with pytest.raises(Unauthorized):
-        await view.get(_request(hass, admin=False), "entry")
-
-
 async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> None:
     runtime = _runtime()
     loaded = _entry(runtime, options={CONF_LIVE_WORKSPACE_TRANSPORT: True})
@@ -1347,7 +956,6 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "live_workspace_transport_enabled": True,
                 "scene_url": f"/api/matic_robot/slam_scene/{loaded.entry_id}",
                 "delta_url": f"/api/matic_robot/slam_delta/{loaded.entry_id}",
-                "pose_url": f"/api/matic_robot/slam_pose/{loaded.entry_id}",
                 "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
                 "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
@@ -1487,7 +1095,6 @@ async def test_admin_catalog_enables_workspace_push_and_ignores_legacy_options(
     entry = json.loads(response.body)["entries"][0]
     assert entry["live_workspace_transport_enabled"] is True
     assert entry["delta_url"] == delta_api_url("entry")
-    assert entry["pose_url"] == pose_api_url("entry")
 
 
 async def test_catalog_push_is_enabled_independent_of_saved_options() -> None:
@@ -2703,19 +2310,6 @@ def test_scene_view_can_purge_one_entries_private_cache() -> None:
     assert view._epochs == {"entry": 1, "missing": 1}
 
 
-def test_pose_view_can_purge_one_entries_private_cache() -> None:
-    view = MaticSlamPoseView()
-    view._cache["entry"] = SimpleNamespace()
-    view._locks["entry"] = MagicMock()
-
-    view.clear_entry("entry")
-    view.clear_entry("missing")
-
-    assert view._cache == {}
-    assert view._locks == {}
-    assert view._epochs == {"entry": 1, "missing": 1}
-
-
 async def test_scene_purge_during_encoding_does_not_retain_private_payload() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
@@ -2769,7 +2363,6 @@ def test_scene_endpoint_paths_are_scoped_to_config_entry() -> None:
     assert scene_api_url("synthetic") == SCENE_API_URL.replace(
         "{entry_id}", "synthetic"
     )
-    assert pose_api_url("synthetic") == POSE_API_URL.replace("{entry_id}", "synthetic")
     assert delta_api_url("synthetic") == DELTA_API_URL.replace(
         "{entry_id}", "synthetic"
     )
@@ -3462,71 +3055,6 @@ async def test_area_workspace_preserves_perimeter_and_rejects_excess_coverage() 
     runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
 
-async def test_pose_cache_does_not_relabel_previous_floor_position() -> None:
-    runtime = _runtime()
-    runtime.client.async_get_pose.side_effect = [
-        _fresh_pose(0.1, 0.2, 0.0),
-        _fresh_pose(0.2, 0.3, 0.0),
-    ]
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-    with patch(
-        "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
-    ):
-        first = await view.get(_request(hass), "entry")
-        runtime.coordinator.data.floor_plan = replace(
-            runtime.coordinator.data.floor_plan,
-            partition_id_wire=b"synthetic-second-frame",
-        )
-        second = await view.get(_request(hass), "entry")
-    assert first.status == second.status == HTTPStatus.OK
-    assert runtime.client.async_get_pose.await_count == 2
-    assert json.loads(second.body)["position"] == [0.2, 0.3]
-    assert json.loads(second.body)["pose_revision"] == 2
-    assert (
-        json.loads(first.body)["map_session_key"]
-        != json.loads(second.body)["map_session_key"]
-    )
-
-
-@pytest.mark.parametrize("same_key", [False, True])
-async def test_pose_read_cannot_cross_floor_or_revocation_generation(same_key) -> None:
-    runtime = _runtime()
-    runtime.coordinator.floor_read_generation = 0
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-    started, release = asyncio.Event(), asyncio.Event()
-
-    async def delayed(**_kwargs):
-        started.set()
-        await release.wait()
-        return _fresh_pose(0.1, 0.2, 0.0)
-
-    runtime.client.async_get_pose.side_effect = delayed
-    task = asyncio.create_task(view.get(_request(hass), "entry"))
-    await started.wait()
-    original = runtime.coordinator.data.floor_plan
-    runtime.coordinator.data.floor_plan = replace(
-        original, partition_id_wire=b"synthetic-second-frame"
-    )
-    runtime.coordinator.floor_read_generation += 1
-    if same_key:
-        runtime.coordinator.data.floor_plan = original
-        runtime.coordinator.floor_read_generation += 1
-    release.set()
-    response = await task
-    assert response.status == HTTPStatus.OK
-    payload = json.loads(response.body)
-    assert payload["position"] is None and payload["source"] == "unavailable"
-    assert payload["map_floor_coherent"] is False
-    assert payload["map_session_key"] is None
-    assert payload["pose_freshness"] == "coordinator_fallback"
-    assert (
-        response.headers["Cache-Control"] == PRIVATE_NO_STORE_HEADERS["Cache-Control"]
-    )
-    assert view._cache == {}
-
-
 @pytest.mark.parametrize("invalidation", ["unload", "runtime", "history"])
 async def test_history_scene_read_rechecks_entry_runtime_and_store(
     invalidation,
@@ -3564,33 +3092,6 @@ async def test_history_scene_read_rechecks_entry_runtime_and_store(
         response.headers["Cache-Control"] == PRIVATE_NO_STORE_HEADERS["Cache-Control"]
     )
     assert response.body != b"synthetic-private-scene"
-
-
-async def test_pose_waiter_rejects_revoked_floor_before_second_rpc():
-    runtime = _runtime()
-    runtime.coordinator.floor_read_generation = 0
-    hass = _hass(_entry(runtime))
-    view = MaticSlamPoseView()
-    started, release = asyncio.Event(), asyncio.Event()
-
-    async def delayed(**_kwargs):
-        started.set()
-        await release.wait()
-        return _fresh_pose(0.1, 0.2, 0.0)
-
-    runtime.client.async_get_pose.side_effect = delayed
-    first = asyncio.create_task(view.get(_request(hass), "entry"))
-    await started.wait()
-    second = asyncio.create_task(view.get(_request(hass), "entry"))
-    await asyncio.sleep(0)
-    runtime.coordinator.floor_read_generation += 1
-    release.set()
-    responses = await asyncio.gather(first, second)
-    assert [r.status for r in responses] == [HTTPStatus.OK] * 2
-    assert all(json.loads(r.body)["map_floor_coherent"] is False for r in responses)
-    assert all(json.loads(r.body)["map_session_key"] is None for r in responses)
-    runtime.client.async_get_pose.assert_awaited_once()
-    assert view._cache == {}
 
 
 def _saved_area(floor_plan: FloorPlan, name: str) -> dict[str, object]:

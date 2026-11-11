@@ -86,6 +86,50 @@ async function loadEffectHarness(page) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
 }
 
+// Home Assistant's websocket as the workspace transport uses it: a ready
+// snapshot, and the robot's pose pushed to each subscription that asks for it.
+// `send` changes the pose and pushes it; `stream` repeats it like a robot that
+// keeps reporting.
+async function installRobotPoses(page) {
+  await page.addInitScript(() => {
+    const subscribers = new Set();
+    const robot = window.__robotPoses = {
+      opened: 0,
+      closed: 0,
+      timer: null,
+      pose: {
+        position: [10, 12], heading: null, scene_revision: null, scene_epoch: null,
+        map_floor_coherent: true, map_session_key: "a".repeat(64), pose_age_seconds: 0,
+      },
+      send(changes = {}) {
+        Object.assign(robot.pose, changes);
+        const pose = { ...robot.pose, source: robot.pose.position ? "exact_pose" : "current_area" };
+        for (const callback of subscribers) callback({ type: "pose", pose });
+      },
+      stream(on) {
+        clearInterval(robot.timer);
+        robot.timer = on ? setInterval(() => robot.send(), 500) : null;
+      },
+      connection: {
+        subscribeMessage: async (callback, message) => {
+          if (!message.poses) return () => {};
+          robot.opened += 1;
+          subscribers.add(callback);
+          queueMicrotask(() => robot.send());
+          return () => { robot.closed += 1; subscribers.delete(callback); };
+        },
+        sendMessagePromise: async (message) => message.type !== "matic_robot/workspace_snapshot" ? { value: null } : {
+          schema: 1, capabilities: { snapshot: 1 }, epoch: "epoch", sequence: 0,
+          coherence_generation: 1, revisions: {}, entry_id: message.entry_id,
+          identity: { entry_id: message.entry_id, floor_mission_id: 1, floor_verified: true },
+          status: { state: "ready", reason: null, retryable: false },
+          payload: { available: true, entry: null },
+        },
+      },
+    };
+  });
+}
+
 async function snapshot(page) {
   return page.evaluate((tag) => document.querySelector(tag).getWorkspaceSnapshot(), GALLERY_TAG);
 }
@@ -2669,75 +2713,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
-  for (const outcome of ["success", "error"]) {
-    test(`@safety disconnect fences an in-flight pose ${outcome} before cancellation`, async ({ page }) => {
-      await loadEffectHarness(page);
-      const result = await page.evaluate(async (outcome) => {
-        const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-        const initial = createGalleryState("ready");
-        const store = new WorkspaceStore(initial);
-        let finish;
-        let hold = false;
-        let abortedGeneration;
-        const effects = new EffectController(store, {
-          catalog: async () => [{ ...initial.resources.entry, deltaUrl: null }],
-          history: async () => initial.resources.history.value,
-          scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
-          pose: async (_url, signal) => {
-            if (!hold) return initial.resources.pose.value;
-            signal.addEventListener("abort", () => { abortedGeneration = store.value.generation; }, { once: true });
-            // A transport can settle after abort; admission must still reject it.
-            return new Promise((resolve, reject) => {
-              finish = () => outcome === "success"
-                ? resolve(initial.resources.pose.value) : reject(new Error("Late transport failure"));
-            });
-          },
-          dispose() {},
-        });
-        const projection = {
-          host: initial.host, activity: initial.activity, batteryPercent: 92,
-          robotLabel: "Synthetic", robots: initial.robots, language: "en",
-          userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
-        };
-        try {
-          effects.sync(projection);
-          await effects.refreshCatalog(true);
-          await effects.refreshPose();
-          const connectedGeneration = store.value.generation;
-          const retainedScene = store.value.resources.scene.value;
-          hold = true;
-          const pending = effects.refreshPose();
-          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
-          const disconnectedGeneration = store.value.generation;
-          finish();
-          await pending;
-          const disconnected = {
-            pose: store.value.resources.pose, exactPose: store.value.map.exactPose,
-            coherence: store.value.coherence, retainedScene: store.value.resources.scene.value === retainedScene,
-          };
-          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
-          const repeatedDisconnectGeneration = store.value.generation;
-          hold = false;
-          effects.sync(projection);
-          await effects.refreshCatalog(true);
-          await effects.refreshPose();
-          return {
-            connectedGeneration, disconnectedGeneration, abortedGeneration, repeatedDisconnectGeneration,
-            disconnected, recovered: store.value.map.exactPose && store.value.coherence === "current",
-          };
-        } finally { effects.dispose(); }
-      }, outcome);
-      expect(result.disconnectedGeneration).toBeGreaterThan(result.connectedGeneration);
-      expect(result.abortedGeneration).toBe(result.disconnectedGeneration);
-      expect(result.repeatedDisconnectGeneration).toBe(result.disconnectedGeneration);
-      expect(result.disconnected).toEqual({
-        pose: { status: "idle", value: null, problem: null }, exactPose: false,
-        coherence: "degraded", retainedScene: true,
-      });
-      expect(result.recovered).toBe(true);
-    });
-  }
-
   for (const force of [false, true]) {
     for (const outcome of ["success", "error"]) {
       test(`@safety reconnect supersedes a ${force ? "forced" : "polling"} catalog ${outcome} without waiting for polling`, async ({ page }) => {
@@ -3300,15 +3275,13 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(errors).toEqual([]);
   });
 
-  test("disposes polling on unload and reattaches with fresh controllers", async ({ page }) => {
+  test("disposes polling and the pose subscription on unload and reattaches with fresh controllers", async ({ page }) => {
     const scene = syntheticScene("Room", 10);
     let catalogRequests = 0;
     let sceneRequests = 0;
-    let poseRequests = 0;
     const entry = {
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-      pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
       history_url: "/api/matic_robot/slam_history/synthetic-entry",
       areas_url: "/api/matic_robot/areas/synthetic-entry",
       plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -3330,6 +3303,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_health: "ready",
       stream_state: "connected",
       stream_failures: 0,
+      live_workspace_transport_enabled: true,
     };
     await page.route("**/api/matic_robot/slam_entries", (route) => {
       catalogRequests += 1;
@@ -3350,34 +3324,6 @@ test.describe("Map Studio v0.4 foundation", () => {
           "X-Matic-Floor-Coherent": "1",
         },
       });
-    });
-    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => {
-      poseRequests += 1;
-      // Keep the first request open long enough for the one-second polling
-      // tick to queue a retry. Removing the panel must abort that request and
-      // clear the queued retry instead of issuing a pose read while detached.
-      const response = {
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          position: null,
-          source: "current_area",
-          revision: 1,
-          pose_revision: poseRequests,
-          map_floor_coherent: true,
-          pose_freshness: "live",
-          map_session_key: "a".repeat(64),
-        }),
-      };
-      if (poseRequests === 1) {
-        return new Promise((resolve) => {
-          setTimeout(() => {
-            void route.fulfill(response).catch(() => {});
-            resolve();
-          }, 1_500);
-        });
-      }
-      return route.fulfill(response);
     });
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
       status: 200,
@@ -3415,6 +3361,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       },
     }));
 
+    await installRobotPoses(page);
     await page.goto("/");
     await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
@@ -3432,6 +3379,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           },
         },
         fetchWithAuth: (path, init) => fetch(path, init),
+        connection: window.__robotPoses.connection,
       };
       document.body.append(panel);
       window.__lifecyclePanel = panel;
@@ -3441,14 +3389,16 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = window.__lifecyclePanel.getWorkspaceSnapshot();
       return { coherence: state.coherence, scene: state.resources.scene.status };
     })).toEqual({ coherence: "current", scene: "ready" });
-    const mounted = { catalogRequests, sceneRequests, poseRequests };
+    const subscriptions = () => page.evaluate(() => ({ opened: window.__robotPoses.opened, closed: window.__robotPoses.closed }));
+    await expect.poll(subscriptions).toEqual({ opened: 1, closed: 0 });
+    const mounted = { catalogRequests, sceneRequests };
 
     await page.evaluate(() => window.__lifecyclePanel.remove());
-    // Allow disconnectedCallback to abort the current requests and clear both
-    // polling timers before checking that detached panels stay completely quiet.
+    // Allow disconnectedCallback to abort the current requests and clear the
+    // polling timer before checking that detached panels stay completely quiet.
     await page.waitForTimeout(1_200);
-    const detached = { catalogRequests, sceneRequests, poseRequests };
-    expect(detached).toEqual(mounted);
+    expect({ catalogRequests, sceneRequests }).toEqual(mounted);
+    expect(await subscriptions()).toEqual({ opened: 1, closed: 1 });
 
     await page.evaluate(() => document.body.append(window.__lifecyclePanel));
     await expect.poll(async () => page.evaluate(() => {
@@ -3463,7 +3413,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     // retained render as proof that every asynchronous read has started.
     await expect.poll(() => catalogRequests).toBeGreaterThan(mounted.catalogRequests);
     await expect.poll(() => sceneRequests).toBeGreaterThan(mounted.sceneRequests);
-    await expect.poll(() => poseRequests).toBeGreaterThan(mounted.poseRequests);
+    await expect.poll(subscriptions).toEqual({ opened: 2, closed: 1 });
 
     await page.evaluate(() => {
       const shell = window.__lifecyclePanel.shadowRoot.querySelector("matic-map-shell-v4");
@@ -3495,10 +3445,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         scene: state.resources.scene.status,
       };
     })).toEqual({ dataMode: "history", floorId: "saved-floor", workflow: "none", scene: "ready" });
-    const historical = { catalogRequests, sceneRequests, poseRequests };
+    const historical = { catalogRequests, sceneRequests };
     await page.evaluate(() => window.__lifecyclePanel.remove());
     await page.waitForTimeout(1_200);
-    expect({ catalogRequests, sceneRequests, poseRequests }).toEqual(historical);
+    expect({ catalogRequests, sceneRequests }).toEqual(historical);
     await page.evaluate(() => document.body.append(window.__lifecyclePanel));
     await expect.poll(async () => page.evaluate(() => {
       const state = window.__lifecyclePanel.getWorkspaceSnapshot();
@@ -3510,10 +3460,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ dataMode: "history", floorId: "saved-floor", scene: "ready" });
     expect(catalogRequests).toBeGreaterThan(historical.catalogRequests);
     expect(sceneRequests).toBe(historical.sceneRequests);
-    expect(poseRequests).toBe(historical.poseRequests);
 
     await page.evaluate(() => window.__lifecyclePanel.remove());
-    const beforeOfflineReattach = { catalogRequests, sceneRequests, poseRequests };
+    const beforeOfflineReattach = { catalogRequests, sceneRequests, subscriptions: await subscriptions() };
     // Update the HA projection while the element is detached, then reattach it
     // synchronously so connectedCallback must use current properties rather
     // than the stale connected projection from its previous mount.
@@ -3527,7 +3476,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       return { connected: state.host.connected, coherence: state.coherence };
     })).toEqual({ connected: false, coherence: "degraded" });
     await page.waitForTimeout(1_200);
-    expect({ catalogRequests, sceneRequests, poseRequests }).toEqual(beforeOfflineReattach);
+    expect({ catalogRequests, sceneRequests, subscriptions: await subscriptions() }).toEqual(beforeOfflineReattach);
     await page.evaluate(() => window.__lifecyclePanel.remove());
   });
 
@@ -5954,7 +5903,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       const entry = {
         entry_id: "synthetic-entry",
         scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-        pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
         history_url: "/api/matic_robot/slam_history/synthetic-entry",
         areas_url: "/api/matic_robot/areas/synthetic-entry",
         plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -6005,17 +5953,6 @@ test.describe("Map Studio v0.4 foundation", () => {
                 "X-Matic-Floor-Coherent": "1",
               },
             });
-          }
-          if (path === entry.pose_url) {
-            return new Response(JSON.stringify({
-              position: null,
-              source: "current_area",
-              revision: 1,
-              pose_revision: 1,
-              map_floor_coherent: true,
-              pose_freshness: "live",
-              map_session_key: "a".repeat(64),
-            }), { status: 200, headers: { "Content-Type": "application/json" } });
           }
           if (path === entry.history_url) {
             return new Response(JSON.stringify({
@@ -6311,7 +6248,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     const entry = {
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-      pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
       history_url: "/api/matic_robot/slam_history/synthetic-entry",
       areas_url: "/api/matic_robot/areas/synthetic-entry",
       plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -6351,19 +6287,6 @@ test.describe("Map Studio v0.4 foundation", () => {
         },
       });
     });
-    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        position: [18, 12],
-        source: "latest_pose",
-        revision: 1,
-        pose_revision: 1,
-        map_floor_coherent: true,
-        pose_freshness: "live",
-        map_session_key: "a".repeat(64),
-      }),
-    }));
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -7104,18 +7027,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     const fullScenePreferCached = [];
     let deltaRequests = 0;
     let failNextDelta = false;
-    let poseSessionKey = "a".repeat(64);
-    let posePosition = [10, 12];
-    let poseFreshness = "live";
-    let poseAgeSeconds;
-    let poseFloorCoherent = true;
-    let poseRequests = 0;
-    let failNextPose = false;
-    let holdNextPose = false;
-    let holdAfterNextAgedPose = false;
-    let heldPoseRequests = 0;
-    let releaseHeldPose;
-    const heldPoseGate = new Promise((resolve) => { releaseHeldPose = resolve; });
     let holdDeltaRecoveryScene = false;
     let releaseDeltaRecoveryScene;
     const deltaRecoverySceneGate = new Promise((resolve) => { releaseDeltaRecoveryScene = resolve; });
@@ -7128,7 +7039,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
       delta_url: "/api/matic_robot/slam_delta/synthetic-entry",
-      pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
       history_url: "/api/matic_robot/slam_history/synthetic-entry",
       areas_url: "/api/matic_robot/areas/synthetic-entry",
       plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -7150,6 +7060,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_health: "ready",
       stream_state: "connected",
       stream_failures: 0,
+      live_workspace_transport_enabled: true,
     });
     await page.route("**/api/matic_robot/slam_entries", (route) => {
       catalogRequests += 1;
@@ -7207,38 +7118,6 @@ test.describe("Map Studio v0.4 foundation", () => {
         },
       });
     });
-    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", async (route) => {
-      poseRequests += 1;
-      if (failNextPose) {
-        failNextPose = false;
-        return route.fulfill({ status: 503, body: "temporary" });
-      }
-      if (holdNextPose) {
-        holdNextPose = false;
-        heldPoseRequests += 1;
-        await heldPoseGate;
-      }
-      // Bind the hold to this response, before its asynchronous delivery. The
-      // test can advance the fixture while an older response is still settling.
-      if (holdAfterNextAgedPose && poseAgeSeconds === 3 && poseFloorCoherent) {
-        holdAfterNextAgedPose = false;
-        holdNextPose = true;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          position: posePosition,
-          source: posePosition ? "latest_pose" : "current_area",
-          revision: catalogRevision + 100,
-          pose_revision: poseRequests,
-          map_floor_coherent: poseFloorCoherent,
-          pose_freshness: poseFreshness,
-          ...(poseAgeSeconds === undefined ? {} : { pose_age_seconds: poseAgeSeconds }),
-          map_session_key: poseSessionKey,
-        }),
-      });
-    });
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -7256,6 +7135,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       }),
     }));
 
+    await installRobotPoses(page);
     await page.goto("/");
     await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
@@ -7273,9 +7153,11 @@ test.describe("Map Studio v0.4 foundation", () => {
           },
         },
         fetchWithAuth: (path, init) => fetch(path, init),
+        connection: window.__robotPoses.connection,
       };
       document.body.append(panel);
       window.__deltaPanel = panel;
+      window.__robotPoses.stream(true);
     });
 
     await expect.poll(async () => page.evaluate(() =>
@@ -7323,58 +7205,27 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().notice)).toBe(null);
-    poseFreshness = "coordinator_fallback";
-    posePosition = [11, 13];
-    await expect.poll(async () => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return {
-        exactPose: state.map.exactPose,
-        freshness: state.resources.pose.value?.freshness,
-        position: state.resources.pose.value?.position,
-      };
-    }), { timeout: 5_000 }).toEqual({
-      exactPose: false,
-      freshness: "coordinator_fallback",
-      position: [11, 13],
-    });
-    posePosition = null;
-    const requestsBeforeMissingFallback = poseRequests;
-    await expect.poll(() => poseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(requestsBeforeMissingFallback);
-    await expect.poll(() => page.evaluate(() => {
+    const send = (changes) => page.evaluate((pose) => window.__robotPoses.send(pose), changes);
+    const shown = () => page.evaluate(() => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, pose: state.resources.pose.value };
-    })).toEqual({
-      exactPose: false,
-      pose: expect.objectContaining({ freshness: "coordinator_fallback", position: null }),
     });
-    poseFreshness = "live";
-    const requestsBeforeMissingLivePose = poseRequests;
-    await expect.poll(() => poseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(requestsBeforeMissingLivePose);
-    await expect.poll(() => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return {
-        exactPose: state.map.exactPose,
-        freshness: state.resources.pose.value?.freshness,
-        position: state.resources.pose.value?.position,
-      };
-    })).toEqual({ exactPose: false, freshness: "live", position: null });
-    failNextPose = true;
-    const requestsBeforeFailure = poseRequests;
-    await expect.poll(() => poseRequests, { timeout: 5_000 }).toBeGreaterThan(requestsBeforeFailure);
-    await expect.poll(() => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return { exactPose: state.map.exactPose, pose: state.resources.pose.value };
-    })).toEqual({ exactPose: false, pose: null });
-    posePosition = [11, 13];
-    const requestsBeforeRecovery = poseRequests;
-    await expect.poll(() => poseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(requestsBeforeRecovery);
-    await expect.poll(() => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
-    })).toEqual({ exactPose: true, position: [11, 13] });
+    // A pose whose age is unknown places the robot's area, not its point.
+    await send({ position: [11, 13], pose_age_seconds: null });
+    await expect.poll(shown).toEqual({
+      exactPose: false,
+      pose: expect.objectContaining({ position: [11, 13], ageSeconds: null }),
+    });
+    await send({ position: null });
+    await expect.poll(shown).toEqual({
+      exactPose: false,
+      pose: expect.objectContaining({ source: "current_area", position: null }),
+    });
+    await send({ position: [11, 13], pose_age_seconds: 0 });
+    await expect.poll(shown).toEqual({
+      exactPose: true,
+      pose: expect.objectContaining({ position: [11, 13] }),
+    });
     holdNextFullScene = true;
     catalogRevision = 3;
     // End the live delta owner after publishing the new catalog revision.
@@ -7400,68 +7251,24 @@ test.describe("Map Studio v0.4 foundation", () => {
     releaseHeldFullScene();
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
-    const requestsBeforeSessionChange = poseRequests;
-    poseSessionKey = "b".repeat(64);
-    await expect.poll(() => poseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(requestsBeforeSessionChange);
-    await expect.poll(async () => page.evaluate(() =>
-      window.__deltaPanel.getWorkspaceSnapshot().map.exactPose), { timeout: 5_000 }).toBe(false);
-    // Return to the same catalog key, then consume the backend's typed
-    // frame-revoked response: it must clear the old verified marker.
-    poseSessionKey = "a".repeat(64);
-    posePosition = [11, 13];
-    await expect.poll(() => page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
-    poseFloorCoherent = false;
-    poseSessionKey = null;
-    posePosition = null;
-    await expect.poll(() => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return { exactPose: state.map.exactPose, pose: state.resources.pose.value };
-    })).toEqual({ exactPose: false, pose: null });
-    // A point read near the backend's freshness limit gets only its remaining
-    // lifetime locally. The next request hangs, but expiry still clears it.
-    poseFloorCoherent = true;
-    poseSessionKey = "a".repeat(64);
-    posePosition = [11, 13];
-    poseAgeSeconds = 3.0;
-    holdAfterNextAgedPose = true;
-    const requestsBeforeAgedPose = poseRequests;
-    await expect.poll(() => poseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(requestsBeforeAgedPose);
-    await expect.poll(() => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return {
-        exactPose: state.map.exactPose,
-        age: state.resources.pose.value?.nativeObservationAgeSeconds,
-        revision: state.resources.pose.value?.poseRevision,
-      };
-    }), { timeout: 1_000 }).toMatchObject({ exactPose: true, age: 3 });
-    await expect.poll(() => heldPoseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(0);
-    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
-    await expect.poll(() => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return { exactPose: state.map.exactPose, pose: state.resources.pose.value };
-    }), { timeout: 2_500, intervals: [50, 100, 200] }).toEqual({ exactPose: false, pose: null });
-    holdNextPose = false;
-    poseAgeSeconds = 0;
-    releaseHeldPose();
-    await expect.poll(() => page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
-    await page.waitForTimeout(250);
-    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
-    poseAgeSeconds = null;
-    const requestsBeforeUnknownAge = poseRequests;
-    await expect.poll(() => poseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(requestsBeforeUnknownAge);
-    await expect.poll(() => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
-      return { exactPose: state.map.exactPose, age: state.resources.pose.value?.nativeObservationAgeSeconds };
-    })).toEqual({ exactPose: false, age: null });
-    poseAgeSeconds = 0;
-    const requestsBeforeFinalRecovery = poseRequests;
-    await expect.poll(() => poseRequests, { timeout: 5_000 })
-      .toBeGreaterThan(requestsBeforeFinalRecovery);
-    await expect.poll(() => page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
+    await send({ map_session_key: "b".repeat(64) });
+    await expect.poll(async () => (await shown()).exactPose).toBe(false);
+    // The first recovery read can see the mismatched pose again; the next is five seconds later.
+    await send({ map_session_key: "a".repeat(64) });
+    await expect.poll(async () => (await shown()).exactPose, { timeout: 10_000 }).toBe(true);
+    // A pose the backend can no longer place on this floor clears the marker.
+    await send({ map_floor_coherent: false, map_session_key: null, position: null });
+    await expect.poll(shown).toEqual({ exactPose: false, pose: null });
+    // A point near the freshness limit keeps only its remaining lifetime, so a
+    // robot that stops reporting disappears without another message.
+    await send({ map_floor_coherent: true, map_session_key: "a".repeat(64), position: [11, 13] });
+    await expect.poll(async () => (await shown()).exactPose, { timeout: 10_000 }).toBe(true);
+    await page.evaluate(() => window.__robotPoses.stream(false));
+    await send({ pose_age_seconds: 3 });
+    expect((await shown()).exactPose).toBe(true);
+    await expect.poll(shown, { timeout: 2_500, intervals: [50, 100, 200] }).toEqual({ exactPose: false, pose: null });
+    await send({ pose_age_seconds: 0 });
+    await expect.poll(async () => (await shown()).exactPose).toBe(true);
     await page.evaluate(() => window.__deltaPanel.remove());
   });
 
@@ -7480,7 +7287,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     const entry = () => ({
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-      pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
       history_url: "/api/matic_robot/slam_history/synthetic-entry",
       areas_url: "/api/matic_robot/areas/synthetic-entry",
       plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -7521,19 +7327,6 @@ test.describe("Map Studio v0.4 foundation", () => {
         },
       });
     });
-    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        position: null,
-        source: "current_area",
-        revision,
-        pose_revision: revision,
-        map_floor_coherent: true,
-        pose_freshness: "live",
-        map_session_key: "a".repeat(64),
-      }),
-    }));
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -7670,7 +7463,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       const entry = {
         entry_id: "synthetic-entry",
         scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-        pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
         history_url: "/api/matic_robot/slam_history/synthetic-entry",
         areas_url: "/api/matic_robot/areas/synthetic-entry",
         plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -7736,17 +7528,6 @@ test.describe("Map Studio v0.4 foundation", () => {
               },
             });
           }
-          if (path === entry.pose_url) {
-            return new Response(JSON.stringify({
-              position: null,
-              source: "current_area",
-              revision: 1,
-              pose_revision: 1,
-              map_floor_coherent: true,
-              pose_freshness: "live",
-              map_session_key: "a".repeat(64),
-            }), { status: 200, headers: { "Content-Type": "application/json" } });
-          }
           if (path === entry.history_url) {
             return new Response(JSON.stringify({
               entry_id: "synthetic-entry",
@@ -7804,7 +7585,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       const entry = {
         entry_id: "synthetic-entry",
         scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-        pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
         history_url: "/api/matic_robot/slam_history/synthetic-entry",
         areas_url: "/api/matic_robot/areas/synthetic-entry",
         plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -7856,17 +7636,6 @@ test.describe("Map Studio v0.4 foundation", () => {
                 "X-Matic-Floor-Coherent": "1",
               },
             });
-          }
-          if (path === entry.pose_url) {
-            return new Response(JSON.stringify({
-              position: null,
-              source: "current_area",
-              revision: 1,
-              pose_revision: 1,
-              map_floor_coherent: true,
-              pose_freshness: "live",
-              map_session_key: "a".repeat(64),
-            }), { status: 200, headers: { "Content-Type": "application/json" } });
           }
           if (path === entry.history_url) {
             return new Response(JSON.stringify({
@@ -7922,7 +7691,6 @@ test.describe("Map Studio v0.4 foundation", () => {
               entry_id: "synthetic-entry",
               scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
               delta_url: "/api/matic_robot/slam_delta/synthetic-entry",
-              pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
               history_url: "/api/matic_robot/slam_history/synthetic-entry",
               areas_url: "/api/matic_robot/areas/synthetic-entry",
               plans_url: "/api/matic_robot/plans/synthetic-entry",

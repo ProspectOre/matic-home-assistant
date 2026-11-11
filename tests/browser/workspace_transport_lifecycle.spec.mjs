@@ -518,7 +518,7 @@ test("same-generation snapshot map revisions wait for delta admission; new ident
     const pendingDeltas = [];
     const counts = { catalog: 0, scene: 0, delta: 0 };
     const wireEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
-      delta_url: entry.deltaUrl, pose_url: entry.poseUrl, history_url: entry.historyUrl,
+      delta_url: entry.deltaUrl, history_url: entry.historyUrl,
       areas_url: entry.areasUrl, plans_url: entry.plansUrl, map_revision: entry.mapRevision,
       map_scene_epoch: entry.mapSceneEpoch,
       map_floor_coherent: entry.mapFloorCoherent, map_session_verified: entry.mapSessionVerified,

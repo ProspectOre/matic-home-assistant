@@ -930,7 +930,7 @@ test("area catalogs stay deferred when their workflow closes during module loadi
     });
   });
   await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged", userData: null }); // without a websocket, home shortcuts read no areas
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);

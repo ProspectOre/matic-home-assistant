@@ -1,4 +1,4 @@
-import { entryCoherenceIdentity, entryManagedLock, type MapEntry } from "./backend-contracts";
+import { entryCoherenceIdentity, entryManagedLock, type MapEntry, type PoseModel } from "./backend-contracts";
 import { type ResourceStamp, type HassProjection } from "./contracts";
 import {
   CoherenceMachine,
@@ -24,6 +24,7 @@ interface WorkspaceSynchronizationCallbacks {
     refreshCatalogProjection?: boolean,
   ) => void;
   readonly spatialRecoveryBlocks: (entry: MapEntry) => boolean;
+  readonly receivePose: (entryId: string, pose: PoseModel) => void;
   readonly loadTransport?: () => Promise<typeof import("./workspace-transport")>;
 }
 
@@ -195,6 +196,10 @@ export class WorkspaceSynchronizer {
           || this.#transportEntry !== entryId
           || this.#callbacks.projection()?.entryKey !== entryId
           || this.#callbacks.projection()?.userKey !== userKey) return;
+        if (event.type === "pose") {
+          this.#callbacks.receivePose(entryId, event.pose);
+          return;
+        }
         if (event.type === "resync" && event.reason === "entry_removed") {
           const removed = {
             entryId,

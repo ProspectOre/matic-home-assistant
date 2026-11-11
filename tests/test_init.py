@@ -64,8 +64,9 @@ from custom_components.matic_robot.photos import (
 from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
 from custom_components.matic_robot.plan_storage import STOP_FENCE_EXPIRES_AT
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.session import Store
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
+from custom_components.matic_robot.slam_view_data import observe_trail
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +75,9 @@ def session_start() -> Iterator[AsyncMock]:
     start = AsyncMock()
 
     def session(_hass, _entry, client) -> SimpleNamespace:
-        return SimpleNamespace(async_start=start, async_stop=client.async_shutdown)
+        return SimpleNamespace(
+            async_start=start, async_stop=client.async_shutdown, poses=Store({})
+        )
 
     with patch("custom_components.matic_robot.RobotSession", session):
         yield start
@@ -989,11 +992,10 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 18
+    assert hass.http.register_view.call_count == 17
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
-        DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
         MATIC_ICONS_PATH,
         MATIC_MAP_PANEL_ELEMENT,
@@ -1002,9 +1004,6 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     )
 
     assert hass.data[DATA_SLAM_SCENE_VIEW] in {
-        call.args[0] for call in hass.http.register_view.call_args_list
-    }
-    assert hass.data[DATA_SLAM_POSE_VIEW] in {
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     assert hass.data[DATA_FLOOR_LAYERS_VIEW] in {
@@ -1339,8 +1338,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
     )
     assert coordinator.async_add_listener.call_count == 2
     trail_callback = coordinator.async_add_listener.call_args_list[0].args[0]
-    assert trail_callback.func is observe_coordinator_trail
+    assert trail_callback.func is observe_trail
     assert trail_callback.args == (entry.runtime_data,)
+    assert entry.runtime_data.session.poses._listeners == [trail_callback]
     sync_callback = coordinator.async_add_listener.call_args.args[0]
     plans.repository.async_add_listener.assert_called_once_with(
         "synthetic-serial", sync_callback
@@ -1846,7 +1846,6 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
-    pose_view = SimpleNamespace(clear_entry=MagicMock())
     floor_layers_view = SimpleNamespace(clear_entry=MagicMock())
     run_thumbnail_view = SimpleNamespace(clear_entry=MagicMock())
     photo_source = SimpleNamespace(
@@ -1855,7 +1854,6 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
-        DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
     )
 
@@ -1866,7 +1864,6 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         ),
         data={
             DOMAIN: {DATA_PHOTO_ATTACHMENT_SOURCE: photo_source},
-            DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
             DATA_FLOOR_LAYERS_VIEW: floor_layers_view,
             DATA_RUN_THUMBNAIL_VIEW: run_thumbnail_view,
@@ -1893,7 +1890,6 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         plans.recovery.async_retire_recovery.assert_not_awaited()
     assert client.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
-    assert pose_view.clear_entry.called is unload_ok
     assert floor_layers_view.clear_entry.called is unload_ok
     assert run_thumbnail_view.clear_entry.called is unload_ok
     if unload_ok:
@@ -1910,7 +1906,6 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
 ) -> None:
     """External dispatch closes synchronously while managed cleanup can settle."""
     from custom_components.matic_robot.frontend import (
-        DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
     )
 
@@ -1948,9 +1943,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
-    pose_view = SimpleNamespace(clear_entry=MagicMock())
     hass.data[DATA_SLAM_SCENE_VIEW] = scene_view
-    hass.data[DATA_SLAM_POSE_VIEW] = pose_view
     monkeypatch.setattr(
         hass.config_entries,
         "async_unload_platforms",
@@ -2162,9 +2155,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())
     plans = SimpleNamespace(async_remove_robot=AsyncMock())
     scene_view = SimpleNamespace(clear_entry=MagicMock())
-    pose_view = SimpleNamespace(clear_entry=MagicMock())
     from custom_components.matic_robot.frontend import (
-        DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
     )
 
@@ -2174,7 +2165,6 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
                 DATA_FIRMWARE_TRACKER: tracker,
                 **({DATA_PLAN_MANAGER: plans} if with_plans else {}),
             },
-            DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
         }
     )
@@ -2213,7 +2203,6 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     if with_plans:
         assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is plans
     scene_view.clear_entry.assert_called_once_with("entry")
-    pose_view.clear_entry.assert_called_once_with("entry")
     slam_map.async_remove.assert_awaited_once()
     slam_history.async_remove.assert_awaited_once()
     run_trails.assert_called_once_with(hass, "entry")

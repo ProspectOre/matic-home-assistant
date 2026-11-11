@@ -1,175 +1,103 @@
-import { entryCoherenceIdentity, type MapEntry } from "./backend-contracts";
-import type { HassProjection, ResourceStamp, WorkspaceState } from "./contracts";
-import type { MaticBackend } from "./backend";
+import type { MapEntry, PoseModel } from "./backend-contracts";
 import type { CoherenceMachine, WorkspaceStore } from "./state";
-import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./shared-primitives";
+import { resource } from "./shared-primitives";
+
+// The server's freshness window: an older observation no longer places the robot.
+const POSE_FRESH_MS = 5_000;
 
 interface SpatialPoseCallbacks {
   readonly disposed: () => boolean;
   readonly pageActive: () => boolean;
-  readonly projection: () => HassProjection | null;
   readonly failed: (entry: MapEntry) => void;
   readonly recovered: (entry: MapEntry) => void;
-  readonly extendLiveTrail: (pose: NonNullable<WorkspaceState["resources"]["pose"]["value"]>) => void;
+  /** Each admitted position, or null once the robot can no longer be placed. */
+  readonly moved: (pose: PoseModel | null) => void;
 }
 
-/** SpatialPose owns its requests and lifetime; admission remains in CoherenceMachine. */
+interface Received {
+  readonly entryId: string;
+  readonly pose: PoseModel;
+  readonly at: number;
+}
+
+const sameAdmission = (left: PoseModel | null, right: PoseModel | null): boolean =>
+  left === right || (left !== null && right !== null && left.mapSessionKey === right.mapSessionKey
+    && left.source === right.source && left.floorCoherent === right.floorCoherent
+    && (left.position === null) === (right.position === null) && (left.heading === null) === (right.heading === null));
+
+/**
+ * Admits pushed poses to the map the store holds. The store changes only when
+ * what the panel shows changes; every position goes to `moved`.
+ */
 export class SpatialPose {
   readonly #store: WorkspaceStore;
-  readonly #backend: Pick<MaticBackend, "pose">;
   readonly #coherence: CoherenceMachine;
-  readonly #requests: ResourceRequests;
   readonly #callbacks: SpatialPoseCallbacks;
-  #poseTimer: number | null = null;
-  #poseExpiryTimer: number | null = null;
-  #observation: object | null = null;
-  #poseLoading = false;
-  #poseQueued = false;
+  #received: Received | null = null;
+  #rejected: Received | null = null;
+  #expiry: number | null = null;
 
-  constructor(store: WorkspaceStore, backend: Pick<MaticBackend, "pose">, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialPoseCallbacks) {
+  constructor(store: WorkspaceStore, coherence: CoherenceMachine, callbacks: SpatialPoseCallbacks) {
     this.#store = store;
-    this.#backend = backend;
     this.#coherence = coherence;
-    this.#requests = requests;
     this.#callbacks = callbacks;
   }
 
-  startPolling(): void {
-    if (this.#poseTimer === null) this.#poseTimer = window.setInterval(() => { void this.refreshPose(); }, 1_000);
+  receive(entryId: string, pose: PoseModel): void {
+    this.#received = { entryId, pose, at: performance.now() };
+    this.admit();
   }
 
-  stopPolling(): void {
-    if (this.#poseTimer !== null) window.clearInterval(this.#poseTimer);
-    this.#poseTimer = null;
+  /** Admits the newest pose to the current map, as each pose and each admitted map arrive. */
+  admit(): void {
+    const received = this.#received;
+    const state = this.#store.value;
+    const entry = state.resources.entry;
+    const now = performance.now();
+    if (!received || received.entryId !== entry?.entryId || now - received.at > POSE_FRESH_MS
+      || this.#callbacks.disposed() || !this.#callbacks.pageActive() || !this.#coherence.current()
+      || state.selection.floorId !== "current" || !entry.mapFloorCoherent || !entry.mapSessionVerified
+      || !state.map.floorCoherent) return;
+    const { pose } = received;
+    if (!pose.floorCoherent || pose.mapSessionKey === null || pose.mapSessionKey !== entry.mapSessionKey) {
+      // A pose bound to an older revision of this scene says nothing about
+      // the newer map admitted since; only a current mismatch revokes it.
+      if (pose.sceneEpoch != null && pose.sceneEpoch === entry.mapSceneEpoch
+        && pose.sceneRevision != null && pose.sceneRevision < entry.mapRevision) return;
+      this.#show(null, false);
+      // The recovery a rejection starts re-admits the same pose; report it once.
+      if (this.#rejected === received) return;
+      this.#rejected = received;
+      this.#callbacks.failed(entry);
+      return;
+    }
+    this.#callbacks.recovered(entry);
+    const freshMs = POSE_FRESH_MS - Math.max(0, pose.ageSeconds ?? 0) * 1_000 - (now - received.at);
+    const exact = pose.position !== null && pose.ageSeconds !== null && freshMs > 0;
+    this.#show(pose, exact);
+    if (!exact) return;
+    this.#expiry = window.setTimeout(() => {
+      this.#expiry = null;
+      this.#show(null, false);
+    }, freshMs);
   }
 
   clearExpiry(): void {
-    this.#observation = null;
-    if (this.#poseExpiryTimer !== null) window.clearTimeout(this.#poseExpiryTimer);
-    this.#poseExpiryTimer = null;
+    if (this.#expiry !== null) window.clearTimeout(this.#expiry);
+    this.#expiry = null;
   }
 
-  cancelQueued(): void { this.#poseQueued = false; }
-
-
-  async refreshPose(): Promise<void> {
-    const entry = this.#store.value.resources.entry;
-    const stamp = this.#coherence.current();
-    if (!entry || !stamp || this.#store.value.selection.floorId !== "current"
-      || !entry.mapFloorCoherent || !entry.mapSessionVerified) return;
-    await this.load(entry, stamp);
-  }
-
-  async load(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
-    if (this.#callbacks.disposed() || !this.#callbacks.pageActive() || !this.#callbacks.projection()?.host.connected) return;
-    if (this.#poseLoading) {
-      this.#poseQueued = true;
-      return;
-    }
-    this.#poseLoading = true;
-    const controller = this.#requests.begin("pose");
-    const requestStartedAt = performance.now();
-    try {
-      const pose = await this.#backend.pose(entry.poseUrl, controller.signal);
-      const current = this.#coherence.current();
-      const currentEntry = this.#store.value.resources.entry;
-      if (controller.signal.aborted || this.#callbacks.disposed() || !current
-        || !sameCoherenceGeneration(stamp, current)
-        || !currentEntry
-        || !this.#store.value.map.floorCoherent) return;
-      if (!pose.floorCoherent || pose.mapSessionKey === null
-        || pose.mapSessionKey !== currentEntry.mapSessionKey) {
-        // The pose endpoint binds its map revision when the response is
-        // created. A coherent delta can admit a newer map while that response
-        // is in flight, so an older mismatch says nothing about the current
-        // floor/session and must not revoke the newly admitted frame.
-        if (pose.sceneEpoch != null
-          && pose.sceneEpoch === currentEntry.mapSceneEpoch
-          && pose.sceneRevision != null
-          && pose.sceneRevision < currentEntry.mapRevision) return;
-        this.#store.dispatch({
-          type: "result",
-          resources: { pose: resource("idle", null) },
-          map: { exactPose: false },
-        });
-        this.clearExpiry();
-        this.#callbacks.failed(currentEntry);
-        return;
-      }
-      this.#callbacks.recovered(currentEntry);
-      const requestElapsedMs = Math.max(0, performance.now() - requestStartedAt);
-      const ageKnown = pose.nativeObservationAgeSeconds === undefined
-        || typeof pose.nativeObservationAgeSeconds === "number";
-      // The server measures native age after waiting for the robot. Do not
-      // count that wait twice, but keep all unaccounted transit and local
-      // processing inside the freshness budget. Older servers stay conservative.
-      const serverMs = Math.min(requestElapsedMs, (pose.poseProcessingSeconds ?? 0) * 1_000);
-      const remainingFreshMs = 5_000 - Math.max(0, pose.nativeObservationAgeSeconds ?? 0) * 1_000
-        - (requestElapsedMs - serverMs);
-      const exactLivePose = pose.position !== null && pose.freshness === "live"
-        && ageKnown && remainingFreshMs > 0;
-      this.clearExpiry();
+  #show(pose: PoseModel | null, exact: boolean): void {
+    this.clearExpiry();
+    const state = this.#store.value;
+    if (state.resources.pose.status !== (pose ? "ready" : "idle")
+      || !sameAdmission(state.resources.pose.value, pose) || state.map.exactPose !== exact) {
       this.#store.dispatch({
         type: "result",
-        resources: { pose: resource("ready", pose) },
-        // Only a live response can confirm the current robot position. A
-        // coordinator fallback has no independently verifiable freshness.
-        map: { exactPose: exactLivePose },
+        resources: { pose: pose ? resource("ready", pose) : resource("idle", null) },
+        map: { exactPose: exact },
       });
-      if (exactLivePose) this.#callbacks.extendLiveTrail(pose);
-      if (exactLivePose) {
-        // A catalog refresh may retain this observation in a new generation.
-        // Its deadline belongs to the observation, not that catalog read.
-        const observation = this.#observation = {};
-        const frame = entryCoherenceIdentity(currentEntry);
-        this.#poseExpiryTimer = window.setTimeout(() => {
-          if (this.#observation !== observation) return;
-          this.#poseExpiryTimer = null;
-          this.#observation = null;
-          const latest = this.#store.value;
-          const latestEntry = latest.resources.entry;
-          if (latest.resources.pose.value !== pose || !latest.map.exactPose
-            || !latestEntry || entryCoherenceIdentity(latestEntry) !== frame
-            || !latest.map.floorCoherent) return;
-          this.#store.dispatch({
-            type: "result",
-            resources: { pose: resource("idle", null) },
-            map: { exactPose: false },
-          });
-        }, remainingFreshMs);
-      }
-    } catch (error) {
-      const current = this.#coherence.current();
-      const currentEntry = this.#store.value.resources.entry;
-      if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed()
-        || !this.#coherence.accepts(stamp)
-        || !current
-        || !sameCoherenceGeneration(stamp, current)
-        || !currentEntry
-        || currentEntry.mapSessionKey !== entry.mapSessionKey
-        || !this.#store.value.map.floorCoherent) return;
-      this.clearExpiry();
-      this.#store.dispatch({
-        type: "result",
-        resources: { pose: resource("error", null, problemCode(error, "pose-unavailable")) },
-        map: { exactPose: false },
-      });
-    } finally {
-      this.#requests.release("pose", controller);
-      this.#poseLoading = false;
-      if (this.#poseQueued
-        && !this.#callbacks.disposed()
-        && this.#callbacks.projection()?.host.connected
-        && this.#callbacks.projection()?.host.administrator
-        && (this.#callbacks.projection()?.host.robotCount ?? 0) > 0) {
-        this.#poseQueued = false;
-        const latestEntry = this.#store.value.resources.entry;
-        const latestStamp = this.#coherence.current();
-        if (latestEntry && latestStamp) void this.load(latestEntry, latestStamp);
-      } else {
-        this.#poseQueued = false;
-      }
     }
+    this.#callbacks.moved(exact ? pose : null);
   }
 }

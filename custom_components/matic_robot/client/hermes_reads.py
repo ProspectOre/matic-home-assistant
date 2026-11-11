@@ -9,7 +9,6 @@ from collections.abc import (
     AsyncGenerator,
 )
 from dataclasses import replace
-from time import monotonic
 
 from google.protobuf.message import DecodeError
 
@@ -25,7 +24,6 @@ from .exceptions import (
     CannotConnectError,
     EndpointUnsupportedError,
     ProtocolError,
-    RequestTimeoutError,
     TransportError,
 )
 from .floor_plan import decode_floor_plans, decode_pose
@@ -78,10 +76,30 @@ from .zones import MAX_ZONES, decode_zones
 
 _LOGGER = logging.getLogger(__name__)
 _RPC_TIMEOUT = 10.0
-_LATEST_POSE_ENTRY_LIMIT = 64
 _LATEST_POSE_VALUE_MAX_BYTES = 16 * 1024
-_LATEST_POSE_READ_TIMEOUT = 3.0
 _DISPLAYED_MISSION_LIMIT = 256
+
+
+def decode_latest_pose(entry: HermesCollectionEntry) -> RobotPose:
+    """Decode one ``latest_pose`` entry, keyed by its mission."""
+    if len(entry.key) != 5:
+        raise DecodeError("latest pose has a malformed mission key")
+    if len(entry.value) > _LATEST_POSE_VALUE_MAX_BYTES:
+        raise DecodeError("latest pose exceeds its value size bound")
+    key_fields = decode_fields(entry.key, max_fields=2)
+    if (
+        len(key_fields) != 1
+        or key_fields[0].number != 2
+        or key_fields[0].wire_type != 5
+        or not isinstance(key_fields[0].value, bytes)
+        or len(key_fields[0].value) != 4
+    ):
+        raise DecodeError("latest pose has a malformed mission key")
+    return decode_pose(
+        entry.value,
+        mission_id=struct.unpack("<I", key_fields[0].value)[0],
+        observed_at=decode_pose_observation_time(entry.value),
+    )
 
 
 class HermesReads:
@@ -243,62 +261,19 @@ class HermesReads:
             raise ProtocolError("Hermes returned no photorealistic SLAM tile")
         return entries[0]
 
-    async def async_get_pose(
-        self, *, expected_mission_id: int | None = None
-    ) -> RobotPose:
-        """Read the uniquely keyed latest local pose for the active mission."""
-        if (
-            isinstance(expected_mission_id, bool)
-            or not isinstance(expected_mission_id, int)
-            or not 0 <= expected_mission_id <= 0xFFFFFFFF
+    async def async_subscribe_poses(self) -> AsyncGenerator[RobotPose]:
+        """Yield each mission's latest pose as the robot publishes it.
+
+        An entry that does not decode is skipped, so it cannot hold back the
+        poses of other missions.
+        """
+        async for entry in self._collections.async_subscribe_collection_entries(
+            "latest_pose"
         ):
-            raise ProtocolError("active mission identity is unavailable for pose")
-        iterator = self._collections.async_subscribe_collection_entries("latest_pose")
-        try:
-            deadline = monotonic() + _LATEST_POSE_READ_TIMEOUT
-            for _ in range(_LATEST_POSE_ENTRY_LIMIT + 1):
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    raise RequestTimeoutError(
-                        "latest pose read exceeded its time bound"
-                    )
-                try:
-                    async with asyncio.timeout(remaining):
-                        entry = await anext(iterator)
-                except StopAsyncIteration as err:
-                    raise ProtocolError(
-                        "latest pose stream ended without active pose"
-                    ) from err
-                except TimeoutError as err:
-                    raise RequestTimeoutError(
-                        "latest pose read exceeded its time bound"
-                    ) from err
-                if len(entry.key) != 5:
-                    raise DecodeError("latest pose has a malformed mission key")
-                if len(entry.value) > _LATEST_POSE_VALUE_MAX_BYTES:
-                    raise DecodeError("latest pose exceeds its value size bound")
-                key_fields = decode_fields(entry.key, max_fields=2)
-                if (
-                    len(key_fields) != 1
-                    or key_fields[0].number != 2
-                    or key_fields[0].wire_type != 5
-                    or not isinstance(key_fields[0].value, bytes)
-                    or len(key_fields[0].value) != 4
-                ):
-                    raise DecodeError("latest pose has a malformed mission key")
-                mission_id = struct.unpack("<I", key_fields[0].value)[0]
-                if mission_id == expected_mission_id:
-                    observed_at = decode_pose_observation_time(entry.value)
-                    return decode_pose(
-                        entry.value,
-                        mission_id=expected_mission_id,
-                        observed_at=observed_at,
-                    )
-            raise ProtocolError("latest pose stream exceeded its entry bound")
-        except DecodeError as err:
-            raise ProtocolError("Hermes returned a malformed robot pose") from err
-        finally:
-            await iterator.aclose()
+            try:
+                yield decode_latest_pose(entry)
+            except DecodeError as err:
+                _LOGGER.debug("Skipped a malformed latest pose: %s", err)
 
     async def async_get_flythrough(self, *, expected_mission_token: str) -> Flythrough:
         """Read the native map tour correlated to the active SLAM mission."""

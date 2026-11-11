@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadRecoveryHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
+      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { workspacePoseConnection } from "./tests/browser/workspace_pose_connection.mjs";',
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -22,7 +22,7 @@ async function loadRecoveryHarness(page) {
 
 async function startRecovery(page, failure = null) {
   await page.evaluate((failure) => {
-    const { EffectController, WorkspaceStore, createGalleryState } = window.__deltaRecoveryWaitModules;
+    const { EffectController, WorkspaceStore, createGalleryState, workspacePoseConnection } = window.__deltaRecoveryWaitModules;
     const initial = createGalleryState("ready");
     const entryA = { ...initial.resources.entry, deltaUrl: "/synthetic-delta-a" };
     const entryB = {
@@ -30,7 +30,6 @@ async function startRecovery(page, failure = null) {
       entryId: "synthetic-entry-b",
       sceneUrl: "/synthetic-scene-b",
       deltaUrl: "/synthetic-delta-b",
-      poseUrl: "/synthetic-pose-b",
       historyUrl: "/synthetic-history-b",
       plansUrl: "/synthetic-plans-b",
       areasUrl: "/synthetic-areas-b",
@@ -50,8 +49,6 @@ async function startRecovery(page, failure = null) {
       deltaReads: { a: 0, b: 0 },
       deltaAborts: { a: 0, b: 0 },
       catalogReads: 0,
-      poseReads: 0,
-      mismatchNextPose: false,
       cooldownTimers: 0,
       cooldownDelays: [],
       sceneFailuresRemaining: failure === "scene" ? 1 : 0,
@@ -82,6 +79,7 @@ async function startRecovery(page, failure = null) {
         history: { status: "ready", value: savedHistory, problem: null },
       },
     });
+    const connection = workspacePoseConnection();
     const effects = new EffectController(store, {
       catalog: async (signal) => {
         probe.catalogReads += 1;
@@ -108,14 +106,6 @@ async function startRecovery(page, failure = null) {
           throw new Error("synthetic terminal scene failure");
         }
         return { scene: initial.resources.scene.value, revision, floorCoherent: true };
-      },
-      pose: async () => {
-        probe.poseReads += 1;
-        if (probe.mismatchNextPose) {
-          probe.mismatchNextPose = false;
-          return { ...initial.resources.pose.value, mapSessionKey: "c".repeat(64) };
-        }
-        return initial.resources.pose.value;
       },
       history: async () => savedHistory,
       plans: async () => initial.resources.plans.value,
@@ -152,7 +142,7 @@ async function startRecovery(page, failure = null) {
         });
       },
       dispose() {},
-    }, null, false);
+    }, connection, true);
     const projection = {
       host: initial.host,
       activity: initial.activity,
@@ -169,7 +159,8 @@ async function startRecovery(page, failure = null) {
     };
     effects.sync(projection);
     void effects.refreshCatalog(true);
-    window.__deltaRecoveryWaitRun = { effects, store, projection, entryA, entryB };
+    window.__deltaRecoveryWaitRun = { effects, store, projection, entryA, entryB, connection,
+      position: initial.resources.pose.value.position };
   }, failure);
   if (failure === "queued-catalog") {
     await expect.poll(() => page.evaluate(() => typeof window.__deltaRecoveryWait.failInitialDelta)).toBe("function");
@@ -340,35 +331,34 @@ test("@safety a pose mismatch during replacement delta recovery releases the wai
   await loadRecoveryHarness(page);
   await startRecovery(page);
 
-  const poseReadsBeforeMismatch = await page.evaluate(() => window.__deltaRecoveryWait.poseReads);
-  await page.evaluate(() => {
-    const run = window.__deltaRecoveryWaitRun;
-    window.__deltaRecoveryWait.mismatchNextPose = true;
-    void run.effects.refreshPose();
-  });
+  // The workspace subscription opens after the map is drawn.
+  await page.clock.runFor(100);
+  const pushPose = (sessionKey) => page.evaluate((key) => {
+    const { connection, position } = window.__deltaRecoveryWaitRun;
+    connection.push({ position, map_session_key: key });
+  }, sessionKey);
+  await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWaitRun.connection.subscribed())).toBe(true);
+  await pushPose("c".repeat(64));
   await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWait.deltaAborts.a)).toBe(1);
   const invalidated = await page.evaluate(() => ({
     sceneReads: { ...window.__deltaRecoveryWait.sceneReads },
     deltaReads: { ...window.__deltaRecoveryWait.deltaReads },
-    poseReads: window.__deltaRecoveryWait.poseReads,
   }));
   expect(invalidated.sceneReads.a).toBe(2);
   expect(invalidated.deltaReads.a).toBe(2);
-  expect(invalidated.poseReads).toBe(poseReadsBeforeMismatch + 1);
   await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWait.cooldownTimers)).toBe(1);
 
+  // The robot's next position is on the admitted map again; the retry admits it.
+  await pushPose(await page.evaluate(() => window.__deltaRecoveryWaitRun.entryA.mapSessionKey));
   await page.clock.fastForward(5_000);
   await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWait.deltaReads.a)).toBe(3);
   const retried = await page.evaluate(() => ({
     sceneReads: { ...window.__deltaRecoveryWait.sceneReads },
-    deltaReads: { ...window.__deltaRecoveryWait.deltaReads },
     deltaAborts: { ...window.__deltaRecoveryWait.deltaAborts },
-    poseReads: window.__deltaRecoveryWait.poseReads,
     cooldownTimers: window.__deltaRecoveryWait.cooldownTimers,
     releaseAvailable: typeof window.__deltaRecoveryWait.releaseA === "function",
   }));
   expect(retried.sceneReads.a).toBe(3);
-  expect(retried.poseReads).toBe(invalidated.poseReads + 1);
   expect(retried.deltaAborts.a).toBe(1);
   expect(retried.cooldownTimers).toBe(1);
   expect(retried.releaseAvailable).toBe(true);

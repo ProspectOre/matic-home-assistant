@@ -648,7 +648,6 @@ test("Try again on a limited map rereads the catalog once and is disabled meanwh
     entry_id: "synthetic-entry",
     scene_url: "/api/matic_robot/slam_scene/synthetic",
     delta_url: null,
-    pose_url: "/api/matic_robot/slam_pose/synthetic",
     history_url: "/api/matic_robot/slam_history/synthetic",
     areas_url: "/api/matic_robot/areas/synthetic",
     plans_url: "/api/matic_robot/plans/synthetic",

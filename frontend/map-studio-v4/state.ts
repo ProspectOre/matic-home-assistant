@@ -1053,7 +1053,7 @@ export const canShowExactPose = (state: WorkspaceState): boolean =>
 export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride"): boolean => {
   const pose = state.resources.pose.value;
   return state.pageActive && !forcesTop(state) && canShowExactPose(state)
-    && state.resources.scene.value?.source === "live" && pose?.freshness === "live"
+    && state.resources.scene.value?.source === "live" && pose !== null
     && pose.position !== null && pose.floorCoherent && pose.mapSessionKey !== null
     && pose.mapSessionKey === state.resources.entry?.mapSessionKey
     && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading)));

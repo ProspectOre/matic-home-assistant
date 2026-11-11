@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from time import time
 from typing import TYPE_CHECKING
 
-from .client.floor_plan import resolve_robot_map_position
+from .client.floor_plan import (
+    pose_observation_age_seconds,
+    resolve_robot_map_position,
+    robot_location_source,
+)
 from .http import (
     FLOOR_LAYERS_API_URL,
     WIFI_HEATMAP_API_URL,
@@ -13,11 +18,9 @@ from .http import (
     delta_api_url,
     history_api_url,
     plans_api_url,
-    pose_api_url,
     scene_api_url,
 )
 from .run_history import RunTrails
-from .slam_map_store import SlamMapIdentity
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
@@ -45,44 +48,73 @@ def _map_session_key(runtime: MaticRuntimeData) -> str | None:
     ).hexdigest()
 
 
-def observe_run_trail(
-    runtime: MaticRuntimeData, position: tuple[float, float] | None
-) -> None:
-    """Give the trail recorder one verified position, or only the run state."""
+def observe_trail(runtime: MaticRuntimeData) -> None:
+    """Record the newest pose on the current map, and close a finished run."""
     trails: RunTrails | None = getattr(runtime, "run_trails", None)
     if trails is None:
         return
     data = runtime.coordinator.data
+    floor_plan = (
+        data.floor_plan
+        if runtime.slam_map.floor_plan_is_current(data.floor_plan)
+        else None
+    )
+    position = resolve_robot_map_position(
+        floor_plan, runtime.session.pose_on(floor_plan), None
+    )
     trails.observe(
         run_id=runtime.cleaning_plans.ledger.active_run_id(
             str(data.info.serial_number)
         ),
         native_active=data.telemetry.active_cleaning_session,
         map_key=_map_session_key(runtime),
-        point=position,
+        point=position[:2] if position is not None else None,
     )
 
 
-def observe_coordinator_trail(runtime: MaticRuntimeData) -> None:
-    """Record the coordinator's own pose read, which also closes finished runs."""
-    data = runtime.coordinator.data
-    position = (
-        resolve_robot_map_position(data.floor_plan, data.pose, None)
-        if runtime.slam_map.floor_plan_is_current(data.floor_plan)
-        else None
-    )
-    observe_run_trail(runtime, position[:2] if position is not None else None)
-
-
-def _pose_frame_key(
+def pose_projection(
+    entry_id: str,
     runtime: MaticRuntimeData,
-) -> tuple[SlamMapIdentity | None, str | None, int]:
-    """Bind pose reads to a coordinate frame and its revocation epoch."""
-    return (
-        runtime.slam_map.mission_identity,
-        _map_session_key(runtime),
-        getattr(runtime.coordinator, "floor_read_generation", 0),
-    )
+    scene_view: MaticSlamSceneView | None = None,
+) -> dict[str, object]:
+    """Project the robot's position on the current map, as the workspace pushes it.
+
+    The scene revision and epoch let the browser tell a pose that predates the
+    map it holds from one that revokes it.
+    """
+    data = runtime.coordinator.data
+    coherent = runtime.slam_map.floor_plan_is_current(data.floor_plan)
+    floor_plan = data.floor_plan if coherent else None
+    pose = runtime.session.pose_on(floor_plan)
+    now = time()
+    position = resolve_robot_map_position(floor_plan, pose, None, now=now)
+    age = pose_observation_age_seconds(pose, now=now)
+    return {
+        "position": list(position[:2]) if position is not None else None,
+        "heading": (
+            round(pose.heading, 4)
+            if position is not None and pose is not None and pose.heading is not None
+            else None
+        ),
+        "source": (
+            robot_location_source(
+                floor_plan, pose, data.operational.current_area, now=now
+            )
+            if coherent
+            else "unavailable"
+        ),
+        "scene_revision": (
+            scene_view.current_revision(entry_id, runtime)
+            if scene_view is not None
+            else None
+        ),
+        "scene_epoch": (
+            scene_view.scene_epoch(entry_id) if scene_view is not None else None
+        ),
+        "map_floor_coherent": coherent,
+        "map_session_key": _map_session_key(runtime) if coherent else None,
+        "pose_age_seconds": round(age, 3) if age is not None else None,
+    }
 
 
 def catalog_entry_projection(
@@ -140,7 +172,6 @@ def catalog_entry_projection(
         "live_workspace_transport_enabled": True,
         "scene_url": scene_api_url(entry_id),
         "delta_url": delta_api_url(entry_id),
-        "pose_url": pose_api_url(entry_id),
         "history_url": history_api_url(entry_id),
         "areas_url": areas_api_url(entry_id),
         "plans_url": plans_api_url(entry_id),

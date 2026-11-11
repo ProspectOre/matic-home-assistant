@@ -28,8 +28,8 @@ from .http import (
 )
 
 if TYPE_CHECKING:
-    from .client.api import MaticHermesClient
     from .coordinator import MaticCoordinator
+    from .session import RobotSession
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -202,7 +202,7 @@ class WifiSurveyStore:
         ]
 
     async def async_collect(
-        self, client: MaticHermesClient, coordinator: MaticCoordinator
+        self, session: RobotSession, coordinator: MaticCoordinator
     ) -> None:
         """Scan at a fixed pace while the survey is on and the robot is out."""
         loop = asyncio.get_running_loop()
@@ -212,10 +212,10 @@ class WifiSurveyStore:
             deadline = max(deadline + SAMPLE_INTERVAL_SECONDS, loop.time())
             await asyncio.sleep(deadline - loop.time())
             if self._enabled and not self._closed:
-                await self._async_sample(client, coordinator)
+                await self._async_sample(session, coordinator)
 
     async def _async_sample(
-        self, client: MaticHermesClient, coordinator: MaticCoordinator
+        self, session: RobotSession, coordinator: MaticCoordinator
     ) -> None:
         state = coordinator.data
         floor_plan = state.floor_plan if state is not None else None
@@ -229,15 +229,15 @@ class WifiSurveyStore:
         mission_id = floor_plan.mission_id
         frame = survey_frame(floor_plan.partition_id_wire)
         epoch = self._epoch
+        before = session.pose_on(floor_plan)
+        if not pose_observation_is_current(before, floor_plan, now=time()):
+            return
         try:
-            before = await client.async_get_pose(expected_mission_id=mission_id)
-            if not pose_observation_is_current(before, floor_plan, now=time()):
-                return
-            dbm = await client.async_scan_wifi_signal()
-            after = await client.async_get_pose(expected_mission_id=mission_id)
+            dbm = await session.client.async_scan_wifi_signal()
         except MaticError as err:
             _LOGGER.debug("Wi-Fi survey sample skipped: %s", err)
             return
+        after = session.pose_on(floor_plan)
         if (
             dbm is None
             or epoch != self._epoch

@@ -30,7 +30,7 @@ const CAMERA_FRAME_MS = 8;
 async function loadRenderer(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { PoseMotion } from "./frontend/map-studio-v4/pose-motion"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -89,7 +89,7 @@ async function loadRenderer(page) {
     }
     count(CanvasRenderingContext2D.prototype, "measureText", "textMeasures");
 
-    const { RendererController, createGalleryState } = await import("/frame-cost.js");
+    const { RendererController, PoseMotion, createGalleryState } = await import("/frame-cost.js");
     const root = document.createElement("div");
     Object.assign(root.style, { position: "relative", width: "800px", height: "600px" });
     document.body.append(root);
@@ -152,7 +152,7 @@ async function loadRenderer(page) {
       }
       return measured;
     };
-    window.__frameCost = { renderer, state, settle, measure, frame, statuses, frames };
+    window.__frameCost = { renderer, state, settle, measure, frame, statuses, frames, PoseMotion };
   });
 }
 
@@ -220,4 +220,32 @@ test("frames that only advance a scene upload leave the 2D canvas alone", async 
   // The 2D canvas is redrawn for the new state and for the published scene.
   expect(result.upload.reduce((sum, frame) => sum + frame.overlayRedraws, 0)).toBeLessThanOrEqual(2);
   for (const frame of result.upload) expect(frame.layoutReads).toBe(0);
+});
+
+test("a moving robot redraws only the 2D canvas, and a robot that stops draws nothing", async ({ page }) => {
+  await loadRenderer(page);
+  const result = await page.evaluate(async () => {
+    const { renderer, state, settle, measure, PoseMotion } = window.__frameCost;
+    renderer.setState(state);
+    const motion = new PoseMotion();
+    renderer.setMotion(motion);
+    const pose = state.resources.pose.value;
+    const at = (x) => ({ ...pose, position: [x, pose.position[1]] });
+    motion.push(at(pose.position[0]));
+    await settle();
+    // A sample every sixth frame, 5 cm apart: the robot moves on every frame.
+    const moving = await measure(30, (index) => {
+      if (index % 6 === 0) motion.push(at(pose.position[0] + 0.05 * (index / 6 + 1)));
+    });
+    await settle();
+    const last = motion.at(performance.now());
+    const still = await measure(10, () => motion.push({ ...last, ageSeconds: 0.1 }));
+    return { moving, still };
+  });
+  expect(result.moving.length).toBeGreaterThanOrEqual(25);
+  test.info().annotations.push({ type: "motion frame counts", description: JSON.stringify(result.moving[0]) });
+  for (const frame of result.moving) {
+    expect(frame).toMatchObject({ glCalls: 0, overlayRedraws: 1, layoutReads: 0, typedArrays: 0, bufferUploads: 0 });
+  }
+  expect(result.still, "samples where the robot already is draw nothing").toEqual([]);
 });

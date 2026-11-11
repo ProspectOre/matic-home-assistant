@@ -7,7 +7,7 @@
  * synthetic connections and cannot acquire a second connection lifecycle.
  */
 
-import { parseCatalog, type MapEntry } from "./backend-contracts";
+import { parseCatalog, parsePose, type MapEntry, type PoseModel } from "./backend-contracts";
 import { isAccessDeniedError } from "./backend";
 import {
   BoundedRequestMetric,
@@ -78,6 +78,7 @@ export type WorkspaceInvalidationEnvelope =
 export type WorkspaceTransportEvent =
   | { readonly type: "snapshot"; readonly snapshot: WorkspaceSnapshot }
   | { readonly type: "invalidation"; readonly invalidation: WorkspaceInvalidation }
+  | { readonly type: "pose"; readonly pose: PoseModel }
   | { readonly type: "resync"; readonly reason: WorkspaceResyncReason; readonly accessDenied?: boolean };
 
 export type WorkspaceResyncReason =
@@ -396,6 +397,17 @@ export class WorkspaceTransport {
       }
       return;
     }
+    if (kind === "pose") {
+      // Poses are not sequenced: a malformed one is dropped, not resynced.
+      let pose: PoseModel;
+      try {
+        pose = parsePose(envelope?.pose);
+      } catch {
+        return;
+      }
+      this.#options.onEvent({ type: "pose", pose });
+      return;
+    }
     const parsed = kind === "snapshot"
       ? parseSnapshot(envelope?.snapshot ?? envelope, this.#options.entryId)
       : kind === "invalidate" ? parseInvalidation(envelope?.invalidation ?? envelope) : null;
@@ -699,7 +711,7 @@ export class WorkspaceTransport {
     const task = (async () => {
       const unsubscribe = await this.#connection.subscribeMessage<unknown>(
         (message) => { if (!retired) this.#onMessage(message); },
-        { type: "matic_robot/workspace_subscribe", version: WORKSPACE_PROTOCOL_VERSION, entry_id: this.#options.entryId },
+        { type: "matic_robot/workspace_subscribe", version: WORKSPACE_PROTOCOL_VERSION, entry_id: this.#options.entryId, poses: true },
       );
       if (this.#disposed || retired) unsubscribe();
       else this.#unsubscribe = unsubscribe;

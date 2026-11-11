@@ -18,6 +18,7 @@ import { HassAdapter } from "./hass-adapter";
 import { MaticBackend } from "./backend";
 import { EffectController } from "./effects";
 import { LayerHistoryController } from "./layer-history";
+import { PoseMotion, POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
 
@@ -71,6 +72,8 @@ export class MaticMapPanelV4 extends LitElement {
   #backend: MaticBackend | null = null;
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
+  // Outlives the controllers, so the map canvas keeps it across a reconnect.
+  readonly #poseMotion = new PoseMotion();
   #stopViewport: (() => void) | null = null;
   // HA's layout viewport can extend below Safari's visible viewport. Cap only
   // this panel, preserving smaller embeds and allowing it to grow again.
@@ -149,6 +152,10 @@ export class MaticMapPanelV4 extends LitElement {
       for (const type of ["resize", "scroll"]) target?.addEventListener(type, this.#fitViewport, options);
     }
     document.addEventListener("fullscreenchange", this.#fitViewport, options);
+    this.addEventListener(POSE_MOTION_EVENT, (event) => {
+      event.stopPropagation();
+      (event as PoseMotionRequest).detail(this.#poseMotion);
+    }, { signal: events.signal });
     observer.observe(this);
     this.#fitViewport();
     this.#requestCommonTranslations();
@@ -189,7 +196,7 @@ export class MaticMapPanelV4 extends LitElement {
     // host from before the detach.
     this.#projection = this.#project();
     this.#backend = new MaticBackend(() => this.hass);
-    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null);
+    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null, undefined, this.#poseMotion);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
     if (this.#projection) {
@@ -214,6 +221,7 @@ export class MaticMapPanelV4 extends LitElement {
     this.#effects?.dispose();
     this.#effects = null;
     this.#backend = null;
+    this.#poseMotion.clear();
   }
 
   // The colour scheme willUpdate picks; the shell and map re-read their
