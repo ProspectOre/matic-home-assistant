@@ -22,8 +22,14 @@ stable release on `main`.
 
 `uv run scripts/check.py` runs the formatter, linter, type checker, layer and
 size rules, privacy scan, and the tests whose imports lead to a changed file.
-CI runs the same command with `--all`, which runs every test and requires 100%
-line coverage. `uv run ruff format .` fixes formatting.
+`uv run ruff format .` fixes formatting.
+
+CI runs the same command with `--all`, which runs every test. On a pull request
+it then requires a test to run every line and take every branch that your
+change adds to `custom_components/matic_robot`, and names each one that none
+does. Code you did not change has no minimum. `uv run scripts/check.py --all`
+gives the same answer before you push. Mark a line no test can reach with
+`# pragma: no cover` and say why in the same comment.
 
 The tests read Matic Map, the sidebar panel, which is built from
 `frontend/map-studio-v4` and not committed. `scripts/check.py` builds it before
