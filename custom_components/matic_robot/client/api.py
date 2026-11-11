@@ -110,16 +110,6 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """
         await self._connection.async_channel()
 
-    async def async_keep_subscribed(
-        self, consume: Callable[[], Awaitable[object]]
-    ) -> None:
-        """Run ``consume`` on every connection until the client shuts down.
-
-        ``consume`` reads one subscription and returns or raises a
-        ``MaticError`` when it ends. The supervisor paces the next run.
-        """
-        await self._connection.async_keep_subscribed(consume)
-
     @property
     def connected(self) -> bool:
         """Whether the connection to the robot is open."""
@@ -127,7 +117,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     @property
     def connection_error(self) -> Exception | None:
-        """Why the last dial failed; None while connected or about to redial."""
+        """Why requests fail: the last dial's failure or a refused credential."""
         return self._connection.supervisor.error
 
     def add_connection_listener(
@@ -148,7 +138,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         pacing, until the client shuts down.
         """
         await async_watch(
-            self.async_keep_subscribed,
+            self._connection.async_keep_subscribed,
             lambda: self.async_subscribe_collection_entries(collection_name),
             on_entry,
             on_status,
@@ -161,7 +151,10 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     ) -> None:
         """Give ``on_state`` every snapshot of ``kabuki_state``, like a watch."""
         await async_watch(
-            self.async_keep_subscribed, self.async_subscribe_state, on_state, on_status
+            self._connection.async_keep_subscribed,
+            self.async_subscribe_state,
+            on_state,
+            on_status,
         )
 
     async def async_shutdown(self) -> None:

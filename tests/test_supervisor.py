@@ -8,7 +8,10 @@ from collections.abc import AsyncIterator, Callable
 import pytest
 
 from custom_components.matic_robot.client import supervisor as supervisor_module
-from custom_components.matic_robot.client.exceptions import TransportError
+from custom_components.matic_robot.client.exceptions import (
+    AuthenticationRequiredError,
+    TransportError,
+)
 from custom_components.matic_robot.client.supervisor import (
     KEEPALIVE_SECONDS,
     Backoff,
@@ -216,6 +219,31 @@ async def test_kept_subscription_waits_for_the_redial_without_hurrying_it(
         await supervisor.async_close()
         await watcher
     assert len(dialer.keepalives) == 2
+
+
+async def test_a_subscription_refused_for_its_credential_is_the_connection_error(
+    supervise: Supervise,
+) -> None:
+    supervisor, _dialer = supervise(FakeChannel())
+    refused = AuthenticationRequiredError("expired")
+    seen: list[tuple[bool, Exception | None]] = []
+    supervisor.add_listener(
+        lambda: seen.append((supervisor.connected, supervisor.error))
+    )
+    told = asyncio.Event()
+    supervisor.add_listener(lambda: told.set() if supervisor.error else None)
+
+    async def consume() -> None:
+        raise refused
+
+    watcher = asyncio.create_task(supervisor.async_keep_subscribed(consume))
+    async with asyncio.timeout(1):
+        await told.wait()
+        await supervisor.async_close()
+        await watcher
+
+    # The connection stays open: only the credential is refused.
+    assert seen[:2] == [(True, None), (True, refused)]
 
 
 async def test_close_ends_a_kept_subscription_that_is_pausing(

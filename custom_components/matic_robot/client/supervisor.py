@@ -10,7 +10,7 @@ from random import uniform
 from time import monotonic
 from typing import Literal
 
-from .exceptions import MaticError, TransportError
+from .exceptions import AuthenticationRequiredError, MaticError, TransportError
 from .transport import PinnedChannel
 
 _LOGGER = logging.getLogger(__name__)
@@ -102,7 +102,8 @@ class ConnectionSupervisor:
         self._keepalive_seconds = KEEPALIVE_SECONDS
         self._task: asyncio.Task[None] | None = None
         self._channel: PinnedChannel | None = None
-        # Why requests fail now: the last dial's error, or the close.
+        # Why requests fail now: the last dial's error, a subscription's
+        # refused credential, or the close.
         self._error: Exception | None = None
         self._closed = asyncio.Event()
         self._changed = asyncio.Event()
@@ -116,7 +117,7 @@ class ConnectionSupervisor:
 
     @property
     def error(self) -> Exception | None:
-        """Why the last dial failed; None while connected or about to redial."""
+        """Why requests fail: the last dial's failure or a refused credential."""
         return self._error
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -155,6 +156,9 @@ class ConnectionSupervisor:
                 await consume()
             except MaticError as err:
                 _LOGGER.debug("Hermes subscription interrupted: %s", err)
+                if isinstance(err, AuthenticationRequiredError):
+                    # Every request on this connection carries that credential.
+                    self._publish(self._channel, err)
             # A closed channel can turn a task's cancellation into a transport
             # error, so the close must end this wait and the loop.
             await _async_wait(self._closed, backoff.delay(monotonic() - started))
