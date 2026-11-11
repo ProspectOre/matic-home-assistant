@@ -1,0 +1,297 @@
+{
+  "firmware": "181.10",
+  "origin": "synthetic",
+  "moment": "Docked after a vacuum and mop of two rooms that ended on its own.",
+  "endpoints": {
+    "kabuki_state": [
+      [
+        "",
+        "0a016a1a0f53696d756c61746564204d6174696322063138312e31302a06737461626c654d85eb513f72055374756479"
+      ]
+    ],
+    "coverage_plan": [
+      [
+        "",
+        "52d201080712cd010a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a1ab4010a590a1612141212091141111111111111111111111111111181123f4a074b69746368656e52340a3212300a0a0d0000000015000000000a0a0d0000004015000000000a0a0d00000040150000c03f0a0a0d00000000150000c03f0a570a1612141212092242222222222222112222222222222282123d4a05537475647952340a3212300a0a0d0000004015000000000a0a0d0000804015000000000a0a0d00008040150000c03f0a0a0d00000040150000c03f"
+      ]
+    ],
+    "displayed_mission": [
+      [
+        "63757272656e74",
+        "180122020a002a1422120a05150700000012091207466c6f6f72203732140a120a05150700000012091207466c6f6f722037"
+      ]
+    ],
+    "latest_pose": [
+      [
+        "1507000000",
+        "12500a4e0d0000803e0d0000803e0d000000001a2c122a0d1ac167bb0df3678d3b0deece1abc0dcefb7f3f120f0d1ac167bb15f3678d3b1deece1abc1dcefb7f3f220f0d0000803e150000803e1d000000002a0a0a0808dccce8cf061000"
+      ]
+    ],
+    "active_session_key": [
+      [
+        "",
+        "00000000000000000000000000000000"
+      ]
+    ],
+    "coverage_session_history": [
+      [
+        "12141212095545555555555555115555555555555585",
+        "12dd110ada110a020a0012d3110ad011125c32220a1612141212094349306e703c86de1101fab401879a6d8e1a0808011000200028003a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a161214121209d7446693742c991111a9b440f935a206991a0808011000200028013a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a161214121209304e3de519b167be11055918684f7dab8e1a0808011000200028023a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a16121412120909491f7e67ebccf0111cbc8550abe72c921a0808011000200028033a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a1612141212099c40fe3c3f533bdb11292747125013dda61a0808011001200028003a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a16121412120970426beb0250186c112e619793ec9e45a51a0808011001200028013a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a161214121209e24554d6c4ee0f211177bd01832ff6eebc1a0808011001200028023a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a1612141212099a469ef98268675311ede4d72c4e3f7c8c1a0808011001200028033a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a161214121209b04a2691f3e647e31141fec0e15ab2c3831a0808011000200128003a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a1612141212097f4e2240aa5a0dba11d744e6c5a865749c1a0808011000200128013a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a161214121209e24d643b03dc6e11114378aeaada4a03b31a0808011000200128023a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a161214121209fe4567ccc01dd904113342187303047ea31a0808011000200128033a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212091141111111111111111111111111111181125c32220a161214121209c14fe76e10fbe80f11734c83eff610579d1a0808011000200028003a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a161214121209e84d28013a26c87d111ad099f69290989a1a0808011000200028013a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a1612141212093840a339cf5bfd2211b4ecae248c043fa01a0808011000200028023a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a161214121209a940ce589cdf97b511afe06d1e190dcd8a1a0808011000200028033a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a161214121209de4deb0fe9f7b4a011918fea9e7a3a78881a0808011001200028003a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a1612141212090d4769ff6801cd6e113a846e9fe9867eb71a0808011001200028013a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a1612141212097f43bbe5fba8465111284c492ba8ef7ba41a0808011001200028023a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a161214121209014f2ba8a713cd0011e5c013d11a2df08f1a0808011001200028033a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a161214121209ff44a03ab77b4e3a118223e7f21a1a79871a0808011000200128003a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a161214121209464618de49f807cd11e94b0a2ddfbb42861a0808011000200128013a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a161214121209c942dd29561cd5eb1131680d9a204b3cbe1a0808011000200128023a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a1612141212092242222222222222112222222222222282125c32220a1612141212095f4dd6ee17ce4b15111841e068bb7cf4a41a0808011000200128033a360a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a12020a001a181a16121412120922422222222222221122222222222222822ab8011a0a0a080880c1e8cf061000220a0a0808b0cae8cf0610002800324a0a240a101111111111114111811111111111111112101a074b69746368656e220308ac0228020a220a1022222222222242228222222222222222120e1a055374756479220308ac0228023a4a0a240a101111111111114111811111111111111112101a074b69746368656e220308ac0228020a220a1022222222222242228222222222222222120e1a055374756479220308ac02280252042a020a00"
+      ]
+    ],
+    "schedule_events": [
+      [
+        "5765656b64617920636c65616e",
+        "0a280a0a080110011801200128011a1a089c0422151213416d65726963612f4c6f735f416e67656c6573120d5765656b64617920636c65616e42003a2412223a181a161a14121209114111111111111111111111111111118132061a0408012000"
+      ]
+    ],
+    "coverage_time": [
+      [
+        "",
+        "1a0308c833"
+      ]
+    ],
+    "current_version": [
+      [
+        "",
+        "0a063138312e31301206737461626c651819"
+      ]
+    ],
+    "petwaste_enabled_state": [
+      [
+        "",
+        "0801"
+      ]
+    ],
+    "child_lock_enabled_state": [
+      [
+        "",
+        "00000000000000000000000000000000"
+      ]
+    ],
+    "update_config": [
+      [
+        "",
+        "0a06737461626c65"
+      ]
+    ],
+    "update_state": [
+      [
+        "",
+        "0a00"
+      ]
+    ],
+    "voice_enabled_state": [
+      [
+        "",
+        "0801"
+      ]
+    ],
+    "matter_pairing_state": [
+      [
+        "",
+        "00000000000000000000000000000000"
+      ]
+    ],
+    "deep_mop_override_setting_state": [
+      [
+        "",
+        "0a00"
+      ]
+    ],
+    "water_flow_override_state": [
+      [
+        "",
+        "0a050d0000803f"
+      ]
+    ],
+    "time_zone": [
+      [
+        "",
+        "0a151213416d65726963612f4c6f735f416e67656c6573"
+      ]
+    ],
+    "wifi_status": [
+      [
+        "",
+        "0803220854657374204c414e3a120a100a0854657374204c414e180130774001"
+      ]
+    ],
+    "user_tunnel_ssh_permission": [
+      [
+        "",
+        "00000000000000000000000000000000"
+      ]
+    ],
+    "uploader_config_state": [
+      [
+        "",
+        "00000000000000000000000000000000"
+      ]
+    ]
+  },
+  "expect": {
+    "state": {
+      "activity": "docked",
+      "battery_percentage": 82,
+      "state_codes": [
+        106
+      ],
+      "error_codes": [],
+      "software_version": "181.10",
+      "release_channel": "stable",
+      "previous_area": "Study",
+      "current_area": null
+    },
+    "floor_plan": {
+      "mission_id": 7,
+      "rooms": [
+        {
+          "name": "Kitchen",
+          "protocol_id": "11111111-1111-4111-8111-111111111111",
+          "boundary": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              2.0,
+              0.0
+            ],
+            [
+              2.0,
+              1.5
+            ],
+            [
+              0.0,
+              1.5
+            ]
+          ]
+        },
+        {
+          "name": "Study",
+          "protocol_id": "22222222-2222-4222-8222-222222222222",
+          "boundary": [
+            [
+              2.0,
+              0.0
+            ],
+            [
+              4.0,
+              0.0
+            ],
+            [
+              4.0,
+              1.5
+            ],
+            [
+              2.0,
+              1.5
+            ]
+          ]
+        }
+      ]
+    },
+    "pose": {
+      "x": 0.25,
+      "y": 0.25,
+      "mission_id": 7,
+      "observed_at": 1778001500.0,
+      "heading": -0.018929
+    },
+    "session_identity": "",
+    "session_records": [
+      {
+        "session": {
+          "started_at": "2026-05-05T16:53:20+00:00",
+          "ended_at": "2026-05-05T17:13:20+00:00",
+          "duration_seconds": 1200,
+          "rooms": [
+            "Kitchen",
+            "Study"
+          ],
+          "completed": true,
+          "vacuum_completed_rooms": [
+            "Kitchen",
+            "Study"
+          ],
+          "mop_completed_rooms": [
+            "Kitchen",
+            "Study"
+          ],
+          "stop_reason": "finished",
+          "mode_results": [
+            {
+              "room": "Kitchen",
+              "cleaning_mode": "vacuum",
+              "status": "completed",
+              "duration_seconds": 300
+            },
+            {
+              "room": "Study",
+              "cleaning_mode": "vacuum",
+              "status": "completed",
+              "duration_seconds": 300
+            },
+            {
+              "room": "Kitchen",
+              "cleaning_mode": "mop",
+              "status": "completed",
+              "duration_seconds": 300
+            },
+            {
+              "room": "Study",
+              "cleaning_mode": "mop",
+              "status": "completed",
+              "duration_seconds": 300
+            }
+          ]
+        }
+      }
+    ],
+    "telemetry": {
+      "software_version": "181.10",
+      "software_profile": "stable",
+      "protocol_version": 25,
+      "update_channel": "stable",
+      "update_state": "idle",
+      "wifi_state": "connected",
+      "wifi_signal_dbm": -60,
+      "timezone": "America/Los_Angeles",
+      "child_lock_enabled": false,
+      "pet_waste_enabled": true,
+      "voice_enabled": true,
+      "matter_pairing_enabled": false,
+      "deep_mop_enabled": false,
+      "water_flow_factor": 1.0,
+      "ssh_tunnel_permission": false,
+      "uploader_opt_in": false,
+      "coverage_time_seconds": 6600,
+      "local_cleaning_sessions": 1,
+      "schedules": [
+        {
+          "name": "Weekday clean",
+          "weekdays": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday"
+          ],
+          "minute_of_day": 540,
+          "timezone": "America/Los_Angeles",
+          "ordered": false,
+          "enabled": true,
+          "room_ids": [
+            "11111111-1111-4111-8111-111111111111"
+          ],
+          "cleaning_mode": "vacuum"
+        }
+      ]
+    }
+  },
+  "entities": {
+    "vacuum.simulated_matic": "docked",
+    "sensor.simulated_matic_battery": "82"
+  }
+}

@@ -21,6 +21,7 @@ import asyncio
 import datetime
 import hashlib
 import ssl
+import struct
 import time
 from collections import Counter, deque
 from collections.abc import Iterable
@@ -64,6 +65,7 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
     Value,
 )
 
+from .sim_faults import UNDECODABLE, Fault, Faults, Link
 from .sim_mission import (
     IDLE_SESSION_KEY,
     CoverageSession,
@@ -266,7 +268,7 @@ class SimulatedRobot:
         self.errors: tuple[int, ...] = ()
         self.current_area: str | None = None
         self.pairing_open = False
-        self.offline = False
+        self.faults = Faults(self._bump)
         self.credentials: set[str] = set()
         self.commands: list[ReceivedCommand] = []
         self.reads: Counter[str] = Counter()
@@ -477,6 +479,12 @@ class SimulatedRobot:
         self.battery = fraction
         self._refresh_state()
 
+    def replay(self, endpoints: dict[str, list[tuple[bytes, bytes]]]) -> None:
+        """Serve recorded entries; later scripted steps replace what they touch."""
+        for name, entries in endpoints.items():
+            self._properties.pop(name, None)
+            self.set_collection(name, entries)
+
     def set_property(self, name: str, value: bytes) -> None:
         """Serve or replace a Hermes property value."""
         self._properties[name] = value
@@ -524,7 +532,6 @@ class SimulatedRobot:
             return HermesCredential.from_message(self.issue_credential(user_id))
         finally:
             self.pairing_open = False
-        self.offline = False
 
     def authorized(self, metadata: Any) -> bool:
         return metadata.get(AUTHORIZATION_KEY) in self.credentials
@@ -728,6 +735,13 @@ def _now() -> int:
     return time.time_ns()
 
 
+async def _send_frame(stream: Stream[Any, Any], body: bytes) -> None:
+    """Send ``body`` as one gRPC message, bypassing the response encoder."""
+    if not stream._send_initial_metadata_done:
+        await stream.send_initial_metadata()
+    await stream._stream.send_data(struct.pack(">?I", False, len(body)) + body)
+
+
 def _require_auth(robot: SimulatedRobot, stream: Stream[Any, Any]) -> None:
     if not robot.authorized(stream.metadata):
         raise GRPCError(Status.UNAUTHENTICATED, "missing or unknown credential")
@@ -742,9 +756,14 @@ class _Hermes(HermesBase):
         _require_auth(self._robot, stream)
         await stream.send_message(Unit())
 
+    async def _reset(self, stream: Stream[Any, Any], name: str, handled: int) -> bool:
+        """Reset the stream if a queued reset is due at ``handled`` messages."""
+        if not self._robot.faults.take(name, Fault.RESET, handled):
+            return False
+        await stream.cancel()
+        return True
+
     async def FetchCollection(self, stream: Stream[Any, CollectionResponse]) -> None:
-        if self._robot.offline:
-            raise GRPCError(Status.UNAVAILABLE, "robot is offline")
         _require_auth(self._robot, stream)
         request = await stream.recv_message()
         if request is None or not request.HasField("initial_request"):
@@ -755,19 +774,29 @@ class _Hermes(HermesBase):
             raise GRPCError(Status.UNIMPLEMENTED, f"{name} is not served")
         # A snapshot reader half-closes after its initial request; a tracked
         # subscriber keeps the stream open and acknowledges every sequence id.
+        faults = self._robot.faults
         tracking = True
-        seen = -1
+        sent = 0
         while True:
             seen = self._robot.version(name)
             for key, value in self._robot.entries(name) or ():
+                if await self._reset(stream, name, sent):
+                    return
+                await faults.pace(name)
                 sequence = self._robot.next_sequence()
-                await stream.send_message(
-                    CollectionResponse(
-                        key_bytes=key,
-                        value=Value(value_bytes=value),
-                        sequence_id=sequence,
+                if faults.take(name, Fault.FRAME, sent):
+                    await _send_frame(stream, UNDECODABLE)
+                else:
+                    if faults.take(name, Fault.VALUE, sent):
+                        value = UNDECODABLE
+                    await stream.send_message(
+                        CollectionResponse(
+                            key_bytes=key,
+                            value=Value(value_bytes=value),
+                            sequence_id=sequence,
+                        )
                     )
-                )
+                sent += 1
                 if not tracking:
                     continue
                 ack = await stream.recv_message()
@@ -778,7 +807,7 @@ class _Hermes(HermesBase):
                         Status.INVALID_ARGUMENT,
                         f"acknowledged {ack.sequence_id} instead of {sequence}",
                     )
-            if not tracking:
+            if not tracking or await self._reset(stream, name, sent):
                 return
             await self._robot.wait_for_change(name, seen)
 
@@ -786,13 +815,17 @@ class _Hermes(HermesBase):
         authorized = self._robot.authorized(stream.metadata)
         target = stream.metadata.get("hermes-target")
         async for request in stream:
+            name = request.channel_name
+            if await self._reset(stream, name, 0):
+                return
             self._robot.commands.append(
-                ReceivedCommand(
-                    request.channel_name, bytes(request.value), target, authorized
-                )
+                ReceivedCommand(name, bytes(request.value), target, authorized)
             )
             if authorized:
-                self._robot.apply_command(request.channel_name, bytes(request.value))
+                self._robot.apply_command(name, bytes(request.value))
+            if await self._reset(stream, name, 1):
+                return
+            await self._robot.faults.pace(name)
         if not authorized:
             raise GRPCError(Status.UNAUTHENTICATED, "missing or unknown credential")
         await stream.send_message(ChannelResponse())
@@ -841,15 +874,17 @@ class RunningSimulator:
     ca_path: Path
     host: str
     port: int
+    link: Link
     _server: Server = field(repr=False)
 
     async def close(self) -> None:
+        await self.link.close()
         self._server.close()
         await self._server.wait_closed()
 
 
 async def start_simulator(robot: SimulatedRobot, directory: Path) -> RunningSimulator:
-    """Serve ``robot`` over TLS on a free loopback port."""
+    """Serve ``robot`` over TLS behind a link relay on a free loopback port."""
     certificate = make_robot_certificate(
         hostname=robot.hostname, serial_number=robot.serial_number
     )
@@ -864,6 +899,9 @@ async def start_simulator(robot: SimulatedRobot, directory: Path) -> RunningSimu
     server = Server([_Hermes(robot), discovery, _Auth(robot)])
     await server.start("127.0.0.1", 0, ssl=context)
     sockets = server._server.sockets if server._server is not None else ()
-    port = int(sockets[0].getsockname()[1])
+    link = Link()
+    port = await link.start(int(sockets[0].getsockname()[1]))
     discovery.port = port
-    return RunningSimulator(robot, certificate, ca_path, "127.0.0.1", port, server)
+    return RunningSimulator(
+        robot, certificate, ca_path, "127.0.0.1", port, link, server
+    )

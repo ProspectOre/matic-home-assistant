@@ -63,6 +63,7 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
 | Home Assistant restart recovery | Durable checkpoint, matching floor/native mission, same `run_id`, and new observation session | Retain verified results; resume only with matching ownership |
 | External/OEM interruption | Native ownership change, `cause: unknown`, and `external_unknown` provenance | No completion credit and no guessed fault |
 | Timeout or robot error | `plan_finished: failed`, stable failure code, room failure event | No completion credit |
+| Start lost or not acknowledged | `plan_finished: failed`, at most one coverage START, and STOP only when the robot reports the session this run dispatched | No completion credit and no second START |
 | Rotation preview and execution | Same room order and selection reasons | Advance opportunity on a confirmed cleaning start; credit completion only after verification |
 | Activity churn or restart | Operational events remain visible; journal session/sequence boundaries are explicit | Never infer a cause from missing activity |
 
