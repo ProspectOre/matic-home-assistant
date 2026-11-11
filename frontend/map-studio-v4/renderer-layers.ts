@@ -6,7 +6,7 @@ import { clamp } from "./shared-primitives";
 import { canShowExactPose } from "./state";
 
 export { OverlayGeometry } from "./overlay-geometry";
-export { wifiLegend } from "./wifi-legend";
+export { layerToggles, mapLegends } from "./map-layers";
 
 export interface MapPoint {
   readonly x: number;

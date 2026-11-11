@@ -1,5 +1,6 @@
 import { normalizeCamera } from "./camera-preferences";
-import type { CameraPreference, MapAppearance, MapQuality, MapView } from "./contracts";
+import type { CameraPreference, LayerChoice, MapAppearance, MapQuality, MapView, WorkspaceState } from "./contracts";
+import { parseLayerChoices } from "./layer-choices";
 
 export type { CameraPreference, MapAppearance, MapQuality, MapView } from "./contracts";
 
@@ -11,6 +12,7 @@ export interface MapPreferences {
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   readonly cameraKey: string | null;
+  readonly layers: Readonly<Record<string, LayerChoice>>;
 }
 
 const defaults = (): MapPreferences => ({
@@ -21,6 +23,7 @@ const defaults = (): MapPreferences => ({
   quality: "auto",
   cameras: {},
   cameraKey: null,
+  layers: {},
 });
 
 const identityFor = (userKey: string): string => {
@@ -73,8 +76,24 @@ export const parsePreferences = (value: unknown): MapPreferences => {
     quality,
     cameras,
     cameraKey: typeof raw.cameraKey === "string" && raw.cameraKey.length <= 1024 ? raw.cameraKey : null,
+    layers: parseLayerChoices(raw.layers),
   };
 };
+
+/** What the store keeps of the map display; the Home presentation outlasts a task's forced view. */
+export const preferencesOf = (state: WorkspaceState): MapPreferences => ({
+  version: 4,
+  view: state.homePresentation?.view ?? state.view,
+  appearance: state.homePresentation?.appearance ?? state.appearance,
+  labels: state.labelsVisible,
+  quality: state.quality,
+  cameras: state.cameras,
+  cameraKey: state.cameraKey,
+  layers: state.layerChoices,
+});
+
+export const samePreferences = (a: MapPreferences, b: MapPreferences): boolean =>
+  (Object.keys(a) as (keyof MapPreferences)[]).every((key) => a[key] === b[key]);
 
 export class PreferenceStore {
   #userKey = "local-user";
