@@ -460,7 +460,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             await slam_history.async_shutdown()
         if slam_map is not None:
             await slam_map.async_shutdown()
-        client.close()
+        await client.async_shutdown()
         raise
     photo_source = hass.data.get(DOMAIN, {}).get(DATA_PHOTO_ATTACHMENT_SOURCE)
     activate_photo_entry = getattr(photo_source, "activate_entry", None)

@@ -51,7 +51,19 @@ class CoverageGuardError(MaticError):
 
 
 class CannotConnectError(MaticError):
-    """The robot could not be reached."""
+    """A request got no usable answer from the robot; a subclass says why."""
+
+
+class TransportError(CannotConnectError):
+    """The connection or one of its streams broke, or could not be opened."""
+
+
+class RequestTimeoutError(CannotConnectError):
+    """The robot did not answer within the time allowed."""
+
+
+class ProtocolError(CannotConnectError):
+    """The robot answered with a payload or status this client cannot use."""
 
 
 class CertificateMismatchError(MaticError):

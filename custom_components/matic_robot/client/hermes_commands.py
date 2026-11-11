@@ -54,11 +54,12 @@ from .coverage_receipts import (
     receipt_matches_plan,
 )
 from .exceptions import (
-    CannotConnectError,
     CoverageGuardError,
     CoverageGuardReason,
     MaticError,
+    RequestTimeoutError,
     SinkLocationUnavailableError,
+    TransportError,
 )
 from .floor_plan import room_name_key
 from .hermes_collections import HermesCollections
@@ -1029,32 +1030,24 @@ class HermesCommands:
         expected: bool | float,
     ) -> None:
         """Wait for one acknowledged setting write to appear in fresh state."""
-        reconnect_attempted = False
+        retried = False
         try:
             async with asyncio.timeout(_SETTING_READBACK_TIMEOUT_SECONDS):
                 while True:
-                    await self._connection.async_connect()
-                    failed_channel = self._connection._channel
                     try:
                         observed = decode(
                             await self._collections.async_get_property(property_name)
                         )
-                    except CannotConnectError:
-                        if reconnect_attempted:
+                    except TransportError:
+                        # One read may land on a connection that just ended.
+                        if retried:
                             raise
-                        _LOGGER.debug(
-                            "Retrying Hermes %s setting read on a fresh pinned channel",
-                            property_name,
-                        )
-                        await self._connection._async_reconnect_after_read_failure(
-                            failed_channel
-                        )
-                        reconnect_attempted = True
+                        retried = True
                         observed = None
                     if observed is not None and observed == expected:
                         return
                     await asyncio.sleep(_SETTING_READBACK_INTERVAL_SECONDS)
         except TimeoutError as err:
-            raise CannotConnectError(
+            raise RequestTimeoutError(
                 "The robot did not confirm the requested setting"
             ) from err

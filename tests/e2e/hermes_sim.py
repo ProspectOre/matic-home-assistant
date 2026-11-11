@@ -38,7 +38,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID, ObjectIdentifier
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError
-from grpclib.server import Server, Stream
+from grpclib.server import Stream
 
 from custom_components.matic_robot.client.auth import (
     AUTHORIZATION_KEY,
@@ -65,7 +65,7 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
     Value,
 )
 
-from .sim_faults import UNDECODABLE, Fault, Faults, Link
+from .sim_faults import UNDECODABLE, Fault, Faults, Link, PingPolicedServer
 from .sim_mission import (
     IDLE_SESSION_KEY,
     CoverageSession,
@@ -875,7 +875,11 @@ class RunningSimulator:
     host: str
     port: int
     link: Link
-    _server: Server = field(repr=False)
+    _server: PingPolicedServer = field(repr=False)
+
+    def refuse_pings(self, faster_than: float) -> None:
+        """End a connection whose pings come less than this many seconds apart."""
+        self._server.min_ping_interval = faster_than
 
     async def close(self) -> None:
         await self.link.close()
@@ -896,7 +900,7 @@ async def start_simulator(robot: SimulatedRobot, directory: Path) -> RunningSimu
     context.load_cert_chain(chain_path)
     context.set_alpn_protocols(["h2"])
     discovery = _Discovery(robot, 0)
-    server = Server([_Hermes(robot), discovery, _Auth(robot)])
+    server = PingPolicedServer([_Hermes(robot), discovery, _Auth(robot)])
     await server.start("127.0.0.1", 0, ssl=context)
     sockets = server._server.sockets if server._server is not None else ()
     link = Link()

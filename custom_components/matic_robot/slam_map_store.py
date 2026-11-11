@@ -48,7 +48,6 @@ MAX_TILES = MAX_SLAM_TILES
 # Base64 adds roughly one third on disk. Candidates use the same ceiling;
 # at most two candidates plus the active floor can be retained concurrently.
 MAX_STORED_BYTES = 64 * 1024 * 1024
-STREAM_RETRY_SECONDS = 5
 SAVE_DELAY_SECONDS = 1
 MAP_SETTLE_SECONDS = 3
 # A valid mapped floor can be physically small. Completeness comes from both
@@ -75,11 +74,10 @@ MAP_SNAPSHOT_TIMEOUT = 30.0
 MAP_SNAPSHOT_FIRST_TIMEOUT = 3.0
 MAP_SNAPSHOT_IDLE_TIMEOUT = 0.25
 MAX_RETIRED_MISSIONS = 8
-# A candidate needs pages from both independent subscriptions.  Allow three
-# normal retry intervals for those streams to converge, then classify a
-# one-sided candidate so it cannot hold the active map unavailable forever.
-CANDIDATE_CLASSIFICATION_SECONDS = STREAM_RETRY_SECONDS * 3
-CANDIDATE_REFRESH_RETRY_SECONDS = STREAM_RETRY_SECONDS
+# A candidate needs pages from both subscriptions. After time for a failed one
+# to resubscribe, classify a one-sided candidate so it cannot block the map.
+CANDIDATE_CLASSIFICATION_SECONDS = 15
+CANDIDATE_REFRESH_RETRY_SECONDS = 5
 
 
 MapHealthState = Literal[
@@ -946,29 +944,31 @@ class SlamMapStore:
     async def _async_collect_collection(
         self, client: MaticHermesClient, name: str, structural: bool
     ) -> None:
-        while not self._closed:
-            self._set_stream_state(name, "connecting")
-            try:
-                async for entry in client.async_subscribe_collection_entries(name):
-                    self._set_stream_state(name, "connected")
-                    try:
-                        if structural:
-                            await self.async_add_structure(entry)
-                        else:
-                            await self.async_add(entry)
-                    except DecodeError:
-                        self._record_invalid()
-                        self._notify_listeners()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # A failed private stream must not kill map collection.
-                self._stream_failures = _increment(self._stream_failures)
-                self._set_stream_state(name, "retrying")
-            else:
-                self._set_stream_state(name, "retrying")
-            if self._closed:
-                return
-            await asyncio.sleep(STREAM_RETRY_SECONDS)
+        await client.async_keep_subscribed(
+            partial(self._async_consume_collection, client, name, structural)
+        )
+
+    async def _async_consume_collection(
+        self, client: MaticHermesClient, name: str, structural: bool
+    ) -> None:
+        """Add the pages of one subscription until it ends."""
+        if self._closed:
+            return
+        self._set_stream_state(name, "connecting")
+        try:
+            async for entry in client.async_subscribe_collection_entries(name):
+                self._set_stream_state(name, "connected")
+                try:
+                    if structural:
+                        await self.async_add_structure(entry)
+                    else:
+                        await self.async_add(entry)
+                except DecodeError:
+                    self._record_invalid()
+                    self._notify_listeners()
+        except Exception:  # A failed private stream must not kill map collection.
+            self._stream_failures = _increment(self._stream_failures)
+        self._set_stream_state(name, "retrying")
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Subscribe to content and health changes; return an unsubscribe callback."""

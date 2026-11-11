@@ -80,7 +80,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
 
     async def __aenter__(self) -> MaticHermesClient:
-        await self.async_connect()
+        try:
+            await self.async_connect()
+        except BaseException:
+            # A failed first dial leaves the supervisor retrying.
+            await self.async_shutdown()
+            raise
         return self
 
     async def __aexit__(
@@ -89,7 +94,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self.close()
+        await self.async_shutdown()
 
     @property
     def activity_journal(self) -> ActivityJournal:
@@ -97,25 +102,26 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         return self._connection.activity_journal
 
     async def async_connect(self) -> None:
-        """Verify the pinned certificate, then open an HTTP/2 channel."""
-        return await self._connection.async_connect()
+        """Dial the robot, pin its certificate and complete the handshake.
 
-    @property
-    def retired(self) -> bool:
-        """Whether this runtime has permanently revoked transport access."""
-        return self._connection.retired
+        Every request does this when no channel is open. From the first one
+        on, a supervisor task keeps the connection and redials after a loss.
+        """
+        await self._connection.async_channel()
 
-    def retire(self) -> None:
-        """Permanently revoke this runtime, including captured channel references."""
-        return self._connection.retire()
+    async def async_keep_subscribed(
+        self, consume: Callable[[], Awaitable[object]]
+    ) -> None:
+        """Run ``consume`` on every connection until the client shuts down.
+
+        ``consume`` reads one subscription and returns or raises a
+        ``MaticError`` when it ends. The supervisor paces the next run.
+        """
+        await self._connection.async_keep_subscribed(consume)
 
     async def async_shutdown(self) -> None:
-        """Revoke this runtime and wait for any in-flight dial to settle."""
-        return await self._connection.async_shutdown()
-
-    def close(self) -> None:
-        """Close the active channel while allowing a later reconnect."""
-        return self._connection.close()
+        """Close the connection for good; every later request fails."""
+        await self._connection.async_shutdown()
 
     async def async_get_info(self) -> RobotInfo:
         """Read identity and connection metadata from the robot."""
