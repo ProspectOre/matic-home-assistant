@@ -1,8 +1,9 @@
 # Installed check
 
+[Testing](testing.md) · [Upgrade drill](upgrade-drill.md) · [Releasing](../CONTRIBUTING.md#releasing)
+
 `scripts/installed_check.py` installs a release candidate on a real Home Assistant host and writes one
-receipt per run. It replaces most of the hand-run [0.5 walkthrough](owner-walkthrough-0.5.md) checks that
-needed a live host. The [simulated robot tests](e2e-harness.md) cover behaviour; this check covers what
+receipt per run. The [simulated robot tests](e2e-harness.md) cover behaviour; this check covers what
 was actually installed and loaded.
 
 ## What it does
@@ -39,7 +40,7 @@ fetched locally (`git fetch origin tag v0.6.0b1`):
 ```sh
 HA_TOKEN=... .venv/bin/python scripts/installed_check.py v0.6.0b1 \
   --url http://homeassistant.local:8123 \
-  --receipts ~/Dev/sources/matic/qualification \
+  --receipts /path/to/private/receipts \
   --ssh homeassistant \
   --aspenos "node /path/to/home-mcp/src/bridge.mjs"
 ```
@@ -55,7 +56,7 @@ then check those files by their full commit ID:
 HA_TOKEN=... .venv/bin/python scripts/installed_check.py \
   --commit FULL_REVIEWED_COMMIT_ID --skip-install \
   --url http://homeassistant.local:8123 \
-  --receipts ~/Dev/sources/matic/qualification --ssh homeassistant
+  --receipts /path/to/private/receipts --ssh homeassistant
 ```
 
 `--commit` requires `--skip-install`; it cannot invoke a HACS download or restart.
@@ -71,6 +72,5 @@ records the full commit and a null tag. No tag or GitHub release is created. Wit
   answer stops the run before anything is sent. The sink trip waits for the owner to refill the robot and
   press Enter once it is docked again.
 - The script never restores a backup. The [upgrade drill](upgrade-drill.md) covers rollback on the simulator.
-- Receipts include entity counts and backup IDs, and the token is never written. Keep receipts in the
-  private sources tree, not in this repository. Each receipt names its tag when present, commit and Home Assistant
-  version.
+- Receipts include entity counts and backup IDs, and the token is never written. Keep receipts out of
+  this repository. Each receipt names its tag when present, commit and Home Assistant version.
