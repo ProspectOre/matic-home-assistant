@@ -74,23 +74,23 @@ class HermesConnection:
         self._credential = credential
         self._timezone_identifier = timezone_identifier
         self._seconds_from_gmt = seconds_from_gmt
-        self._supervisor = ConnectionSupervisor(self._async_open)
+        self.supervisor = ConnectionSupervisor(self._async_open)
         self._command_health: dict[str, str] = {}
         self.activity_journal = ActivityJournal(observation_callback)
 
     async def async_channel(self) -> PinnedChannel:
         """Return the supervised channel, or raise why there is none."""
-        return await self._supervisor.async_channel()
+        return await self.supervisor.async_channel()
 
     async def async_keep_subscribed(
         self, consume: Callable[[], Awaitable[object]]
     ) -> None:
         """Run ``consume``, which reads one subscription, on every connection."""
-        await self._supervisor.async_keep_subscribed(consume)
+        await self.supervisor.async_keep_subscribed(consume)
 
     async def async_shutdown(self) -> None:
         """Close the connection for good and wait for the supervisor to end."""
-        await self._supervisor.async_close()
+        await self.supervisor.async_close()
 
     async def _async_open(self, keepalive_seconds: float) -> PinnedChannel:
         """Dial the robot, pin its certificate and bind this app session."""

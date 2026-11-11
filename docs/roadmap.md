@@ -18,7 +18,7 @@ checks are still open:
 | --- | --- |
 | [Upgrade drill](upgrade-drill.md) on the final commit, and a backup restored on a real host (PRO-75) | 0.6 changes the saved-map store, and 0.5 can't read the new one |
 | [Installed check](installed-check.md) on the candidate (PRO-74) | Shows what a real host installed and loaded |
-| Live updates over a real network: reconnects, lost messages and the fallback to polling (PRO-130, PRO-131) | Tested on the simulated robot only |
+| Live updates over a real network: reconnects, lost messages and a robot that never serves the state subscription (PRO-130, PRO-131) | Tested on the simulated robot only |
 | Matic Map on real phones and tablets, with a screen reader and at high zoom (PRO-144) | Browser tests emulate devices |
 | A home with many rooms, several floors or several robots (PRO-138, PRO-139) | The [capacity lab](performance-map-lab.md) uses synthetic homes |
 | Home Assistant 2026.11 (PRO-106) | Not tried yet |

@@ -32,7 +32,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
     runtime.slam_history = SimpleNamespace(async_shutdown=AsyncMock())
     runtime.run_trails = SimpleNamespace(async_shutdown=AsyncMock())
     runtime.wifi_survey = SimpleNamespace(async_shutdown=AsyncMock())
-    runtime.client.async_shutdown = AsyncMock()
+    runtime.session = SimpleNamespace(async_stop=AsyncMock())
     entry.entry_id = "entry"
     entry.disabled_by = None
     entry.data = {CONF_SERIAL_NUMBER: "serial"}

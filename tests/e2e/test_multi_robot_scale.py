@@ -31,6 +31,7 @@ from custom_components.matic_robot.const import (
 )
 
 from .hermes_sim import SimulatedRobot, start_simulator
+from .plan_run import poll
 from .sim_mission import SimFloor, SimRoom, two_room_floor
 
 
@@ -286,7 +287,7 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
         reloaded_photo_url = f"/api/{DOMAIN}/photo/{reloaded.entry_id}/{photo_id}"
         assert (await client.get(reloaded_photo_url)).status == 404
         robots[1].arrive_at_dock()
-        await reloaded.runtime_data.coordinator.async_refresh()
+        await poll(hass, reloaded, robots[1])
         reconnected_photo_id = uuid4()
         reconnected_color = (235, 170, 25)
         robots[1].queue_photo(

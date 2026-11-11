@@ -257,82 +257,43 @@ def _coordinator_state_trace(
     trace_lock: threading.Lock,
     started_at: float,
 ) -> None:
-    """Capture bounded poll/stream merge evidence without exposing identifiers."""
+    """Record what each push and heartbeat published, without identifiers."""
     from custom_components.matic_robot.client.api import MaticHermesClient
     from custom_components.matic_robot.coordinator import MaticCoordinator
 
-    def active(state: Any) -> bool | None:
-        return state.native_session_activity() if state is not None else None
-
-    def record(
-        coordinator: Any,
-        event: str,
-        *,
-        input_active: bool | None = None,
-        poll_generation_arg: int | None = None,
-        error_type: str | None = None,
-    ) -> None:
-        data = coordinator.data
-        operational = data.operational if data is not None else None
-        telemetry = data.telemetry if data is not None else None
+    def record(event: str, data: Any, error_type: str | None = None) -> None:
         item = {
             "elapsed_ms": round((monotonic() - started_at) * 1000),
             "event": event,
-            "input_active": input_active,
-            "poll_generation_arg": poll_generation_arg,
-            "poll_generation": coordinator._state_poll_generation,
-            "latest_push_generation": coordinator._latest_state_push_generation,
-            "latest_poll_generation": coordinator._latest_state_poll_generation,
-            "push_sequence": coordinator._state_push_sequence,
-            "processed_push_sequence": coordinator._latest_processed_push_sequence,
-            "received_active": active(coordinator._latest_received_state),
-            "merged_active": active(coordinator._latest_state_operational),
-            "published_active": (
-                telemetry.active_cleaning_session if telemetry is not None else None
-            ),
-            "published_cleaning": (
-                operational.cleaning if operational is not None else None
-            ),
-            "published_returning": (
-                operational.returning if operational is not None else None
-            ),
+            "published_active": data.telemetry.active_cleaning_session,
+            "published_cleaning": data.operational.cleaning,
+            "published_returning": data.operational.returning,
             "error_type": error_type,
         }
         with trace_lock:
             trace.append(item)
 
-    original_push = MaticCoordinator.async_process_operational_state
+    original_push = MaticCoordinator._async_state_pushed
 
-    def traced_push(
-        self: Any,
-        state: Any,
-        *,
-        poll_generation: int | None = None,
-    ) -> None:
-        input_active = active(state)
-        original_push(self, state, poll_generation=poll_generation)
-        record(
-            self,
-            "push",
-            input_active=input_active,
-            poll_generation_arg=poll_generation,
-        )
+    def traced_push(self: Any) -> None:
+        original_push(self)
+        record("push", self.data)
 
-    MaticCoordinator.async_process_operational_state = traced_push
-    original_poll = MaticCoordinator._async_update_data
+    MaticCoordinator._async_state_pushed = traced_push
+    original_heartbeat = MaticCoordinator._async_update_data
 
-    async def traced_poll(self: Any) -> Any:
+    async def traced_heartbeat(self: Any) -> Any:
         try:
-            result = await original_poll(self)
+            result = await original_heartbeat(self)
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            record(self, "poll_error", error_type=type(err).__name__)
+            record("heartbeat_error", self.data, type(err).__name__)
             raise
-        record(self, "poll", input_active=active(result.operational))
+        record("heartbeat", result)
         return result
 
-    MaticCoordinator._async_update_data = traced_poll
+    MaticCoordinator._async_update_data = traced_heartbeat
 
     original_identity_read = MaticHermesClient.async_get_cleaning_session_identity
 

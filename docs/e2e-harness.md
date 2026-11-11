@@ -85,7 +85,7 @@ replaced before it is committed.
 - A clean started outside Home Assistant is paused, resumed and sent home; a
   held task gets STOP, then DOCK once the stop settles.
 - Low-charge recharge and resume.
-- Robot errors appear only after the confirmation poll and clear again.
+- Robot errors appear only after a confirming sample and clear again.
 - Managed plan runs (`clean_room_sequence`, Kitchen then Study), following the
   [plan run contract](e2e-contract.md): all rooms verified from native
   history, a session that ends after one room (partial credit), return home
@@ -101,7 +101,7 @@ replaced before it is committed.
 - A sink trip waits for the refill and docks; without a saved sink it is
   refused.
 - An occupancy-aware saved plan holds a room whose sensor is on.
-- A full bag raises a Repair after the confirmation poll and clears it when
+- A full bag raises a Repair after a confirming sample and clears it when
   the error goes.
 - Custom-area geometry reaches the native command. Saved area plans and a
   room → area → room plan preserve mission order, dock handoffs and separate

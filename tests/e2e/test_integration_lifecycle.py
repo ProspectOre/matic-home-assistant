@@ -37,6 +37,7 @@ from .hermes_sim import (
     RunningSimulator,
     SimulatedRobot,
 )
+from .plan_run import poll, state_becomes
 
 VACUUM = "vacuum.simulated_matic"
 BATTERY = "sensor.simulated_matic_battery"
@@ -44,12 +45,6 @@ CURRENT_AREA = "sensor.simulated_matic_current_area"
 PROBLEM = "binary_sensor.simulated_matic_problem"
 LOW_CHARGE = "binary_sensor.simulated_matic_low_charge"
 CHARGING = "binary_sensor.simulated_matic_charging"
-
-
-async def _poll(hass: HomeAssistant, entry: MockConfigEntry) -> None:
-    """Run one coordinator poll, as the update interval would."""
-    await entry.runtime_data.coordinator.async_refresh()
-    await hass.async_block_till_done()
 
 
 async def _vacuum(hass: HomeAssistant, service: str) -> None:
@@ -90,16 +85,16 @@ async def test_app_started_clean_is_paused_resumed_and_sent_home(
     # not the logic.
     monkeypatch.setattr(stop_return, "DOCK_SETTLE_POLL_SECONDS", 0.05)
     robot.start_cleaning("Kitchen")
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.CLEANING
     assert _state(hass, CURRENT_AREA) == "Kitchen"
 
     await _vacuum(hass, SERVICE_PAUSE)
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.PAUSED
 
     await _vacuum(hass, SERVICE_START)
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.CLEANING
 
     # A task the robot still holds is stopped first, because DOCK during a
@@ -108,12 +103,12 @@ async def test_app_started_clean_is_paused_resumed_and_sent_home(
     assert robot.received() == [PAUSE_PAYLOAD, RESUME_PAYLOAD, STOP_PAYLOAD]
     async with asyncio.timeout(5):
         await robot.wait_for_phase(Phase.RETURNING)
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.RETURNING
     assert robot.received()[-1] == DOCK_PAYLOAD
 
     robot.arrive_at_dock()
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.DOCKED
     assert all(command.authorized for command in robot.commands)
 
@@ -122,50 +117,50 @@ async def test_low_charge_recharge_and_resume(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, robot: SimulatedRobot
 ) -> None:
     robot.start_cleaning("Hall")
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
 
     robot.low_charge_recharge(0.12)
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.DOCKED
     assert _state(hass, LOW_CHARGE) == STATE_ON
     assert _state(hass, CHARGING) == STATE_ON
     assert _state(hass, BATTERY) == "12"
 
     robot.recharged()
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.CLEANING
 
 
-async def test_robot_errors_surface_after_confirmation_poll(
+async def test_robot_errors_surface_after_a_confirming_sample(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, robot: SimulatedRobot
 ) -> None:
     robot.start_cleaning()
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     robot.fault(326)
 
-    await _poll(hass, loaded_entry)
-    # One poll is treated as a possible firmware pulse, so the robot reads as
-    # paused until the error repeats.
+    await poll(hass, loaded_entry, robot)
+    # One sample is treated as a possible firmware pulse, so the robot reads
+    # as paused until the error repeats.
     assert _state(hass, VACUUM) == VacuumActivity.PAUSED
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.ERROR
     assert _state(hass, PROBLEM) == STATE_ON
 
     robot.set_errors()
-    await _poll(hass, loaded_entry)
+    await poll(hass, loaded_entry, robot)
     assert _state(hass, VACUUM) == VacuumActivity.PAUSED
 
 
 async def test_unreachable_robot_marks_entities_unavailable_then_recovers(
     hass: HomeAssistant, loaded_entry: MockConfigEntry, simulator: RunningSimulator
 ) -> None:
+    # No heartbeat runs here: the lost connection and its failed redial tell
+    # the entities, and the next state the robot pushes brings them back.
     simulator.link.cut()
-    await _poll(hass, loaded_entry)
-    assert _state(hass, VACUUM) == STATE_UNAVAILABLE
+    await state_becomes(hass, VACUUM, STATE_UNAVAILABLE)
 
     simulator.link.restore()
-    await _poll(hass, loaded_entry)
-    assert _state(hass, VACUUM) == VacuumActivity.DOCKED
+    await state_becomes(hass, VACUUM, VacuumActivity.DOCKED)
 
 
 async def test_revoked_credential_starts_reauthentication(
@@ -179,7 +174,11 @@ async def test_revoked_credential_starts_reauthentication(
         config_flow, "async_has_local_bluetooth_adapter", lambda hass: False
     )
     robot.credentials.clear()
-    await _poll(hass, loaded_entry)
+    # The open state subscription outlives the credential; its successor is
+    # refused, and that starts the flow without any read.
+    robot.faults.reset("kabuki_state")
+    await state_becomes(hass, VACUUM, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
 
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert [flow["context"]["source"] for flow in flows] == [SOURCE_REAUTH]

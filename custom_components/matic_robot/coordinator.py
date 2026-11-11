@@ -1,4 +1,4 @@
-"""Data coordinator for Matic Hermes."""
+"""What entities read: the session's live state joined with slower reads."""
 
 from __future__ import annotations
 
@@ -21,21 +21,15 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .client.api import MaticHermesClient
 from .client.commands import CleaningMode, CoverageSetting
-from .client.exceptions import (
-    AuthenticationRequiredError,
-    CertificateMismatchError,
-    InvalidRobotCertificateError,
-    MaticError,
-)
+from .client.exceptions import AuthenticationRequiredError, MaticError
 from .client.mission import decode_mission_client_state
 from .client.models import (
     CleaningSession,
     CuesVoiceStatus,
     FloorPlan,
+    HermesCollectionEntry,
     MappedFloor,
-    RobotInfo,
     RobotOperationalState,
     RobotPose,
     RobotState,
@@ -54,7 +48,7 @@ from .const import (
 )
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
 from .repairs import repair_placeholders
-from .robot_health import RobotHealth
+from .session import RobotSession
 from .session_tracking import (
     CleaningSessionTracker,
     _parse_timestamp,
@@ -67,9 +61,6 @@ _LOGGER = logging.getLogger(__name__)
 # Unexpected snapshot failures retain a RAM cooldown in addition to the
 # tracker's persisted normal discovery/recovery cadence.
 SNAPSHOT_RETRY_SECONDS = 900
-# Limit robot-driven Cues fan-out while retaining the newest state received during
-# each interval. This bounds coordinator, event-bus, automation, and Recorder work.
-CUES_UPDATE_INTERVAL_SECONDS = 1.0
 
 
 def _floor_plan_matches_displayed(
@@ -91,58 +82,26 @@ def _floor_plan_matches_displayed(
     return not floor_plan.mapped_floors or floor_plan.mapped_floors == signature
 
 
-def _merge_stream_operational(
-    previous: RobotOperationalState | None,
-    pushed: RobotOperationalState,
-    *,
-    include_cues: bool = True,
-) -> RobotOperationalState:
-    """Overlay streamed values while keeping poll-confirmed health fields.
+def _heartbeat(operational: RobotOperationalState) -> timedelta:
+    """Return how often to read what the robot does not push.
 
-    Error and bag confirmation intentionally counts coordinator polls. A push
-    subscription can deliver repeated snapshots in a burst and must not turn
-    that into multiple independent confirmations.
+    A robot on its dock changes none of it quickly. One that is out moves,
+    and its pose and run progress are reads until they are streams.
     """
-    if previous is None:
-        return replace(pushed, error_codes=(), bag_full=None, bag_missing=None)
-    optional_fields = (
-        "battery_percentage",
-        "software_version",
-        "release_channel",
-        "current_area",
-        "previous_area",
-        "robot_profile",
-        "cues_voice_status",
-        "cues_voice_intent",
-        "cues_gesture_status",
-        "following_person",
+    return timedelta(
+        seconds=SLOW_UPDATE_INTERVAL_SECONDS
+        if operational.is_charging
+        else UPDATE_INTERVAL_SECONDS
     )
-    updates = {
-        name: value
-        for name in optional_fields
-        if (
-            include_cues
-            or name
-            not in {
-                "cues_voice_status",
-                "cues_voice_intent",
-                "cues_gesture_status",
-                "following_person",
-            }
+
+
+def _update_error(error: Exception) -> Exception:
+    """Return the update failure that tells Home Assistant why the robot is away."""
+    if isinstance(error, AuthenticationRequiredError):
+        return ConfigEntryAuthFailed(
+            "The robot rejected its local Home Assistant credential"
         )
-        if (value := getattr(pushed, name)) is not None
-    }
-    return replace(
-        previous,
-        **updates,
-        state_codes=pushed.state_codes,
-        charging_idle=pushed.charging_idle,
-        charging=pushed.charging,
-        low_charge=pushed.low_charge,
-        paused=pushed.paused,
-        cleaning=pushed.cleaning,
-        returning=pushed.returning,
-    )
+    return UpdateFailed(str(error))
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,33 +113,42 @@ class MaticCuesEvent:
 
 
 class MaticCoordinator(DataUpdateCoordinator[RobotState]):
-    """Coordinate local robot snapshots and Cues push updates."""
+    """Join the session's pushed state with what the robot does not push.
+
+    Robot state is never read here: the session's watch is its only writer,
+    and each new value is published at once. The heartbeat reads the floor
+    plan, pose, telemetry and run progress, and fails while the session
+    cannot reach the robot.
+    """
 
     config_entry: ConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
-        client: MaticHermesClient,
+        session: RobotSession,
         config_entry: ConfigEntry,
         *,
         cleaning_mode: CleaningMode = CleaningMode.BOTH,
         coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL,
         firmware_tracker: FirmwareTracker | None = None,
     ) -> None:
+        operational = session.state.value.operational
         super().__init__(
             hass,
             logger=_LOGGER,
             name=DOMAIN,
             config_entry=config_entry,
-            update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
+            update_interval=_heartbeat(operational),
             always_update=False,
         )
-        self.client = client
+        self.session = session
+        self.client = session.client
+        self.robot_health = session.health
+        self.data = self._with_live_state(RobotState(session.info, operational))
         self.cleaning_mode = cleaning_mode
         self.coverage_setting = coverage_setting
         self.firmware_tracker = firmware_tracker
-        self._cached_info: RobotInfo | None = None
         self._cached_floor_plan: FloorPlan | None = None
         # The displayed-mission stream is the first authority that can revoke
         # the current floor. Keep it separately from the map refresh hint so
@@ -205,156 +173,118 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
-        self.robot_health = RobotHealth(hass, config_entry.entry_id)
-        self._identity_issue_active = False
         self._time_zone_checked = False
         self._time_zone_issue: tuple[str, str] | None = None
         self._time_zone_scans: dict[tuple[str, str, date], bool | None] = {}
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
-        self._latest_cues_state: RobotOperationalState | None = None
-        self._cues_push_sequence = 0
-        self._state_push_sequence = 0
-        self._latest_state_operational: RobotOperationalState | None = None
-        self._latest_received_state: RobotOperationalState | None = None
-        self._latest_processed_push_sequence = 0
-        self._latest_state_push_generation = 0
-        self._latest_state_poll_generation = 0
-        self._state_poll_generation = 0
+        config_entry.async_on_unload(session.state.subscribe(self._async_state_pushed))
+        config_entry.async_on_unload(
+            session.error.subscribe(self._async_reachability_changed)
+        )
 
-    async def async_watch_state(self) -> None:
-        """Keep robot operational state current between coordinator polls."""
-        await self.client.async_keep_subscribed(self._async_consume_state_subscription)
+    def _with_live_state(self, state: RobotState) -> RobotState:
+        """Return ``state`` carrying the session's current robot state."""
+        live = self.session.state.value
+        return replace(
+            state,
+            operational=live.operational,
+            telemetry=replace(
+                state.telemetry,
+                active_cleaning_session=live.session_active,
+                run_progress=state.telemetry.run_progress
+                if live.session_active
+                else None,
+            ),
+        )
 
-    async def _async_consume_state_subscription(self) -> None:
-        """Consume one subscription, coalescing snapshots to a bounded rate."""
-        pending: RobotOperationalState | None = None
-        pending_poll_generation = 0
-        pending_available = asyncio.Event()
+    @callback
+    def _async_publish(self, state: RobotState) -> None:
+        """Give listeners new data; the heartbeat and availability stay as set."""
+        self.data = state
+        self.async_update_listeners()
 
-        async def _collect() -> None:
-            nonlocal pending, pending_poll_generation
-            # The first frame is the subscription baseline. Bind it to the
-            # poll generation that existed before opening the stream, even if
-            # the server or transport delays delivering it until a newer poll
-            # has already completed. Frames after that baseline are stamped
-            # when received so fresh pushes retain authority over later work.
-            subscription_poll_generation = self._state_poll_generation
-            first_snapshot = True
-            try:
-                async for state in self.client.async_subscribe_state():
-                    self._state_push_sequence += 1
-                    pending = state
-                    pending_poll_generation = (
-                        subscription_poll_generation
-                        if first_snapshot
-                        else self._state_poll_generation
-                    )
-                    first_snapshot = False
-                    self._latest_state_push_generation = pending_poll_generation
-                    self._latest_received_state = state
-                    pending_available.set()
-            finally:
-                # Wake the consumer so it can observe completion or an exception.
-                pending_available.set()
+    @callback
+    def _async_state_pushed(self) -> None:
+        """Show the session's new state without waiting for a heartbeat."""
+        previous = self.data.operational
+        self._async_publish(self._with_live_state(self.data))
+        current = self.data.operational
+        for event in _cues_events(previous, current):
+            self._async_fire_cues_event(event)
+        if (heartbeat := _heartbeat(current)) != self.update_interval:
+            # The read at the dock transition also restarts the timer.
+            self.update_interval = heartbeat
+            self.config_entry.async_create_background_task(
+                self.hass, self.async_request_refresh(), f"{DOMAIN} heartbeat"
+            )
 
-        collector = asyncio.create_task(_collect())
-        next_update_at = 0.0
-        try:
-            while True:
-                await pending_available.wait()
-                pending_available.clear()
-                if pending is None:
-                    await collector
-                    return
-
-                delay = next_update_at - monotonic()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-
-                state = pending
-                state_poll_generation = pending_poll_generation
-                pending = None
-                self.async_process_operational_state(
-                    state, poll_generation=state_poll_generation
-                )
-                # A collector may have signalled while the rate-limit sleep
-                # was in progress. Preserve that signal only when it also
-                # delivered a newer pending snapshot; otherwise a stale set
-                # event would make the next iteration await the long-lived
-                # collector instead of waiting for the next snapshot.
-                if pending is None:
-                    pending_available.clear()
-                next_update_at = monotonic() + CUES_UPDATE_INTERVAL_SECONDS
-
-                if collector.done() and pending is None:
-                    await collector
-                    return
-        finally:
-            if not collector.done():
-                collector.cancel()
-            await asyncio.gather(collector, return_exceptions=True)
+    @callback
+    def _async_reachability_changed(self) -> None:
+        """Make every entity unavailable while the robot cannot be reached."""
+        if (error := self.session.error.value) is None:
+            self.async_set_updated_data(self.data)
+        else:
+            self.async_set_update_error(_update_error(error))
 
     async def async_watch_floor_plan(self) -> None:
         """Refresh floor geometry when the robot changes displayed mission."""
-        await self.client.async_keep_subscribed(self._async_consume_displayed_mission)
+        await self.client.async_watch(
+            "displayed_mission", self._async_displayed_mission
+        )
 
-    async def _async_consume_displayed_mission(self) -> None:
-        """Follow one displayed-mission subscription until it ends."""
-        async for entry in self.client.async_subscribe_collection_entries(
-            "displayed_mission"
-        ):
-            try:
-                mission_state = decode_mission_client_state(entry.value)
-            except DecodeError:
-                self._async_revoke_displayed_floor()
-                continue
-            active_floor = mission_state.active_floor
-            if active_floor is None:
-                self._async_revoke_displayed_floor()
-                continue
-            self._displayed_floor_unknown = False
-            displayed_signature = mission_state.mapped_floors
-            identity_changed = (
-                self._displayed_floor_mission_id != active_floor.mission_id
-                or self._displayed_floor_signature != displayed_signature
-            )
-            verified_conflict = (
-                self._verified_floor_mission_id is not None
-                and self._verified_floor_mission_id != active_floor.mission_id
-            )
-            floor_plan = self.data.floor_plan if self.data is not None else None
-            published_map_matches = _floor_plan_matches_displayed(
-                floor_plan, active_floor.mission_id, displayed_signature
-            )
-            verified_invalidated = self._verified_floor_mission_id is not None and (
-                verified_conflict or not published_map_matches
-            )
-            invalidates_read = identity_changed or verified_invalidated
-            invalidated_read = invalidates_read and self._floor_reads_in_flight > 0
-            if invalidates_read:
-                self._floor_read_generation += 1
-            if verified_invalidated:
-                # The displayed mission and floor signature are the
-                # immediate localization authority for later reads.
-                self._verified_floor_mission_id = None
-            self._displayed_floor_mission_id = active_floor.mission_id
-            self._displayed_floor_signature = displayed_signature
-            if published_map_matches:
-                if invalidated_read:
-                    # The matching published map remains valid, but a
-                    # read admitted under the prior identity was
-                    # revoked. Schedule its replacement immediately.
-                    self._map_refresh_due = 0.0
-                    await self.async_request_refresh()
-                continue
-            # This stream is the robot's immediate localization signal.
-            # A previously verified map identity may only be a replayed
-            # scene at the dock, so it cannot override this newer state.
-            self._map_refresh_due = 0.0
-            # Revoke the old floor before awaiting the replacement read.
-            if self.data is not None and self.data.floor_plan is not None:
-                self.async_set_updated_data(replace(self.data, floor_plan=None))
-            await self.async_request_refresh()
+    async def _async_displayed_mission(self, entry: HermesCollectionEntry) -> None:
+        """Admit or revoke the floor one displayed-mission entry names."""
+        try:
+            mission_state = decode_mission_client_state(entry.value)
+        except DecodeError:
+            self._async_revoke_displayed_floor()
+            return
+        active_floor = mission_state.active_floor
+        if active_floor is None:
+            self._async_revoke_displayed_floor()
+            return
+        self._displayed_floor_unknown = False
+        displayed_signature = mission_state.mapped_floors
+        identity_changed = (
+            self._displayed_floor_mission_id != active_floor.mission_id
+            or self._displayed_floor_signature != displayed_signature
+        )
+        verified_conflict = (
+            self._verified_floor_mission_id is not None
+            and self._verified_floor_mission_id != active_floor.mission_id
+        )
+        published_map_matches = _floor_plan_matches_displayed(
+            self.data.floor_plan, active_floor.mission_id, displayed_signature
+        )
+        verified_invalidated = self._verified_floor_mission_id is not None and (
+            verified_conflict or not published_map_matches
+        )
+        invalidates_read = identity_changed or verified_invalidated
+        invalidated_read = invalidates_read and self._floor_reads_in_flight > 0
+        if invalidates_read:
+            self._floor_read_generation += 1
+        if verified_invalidated:
+            # The displayed mission and floor signature are the
+            # immediate localization authority for later reads.
+            self._verified_floor_mission_id = None
+        self._displayed_floor_mission_id = active_floor.mission_id
+        self._displayed_floor_signature = displayed_signature
+        if published_map_matches:
+            if invalidated_read:
+                # The matching published map remains valid, but a
+                # read admitted under the prior identity was
+                # revoked. Schedule its replacement immediately.
+                self._map_refresh_due = 0.0
+                await self.async_request_refresh()
+            return
+        # This stream is the robot's immediate localization signal.
+        # A previously verified map identity may only be a replayed
+        # scene at the dock, so it cannot override this newer state.
+        self._map_refresh_due = 0.0
+        # Revoke the old floor before awaiting the replacement read.
+        if self.data.floor_plan is not None:
+            self._async_publish(replace(self.data, floor_plan=None))
+        await self.async_request_refresh()
 
     @callback
     def _async_revoke_displayed_floor(self) -> None:
@@ -366,82 +296,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._floor_read_generation += 1
         self._cached_floor_plan = None
         self._map_refresh_due = 0.0
-        if self.data is not None and self.data.floor_plan is not None:
-            self.async_set_updated_data(replace(self.data, floor_plan=None))
-
-    @callback
-    def _async_process_cues_fields(self, state: RobotOperationalState) -> None:
-        """Merge Cues fields and emit meaningful transitions."""
-        self._latest_cues_state = state
-        self._cues_push_sequence += 1
-        if self.data is None:
-            return
-        previous = self.data.operational
-        current = replace(
-            previous,
-            cues_voice_status=state.cues_voice_status,
-            cues_voice_intent=state.cues_voice_intent,
-            cues_gesture_status=state.cues_gesture_status,
-            following_person=state.following_person,
-        )
-        if current == previous:
-            return
-        self.async_set_updated_data(replace(self.data, operational=current))
-        for event in _cues_events(previous, current):
-            self._async_fire_cues_event(event)
-
-    @callback
-    def async_process_operational_state(
-        self,
-        state: RobotOperationalState,
-        *,
-        poll_generation: int | None = None,
-    ) -> None:
-        """Apply one push without advancing poll-confirmed health evidence."""
-        if poll_generation is None:
-            poll_generation = self._state_poll_generation
-            self._latest_state_push_generation = poll_generation
-            self._latest_received_state = state
-        # The subscriber may have buffered a value while it was rate limiting.
-        # A poll started after that value was received has fresher snapshot
-        # authority, so the delayed push must not overwrite it.
-        if poll_generation < self._state_poll_generation:
-            return
-        previous = self.data.operational if self.data is not None else None
-        state = _merge_stream_operational(previous, state)
-        self._latest_state_operational = state
-        self._latest_state_poll_generation = poll_generation
-        self._latest_processed_push_sequence = self._state_push_sequence
-        self._async_process_cues_fields(state)
-        if self.data is None:
-            return
-        if state == self.data.operational:
-            return
-        active = state.native_session_activity()
-        telemetry = replace(
-            self.data.telemetry,
-            active_cleaning_session=active,
-            run_progress=(
-                self.data.telemetry.run_progress
-                if active is True
-                and self.data.telemetry.active_cleaning_session is True
-                else None
-            ),
-        )
-        self.async_set_updated_data(
-            replace(self.data, operational=state, telemetry=telemetry)
-        )
-
-    @callback
-    def _process_confirmed_operational_state(
-        self, state: RobotOperationalState
-    ) -> RobotOperationalState:
-        """Apply the same error, bag, and Repair rules to polls and pushes."""
-        operational = self.robot_health.resolve_bag_capability(state)
-        operational = self.robot_health.confirm_errors(operational)
-        self.robot_health.track_bag_state(operational)
-        self.robot_health.track_alerts(operational)
-        return operational
+        if self.data.floor_plan is not None:
+            self._async_publish(replace(self.data, floor_plan=None))
 
     @callback
     def async_add_cues_listener(
@@ -472,153 +328,89 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             listener(event)
 
     async def _async_update_data(self) -> RobotState:
-        cues_push_sequence = self._cues_push_sequence
-        state_push_sequence = self._state_push_sequence
-        self._state_poll_generation += 1
-        state_poll_generation = self._state_poll_generation
+        """Read what the robot does not push and join it with what it does."""
+        self._raise_if_unreachable()
+        self.session.async_flush_state()
         full_refresh_generation = self._full_refresh_generation
         floor_read_generation = self._floor_read_generation
         try:
-            info, operational, map_state, telemetry = await asyncio.gather(
-                self._async_info(),
-                self.client.async_get_state(),
-                self._async_optional_map_state(),
-                self._async_optional_telemetry(),
+            (floor_plan, pose), telemetry = await asyncio.gather(
+                self._async_optional_map_state(), self._async_optional_telemetry()
             )
-            floor_plan, pose = map_state
-            if (
-                self._state_push_sequence != state_push_sequence
-                and self._latest_state_push_generation == state_poll_generation
-            ):
-                pushed = self._latest_received_state
-                if pushed is not None:
-                    operational = _merge_stream_operational(
-                        operational, pushed, include_cues=False
-                    )
-            # Task evidence belongs to the latest raw snapshot, including a
-            # same-generation state push that won over the overlapping poll.
-            # Compute it before presentation confirms/suppresses transient
-            # problem codes, then keep it aligned with the operational state
-            # returned below.
-            active = operational.native_session_activity()
-            telemetry = replace(
-                telemetry,
-                active_cleaning_session=active,
-                run_progress=await self._async_optional_run_progress()
-                if active
-                else None,
-            )
-            operational = self._process_confirmed_operational_state(operational)
-            state = RobotState(
-                info=info,
-                operational=operational,
-                floor_plan=floor_plan,
-                pose=pose,
-                telemetry=telemetry,
-            )
-            version = telemetry.software_version or operational.software_version
-            if version is not None:
-                self._async_update_device_software(version, info.serial_number)
-            self._async_clear_identity_issue()
-            self._async_check_time_zone(telemetry)
-            # Events require native evidence; local estimates are display-only.
-            self._async_fire_native_history_updated(state)
-            self._async_fire_session_finished(state, version)
-            state = await self._async_track_cleaning_session(state)
-            if self.firmware_tracker is not None:
-                version_changed = await self.firmware_tracker.async_observe_version(
-                    self.config_entry.entry_id,
-                    version,
-                    telemetry.protocol_version,
-                    device_id=self._device_id(info.serial_number),
+            if self.session.state.value.session_active:
+                telemetry = replace(
+                    telemetry, run_progress=await self._async_optional_run_progress()
                 )
-                if version is not None:
-                    snapshot_identity = (version, telemetry.protocol_version)
-                    if (
-                        snapshot_identity not in self._snapshot_versions_in_progress
-                        and (
-                            version_changed
-                            or monotonic()
-                            >= self._snapshot_retry_after.get(snapshot_identity, 0.0)
-                        )
-                        and self.firmware_tracker.needs_snapshot(
-                            self.config_entry.entry_id,
-                            version,
-                            telemetry.protocol_version,
-                            context=operational.activity.value,
-                        )
-                    ):
-                        self._snapshot_versions_in_progress.add(snapshot_identity)
-                        occurrence_generation = (
-                            self.firmware_tracker.occurrence_generation(
-                                self.config_entry.entry_id
-                            )
-                        )
-                        self.config_entry.async_create_background_task(
-                            self.hass,
-                            self._async_capture_firmware_snapshot(
-                                self.firmware_tracker,
-                                state,
-                                version,
-                                occurrence_generation,
-                            ),
-                            f"{DOMAIN} firmware snapshot",
-                        )
-            if self._cues_push_sequence != cues_push_sequence:
-                latest_cues_state = self._latest_cues_state
-                assert latest_cues_state is not None
-                state = replace(
-                    state,
-                    operational=replace(
-                        state.operational,
-                        cues_voice_status=latest_cues_state.cues_voice_status,
-                        cues_voice_intent=latest_cues_state.cues_voice_intent,
-                        cues_gesture_status=latest_cues_state.cues_gesture_status,
-                        following_person=latest_cues_state.following_person,
-                    ),
-                )
-            if (
-                self._state_push_sequence != state_push_sequence
-                and self._latest_state_push_generation == state_poll_generation
-            ):
-                latest_operational: RobotOperationalState | None = None
-                if (
-                    self._latest_state_poll_generation == state_poll_generation
-                    and self._latest_processed_push_sequence
-                    == self._state_push_sequence
-                ):
-                    latest_operational = self._latest_state_operational
-                elif self._latest_received_state is not None:
-                    latest_operational = _merge_stream_operational(
-                        state.operational,
-                        self._latest_received_state,
-                        include_cues=False,
-                    )
-                if latest_operational is not None:
-                    state = replace(state, operational=latest_operational)
-            # A cached floor may have completed before another gathered read
-            # or later enrichment. Revalidate at publication, including a
-            # revoke/recover cycle that has already cleared the unknown flag.
-            if self._floor_read_generation != floor_read_generation:
-                state = replace(
-                    state, floor_plan=self._current_published_floor_plan(), pose=None
-                )
-            return state
-        except AuthenticationRequiredError as err:
-            raise ConfigEntryAuthFailed(
-                "The robot rejected its local Home Assistant credential"
-            ) from err
-        except (CertificateMismatchError, InvalidRobotCertificateError) as err:
-            self._async_raise_identity_issue()
-            raise UpdateFailed(
-                f"The robot's TLS identity no longer matches its pinned"
-                f" certificate: {err}"
-            ) from err
-        except MaticError as err:
-            raise UpdateFailed(str(err)) from err
         finally:
             if self._full_refresh_generation == full_refresh_generation:
                 self._force_full_refresh = False
+        state = self._with_live_state(
+            replace(self.data, floor_plan=floor_plan, pose=pose, telemetry=telemetry)
+        )
+        operational = state.operational
+        serial_number = state.info.serial_number
+        version = telemetry.software_version or operational.software_version
+        if version is not None:
+            self._async_update_device_software(version, serial_number)
+        self._async_check_time_zone(telemetry)
+        # Events require native evidence; local estimates are display-only.
+        self._async_fire_native_history_updated(state)
+        self._async_fire_session_finished(state, version)
+        state = await self._async_track_cleaning_session(state)
+        if self.firmware_tracker is not None:
+            version_changed = await self.firmware_tracker.async_observe_version(
+                self.config_entry.entry_id,
+                version,
+                telemetry.protocol_version,
+                device_id=self._device_id(serial_number),
+            )
+            if version is not None:
+                snapshot_identity = (version, telemetry.protocol_version)
+                if (
+                    snapshot_identity not in self._snapshot_versions_in_progress
+                    and (
+                        version_changed
+                        or monotonic()
+                        >= self._snapshot_retry_after.get(snapshot_identity, 0.0)
+                    )
+                    and self.firmware_tracker.needs_snapshot(
+                        self.config_entry.entry_id,
+                        version,
+                        telemetry.protocol_version,
+                        context=operational.activity.value,
+                    )
+                ):
+                    self._snapshot_versions_in_progress.add(snapshot_identity)
+                    occurrence_generation = self.firmware_tracker.occurrence_generation(
+                        self.config_entry.entry_id
+                    )
+                    self.config_entry.async_create_background_task(
+                        self.hass,
+                        self._async_capture_firmware_snapshot(
+                            self.firmware_tracker,
+                            state,
+                            version,
+                            occurrence_generation,
+                        ),
+                        f"{DOMAIN} firmware snapshot",
+                    )
+        # A cached floor may have completed before another gathered read
+        # or later enrichment. Revalidate at publication, including a
+        # revoke/recover cycle that has already cleared the unknown flag.
+        if self._floor_read_generation != floor_read_generation:
+            state = replace(
+                state, floor_plan=self._current_published_floor_plan(), pose=None
+            )
+        # An outage found during the reads above fails this heartbeat, and a
+        # state pushed during them is newer than the one they started from.
+        # Nothing may await between here and publication.
+        self._raise_if_unreachable()
+        return self._with_live_state(state)
+
+    def _raise_if_unreachable(self) -> None:
+        """Fail a heartbeat that would mark an unreachable robot available."""
+        if (error := self.session.error.value) is not None:
+            raise _update_error(error)
 
     @property
     def floor_read_generation(self) -> int:
@@ -705,12 +497,6 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         )
         return True
 
-    async def _async_info(self) -> RobotInfo:
-        """Read immutable identity once per coordinator lifetime."""
-        if self._cached_info is None:
-            self._cached_info = await self.client.async_get_info()
-        return self._cached_info
-
     async def _async_optional_floor_plan(self) -> FloorPlan | None:
         """Read map geometry without hiding core state if unavailable."""
         if self._displayed_floor_unknown:
@@ -787,7 +573,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         """Retain only a published map still admitted by current localization."""
         if self._displayed_floor_unknown:
             return None
-        floor_plan = self.data.floor_plan if self.data is not None else None
+        floor_plan = self.data.floor_plan
         expected_mission_id = self.expected_floor_mission_id
         if _floor_plan_matches_displayed(
             floor_plan,
@@ -875,8 +661,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     ) -> None:
         """Refresh the active floor plan after a verified SLAM mission change.
 
-        A robot can localize onto another mapped floor between normal map
-        polling intervals.  Keep the other slow reads cached, but do not keep
+        A robot can localize onto another mapped floor between map reads.
+        Keep the other slow reads cached, but do not keep
         a prior floor plan long enough to make a newly observed SLAM mission
         look like an unresolved transition.
         """
@@ -911,7 +697,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 "snapshot_superseded",
             }:
                 # A capture from an obsolete occurrence should be retried on the
-                # next coordinator poll instead of waiting out its old cooldown.
+                # next heartbeat instead of waiting out its old cooldown.
                 self._snapshot_retry_after.pop(snapshot_identity, None)
         finally:
             self._snapshot_versions_in_progress.discard(snapshot_identity)
@@ -948,7 +734,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     @callback
     def native_history_revision_is_current(self, revision: str) -> bool:
-        """Return whether a refresh request still matches the latest poll."""
+        """Return whether a refresh request still matches the latest heartbeat."""
         return revision == self._latest_native_history_revision
 
     @callback
@@ -1033,44 +819,6 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 "stop_reason": session.stop_reason,
                 "firmware_version": version,
             },
-        )
-
-    @callback
-    def _async_raise_identity_issue(self) -> None:
-        """Surface a pinned-identity mismatch distinctly from network noise."""
-        if self._identity_issue_active:
-            return
-        self._identity_issue_active = True
-        _LOGGER.error(
-            "The robot at the configured address presented a TLS certificate"
-            " that does not match the pinned robot identity; refusing to"
-            " communicate until it matches or the entry is reconfigured"
-        )
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            f"robot_identity_changed_{self.config_entry.entry_id}",
-            data={"entry_id": self.config_entry.entry_id},
-            is_fixable=True,
-            is_persistent=False,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key="robot_identity_changed",
-            translation_placeholders=repair_placeholders(
-                self.hass, self.config_entry.entry_id
-            ),
-        )
-
-    @callback
-    def _async_clear_identity_issue(self) -> None:
-        """Withdraw the identity warning after a verified reconnect."""
-        if not self._identity_issue_active:
-            return
-        self._identity_issue_active = False
-        _LOGGER.warning("The robot's TLS identity matches its pinned certificate again")
-        ir.async_delete_issue(
-            self.hass,
-            DOMAIN,
-            f"robot_identity_changed_{self.config_entry.entry_id}",
         )
 
     @callback

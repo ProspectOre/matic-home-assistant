@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.const import ATTR_ENTITY_ID, STATE_UNAVAILABLE
@@ -17,7 +18,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.event import async_track_state_change_event
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot import managed_dispatch
+from custom_components.matic_robot import managed_dispatch, session
 from custom_components.matic_robot.client import hermes_collections, hermes_connection
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 
@@ -28,6 +29,7 @@ from .hermes_sim import (
     RunningSimulator,
     SimulatedRobot,
 )
+from .plan_run import state_becomes
 from .sim_faults import Faults
 from .sim_mission import SimFloor, parse_coverage_command, two_room_floor
 
@@ -38,11 +40,6 @@ BATTERY = "sensor.simulated_matic_battery"
 @pytest.fixture
 def floor() -> SimFloor:
     return two_room_floor()
-
-
-async def _poll(hass: HomeAssistant, entry: MockConfigEntry) -> None:
-    await entry.runtime_data.coordinator.async_refresh()
-    await hass.async_block_till_done()
 
 
 def _state(hass: HomeAssistant, entity_id: str) -> str:
@@ -116,23 +113,30 @@ async def test_malformed_floor_frame_costs_only_the_floor_read(
     assert coordinator.data.floor_plan == floor_plan
 
 
-async def test_silent_link_times_out_then_polls_and_pushes_recover(
+@pytest.mark.usefixtures("fast_keepalive")
+async def test_keepalive_finds_a_silent_link_and_the_pushes_come_back(
     hass: HomeAssistant,
     loaded_entry: MockConfigEntry,
     robot: SimulatedRobot,
     simulator: RunningSimulator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The dial and RPC timeouts are 10 s; shorten the wait, not the logic.
+    # The dial and RPC timeouts and the outage grace are 10 s; shorten the
+    # waits, not the logic.
     monkeypatch.setattr(hermes_collections, "_RPC_TIMEOUT", 0.2)
     monkeypatch.setattr(hermes_connection, "_RPC_TIMEOUT", 0.2)
+    monkeypatch.setattr(session, "UNREACHABLE_AFTER_SECONDS", 0.2)
+    coordinator = loaded_entry.runtime_data.coordinator
+    heartbeat = AsyncMock(wraps=coordinator._async_update_data)
+    monkeypatch.setattr(coordinator, "_async_update_data", heartbeat)
+
+    # Nothing asks the robot anything: the unanswered ping ends the link.
     simulator.link.stall()
-    await _poll(hass, loaded_entry)
-    assert _state(hass, VACUUM) == STATE_UNAVAILABLE
+    await state_becomes(hass, VACUUM, STATE_UNAVAILABLE)
+    heartbeat.assert_not_awaited()
 
     simulator.link.restore()
-    await _poll(hass, loaded_entry)
-    assert _state(hass, VACUUM) == "docked"
+    await state_becomes(hass, VACUUM, "docked")
     await _pushed_battery(hass, robot, 0.5)
 
 

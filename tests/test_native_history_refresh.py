@@ -27,7 +27,8 @@ from custom_components.matic_robot.const import (
     EVENT_CLEANING_FINISHED,
     EVENT_NATIVE_HISTORY_UPDATED,
 )
-from tests.test_coordinator import _client, _coordinator
+from tests.session_fakes import start_coordinator
+from tests.test_coordinator import _client
 
 
 def _floor_plan() -> FloorPlan:
@@ -45,7 +46,7 @@ async def _native_sync_harness(hass, revision="revision-0"):
     client.async_get_telemetry.return_value = RobotTelemetry(
         native_history_revision=revision
     )
-    coordinator = _coordinator(hass, client)
+    coordinator = await start_coordinator(hass, client)
     coordinator.async_set_updated_data(await coordinator._async_update_data())
     entry = MagicMock(entry_id="entry")
     unloads = []
@@ -85,7 +86,7 @@ async def test_native_result_enrichment_refreshes_history_once_without_finished_
         "custom_components.matic_robot.coordinator.dt_util.utcnow",
         return_value=now - timedelta(hours=1),
     ):
-        coordinator = _coordinator(hass, client)
+        coordinator = await start_coordinator(hass, client)
     client.async_get_telemetry.return_value = RobotTelemetry(
         native_history_revision="revision-0"
     )
