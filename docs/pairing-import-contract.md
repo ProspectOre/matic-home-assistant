@@ -1,6 +1,6 @@
 # Pairing import contract · 0.5
 
-[Pairing guide](hermes-pairing.md#pair-on-another-device) · [Review requirements](maintenance-reviews.md)
+[Pairing guide](hermes-pairing.md#pair-on-another-device) · [Contributing](../CONTRIBUTING.md#changes-and-pull-requests)
 
 This is the integration's compatibility contract for experimental pairing
 import in 0.5. The community tool owns acquiring a robot-issued credential on

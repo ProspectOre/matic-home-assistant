@@ -1,53 +1,42 @@
 # Review and manual merge
 
-The owner-approved process replaces Matic's bespoke status gate with authentic
-complete review, required CI and a designated-owner manual merge. The canonical
-[workspace checklist](https://github.com/ProspectOre/wiki/blob/main/workflows/pr-gates.md)
-owns the shared process.
+[Contributing](../CONTRIBUTING.md#changes-and-pull-requests) · [Testing](testing.md) ·
+[All guides](README.md)
 
-The owner retired the request coordinator on October 8, 2026. Request regular
-`@codex review` directly for each opened or pushed PR head, after checking for an
-existing request on the unchanged comparison. Do not use the retired coordinator.
+Every change merges by pull request, after a complete review and the required
+checks, and the designated owner merges it by hand. Automatic merge and force
+pushes stay off.
 
-## Candidate evidence
+## Review
 
-Freeze the full candidate head and intended base OIDs. Obtain an authentic Codex
-review of their complete diff; a final-commit-only review is insufficient. Resolve
-an abbreviated footer uniquely to its full commit and verify comparison provenance.
-Native review requires unchanged source hashes before and after the live capture;
-archival receipts cannot authorize a later invocation.
+- Request `@codex review` on each opened or pushed pull request head. Check
+  first that the same head and base don't already have a request.
+- The review must cover the whole diff between that head and its intended
+  base. A review of only the last commit doesn't count.
+- Answer every actionable finding with a fix or a reason before resolving its
+  thread. A resolved thread is not a clean review.
 
-Disposition every actionable finding with evidence before resolving its thread.
-A resolved thread is not itself a clean review. Reuse a pending or delivered review
-request for an unchanged comparison instead of posting duplicates.
+## Merge
 
-Run Test, Browser and Validate through the configured public GitHub-hosted route.
-Retain all required contexts and native branch protections except the explicitly
-removed custom `review-gate` context. Never enable automatic merge or force pushes.
+- Test, Browser UI and Validate must pass on the head being merged.
+- Just before merging, the owner checks the head, base, review, findings,
+  required checks and branch protections again. If any of them changed, or
+  could not be read, the merge waits.
+- The pull request records the head and base commits, the review, the findings,
+  the CI runs and the merge result.
 
-Immediately before manual merge, the designated owner rechecks head, base, review,
-findings, required checks and native protections. Changed inputs invalidate the
-comparison; failed or incomplete reads cannot authorize merge. Record the full
-head/base, review provenance, findings, CI links and actual merge result on the PR.
+## Branches and releases
 
-## Maintenance and release
+`main` holds the latest stable release and its hotfixes, which land by pull
+request. The next release and its betas live on `release/X.Y`, which merges
+into `main` for the stable release and is then deleted.
+[Contributing](../CONTRIBUTING.md#releasing) has the release steps.
 
-`main` holds production code: the latest stable release and its hotfixes, which
-land by PR. The next release and its betas live on `release/X.Y` (now
-`release/0.6`), which merges into `main` for the stable release and is then
-deleted. `release/0.4` includes the merged 0.4.8 firmware features.
-A build from that maintenance branch must not be described as a narrow 0.4.7
-diagnostic. Resolve release composition before publishing a candidate. A new
-protected release target requires explicit authority and verified protections.
+Passing review and CI says the source is ready. Installing a candidate,
+checking it on a real Home Assistant host, trying it on a robot and approving
+a stable release are separate steps ([testing](testing.md#what-runs-by-hand)).
 
-The gate migration does not close historical evidence gaps: the 19 original
-review-event runs retained in the #216 investigation lack required receipt proof,
-and the #219 gap remains recorded. Do not backfill acknowledgements, invent green
-statuses, or claim a new clean review supplies missing historical coverage.
-
-The full-visibility outage remains explicit: if current-head and association reads
-fail while a comment names an older commit, current-head revocation is unproven.
-Fresh successful reads at the owner merge decision are required.
-
-RC installation, configuration preservation, runtime fingerprints, physical
-acceptance and stable-release approval remain separate from source qualification.
+Earlier gaps in review records stay recorded as they are, in
+[#216](https://github.com/ProspectOre/matic-home-assistant/issues/216) and
+[#219](https://github.com/ProspectOre/matic-home-assistant/issues/219). Don't
+backfill them or present a new review as covering them.
