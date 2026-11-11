@@ -8,13 +8,15 @@ import pytest
 
 from custom_components.matic_robot.client import hermes_commands as api_module
 from custom_components.matic_robot.client.api import MaticHermesClient
-from custom_components.matic_robot.client.exceptions import CannotConnectError
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    TransportError,
+)
 
 
 def _client() -> MaticHermesClient:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
-    client._connection.async_connect = AsyncMock()
+    client._connection.async_channel = AsyncMock(return_value=object())
     client._connection._async_send_channel_payload = AsyncMock()
     client._collections.async_get_property = AsyncMock()
     return client
@@ -152,22 +154,12 @@ _SETTER_CASES = (
 
 
 @pytest.mark.parametrize("setter,property_name,confirmed,stale", _SETTER_CASES)
-async def test_setting_retries_after_transient_read_error_without_resend(
+async def test_setting_reads_again_after_one_transport_failure_without_resend(
     setter, property_name, confirmed, stale
 ):
     client = _client()
-    failed_channel = client._connection._channel
-    fresh_channel = object()
     client._collections.async_get_property = AsyncMock(
-        side_effect=(CannotConnectError("temporary read failure"), confirmed)
-    )
-
-    async def reconnect(channel):
-        assert channel is failed_channel
-        client._connection._channel = fresh_channel
-
-    client._connection._async_reconnect_after_read_failure = AsyncMock(
-        side_effect=reconnect
+        side_effect=(TransportError("temporary read failure"), confirmed)
     )
 
     await setter(client)
@@ -176,41 +168,25 @@ async def test_setting_retries_after_transient_read_error_without_resend(
         call(property_name),
         call(property_name),
     ]
-    client._connection._async_reconnect_after_read_failure.assert_awaited_once_with(
-        failed_channel
-    )
     client._connection._async_send_channel_payload.assert_awaited_once()
 
 
 @pytest.mark.parametrize("setter,property_name,confirmed,stale", _SETTER_CASES)
-async def test_setting_stops_after_reconnect_read_failure_without_resend(
+async def test_setting_stops_after_a_second_transport_failure_without_resend(
     setter, property_name, confirmed, stale
 ):
     client = _client()
-    failed_channel = client._connection._channel
-    fresh_channel = object()
     client._collections.async_get_property = AsyncMock(
         side_effect=(
-            CannotConnectError("temporary read failure"),
-            CannotConnectError("fresh session read failure"),
+            TransportError("temporary read failure"),
+            TransportError("second read failure"),
         )
     )
 
-    async def reconnect(channel):
-        assert channel is failed_channel
-        client._connection._channel = fresh_channel
-
-    client._connection._async_reconnect_after_read_failure = AsyncMock(
-        side_effect=reconnect
-    )
-
-    with pytest.raises(CannotConnectError, match="fresh session read failure"):
+    with pytest.raises(TransportError, match="second read failure"):
         await setter(client)
 
     assert client._collections.async_get_property.await_count == 2
-    client._connection._async_reconnect_after_read_failure.assert_awaited_once_with(
-        failed_channel
-    )
     client._connection._async_send_channel_payload.assert_awaited_once()
 
 

@@ -43,6 +43,7 @@ from custom_components.matic_robot.coordinator import (
     MaticCuesEvent,
 )
 from custom_components.matic_robot.robot_health import async_delete_robot_alert_issues
+from tests.hermes_fakes import FakeChannel, keep_subscribed
 
 
 def _client() -> AsyncMock:
@@ -65,7 +66,7 @@ def _client() -> AsyncMock:
     client.async_get_floor_plan.return_value = None
     client.async_get_pose.return_value = None
     client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
-    client.retired = False
+    client.async_keep_subscribed = keep_subscribed()
     return client
 
 
@@ -531,7 +532,7 @@ async def test_delayed_initial_stream_frame_uses_subscription_generation(
     assert poll.operational.cleaning is False
 
     release_first_frame.set()
-    assert await consumer == 2
+    await consumer
 
     assert coordinator._latest_state_push_generation == poll_generation
     assert coordinator.data.operational.cleaning is True
@@ -593,31 +594,27 @@ async def test_live_cues_ignores_updates_before_initial_refresh(hass) -> None:
     assert coordinator.data is None
 
 
-async def test_state_watcher_retries_transport_failures(hass) -> None:
+async def test_state_watcher_subscribes_again_after_a_failure(hass) -> None:
     client = _client()
+    attempts = 0
 
     async def failed_subscription():
+        nonlocal attempts
+        attempts += 1
         if False:
             yield client.async_get_state.return_value
         raise MaticError("offline")
 
     client.async_subscribe_state = failed_subscription
-    coordinator = _coordinator(hass, client)
+    client.async_keep_subscribed = keep_subscribed(2)
 
-    with (
-        patch(
-            "custom_components.matic_robot.coordinator.asyncio.sleep",
-            AsyncMock(side_effect=[None, asyncio.CancelledError]),
-        ) as sleep,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await coordinator.async_watch_state()
+    await _coordinator(hass, client).async_watch_state()
 
-    assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
+    assert attempts == 2
 
 
-async def test_state_polling_covers_stream_backoff_and_reconnected_push(
-    hass, monkeypatch: pytest.MonkeyPatch
+async def test_state_polling_covers_a_stream_outage_and_the_resubscribed_push(
+    hass,
 ) -> None:
     """Keep polling useful through a stream outage, then resume live updates."""
     client = _client()
@@ -625,17 +622,19 @@ async def test_state_polling_covers_stream_backoff_and_reconnected_push(
     initial = await coordinator._async_update_data()
     coordinator.async_set_updated_data(initial)
 
-    backoff_started = asyncio.Event()
+    stream_down = asyncio.Event()
     retry_allowed = asyncio.Event()
     reconnected = asyncio.Event()
     deliver_fresh_push = asyncio.Event()
     keep_stream_open = asyncio.Event()
     attempts = 0
 
-    async def controlled_sleep(delay: float) -> None:
-        assert delay == 1
-        backoff_started.set()
+    async def keep_subscribed_after_an_outage(consume) -> None:
+        with pytest.raises(MaticError, match="temporary stream outage"):
+            await consume()
+        stream_down.set()
         await retry_allowed.wait()
+        await consume()
 
     async def subscription():
         nonlocal attempts
@@ -653,6 +652,7 @@ async def test_state_polling_covers_stream_backoff_and_reconnected_push(
         await keep_stream_open.wait()
 
     client.async_subscribe_state = subscription
+    client.async_keep_subscribed = keep_subscribed_after_an_outage
     real_process = coordinator.async_process_operational_state
     processed = asyncio.Event()
 
@@ -661,19 +661,9 @@ async def test_state_polling_covers_stream_backoff_and_reconnected_push(
         processed.set()
 
     coordinator.async_process_operational_state = observe_process
-    watcher_asyncio = SimpleNamespace(
-        Event=asyncio.Event,
-        create_task=asyncio.create_task,
-        gather=asyncio.gather,
-        CancelledError=asyncio.CancelledError,
-        sleep=controlled_sleep,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.coordinator.asyncio", watcher_asyncio
-    )
     watcher = asyncio.create_task(coordinator.async_watch_state())
     try:
-        await backoff_started.wait()
+        await stream_down.wait()
 
         # The ordinary coordinator refresh remains the source of truth while
         # push is unavailable.
@@ -704,36 +694,7 @@ async def test_state_polling_covers_stream_backoff_and_reconnected_push(
             await watcher
 
 
-async def test_state_watcher_backs_off_after_initial_snapshots(hass) -> None:
-    client = _client()
-    attempts = 0
-
-    async def short_lived_subscription():
-        nonlocal attempts
-        attempts += 1
-        yield client.async_get_state.return_value
-        if attempts == 3:
-            yield client.async_get_state.return_value
-        raise MaticError("stream closed")
-
-    client.async_subscribe_state = short_lived_subscription
-    coordinator = _coordinator(hass, client)
-
-    with (
-        patch(
-            "custom_components.matic_robot.coordinator.asyncio.sleep",
-            AsyncMock(side_effect=[None, None, asyncio.CancelledError]),
-        ) as sleep,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await coordinator.async_watch_state()
-
-    assert [args.args for args in sleep.await_args_list] == [(1,), (2,), (1,)]
-
-
-async def test_state_subscription_resets_burst_backoff_when_stream_completes(
-    hass,
-) -> None:
+async def test_state_subscription_returns_when_the_stream_completes(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
 
@@ -743,7 +704,9 @@ async def test_state_subscription_resets_burst_backoff_when_stream_completes(
 
     client.async_subscribe_state = subscription
 
-    assert await coordinator._async_consume_state_subscription() == 2
+    await coordinator._async_consume_state_subscription()
+
+    assert coordinator._state_push_sequence == 2
 
 
 async def test_state_subscription_returns_after_collector_finishes(hass) -> None:
@@ -756,28 +719,9 @@ async def test_state_subscription_returns_after_collector_finishes(hass) -> None
 
     client.async_subscribe_state = subscription
 
-    assert await coordinator._async_consume_state_subscription() == 0
+    await coordinator._async_consume_state_subscription()
 
-
-async def test_state_watcher_resets_delay_after_successful_burst(hass) -> None:
-    client = _client()
-    coordinator = _coordinator(hass, client)
-
-    async def subscription():
-        yield client.async_get_state.return_value
-        yield client.async_get_state.return_value
-
-    client.async_subscribe_state = subscription
-    with (
-        patch(
-            "custom_components.matic_robot.coordinator.asyncio.sleep",
-            AsyncMock(side_effect=asyncio.CancelledError),
-        ) as sleep,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await coordinator.async_watch_state()
-
-    assert sleep.await_args.args == (1,)
+    assert coordinator._state_push_sequence == 0
 
 
 async def test_state_subscription_cancels_collector_on_shutdown(hass) -> None:
@@ -901,10 +845,10 @@ async def test_state_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
                 release.set()
                 assert await publications.get() == first
                 assert processed == [first, latest, first]
+                # The stream has ended, and with it the one subscription.
+                await watcher
         finally:
             watcher.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await watcher
 
 
 async def test_floor_watcher_refreshes_changed_mission_and_labels(
@@ -1168,7 +1112,7 @@ async def test_floor_read_does_not_preserve_map_after_same_mission_signature_cha
     assert coordinator._cached_floor_plan is floor_plan
 
 
-async def test_floor_watcher_revokes_unknown_state_and_retries_failures(
+async def test_floor_watcher_revokes_unknown_state_and_subscribes_again(
     hass, monkeypatch
 ) -> None:
     client = _client()
@@ -1186,6 +1130,7 @@ async def test_floor_watcher_revokes_unknown_state_and_retries_failures(
         raise MaticError("stream closed")
 
     client.async_subscribe_collection_entries = entries
+    client.async_keep_subscribed = keep_subscribed(2)
     coordinator = _coordinator(hass, client)
     coordinator.async_request_refresh = AsyncMock()
 
@@ -1201,17 +1146,11 @@ async def test_floor_watcher_revokes_unknown_state_and_retries_failures(
         "custom_components.matic_robot.coordinator.decode_mission_client_state",
         decode,
     )
-    with (
-        patch(
-            "custom_components.matic_robot.coordinator.asyncio.sleep",
-            AsyncMock(side_effect=[None, asyncio.CancelledError]),
-        ) as sleep,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await coordinator.async_watch_floor_plan()
 
+    await coordinator.async_watch_floor_plan()
+
+    assert attempts == 2
     coordinator.async_request_refresh.assert_awaited_once_with()
-    assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
 
 
 @pytest.mark.parametrize("malformed", [False, True])
@@ -2768,10 +2707,10 @@ async def test_native_finished_event_excludes_unattempted_room_scope(hass):
 
 
 @pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_state"))
-async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
+async def test_watcher_finishes_when_a_closed_channel_replaces_its_cancellation(
     hass, watcher
 ) -> None:
-    """Real grpclib error replacement cannot leave teardown in retry sleep."""
+    """Real grpclib error replacement cannot leave teardown in a retry sleep."""
     from grpclib.exceptions import StreamTerminatedError
     from grpclib.utils import Wrapper
 
@@ -2790,42 +2729,29 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
                 await asyncio.Event().wait()
             yield None
 
+    class Channel(FakeChannel):
+        def close(self) -> None:
+            super().close()
+            wrapper.cancel(StreamTerminatedError("synthetic closed channel"))
+            if watcher == "async_watch_floor_plan":
+                # HA's cancellation races the close-triggered cancellation.
+                # Wrapper replaces both with its saved transport error on the
+                # same stack.
+                task.cancel("synthetic config entry unload")
+
     client.async_subscribe_collection_entries = subscription
     client.async_subscribe_state = subscription
-    channel = MagicMock()
-    channel.close.side_effect = lambda: wrapper.cancel(
-        StreamTerminatedError("synthetic closed channel")
-    )
-    client._connection._channel = channel
+    client._connection._supervisor._open = AsyncMock(return_value=Channel())
     coordinator.async_request_refresh = AsyncMock()
     task = asyncio.create_task(getattr(coordinator, watcher)())
     await started.wait()
-    client.retire()
-    if watcher == "async_watch_floor_plan":
-        # HA's cancellation races the close-triggered cancellation. Wrapper
-        # replaces both with its saved transport error on the same stack.
-        task.cancel("synthetic config entry unload")
+
+    await client.async_shutdown()
+
     await asyncio.wait_for(task, 0.5)
     assert subscriptions == 1
-    assert client.retired
-    assert client._connection._channel is None
     coordinator.async_request_refresh.assert_not_awaited()
     assert coordinator.data is None
-
-
-@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_state"))
-async def test_retired_watcher_finishes_after_subscription_ends(hass, watcher) -> None:
-    client = _client()
-    coordinator = _coordinator(hass, client)
-
-    async def subscription(*_args):
-        client.retired = True
-        if False:
-            yield None
-
-    client.async_subscribe_collection_entries = subscription
-    client.async_subscribe_state = subscription
-    await asyncio.wait_for(getattr(coordinator, watcher)(), 0.5)
 
 
 async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:

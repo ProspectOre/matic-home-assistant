@@ -10,8 +10,14 @@ Home Assistant owns setup, entity and service lifecycles. The integration keeps
 robot traffic local, validates and pins the robot's identity, and cleans up its
 resources on unload. The [Hermes client](../custom_components/matic_robot/client/api.py)
 composes the pinned [connection](../custom_components/matic_robot/client/hermes_connection.py),
-collection transport, decoded reads and validated commands. Bounded telemetry
-decoders handle robot state and native cleaning summaries.
+collection transport, decoded reads and validated commands. One
+[supervisor](../custom_components/matic_robot/client/supervisor.py) task dials,
+pins the certificate, completes the handshake, pings the open connection and
+redials a lost one after a jittered, growing pause; nothing else opens, closes
+or retries a connection. A failed request raises a transport, timeout,
+protocol, unsupported-endpoint or authentication error, and only the loss of
+the connection itself replaces it. Bounded telemetry decoders handle robot
+state and native cleaning summaries.
 [Discovery](../custom_components/matic_robot/config_flow_discovery.py) selects
 a certificate-bound address; [vacuum catalogs](../custom_components/matic_robot/vacuum_catalog.py)
 map Home Assistant areas to floor-scoped rooms. The

@@ -72,13 +72,7 @@ async def _pushed_battery(
         pytest.param(lambda faults: faults.reset("kabuki_state"), id="reset"),
         pytest.param(lambda faults: faults.corrupt("kabuki_state"), id="value"),
         pytest.param(
-            lambda faults: faults.corrupt("kabuki_state", frame=True),
-            id="frame",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="PRO-165: protobuf's DecodeError is not a Matic error, so"
-                " a malformed frame ends the state watcher until reload",
-            ),
+            lambda faults: faults.corrupt("kabuki_state", frame=True), id="frame"
         ),
     ],
 )

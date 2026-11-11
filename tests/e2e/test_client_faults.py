@@ -2,22 +2,36 @@
 
 Each test injects one fault from ``sim_faults`` and checks the error the
 client reports, what the robot did, and that the next attempt succeeds.
+``link.connections`` counts dials, so it shows which faults cost the
+connection.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from time import monotonic
 
 import pytest
 
-from custom_components.matic_robot.client import hermes_collections, hermes_connection
+from custom_components.matic_robot.client import (
+    hermes_collections,
+    hermes_connection,
+    supervisor,
+    transport,
+)
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import (
-    CannotConnectError,
-    MaticError,
+    ProtocolError,
+    RequestTimeoutError,
+    TransportError,
 )
-from custom_components.matic_robot.client.models import RobotActivity
+from custom_components.matic_robot.client.models import (
+    RobotActivity,
+    RobotOperationalState,
+)
 
 from .hermes_sim import PAUSE_PAYLOAD, Phase, RunningSimulator, SimulatedRobot
 
@@ -29,6 +43,49 @@ def short_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shorten the 10 s dial and RPC timeouts; the logic is unchanged."""
     monkeypatch.setattr(hermes_collections, "_RPC_TIMEOUT", 0.2)
     monkeypatch.setattr(hermes_connection, "_RPC_TIMEOUT", 0.2)
+
+
+@pytest.fixture
+def fast_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ping every 0.2 s, not every minute, and wait 0.2 s for the answer."""
+    monkeypatch.setattr(supervisor, "KEEPALIVE_SECONDS", 0.2)
+    monkeypatch.setattr(transport, "KEEPALIVE_TIMEOUT_SECONDS", 0.2)
+
+
+class _KeptSubscription:
+    """A state subscription the client keeps open, as the integration does."""
+
+    def __init__(self) -> None:
+        self.states: asyncio.Queue[RobotOperationalState] = asyncio.Queue()
+        self.interrupted = asyncio.Event()
+
+    async def activity(self, activity: RobotActivity) -> None:
+        """Wait for a pushed or resubscribed state with ``activity``."""
+        async with asyncio.timeout(10):
+            while (await self.states.get()).activity is not activity:
+                pass
+
+
+@asynccontextmanager
+async def _kept_subscription(
+    client: MaticHermesClient,
+) -> AsyncIterator[_KeptSubscription]:
+    kept = _KeptSubscription()
+
+    async def consume() -> None:
+        try:
+            async for state in client.async_subscribe_state():
+                kept.states.put_nowait(state)
+        except TransportError:
+            kept.interrupted.set()
+            raise
+
+    watcher = asyncio.create_task(client.async_keep_subscribed(consume))
+    await kept.activity(RobotActivity.DOCKED)
+    yield kept
+    # Closing the client is what ends a kept subscription.
+    await client.async_shutdown()
+    await watcher
 
 
 async def test_delayed_reply_arrives_late(
@@ -44,28 +101,31 @@ async def test_delayed_reply_arrives_late(
 
 @pytest.mark.usefixtures("short_timeouts")
 async def test_stalled_stream_times_out_until_it_is_released(
-    client: MaticHermesClient, robot: SimulatedRobot
+    client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
 ) -> None:
     robot.faults.stall("kabuki_state")
-    with pytest.raises(CannotConnectError, match="timed out"):
+    with pytest.raises(RequestTimeoutError, match="timed out"):
         await client.async_get_state()
     # Only that stream is silent.
     assert await client.async_get_property("wifi_status")
 
     robot.faults.clear()
     assert (await client.async_get_state()).activity is RobotActivity.DOCKED
+    assert simulator.link.connections == 1
 
 
 async def test_reset_part_way_through_a_snapshot_fails_that_read(
-    client: MaticHermesClient, robot: SimulatedRobot
+    client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
 ) -> None:
     robot.set_collection("schedule_events", SCHEDULES)
     robot.faults.reset("schedule_events", after=1)
-    with pytest.raises(CannotConnectError, match="connection failed"):
+    with pytest.raises(TransportError, match="connection failed"):
         await client.async_get_collection_entries("schedule_events")
 
     entries = await client.async_get_collection_entries("schedule_events")
     assert [(entry.key, entry.value) for entry in entries] == SCHEDULES
+    # One stream was reset; the connection carried the second read.
+    assert simulator.link.connections == 1
 
 
 async def test_reset_ends_a_subscription_and_a_new_one_resumes(
@@ -74,7 +134,7 @@ async def test_reset_ends_a_subscription_and_a_new_one_resumes(
     updates = client.async_subscribe_state()
     await anext(updates)
     robot.faults.reset("kabuki_state")
-    with pytest.raises(CannotConnectError, match="connection failed"):
+    with pytest.raises(TransportError, match="connection failed"):
         await anext(updates)
 
     updates = client.async_subscribe_state()
@@ -84,7 +144,7 @@ async def test_reset_ends_a_subscription_and_a_new_one_resumes(
     await updates.aclose()
 
 
-async def test_state_read_retries_one_reset_on_a_fresh_channel(
+async def test_state_read_is_repeated_once_after_a_reset(
     client: MaticHermesClient, robot: SimulatedRobot
 ) -> None:
     robot.faults.reset("kabuki_state")
@@ -92,7 +152,7 @@ async def test_state_read_retries_one_reset_on_a_fresh_channel(
 
     robot.faults.reset("kabuki_state")
     robot.faults.reset("kabuki_state")
-    with pytest.raises(CannotConnectError):
+    with pytest.raises(TransportError):
         await client.async_get_state()
 
 
@@ -101,23 +161,27 @@ async def test_undecodable_value_is_a_malformed_state_and_spares_other_streams(
 ) -> None:
     robot.faults.corrupt("kabuki_state")
     assert await client.async_get_property("wifi_status")
-    with pytest.raises(CannotConnectError, match="malformed robot state"):
+    with pytest.raises(ProtocolError, match="malformed robot state"):
         await client.async_get_state()
 
     assert (await client.async_get_state()).activity is RobotActivity.DOCKED
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PRO-165: a frame that is not a CollectionResponse raises protobuf's"
-    " DecodeError past the Matic error mapping",
-)
-async def test_undecodable_frame_is_a_matic_error(
-    client: MaticHermesClient, robot: SimulatedRobot
+async def test_undecodable_frame_fails_that_read_and_spares_other_streams(
+    client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
 ) -> None:
-    robot.faults.corrupt("kabuki_state", frame=True)
-    with pytest.raises(MaticError):
-        await client.async_get_state()
+    updates = client.async_subscribe_state()
+    await anext(updates)
+    robot.set_collection("schedule_events", SCHEDULES)
+    robot.faults.corrupt("schedule_events", frame=True)
+    with pytest.raises(ProtocolError, match="undecodable message"):
+        await client.async_get_collection_entries("schedule_events")
+
+    # The subscription open on the same connection still delivers.
+    robot.start_cleaning()
+    assert (await anext(updates)).activity is RobotActivity.CLEANING
+    await updates.aclose()
+    assert simulator.link.connections == 1
 
 
 @pytest.mark.parametrize(
@@ -134,12 +198,12 @@ async def test_reset_command_fails_the_same_whether_or_not_the_robot_acted(
 ) -> None:
     robot.start_cleaning()
     robot.faults.reset("user_command", after=after)
-    with pytest.raises(CannotConnectError, match="command connection failed"):
+    with pytest.raises(TransportError, match="command connection failed"):
         await client.async_send_user_command(UserCommand.PAUSE)
 
     assert robot.phase is phase
     assert robot.received() == received
-    assert client.command_health["user_command"] == "CannotConnectError"
+    assert client.command_health["user_command"] == "TransportError"
 
 
 @pytest.mark.usefixtures("short_timeouts")
@@ -148,7 +212,7 @@ async def test_stalled_acknowledgment_times_out_after_the_robot_acted(
 ) -> None:
     robot.start_cleaning()
     robot.faults.stall("user_command")
-    with pytest.raises(CannotConnectError, match="command timed out"):
+    with pytest.raises(RequestTimeoutError, match="command timed out"):
         await client.async_send_user_command(UserCommand.PAUSE)
 
     assert robot.phase is Phase.PAUSED
@@ -160,34 +224,65 @@ async def test_dropped_link_ends_a_subscription_and_the_next_read_redials(
     updates = client.async_subscribe_state()
     await anext(updates)
     simulator.link.drop()
-    with pytest.raises(CannotConnectError):
+    with pytest.raises(TransportError):
         await anext(updates)
 
     assert (await client.async_get_state()).activity is RobotActivity.DOCKED
+    assert simulator.link.connections == 2
 
 
 async def test_cut_link_refuses_the_dial_until_it_is_restored(
     client: MaticHermesClient, simulator: RunningSimulator
 ) -> None:
     simulator.link.cut()
-    with pytest.raises(CannotConnectError):
+    with pytest.raises(TransportError):
         await client.async_get_state()
 
+    # A request dials at once; it does not wait out the pause between redials.
     simulator.link.restore()
     assert (await client.async_get_state()).activity is RobotActivity.DOCKED
 
 
 @pytest.mark.usefixtures("short_timeouts")
-async def test_silent_link_is_noticed_only_when_a_timeout_expires(
+async def test_read_on_a_silent_link_times_out_and_the_next_one_redials(
     client: MaticHermesClient, simulator: RunningSimulator
 ) -> None:
     simulator.link.stall()
-    started = monotonic()
-    with pytest.raises(CannotConnectError, match="timed out"):
+    with pytest.raises(RequestTimeoutError, match="timed out"):
         await client.async_get_state()
-    # Nothing reports the loss sooner: the read and then the redial each wait
-    # out a timeout.
-    assert monotonic() - started >= 0.4
 
     simulator.link.restore()
     assert (await client.async_get_state()).activity is RobotActivity.DOCKED
+    assert simulator.link.connections == 2
+
+
+@pytest.mark.usefixtures("fast_keepalive")
+async def test_keepalive_ends_a_silent_link_and_the_subscription_resumes(
+    client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
+) -> None:
+    async with _kept_subscription(client) as kept:
+        simulator.link.stall()
+        # Nothing is requested or pushed: only the unanswered ping can tell.
+        async with asyncio.timeout(5):
+            await kept.interrupted.wait()
+
+        simulator.link.restore()
+        robot.start_cleaning()
+        await kept.activity(RobotActivity.CLEANING)
+
+
+@pytest.mark.usefixtures("fast_keepalive")
+async def test_refused_pings_slow_the_keepalive_down(
+    client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
+) -> None:
+    # A ping every 0.2 s is refused; one every 0.4 s, the doubled pace, is not.
+    simulator.refuse_pings(faster_than=0.3)
+    async with _kept_subscription(client) as kept:
+        async with asyncio.timeout(5):
+            await kept.interrupted.wait()
+        robot.start_cleaning()
+        await kept.activity(RobotActivity.CLEANING)
+
+        # Three more pings at the new pace, and no further redial.
+        await asyncio.sleep(1.2)
+        assert simulator.link.connections == 2

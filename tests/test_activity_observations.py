@@ -84,7 +84,7 @@ async def test_command_transport_records_attempt_send_and_result(
     client = MaticHermesClient(
         "robot.invalid", 16320, observation_callback=delivered.append
     )
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     stream = _Stream(response=response)
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_connection.HermesStub",
@@ -111,7 +111,7 @@ async def test_connection_failure_and_cancellation_never_claim_sent(
     error, outcome
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection.async_connect = AsyncMock(side_effect=error)
+    client._connection.async_channel = AsyncMock(side_effect=error)
     with pytest.raises(type(error)):
         await client.async_send_user_command(UserCommand.DOCK)
     events = client.activity_journal.snapshot
@@ -129,7 +129,7 @@ async def test_observer_failure_cannot_block_a_command(monkeypatch, caplog) -> N
         raise RuntimeError("private-secret")
 
     client = MaticHermesClient("robot.invalid", 16320, observation_callback=broken)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     stream = _Stream()
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_connection.HermesStub",

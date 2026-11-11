@@ -56,7 +56,7 @@ def _wifi(signal: int | None) -> bytes:
 
 def _client(*properties: bytes) -> MaticHermesClient:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     client._connection._async_send_channel_payload = AsyncMock()
     client._collections.async_get_property = AsyncMock(side_effect=list(properties))
     return client
