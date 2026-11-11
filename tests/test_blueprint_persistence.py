@@ -56,7 +56,7 @@ async def prepare_api(hass: HomeAssistant, tmp_path: Path) -> list[ServiceCall]:
         calls.append(call)
 
     for domain, service in (
-        ("matic_robot", "intelligent_clean"),
+        ("matic_robot", "run_selected_plan"),
         ("matic_robot", "stop_intelligent_cleaning"),
         ("matic_robot", "firmware_notification"),
         ("notify", "blueprint_test_phone"),
@@ -220,9 +220,13 @@ async def test_import_save_reload_and_source_trigger(
     else:
         assert len(calls) == 1
         assert (
-            calls[0].domain == "matic_robot" and calls[0].service == "intelligent_clean"
+            calls[0].domain == "matic_robot" and calls[0].service == "run_selected_plan"
         )
-        assert calls[0].data == {"entity_id": [VACUUM], "plan": "Saved test plan"}
+        assert calls[0].data == {
+            "entity_id": [VACUUM],
+            "plan": "Saved test plan",
+            "run_behavior": "intelligent",
+        }
     await hass.services.async_call(
         "automation",
         "turn_off",

@@ -133,3 +133,10 @@ class MaticBinarySensor(MaticEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return the current predicate value."""
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Name the robot's current errors on the Problem sensor."""
+        if self.entity_description.key != "problem":
+            return None
+        return {"errors": list(self.coordinator.data.operational.error_names)}

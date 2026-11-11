@@ -820,5 +820,6 @@ def test_away_blueprint_starts_and_stops_intelligent_cleaning() -> None:
     assert "id: someone_returned" in blueprint
     assert "vacuum_entity: !input vacuum" in blueprint
     assert "states(vacuum_entity) in ('docked', 'idle')" in blueprint
-    assert "action: matic_robot.intelligent_clean" in blueprint
+    assert "action: matic_robot.run_selected_plan" in blueprint
+    assert "run_behavior='intelligent'" in blueprint
     assert "action: matic_robot.stop_intelligent_cleaning" in blueprint

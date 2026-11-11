@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -50,6 +51,7 @@ from .llm import async_register_matic_llm_api
 from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager, async_get_plan_manager, plan_floor_token
+from .removals import async_warn_of_removals
 from .restart import async_recover_managed_run
 from .services import async_register_services
 from .slam_history import (
@@ -122,6 +124,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     await async_register_frontend(hass)
     await async_register_services(hass)
     hass.data[DOMAIN][DATA_LLM_API] = async_register_matic_llm_api(hass)
+    async_at_started(hass, async_warn_of_removals)
     return True
 
 

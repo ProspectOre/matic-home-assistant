@@ -91,6 +91,7 @@ from .plans import (
     resolve_rooms,
     room_cadence_identity,
 )
+from .removals import warn_of_removal
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_coherence import room_completion_names_are_current
 from .room_sequence import resolve_room_sequence, saved_plan_preview_token
@@ -244,6 +245,7 @@ RUN_SELECTED_PLAN_SCHEMA = cv.make_entity_service_schema(
             cv.string,
             probatio.Match(r"^[0-9a-f]{64}$"),
         ),
+        probatio.Optional("run_behavior"): probatio.In(("intelligent", "ordered")),
     }
 )
 
@@ -1106,23 +1108,30 @@ async def async_register_services(hass: HomeAssistant) -> None:
         await async_run_saved_plan(call, intelligent=False)
 
     async def async_run_selected_plan(call: ServiceCall) -> None:
-        """Run a saved plan using its configured default behavior."""
+        """Run a saved plan in its saved cleaning order, or the one asked for."""
+        run_behavior = call.data.get("run_behavior")
         await async_run_saved_plan(
             call,
-            intelligent=None,
+            intelligent=None if run_behavior is None else run_behavior == "intelligent",
             preview_token=call.data.get("preview_token"),
         )
 
     hass.services.async_register(
         DOMAIN,
         SERVICE_INTELLIGENT_CLEAN,
-        _require_matic_control(hass, _keep_managed_run(hass, async_intelligent_clean)),
+        _require_matic_control(
+            hass,
+            warn_of_removal(hass, _keep_managed_run(hass, async_intelligent_clean)),
+        ),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_ENTIRE_PLAN,
-        _require_matic_control(hass, _keep_managed_run(hass, async_clean_entire_plan)),
+        _require_matic_control(
+            hass,
+            warn_of_removal(hass, _keep_managed_run(hass, async_clean_entire_plan)),
+        ),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
@@ -1482,7 +1491,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_SELECT_PLAN,
-        _require_matic_control(hass, async_select_plan),
+        _require_matic_control(hass, warn_of_removal(hass, async_select_plan)),
         schema=PLAN_REFERENCE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -1558,7 +1567,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_SAVE_PLAN_ROOM,
-        _require_matic_control(hass, async_save_plan_room),
+        _require_matic_control(hass, warn_of_removal(hass, async_save_plan_room)),
         schema=SAVE_PLAN_ROOM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -1599,7 +1608,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_DELETE_PLAN_ROOM,
-        _require_matic_control(hass, async_delete_plan_room),
+        _require_matic_control(hass, warn_of_removal(hass, async_delete_plan_room)),
         schema=DELETE_PLAN_ROOM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -1662,7 +1671,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_MOVE_PLAN_ROOM,
-        _require_matic_control(hass, async_move_plan_room),
+        _require_matic_control(hass, warn_of_removal(hass, async_move_plan_room)),
         schema=MOVE_PLAN_ROOM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )

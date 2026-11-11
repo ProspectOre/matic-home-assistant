@@ -2439,6 +2439,28 @@ async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
     ]
 
 
+def test_problem_sensor_names_the_current_errors() -> None:
+    """Error names stay readable once 0.6 removes the Activity sensor."""
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, error_codes=(220, 326)),
+    )
+
+    attributes = {
+        description.key: binary_sensor.MaticBinarySensor(
+            entry, description
+        ).extra_state_attributes
+        for description in binary_sensor.DESCRIPTIONS
+    }
+
+    assert attributes.pop("problem") == {
+        "errors": ["Mopping water unavailable", "error_code_326"]
+    }
+    assert set(attributes.values()) == {None}
+
+
 async def test_paused_vacuum_with_latched_warning_reports_paused_and_problem() -> None:
     """A latched warning must not turn a paused robot back into cleaning."""
     entry = _entry(paused=True)

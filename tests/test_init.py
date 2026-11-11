@@ -12,6 +12,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 import pytest
 from homeassistant.components import frontend, panel_custom
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import CoreState
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 
 from custom_components.matic_robot import (
@@ -61,6 +62,7 @@ from custom_components.matic_robot.plans import (
     AreaBindingUpgradeResult,
     CleaningPlanManager,
 )
+from custom_components.matic_robot.removals import async_warn_of_removals
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 
 
@@ -934,9 +936,11 @@ async def test_setup_registers_services_without_media_view() -> None:
             "custom_components.matic_robot.async_register_matic_llm_api",
             return_value=SimpleNamespace(id="matic_robot_operations"),
         ),
+        patch("custom_components.matic_robot.async_at_started") as at_started,
     ):
         assert await async_setup(hass, {}) is True
 
+    at_started.assert_called_once_with(hass, async_warn_of_removals)
     assert hass.services.async_register.call_count == 23
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
@@ -968,6 +972,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     register_panel = panel_custom.async_register_panel
     hass = SimpleNamespace(
         is_running=False,
+        state=CoreState.not_running,
         http=SimpleNamespace(
             register_view=MagicMock(), async_register_static_paths=AsyncMock()
         ),

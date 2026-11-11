@@ -1573,6 +1573,61 @@
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
+    },
+    "removed_plan_run_action": {
+      "title": "Version 0.6 removes {action}",
+      "description": "`{action}` just ran, and Matic (Unofficial) 0.6 removes it along with the button that calls it. Wherever you use either one, switch to `matic_robot.run_selected_plan` with `run_behavior: {run_behavior}` or to the Run plan button, then restart Home Assistant to clear this notice."
+    },
+    "removed_select_plan_action": {
+      "title": "Version 0.6 removes {action}",
+      "description": "`{action}` just ran, and Matic (Unofficial) 0.6 removes it. Wherever you use it, switch to `select.select_option` on the robot's Default cleaning plan entity, which is off until you enable it, then restart Home Assistant to clear this notice."
+    },
+    "removed_plan_room_action": {
+      "title": "Version 0.6 removes {action}",
+      "description": "`{action}` just ran, and Matic (Unofficial) 0.6 removes it. Wherever you use it, switch to `matic_robot.save_plan`, which saves a plan's whole room list, or edit the plan in Matic Map, then restart Home Assistant to clear this notice."
+    },
+    "removed_entity_state": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 removes:\n\n{items}\n\nChange them to the state of the robot's `vacuum` entity, then restart Home Assistant to clear this notice."
+    },
+    "removed_entity_fully_charged": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 removes:\n\n{items}\n\nChange them to Battery at 100% while the Charging sensor is on, then restart Home Assistant to clear this notice."
+    },
+    "removed_entity_rooms": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 removes:\n\n{items}\n\nChange them to the `rooms` attribute of the robot's `vacuum` entity, then restart Home Assistant to clear this notice."
+    },
+    "removed_entity_update": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 removes:\n\n{items}\n\nChange them to the attribute of the same name on the robot's Firmware entity, then restart Home Assistant to clear this notice."
+    },
+    "removed_entity_scheduled_cleanings": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 replaces with a calendar of the robot's scheduled cleanings:\n\n{items}\n\nChange them to the calendar after you install 0.6."
+    },
+    "removed_entity_diagnostics": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 moves to the robot's diagnostics download:\n\n{items}\n\nNothing can read the download automatically, so take `{entity_id}` out of them, then restart Home Assistant to clear this notice."
+    },
+    "removed_entity_plan_button": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 removes:\n\n{items}\n\nChange them to the Run plan button, or to `matic_robot.run_selected_plan` with the `run_behavior` you want, then restart Home Assistant to clear this notice."
+    },
+    "removed_entity_stop_button": {
+      "title": "Version 0.6 removes {entity_id}",
+      "description": "These use `{entity_id}`, which Matic (Unofficial) 0.6 removes:\n\n{items}\n\nChange them to `vacuum.stop` on the robot's `vacuum` entity, then restart Home Assistant to clear this notice."
+    },
+    "blueprints_use_removed_action": {
+      "title": "Matic blueprints need an update",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Update Matic blueprints",
+            "description": "These blueprints call `matic_robot.intelligent_clean`, which Matic (Unofficial) 0.6 removes: {blueprints}. Submit to switch them to `matic_robot.run_selected_plan` with the same cleaning order, which rewrites their files and reloads your automations."
+          }
+        }
+      }
     }
   },
   "services": {
@@ -1687,6 +1742,10 @@
         "plan": {
           "name": "Cleaning plan",
           "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
+        },
+        "run_behavior": {
+          "name": "Cleaning order",
+          "description": "Smart Order cleans the rooms that have waited longest first. Saved order cleans every room from top to bottom. Leave empty to use the order saved with the plan."
         },
         "preview_token": {
           "name": "Preview ID",

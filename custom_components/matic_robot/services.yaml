@@ -131,6 +131,11 @@ run_selected_plan:
       example: Main floor
       selector:
         text:
+    run_behavior:
+      selector:
+        select:
+          translation_key: run_behavior
+          options: [intelligent, ordered]
     preview_token:
       advanced: true
       selector:

@@ -53,8 +53,8 @@ are disabled by default; enable them from the device's entity list.
 | Matter pairing mode | `binary_sensor.matic_matter_pairing_mode` | off |
 | Support tunnel permission · Diagnostic upload | `binary_sensor.matic_ssh_tunnel_permission` · `_diagnostic_upload` | off |
 
-Paused, Returning to dock and Fully charged repeat **Activity**, so they start
-disabled. The status sensors (Activity, Firmware check status, Update status,
+Matic 0.6 [removes 14 of these entities](release-notes-0.5.4.md#removed-in-06); 0.5.4 warns in Repairs when an automation or script uses one.
+The status sensors (Activity, Firmware check status, Update status,
 Wi-Fi status, both Cues statuses) offer their states as a pick list in the
 automation editor. Duration sensors store seconds: room timing and coverage time
 suggest minutes, Last clean duration suggests hours, and you can choose another
@@ -112,9 +112,9 @@ the first stays skipped. With no installed version, Home Assistant shows the
 update's state as unknown, so there is nothing to skip. The device page shows
 the software and hardware versions.
 
-If **Problem** turns on, `sensor.matic_activity` names the reported conditions
-in `errors` and `primary_error` and keeps their numeric codes in
-`hermes_error_codes`; a code with no known meaning appears as `error_code_<n>`.
+If **Problem** turns on, its `errors` attribute names the reported conditions;
+`sensor.matic_activity` repeats them and keeps their numeric codes in
+`hermes_error_codes`. A code with no known meaning appears as `error_code_<n>`.
 Each new error needs two normal polls; existing errors stay visible while others change.
 Code 207's lid meaning is physically confirmed. Matic app 1.182.1 maps
 220 to mopping water unavailable; broader firmware coverage remains unqualified. Recorded activity keeps their numeric codes after clearing.
