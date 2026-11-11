@@ -140,7 +140,7 @@ async function captureNativeOwnership(page, robot, testInfo, label) {
       },
       identityTrace: simulator.identity_trace.slice(-24),
     },
-    coordinator: simulator.coordinator_trace.slice(-32),
+    session: simulator.session_trace.slice(-32),
     publishedWorkspace: workspace && {
       generation: workspace.generation,
       hostConnected: workspace.host?.connected,

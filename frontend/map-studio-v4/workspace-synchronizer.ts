@@ -283,7 +283,7 @@ export class WorkspaceSynchronizer {
             sequence: snapshot.sequence, coherenceGeneration: snapshot.coherence_generation,
             revisions: snapshot.revisions };
           if (floorVerificationLost) {
-            // A coordinator failure can produce an empty, unverified snapshot
+            // An unreachable robot can produce an empty, unverified snapshot
             // while the REST-backed projection still contains the last good
             // floor. Treat that snapshot as a lost proof: close live controls
             // and revalidate the catalog before trusting the retained scene.

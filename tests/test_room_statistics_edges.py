@@ -1,7 +1,6 @@
 """Boundary cases for native room-statistics evidence and sensor projection."""
 
 import hashlib
-from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -26,6 +25,7 @@ from custom_components.matic_robot.plans import (
 from custom_components.matic_robot.room_statistics import (
     completed_native_room_statistics,
 )
+from custom_components.matic_robot.stores import CleaningHistory
 from tests.test_entities import _entry as entity_entry
 
 
@@ -573,17 +573,15 @@ def test_managed_room_match_uses_fallback_when_native_start_is_missing():
 
 def test_other_room_managed_session_suppresses_incidental_native_room_completion():
     entry = entity_entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     floor = _floor(("room-a", "Room A"), ("room-b", "Room B"))
     started = "2026-11-01T10:00:00+00:00"
     ended = "2026-11-01T11:00:00+00:00"
     room_a = floor.rooms[0]
-    coordinator.data = replace(
-        coordinator.data,
-        floor_plan=floor,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    session.floor.set(floor)
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 started_at=started,
                 ended_at=ended,
                 duration_seconds=3600,
@@ -592,7 +590,16 @@ def test_other_room_managed_session_suppresses_incidental_native_room_completion
                 completed=True,
                 mode_results=(),
             ),
-        ),
+            CleaningSession(
+                started_at=started,
+                ended_at=ended,
+                duration_seconds=3600,
+                rooms=("Room B",),
+                room_durations=(),
+                completed=True,
+                mode_results=(),
+            ),
+        )
     )
     older_a = "2026-10-31T08:00:00+00:00"
     incidental_native = "2026-11-01T10:30:00+00:00"

@@ -27,7 +27,7 @@ def floor() -> SimFloor:
 
 
 def _room_id(entry: MockConfigEntry, name: str) -> str:
-    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    floor_plan = entry.runtime_data.session.floor.value
     return next(room.id for room in floor_plan.rooms if room.name == name)
 
 

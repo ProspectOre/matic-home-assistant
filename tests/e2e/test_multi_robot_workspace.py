@@ -156,7 +156,7 @@ async def test_three_robot_workspace_operational_load_fanout_and_cleanup(
             assert entry.state is ConfigEntryState.LOADED
             state_changed = asyncio.Event()
             state_unsubscribers.append(
-                entry.runtime_data.coordinator.async_add_listener(state_changed.set)
+                entry.runtime_data.session.state.subscribe(state_changed.set)
             )
             state_changed_by_entry[entry.entry_id] = state_changed
             history = entry.runtime_data.slam_history
@@ -266,7 +266,7 @@ async def test_three_robot_workspace_operational_load_fanout_and_cleanup(
             return [
                 entry
                 for entry, battery in zip(entries, final_batteries, strict=True)
-                if entry.runtime_data.coordinator.data.operational.battery_percentage
+                if entry.runtime_data.session.state.value.operational.battery_percentage
                 != round(battery * 100)
             ]
 
@@ -293,7 +293,7 @@ async def test_three_robot_workspace_operational_load_fanout_and_cleanup(
                     ws, queues[client_index], 7 + index, entry.entry_id
                 )
                 readbacks.append(readback)
-                state = entry.runtime_data.coordinator.data.operational
+                state = entry.runtime_data.session.state.value.operational
                 assert readback["entry_id"] == entry.entry_id
                 assert state.battery_percentage == round(final_batteries[index] * 100)
                 assert (

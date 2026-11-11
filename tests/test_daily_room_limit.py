@@ -1114,7 +1114,7 @@ async def test_untracked_vacuum_room_clean_is_refused_when_policy_enabled(hass):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     identity = room_cadence_identity(floor, room.id)
     await manager.cadence.async_set_daily_limit(
@@ -1128,7 +1128,7 @@ async def test_untracked_vacuum_room_clean_is_refused_when_policy_enabled(hass):
     with pytest.raises(ServiceValidationError) as raised:
         await vacuum.async_send_command("clean_rooms", {"rooms": [room.id]})
     assert raised.value.translation_key == "daily_room_limit_requires_managed"
-    entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+    entry.runtime_data.session.client.async_start_coverage.assert_not_awaited()
 
 
 async def test_direct_redo_and_reached_room_refuse_bypassing_daily_limit(hass):
@@ -1136,7 +1136,7 @@ async def test_direct_redo_and_reached_room_refuse_bypassing_daily_limit(hass):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     identity = room_cadence_identity(floor, room.id)
     serial = "synthetic-serial"
@@ -1154,7 +1154,7 @@ async def test_direct_redo_and_reached_room_refuse_bypassing_daily_limit(hass):
     with pytest.raises(ServiceValidationError) as clean:
         await vacuum.async_send_command("clean_rooms", {"rooms": [room.id]})
     assert clean.value.translation_key == "daily_room_limit_reached"
-    entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+    entry.runtime_data.session.client.async_start_coverage.assert_not_awaited()
 
 
 async def test_direct_clean_refuses_when_room_identity_cannot_be_resolved(
@@ -1164,7 +1164,7 @@ async def test_direct_clean_refuses_when_room_identity_cannot_be_resolved(
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     await manager.cadence.async_set_daily_limit(
         "synthetic-serial",
@@ -1187,7 +1187,7 @@ async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     now = dt_util.utcnow()
     session = CleaningSession(
@@ -1209,7 +1209,7 @@ async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
         )
         return [CleaningSessionRecord(b"native", session)]
 
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     client.async_get_cleaning_session_records = AsyncMock(side_effect=history)
     vacuum = MaticVacuum(entry)
     vacuum._holds_task = lambda: False
@@ -1224,7 +1224,7 @@ async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_writ
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     identity = room_cadence_identity(floor, room.id)
     vacuum = MaticVacuum(entry)
@@ -1248,7 +1248,7 @@ async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_writ
         writes.append("sent")
 
     vacuum._async_ensure_stop_settled = wait_for_stop
-    entry.runtime_data.coordinator.client.async_start_coverage = AsyncMock(
+    entry.runtime_data.session.client.async_start_coverage = AsyncMock(
         side_effect=start_coverage
     )
     with pytest.raises(ServiceValidationError) as raised:
@@ -1275,11 +1275,9 @@ def _daily_limit_request(hass, body, *, admin=True):
 
 def _daily_limit_runtime(floor, setter):
     runtime = SimpleNamespace(
-        coordinator=SimpleNamespace(
-            data=SimpleNamespace(
-                floor_plan=floor,
-                info=SimpleNamespace(serial_number=SERIAL),
-            )
+        session=SimpleNamespace(
+            floor=SimpleNamespace(value=floor),
+            info=SimpleNamespace(serial_number=SERIAL),
         ),
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
         cleaning_plans=SimpleNamespace(
@@ -1404,7 +1402,7 @@ async def test_daily_limit_view_binds_write_to_live_floor_identity(monkeypatch):
         MagicMock(side_effect=ValueError("room disappeared")),
     )
     assert not setter.await_args.kwargs["require_current"]()
-    runtime.coordinator.data.floor_plan = replace(floor, mission_id=2)
+    runtime.session.floor.value = replace(floor, mission_id=2)
     assert not setter.await_args.kwargs["require_current"]()
 
 

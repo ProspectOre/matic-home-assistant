@@ -66,7 +66,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                 await _ensure_stop_settled(
                     hass,
                     manager,
-                    entry.runtime_data.coordinator.data.info.serial_number,
+                    entry.runtime_data.session.info.serial_number,
                     entity_id,
                     entry.runtime_data.client.async_get_active_cleaning_session_state,
                 )
@@ -236,7 +236,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
             ) from err
         _validated_area_command(
             area,
-            entry.runtime_data.coordinator.data.floor_plan,
+            entry.runtime_data.session.floor.value,
             call.data.get("cleaning_mode"),
             call.data.get("coverage_setting"),
         )
@@ -290,7 +290,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                     "The robot could not start the custom-area clean",
                     "robot_command_failed",
                 ) from err
-        await entry.runtime_data.coordinator.async_request_refresh()
+        await entry.runtime_data.session.heartbeat.async_request_refresh()
 
     hass.services.async_register(
         DOMAIN,

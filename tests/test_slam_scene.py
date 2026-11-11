@@ -127,8 +127,22 @@ def _fresh_pose(x: float, y: float, z: float) -> RobotPose:
     return RobotPose(x, y, z, mission_id=1, observed_at=time(), heading=0.5)
 
 
-def _pose_session(pose: RobotPose | None) -> SimpleNamespace:
-    session = SimpleNamespace(poses=Store({} if pose is None else {1: pose}))
+def _pose_session(
+    pose: RobotPose | None, floor_plan: FloorPlan | None = None
+) -> SimpleNamespace:
+    session = SimpleNamespace(
+        info=SimpleNamespace(serial_number="synthetic-serial"),
+        error=Store(None),
+        floor=Store(floor_plan),
+        state=Store(
+            SimpleNamespace(
+                operational=SimpleNamespace(current_area="Kitchen"),
+                session_active=False,
+            )
+        ),
+        telemetry=Store(SimpleNamespace(zones=())),
+        poses=Store({} if pose is None else {1: pose}),
+    )
     session.pose_on = partial(RobotSession.pose_on, session)
     return session
 
@@ -181,18 +195,8 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
     )
     return SimpleNamespace(
         client=SimpleNamespace(),
-        session=_pose_session(robot_pose),
+        session=_pose_session(robot_pose, floor_plan),
         slam_map=slam_map,
-        coordinator=SimpleNamespace(
-            async_add_listener=MagicMock(return_value=MagicMock()),
-            data=SimpleNamespace(
-                info=SimpleNamespace(serial_number="synthetic-serial"),
-                floor_plan=floor_plan,
-                pose=robot_pose,
-                operational=SimpleNamespace(current_area="Kitchen"),
-                telemetry=SimpleNamespace(active_cleaning_session=False, zones=()),
-            ),
-        ),
         slam_history=SimpleNamespace(
             catalog=MagicMock(return_value=()),
             catalog_for_mission=MagicMock(return_value=()),
@@ -247,15 +251,15 @@ def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
     )
     assert _map_session_key(runtime) == original
 
-    floor_plan = runtime.coordinator.data.floor_plan
+    floor_plan = runtime.session.floor.value
     assert floor_plan is not None
-    runtime.coordinator.data.floor_plan = replace(
+    runtime.session.floor.value = replace(
         floor_plan,
         partition_id_wire=b"replacement-partition",
     )
     assert _map_session_key(runtime) != original
 
-    runtime.coordinator.data.floor_plan = replace(
+    runtime.session.floor.value = replace(
         floor_plan,
         mission_id=floor_plan.mission_id + 1,
     )
@@ -347,7 +351,6 @@ def _entry(
         entry_id=entry_id,
         options={} if options is None else options,
     )
-    runtime.coordinator.config_entry = entry
     return entry
 
 
@@ -381,9 +384,7 @@ async def test_scene_view_serves_and_etag_caches_compact_private_payload() -> No
 
 async def test_scene_withholds_floor_overlays_until_mission_identity_matches() -> None:
     runtime = _runtime()
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan, mission_id=2
-    )
+    runtime.session.floor.value = replace(runtime.session.floor.value, mission_id=2)
     hass = _hass(_entry(runtime))
 
     response = await MaticSlamSceneView().get(_request(hass), "entry")
@@ -428,9 +429,7 @@ async def test_scene_generation_covers_both_multi_floor_transition_orders(
     assert initial["map_floor_coherent"] is True
 
     if first_change == "floor":
-        runtime.coordinator.data.floor_plan = replace(
-            runtime.coordinator.data.floor_plan, mission_id=2
-        )
+        runtime.session.floor.value = replace(runtime.session.floor.value, mission_id=2)
     else:
         _set_map_mission(runtime, 2, 8)
     transition = json.loads((await catalog_view.get(_request(hass))).body)["entries"][0]
@@ -440,9 +439,7 @@ async def test_scene_generation_covers_both_multi_floor_transition_orders(
     if first_change == "floor":
         _set_map_mission(runtime, 2, 8)
     else:
-        runtime.coordinator.data.floor_plan = replace(
-            runtime.coordinator.data.floor_plan, mission_id=2
-        )
+        runtime.session.floor.value = replace(runtime.session.floor.value, mission_id=2)
     settled = json.loads((await catalog_view.get(_request(hass))).body)["entries"][0]
     assert settled["map_revision"] > transition["map_revision"]
     assert settled["map_scene_epoch"] == initial["map_scene_epoch"]
@@ -472,7 +469,7 @@ async def test_scene_publishes_captured_snapshot_during_same_mission_churn() -> 
     assert view._cache["entry"].key == (
         7,
         runtime.slam_map.mission_identity,
-        runtime.coordinator.data.floor_plan,
+        runtime.session.floor.value,
     )
     assert response.headers["X-Matic-Revision"] == "7"
     assert view.current_revision("entry", runtime) == 8
@@ -489,7 +486,7 @@ async def test_scene_retries_when_floor_changes_during_encoding() -> None:
         encoded = target()
         calls += 1
         if calls == 1:
-            runtime.coordinator.data.floor_plan = replace(_floor_plan(), mission_id=2)
+            runtime.session.floor.value = replace(_floor_plan(), mission_id=2)
         return encoded
 
     hass.async_add_executor_job.side_effect = mutate_during_first_encode
@@ -501,7 +498,7 @@ async def test_scene_retries_when_floor_changes_during_encoding() -> None:
     assert view._cache["entry"].key == (
         runtime.slam_map.revision,
         runtime.slam_map.mission_identity,
-        runtime.coordinator.data.floor_plan,
+        runtime.session.floor.value,
     )
 
 
@@ -512,9 +509,9 @@ async def test_scene_fails_closed_during_continuous_floor_updates() -> None:
 
     async def mutate_every_encode(target):
         encoded = target()
-        runtime.coordinator.data.floor_plan = replace(
-            runtime.coordinator.data.floor_plan,
-            mission_id=runtime.coordinator.data.floor_plan.mission_id + 1,
+        runtime.session.floor.value = replace(
+            runtime.session.floor.value,
+            mission_id=runtime.session.floor.value.mission_id + 1,
         )
         return encoded
 
@@ -527,7 +524,7 @@ async def test_scene_fails_closed_during_continuous_floor_updates() -> None:
     assert second.status == HTTPStatus.CONFLICT
     assert hass.async_add_executor_job.await_count == 4
     assert view._cache == {}
-    assert runtime.coordinator.data.floor_plan.mission_id == 5
+    assert runtime.session.floor.value.mission_id == 5
 
 
 async def test_scene_revision_advances_when_room_metadata_changes() -> None:
@@ -535,8 +532,8 @@ async def test_scene_revision_advances_when_room_metadata_changes() -> None:
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
     first = await view.get(_request(hass), "entry")
-    original = runtime.coordinator.data.floor_plan
-    runtime.coordinator.data.floor_plan = FloorPlan(
+    original = runtime.session.floor.value
+    runtime.session.floor.value = FloorPlan(
         original.mission_id,
         original.partition_protocol_id,
         original.partition_id_wire,
@@ -995,7 +992,6 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         ]
     }
 
-    loaded.runtime_data.coordinator.last_update_success = True
     hass.data = {DATA_SLAM_SCENE_VIEW: scene_view}
     workspace_snapshot = WorkspaceSocket(hass).snapshot(loaded.entry_id)
     rest_entry = json.loads(response.body)["entries"][0]
@@ -1011,7 +1007,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     runtime.cleaning_plans.ledger.pending_native_reconciliation.return_value = {
         "session_id": "private-session"
     }
-    runtime.coordinator.data.telemetry.active_cleaning_session = True
+    runtime.session.state.value.session_active = True
     blocked_response = await MaticSlamCatalogView().get(_request(hass))
     blocked_payload = json.loads(blocked_response.body)
     blocked_entry = blocked_payload["entries"][0]
@@ -1043,14 +1039,14 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert empty_entry["selected_floor_ordinal"] == 1
     assert empty_entry["map_floor_ordinal"] is None
 
-    runtime.coordinator.data.floor_plan = None
+    runtime.session.floor.value = None
     empty_plan = await MaticSlamCatalogView().get(_request(hass))
     empty_plan_entry = json.loads(empty_plan.body)["entries"][0]
     assert empty_plan_entry["selected_floor_ordinal"] is None
     assert empty_plan_entry["map_floor_ordinal"] is None
     assert empty_plan_entry["map_block_reason"] == "floor_plan_unavailable"
 
-    runtime.coordinator.data.floor_plan = _floor_plan()
+    runtime.session.floor.value = _floor_plan()
     runtime.slam_map.health.photo_tiles = 0
     runtime.slam_map.health.structure_tiles = 0
     runtime.slam_map.health.bootstrap_state = "complete"
@@ -1120,7 +1116,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     runtime = _runtime()
     circle = {"x": 0.1, "y": 0.1, "radius": 0.2}
     review_circle = {"x": 0.1, "y": 0.1, "radius": 0.1}
-    current_binding = binding_for_area(runtime.coordinator.data.floor_plan, [circle])
+    current_binding = binding_for_area(runtime.session.floor.value, [circle])
     runtime.cleaning_plans.catalog.areas.return_value = {
         "table": {
             "name": "Table",
@@ -1137,10 +1133,10 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
             "coverage_setting": "standard",
             "map_binding": binding_for_floor_plan(
                 replace(
-                    runtime.coordinator.data.floor_plan,
+                    runtime.session.floor.value,
                     rooms=(
                         replace(
-                            runtime.coordinator.data.floor_plan.rooms[0],
+                            runtime.session.floor.value.rooms[0],
                             boundary=(
                                 (0.01, 0.0),
                                 (0.3, 0.0),
@@ -1157,7 +1153,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     }
     runtime.cleaning_plans.catalog.selected_area.return_value = "review"
     no_go = ((0.2, 0.2), (0.6, 0.2), (0.6, 0.6), (0.2, 0.6))
-    runtime.coordinator.data.telemetry.zones = (
+    runtime.session.telemetry.value.zones = (
         MapZone(1, "no_go", 1, no_go),
         # A zone from another mission never reaches this map.
         MapZone(2, "unknown", 0, no_go),
@@ -1256,10 +1252,10 @@ async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
     runtime = _runtime()
     circle = {"x": 0.1, "y": 0.1, "radius": 0.1}
     changed_floor = replace(
-        runtime.coordinator.data.floor_plan,
+        runtime.session.floor.value,
         rooms=(
             replace(
-                runtime.coordinator.data.floor_plan.rooms[0],
+                runtime.session.floor.value.rooms[0],
                 boundary=((0.01, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)),
             ),
         ),
@@ -1326,10 +1322,10 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
     preview_token = saved_plan_preview_token(
         runtime.cleaning_plans.planning.preview.return_value,
         entry_id="entry",
-        floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
+        floor_token=plan_floor_token(runtime.session.floor.value),
         room_identities={
-            room.id: room_cadence_identity(runtime.coordinator.data.floor_plan, room.id)
-            for room in runtime.coordinator.data.floor_plan.rooms
+            room.id: room_cadence_identity(runtime.session.floor.value, room.id)
+            for room in runtime.session.floor.value.rooms
         },
     )
 
@@ -1341,7 +1337,7 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
     )
     assert json.loads(response.body) == {
         "entry_id": "entry",
-        "floor_token": plan_floor_token(runtime.coordinator.data.floor_plan),
+        "floor_token": plan_floor_token(runtime.session.floor.value),
         "rooms": [{"room_id": "room-1", "name": "Kitchen"}],
         "plans": [
             {
@@ -1532,9 +1528,9 @@ async def test_plan_workspace_preserves_invalid_cadence_reasons_and_other_rooms(
 
 async def test_plan_workspace_projects_malformed_persisted_cadence_safely(hass) -> None:
     runtime = _runtime()
-    floor_plan = runtime.coordinator.data.floor_plan
+    floor_plan = runtime.session.floor.value
     assert floor_plan is not None
-    runtime.coordinator.data.floor_plan = replace(
+    runtime.session.floor.value = replace(
         floor_plan,
         rooms=(
             *floor_plan.rooms,
@@ -1619,10 +1615,10 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
             "room_order": ["room-1", "room-2"],
         }
     }
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan,
+    runtime.session.floor.value = replace(
+        runtime.session.floor.value,
         rooms=(
-            *runtime.coordinator.data.floor_plan.rooms,
+            *runtime.session.floor.value.rooms,
             Room(
                 "room-2",
                 "Study",
@@ -1661,10 +1657,10 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
     preview_token = saved_plan_preview_token(
         preview_result,
         entry_id="entry",
-        floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
+        floor_token=plan_floor_token(runtime.session.floor.value),
         room_identities={
-            room.id: room_cadence_identity(runtime.coordinator.data.floor_plan, room.id)
-            for room in runtime.coordinator.data.floor_plan.rooms
+            room.id: room_cadence_identity(runtime.session.floor.value, room.id)
+            for room in runtime.session.floor.value.rooms
         },
     )
 
@@ -1708,12 +1704,12 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
         "synthetic-serial",
         {"room-1": "Kitchen", "room-2": "Study"},
         "weekday",
-        floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
+        floor_token=plan_floor_token(runtime.session.floor.value),
         room_identities={
-            room.id: room_cadence_identity(runtime.coordinator.data.floor_plan, room.id)
-            for room in runtime.coordinator.data.floor_plan.rooms
+            room.id: room_cadence_identity(runtime.session.floor.value, room.id)
+            for room in runtime.session.floor.value.rooms
         },
-        floor_plan=runtime.coordinator.data.floor_plan,
+        floor_plan=runtime.session.floor.value,
     )
     runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
     runtime.cleaning_plans.catalog.async_delete_area.assert_not_awaited()
@@ -1917,17 +1913,17 @@ async def test_plan_workspace_handles_missing_entry_and_floor_plan() -> None:
     ).status == HTTPStatus.NOT_FOUND
 
     runtime = _runtime()
-    runtime.coordinator.data.floor_plan = None
+    runtime.session.floor.value = None
     response = await view.get(_request(_hass(_entry(runtime))), "entry")
     assert response.status == HTTPStatus.CONFLICT
     assert response.headers["X-Matic-Plans-Conflict"] == "map-rechecking"
-    runtime.coordinator.data.floor_plan = _floor_plan()
+    runtime.session.floor.value = _floor_plan()
     runtime.slam_map.floor_plan_is_current.side_effect = None
     runtime.slam_map.floor_plan_is_current.return_value = False
     response = await view.get(_request(_hass(_entry(runtime))), "entry")
     assert response.status == HTTPStatus.CONFLICT
     assert response.headers["X-Matic-Plans-Conflict"] == "map-rechecking"
-    runtime.coordinator.data.floor_plan = replace(_floor_plan(), rooms=())
+    runtime.session.floor.value = replace(_floor_plan(), rooms=())
     runtime.slam_map.floor_plan_is_current.return_value = True
     response = await view.get(_request(_hass(_entry(runtime))), "entry")
     assert response.status == HTTPStatus.CONFLICT
@@ -1938,19 +1934,19 @@ async def test_area_workspace_distinguishes_revalidation_from_an_empty_floor() -
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
-    runtime.coordinator.data.floor_plan = None
+    runtime.session.floor.value = None
     response = await view.get(_request(hass), "entry")
     assert response.status == HTTPStatus.CONFLICT
     assert response.headers["X-Matic-Areas-Conflict"] == "map-rechecking"
 
-    runtime.coordinator.data.floor_plan = _floor_plan()
+    runtime.session.floor.value = _floor_plan()
     runtime.slam_map.floor_plan_is_current.side_effect = None
     runtime.slam_map.floor_plan_is_current.return_value = False
     response = await view.get(_request(hass), "entry")
     assert response.status == HTTPStatus.CONFLICT
     assert response.headers["X-Matic-Areas-Conflict"] == "map-rechecking"
 
-    runtime.coordinator.data.floor_plan = replace(_floor_plan(), rooms=())
+    runtime.session.floor.value = replace(_floor_plan(), rooms=())
     runtime.slam_map.floor_plan_is_current.return_value = True
     response = await view.get(_request(hass), "entry")
     assert response.status == HTTPStatus.CONFLICT
@@ -1983,7 +1979,7 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
             "cleaning_mode": "vacuum_and_mop",
             "coverage_setting": "standard",
             "map_binding": binding_for_area(
-                runtime.coordinator.data.floor_plan, values["circles"]
+                runtime.session.floor.value, values["circles"]
             ),
         },
     )
@@ -2148,10 +2144,10 @@ async def test_area_workspace_rejects_floor_change_during_request_body_read() ->
             "coverage_setting": "standard",
         },
     )
-    original_floor = runtime.coordinator.data.floor_plan
+    original_floor = runtime.session.floor.value
 
     async def read_body_after_floor_change(**_kwargs):
-        runtime.coordinator.data.floor_plan = replace(
+        runtime.session.floor.value = replace(
             original_floor,
             partition_protocol_id="synthetic-replacement-partition",
             partition_id_wire=b"synthetic-replacement-partition",
@@ -2251,11 +2247,11 @@ async def test_area_workspace_handles_missing_maps_entries_and_conflicts() -> No
 
     runtime = _runtime()
     hass = _hass(_entry(runtime))
-    runtime.coordinator.data.floor_plan = None
+    runtime.session.floor.value = None
     assert MaticAreasView._rooms(None) == []
     assert (await view.get(_request(hass), "entry")).status == 409
     assert (await view.post(_json_request(hass, "POST", {}), "entry")).status == 409
-    runtime.coordinator.data.floor_plan = _floor_plan()
+    runtime.session.floor.value = _floor_plan()
 
     oversized = _json_request(hass, "POST", {}, content_length=131_073)
     assert (await view.post(oversized, "entry")).status == 413
@@ -2490,7 +2486,6 @@ async def test_delta_view_cancellation_removes_long_poll_listeners() -> None:
 
     subscribed = asyncio.Event()
     map_listeners = set()
-    coordinator_listeners = set()
 
     def subscribe_map(listener):
         map_listeners.add(listener)
@@ -2500,24 +2495,22 @@ async def test_delta_view_cancellation_removes_long_poll_listeners() -> None:
 
         return remove
 
-    def subscribe_coordinator(listener):
-        coordinator_listeners.add(listener)
+    floor = runtime.session.floor
+    subscribe_floor = floor.subscribe
+
+    def subscribe_and_tell(listener):
         subscribed.set()
+        return subscribe_floor(listener)
 
-        def remove() -> None:
-            coordinator_listeners.discard(listener)
-
-        return remove
-
+    floor.subscribe = subscribe_and_tell
     runtime.slam_map.async_add_listener.side_effect = subscribe_map
-    runtime.coordinator.async_add_listener.side_effect = subscribe_coordinator
     waiting = asyncio.create_task(
         MaticSlamDeltaView(scene_view).get(_request(hass, path="/?since=7"), "entry")
     )
     try:
         await asyncio.wait_for(subscribed.wait(), timeout=1)
         assert len(map_listeners) == 1
-        assert len(coordinator_listeners) == 1
+        assert len(floor._listeners) == 1
 
         waiting.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -2531,7 +2524,7 @@ async def test_delta_view_cancellation_removes_long_poll_listeners() -> None:
             pass
 
     assert map_listeners == set()
-    assert coordinator_listeners == set()
+    assert floor._listeners == []
 
 
 async def test_delta_view_wakes_when_only_the_floor_plan_changes() -> None:
@@ -2541,32 +2534,26 @@ async def test_delta_view_wakes_when_only_the_floor_plan_changes() -> None:
     initial = await scene_view.get(_request(hass), "entry")
     assert initial.headers["X-Matic-Revision"] == "7"
     subscribed = asyncio.Event()
-    floor_listener = None
-    remove_floor_listener = MagicMock()
+    floor = runtime.session.floor
+    subscribe_floor = floor.subscribe
 
     def subscribe(listener):
-        nonlocal floor_listener
-        floor_listener = listener
         subscribed.set()
-        return remove_floor_listener
+        return subscribe_floor(listener)
 
-    runtime.coordinator.async_add_listener.side_effect = subscribe
+    floor.subscribe = subscribe
     waiting = asyncio.create_task(
         MaticSlamDeltaView(scene_view).get(_request(hass, path="/?since=7"), "entry")
     )
     await asyncio.wait_for(subscribed.wait(), timeout=1)
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan, mission_id=2
-    )
-    assert floor_listener is not None
-    floor_listener()
+    floor.set(replace(floor.value, mission_id=2))
 
     response = await asyncio.wait_for(waiting, timeout=1)
 
     assert response.status == HTTPStatus.OK
     assert response.headers["X-Matic-Revision"] == "8"
     assert response.headers["X-Matic-Floor-Coherent"] == "0"
-    remove_floor_listener.assert_called_once()
+    assert floor._listeners == []
 
 
 @pytest.mark.parametrize(
@@ -2748,8 +2735,8 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
             "2" * 64: "d" * 64,
         }.get(token)
     )
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan,
+    runtime.session.floor.value = replace(
+        runtime.session.floor.value,
         floor_label="Main",
         mapped_floors=(
             MappedFloor(1, "Main", current_token),
@@ -2818,8 +2805,8 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
     assert payload["floors"][3]["live_available"] is False
     assert payload["floors"][3]["snapshots"][0]["id"] == archive_snapshot.record_id
     stable_saved_floor_id = payload["floors"][1]["id"]
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan,
+    runtime.session.floor.value = replace(
+        runtime.session.floor.value,
         mapped_floors=(
             MappedFloor(1, "Main", current_token),
             MappedFloor(2, "Workshop", saved_snapshot.mission_token),
@@ -2833,8 +2820,8 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         and floor["snapshots"][0]["id"] == saved_snapshot.snapshot_id
         for floor in after_other_floor_removed["floors"]
     )
-    runtime.coordinator.data.floor_plan = replace(
-        runtime.coordinator.data.floor_plan,
+    runtime.session.floor.value = replace(
+        runtime.session.floor.value,
         mapped_floors=(
             MappedFloor(1, "Main", current_token),
             MappedFloor(2, "Workshop", saved_snapshot.mission_token),
@@ -3118,7 +3105,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     hass,
 ) -> None:
     runtime = _runtime()
-    floor_plan = runtime.coordinator.data.floor_plan
+    floor_plan = runtime.session.floor.value
     second_room = replace(
         floor_plan.rooms[0],
         id="room-2",
@@ -3127,7 +3114,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         id_wire=b"room-2",
     )
     floor_plan = replace(floor_plan, rooms=(*floor_plan.rooms, second_room))
-    runtime.coordinator.data.floor_plan = floor_plan
+    runtime.session.floor.value = floor_plan
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     serial = "synthetic-serial"
@@ -3303,7 +3290,7 @@ async def test_area_delete_keeps_the_area_and_plans_a_delete_would_empty(
     hass,
 ) -> None:
     runtime = _runtime()
-    floor_plan = runtime.coordinator.data.floor_plan
+    floor_plan = runtime.session.floor.value
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     serial = "synthetic-serial"

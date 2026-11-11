@@ -242,7 +242,7 @@ def _resolve_entry(
 
 def _entry_name(entry: ConfigEntry[Any]) -> str:
     """Return the local robot display name with a config-entry fallback."""
-    name = entry.runtime_data.coordinator.data.info.name
+    name = entry.runtime_data.session.info.name
     return name if name else entry.title
 
 

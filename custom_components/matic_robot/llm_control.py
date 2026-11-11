@@ -275,7 +275,7 @@ class MaticResetScheduleTool(_MaticTool):
         }
         room_name: str | None = None
         if args["scope"] == "room":
-            floor_plan = robot.entry.runtime_data.coordinator.data.floor_plan
+            floor_plan = robot.entry.runtime_data.session.floor.value
             room_map = {room.id: room.name for room in floor_plan.rooms}
             try:
                 data["room_id"], room_name = resolve_room_reference(
@@ -412,7 +412,7 @@ class _PanelRobot:
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry[Any]) -> None:
         self.entry = entry
-        self.serial_number = str(entry.runtime_data.coordinator.data.info.serial_number)
+        self.serial_number = str(entry.runtime_data.session.info.serial_number)
         entity_id = er.async_get(hass).async_get_entity_id(
             VACUUM_DOMAIN, DOMAIN, f"{self.serial_number}_vacuum"
         )

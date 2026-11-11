@@ -219,7 +219,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     _saved_plan(manager)
 
     runtime = _runtime()
-    runtime.coordinator.data.floor_plan = current_map
+    runtime.session.floor.value = current_map
     runtime.cleaning_plans = manager
     runtime.client.async_send_command = AsyncMock()
     entry = _entry(runtime)
@@ -420,7 +420,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
         refreshed_map = _translated_floor_plan(refreshed_map)
     original_record = deepcopy(saved_area)
     runtime = _runtime()
-    runtime.coordinator.data.floor_plan = refreshed_map
+    runtime.session.floor.value = refreshed_map
     runtime.slam_map.revision += 1
     runtime.cleaning_plans = manager
     runtime.client.async_send_command = AsyncMock()
@@ -431,7 +431,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
     store_save = manager.repository.store.async_save
     manager.repository.store.async_save = AsyncMock(wraps=store_save)
 
-    # This is the manager operation scheduled by the coordinator on a fresh
+    # This is the manager operation scheduled by the session on a fresh
     # supported floor-plan revision. It may upgrade legacy records, but must
     # not rebind a current anchored area as a side effect of unrelated map churn.
     upgrade = await manager.catalog.async_upgrade_area_bindings(
@@ -557,7 +557,7 @@ async def test_area_commit_rejects_floor_or_runtime_drift_while_store_queued(
             "coverage_setting": "standard",
         },
     )
-    original_floor = runtime.coordinator.data.floor_plan
+    original_floor = runtime.session.floor.value
     await manager.repository.store_lock.acquire()
     pending = asyncio.create_task(MaticAreasView().post(request, "entry"))
     try:
@@ -567,7 +567,7 @@ async def test_area_commit_rejects_floor_or_runtime_drift_while_store_queued(
             await asyncio.sleep(0)
         assert manager.repository.metadata_persistence_tasks.get("synthetic-serial")
         if drift == "floor":
-            runtime.coordinator.data.floor_plan = replace(
+            runtime.session.floor.value = replace(
                 original_floor,
                 partition_protocol_id="queued-replacement-partition",
                 partition_id_wire=b"queued-replacement-partition",
@@ -698,7 +698,7 @@ async def test_queued_area_update_does_not_recreate_deleted_area(
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
         "map_binding": binding_for_area(
-            runtime.coordinator.data.floor_plan,
+            runtime.session.floor.value,
             [{"x": 0.1, "y": 0.1, "radius": 0.2}],
         ),
     }

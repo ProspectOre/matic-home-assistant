@@ -252,48 +252,49 @@ def _install_robot_state_trace(
     robot.set_property = traced_set_property  # type: ignore[method-assign]
 
 
-def _coordinator_state_trace(
+def _session_state_trace(
     trace: deque[dict[str, Any]],
     trace_lock: threading.Lock,
     started_at: float,
 ) -> None:
     """Record what each push and heartbeat published, without identifiers."""
     from custom_components.matic_robot.client.api import MaticHermesClient
-    from custom_components.matic_robot.coordinator import MaticCoordinator
+    from custom_components.matic_robot.heartbeat import Heartbeat
+    from custom_components.matic_robot.session import RobotSession
 
-    def record(event: str, data: Any, error_type: str | None = None) -> None:
+    def record(event: str, session: Any, error_type: str | None = None) -> None:
+        live = session.state.value
         item = {
             "elapsed_ms": round((monotonic() - started_at) * 1000),
             "event": event,
-            "published_active": data.telemetry.active_cleaning_session,
-            "published_cleaning": data.operational.cleaning,
-            "published_returning": data.operational.returning,
+            "published_active": live.session_active,
+            "published_cleaning": live.operational.cleaning,
+            "published_returning": live.operational.returning,
             "error_type": error_type,
         }
         with trace_lock:
             trace.append(item)
 
-    original_push = MaticCoordinator._async_state_pushed
+    original_push = RobotSession._async_publish_pending
 
     def traced_push(self: Any) -> None:
         original_push(self)
-        record("push", self.data)
+        record("push", self)
 
-    MaticCoordinator._async_state_pushed = traced_push
-    original_heartbeat = MaticCoordinator._async_update_data
+    RobotSession._async_publish_pending = traced_push  # type: ignore[method-assign]
+    original_heartbeat = Heartbeat._async_read
 
-    async def traced_heartbeat(self: Any) -> Any:
+    async def traced_heartbeat(self: Any) -> None:
         try:
-            result = await original_heartbeat(self)
+            await original_heartbeat(self)
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            record("heartbeat_error", self.data, type(err).__name__)
+            record("heartbeat_error", self._session, type(err).__name__)
             raise
-        record("heartbeat", result)
-        return result
+        record("heartbeat", self._session)
 
-    MaticCoordinator._async_update_data = traced_heartbeat
+    Heartbeat._async_read = traced_heartbeat  # type: ignore[method-assign]
 
     original_identity_read = MaticHermesClient.async_get_cleaning_session_identity
 
@@ -324,7 +325,7 @@ def _coordinator_state_trace(
 async def _control_app(
     robot: SimulatedRobot,
     robot_trace: deque[dict[str, Any]],
-    coordinator_trace: deque[dict[str, Any]],
+    session_trace: deque[dict[str, Any]],
     trace_lock: threading.Lock,
     started_at: float,
 ) -> web.Application:
@@ -343,7 +344,7 @@ async def _control_app(
         elif name == "hold_history":
             with trace_lock:
                 robot_trace.clear()
-                coordinator_trace.clear()
+                session_trace.clear()
             robot.hold_history()
             _record_robot_state_trace(
                 robot, robot_trace, trace_lock, started_at, "hold_history_checkpoint"
@@ -378,7 +379,7 @@ async def _control_app(
     async def state(_request: web.Request) -> web.Response:
         with trace_lock:
             robot_events = list(robot_trace)
-            coordinator_events = list(coordinator_trace)
+            session_events = list(session_trace)
         return web.json_response(
             {
                 "phase": robot.phase.value,
@@ -407,7 +408,7 @@ async def _control_app(
                     for command in robot.commands
                 ],
                 "identity_trace": robot_events,
-                "coordinator_trace": coordinator_events,
+                "session_trace": session_events,
             }
         )
 
@@ -421,7 +422,7 @@ def start_robot_thread(
     directory: Path,
     control_port: int,
     robot_trace: deque[dict[str, Any]],
-    coordinator_trace: deque[dict[str, Any]],
+    session_trace: deque[dict[str, Any]],
     trace_lock: threading.Lock,
     started_at: float,
 ) -> tuple[SimulatedRobot, RunningSimulator]:
@@ -451,7 +452,7 @@ def start_robot_thread(
             simulator = await start_simulator(robot, directory)
             runner = web.AppRunner(
                 await _control_app(
-                    robot, robot_trace, coordinator_trace, trace_lock, started_at
+                    robot, robot_trace, session_trace, trace_lock, started_at
                 )
             )
             await runner.setup()
@@ -482,7 +483,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="matic-live-") as temporary:
         robot_trace: deque[dict[str, Any]] = deque(maxlen=256)
-        coordinator_trace: deque[dict[str, Any]] = deque(maxlen=256)
+        session_trace: deque[dict[str, Any]] = deque(maxlen=256)
         trace_lock = threading.Lock()
         started_at = monotonic()
         return run(
@@ -491,7 +492,7 @@ def main() -> int:
             args.control_port,
             workspace_push=args.workspace_push == "on",
             robot_trace=robot_trace,
-            coordinator_trace=coordinator_trace,
+            session_trace=session_trace,
             trace_lock=trace_lock,
             started_at=started_at,
         )
@@ -504,7 +505,7 @@ def run(
     *,
     workspace_push: bool = False,
     robot_trace: deque[dict[str, Any]],
-    coordinator_trace: deque[dict[str, Any]],
+    session_trace: deque[dict[str, Any]],
     trace_lock: threading.Lock,
     started_at: float,
 ) -> int:
@@ -515,7 +516,7 @@ def run(
         workspace,
         control_port,
         robot_trace,
-        coordinator_trace,
+        session_trace,
         trace_lock,
         started_at,
     )
@@ -549,7 +550,7 @@ def run(
 
     slam_view_data.catalog_entry_projection = simulated_catalog_projection
     slam_catalog_view.catalog_entry_projection = simulated_catalog_projection
-    _coordinator_state_trace(coordinator_trace, trace_lock, started_at)
+    _session_state_trace(session_trace, trace_lock, started_at)
 
     from homeassistant import __main__ as hass_main
 

@@ -50,19 +50,19 @@ from custom_components.matic_robot.client.models import (
     CleaningSchedule,
     CleaningSession,
     CleaningSessionRecord,
+    CuesIntent,
+    CuesVoiceStatus,
     FloorPlan,
     HermesCollectionEntry,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
-    RobotState,
     RobotTelemetry,
     Room,
     RunProgress,
     WifiNetwork,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.coordinator import MaticCuesEvent
 from custom_components.matic_robot.entity import MaticEntity
 from custom_components.matic_robot.plan_model import (
     PLAN_MOTION_TOKEN,
@@ -75,16 +75,34 @@ from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     SlamMapStore,
 )
+from custom_components.matic_robot.stores import CleaningHistory
 from tests.frontend_sources import common_strings
+from tests.session_fakes import fake_session, set_operational
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 INTEGRATION = Path(__file__).parents[1] / "custom_components" / DOMAIN
 
 
 def _state(
-    *, paused: bool = False, idle: bool = False, floor_plan: FloorPlan | None = None
-) -> RobotState:
-    return RobotState(
+    *,
+    paused: bool = False,
+    idle: bool = False,
+    floor_plan: FloorPlan | None = None,
+    client: object = None,
+) -> SimpleNamespace:
+    latest_session = CleaningSession(
+        "2026-01-01T08:00:01+00:00",
+        "2026-01-01T08:10:00+00:00",
+        600,
+        ("Kitchen",),
+        (("Kitchen", 600),),
+        True,
+        completed_rooms=("Kitchen",),
+    )
+    return fake_session(
+        client=client,
+        session_active=not idle,
+        history=CleaningHistory(latest_session, latest_session),
         info=RobotInfo(
             serial_number="synthetic-serial",
             name="Test Robot",
@@ -111,7 +129,6 @@ def _state(
         floor_plan=floor_plan,
         pose=RobotPose(1, 2, 0, mission_id=7, observed_at=time()),
         telemetry=RobotTelemetry(
-            active_cleaning_session=not idle,
             software_version="v-test",
             software_profile="test-profile",
             protocol_version=25,
@@ -148,15 +165,7 @@ def _state(
                     ("protocol-1",),
                 ),
             ),
-            latest_session=CleaningSession(
-                "2026-01-01T08:00:01+00:00",
-                "2026-01-01T08:10:00+00:00",
-                600,
-                ("Kitchen",),
-                (("Kitchen", 600),),
-                True,
-                completed_rooms=("Kitchen",),
-            ),
+            latest_session=latest_session,
         ),
     )
 
@@ -202,9 +211,10 @@ async def _managed_motion_context(_serial: str, _token: int):
 
 def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = True):
     floor_plan = _floor_plan() if with_floor_plan else None
-    coordinator = SimpleNamespace(
-        data=_state(paused=paused, idle=idle, floor_plan=floor_plan),
-        robot_health=SimpleNamespace(unknown_alert_codes={}),
+    session = _state(
+        paused=paused,
+        idle=idle,
+        floor_plan=floor_plan,
         client=SimpleNamespace(
             async_get_slam_tile_entry=AsyncMock(
                 side_effect=CannotConnectError("synthetic unavailable")
@@ -220,14 +230,6 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             async_set_deep_mop=AsyncMock(),
             async_set_water_flow=AsyncMock(),
         ),
-        cleaning_mode=CleaningMode.BOTH,
-        coverage_setting=CoverageSetting.STANDARD,
-        async_request_refresh=AsyncMock(),
-        async_request_full_refresh=AsyncMock(),
-        async_discard_current_room=MagicMock(),
-        async_add_listener=MagicMock(return_value=MagicMock()),
-        async_add_cues_listener=MagicMock(return_value=MagicMock()),
-        last_update_success=True,
     )
     history = SimpleNamespace(
         repository=SimpleNamespace(
@@ -341,7 +343,9 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
     )
     return SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
+            cleaning_mode=CleaningMode.BOTH,
+            coverage_setting=CoverageSetting.STANDARD,
             cleaning_plans=history,
             firmware_tracker=firmware,
             slam_map=slam_map,
@@ -448,7 +452,7 @@ async def test_renamed_entities_keep_their_entity_ids(hass) -> None:
 
 async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     added: list[object] = []
 
     await sensor.async_setup_entry(hass, entry, lambda values: added.extend(values))
@@ -467,21 +471,18 @@ async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
     )
     assert room_entities[0].suggested_object_id == "kitchen_clean_duration"
 
-    # The coordinator listener adds sensors for rooms that appear later.
-    listener = coordinator.async_add_listener.call_args.args[0]
+    # The floor listener adds sensors for rooms that appear later, once.
     added.clear()
-    listener()
+    session.floor.set(replace(session.floor.value, partition_id_wire=b"moved"))
     assert added == []
 
     new_room = Room("room-3", "Hall", "protocol-3", b"three", ((2, 2), (3, 3)))
-    coordinator.data = replace(
-        coordinator.data,
-        floor_plan=replace(
-            coordinator.data.floor_plan,
-            rooms=(*coordinator.data.floor_plan.rooms, new_room),
-        ),
+    session.floor.set(
+        replace(
+            session.floor.value,
+            rooms=(*session.floor.value.rooms, new_room),
+        )
     )
-    listener()
     assert len(added) == 2
 
 
@@ -492,13 +493,8 @@ async def test_bag_alerts_are_exposed_but_bag_statistics_stay_latent(
     # get binary sensors. The full/replacement statistics wait for a real
     # robot transition.
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(
-            coordinator.data.operational, bag_full=True, bag_missing=False
-        ),
-    )
+    session = entry.runtime_data.session
+    set_operational(session, bag_full=True, bag_missing=False)
     added: list[object] = []
 
     await binary_sensor.async_setup_entry(
@@ -523,7 +519,7 @@ async def test_bag_alerts_are_exposed_but_bag_statistics_stay_latent(
 
 async def test_bag_statistics_restore_and_count_full_transitions() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     count = sensor.MaticBagFullCountSensor(entry)
     last_full = sensor.MaticBagLastFullSensor(entry)
     replacement_count = sensor.MaticBagReplacementCountSensor(entry)
@@ -534,11 +530,8 @@ async def test_bag_statistics_restore_and_count_full_transitions() -> None:
     last_full.async_write_ha_state = MagicMock()
     replacement_count.async_write_ha_state = MagicMock()
     last_replaced.async_write_ha_state = MagicMock()
-    count._async_coordinator_updated()
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=False),
-    )
+    count._async_state_updated()
+    set_operational(session, bag_full=False)
     restored_at = sensor.dt_util.parse_datetime("2026-01-01T00:00:00+00:00")
     with (
         patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
@@ -573,91 +566,47 @@ async def test_bag_statistics_restore_and_count_full_transitions() -> None:
     assert replacement_count.native_value == 0
     assert last_replaced.native_value is None
 
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=True),
-    )
-    count._async_coordinator_updated()
-    last_full._async_coordinator_updated()
-    replacement_count._async_coordinator_updated()
-    last_replaced._async_coordinator_updated()
+    set_operational(session, bag_full=True)
     assert count.native_value == 5
     assert last_full.native_value is not None
     assert last_full.native_value != restored_at
     assert replacement_count.native_value == 0
     assert last_replaced.native_value is None
 
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=False),
-    )
-    count._async_coordinator_updated()
-    last_full._async_coordinator_updated()
-    replacement_count._async_coordinator_updated()
-    last_replaced._async_coordinator_updated()
+    set_operational(session, bag_full=False)
     assert replacement_count.native_value == 0
     assert last_replaced.native_value is None
 
     # A single clear followed by a full report is treated as telemetry noise.
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=True),
-    )
-    count._async_coordinator_updated()
-    last_full._async_coordinator_updated()
-    replacement_count._async_coordinator_updated()
-    last_replaced._async_coordinator_updated()
+    set_operational(session, bag_full=True)
     assert count.native_value == 5
     assert replacement_count.native_value == 0
 
-    # Two consecutive clear reports identify the replacement.
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=False),
-    )
-    count._async_coordinator_updated()
-    last_full._async_coordinator_updated()
-    replacement_count._async_coordinator_updated()
-    last_replaced._async_coordinator_updated()
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=False),
-    )
-    count._async_coordinator_updated()
-    last_full._async_coordinator_updated()
-    replacement_count._async_coordinator_updated()
-    last_replaced._async_coordinator_updated()
+    # Two consecutive clear reports identify the replacement. The subscribed
+    # sensors see each report the state store publishes.
+    set_operational(session, bag_full=False)
+    set_operational(session, bag_full=False, battery_percentage=81)
     assert replacement_count.native_value == 1
     assert last_replaced.native_value is not None
 
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=True),
-    )
-    count._async_coordinator_updated()
-    last_full._async_coordinator_updated()
-    replacement_count._async_coordinator_updated()
-    last_replaced._async_coordinator_updated()
+    set_operational(session, bag_full=True)
     assert count.native_value == 6
 
 
 async def test_bag_statistics_ignore_a_clear_flag_while_the_bag_is_missing() -> None:
     """A bag taken out and not put back is not a confirmed replacement."""
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     replacement_count = sensor.MaticBagReplacementCountSensor(entry)
     last_replaced = sensor.MaticBagLastReplacedSensor(entry)
     replacement_count.async_write_ha_state = MagicMock()
     last_replaced.async_write_ha_state = MagicMock()
 
     def observe(**flags: object) -> None:
-        nonlocal coordinator
-        coordinator.data = replace(
-            coordinator.data,
-            operational=replace(coordinator.data.operational, **flags),
-        )
-        replacement_count._async_coordinator_updated()
-        last_replaced._async_coordinator_updated()
+        nonlocal session
+        set_operational(session, **flags)
+        replacement_count._async_state_updated()
+        last_replaced._async_state_updated()
 
     observe(bag_full=False, bag_missing=False)
     observe(bag_full=True, bag_missing=False)
@@ -678,15 +627,12 @@ async def test_bag_statistics_ignore_a_clear_flag_while_the_bag_is_missing() -> 
 
 async def test_bag_replacement_statistics_restore_previous_values() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     replacement_count = sensor.MaticBagReplacementCountSensor(entry)
     last_replaced = sensor.MaticBagLastReplacedSensor(entry)
     replacement_count.async_write_ha_state = MagicMock()
     last_replaced.async_write_ha_state = MagicMock()
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=False),
-    )
+    set_operational(session, bag_full=False)
     restored_at = sensor.dt_util.parse_datetime("2026-02-03T04:05:06+00:00")
     with (
         patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
@@ -708,19 +654,9 @@ async def test_bag_replacement_statistics_restore_previous_values() -> None:
     assert last_replaced.native_value == restored_at
 
     # A replacement observed after the restore continues from the stored count.
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, bag_full=True),
-    )
-    replacement_count._async_coordinator_updated()
-    last_replaced._async_coordinator_updated()
-    for _ in range(2):
-        coordinator.data = replace(
-            coordinator.data,
-            operational=replace(coordinator.data.operational, bag_full=False),
-        )
-        replacement_count._async_coordinator_updated()
-        last_replaced._async_coordinator_updated()
+    set_operational(session, bag_full=True)
+    for battery in (81, 80):
+        set_operational(session, bag_full=False, battery_percentage=battery)
 
     assert replacement_count.native_value == 4
     assert last_replaced.native_value != restored_at
@@ -734,8 +670,11 @@ async def test_cues_event_entity_records_live_event(hass) -> None:
     entity.async_write_ha_state = MagicMock()
 
     await entity.async_added_to_hass()
-    listener = entry.runtime_data.coordinator.async_add_cues_listener.call_args.args[0]
-    listener(MaticCuesEvent("intent_classified", {"intent": "clean_all"}))
+    set_operational(
+        entry.runtime_data.session,
+        cues_voice_status=CuesVoiceStatus.CLASSIFIED,
+        cues_voice_intent=CuesIntent.CLEAN_ALL,
+    )
 
     assert entity.state_attributes["event_type"] == "intent_classified"
     assert entity.state_attributes["intent"] == "clean_all"
@@ -760,8 +699,8 @@ async def test_room_sensors_wait_for_a_floor_plan(hass) -> None:
 
 async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     entry = _entry()
-    kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
-    study = entry.runtime_data.coordinator.data.floor_plan.rooms[1]
+    kitchen = entry.runtime_data.session.floor.value.rooms[0]
+    study = entry.runtime_data.session.floor.value.rooms[1]
 
     duration = sensor.MaticRoomDurationSensor(entry, kitchen)
     last_cleaned = sensor.MaticRoomLastCleanedSensor(entry, kitchen)
@@ -815,12 +754,10 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
 
     # Native or external runs that did not prove completion cannot overwrite
     # the last trusted room statistics, even when they report room timing.
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    session = entry.runtime_data.session
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 "2026-01-02T08:00:00+00:00",
                 "2026-01-02T08:05:00+00:00",
                 300,
@@ -828,7 +765,15 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
                 (("Kitchen", 300),),
                 None,
             ),
-        ),
+            CleaningSession(
+                "2026-01-02T08:00:00+00:00",
+                "2026-01-02T08:05:00+00:00",
+                300,
+                ("Kitchen",),
+                (("Kitchen", 300),),
+                None,
+            ),
+        )
     )
     duration._async_apply_session()
     last_cleaned._async_apply_session()
@@ -837,11 +782,9 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
 
     # A partially completed native run proves nothing either: the robot marks
     # the room it was stopped in the same way it marks a finished one.
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 "2026-01-03T08:00:00+00:00",
                 "2026-01-03T08:10:00+00:00",
                 600,
@@ -850,7 +793,16 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
                 False,
                 completed_rooms=("Kitchen",),
             ),
-        ),
+            CleaningSession(
+                "2026-01-03T08:00:00+00:00",
+                "2026-01-03T08:10:00+00:00",
+                600,
+                ("Kitchen", "Study"),
+                (("Kitchen", 420), ("Study", 180)),
+                False,
+                completed_rooms=("Kitchen",),
+            ),
+        )
     )
     duration._async_apply_session()
     last_cleaned._async_apply_session()
@@ -861,12 +813,10 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     assert study_duration.native_value == 120
     assert study_last.native_value == stored_when.native_value
 
-    # Coordinator updates re-apply the latest session.
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    # A history store update re-applies the latest session.
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 "2026-01-01T08:00:01+00:00",
                 "2026-01-01T08:10:00+00:00",
                 600,
@@ -874,20 +824,25 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
                 (("Kitchen", 600),),
                 True,
             ),
-        ),
+            CleaningSession(
+                "2026-01-01T08:00:01+00:00",
+                "2026-01-01T08:10:00+00:00",
+                600,
+                ("Kitchen",),
+                (("Kitchen", 600),),
+                True,
+            ),
+        )
     )
     fresh = sensor.MaticRoomDurationSensor(entry, kitchen)
     fresh.async_write_ha_state = MagicMock()
-    fresh._handle_coordinator_update()
+    fresh._handle_store_update()
     assert fresh.native_value is None
 
     # A remap retires statistics entities whose stable room id disappeared,
     # without erasing their restored values.
-    entry.runtime_data.coordinator.data = replace(
-        entry.runtime_data.coordinator.data,
-        floor_plan=replace(
-            entry.runtime_data.coordinator.data.floor_plan, rooms=(study,)
-        ),
+    entry.runtime_data.session.floor.set(
+        replace(entry.runtime_data.session.floor.value, rooms=(study,))
     )
     assert duration.available is False
     assert study_duration.available is True
@@ -895,7 +850,7 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
 
 def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     history = entry.runtime_data.cleaning_plans
     history.history.snapshot.return_value["plan_history"] = {
         "handoff": {
@@ -916,11 +871,9 @@ def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
             }
         }
     }
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 "2026-01-01T08:00:00+00:00",
                 "2026-01-01T08:10:00+00:00",
                 600,
@@ -928,11 +881,19 @@ def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
                 (("Kitchen", 400), ("Study", 200)),
                 True,
             ),
-        ),
+            CleaningSession(
+                "2026-01-01T08:00:00+00:00",
+                "2026-01-01T08:10:00+00:00",
+                600,
+                ("Kitchen", "Study"),
+                (("Kitchen", 400), ("Study", 200)),
+                True,
+            ),
+        )
     )
 
-    kitchen = coordinator.data.floor_plan.rooms[0]
-    study = coordinator.data.floor_plan.rooms[1]
+    kitchen = session.floor.value.rooms[0]
+    study = session.floor.value.rooms[1]
     assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_value() == (
         "2026-01-01T08:06:00+00:00",
         360,
@@ -1000,7 +961,7 @@ def test_room_statistics_apply_newer_verified_plan_history() -> None:
             "runs": 2,
         }
     }
-    kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
+    kitchen = entry.runtime_data.session.floor.value.rooms[0]
     duration = sensor.MaticRoomDurationSensor(entry, kitchen)
     last_cleaned = sensor.MaticRoomLastCleanedSensor(entry, kitchen)
     duration.async_write_ha_state = MagicMock()
@@ -1033,36 +994,27 @@ def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
     assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
 
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    removed = replace(
-        coordinator.data,
-        floor_plan=replace(coordinator.data.floor_plan, rooms=()),
-    )
-    coordinator.data = removed
+    session = entry.runtime_data.session
+    session.floor.set(replace(session.floor.value, rooms=()))
     assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
 
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(coordinator.data.telemetry, latest_session=None),
-    )
+    session = entry.runtime_data.session
+    session.history.set(CleaningHistory(None, None))
     assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
 
     entry = _entry()
-    study = entry.runtime_data.coordinator.data.floor_plan.rooms[1]
+    study = entry.runtime_data.session.floor.value.rooms[1]
     entity = sensor.MaticRoomLastCleanedSensor(entry, study)
     entity._async_apply_session()
     assert entity.native_value is None
 
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    kitchen = coordinator.data.floor_plan.rooms[0]
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    session = entry.runtime_data.session
+    kitchen = session.floor.value.rooms[0]
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 "2026-01-02T08:00:00+00:00",
                 "2026-01-02T08:05:00+00:00",
                 300,
@@ -1071,33 +1023,36 @@ def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
                 True,
                 completed_rooms=("Kitchen",),
             ),
-        ),
+            CleaningSession(
+                "2026-01-02T08:00:00+00:00",
+                "2026-01-02T08:05:00+00:00",
+                300,
+                ("Kitchen",),
+                (),
+                True,
+                completed_rooms=("Kitchen",),
+            ),
+        )
     )
     assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_value() is None
 
 
 def _update_entity(hass, version: str | None = "v178.8"):
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, software_version=version),
-        telemetry=replace(coordinator.data.telemetry, software_version=version),
-    )
+    session = entry.runtime_data.session
+    set_operational(session, software_version=version)
+    session.telemetry.set(replace(session.telemetry.value, software_version=version))
     entity = update.MaticFirmwareUpdate(entry)
     entity.hass = hass
-    return entity, coordinator
+    return entity, session
 
 
-def _set_update_state(coordinator, update_state: str) -> None:
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(coordinator.data.telemetry, update_state=update_state),
-    )
+def _set_update_state(session, update_state: str) -> None:
+    session.telemetry.set(replace(session.telemetry.value, update_state=update_state))
 
 
 async def test_update_entity_mirrors_robot_managed_ota_state(hass) -> None:
-    entity, coordinator = _update_entity(hass)
+    entity, session = _update_entity(hass)
 
     assert entity.installed_version == "v178.8"
     assert entity.latest_version == entity.installed_version
@@ -1108,12 +1063,12 @@ async def test_update_entity_mirrors_robot_managed_ota_state(hass) -> None:
         "update_channel": "stable",
     }
 
-    _set_update_state(coordinator, "available")
+    _set_update_state(session, "available")
     assert entity.latest_version == "Newer than v178.8"
     assert entity.release_summary == update.FIRMWARE_RELEASE_SUMMARY
     assert entity.state == STATE_ON
 
-    _set_update_state(coordinator, "complete")
+    _set_update_state(session, "complete")
     assert entity.latest_version == entity.installed_version
     assert entity.state == STATE_OFF
 
@@ -1121,8 +1076,8 @@ async def test_update_entity_mirrors_robot_managed_ota_state(hass) -> None:
 async def test_pending_firmware_reads_the_loaded_translation(hass) -> None:
     """The marker comes from Home Assistant's cache, which core fills at setup."""
     await translation.async_load_integrations(hass, {DOMAIN})
-    entity, coordinator = _update_entity(hass)
-    _set_update_state(coordinator, "available")
+    entity, session = _update_entity(hass)
+    _set_update_state(session, "available")
     common = common_strings()
     assert common["pending_firmware_version"] == update.PENDING_FIRMWARE_VERSION
     assert (
@@ -1145,8 +1100,8 @@ async def test_pending_firmware_reads_the_loaded_translation(hass) -> None:
         assert entity.release_summary == "Der Roboter aktualisiert sich selbst."
         assert entity.state == STATE_ON
         cached.assert_called_with(hass, "de", "common", DOMAIN)
-        unknown, unknown_coordinator = _update_entity(hass, None)
-        _set_update_state(unknown_coordinator, "available")
+        unknown, unknown_session = _update_entity(hass, None)
+        _set_update_state(unknown_session, "available")
         assert unknown.latest_version == "Neuere Firmware"
 
 
@@ -1154,15 +1109,15 @@ async def test_a_skip_lasts_until_the_installed_version_or_language_changes(
     hass,
 ) -> None:
     """The documented Skip behaviour (docs/entities.md, ha-entities.md §10)."""
-    entity, coordinator = _update_entity(hass)
-    _set_update_state(coordinator, "available")
+    entity, session = _update_entity(hass)
+    _set_update_state(session, "available")
     with patch.object(entity, "async_write_ha_state"):
         await entity.async_skip()
     assert entity.state == STATE_OFF
 
     # A second pending update before any install keeps the same marker.
-    _set_update_state(coordinator, "idle")
-    _set_update_state(coordinator, "available")
+    _set_update_state(session, "idle")
+    _set_update_state(session, "available")
     assert entity.state == STATE_OFF
 
     hass.config.language = "de"
@@ -1173,17 +1128,14 @@ async def test_a_skip_lasts_until_the_installed_version_or_language_changes(
         assert entity.state == STATE_ON
     hass.config.language = "en"
 
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(coordinator.data.telemetry, software_version="v179.0"),
-    )
+    session.telemetry.set(replace(session.telemetry.value, software_version="v179.0"))
     assert entity.latest_version == "Newer than v179.0"
     assert entity.state == STATE_ON
 
 
 async def test_pending_firmware_without_an_installed_version(hass) -> None:
-    entity, coordinator = _update_entity(hass, None)
-    _set_update_state(coordinator, "available")
+    entity, session = _update_entity(hass, None)
+    _set_update_state(session, "available")
 
     assert entity.installed_version is None
     assert entity.latest_version == "Newer firmware"
@@ -1352,11 +1304,8 @@ def test_sensor_and_binary_sensor_values() -> None:
 
 def test_session_attributes_require_a_recorded_session() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(coordinator.data.telemetry, latest_session=None),
-    )
+    session = entry.runtime_data.session
+    session.history.set(CleaningHistory(None, None))
     description = next(
         description
         for description in sensor.STATE_DESCRIPTIONS
@@ -1387,7 +1336,7 @@ def test_next_room_preview_hides_stale_plan_errors() -> None:
 
 def test_plan_entities_preview_custom_areas_on_the_current_map() -> None:
     entry = _entry()
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     preview = entry.runtime_data.cleaning_plans.planning.preview
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     plan_button = button.MaticPlanButton(entry)
@@ -1437,7 +1386,7 @@ async def test_storage_backed_sensors_track_history_and_stay_available() -> None
         listener()
         entity.async_write_ha_state.assert_called_once()
 
-    entry.runtime_data.coordinator.last_update_success = False
+    entry.runtime_data.session.error.set(CannotConnectError("offline"))
     assert history_sensor.available is True
     assert plan_sensor.available is True
 
@@ -1451,11 +1400,8 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
     manager = CleaningPlanManager(hass)
     manager.repository.store.async_save = AsyncMock()
     entry.runtime_data.cleaning_plans = manager
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, current_area="The Kitchen"),
-    )
+    session = entry.runtime_data.session
+    set_operational(session, current_area="The Kitchen")
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
     base = dt_util.utcnow()
     with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
@@ -1535,34 +1481,21 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
             "synthetic-serial", "daily", room, "paused"
         )
         assert publisher.data is None  # Source/manager disagree during the handoff.
-        coordinator.data = replace(
-            coordinator.data,
-            operational=replace(
-                coordinator.data.operational, paused=True, cleaning=False
-            ),
-        )
-        coordinator.async_add_listener.call_args_list[0].args[0]()
+        set_operational(session, paused=True, cleaning=False)
     with patch(
         "custom_components.matic_robot.plans.dt_util.utcnow",
         return_value=base + timedelta(hours=1),
     ):
         publisher.refresh()
         assert [entity.native_value for entity in entities] == [35, 100, 35]
-        coordinator.last_update_success = False
-        publisher.refresh()
+        session.error.set(CannotConnectError("offline"))
         assert all(entity.native_value is None for entity in entities)
         assert all(not entity.available for entity in entities)
-        coordinator.last_update_success = True
-        coordinator.data = replace(
-            coordinator.data,
-            operational=replace(coordinator.data.operational, current_area="Study"),
-        )
+        session.error.set(None)
+        set_operational(session, current_area="Study")
         publisher.refresh()
         assert publisher.data is None
-        coordinator.data = replace(
-            coordinator.data,
-            operational=replace(coordinator.data.operational, current_area="Kitchen"),
-        )
+        set_operational(session, current_area="Kitchen")
         publisher.refresh()
         assert publisher.data is not None
         async with manager.control.lock("synthetic-serial"):
@@ -1580,12 +1513,7 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
         )
         publisher.refresh()
         assert publisher.data is None
-        coordinator.data = replace(
-            coordinator.data,
-            operational=replace(
-                coordinator.data.operational, paused=False, cleaning=False
-            ),
-        )
+        set_operational(session, paused=False, cleaning=False)
         publisher.refresh()
         assert publisher.data is None
     for remove in remove_listeners:
@@ -1594,7 +1522,7 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
     close = entry.async_on_unload.call_args.args[0]
     close()
     cancel_timer.assert_called_once()
-    coordinator.async_add_listener.return_value.assert_called_once()
+    assert session.state._listeners == session.error._listeners == []
     with patch.object(manager.history, "current_room_timing") as read:
         publisher.refresh()
         read.assert_not_called()
@@ -1617,7 +1545,7 @@ async def test_firmware_sensor_tracks_background_snapshot_completion() -> None:
 
 async def test_verified_setting_entities_write_and_refresh() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     switches = [
         switch.MaticSettingSwitch(entry, description)
         for description in switch.DESCRIPTIONS
@@ -1640,19 +1568,19 @@ async def test_verified_setting_entities_write_and_refresh() -> None:
     await switches[2].async_turn_on()
     await switches[3].async_turn_on()
 
-    assert coordinator.client.async_set_binary_setting.await_args_list == [
+    assert session.client.async_set_binary_setting.await_args_list == [
         call("child_lock", True),
         call("pet_waste", False),
         call("voice", True),
     ]
-    coordinator.client.async_set_deep_mop.assert_awaited_once_with(True)
+    session.client.async_set_deep_mop.assert_awaited_once_with(True)
 
     water_flow = number.MaticWaterFlowNumber(entry)
     assert water_flow.native_value == 1.0
     assert water_flow.available is True
     await water_flow.async_set_native_value(1.4)
-    coordinator.client.async_set_water_flow.assert_awaited_once_with(1.4)
-    assert coordinator.async_request_full_refresh.await_count == 5
+    session.client.async_set_water_flow.assert_awaited_once_with(1.4)
+    assert session.heartbeat.async_request_full_refresh.await_count == 5
 
 
 @pytest.mark.parametrize("entity_kind", ["switch", "number"])
@@ -1660,16 +1588,16 @@ async def test_setting_confirmation_failure_uses_safe_translation(
     entity_kind: str,
 ) -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     if entity_kind == "switch":
         entity = switch.MaticSettingSwitch(entry, switch.DESCRIPTIONS[-1])
-        coordinator.client.async_set_deep_mop.side_effect = CannotConnectError(
+        session.client.async_set_deep_mop.side_effect = CannotConnectError(
             "private transport detail"
         )
         operation = entity.async_turn_on()
     else:
         entity = number.MaticWaterFlowNumber(entry)
-        coordinator.client.async_set_water_flow.side_effect = CannotConnectError(
+        session.client.async_set_water_flow.side_effect = CannotConnectError(
             "private transport detail"
         )
         operation = entity.async_set_native_value(1.4)
@@ -1680,7 +1608,7 @@ async def test_setting_confirmation_failure_uses_safe_translation(
     assert error.value.translation_domain == "matic_robot"
     assert error.value.translation_key == "setting_unconfirmed"
     assert error.value.__suppress_context__ is True
-    coordinator.async_request_full_refresh.assert_not_awaited()
+    session.heartbeat.async_request_full_refresh.assert_not_awaited()
 
 
 async def test_saved_plan_select_and_native_button() -> None:
@@ -1789,8 +1717,8 @@ async def test_custom_area_select_and_native_button() -> None:
     floor_listener()
     floor_listener()
     area_button.async_write_ha_state.assert_called_once()
-    with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
-        area_button._handle_coordinator_update()
+    with patch.object(MaticEntity, "_handle_store_update") as parent_update:
+        area_button._handle_store_update()
     parent_update.assert_called_once_with()
 
     registry_entry = SimpleNamespace(
@@ -1820,9 +1748,9 @@ async def test_plan_button_disables_an_impossible_run_and_refreshes() -> None:
     history = entry.runtime_data.cleaning_plans
     start_button = button.MaticPlanButton(entry)
 
-    entry.runtime_data.coordinator.last_update_success = False
+    entry.runtime_data.session.error.set(CannotConnectError("offline"))
     assert start_button.available is False
-    entry.runtime_data.coordinator.last_update_success = True
+    entry.runtime_data.session.error.set(None)
 
     history.planning.preview.side_effect = KeyError("missing")
     assert start_button.available is False
@@ -1847,8 +1775,8 @@ async def test_plan_button_disables_an_impossible_run_and_refreshes() -> None:
     floor_listener()
     floor_listener()
     start_button.async_write_ha_state.assert_called_once()
-    with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
-        start_button._handle_coordinator_update()
+    with patch.object(MaticEntity, "_handle_store_update") as parent_update:
+        start_button._handle_store_update()
     parent_update.assert_called_once_with()
 
 
@@ -1957,8 +1885,8 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert write_state.call_count == 2
 
     store.floor_plan_is_current.return_value = False
-    with patch.object(MaticEntity, "_handle_coordinator_update") as update_state:
-        entity._handle_coordinator_update()
+    with patch.object(MaticEntity, "_handle_store_update") as update_state:
+        entity._handle_store_update()
     assert entity._published_floor_coherent is False
     update_state.assert_called_once_with()
 
@@ -2000,7 +1928,7 @@ async def test_camera_discards_render_when_floor_changes_in_executor(
     def render(floor_plan, _pose, _current_area, **_kwargs) -> bytes:
         if floor_plan is not None:
             if revoke_then_recover:
-                entry.runtime_data.coordinator.floor_read_generation = 2
+                entry.runtime_data.session.heartbeat.floor_read_generation = 2
             else:
                 store.floor_plan_is_current.return_value = False
             return b"stale-floor"
@@ -2024,8 +1952,8 @@ async def test_camera_native_pose_expiry_invalidates_cached_marker(
     hass, photorealistic, expire_in_render
 ) -> None:
     entry = _entry()
-    data = entry.runtime_data.coordinator.data
-    clock = SimpleNamespace(now=data.pose.observed_at)
+    session = entry.runtime_data.session
+    clock = SimpleNamespace(now=session.pose_on(session.floor.value).observed_at)
     entity_type = (
         camera.MaticPhotorealisticMapCamera if photorealistic else camera.MaticMapCamera
     )
@@ -2052,7 +1980,7 @@ async def test_camera_native_pose_expiry_invalidates_cached_marker(
     ):
         first = await entity.async_camera_image()
         assert first == (b"without-marker" if expire_in_render else b"with-marker")
-        clock.now = data.pose.observed_at + 6.0
+        clock.now = session.pose_on(session.floor.value).observed_at + 6.0
         assert await entity.async_camera_image() == b"without-marker"
         assert await entity.async_camera_image() == b"without-marker"
         assert entity.extra_state_attributes["robot_location_source"] != "exact_pose"
@@ -2111,8 +2039,8 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     assert write_state.call_count == 2
 
     store.floor_plan_is_current.return_value = False
-    with patch.object(MaticEntity, "_handle_coordinator_update") as update_state:
-        entity._handle_coordinator_update()
+    with patch.object(MaticEntity, "_handle_store_update") as update_state:
+        entity._handle_store_update()
     assert entity._published_floor_coherent is False
     update_state.assert_called_once_with()
 
@@ -2165,7 +2093,7 @@ async def test_photorealistic_camera_discards_render_when_floor_changes(
 
     def render(*_args, **_kwargs) -> bytes:
         if revoke_then_recover:
-            entry.runtime_data.coordinator.floor_read_generation = 2
+            entry.runtime_data.session.heartbeat.floor_read_generation = 2
         else:
             store.floor_plan_is_current.return_value = False
         return b"stale-floor"
@@ -2201,13 +2129,13 @@ async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> N
     await entity._render_lock.acquire()
     task = hass.async_create_task(entity.async_camera_image())
     await asyncio.sleep(0)
-    data = entry.runtime_data.coordinator.data
+    data = camera._map_view(entry.runtime_data.session)
     entity._cached_key = (
         entry.runtime_data.slam_map.revision,
         id(data.floor_plan),
         True,
         data.pose,
-        data.operational.current_area,
+        data.current_area,
         1024,
         1024,
         camera._floor_render_identity(entry.runtime_data.slam_map, data, 0),
@@ -2283,7 +2211,7 @@ def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
         result = camera._render_photorealistic_entries(
             (synthetic_slam_entry(),),
             (synthetic_structure_entry(),),
-            _state(floor_plan=_floor_plan()),
+            camera._map_view(_state(floor_plan=_floor_plan())),
             floor_plan_coherent=True,
             width=640,
             height=480,
@@ -2305,7 +2233,7 @@ def test_photorealistic_camera_withholds_mismatched_floor_overlays() -> None:
         result = camera._render_photorealistic_entries(
             (synthetic_slam_entry(),),
             (synthetic_structure_entry(),),
-            _state(floor_plan=_floor_plan()),
+            camera._map_view(_state(floor_plan=_floor_plan())),
             floor_plan_coherent=False,
             width=640,
             height=480,
@@ -2319,7 +2247,7 @@ def test_photorealistic_camera_withholds_mismatched_floor_overlays() -> None:
 async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     entry = _entry()
     entity = vacuum.MaticVacuum(entry)
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
 
     assert entity.activity is VacuumActivity.CLEANING
     assert [segment.id for segment in await entity.async_get_segments()] == [
@@ -2334,8 +2262,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     await entity.async_stop()
     await entity.async_return_to_base()
     commands = [
-        call.args[0]
-        for call in coordinator.client.async_send_user_command.await_args_list
+        call.args[0] for call in session.client.async_send_user_command.await_args_list
     ]
     assert commands == [
         UserCommand.PAUSE,
@@ -2352,7 +2279,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     )
 
     await entity.async_clean_segments(["room-2"])
-    coverage_call = coordinator.client.async_start_coverage.await_args
+    coverage_call = session.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-2"]
     _assert_current_coverage_call(
         coverage_call,
@@ -2363,7 +2290,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         },
     )
     assert "require_settings_readback" not in coverage_call.kwargs
-    assert coordinator.async_request_refresh.await_count == 4
+    assert session.heartbeat.async_request_refresh.await_count == 4
 
 
 async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
@@ -2376,7 +2303,7 @@ async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
     await entity.async_send_command("stop")
 
     assert plans.control.request_stop.call_count == 2
-    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+    entry.runtime_data.session.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
@@ -2392,9 +2319,7 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
         },
     )
 
-    coverage_call = (
-        entry.runtime_data.coordinator.client.async_start_coverage.await_args
-    )
+    coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-2"]
     _assert_current_coverage_call(
         coverage_call,
@@ -2414,15 +2339,13 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
 async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
     paused_entry = _entry(paused=True)
     await vacuum.MaticVacuum(paused_entry).async_start()
-    paused_entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+    paused_entry.runtime_data.session.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.RESUME
     )
 
     ready_entry = _entry()
     await vacuum.MaticVacuum(ready_entry).async_start()
-    start_call = (
-        ready_entry.runtime_data.coordinator.client.async_start_coverage.await_args
-    )
+    start_call = ready_entry.runtime_data.session.client.async_start_coverage.await_args
     assert start_call.args[1] == [
         "protocol-1",
         "protocol-2",
@@ -2432,14 +2355,9 @@ async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
 async def test_paused_vacuum_with_latched_warning_reports_paused_and_problem() -> None:
     """A latched warning must not turn a paused robot back into cleaning."""
     entry = _entry(paused=True)
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     # Firmware keeps the mission flag set while paused; warning 326 is latched.
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(
-            coordinator.data.operational, cleaning=True, error_codes=(326,)
-        ),
-    )
+    set_operational(session, cleaning=True, error_codes=(326,))
     entity = vacuum.MaticVacuum(entry)
 
     assert entity.activity is VacuumActivity.PAUSED, entity.activity
@@ -2454,11 +2372,8 @@ async def test_paused_vacuum_with_latched_warning_reports_paused_and_problem() -
 def test_problem_sensor_names_the_current_errors() -> None:
     """The Problem sensor is where an automation reads the robot's error names."""
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, error_codes=(220, 326)),
-    )
+    session = entry.runtime_data.session
+    set_operational(session, error_codes=(220, 326))
 
     attributes = {
         description.key: binary_sensor.MaticBinarySensor(
@@ -2487,7 +2402,7 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
         },
     )
 
-    call = entry.runtime_data.coordinator.client.async_start_coverage.await_args
+    call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert call.args[1] == ["protocol-2", "protocol-1"]
     _assert_current_coverage_call(
         call,
@@ -2506,7 +2421,7 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
             "coverage": "standard",
         },
     )
-    call = entry.runtime_data.coordinator.client.async_start_coverage.await_args
+    call = entry.runtime_data.session.client.async_start_coverage.await_args
     _assert_current_coverage_call(
         call,
         {
@@ -2544,12 +2459,10 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     )
 
     bare_entry = _entry(with_floor_plan=False)
-    data = bare_entry.runtime_data.coordinator.data
-    bare_entry.runtime_data.coordinator.data = replace(
-        data,
-        operational=replace(data.operational, state_codes=(119, 131), cleaning=True),
-        telemetry=replace(data.telemetry, run_progress=RunProgress(900, 300)),
+    set_operational(
+        bare_entry.runtime_data.session, state_codes=(119, 131), cleaning=True
     )
+    bare_entry.runtime_data.session.progress.set(RunProgress(900, 300))
     bare = vacuum.MaticVacuum(bare_entry)
     assert bare.extra_state_attributes == {
         "matic_entry_id": "entry",
@@ -2570,10 +2483,7 @@ def test_vacuum_rejects_a_missing_or_empty_room_map() -> None:
     for floor_plan in floor_plans:
         entry = _entry(with_floor_plan=False)
         if floor_plan is not None:
-            entry.runtime_data.coordinator.data = replace(
-                entry.runtime_data.coordinator.data,
-                floor_plan=floor_plan,
-            )
+            entry.runtime_data.session.floor.set(floor_plan)
         entity = vacuum.MaticVacuum(entry)
         with pytest.raises(ServiceValidationError) as raised:
             entity._floor_plan()
@@ -2585,9 +2495,7 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
     entity = vacuum.MaticVacuum(entry)
 
     await entity.async_send_command("clean_all")
-    coverage_call = (
-        entry.runtime_data.coordinator.client.async_start_coverage.await_args
-    )
+    coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-1", "protocol-2"]
     _assert_current_coverage_call(
         coverage_call,
@@ -2600,9 +2508,7 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
     assert "require_settings_readback" not in coverage_call.kwargs
 
     await entity.async_send_command("clean_segments", ["Study"])
-    coverage_call = (
-        entry.runtime_data.coordinator.client.async_start_coverage.await_args
-    )
+    coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-2"]
     assert coverage_call.kwargs["ordered"] is False
 
@@ -2624,7 +2530,7 @@ async def test_vacuum_named_commands_and_validation() -> None:
     await entity.async_send_command("resume")
     await entity.async_send_command("stay put")
     await entity.async_send_command("emote", {"kind": " Pirouette "})
-    sent = entry.runtime_data.coordinator.client.async_send_user_command.await_args_list
+    sent = entry.runtime_data.session.client.async_send_user_command.await_args_list
     assert [call.args[0] for call in sent[-2:]] == [
         UserCommand.STAY_PUT,
         UserCommand.EMOTE_PIROUETTE,
@@ -2638,7 +2544,7 @@ async def test_vacuum_named_commands_and_validation() -> None:
             "ordered": True,
         },
     )
-    call = entry.runtime_data.coordinator.client.async_start_coverage.await_args
+    call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert call.args[1] == ["protocol-2", "protocol-1"]
     _assert_current_coverage_call(
         call,
@@ -2693,25 +2599,25 @@ async def test_vacuum_named_commands_and_validation() -> None:
 
 async def test_sink_summon_sends_the_current_floor_when_idle() -> None:
     entry = _entry(idle=True)
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
 
     await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
 
     client.async_sink_summon.assert_awaited_once_with(
         _floor_plan(), b"synthetic-posture"
     )
-    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once_with()
+    entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once_with()
 
 
 async def test_sink_summon_rejects_a_floor_without_a_saved_location() -> None:
     unsaved = _entry(idle=True)
-    unsaved.runtime_data.coordinator.client.async_get_sink_posture.side_effect = (
+    unsaved.runtime_data.session.client.async_get_sink_posture.side_effect = (
         SinkLocationUnavailableError("synthetic")
     )
     with pytest.raises(ServiceValidationError) as missing:
         await vacuum.MaticVacuum(unsaved).async_sink_summon()
     assert missing.value.translation_key == "sink_location_unavailable"
-    unsaved.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+    unsaved.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> None:
@@ -2720,23 +2626,23 @@ async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> No
     with pytest.raises(ServiceValidationError) as unavailable:
         await vacuum.MaticVacuum(stale).async_sink_summon()
     assert unavailable.value.translation_key == "room_plan_unavailable"
-    stale.runtime_data.coordinator.client.async_sink_summon.assert_not_awaited()
+    stale.runtime_data.session.client.async_sink_summon.assert_not_awaited()
 
     for method in ("async_get_sink_posture", "async_sink_summon"):
         unsupported = _entry(idle=True)
         getattr(
-            unsupported.runtime_data.coordinator.client, method
+            unsupported.runtime_data.session.client, method
         ).side_effect = EndpointUnsupportedError("synthetic")
         with pytest.raises(HomeAssistantError) as failed:
             await vacuum.MaticVacuum(unsupported).async_sink_summon()
         assert not isinstance(failed.value, ServiceValidationError)
         assert failed.value.translation_key == "robot_command_failed"
-        unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+        unsupported.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 async def test_go_to_room_sends_the_named_room_on_the_current_floor() -> None:
     entry = _entry(idle=True)
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
 
     await vacuum.MaticVacuum(entry).async_send_command(
         "go_to_room", {"room": " study "}
@@ -2747,7 +2653,7 @@ async def test_go_to_room_sends_the_named_room_on_the_current_floor() -> None:
         (_floor_plan(), _floor_plan().rooms[1]),
         (_floor_plan(), _floor_plan().rooms[0]),
     ]
-    assert entry.runtime_data.coordinator.async_request_refresh.await_count == 2
+    assert entry.runtime_data.session.heartbeat.async_request_refresh.await_count == 2
 
 
 @pytest.mark.parametrize(
@@ -2758,7 +2664,7 @@ async def test_go_to_room_requires_one_room(params) -> None:
     with pytest.raises(ServiceValidationError) as raised:
         await vacuum.MaticVacuum(entry).async_send_command("go_to_room", params)
     assert raised.value.translation_key == "go_to_room_room_required"
-    entry.runtime_data.coordinator.client.async_go_to_room.assert_not_awaited()
+    entry.runtime_data.session.client.async_go_to_room.assert_not_awaited()
 
 
 async def test_go_to_room_refuses_unknown_and_ambiguous_rooms() -> None:
@@ -2772,15 +2678,13 @@ async def test_go_to_room_refuses_unknown_and_ambiguous_rooms() -> None:
         _floor_plan(),
         rooms=(*_floor_plan().rooms, replace(_floor_plan().rooms[1], id="room-3")),
     )
-    entry.runtime_data.coordinator.data = replace(
-        entry.runtime_data.coordinator.data, floor_plan=twin
-    )
+    entry.runtime_data.session.floor.set(twin)
     with pytest.raises(ServiceValidationError) as ambiguous:
         await vacuum.MaticVacuum(entry).async_go_to_room("Study")
     assert ambiguous.value.translation_key == "ambiguous_room"
     assert ambiguous.value.translation_placeholders == {"room": "Study"}
-    entry.runtime_data.coordinator.client.async_go_to_room.assert_not_awaited()
-    entry.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+    entry.runtime_data.session.client.async_go_to_room.assert_not_awaited()
+    entry.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 async def test_go_to_room_rejects_stale_maps_and_reports_robot_failures() -> None:
@@ -2789,17 +2693,17 @@ async def test_go_to_room_rejects_stale_maps_and_reports_robot_failures() -> Non
     with pytest.raises(ServiceValidationError) as unavailable:
         await vacuum.MaticVacuum(stale).async_go_to_room("Kitchen")
     assert unavailable.value.translation_key == "room_plan_unavailable"
-    stale.runtime_data.coordinator.client.async_go_to_room.assert_not_awaited()
+    stale.runtime_data.session.client.async_go_to_room.assert_not_awaited()
 
     unsupported = _entry(idle=True)
-    unsupported.runtime_data.coordinator.client.async_go_to_room.side_effect = (
+    unsupported.runtime_data.session.client.async_go_to_room.side_effect = (
         EndpointUnsupportedError("synthetic")
     )
     with pytest.raises(HomeAssistantError) as failed:
         await vacuum.MaticVacuum(unsupported).async_go_to_room("Kitchen")
     assert not isinstance(failed.value, ServiceValidationError)
     assert failed.value.translation_key == "robot_command_failed"
-    unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+    unsupported.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 _SESSION_KEY = bytes.fromhex("1214121209" + "aa" * 8 + "11" + "bb" * 8)
@@ -2814,7 +2718,7 @@ def _session_record(key: bytes, started_at: str, ended_at: str | None):
 
 async def test_redo_last_clean_repeats_the_newest_finished_clean() -> None:
     entry = _entry(idle=True)
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     newest = _SESSION_KEY[:-1] + b"\x01"
     open_session = _SESSION_KEY[:-1] + b"\x02"
     client.async_get_cleaning_session_records.return_value = (
@@ -2826,7 +2730,7 @@ async def test_redo_last_clean_repeats_the_newest_finished_clean() -> None:
     await vacuum.MaticVacuum(entry).async_send_command("redo last clean")
 
     client.async_redo_clean.assert_awaited_once_with(newest)
-    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once_with()
+    entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once_with()
 
 
 async def test_redo_last_clean_refuses_without_history_or_while_busy() -> None:
@@ -2837,7 +2741,7 @@ async def test_redo_last_clean_refuses_without_history_or_while_busy() -> None:
 
     unfinished = _entry(idle=True)
     open_records = (
-        unfinished.runtime_data.coordinator.client.async_get_cleaning_session_records
+        unfinished.runtime_data.session.client.async_get_cleaning_session_records
     )
     open_records.return_value = (
         _session_record(_SESSION_KEY, "2026-10-31T10:00:00", None),
@@ -2850,30 +2754,28 @@ async def test_redo_last_clean_refuses_without_history_or_while_busy() -> None:
     with pytest.raises(ServiceValidationError) as cleaning:
         await vacuum.MaticVacuum(busy).async_redo_last_clean()
     assert cleaning.value.translation_key == "redo_robot_busy"
-    busy.runtime_data.coordinator.client.async_get_cleaning_session_records.assert_not_awaited()
+    busy.runtime_data.session.client.async_get_cleaning_session_records.assert_not_awaited()
 
     unreadable = _entry(idle=True)
-    records = (
-        unreadable.runtime_data.coordinator.client.async_get_cleaning_session_records
-    )
+    records = unreadable.runtime_data.session.client.async_get_cleaning_session_records
     records.side_effect = CannotConnectError("synthetic")
     with pytest.raises(HomeAssistantError) as history:
         await vacuum.MaticVacuum(unreadable).async_redo_last_clean()
     assert history.value.translation_key == "robot_command_failed"
     for entry in (empty, unfinished, busy, unreadable):
-        entry.runtime_data.coordinator.client.async_redo_clean.assert_not_awaited()
+        entry.runtime_data.session.client.async_redo_clean.assert_not_awaited()
 
 
 async def test_redo_last_clean_rechecks_the_robot_and_reports_failures() -> None:
     raced = _entry(idle=True)
-    client = raced.runtime_data.coordinator.client
+    client = raced.runtime_data.session.client
     client.async_get_cleaning_session_records.return_value = (
         _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
     )
     entity = vacuum.MaticVacuum(raced)
 
     async def started(*args, **kwargs):
-        raced.runtime_data.coordinator.data = _state(floor_plan=_floor_plan())
+        raced.runtime_data.session.state.set(_state().state.value)
         return client.async_get_cleaning_session_records.return_value
 
     client.async_get_cleaning_session_records.side_effect = started
@@ -2883,18 +2785,18 @@ async def test_redo_last_clean_rechecks_the_robot_and_reports_failures() -> None
     client.async_redo_clean.assert_not_awaited()
 
     failing = _entry(idle=True)
-    failing_client = failing.runtime_data.coordinator.client
+    failing_client = failing.runtime_data.session.client
     failing_client.async_get_cleaning_session_records.return_value = (
         _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
     )
-    failing.runtime_data.coordinator.client.async_redo_clean.side_effect = (
+    failing.runtime_data.session.client.async_redo_clean.side_effect = (
         EndpointUnsupportedError("synthetic")
     )
     with pytest.raises(HomeAssistantError) as failed:
         await vacuum.MaticVacuum(failing).async_redo_last_clean()
     assert not isinstance(failed.value, ServiceValidationError)
     assert failed.value.translation_key == "robot_command_failed"
-    failing.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+    failing.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 async def test_vacuum_dock_from_idle_sends_no_stop() -> None:
@@ -2903,7 +2805,7 @@ async def test_vacuum_dock_from_idle_sends_no_stop() -> None:
 
     await entity.async_return_to_base()
 
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     commands = [call.args[0] for call in client.async_send_user_command.await_args_list]
     assert commands == [UserCommand.DOCK]
 
@@ -2911,7 +2813,7 @@ async def test_vacuum_dock_from_idle_sends_no_stop() -> None:
 async def test_room_statistics_sensors_use_verified_managed_runs() -> None:
     """A verified managed run still populates room statistics."""
     entry = _entry()
-    kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
+    kitchen = entry.runtime_data.session.floor.value.rooms[0]
     entry.runtime_data.cleaning_plans.history.snapshot.return_value = {
         **entry.runtime_data.cleaning_plans.history.snapshot.return_value,
         "plan_history": {
@@ -2955,13 +2857,11 @@ def test_native_session_exposes_unrecorded_per_mode_outcomes():
     from custom_components.matic_robot.client.models import CleaningModeResult
 
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    latest = coordinator.data.telemetry.latest_session
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=replace(
+    session = entry.runtime_data.session
+    latest = session.history.value.latest_session
+    session.history.set(
+        CleaningHistory(
+            replace(
                 latest,
                 rooms=("Study", "Store", "Unknown"),
                 mode_results=(
@@ -2970,7 +2870,16 @@ def test_native_session_exposes_unrecorded_per_mode_outcomes():
                     CleaningModeResult("Unknown", "mop", None, None),
                 ),
             ),
-        ),
+            replace(
+                latest,
+                rooms=("Study", "Store", "Unknown"),
+                mode_results=(
+                    CleaningModeResult("Study", "mop", "partial", 20),
+                    CleaningModeResult("Store", "mop", "unattempted", 0),
+                    CleaningModeResult("Unknown", "mop", None, None),
+                ),
+            ),
+        )
     )
     description = next(
         item
@@ -3046,13 +2955,10 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
 
 def test_unnamed_robot_device_uses_the_translated_fallback_name() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
+    session = entry.runtime_data.session
     assert MaticEntity(entry).device_info["name"] == "Test Robot"
 
-    coordinator.data = replace(
-        coordinator.data,
-        info=replace(coordinator.data.info, name="", hostname="matic-ab12.local."),
-    )
+    session.info = replace(session.info, name="", hostname="matic-ab12.local.")
     device = MaticEntity(entry).device_info
     assert "name" not in device
     assert device["translation_key"] == "robot"
@@ -3120,12 +3026,9 @@ def test_rarely_useful_entities_are_off_by_default() -> None:
 
 def test_robot_alert_sensor_names_known_codes_and_keeps_unknown_ones() -> None:
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        operational=replace(coordinator.data.operational, error_codes=(304, 206)),
-    )
-    coordinator.robot_health.unknown_alert_codes = {
+    session = entry.runtime_data.session
+    set_operational(session, error_codes=(304, 206))
+    session.health.unknown_alert_codes = {
         "304": {"first_seen": "2026-10-30T03:00:00+00:00", "last_seen": "now"}
     }
     alert = sensor.MaticRobotAlertSensor(entry)

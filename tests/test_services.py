@@ -123,6 +123,7 @@ from custom_components.matic_robot.service_schemas import (
 from custom_components.matic_robot.services import (
     async_register_services,
 )
+from custom_components.matic_robot.stores import LiveState, Store
 
 
 def test_room_sequence_default_resolver_uses_canonical_reference_rules() -> None:
@@ -290,6 +291,26 @@ async def test_dock_upgrade_allows_managed_stop_running_failure(hass) -> None:
     await _async_mark_run_docked(manager, "serial", "run-1", "vacuum.matic", Context())
 
     manager.ledger.async_mark_run_docked.assert_awaited_once()
+
+
+def _session(
+    *,
+    floor_plan: FloorPlan | None = None,
+    info: object = SimpleNamespace(serial_number="serial"),
+    refresh: object = None,
+    confirm_room_completed: object = None,
+    discard_current_room: object = None,
+) -> SimpleNamespace:
+    """Return the session parts the services read and ask."""
+    return SimpleNamespace(
+        info=info,
+        floor=Store(floor_plan),
+        heartbeat=SimpleNamespace(
+            async_request_refresh=refresh,
+            async_confirm_room_completed=confirm_room_completed,
+            async_discard_current_room=discard_current_room,
+        ),
+    )
 
 
 def _registered_handler(services, service: str):
@@ -527,9 +548,7 @@ async def test_clean_action_checks_oem_stop_fence() -> None:
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(info=SimpleNamespace(serial_number="serial"))
-            ),
+            session=_session(info=SimpleNamespace(serial_number="serial")),
             client=SimpleNamespace(async_get_active_cleaning_session_state=AsyncMock()),
         )
     )
@@ -570,14 +589,11 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=coordinator,
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -612,7 +628,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         cleaning_mode=CleaningMode.VACUUM,
         coverage_setting=CoverageSetting.HEAVY_DUTY,
     )
-    coordinator.async_request_refresh.assert_awaited_once()
+    session.heartbeat.async_request_refresh.assert_awaited_once()
 
 
 async def test_custom_area_native_completion_does_not_advance_shared_cadence(
@@ -627,14 +643,11 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=coordinator,
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -768,17 +781,14 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
         },
     )
     services = await _registered_services(hass, manager)
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=SimpleNamespace(
                 async_start_custom_coverage=AsyncMock(),
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
             ),
-            coordinator=coordinator,
+            session=session,
         )
     )
     context = ("vacuum.test", entry, "serial", {"office": "Office"})
@@ -808,7 +818,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
         with pytest.raises(ServiceValidationError) as non_string_settings:
             await invoke("Non-string settings")
         assert non_string_settings.value.translation_key == "invalid_area"
-        coordinator.data.floor_plan = None
+        session.floor.value = None
         with pytest.raises(ServiceValidationError) as no_map:
             await invoke("Broken")
         assert no_map.value.translation_key == "room_plan_unavailable"
@@ -872,14 +882,11 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=live_floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=live_floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=coordinator,
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -905,7 +912,7 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
     assert manager.control.managed_motion_is_current("serial", managed_token) is True
     client.async_start_custom_coverage.assert_not_awaited()
 
-    coordinator.async_request_refresh.assert_not_awaited()
+    session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> None:
@@ -930,14 +937,11 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=coordinator,
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -957,7 +961,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
         await asyncio.sleep(0)
-        coordinator.data.floor_plan = _area_floor_plan(mission_id=43)
+        session.floor.value = _area_floor_plan(mission_id=43)
         lock.release()
         with pytest.raises(ServiceValidationError) as stale:
             await task
@@ -966,7 +970,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     assert manager.control.managed_motion_is_current("serial", managed_token) is True
     client.async_start_custom_coverage.assert_not_awaited()
 
-    coordinator.data.floor_plan = floor_plan
+    session.floor.value = floor_plan
     lock = manager.control.command_lock("serial")
     await lock.acquire()
     with patch(
@@ -1058,14 +1062,11 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=coordinator,
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -1093,7 +1094,7 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
     assert blocked.value.translation_key == "robot_stop_pending"
     assert manager.control.managed_motion_is_current("serial", managed_token) is True
     client.async_start_custom_coverage.assert_not_awaited()
-    coordinator.async_request_refresh.assert_not_awaited()
+    session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
@@ -1137,14 +1138,11 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=coordinator,
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -1181,7 +1179,7 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
 
             assert manager.control.managed_motion_is_current("serial", managed_token)
             client.async_start_custom_coverage.assert_not_awaited()
-            coordinator.async_request_refresh.assert_not_awaited()
+            session.heartbeat.async_request_refresh.assert_not_awaited()
         finally:
             if command_lock.locked():
                 command_lock.release()
@@ -1303,7 +1301,7 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
                 blocking=True,
                 context=stop.context,
             )
-            entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+            entry.runtime_data.session.client.async_send_user_command.assert_awaited_once_with(
                 UserCommand.STOP
             )
         finally:
@@ -1383,7 +1381,7 @@ async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
             plan_lock.release()
 
     assert manager.control.cancellation_reason(serial_number) == "managed_stop"
-    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+    entry.runtime_data.session.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.STOP
     )
 
@@ -1471,8 +1469,8 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
 
     assert manager.control.motion_generation(serial_number) == replacement_generation
     assert manager.control.cancellation_reason(serial_number) == "motion_replaced"
-    entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
-    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+    entry.runtime_data.session.client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.session.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
@@ -1557,7 +1555,7 @@ async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
             plan_lock.release()
 
     assert not manager.control.stop_dispatch_pending(serial_number)
-    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+    entry.runtime_data.session.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.STOP
     )
 
@@ -1605,8 +1603,7 @@ async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> No
     entity.hass = hass
     entity.entity_id = "vacuum.test"
     tracker = CleaningSessionTracker()
-    entry.runtime_data.coordinator._session_tracker = tracker
-    entry.runtime_data.coordinator.async_discard_current_room = lambda: (
+    entry.runtime_data.session.heartbeat.async_discard_current_room = lambda: (
         tracker.discard_current_room(now=dt_util.utcnow())
     )
     stop = ServiceCall(
@@ -1663,8 +1660,8 @@ async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> No
     assert tracker._current_room == "Study"
     assert tracker._active_started_at is not None
     assert tracker._confirmed_rooms == {"Study"}
-    entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
-    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+    entry.runtime_data.session.client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.session.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_clean_area_translates_client_failure_without_protocol_details(
@@ -1691,14 +1688,11 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
             side_effect=MaticError("synthetic protocol detail")
         ),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=coordinator,
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -1722,7 +1716,7 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
 
     assert failure.value.translation_key == "robot_command_failed"
     assert "protocol detail" not in str(failure.value)
-    coordinator.async_request_refresh.assert_not_awaited()
+    session.heartbeat.async_request_refresh.assert_not_awaited()
 
 
 async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -> None:
@@ -1738,14 +1732,12 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             Room("room-study", "Study", "study", b"study", ()),
         ),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-        async_confirm_room_completed=MagicMock(),
+    session = _session(
+        floor_plan=floor_plan, refresh=AsyncMock(), confirm_room_completed=MagicMock()
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
@@ -1787,15 +1779,15 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
 
     async def exercise_sequence(*_args, **kwargs) -> None:
         assert kwargs["floor_is_current"]() is True
-        original_floor = coordinator.data.floor_plan
-        coordinator.data.floor_plan = replace(
+        original_floor = session.floor.value
+        session.floor.value = replace(
             original_floor,
             rooms=tuple(
                 replace(room, name="The Study") for room in original_floor.rooms
             ),
         )
         assert kwargs["floor_is_current"]() is False
-        coordinator.data.floor_plan = original_floor
+        session.floor.value = original_floor
         token = manager.control.begin_managed_motion("serial")
         try:
             await kwargs["managed_user_command"](token, UserCommand.STOP)
@@ -1837,7 +1829,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
     entry.runtime_data.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.STOP
     )
-    coordinator.async_request_refresh.assert_awaited_once_with()
+    session.heartbeat.async_request_refresh.assert_awaited_once_with()
     dock_after_stop.assert_called_once()
 
 
@@ -1863,9 +1855,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     identity = _plan_cadence_bindings(
         SimpleNamespace(
             runtime_data=SimpleNamespace(
-                coordinator=SimpleNamespace(
-                    data=SimpleNamespace(floor_plan=floor_plan)
-                ),
+                session=_session(floor_plan=floor_plan),
                 slam_map=SimpleNamespace(
                     floor_plan_is_current=MagicMock(return_value=True)
                 ),
@@ -1899,10 +1889,10 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     entry = SimpleNamespace(
         entry_id="entry-preview",
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(floor_plan=floor_plan),
-                async_request_refresh=AsyncMock(),
-                async_confirm_room_completed=MagicMock(),
+            session=_session(
+                floor_plan=floor_plan,
+                refresh=AsyncMock(),
+                confirm_room_completed=MagicMock(),
             ),
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
@@ -2207,9 +2197,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     identity = _plan_cadence_bindings(
         SimpleNamespace(
             runtime_data=SimpleNamespace(
-                coordinator=SimpleNamespace(
-                    data=SimpleNamespace(floor_plan=floor_plan)
-                ),
+                session=_session(floor_plan=floor_plan),
                 slam_map=SimpleNamespace(
                     floor_plan_is_current=MagicMock(return_value=True)
                 ),
@@ -2280,14 +2268,12 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         "mop": 1,
         "coverage": 1,
     }
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-        async_confirm_room_completed=MagicMock(),
+    session = _session(
+        floor_plan=floor_plan, refresh=AsyncMock(), confirm_room_completed=MagicMock()
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
@@ -2655,10 +2641,10 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
     room = floor_plan.rooms[0]
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(floor_plan=floor_plan),
-                async_request_refresh=AsyncMock(),
-                async_confirm_room_completed=MagicMock(),
+            session=_session(
+                floor_plan=floor_plan,
+                refresh=AsyncMock(),
+                confirm_room_completed=MagicMock(),
             ),
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
@@ -2734,7 +2720,7 @@ async def test_plan_cadence_bindings_uses_verified_current_map() -> None:
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -2750,7 +2736,7 @@ async def test_late_native_completion_uses_current_room_cadence_identity(hass) -
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -2890,7 +2876,7 @@ async def test_cleaning_service_rejects_invalid_cadence_resolution(
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -2971,7 +2957,7 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -3039,10 +3025,7 @@ async def test_all_daily_limited_rooms_block_saved_and_manual_dispatch(hass) -> 
         now=now,
     )
     services = await _registered_services(hass, manager)
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-    )
+    session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     client = SimpleNamespace(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
@@ -3051,7 +3034,7 @@ async def test_all_daily_limited_rooms_block_saved_and_manual_dispatch(hass) -> 
     entry = SimpleNamespace(
         entry_id="entry-daily-limit",
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             client=client,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
@@ -3145,7 +3128,7 @@ async def test_legacy_oversized_plan_cannot_be_previewed_or_dispatched(hass) -> 
 
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -3199,10 +3182,10 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(floor_plan=floor_plan),
-                async_request_refresh=AsyncMock(),
-                async_confirm_room_completed=MagicMock(),
+            session=_session(
+                floor_plan=floor_plan,
+                refresh=AsyncMock(),
+                confirm_room_completed=MagicMock(),
             ),
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
@@ -3305,10 +3288,8 @@ async def test_run_without_preview_revalidates_after_stop_settlement(
         "room-office",
         {"identity": None, "progress": {"mop": 0, "coverage": 0}},
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-        async_confirm_room_completed=MagicMock(),
+    session = _session(
+        floor_plan=floor_plan, refresh=AsyncMock(), confirm_room_completed=MagicMock()
     )
     client = SimpleNamespace(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
@@ -3319,7 +3300,7 @@ async def test_run_without_preview_revalidates_after_stop_settlement(
     entry = SimpleNamespace(
         entry_id="entry-legacy-revalidation",
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             client=client,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
@@ -3350,7 +3331,7 @@ async def test_run_without_preview_revalidates_after_stop_settlement(
                 False
             )
         elif changed_input == "map":
-            coordinator.data.floor_plan = _area_floor_plan(mission_id=43)
+            session.floor.value = _area_floor_plan(mission_id=43)
         else:
             cadence["progress"]["mop"] = 1
 
@@ -3432,11 +3413,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             ),
         ),
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_refresh=AsyncMock(),
-        async_discard_current_room=MagicMock(),
-        async_confirm_room_completed=MagicMock(),
+    session = _session(
+        floor_plan=floor_plan,
+        refresh=AsyncMock(),
+        discard_current_room=MagicMock(),
+        confirm_room_completed=MagicMock(),
     )
     client = SimpleNamespace(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
@@ -3446,7 +3427,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             client=client,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
@@ -3525,7 +3506,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         run_call(run_behavior="fastest")
     assert "intelligent" not in execute.await_args_list[0].kwargs
     assert execute.await_args_list[0].kwargs["refresh"] is (
-        coordinator.async_request_refresh
+        session.heartbeat.async_request_refresh
     )
     assert "intelligent" not in execute.await_args_list[1].kwargs
     assert "intelligent" not in execute.await_args_list[2].kwargs
@@ -3534,12 +3515,12 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         floor_plan
     )
     assert floor_guard() is True
-    coordinator.data.floor_plan = replace(
+    session.floor.value = replace(
         floor_plan,
         rooms=tuple(replace(room, name="The Study") for room in floor_plan.rooms),
     )
     assert floor_guard() is False
-    coordinator.data.floor_plan = replace(
+    session.floor.value = replace(
         floor_plan,
         rooms=tuple(
             replace(room, name="Office" if room.name == "Study" else "Study")
@@ -3547,7 +3528,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         ),
     )
     assert floor_guard() is False
-    coordinator.data.floor_plan = replace(
+    session.floor.value = replace(
         floor_plan,
         rooms=tuple(
             replace(room, boundary=tuple((x + 0.025, y) for x, y in room.boundary))
@@ -3555,9 +3536,9 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         ),
     )
     assert floor_guard() is True
-    coordinator.data.floor_plan = _area_floor_plan(mission_id=43)
+    session.floor.value = _area_floor_plan(mission_id=43)
     assert floor_guard() is False
-    coordinator.data.floor_plan = floor_plan
+    session.floor.value = floor_plan
     assert client.async_send_user_command.await_count == 3
     assert "stop_fence_expires_at" in manager.repository.robot("serial")
     assert preview["plan_name"] == "Upstairs"
@@ -3664,7 +3645,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     ):
         await _registered_handler(services, "stop_intelligent_cleaning")(stop)
     assert manager.control.cancellation_event("serial").is_set()
-    coordinator.async_discard_current_room.assert_called_once_with()
+    session.heartbeat.async_discard_current_room.assert_called_once_with()
     lock.release()
     services.async_call.assert_awaited_with(
         "vacuum",
@@ -3734,8 +3715,8 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
         ],
     }
     services = await _registered_services(hass, manager)
-    coordinator = SimpleNamespace(async_discard_current_room=MagicMock())
-    entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+    session = _session(discard_current_room=MagicMock())
+    entry = SimpleNamespace(runtime_data=SimpleNamespace(session=session))
     context = ("vacuum.test", entry, "serial", {"room-study": "Study"})
     run_id = "smart-stop-run"
     await manager.ledger.async_begin_run(
@@ -3797,7 +3778,7 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
         manager.history.snapshot("serial")["active_plan"]["smart_stop_pending"] is False
     )
     assert manager.control.finish_room_event("serial").is_set() is False
-    coordinator.async_discard_current_room.assert_called_once_with()
+    session.heartbeat.async_discard_current_room.assert_called_once_with()
     services.async_call.assert_awaited_once_with(
         "vacuum",
         "return_to_base",
@@ -3839,7 +3820,7 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -3890,8 +3871,8 @@ async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     services = await _registered_services(hass, manager)
-    coordinator = SimpleNamespace(async_discard_current_room=MagicMock())
-    entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+    session = _session(discard_current_room=MagicMock())
+    entry = SimpleNamespace(runtime_data=SimpleNamespace(session=session))
     stop = ServiceCall(
         hass,
         DOMAIN,
@@ -3905,7 +3886,7 @@ async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
         await _registered_handler(services, "stop_intelligent_cleaning")(stop)
     resolve.assert_called_once_with(hass, stop, require_rooms=False)
     if include_unmanaged:
-        coordinator.async_discard_current_room.assert_called_once_with()
+        session.heartbeat.async_discard_current_room.assert_called_once_with()
         services.async_call.assert_awaited_once_with(
             "vacuum",
             "return_to_base",
@@ -3914,7 +3895,7 @@ async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
             context=stop.context,
         )
     else:
-        coordinator.async_discard_current_room.assert_not_called()
+        session.heartbeat.async_discard_current_room.assert_not_called()
         services.async_call.assert_not_awaited()
 
 
@@ -4001,7 +3982,7 @@ async def test_delete_room_schedule_service_uses_current_binding_and_exact_token
     room = floor_plan.rooms[0]
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -4077,7 +4058,7 @@ async def test_delete_room_schedule_service_translates_manager_errors(
     room = floor_plan.rooms[0]
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -4122,7 +4103,7 @@ async def test_delete_room_schedule_service_rejects_room_missing_from_current_ma
     room = floor_plan.rooms[0]
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -4164,7 +4145,7 @@ async def test_save_plan_returns_manager_normalized_shared_cadence(hass) -> None
     room = floor_plan.rooms[0]
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -4481,7 +4462,7 @@ async def test_save_plan_translates_cadence_edit_blocked_during_run(hass) -> Non
     }
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -4587,10 +4568,10 @@ async def test_plan_edits_reject_unknown_rooms_and_plans(hass) -> None:
 
 
 def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
-    """The room map must come from the coordinator, not published attributes.
+    """The room map must come from the session, not published attributes.
 
     0.2.0 removed the vacuum's ``rooms`` state attribute, so this seam
-    deliberately builds the context from the real coordinator floor plan.
+    deliberately builds the context from the real session floor plan.
     """
     call = MagicMock()
     hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock(return_value=None)))
@@ -4600,13 +4581,13 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
             SimpleNamespace(id="two", name="Study"),
         )
     )
-    data = SimpleNamespace(
+    session = _session(
         info=SimpleNamespace(serial_number="synthetic-serial"),
         floor_plan=floor_plan,
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=data),
+            session=session,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -4634,7 +4615,7 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
         with pytest.raises(ServiceValidationError, match="room map"):
             _saved_plan_context(hass, call, require_current_floor=True)
         entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
-        data.floor_plan = None
+        session.floor.value = None
         with pytest.raises(ServiceValidationError, match="room map"):
             _saved_plan_context(hass, call)
         assert _saved_plan_context(hass, call, require_rooms=False)[3] == {}
@@ -4651,7 +4632,7 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
 async def test_saved_plan_context_reads_rooms_the_vacuum_actually_exposes() -> None:
     """Guard the producer/consumer seam with the real vacuum entity.
 
-    The context and the vacuum entity must agree on the same coordinator
+    The context and the vacuum entity must agree on the same session
     floor plan so a state-attribute change can never break plan services.
     """
     from custom_components.matic_robot import vacuum as vacuum_platform
@@ -5082,17 +5063,24 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
         return (HermesCollectionEntry(b"key", b"value"),)
 
     client = SimpleNamespace(async_inspect_endpoint=AsyncMock(side_effect=inspect))
-    state = SimpleNamespace(
-        telemetry=SimpleNamespace(software_version="v168.11", protocol_version=25),
-        operational=SimpleNamespace(
-            software_version="fallback", activity=SimpleNamespace(value="cleaning")
+    session = SimpleNamespace(
+        client=client,
+        telemetry=Store(
+            SimpleNamespace(software_version="v168.11", protocol_version=25)
+        ),
+        state=Store(
+            LiveState(
+                SimpleNamespace(
+                    software_version="fallback",
+                    activity=SimpleNamespace(value="cleaning"),
+                ),
+                None,
+            )
         ),
     )
     entry = SimpleNamespace(
         entry_id="entry",
-        runtime_data=SimpleNamespace(
-            client=client, coordinator=SimpleNamespace(data=state)
-        ),
+        runtime_data=SimpleNamespace(client=client, session=session),
     )
     call = ServiceCall(
         hass,
@@ -5376,7 +5364,7 @@ async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> No
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -6355,10 +6343,7 @@ async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> No
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(floor_plan=floor),
-                async_request_refresh=AsyncMock(),
-            ),
+            session=_session(floor_plan=floor, refresh=AsyncMock()),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -6739,7 +6724,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
         "stop_intent"
         not in manager.recovery.recovery_run(serial)["recovery_checkpoint"]
     )
-    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+    entry.runtime_data.session.client.async_send_user_command.assert_not_awaited()
     schedule_dock.assert_not_called()
 
 

@@ -31,8 +31,8 @@ def room_completion_names_are_current(
 
 
 def current_floor_plan(entry: ConfigEntry[Any]) -> FloorPlan:
-    """Return the coordinator floor only while SLAM identity still matches."""
-    floor_plan: FloorPlan | None = entry.runtime_data.coordinator.data.floor_plan
+    """Return the session's floor only while SLAM identity still matches."""
+    floor_plan: FloorPlan | None = entry.runtime_data.session.floor.value
     if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
         floor_plan
     ):

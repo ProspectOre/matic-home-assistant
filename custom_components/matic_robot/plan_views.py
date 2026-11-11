@@ -51,7 +51,7 @@ class MaticPlansView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        floor_plan = runtime.coordinator.data.floor_plan
+        floor_plan = runtime.session.floor.value
         if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
             headers = {
                 **PRIVATE_NO_STORE_HEADERS,
@@ -64,7 +64,7 @@ class MaticPlansView(HomeAssistantView):
                 "X-Matic-Plans-Conflict": "no-rooms",
             }
             return web.Response(status=HTTPStatus.CONFLICT, headers=headers)
-        serial_number = str(runtime.coordinator.data.info.serial_number)
+        serial_number = str(runtime.session.info.serial_number)
         floor_token = plan_floor_token(floor_plan)
         current_rooms = {room.id: room for room in floor_plan.rooms}
         room_map = {room.id: room.name for room in floor_plan.rooms}

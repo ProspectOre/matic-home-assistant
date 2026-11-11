@@ -32,7 +32,7 @@ _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
 def _map_session_key(runtime: MaticRuntimeData) -> str | None:
     """Return a browser-safe identity for one verified SLAM coordinate frame."""
     identity = runtime.slam_map.mission_identity
-    floor_plan = runtime.coordinator.data.floor_plan
+    floor_plan = runtime.session.floor.value
     if (
         identity is None
         or identity.mission_id is None
@@ -53,20 +53,18 @@ def observe_trail(runtime: MaticRuntimeData) -> None:
     trails: RunTrails | None = getattr(runtime, "run_trails", None)
     if trails is None:
         return
-    data = runtime.coordinator.data
+    session = runtime.session
     floor_plan = (
-        data.floor_plan
-        if runtime.slam_map.floor_plan_is_current(data.floor_plan)
+        session.floor.value
+        if runtime.slam_map.floor_plan_is_current(session.floor.value)
         else None
     )
-    position = resolve_robot_map_position(
-        floor_plan, runtime.session.pose_on(floor_plan), None
-    )
+    position = resolve_robot_map_position(floor_plan, session.pose_on(floor_plan), None)
     trails.observe(
         run_id=runtime.cleaning_plans.ledger.active_run_id(
-            str(data.info.serial_number)
+            str(session.info.serial_number)
         ),
-        native_active=data.telemetry.active_cleaning_session,
+        native_active=session.state.value.session_active,
         map_key=_map_session_key(runtime),
         point=position[:2] if position is not None else None,
     )
@@ -82,9 +80,9 @@ def pose_projection(
     The scene revision and epoch let the browser tell a pose that predates the
     map it holds from one that revokes it.
     """
-    data = runtime.coordinator.data
-    coherent = runtime.slam_map.floor_plan_is_current(data.floor_plan)
-    floor_plan = data.floor_plan if coherent else None
+    session = runtime.session
+    coherent = runtime.slam_map.floor_plan_is_current(session.floor.value)
+    floor_plan = session.floor.value if coherent else None
     pose = runtime.session.pose_on(floor_plan)
     now = time()
     position = resolve_robot_map_position(floor_plan, pose, None, now=now)
@@ -98,7 +96,10 @@ def pose_projection(
         ),
         "source": (
             robot_location_source(
-                floor_plan, pose, data.operational.current_area, now=now
+                floor_plan,
+                pose,
+                session.state.value.operational.current_area,
+                now=now,
             )
             if coherent
             else "unavailable"
@@ -124,7 +125,7 @@ def catalog_entry_projection(
 ) -> dict[str, object]:
     """Project the bounded catalog row shared by REST and workspace snapshots."""
     health = runtime.slam_map.health
-    floor_plan = runtime.coordinator.data.floor_plan
+    floor_plan = runtime.session.floor.value
     mapped_floors = floor_plan.mapped_floors if floor_plan is not None else ()
     selected_floor_ordinal = next(
         (
@@ -162,9 +163,8 @@ def catalog_entry_projection(
         map_block_reason = "map_session_unverified"
     else:
         map_block_reason = "floor_plan_mismatch"
-    serial_number = runtime.coordinator.data.info.serial_number
+    serial_number = runtime.session.info.serial_number
     plan_snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
-    telemetry = getattr(runtime.coordinator.data, "telemetry", None)
     return {
         "entry_id": entry_id,
         # The workspace push is the default transport when this capability is
@@ -206,7 +206,7 @@ def catalog_entry_projection(
             runtime.cleaning_plans.ledger.pending_native_reconciliation(serial_number)
             is not None
         ),
-        "native_session_active": getattr(telemetry, "active_cleaning_session", None),
+        "native_session_active": runtime.session.state.value.session_active,
         "map_health": health.state,
         "map_complete": health.complete,
         "map_truncated": health.truncated,

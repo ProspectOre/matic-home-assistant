@@ -135,11 +135,11 @@ def short_wifi_sample_interval(
 
 async def _save_area(plan: PlanRun, area_id: str, name: str) -> list[dict[str, float]]:
     """Save a bound custom area through the real per-robot metadata store."""
-    coordinator = plan.entry.runtime_data.coordinator
+    session = plan.entry.runtime_data.session
     async with asyncio.timeout(5):
-        while coordinator.data is None or coordinator.data.floor_plan is None:
+        while session.floor.value is None:
             await plan.poll()
-    floor_plan = coordinator.data.floor_plan
+    floor_plan = session.floor.value
     assert floor_plan is not None
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.25}]
     area = {
@@ -151,7 +151,7 @@ async def _save_area(plan: PlanRun, area_id: str, name: str) -> list[dict[str, f
         "map_binding": binding_for_area(floor_plan, circles),
     }
     await plan.entry.runtime_data.cleaning_plans.catalog.async_save_area(
-        plan.entry.runtime_data.coordinator.data.info.serial_number, area_id, area
+        plan.entry.runtime_data.session.info.serial_number, area_id, area
     )
     return circles
 
@@ -191,7 +191,7 @@ async def test_saved_area_plan_finishes_without_room_credit(
     )
     area_events: list[tuple[str, dict[str, object]]] = []
     manager = plan.entry.runtime_data.cleaning_plans
-    serial = plan.entry.runtime_data.coordinator.data.info.serial_number
+    serial = plan.entry.runtime_data.session.info.serial_number
     stored_before = manager.repository.robot(serial)
     room_history_before = deepcopy(stored_before["rooms"])
     prior_area_runs = (
@@ -206,7 +206,7 @@ async def test_saved_area_plan_finishes_without_room_credit(
     await plan.start_service("run_selected_plan", plan="living-rug-plan")
     assert robot.session is not None and robot.session.current_visit is not None
     assert robot.session.current_visit.custom_area
-    serial = plan.entry.runtime_data.coordinator.data.info.serial_number
+    serial = plan.entry.runtime_data.session.info.serial_number
     async with asyncio.timeout(5):
         while (
             not any(name == "area_started" for name, _data in area_events)
@@ -275,7 +275,7 @@ async def test_native_schedule_calendar_expands_enabled_schedules_only(
     telemetry = await plan.entry.runtime_data.client.async_get_telemetry()
     assert len(telemetry.schedules) == 4
     await plan.poll()
-    schedules = plan.entry.runtime_data.coordinator.data.telemetry.schedules
+    schedules = plan.entry.runtime_data.session.telemetry.value.schedules
     assert [schedule.name for schedule in schedules] == [
         "Weekday kitchen",
         "Mop bathroom",
@@ -298,7 +298,7 @@ async def test_native_schedule_calendar_expands_enabled_schedules_only(
     entity_id = er.async_get(plan.hass).async_get_entity_id(
         "calendar",
         DOMAIN,
-        f"{plan.entry.runtime_data.coordinator.data.info.serial_number}_native_schedules",
+        f"{plan.entry.runtime_data.session.info.serial_number}_native_schedules",
     )
     assert entity_id is not None
     response = await hass.services.async_call(
@@ -357,7 +357,7 @@ async def test_new_native_schedule_session_takes_over_a_managed_run(
     robot: SimulatedRobot,
 ) -> None:
     await plan.poll()
-    assert plan.entry.runtime_data.coordinator.data.telemetry.schedules
+    assert plan.entry.runtime_data.session.telemetry.value.schedules
     await plan.start()
 
     robot.finish_room()
@@ -380,26 +380,25 @@ async def test_wifi_survey_records_only_the_signal_cell(
 ) -> None:
     survey = plan.entry.runtime_data.wifi_survey
     assert survey is not None
-    floor_plan = plan.entry.runtime_data.coordinator.data.floor_plan
+    floor_plan = plan.entry.runtime_data.session.floor.value
     assert floor_plan is not None
 
     # The collector only samples while the robot is off its charger.
     robot.start_cleaning("Kitchen")
-    coordinator = plan.entry.runtime_data.coordinator
+    session = plan.entry.runtime_data.session
     async with asyncio.timeout(5):
-        while coordinator.expected_floor_mission_id != floor_plan.mission_id:
+        while session.heartbeat.expected_floor_mission_id != floor_plan.mission_id:
             await plan.poll()
     await plan.poll()
-    assert coordinator.data is not None
-    assert not coordinator.data.operational.is_charging, (
-        coordinator.data.operational,
-        coordinator.expected_floor_mission_id,
+    assert not session.state.value.operational.is_charging, (
+        session.state.value.operational,
+        session.heartbeat.expected_floor_mission_id,
         floor_plan.mission_id,
     )
     switch_id = er.async_get(plan.hass).async_get_entity_id(
         "switch",
         DOMAIN,
-        f"{plan.entry.runtime_data.coordinator.data.info.serial_number}_wifi_survey",
+        f"{plan.entry.runtime_data.session.info.serial_number}_wifi_survey",
     )
     assert switch_id is not None
     frame = survey_frame(floor_plan.partition_id_wire)
@@ -435,8 +434,8 @@ async def test_wifi_survey_records_only_the_signal_cell(
     except TimeoutError:
         pytest.fail(
             "scheduled Wi-Fi sample produced no cell: "
-            f"expected_mission={coordinator.expected_floor_mission_id}, "
-            f"operational={coordinator.data.operational}, poses={pose_reads!r}, "
+            f"expected_mission={session.heartbeat.expected_floor_mission_id}, "
+            f"operational={session.state.value.operational}, poses={pose_reads!r}, "
             f"scan_results={scan_results!r}, "
             f"scan_commands={len(robot.received('wifi_scan_command'))}, "
             f"switch={hass.states.get(switch_id)!r}"
@@ -455,7 +454,7 @@ async def test_wifi_survey_records_only_the_signal_cell(
     clear_id = er.async_get(hass).async_get_entity_id(
         "button",
         DOMAIN,
-        f"{plan.entry.runtime_data.coordinator.data.info.serial_number}_clear_wifi_survey",
+        f"{plan.entry.runtime_data.session.info.serial_number}_clear_wifi_survey",
     )
     assert clear_id is not None
     await hass.services.async_call("button", "press", {"entity_id": clear_id})
@@ -544,7 +543,7 @@ async def test_late_native_history_reconciles_after_grouped_completion(
         plan, robot, hass, dock=not idle_before_history
     )
     manager = plan.entry.runtime_data.cleaning_plans
-    serial = plan.entry.runtime_data.coordinator.data.info.serial_number
+    serial = plan.entry.runtime_data.session.info.serial_number
     pending = manager.ledger.pending_native_reconciliation(serial)
     assert pending is not None
     assert len(started) == 2
@@ -582,7 +581,7 @@ async def test_late_native_history_reconciles_after_grouped_completion(
     assert len(plan.coverage_commands()) == 1
 
     stored_rooms = manager.repository.robot(serial)["rooms"]
-    for room in plan.entry.runtime_data.coordinator.data.floor_plan.rooms:
+    for room in plan.entry.runtime_data.session.floor.value.rooms:
         record = stored_rooms[str(room.id)]
         assert record["completed_runs"] == 1
         assert record["last_completed_run_id"] == pending["run_id"]
@@ -619,7 +618,7 @@ async def test_unmatched_late_history_expires_without_credit_or_redispatch(
     hass.bus.async_listen(f"{DOMAIN}_room_reconciled", on_reconciled)
     finished, _started = await _finish_grouped_run_with_history_held(plan, robot, hass)
     manager = plan.entry.runtime_data.cleaning_plans
-    serial = plan.entry.runtime_data.coordinator.data.info.serial_number
+    serial = plan.entry.runtime_data.session.info.serial_number
     pending = manager.ledger.pending_native_reconciliation(serial)
     assert pending is not None
     assert robot._pending_history

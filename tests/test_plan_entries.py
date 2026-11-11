@@ -108,7 +108,7 @@ def _entry(floor: FloorPlan) -> SimpleNamespace:
     return SimpleNamespace(
         entry_id="entry",
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor)),
+            session=SimpleNamespace(floor=SimpleNamespace(value=floor)),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
@@ -809,7 +809,7 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
     entry = SimpleNamespace(
         entry_id="entry",
         runtime_data=SimpleNamespace(
-            coordinator=MagicMock(data=SimpleNamespace(floor_plan=floor)),
+            session=MagicMock(floor=SimpleNamespace(value=floor)),
             client=MagicMock(),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
@@ -867,7 +867,7 @@ async def test_running_a_room_only_plan_keeps_its_legacy_executor_call(hass) -> 
     entry = SimpleNamespace(
         entry_id="entry",
         runtime_data=SimpleNamespace(
-            coordinator=MagicMock(data=SimpleNamespace(floor_plan=floor)),
+            session=MagicMock(floor=SimpleNamespace(value=floor)),
             client=MagicMock(),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)

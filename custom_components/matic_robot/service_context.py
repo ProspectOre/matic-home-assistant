@@ -136,11 +136,11 @@ def _saved_plan_context(
         )
     entity_id = entity_ids[0]
     entry = _entry_for_entity(hass, entity_id)
-    data = entry.runtime_data.coordinator.data
+    session = entry.runtime_data.session
     floor_plan = (
-        _current_floor_plan(entry) if require_current_floor else data.floor_plan
+        _current_floor_plan(entry) if require_current_floor else session.floor.value
     )
-    serial_number = data.info.serial_number
+    serial_number = session.info.serial_number
     room_map = (
         {room.id: room.name for room in floor_plan.rooms}
         if floor_plan is not None

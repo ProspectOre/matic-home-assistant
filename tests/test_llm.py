@@ -41,7 +41,6 @@ from custom_components.matic_robot.client.models import (
     MapZone,
     RobotInfo,
     RobotOperationalState,
-    RobotState,
     RobotTelemetry,
     Room,
 )
@@ -100,6 +99,7 @@ from custom_components.matic_robot.plan_model import (
     room_cadence_identity,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.session_fakes import fake_session
 
 _INTERNAL_TERMS = re.compile(
     r"\bmission|\bleg|\bnative|runner lock|reconciliation marker|opaque key|"
@@ -109,7 +109,8 @@ _INTERNAL_TERMS = re.compile(
 
 
 def _state(*, name: str = "Synthetic Robot", floor_plan: FloorPlan | None = None):
-    return RobotState(
+    return fake_session(
+        session_active=True,
         info=RobotInfo(
             "synthetic-serial",
             name,
@@ -137,10 +138,7 @@ def _state(*, name: str = "Synthetic Robot", floor_plan: FloorPlan | None = None
             previous_area="Kitchen",
         ),
         floor_plan=floor_plan,
-        telemetry=RobotTelemetry(
-            software_version="172.13",
-            active_cleaning_session=True,
-        ),
+        telemetry=RobotTelemetry(software_version="172.13"),
     )
 
 
@@ -175,9 +173,8 @@ def _entry(
         "dispatched_at": "2026-08-25T20:00:00+00:00",
         "expires_at": "2026-08-25T20:12:00+00:00",
     }
-    state = _state(name=name, floor_plan=floor_plan)
     runtime = SimpleNamespace(
-        coordinator=SimpleNamespace(data=state, last_update_success=True),
+        session=_state(name=name, floor_plan=floor_plan),
         cleaning_plans=manager,
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
         client=SimpleNamespace(async_get_cleaning_session_records=AsyncMock()),
@@ -654,7 +651,7 @@ async def test_operations_and_robot_resolution() -> None:
     assert result["robot_count"] == 2
     robot = result["robots"][0]
     assert robot["name"] == "Synthetic Robot"
-    assert robot["coordinator_available"] is True
+    assert robot["robot_reachable"] is True
     assert robot["robot"] == {
         "activity": "cleaning",
         "battery_percentage": 72,
@@ -665,6 +662,7 @@ async def test_operations_and_robot_resolution() -> None:
         "bag_missing": None,
         "native_session_active": True,
         "software_version": "172.13",
+        "bag_observation": {},
     }
     assert robot["managed_runner"]["lock_held"] is True
     assert robot["native_reconciliation"]["room"] == "Study"
@@ -673,7 +671,7 @@ async def test_operations_and_robot_resolution() -> None:
 
 async def test_operations_includes_read_only_bag_observation_when_available() -> None:
     entry = _entry()
-    entry.runtime_data.coordinator.robot_health = SimpleNamespace(
+    entry.runtime_data.session.health = SimpleNamespace(
         bag_observation=MagicMock(
             return_value={
                 "full": False,
@@ -870,7 +868,7 @@ async def test_operations_withholds_unavailable_or_stale_timing(condition) -> No
     elif condition in {"unknown", "unavailable"}:
         hass.states.get.return_value = State("sensor.renamed_clock", condition, sample)
     elif condition == "offline":
-        entry.runtime_data.coordinator.last_update_success = False
+        entry.runtime_data.session.error.set(RuntimeError("offline"))
     elif condition == "no_active":
         snapshot["active_plan"] = None
     elif condition == "no_run":
@@ -3100,10 +3098,8 @@ def _schedule(**changes: Any) -> CleaningSchedule:
 
 
 def _with_telemetry(entry: Any, **changes: Any) -> None:
-    state = entry.runtime_data.coordinator.data
-    entry.runtime_data.coordinator.data = replace(
-        state, telemetry=replace(state.telemetry, **changes)
-    )
+    telemetry = entry.runtime_data.session.telemetry
+    telemetry.set(replace(telemetry.value, **changes))
 
 
 async def test_schedules_list_rooms_by_name_and_the_runs_coming_up() -> None:

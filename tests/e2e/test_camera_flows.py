@@ -189,7 +189,7 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
     # Let it arrive so this retry isolates the cooldown guard from the busy guard.
     robot.arrive_at_dock()
     await poll(hass, loaded_entry, robot)
-    assert loaded_entry.runtime_data.coordinator.data.operational.returning is False
+    assert loaded_entry.runtime_data.session.state.value.operational.returning is False
 
     previous_commands = robot.received()
     with pytest.raises(HomeAssistantError) as raised:
@@ -252,7 +252,7 @@ async def test_unattended_patrol_requires_opt_in_and_respects_no_photo_rooms(
 ) -> None:
     """The configured privacy boundary is checked before navigation or snap."""
     robot.set_collection("instamatic_snaps", [])
-    floor_plan = loaded_entry.runtime_data.coordinator.data.floor_plan
+    floor_plan = loaded_entry.runtime_data.session.floor.value
     assert loaded_entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
     study_id = floor_plan.rooms[1].id
     await poll(hass, loaded_entry, robot)
@@ -277,7 +277,7 @@ async def test_manual_photo_button_refuses_a_blocked_or_unverifiable_room(
     robot: SimulatedRobot,
 ) -> None:
     """Manual camera snaps obey the room privacy list and fail closed."""
-    floor_plan = loaded_entry.runtime_data.coordinator.data.floor_plan
+    floor_plan = loaded_entry.runtime_data.session.floor.value
     assert floor_plan is not None
     study_id = next(room.id for room in floor_plan.rooms if room.name == "Study")
     await _configure_patrol(hass, loaded_entry, blocked_rooms=[study_id])
@@ -293,7 +293,8 @@ async def test_manual_photo_button_refuses_a_blocked_or_unverifiable_room(
     # The robot pushes where it arrived; the service does not read it back.
     await poll(hass, loaded_entry, robot)
     assert (
-        loaded_entry.runtime_data.coordinator.data.operational.current_area == "Study"
+        loaded_entry.runtime_data.session.state.value.operational.current_area
+        == "Study"
     )
     assert robot.current_area == "Study"
 

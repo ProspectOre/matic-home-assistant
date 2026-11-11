@@ -356,7 +356,7 @@ class MaticGetRunHistoryTool(_MaticTool):
         except MaticError, TimeoutError:
             robot_history = False
         runs = runtime.cleaning_plans.history.run_history(
-            str(runtime.coordinator.data.info.serial_number), native
+            str(runtime.session.info.serial_number), native
         )
         return llm.ToolResult(
             data={

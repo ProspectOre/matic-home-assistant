@@ -193,7 +193,7 @@ async def _async_stop_interrupted_mixed_dispatch(
         _schedule_managed_dock_after_stop(
             hass, entry, manager, serial_number, entity_id, run_id, None
         )
-        await runtime.coordinator.async_request_refresh()
+        await runtime.session.heartbeat.async_request_refresh()
     return "restart_mixed_dispatch_stop_requested"
 
 
@@ -367,7 +367,7 @@ async def async_recover_managed_run(
             )
 
         def floor_is_current() -> bool:
-            floor = runtime.coordinator.data.floor_plan
+            floor = runtime.session.floor.value
             return (
                 floor is not None
                 and plan_floor_token(floor) == checkpoint["floor_token"]
@@ -375,7 +375,7 @@ async def async_recover_managed_run(
             )
 
         def completion_is_current() -> bool:
-            floor = runtime.coordinator.data.floor_plan
+            floor = runtime.session.floor.value
             return (
                 floor is not None
                 and floor_is_current()
@@ -391,7 +391,7 @@ async def async_recover_managed_run(
                 reason = "restart_recovery_cancelled"
                 return
             try:
-                await runtime.coordinator.async_request_refresh()
+                await runtime.session.heartbeat.async_request_refresh()
                 identity = await runtime.client.async_get_cleaning_session_identity()
             except MaticError:
                 identity = None
@@ -457,7 +457,7 @@ async def async_recover_managed_run(
                 hass,
                 entity_id,
                 cancel,
-                refresh=runtime.coordinator.async_request_refresh,
+                refresh=runtime.session.heartbeat.async_request_refresh,
                 active_session=runtime.client.async_get_active_cleaning_session_state,
                 identity_reader=runtime.client.async_get_cleaning_session_identity,
                 expected_identity=identity if identity else None,
@@ -485,7 +485,7 @@ async def async_recover_managed_run(
                 entity_id,
                 serial_number,
                 rooms,
-                refresh=runtime.coordinator.async_request_refresh,
+                refresh=runtime.session.heartbeat.async_request_refresh,
                 active_session=runtime.client.async_get_active_cleaning_session_state,
                 session_history=partial(
                     runtime.client.async_get_cleaning_session_records, strict=True
@@ -494,7 +494,7 @@ async def async_recover_managed_run(
                 coverage_verifier=getattr(
                     runtime.client, "async_confirm_coverage_receipt", None
                 ),
-                confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
+                confirm_room_completed=runtime.session.heartbeat.async_confirm_room_completed,
                 managed_user_command=command,
                 mapped_room_names=tuple(
                     room.name for room in current_floor_plan(entry).rooms
@@ -622,7 +622,7 @@ async def async_recover_managed_run(
                         return
                     completed_ids.add(room.room_id)
                     checkpoint["completed_room_ids"] = list(completed_ids)
-                    runtime.coordinator.async_confirm_room_completed(room.name)
+                    runtime.session.heartbeat.async_confirm_room_completed(room.name)
                     hass.bus.async_fire(
                         f"{DOMAIN}_room_completed",
                         {
@@ -651,7 +651,7 @@ async def async_recover_managed_run(
             entity_id,
             serial_number,
             rooms,
-            refresh=runtime.coordinator.async_request_refresh,
+            refresh=runtime.session.heartbeat.async_request_refresh,
             active_session=runtime.client.async_get_active_cleaning_session_state,
             session_history=partial(
                 runtime.client.async_get_cleaning_session_records, strict=True
@@ -660,7 +660,7 @@ async def async_recover_managed_run(
             coverage_verifier=getattr(
                 runtime.client, "async_confirm_coverage_receipt", None
             ),
-            confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
+            confirm_room_completed=runtime.session.heartbeat.async_confirm_room_completed,
             managed_user_command=command,
             mapped_room_names=tuple(
                 room.name for room in current_floor_plan(entry).rooms

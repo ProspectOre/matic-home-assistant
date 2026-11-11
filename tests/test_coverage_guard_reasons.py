@@ -218,7 +218,7 @@ async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     token = manager.control.begin_managed_motion("synthetic-serial")
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=error)
     client.async_start_coverage = AsyncMock()
     entity = MaticVacuum(entry)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 from homeassistant.components.number import NumberEntity, NumberEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -12,6 +15,7 @@ from . import MaticConfigEntry
 from .client.exceptions import MaticError
 from .const import DOMAIN
 from .entity import MaticEntity
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -42,12 +46,15 @@ class MaticWaterFlowNumber(MaticEntity, NumberEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_water_flow"
+        self._attr_unique_id = f"{self.session.info.serial_number}_water_flow"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.telemetry,)
 
     @property
     def native_value(self) -> float | None:
         """Return the verified water-flow factor."""
-        return self.coordinator.data.telemetry.water_flow_factor
+        return self.session.telemetry.value.water_flow_factor
 
     @property
     def available(self) -> bool:
@@ -57,10 +64,10 @@ class MaticWaterFlowNumber(MaticEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Set the robot's official 0.5x to 2.0x water-flow factor."""
         try:
-            await self.coordinator.client.async_set_water_flow(value)
+            await self.session.client.async_set_water_flow(value)
         except MaticError:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="setting_unconfirmed",
             ) from None
-        await self.coordinator.async_request_full_refresh()
+        await self.session.heartbeat.async_request_full_refresh()

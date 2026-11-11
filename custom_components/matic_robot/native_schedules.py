@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from homeassistant.components.calendar import CalendarEvent
 from homeassistant.util import dt as dt_util
 
-from .client.models import CleaningSchedule, RobotState
+from .client.models import CleaningSchedule, FloorPlan, RobotTelemetry
 
 # The robot stores only a start time. A run's real length depends on the
 # rooms and the floor, so each occurrence gets a nominal one-hour block.
@@ -43,23 +43,26 @@ def schedule_zone(schedule: CleaningSchedule, robot_zone: str | None) -> tzinfo:
 
 
 def schedule_occurrences(
-    state: RobotState, start: datetime, end: datetime
+    telemetry: RobotTelemetry,
+    floor_plan: FloorPlan | None,
+    start: datetime,
+    end: datetime,
 ) -> list[CalendarEvent]:
     """Expand enabled native schedules into runs overlapping start to end."""
     room_names = (
-        {room.protocol_id: room.name for room in state.floor_plan.rooms}
-        if state.floor_plan is not None
+        {room.protocol_id: room.name for room in floor_plan.rooms}
+        if floor_plan is not None
         else {}
     )
     events = [
         event
-        for schedule in state.telemetry.schedules
+        for schedule in telemetry.schedules
         if schedule.enabled is not False
         and (minute_of_day := schedule.minute_of_day) is not None
         for event in _occurrences(
             schedule,
             minute_of_day,
-            schedule_zone(schedule, state.telemetry.timezone),
+            schedule_zone(schedule, telemetry.timezone),
             room_names,
             start,
             end,

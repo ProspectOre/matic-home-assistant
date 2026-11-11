@@ -58,7 +58,7 @@ class MaticRunHistoryView(HomeAssistantView):
                 native = await runtime.client.async_get_cleaning_session_records()
         except MaticError, TimeoutError:
             robot_history = False
-        serial_number = str(runtime.coordinator.data.info.serial_number)
+        serial_number = str(runtime.session.info.serial_number)
         runs = runtime.cleaning_plans.history.run_history(serial_number, native)
         for run in runs:
             run["trail"] = (

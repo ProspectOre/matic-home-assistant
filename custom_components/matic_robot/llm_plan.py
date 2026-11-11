@@ -66,13 +66,12 @@ class MaticGetPlanTool(_MaticTool):
     ) -> llm.ToolResult:
         entry = self.resolve_entry(hass, llm_context, args.get("robot"))
         runtime = entry.runtime_data
-        state = runtime.coordinator.data
-        floor_plan = state.floor_plan
+        floor_plan = runtime.session.floor.value
         if floor_plan is None or not floor_plan.rooms:
             raise _error("llm_map_unavailable")
         if not runtime.slam_map.floor_plan_is_current(floor_plan):
             raise _error("llm_map_rechecking")
-        serial_number = state.info.serial_number
+        serial_number = runtime.session.info.serial_number
         room_map = {room.id: room.name for room in floor_plan.rooms}
         plan_id = _resolve_plan_id(
             runtime.cleaning_plans, serial_number, args.get("plan")
@@ -240,10 +239,9 @@ class MaticGetPlanReadinessTool(_MaticTool):
     ) -> llm.ToolResult:
         entry = self.resolve_entry(hass, llm_context, args.get("robot"))
         runtime = entry.runtime_data
-        state = runtime.coordinator.data
-        floor_plan = state.floor_plan
+        floor_plan = runtime.session.floor.value
         manager = runtime.cleaning_plans
-        serial_number = state.info.serial_number
+        serial_number = runtime.session.info.serial_number
         map_status = "ready"
         if floor_plan is None or not floor_plan.rooms:
             map_status = "unavailable"

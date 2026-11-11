@@ -358,7 +358,7 @@ async def test_unknown_native_status_with_cleared_identity_docks_and_confirms(
     client = MaticHermesClient("192.0.2.1", 16320)
     client._collections.async_get_property = AsyncMock(side_effect=[b""] * 12)
     unknown_state = replace(
-        _state(idle=True).operational,
+        _state(idle=True).state.value.operational,
         state_codes=(108, 109, 110),
     )
     docked_state = replace(unknown_state, charging_idle=True)
@@ -409,7 +409,7 @@ async def test_final_dock_uses_task_state_under_retained_identity(
     client = MaticHermesClient("192.0.2.1", 16320)
     client._collections.async_get_property = AsyncMock(return_value=b"\x0a\x03key")
     client._reads.async_get_state = AsyncMock(
-        return_value=replace(_state(idle=True).operational, **changes)
+        return_value=replace(_state(idle=True).state.value.operational, **changes)
     )
     client._commands.async_send_user_command = AsyncMock()
     assert await client.async_get_cleaning_session_identity() == b"\x0a\x03key"
@@ -433,7 +433,7 @@ async def test_retained_inactive_identity_allows_exact_ownerless_fence_clear(
     client = MaticHermesClient("192.0.2.1", 16320)
     client._collections.async_get_property = AsyncMock(return_value=b"\x0a\x03key")
     client._reads.async_get_state = AsyncMock(
-        return_value=replace(_state(idle=True).operational, charging=True)
+        return_value=replace(_state(idle=True).state.value.operational, charging=True)
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -499,7 +499,7 @@ async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> Non
 async def test_ownerless_stop_fence_clears_only_after_native_inactive_dock(
     hass, monkeypatch, native_active: bool | str | None
 ) -> None:
-    """A docked coordinator state alone cannot clear an ownerless STOP fence."""
+    """A docked session state alone cannot clear an ownerless STOP fence."""
     monkeypatch.setattr(stop_return, "DOCK_SETTLE_TIMEOUT_SECONDS", 0)
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -953,7 +953,7 @@ async def test_skips_when_new_work_replaced_the_stop(
 async def test_refreshes_past_the_stale_pre_stop_state_before_docking(
     hass, state: str
 ) -> None:
-    """The accepted STOP can settle before the coordinator leaves cleaning."""
+    """The accepted STOP can settle before the session leaves cleaning."""
     hass.states.async_set(ENTITY, state, {})
     client = _client(session=False)
 

@@ -1101,11 +1101,9 @@ async def _options_entry(hass, *, options: dict[str, object] | None = None):
         domain=DOMAIN, data={}, options={} if options is None else options
     )
     entry.runtime_data = SimpleNamespace(
-        coordinator=SimpleNamespace(
-            data=SimpleNamespace(
-                info=SimpleNamespace(serial_number="synthetic-serial"),
-                floor_plan=floor_plan,
-            )
+        session=SimpleNamespace(
+            info=SimpleNamespace(serial_number="synthetic-serial"),
+            floor=SimpleNamespace(value=floor_plan),
         ),
         cleaning_plans=manager,
     )

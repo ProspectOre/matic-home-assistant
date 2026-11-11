@@ -35,7 +35,9 @@ async def test_second_shutdown_during_recovery_preserves_checkpoint(
         return ()
 
     if stage == "refresh":
-        entry.runtime_data.coordinator.async_request_refresh.side_effect = shutdown
+        entry.runtime_data.session.heartbeat.async_request_refresh.side_effect = (
+            shutdown
+        )
         client.async_get_cleaning_session_identity.return_value = None
     elif stage == "history":
         client.async_get_cleaning_session_records.side_effect = shutdown

@@ -12,11 +12,15 @@ from homeassistant.components.websocket_api.commands import handle_unsubscribe_e
 from homeassistant.components.websocket_api.connection import ActiveConnection
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.exceptions import ConfigEntryAuthFailed, Unauthorized
+from homeassistant.exceptions import Unauthorized
 
+from custom_components.matic_robot.client.exceptions import (
+    AuthenticationRequiredError,
+)
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.slam_scene import MaticSlamSceneView
+from custom_components.matic_robot.stores import LiveState, Store
 from custom_components.matic_robot.workspace_socket import (
     QUEUE_LIMIT,
     SNAPSHOT_CURSOR_LIMIT,
@@ -37,18 +41,39 @@ class _Hass:
         )
 
 
-def _entry(entry_id: str, *, loaded: bool = True) -> SimpleNamespace:
-    coordinator = SimpleNamespace(
-        last_update_success=True,
-        data=SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            pose=SimpleNamespace(x=123.0, y=456.0),
-        ),
+def _session(
+    *, cleaning: bool = False, floor_plan: Any = None, zones: tuple[str, ...] = ()
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        info=SimpleNamespace(serial_number="private-serial"),
+        error=Store(None),
+        state=Store(LiveState(SimpleNamespace(cleaning=cleaning), None)),
+        floor=Store(floor_plan),
+        telemetry=Store(SimpleNamespace(zones=zones)),
+        poses=Store({None: SimpleNamespace(x=123.0, y=456.0)}),
     )
+
+
+def _set_cleaning(session: SimpleNamespace, cleaning: bool) -> None:
+    session.state.set(LiveState(SimpleNamespace(cleaning=cleaning), None))
+
+
+def _session_listeners(session: SimpleNamespace) -> list[Any]:
+    stores = (session.error, session.state, session.floor, session.telemetry)
+    return [listener for store in stores for listener in store._listeners]
+
+
+def _notify_unchanged(session: SimpleNamespace) -> None:
+    """Call the session listeners as a store would, without a new value."""
+    for listener in _session_listeners(session):
+        listener()
+
+
+def _entry(entry_id: str, *, loaded: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         entry_id=entry_id,
         state=ConfigEntryState.LOADED if loaded else ConfigEntryState.SETUP_RETRY,
-        runtime_data=SimpleNamespace(coordinator=coordinator),
+        runtime_data=SimpleNamespace(session=_session()),
     )
 
 
@@ -57,9 +82,7 @@ class _LifecycleEntry(SimpleNamespace):
         super().__init__(
             entry_id=entry_id,
             state=ConfigEntryState.LOADED,
-            runtime_data=SimpleNamespace(
-                coordinator=SimpleNamespace(last_update_success=True)
-            ),
+            runtime_data=SimpleNamespace(session=_session()),
         )
         self.state_callbacks = []
         self.unload_callbacks = []
@@ -125,14 +148,6 @@ class _ScenePublisher(_Publisher):
 
     def floor_plan_is_current(self, floor_plan: Any) -> bool:
         return self.current and self.live_session_verified and floor_plan is not None
-
-
-class _CoordinatorPublisher(_Publisher):
-    def __init__(self, data: Any) -> None:
-        super().__init__()
-        self.data = data
-        self.last_update_success = True
-        self.last_exception = None
 
 
 class _HistoryPublisher(_Publisher):
@@ -228,7 +243,7 @@ def test_snapshot_is_versioned_minimized_and_admin_only() -> None:
 def test_snapshot_exposes_only_verified_floor_and_existing_resource_revisions() -> None:
     entry = _entry("entry-a")
     floor_plan = SimpleNamespace(mission_id=47)
-    entry.runtime_data.coordinator.data.floor_plan = floor_plan
+    entry.runtime_data.session.floor.value = floor_plan
     entry.runtime_data.slam_map = SimpleNamespace(
         revision=12, floor_plan_is_current=MagicMock(return_value=True)
     )
@@ -264,7 +279,7 @@ def test_snapshot_exposes_only_verified_floor_and_existing_resource_revisions() 
 
 def test_snapshot_omits_invalid_projected_scene_revision() -> None:
     entry = _entry("entry-a")
-    entry.runtime_data.coordinator.data.floor_plan = SimpleNamespace(mission_id=47)
+    entry.runtime_data.session.floor.value = SimpleNamespace(mission_id=47)
     entry.runtime_data.slam_map = SimpleNamespace(
         revision=12, floor_plan_is_current=lambda _floor_plan: True
     )
@@ -289,7 +304,7 @@ def test_snapshot_omits_invalid_projected_scene_revision() -> None:
 
 def test_snapshot_scene_fence_uses_current_revision_while_payload_is_cached() -> None:
     entry = _entry("entry-a")
-    entry.runtime_data.coordinator.data.floor_plan = SimpleNamespace(mission_id=47)
+    entry.runtime_data.session.floor.value = SimpleNamespace(mission_id=47)
     entry.runtime_data.slam_map = SimpleNamespace(revision=8)
     entry.runtime_data.cleaning_plans = object()
     entry.runtime_data.slam_history = SimpleNamespace(catalog=lambda: ())
@@ -321,12 +336,13 @@ def test_snapshot_scene_fence_uses_current_revision_while_payload_is_cached() ->
     assert "scene" not in third["revisions"]
 
 
-def test_snapshot_marks_stale_coordinator_data_without_reusing_floor_identity() -> None:
+def test_snapshot_marks_unreachable_robot_stale_without_reusing_floor_identity() -> (
+    None
+):
     entry = _entry("entry-a")
-    entry.runtime_data.coordinator.last_update_success = False
-    entry.runtime_data.coordinator.last_exception = RuntimeError("private detail")
+    entry.runtime_data.session.error.value = RuntimeError("private detail")
     floor_plan = SimpleNamespace(mission_id=47)
-    entry.runtime_data.coordinator.data.floor_plan = floor_plan
+    entry.runtime_data.session.floor.value = floor_plan
     is_current = MagicMock(return_value=True)
     entry.runtime_data.slam_map = SimpleNamespace(
         revision=12, floor_plan_is_current=is_current
@@ -357,21 +373,29 @@ def test_snapshot_marks_stale_coordinator_data_without_reusing_floor_identity() 
     assert "private detail" not in repr(snapshot)
 
 
-def test_snapshot_unknown_coordinator_and_authorization_status_are_typed() -> None:
+def test_snapshot_missing_session_and_authorization_status_are_typed() -> None:
     entry = _entry("entry-a")
-    entry.runtime_data.coordinator.data = None
-    entry.runtime_data.coordinator.last_exception = ConfigEntryAuthFailed(
+    entry.runtime_data.session.error.value = AuthenticationRequiredError(
         "auth required"
     )
     manager = WorkspaceSocket(_Hass([entry]))
 
+    refused = manager.snapshot("entry-a")
+    entry.runtime_data.session = None
     snapshot = manager.snapshot("entry-a")
 
+    assert refused["payload"] == {"available": False, "entry": None}
+    assert refused["status"] == {
+        "state": "stale",
+        "reason": "authorization",
+        "retryable": False,
+    }
+    assert "auth required" not in repr(refused)
     assert snapshot["payload"] == {"available": False, "entry": None}
     assert snapshot["status"] == {
         "state": "unavailable",
-        "reason": "authorization",
-        "retryable": False,
+        "reason": "snapshot_required",
+        "retryable": True,
     }
     assert snapshot["identity"]["floor_mission_id"] is None
     assert snapshot["revisions"] == {
@@ -479,13 +503,6 @@ def test_status_and_activity_events_do_not_advance_spatial_generation() -> None:
 
 def test_plan_and_area_changes_publish_only_observed_resource_revisions() -> None:
     entry = _LifecycleEntry("entry-a")
-    coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-        )
-    )
-    entry.runtime_data.coordinator = coordinator
     plans = _PlanPublisher()
     entry.runtime_data.cleaning_plans = SimpleNamespace(catalog=plans, repository=plans)
     manager = WorkspaceSocket(_Hass([entry]))
@@ -525,13 +542,7 @@ def test_plan_and_area_changes_publish_only_observed_resource_revisions() -> Non
 
 def test_scene_and_history_publish_from_their_authoritative_stores() -> None:
     entry = _LifecycleEntry("entry-a")
-    entry.runtime_data.coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-            floor_plan=SimpleNamespace(mission_id=47),
-        )
-    )
+    entry.runtime_data.session = _session(floor_plan=SimpleNamespace(mission_id=47))
     scene = _ScenePublisher()
     history = _HistoryPublisher()
     entry.runtime_data.slam_map = scene
@@ -576,18 +587,13 @@ def test_scene_and_history_publish_from_their_authoritative_stores() -> None:
     entry.set_state(ConfigEntryState.UNLOAD_IN_PROGRESS)
     assert not scene.listeners
     assert not history.listeners
-    assert not entry.runtime_data.coordinator.listeners
+    assert not _session_listeners(entry.runtime_data.session)
+    assert not entry.runtime_data.session.poses._listeners
 
 
 def test_scene_boundary_tracks_session_loss_and_restore_at_fixed_revision() -> None:
     entry = _LifecycleEntry("entry-a")
-    entry.runtime_data.coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-            floor_plan=SimpleNamespace(mission_id=47),
-        )
-    )
+    entry.runtime_data.session = _session(floor_plan=SimpleNamespace(mission_id=47))
     scene = _ScenePublisher()
     entry.runtime_data.slam_map = scene
     manager = WorkspaceSocket(_Hass([entry]))
@@ -617,13 +623,7 @@ def test_scene_boundary_tracks_session_loss_and_restore_at_fixed_revision() -> N
 
 def test_scene_content_burst_does_not_advance_coherence_generation() -> None:
     entry = _LifecycleEntry("entry-a")
-    entry.runtime_data.coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-            floor_plan=SimpleNamespace(mission_id=47),
-        )
-    )
+    entry.runtime_data.session = _session(floor_plan=SimpleNamespace(mission_id=47))
     scene = _ScenePublisher()
     entry.runtime_data.slam_map = scene
     manager = WorkspaceSocket(_Hass([entry]))
@@ -644,15 +644,11 @@ def test_scene_content_burst_does_not_advance_coherence_generation() -> None:
 
 def test_scene_boundary_tracks_identity_and_floor_geometry_changes() -> None:
     entry = _LifecycleEntry("entry-a")
-    entry.runtime_data.coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-            floor_plan=SimpleNamespace(
-                mission_id=47,
-                partition_protocol_id="partition-a",
-                rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0),)),),
-            ),
+    entry.runtime_data.session = _session(
+        floor_plan=SimpleNamespace(
+            mission_id=47,
+            partition_protocol_id="partition-a",
+            rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0),)),),
         )
     )
     scene = _ScenePublisher()
@@ -667,17 +663,19 @@ def test_scene_boundary_tracks_identity_and_floor_geometry_changes() -> None:
     identity_change = connection.send_event.call_args.args[1]["invalidation"]
     assert identity_change["coherence_generation"] == 2
 
-    entry.runtime_data.coordinator.data.floor_plan = SimpleNamespace(
-        mission_id=47,
-        partition_protocol_id="partition-b",
-        rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0), (1, 0))),),
+    entry.runtime_data.session.floor.set(
+        SimpleNamespace(
+            mission_id=47,
+            partition_protocol_id="partition-b",
+            rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0), (1, 0))),),
+        )
     )
     scene.publish()
     geometry_change = connection.send_event.call_args.args[1]["invalidation"]
     assert connection.send_event.call_count == 2
     assert geometry_change["coherence_generation"] == 3
 
-    entry.runtime_data.coordinator.data.info.serial_number = "another-private-serial"
+    entry.runtime_data.session.info.serial_number = "another-private-serial"
     scene.publish()
     robot_change = connection.send_event.call_args.args[1]["invalidation"]
     assert connection.send_event.call_count == 3
@@ -689,15 +687,11 @@ def test_scene_invalidation_tracks_floor_geometry_at_fixed_mission_and_revision(
 ):
     """A floor-plan-only update invalidates the scene resource for clients."""
     entry = _LifecycleEntry("entry-a")
-    entry.runtime_data.coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-            floor_plan=SimpleNamespace(
-                mission_id=47,
-                partition_protocol_id="partition-a",
-                rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0),)),),
-            ),
+    entry.runtime_data.session = _session(
+        floor_plan=SimpleNamespace(
+            mission_id=47,
+            partition_protocol_id="partition-a",
+            rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0),)),),
         )
     )
     scene = _ScenePublisher()
@@ -708,16 +702,13 @@ def test_scene_invalidation_tracks_floor_geometry_at_fixed_mission_and_revision(
     manager.track_entry(entry)
     manager.subscribe(connection, "entry-a", 25)
 
-    entry.runtime_data.coordinator.data = SimpleNamespace(
-        info=SimpleNamespace(serial_number="private-serial"),
-        operational=SimpleNamespace(cleaning=False),
-        floor_plan=SimpleNamespace(
+    entry.runtime_data.session.floor.set(
+        SimpleNamespace(
             mission_id=47,
             partition_protocol_id="partition-b",
             rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0), (1, 0))),),
-        ),
+        )
     )
-    entry.runtime_data.coordinator.publish()
 
     invalidation = connection.send_event.call_args.args[1]["invalidation"]
     assert invalidation["resources"] == ["scene"]
@@ -725,44 +716,32 @@ def test_scene_invalidation_tracks_floor_geometry_at_fixed_mission_and_revision(
     assert invalidation["revisions"]["scene"] == 2
 
 
-def test_coordinator_publishes_status_and_operational_changes_only() -> None:
+def test_session_publishes_status_and_operational_changes_only() -> None:
     entry = _LifecycleEntry("entry-a")
-    operational = SimpleNamespace(cleaning=False)
-    coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=operational,
-        )
-    )
-    entry.runtime_data.coordinator = coordinator
+    session = entry.runtime_data.session
     manager = WorkspaceSocket(_Hass([entry]))
     connection = _connection()
     manager.track_entry(entry)
     manager.subscribe(connection, "entry-a", 23)
 
-    coordinator.last_update_success = False
-    coordinator.publish()
+    session.error.set(RuntimeError("offline"))
     status_event = connection.send_event.call_args.args[1]["invalidation"]
     assert status_event["resources"] == ["status"]
     assert status_event["coherence_generation"] == 1
     assert status_event["revisions"]["status"] == 1
     assert status_event["revisions"]["robot_state"] == 0
 
-    coordinator.data = SimpleNamespace(
-        info=SimpleNamespace(serial_number="private-serial"),
-        operational=SimpleNamespace(cleaning=True),
-    )
-    coordinator.publish()
+    _set_cleaning(session, True)
     state_event = connection.send_event.call_args.args[1]["invalidation"]
     assert state_event["resources"] == ["robot_state"]
     assert state_event["coherence_generation"] == 1
     assert state_event["revisions"]["robot_state"] == 1
     assert state_event["sequence"] == 2
 
-    coordinator.publish()
+    _notify_unchanged(session)
     assert connection.send_event.call_count == 2
 
-    callback = next(iter(coordinator.listeners))
+    callback = session.state._listeners[0]
     entry.set_state(ConfigEntryState.UNLOAD_IN_PROGRESS)
     callback()
     assert connection.send_event.call_count == 3
@@ -772,25 +751,15 @@ def test_coordinator_publishes_status_and_operational_changes_only() -> None:
     }
 
 
-def test_coordinator_push_reconnect_replays_gap_and_recovers_after_overflow() -> None:
+def test_session_push_reconnect_replays_gap_and_recovers_after_overflow() -> None:
     """A reconnect gets missed robot changes or a fresh snapshot after overflow."""
     entry = _LifecycleEntry("entry-a")
-    coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-        )
-    )
-    entry.runtime_data.coordinator = coordinator
+    session = entry.runtime_data.session
     manager = WorkspaceSocket(_Hass([entry]))
     manager.track_entry(entry)
 
     def publish_cleaning(cleaning: bool) -> None:
-        coordinator.data = SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=cleaning),
-        )
-        coordinator.publish()
+        _set_cleaning(session, cleaning)
 
     first = _connection()
     websocket_snapshot(
@@ -856,39 +825,30 @@ def test_coordinator_push_reconnect_replays_gap_and_recovers_after_overflow() ->
     )
     assert overflow_connection.send_event.call_count == 0
 
-    publish_cleaning(not coordinator.data.operational.cleaning)
+    publish_cleaning(not session.state.value.operational.cleaning)
     continuation = overflow_connection.send_event.call_args.args[1]["invalidation"]
     assert continuation["sequence"] == fresh_snapshot["sequence"] + 1
     assert continuation["resources"] == ["robot_state"]
 
 
-def test_coordinator_invalidates_areas_when_zones_change() -> None:
+def test_session_invalidates_areas_when_zones_change() -> None:
     entry = _LifecycleEntry("entry-a")
-
-    def state(zones: tuple[str, ...]) -> SimpleNamespace:
-        return SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-            telemetry=SimpleNamespace(zones=zones),
-        )
-
-    coordinator = _CoordinatorPublisher(state(("kitchen-no-go",)))
-    entry.runtime_data.coordinator = coordinator
+    session = _session(zones=("kitchen-no-go",))
+    entry.runtime_data.session = session
     manager = WorkspaceSocket(_Hass([entry]))
     connection = _connection()
     manager.track_entry(entry)
     manager.subscribe(connection, "entry-a", 23)
 
-    coordinator.publish()
+    _notify_unchanged(session)
     assert connection.send_event.call_count == 0
 
-    coordinator.data = state(("kitchen-no-go", "stairs"))
-    coordinator.publish()
+    session.telemetry.set(SimpleNamespace(zones=("kitchen-no-go", "stairs")))
     event = connection.send_event.call_args.args[1]["invalidation"]
     assert event["resources"] == ["areas"]
     assert event["revisions"]["areas"] == 1
 
-    coordinator.publish()
+    _notify_unchanged(session)
     assert connection.send_event.call_count == 1
 
 
@@ -897,25 +857,23 @@ async def test_unavailable_sources_and_idempotent_cleanup_are_safe() -> None:
     entry = _LifecycleEntry("entry-a")
     manager = WorkspaceSocket(_Hass([entry]))
     manager._untrack_entry("missing")
-    manager._async_coordinator_changed("entry-a")
+    manager._async_session_changed("entry-a")
     manager._async_scene_changed("entry-a")
     manager._async_history_changed("entry-a")
     manager._invalidate("entry-a", ["workspace"])
+    # An entry without a session has no robot sources to follow.
+    sessionless = _LifecycleEntry("entry-b")
+    sessionless.runtime_data.session = None
+    manager.track_entry(sessionless)
+    assert "session" not in manager._tracked_entries["entry-b"].source_state
 
-    coordinator = _CoordinatorPublisher(
-        SimpleNamespace(
-            info=SimpleNamespace(serial_number="private-serial"),
-            operational=SimpleNamespace(cleaning=False),
-        )
-    )
-    entry.runtime_data.coordinator = coordinator
     plans = _PlanPublisher()
     entry.runtime_data.cleaning_plans = SimpleNamespace(catalog=plans, repository=plans)
     no_catalog = _Publisher()
     entry.runtime_data.slam_history = no_catalog
     manager.track_entry(entry)
     plan_listener = next(iter(plans.listeners))
-    coordinator_listener = next(iter(coordinator.listeners))
+    session_listener = entry.runtime_data.session.state._listeners[0]
     history_listener = next(iter(no_catalog.listeners))
     entry.runtime_data.cleaning_plans = None
     plan_listener()
@@ -924,8 +882,8 @@ async def test_unavailable_sources_and_idempotent_cleanup_are_safe() -> None:
     assert WorkspaceSocket._history_state(no_catalog) == ()
     history_listener()
     assert manager._sequence.get("entry-a", 0) == 1
-    entry.runtime_data.coordinator = None
-    coordinator_listener()
+    entry.runtime_data.session = None
+    session_listener()
     assert manager._sequence.get("entry-a", 0) == 1
     entry.runtime_data.slam_history = None
     history_listener()

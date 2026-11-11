@@ -9,7 +9,11 @@ from unittest.mock import MagicMock, patch
 from homeassistant.config_entries import ConfigEntryState
 
 from custom_components.matic_robot import slam_history_format as history_format
-from custom_components.matic_robot.client.models import FloorPlan, MappedFloor
+from custom_components.matic_robot.client.models import (
+    FloorPlan,
+    MappedFloor,
+    RobotOperationalState,
+)
 from custom_components.matic_robot.client.slam_scene import encode_slam_scene
 from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
@@ -19,29 +23,19 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_history import SlamHistoryStore
 from custom_components.matic_robot.slam_map_store import SlamMapStore
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
+from tests.session_fakes import fake_session
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
-class _Coordinator:
-    def __init__(self, serial: str, floor_plan: FloorPlan) -> None:
-        self.data = SimpleNamespace(
-            info=SimpleNamespace(serial_number=serial),
-            floor_plan=floor_plan,
-            operational=SimpleNamespace(cleaning=False),
-            telemetry=SimpleNamespace(active_cleaning_session=False),
-            pose=None,
-        )
-        self.last_update_success = True
-        self.floor_read_generation = 0
-        self._listeners = set()
-
-    def async_add_listener(self, listener):
-        self._listeners.add(listener)
-
-        def remove():
-            self._listeners.discard(listener)
-
-        return remove
+def _session(serial: str, floor_plan: FloorPlan) -> SimpleNamespace:
+    return fake_session(
+        operational=RobotOperationalState(
+            50, (), (), False, False, False, False, False, False
+        ),
+        session_active=False,
+        info=SimpleNamespace(serial_number=serial),
+        floor_plan=floor_plan,
+    )
 
 
 class _Entry:
@@ -146,9 +140,9 @@ async def test_three_robot_map_history_workspace_and_plan_isolation(hass) -> Non
         robot_plans = plans.repository.robot(serial)["plans"]
         robot_plans[f"plan-{robot_index}"] = {"name": f"Plan {robot_index}"}
         plans.control.activate_robot(serial)
-        coordinator = _Coordinator(serial, floor_plan)
+        session = _session(serial, floor_plan)
         runtime = SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             slam_map=slam_map,
             slam_history=history,
             cleaning_plans=plans,

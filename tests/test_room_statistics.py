@@ -20,6 +20,7 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.stores import CleaningHistory
 from tests.test_entities import _entry as entity_entry
 
 
@@ -415,13 +416,11 @@ async def test_managed_session_excludes_incidental_other_room_after_reload(hass)
     )
 
     entry = entity_entry()
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        floor_plan=floor,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    session = entry.runtime_data.session
+    session.floor.set(floor)
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 started_at=later_start,
                 ended_at=later_end,
                 duration_seconds=300,
@@ -430,7 +429,16 @@ async def test_managed_session_excludes_incidental_other_room_after_reload(hass)
                 completed=True,
                 mode_results=(),
             ),
-        ),
+            CleaningSession(
+                started_at=later_start,
+                ended_at=later_end,
+                duration_seconds=300,
+                rooms=("Room B",),
+                room_durations=(),
+                completed=True,
+                mode_results=(),
+            ),
+        )
     )
     entry.runtime_data.cleaning_plans.history.snapshot.return_value = snapshot
     duration = sensor.MaticRoomDurationSensor(entry, floor.rooms[0])
@@ -591,18 +599,17 @@ async def test_native_room_stats_are_held_when_multiple_floors_are_known(hass):
 
 def test_room_sensors_clear_native_values_when_floor_becomes_ambiguous():
     entry = entity_entry()
-    coordinator = entry.runtime_data.coordinator
-    floor = coordinator.data.floor_plan
+    session = entry.runtime_data.session
+    floor = session.floor.value
     room = floor.rooms[0]
-    coordinator.data = replace(
-        coordinator.data,
-        floor_plan=replace(
+    session.floor.set(
+        replace(
             floor,
             mapped_floors=(
                 MappedFloor(7, "Main", "main"),
                 MappedFloor(8, "Upper", "upper"),
             ),
-        ),
+        )
     )
     snapshot = entry.runtime_data.cleaning_plans.history.snapshot.return_value
     snapshot["robot_reported_completed_by_room"] = {
@@ -646,8 +653,8 @@ def test_room_sensors_clear_native_values_when_floor_becomes_ambiguous():
 def test_room_sensors_explain_withheld_native_statistics(sensor_class, managed_result):
     """Explain unknown native values without hiding a verified managed result."""
     entry = entity_entry()
-    coordinator = entry.runtime_data.coordinator
-    floor = coordinator.data.floor_plan
+    session = entry.runtime_data.session
+    floor = session.floor.value
     room = floor.rooms[0]
     snapshot = entry.runtime_data.cleaning_plans.history.snapshot.return_value
     snapshot["last_completed_by_room"] = {}
@@ -665,15 +672,14 @@ def test_room_sensors_explain_withheld_native_statistics(sensor_class, managed_r
     original_attributes = entity.extra_state_attributes
     assert "native_statistics_blocked_reason" not in original_attributes
 
-    coordinator.data = replace(
-        coordinator.data,
-        floor_plan=replace(
+    session.floor.set(
+        replace(
             floor,
             mapped_floors=(
                 MappedFloor(floor.mission_id, "Main", "main"),
                 MappedFloor(floor.mission_id + 1, "Upper", "upper"),
             ),
-        ),
+        )
     )
     entity._async_apply_session()
     assert entity.native_value == original_value
@@ -693,7 +699,7 @@ def test_room_sensors_explain_withheld_native_statistics(sensor_class, managed_r
         assert "statistics_source" not in entity.extra_state_attributes
 
     # The same entity updates its explanation when the map changes, without reload.
-    coordinator.data = replace(coordinator.data, floor_plan=floor)
+    session.floor.set(floor)
     entity._async_apply_session()
     assert entity.extra_state_attributes == original_attributes
     assert entity.native_value == original_value
@@ -708,25 +714,24 @@ def test_native_statistics_reason_uses_distinct_floors_including_active(
     mapped_floor_offsets, blocked
 ):
     entry = entity_entry()
-    coordinator = entry.runtime_data.coordinator
-    floor = coordinator.data.floor_plan
+    session = entry.runtime_data.session
+    floor = session.floor.value
     room = floor.rooms[0]
-    coordinator.data = replace(
-        coordinator.data,
-        floor_plan=replace(
+    session.floor.set(
+        replace(
             floor,
             mapped_floors=tuple(
                 MappedFloor(floor.mission_id + offset, "Floor", "floor")
                 for offset in mapped_floor_offsets
             ),
-        ),
+        )
     )
     entity = sensor.MaticRoomLastCleanedSensor(entry, room)
     assert (
         "native_statistics_blocked_reason" in entity.extra_state_attributes
     ) is blocked
 
-    coordinator.data = replace(coordinator.data, floor_plan=None)
+    session.floor.set(None)
     assert "native_statistics_blocked_reason" not in entity.extra_state_attributes
 
 
@@ -735,8 +740,8 @@ def test_native_statistics_reason_uses_distinct_floors_including_active(
 )
 def test_native_mode_result_cannot_replace_managed_room_result(last_result):
     entry = entity_entry()
-    coordinator = entry.runtime_data.coordinator
-    room = coordinator.data.floor_plan.rooms[0]
+    session = entry.runtime_data.session
+    room = session.floor.value.rooms[0]
     snapshot = entry.runtime_data.cleaning_plans.history.snapshot.return_value
     managed_completed = (
         "2026-01-01T08:25:00+00:00"
@@ -766,15 +771,13 @@ def test_native_mode_result_cannot_replace_managed_room_result(last_result):
             "at": "2026-01-01T08:30:00+00:00",
             "duration_seconds": 600,
             "started_at": "2026-01-01T08:00:00+00:00",
-            "floor_mission_id": coordinator.data.floor_plan.mission_id,
+            "floor_mission_id": session.floor.value.mission_id,
             "source": "robot_native_mode_result_room_name_match",
         }
     }
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(
-            coordinator.data.telemetry,
-            latest_session=CleaningSession(
+    session.history.set(
+        CleaningHistory(
+            CleaningSession(
                 started_at="2026-01-02T08:00:00+00:00",
                 ended_at="2026-01-02T08:30:00+00:00",
                 duration_seconds=1800,
@@ -783,7 +786,16 @@ def test_native_mode_result_cannot_replace_managed_room_result(last_result):
                 completed=True,
                 mode_results=(),
             ),
-        ),
+            CleaningSession(
+                started_at="2026-01-02T08:00:00+00:00",
+                ended_at="2026-01-02T08:30:00+00:00",
+                duration_seconds=1800,
+                rooms=(),
+                room_durations=(),
+                completed=True,
+                mode_results=(),
+            ),
+        )
     )
     duration = sensor.MaticRoomDurationSensor(entry, room)
     last_cleaned = sensor.MaticRoomLastCleanedSensor(entry, room)
@@ -805,7 +817,7 @@ def test_native_mode_result_cannot_replace_managed_room_result(last_result):
 @pytest.mark.asyncio
 async def test_conflicted_native_mode_clears_sensors_and_stays_tombstoned(hass):
     entry = entity_entry()
-    floor = entry.runtime_data.coordinator.data.floor_plan
+    floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     manager = await _manager(hass)
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()

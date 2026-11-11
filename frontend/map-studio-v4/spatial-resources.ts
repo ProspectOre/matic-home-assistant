@@ -248,7 +248,7 @@ export class SpatialResources {
       const resources = new Set(invalidated);
       // A new live generation already reloads history through its owner.
       resources.delete("history");
-      // The catalog read above already refreshed runner and coordinator state.
+      // The catalog read above already refreshed runner and robot state.
       this.#callbacks.loadWorkspaceResources(entry, stamp, resources, false);
     });
   }
@@ -568,7 +568,7 @@ export class SpatialResources {
         },
         floor: { classifiedCount: Math.max(1, selected.historyFloorCount) },
       });
-      // The plans endpoint intentionally fails closed while the coordinator
+      // The plans endpoint intentionally fails closed while the integration
       // is still revalidating the active floor.  A catalog refresh is the
       // next authoritative coherence check, so retry that transient result
       // instead of leaving the workspace stuck on "Plans unavailable".

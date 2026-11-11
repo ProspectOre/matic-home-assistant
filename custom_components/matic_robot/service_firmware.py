@@ -169,9 +169,8 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
                 "single_robot_required",
             )
         entry = context._entry_for_entity(hass, entity_ids[0])
-        state = entry.runtime_data.coordinator.data
         occurrence_generation = firmware_tracker.occurrence_generation(entry.entry_id)
-        snapshot = await async_build_firmware_snapshot(entry.runtime_data.client, state)
+        snapshot = await async_build_firmware_snapshot(entry.runtime_data.session)
         comparison = await firmware_tracker.async_record_snapshot(
             entry.entry_id,
             snapshot,

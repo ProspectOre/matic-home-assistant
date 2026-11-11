@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from functools import partial
+from typing import Any
 
 from homeassistant.components.camera import Camera
 from homeassistant.core import HomeAssistant, callback
@@ -16,7 +18,7 @@ from .client.floor_plan import (
     resolve_robot_map_position,
     robot_location_source,
 )
-from .client.models import HermesCollectionEntry, RobotState
+from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
 from .client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
@@ -26,15 +28,35 @@ from .floor_render import render_floor_plan
 from .http import (
     scene_api_url,
 )
+from .session import RobotSession
 from .slam_map_store import SlamMapStore
 from .slam_render import render_slam_map
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 MAX_CAMERA_DIMENSION = 4096
 
 
+@dataclass(frozen=True, slots=True)
+class _MapView:
+    """What one map render draws: the floor, the robot's pose and its room."""
+
+    floor_plan: FloorPlan | None
+    pose: RobotPose | None
+    current_area: str | None
+
+
+def _map_view(session: RobotSession) -> _MapView:
+    floor_plan = session.floor.value
+    return _MapView(
+        floor_plan,
+        session.pose_on(floor_plan),
+        session.state.value.operational.current_area,
+    )
+
+
 def _floor_render_identity(
-    store: SlamMapStore, data: RobotState, floor_read_generation: int
+    store: SlamMapStore, data: _MapView, floor_read_generation: int
 ) -> tuple[object, ...]:
     """Return the private map identity that one camera render may disclose."""
     return (
@@ -70,10 +92,10 @@ class MaticMapCamera(MaticEntity, Camera):
         Camera.__init__(self)
         self.content_type = "image/png"
         MaticEntity.__init__(self, entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_map"
+        self._attr_unique_id = f"{self.session.info.serial_number}_map"
         self._store = entry.runtime_data.slam_map
         floor_plan_coherent = self._store.floor_plan_is_current(
-            self.coordinator.data.floor_plan
+            self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
         self._published_session_verified = _map_session_verified(
@@ -89,23 +111,26 @@ class MaticMapCamera(MaticEntity, Camera):
             self._store.async_add_listener(self._async_handle_store_update)
         )
 
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.state, self.session.floor)
+
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Publish coordinator state and remember its coherence classification."""
+    def _handle_store_update(self) -> None:
+        """Publish new state and remember its coherence classification."""
         floor_plan_coherent = self._store.floor_plan_is_current(
-            self.coordinator.data.floor_plan
+            self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
         self._published_session_verified = _map_session_verified(
             self._store, floor_plan_coherent
         )
-        super()._handle_coordinator_update()
+        super()._handle_store_update()
 
     @callback
     def _async_handle_store_update(self) -> None:
         """Publish only store changes that cross the floor-coherence boundary."""
         floor_plan_coherent = self._store.floor_plan_is_current(
-            self.coordinator.data.floor_plan
+            self.session.floor.value
         )
         session_verified = _map_session_verified(self._store, floor_plan_coherent)
         if (
@@ -121,10 +146,10 @@ class MaticMapCamera(MaticEntity, Camera):
         self, width: int | None = None, height: int | None = None
     ) -> bytes:
         """Return the current labeled room map."""
-        data = self.coordinator.data
+        data = _map_view(self.session)
         floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         render_floor_identity = _floor_render_identity(
-            self._store, data, getattr(self.coordinator, "floor_read_generation", 0)
+            self._store, data, self.session.heartbeat.floor_read_generation
         )
         render_pose = (
             data.pose
@@ -138,7 +163,7 @@ class MaticMapCamera(MaticEntity, Camera):
             id(data.floor_plan),
             floor_plan_coherent,
             render_pose,
-            data.operational.current_area,
+            data.current_area,
             requested_width,
             requested_height,
             render_floor_identity,
@@ -150,7 +175,7 @@ class MaticMapCamera(MaticEntity, Camera):
                 render_floor_plan,
                 data.floor_plan if floor_plan_coherent else None,
                 render_pose,
-                data.operational.current_area if floor_plan_coherent else None,
+                data.current_area if floor_plan_coherent else None,
                 width=requested_width,
                 height=requested_height,
             )
@@ -163,7 +188,7 @@ class MaticMapCamera(MaticEntity, Camera):
                     render_floor_plan,
                     data.floor_plan,
                     None,
-                    data.operational.current_area,
+                    data.current_area,
                     width=requested_width,
                     height=requested_height,
                 )
@@ -172,8 +197,8 @@ class MaticMapCamera(MaticEntity, Camera):
         if (
             _floor_render_identity(
                 self._store,
-                self.coordinator.data,
-                getattr(self.coordinator, "floor_read_generation", 0),
+                _map_view(self.session),
+                self.session.heartbeat.floor_read_generation,
             )
             != render_floor_identity
         ):
@@ -196,7 +221,7 @@ class MaticMapCamera(MaticEntity, Camera):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose exact-position or non-positional room-presence availability."""
-        data = self.coordinator.data
+        data = _map_view(self.session)
         floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         return {
             "matic_entry_id": self._config_entry.entry_id,
@@ -207,7 +232,7 @@ class MaticMapCamera(MaticEntity, Camera):
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
                 data.pose,
-                data.operational.current_area,
+                data.current_area,
             ),
             "source": "local_room_map",
         }
@@ -227,12 +252,10 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         Camera.__init__(self)
         self.content_type = "image/png"
         MaticEntity.__init__(self, entry)
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_photorealistic_map"
-        )
+        self._attr_unique_id = f"{self.session.info.serial_number}_photorealistic_map"
         self._store = entry.runtime_data.slam_map
         floor_plan_coherent = self._store.floor_plan_is_current(
-            self.coordinator.data.floor_plan
+            self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
         self._published_session_verified = _map_session_verified(
@@ -249,23 +272,26 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             self._store.async_add_listener(self._async_handle_store_update)
         )
 
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.state, self.session.floor)
+
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Publish coordinator state and remember its coherence classification."""
+    def _handle_store_update(self) -> None:
+        """Publish new state and remember its coherence classification."""
         floor_plan_coherent = self._store.floor_plan_is_current(
-            self.coordinator.data.floor_plan
+            self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
         self._published_session_verified = _map_session_verified(
             self._store, floor_plan_coherent
         )
-        super()._handle_coordinator_update()
+        super()._handle_store_update()
 
     @callback
     def _async_handle_store_update(self) -> None:
         """Publish only store changes that cross the floor-coherence boundary."""
         floor_plan_coherent = self._store.floor_plan_is_current(
-            self.coordinator.data.floor_plan
+            self.session.floor.value
         )
         session_verified = _map_session_verified(self._store, floor_plan_coherent)
         if (
@@ -285,7 +311,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         """Fetch one current tile and render the accumulated isometric map."""
         requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
         requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
-        data = self.coordinator.data
+        data = _map_view(self.session)
         floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         if not floor_plan_coherent:
             self._cached_key = None
@@ -310,17 +336,17 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             id(data.floor_plan),
             floor_plan_coherent,
             render_pose,
-            data.operational.current_area,
+            data.current_area,
             requested_width,
             requested_height,
             _floor_render_identity(
-                self._store, data, getattr(self.coordinator, "floor_read_generation", 0)
+                self._store, data, self.session.heartbeat.floor_read_generation
             ),
         )
         if key == self._cached_key and self._cached_image is not None:
             return self._cached_image
         async with self._render_lock:
-            data = self.coordinator.data
+            data = _map_view(self.session)
             floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
             if not floor_plan_coherent:
                 self._cached_key = None
@@ -336,7 +362,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
                     )
                 )
             render_floor_identity = _floor_render_identity(
-                self._store, data, getattr(self.coordinator, "floor_read_generation", 0)
+                self._store, data, self.session.heartbeat.floor_read_generation
             )
             render_pose = (
                 data.pose
@@ -348,7 +374,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
                 id(data.floor_plan),
                 floor_plan_coherent,
                 render_pose,
-                data.operational.current_area,
+                data.current_area,
                 requested_width,
                 requested_height,
                 render_floor_identity,
@@ -386,8 +412,8 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             if (
                 _floor_render_identity(
                     self._store,
-                    self.coordinator.data,
-                    getattr(self.coordinator, "floor_read_generation", 0),
+                    _map_view(self.session),
+                    self.session.heartbeat.floor_read_generation,
                 )
                 != render_floor_identity
             ):
@@ -410,7 +436,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose cache readiness without exposing private map content."""
-        data = self.coordinator.data
+        data = _map_view(self.session)
         floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         return {
             "matic_entry_id": self._config_entry.entry_id,
@@ -425,7 +451,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
                 data.pose,
-                data.operational.current_area,
+                data.current_area,
             ),
             "source": "local_robot_slam",
             "scene_url": scene_api_url(self._config_entry.entry_id),
@@ -435,7 +461,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
 def _render_photorealistic_entries(
     entries: tuple[HermesCollectionEntry, ...],
     structure_entries: tuple[HermesCollectionEntry, ...],
-    state: RobotState,
+    state: _MapView,
     *,
     floor_plan_coherent: bool,
     width: int,
@@ -446,9 +472,7 @@ def _render_photorealistic_entries(
     structures = tuple(decode_slam_structure_tile(entry) for entry in structure_entries)
     floor_plan = state.floor_plan if floor_plan_coherent else None
     position = (
-        resolve_robot_map_position(
-            floor_plan, state.pose, state.operational.current_area
-        )
+        resolve_robot_map_position(floor_plan, state.pose, state.current_area)
         if floor_plan is not None
         else None
     )

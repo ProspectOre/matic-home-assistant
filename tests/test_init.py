@@ -6,9 +6,9 @@ import asyncio
 import math
 from collections.abc import Iterator
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import frontend, panel_custom
@@ -16,21 +16,13 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 
 from custom_components.matic_robot import (
-    ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS,
-    FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS,
-    FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,
-    FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,
     _async_recover_after_failed_unload,
-    _async_resume_native_reconciliation,
-    _floor_plan_supports_area_binding,
-    _register_native_history_sync,
-    _register_slam_map_floor_plan_sync,
-    _schedule_native_reconciliation_recovery,
     async_remove_entry,
     async_setup,
     async_setup_entry,
     async_unload_entry,
 )
+from custom_components.matic_robot.activity_events import ActivityEvents
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     SCOPED_MAP_BINDING_VERSION,
@@ -41,9 +33,8 @@ from custom_components.matic_robot.area_binding import (
 )
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
-    CleaningSession,
-    CleaningSessionRecord,
     FloorPlan,
+    RobotOperationalState,
     Room,
 )
 from custom_components.matic_robot.const import (
@@ -62,25 +53,32 @@ from custom_components.matic_robot.photos import (
     RobotPhotoStore,
 )
 from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
-from custom_components.matic_robot.plan_storage import STOP_FENCE_EXPIRES_AT
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.session import Store
-from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_view_data import observe_trail
+from custom_components.matic_robot.stores import CleaningHistory
+from tests.session_fakes import fake_session
 
 
 @pytest.fixture(autouse=True)
-def session_start() -> Iterator[AsyncMock]:
-    """Put a fake session over the fake client; return its ``async_start``."""
-    start = AsyncMock()
+def robot_session() -> Iterator[SimpleNamespace]:
+    """Put a fake session over the fake client and return it.
 
-    def session(_hass, _entry, client) -> SimpleNamespace:
-        return SimpleNamespace(
-            async_start=start, async_stop=client.async_shutdown, poses=Store({})
+    Its ``async_start`` is a mock, and stopping it shuts the client down.
+    """
+    session = fake_session(
+        operational=RobotOperationalState(
+            50, (), (), False, False, False, False, False, False
         )
+    )
+    session.async_start = AsyncMock()
 
-    with patch("custom_components.matic_robot.RobotSession", session):
-        yield start
+    def build(_hass, _entry, client) -> SimpleNamespace:
+        session.client = client
+        session.async_stop = client.async_shutdown
+        return session
+
+    with patch("custom_components.matic_robot.RobotSession", build):
+        yield session
 
 
 def _wifi_survey() -> SimpleNamespace:
@@ -111,828 +109,6 @@ def _entry() -> SimpleNamespace:
         async_create_background_task=MagicMock(side_effect=close_background_coroutine),
         async_on_unload=MagicMock(),
         add_update_listener=MagicMock(),
-    )
-
-
-def test_floor_plan_area_binding_support_requires_usable_geometry() -> None:
-    assert not _floor_plan_supports_area_binding(None)
-    assert not _floor_plan_supports_area_binding(
-        FloorPlan(42, "synthetic-partition", b"synthetic-partition", ())
-    )
-    assert _floor_plan_supports_area_binding(
-        FloorPlan(
-            42,
-            "synthetic-partition",
-            b"synthetic-partition",
-            (
-                Room(
-                    "room",
-                    "Room",
-                    "room",
-                    b"room",
-                    ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
-                ),
-            ),
-        )
-    )
-
-
-async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> None:
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        if coordinator.async_request_floor_plan_refresh.await_count == 4:
-            slam_map.floor_plan_is_current.return_value = True
-
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
-    )
-    listener: object | None = None
-
-    def add_listener(candidate):
-        nonlocal listener
-        listener = candidate
-        return remove_listener
-
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        async_add_listener=add_listener,
-        mission_identity=SlamMapIdentity("00" * 32, 43),
-    )
-
-    with patch("custom_components.matic_robot.asyncio.sleep", new_callable=AsyncMock):
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        assert callable(listener)
-        assert len(scheduled) == 1
-        listener()
-        listener()
-        assert len(scheduled) == 1
-        await scheduled[0]
-        assert coordinator.async_request_floor_plan_refresh.await_count == 4
-        entry.async_on_unload.assert_called_once_with(remove_listener)
-
-    listener()
-    assert len(scheduled) == 1
-    slam_map.floor_plan_is_current.return_value = True
-    listener()
-    assert len(scheduled) == 1
-
-    slam_map.mission_identity = None
-    listener()
-    assert len(scheduled) == 1
-
-
-async def test_slam_map_transition_recovers_after_fast_retry_budget(hass) -> None:
-    """A verified mission keeps retrying if the floor plan stays stale."""
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        mission_identity=SlamMapIdentity("00" * 32, 43),
-        async_add_listener=MagicMock(return_value=remove_listener),
-    )
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        if coordinator.async_request_floor_plan_refresh.await_count == 6:
-            slam_map.floor_plan_is_current.return_value = True
-
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
-    )
-
-    with patch(
-        "custom_components.matic_robot.asyncio.sleep", new_callable=AsyncMock
-    ) as sleep:
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        await scheduled[0]
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 6
-    assert all(
-        request.args == (43,)
-        for request in coordinator.async_request_floor_plan_refresh.await_args_list
-    )
-    assert sleep.await_args_list == [
-        ((FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,), {}),
-        ((FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,), {}),
-        ((FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,), {}),
-        ((FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS,), {}),
-        ((FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS * 2,), {}),
-    ]
-
-
-async def test_slam_map_transition_drops_changed_identity_during_recovery_wait(
-    hass,
-) -> None:
-    """A newer mission replaces a sleeping same-identity recovery task."""
-    entry = _entry()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    first_identity = SlamMapIdentity("00" * 32, 43)
-    second_identity = SlamMapIdentity("11" * 32, 44)
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        mission_identity=first_identity,
-        async_add_listener=MagicMock(return_value=MagicMock()),
-    )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(),
-    )
-
-    recovery_wait_started = asyncio.Event()
-    never_timeout = asyncio.Event()
-
-    async def sleep(delay: int) -> None:
-        if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
-            recovery_wait_started.set()
-            await never_timeout.wait()
-
-    with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        first_task = asyncio.create_task(scheduled[0])
-        await recovery_wait_started.wait()
-        slam_map.mission_identity = second_identity
-        slam_map.async_add_listener.call_args.args[0]()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        await first_task
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 4
-    assert len(scheduled) == 2
-    scheduled[1].close()
-
-
-async def test_slam_map_transition_cancelled_recovery_suppresses_duplicate_sync(
-    hass,
-) -> None:
-    """Cancellation leaves the attempted identity fenced from duplicate sync."""
-    entry = _entry()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    started = asyncio.Event()
-    blocked = asyncio.Event()
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        mission_identity=SlamMapIdentity("00" * 32, 43),
-        async_add_listener=MagicMock(return_value=MagicMock()),
-    )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(),
-    )
-
-    async def sleep(delay: int) -> None:
-        if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
-            started.set()
-            await blocked.wait()
-
-    with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        task = asyncio.create_task(scheduled[0])
-        await started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 4
-    assert len(scheduled) == 1
-
-
-async def test_slam_map_transition_drops_identity_changed_without_wake(hass) -> None:
-    """A changed identity is discarded even when the wait times out normally."""
-    entry = _entry()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    first_identity = SlamMapIdentity("00" * 32, 43)
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        mission_identity=first_identity,
-        async_add_listener=MagicMock(return_value=MagicMock()),
-    )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(),
-    )
-
-    async def sleep(delay: int) -> None:
-        if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
-            slam_map.mission_identity = SlamMapIdentity("11" * 32, 44)
-
-    with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        await scheduled[0]
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 4
-    assert len(scheduled) == 2
-    scheduled[1].close()
-
-
-async def test_slam_map_transition_observes_coherence_during_recovery_wait(
-    hass,
-) -> None:
-    """A normal coordinator update can settle recovery without another read."""
-    entry = _entry()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        mission_identity=SlamMapIdentity("00" * 32, 43),
-        async_add_listener=MagicMock(return_value=MagicMock()),
-    )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(),
-    )
-
-    async def sleep(delay: int) -> None:
-        if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
-            slam_map.floor_plan_is_current.return_value = True
-
-    with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        await scheduled[0]
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 4
-    assert len(scheduled) == 1
-
-
-async def test_slam_map_transition_drops_changed_identity_during_recovery_read(
-    hass,
-) -> None:
-    """A response for an obsolete recovery mission is never accepted."""
-    entry = _entry()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    first_identity = SlamMapIdentity("00" * 32, 43)
-    second_identity = SlamMapIdentity("11" * 32, 44)
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        mission_identity=first_identity,
-        async_add_listener=MagicMock(return_value=MagicMock()),
-    )
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        if coordinator.async_request_floor_plan_refresh.await_count == 5:
-            slam_map.mission_identity = second_identity
-
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
-    )
-
-    with patch("custom_components.matic_robot.asyncio.sleep", new_callable=AsyncMock):
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        await scheduled[0]
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 5
-    assert len(scheduled) == 2
-    scheduled[1].close()
-
-
-async def test_slam_map_sync_waits_for_live_session_revalidation(hass) -> None:
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
-    listener: object | None = None
-
-    def add_listener(candidate):
-        nonlocal listener
-        listener = candidate
-        return remove_listener
-
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        async_add_listener=add_listener,
-        mission_identity=SlamMapIdentity("00" * 32, 43),
-        live_session_verified=False,
-    )
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        slam_map.floor_plan_is_current.return_value = True
-
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
-    )
-
-    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-
-    assert callable(listener)
-    assert not scheduled
-    coordinator.async_request_floor_plan_refresh.assert_not_awaited()
-
-    slam_map.live_session_verified = True
-    listener()
-    assert len(scheduled) == 1
-    await scheduled[0]
-
-    coordinator.async_request_floor_plan_refresh.assert_awaited_once_with(43)
-    entry.async_on_unload.assert_called_once_with(remove_listener)
-
-
-async def test_slam_map_transition_rechecks_a_newer_mission_after_refresh(hass) -> None:
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    first_request_started = asyncio.Event()
-    release_first_request = asyncio.Event()
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        if not first_request_started.is_set():
-            first_request_started.set()
-            await release_first_request.wait()
-
-    first_identity = SlamMapIdentity("00" * 32, 43)
-    second_identity = SlamMapIdentity("11" * 32, 44)
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
-    )
-    listener: object | None = None
-
-    def add_listener(candidate):
-        nonlocal listener
-        listener = candidate
-        return remove_listener
-
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        async_add_listener=add_listener,
-        mission_identity=first_identity,
-    )
-
-    with patch("custom_components.matic_robot.asyncio.sleep", new_callable=AsyncMock):
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        assert callable(listener)
-        listener()
-        first_task = asyncio.create_task(scheduled[0])
-        await first_request_started.wait()
-        slam_map.mission_identity = second_identity
-        listener()
-        release_first_request.set()
-        await first_task
-        assert len(scheduled) == 2
-
-        slam_map.floor_plan_is_current.return_value = True
-        await scheduled[1]
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 2
-
-
-async def test_slam_map_transition_drops_an_already_invalid_refresh(hass) -> None:
-    """A queued refresh must not spend its budget after live proof is lost."""
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    identity = SlamMapIdentity("00" * 32, 43)
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(),
-    )
-    listener: object | None = None
-
-    def add_listener(candidate):
-        nonlocal listener
-        listener = candidate
-        return remove_listener
-
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        async_add_listener=add_listener,
-        mission_identity=identity,
-        live_session_verified=True,
-    )
-
-    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-    assert callable(listener)
-    slam_map.live_session_verified = False
-    await scheduled[0]
-
-    coordinator.async_request_floor_plan_refresh.assert_not_awaited()
-    slam_map.live_session_verified = True
-    listener()
-    assert len(scheduled) == 2
-    scheduled[1].close()
-
-
-async def test_slam_map_transition_retries_after_live_proof_is_interrupted(
-    hass,
-) -> None:
-    """A same-identity map refresh gets a new bounded budget after invalidation."""
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    refresh_started = asyncio.Event()
-    release_refresh = asyncio.Event()
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        refresh_started.set()
-        await release_refresh.wait()
-
-    identity = SlamMapIdentity("00" * 32, 43)
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
-        ),
-        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
-    )
-    listener: object | None = None
-
-    def add_listener(candidate):
-        nonlocal listener
-        listener = candidate
-        return remove_listener
-
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        async_add_listener=add_listener,
-        mission_identity=identity,
-        live_session_verified=True,
-    )
-
-    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-    assert callable(listener)
-    first = asyncio.create_task(scheduled[0])
-    await refresh_started.wait()
-    slam_map.live_session_verified = False
-    listener()
-    release_refresh.set()
-    await first
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 1
-    assert len(scheduled) == 1
-    slam_map.live_session_verified = True
-    listener()
-    assert len(scheduled) == 2
-    slam_map.floor_plan_is_current.return_value = True
-    await scheduled[1]
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 2
-
-
-async def test_slam_map_transition_retries_a_delayed_floor_plan_once(hass) -> None:
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        mission_identity=SlamMapIdentity("00" * 32, 43),
-    )
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        if coordinator.async_request_floor_plan_refresh.await_count == 3:
-            slam_map.floor_plan_is_current.return_value = True
-
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
-    )
-    listener: object | None = None
-
-    def add_listener(candidate):
-        nonlocal listener
-        listener = candidate
-        return remove_listener
-
-    slam_map.async_add_listener = add_listener
-
-    with patch(
-        "custom_components.matic_robot.asyncio.sleep", new_callable=AsyncMock
-    ) as sleep:
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        assert callable(listener)
-        await scheduled[0]
-
-    assert coordinator.async_request_floor_plan_refresh.await_count == 3
-    assert sleep.await_args_list == [
-        ((FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,), {}),
-        ((FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,), {}),
-    ]
-
-
-async def test_slam_map_transition_refreshes_a_missing_cached_floor_plan(hass) -> None:
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=None),
-        async_request_floor_plan_refresh=AsyncMock(),
-    )
-    listener: object | None = None
-
-    def add_listener(candidate):
-        nonlocal listener
-        listener = candidate
-        return remove_listener
-
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=True),
-        async_add_listener=add_listener,
-        mission_identity=SlamMapIdentity("00" * 32, 43),
-    )
-
-    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
-        coordinator.data.floor_plan = floor_plan
-
-    coordinator.async_request_floor_plan_refresh.side_effect = refresh_floor_plan
-
-    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-    assert callable(listener)
-    assert len(scheduled) == 1
-    await scheduled[0]
-
-    coordinator.async_request_floor_plan_refresh.assert_awaited_once_with(43)
-    slam_map.floor_plan_is_current.assert_called_with(floor_plan)
-
-
-async def test_slam_map_transition_ignores_an_opaque_mission_identity(hass) -> None:
-    entry = _entry()
-    remove_listener = MagicMock()
-    scheduled: list[object] = []
-    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-        scheduled.append(target)
-    )
-    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(floor_plan=floor_plan),
-        async_request_floor_plan_refresh=AsyncMock(),
-    )
-
-    slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False),
-        async_add_listener=lambda _candidate: remove_listener,
-        mission_identity=SlamMapIdentity("00" * 32, None),
-    )
-
-    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-
-    assert not scheduled
-    coordinator.async_request_floor_plan_refresh.assert_not_awaited()
-    slam_map.floor_plan_is_current.assert_not_called()
-
-
-async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
-    pending = {
-        "plan_id": "away",
-        "room_id": "room-kitchen",
-        "room": "Kitchen",
-        "dispatched_at": "2026-08-13T12:00:00+00:00",
-        "expires_at": "2026-08-13T12:12:00+00:00",
-    }
-    plans = MagicMock()
-    plans.ledger.async_set_native_cleanings_enabled = AsyncMock()
-    plans.recovery.recovery_run.return_value = None
-    plans.ledger.pending_native_reconciliation.return_value = None
-    entry = SimpleNamespace(async_create_background_task=MagicMock())
-    hass = MagicMock()
-    client = MagicMock()
-    coordinator = MagicMock()
-
-    _schedule_native_reconciliation_recovery(
-        hass, entry, client, coordinator, plans, "synthetic-serial"
-    )
-    entry.async_create_background_task.assert_not_called()
-
-    lifecycle_task = asyncio.create_task(asyncio.sleep(0))
-
-    def capture_task(_hass, target, _name):
-        target.close()
-        return lifecycle_task
-
-    plans.ledger.pending_native_reconciliation.return_value = pending
-    entry.async_create_background_task.side_effect = capture_task
-    _schedule_native_reconciliation_recovery(
-        hass, entry, client, coordinator, plans, "synthetic-serial"
-    )
-    await lifecycle_task
-
-    assert entry.async_create_background_task.call_args.args[2] == (
-        "matic_robot native stop recovery"
-    )
-    plans.control.register_reconciliation_task.assert_called_once_with(
-        "synthetic-serial", lifecycle_task
-    )
-
-
-async def test_restart_recovery_credits_late_native_completion(hass) -> None:
-    events = []
-    hass.bus.async_listen("matic_robot_room_reconciled", events.append)
-    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
-    room = Room(
-        "room-kitchen",
-        "Kitchen",
-        "protocol-kitchen",
-        b"kitchen",
-        ((0, 0), (1, 0), (1, 1), (0, 1)),
-    )
-    floor_plan = FloorPlan(1, "partition", b"partition", (room,))
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    manager.repository.robot("synthetic-serial")["pending_native_reconciliation"] = {
-        "plan_id": "away",
-        "room_id": room.id,
-        "room": room.name,
-        "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
-        "expires_at": (now + timedelta(seconds=10)).isoformat(),
-        "run_id": "synthetic-restart-run",
-    }
-    pending = manager.ledger.pending_native_reconciliation("synthetic-serial")
-    assert pending is not None
-    native_record = CleaningSessionRecord(
-        b"late-session",
-        CleaningSession(
-            (now - timedelta(seconds=4)).isoformat(),
-            (now - timedelta(seconds=1)).isoformat(),
-            3,
-            (room.name,),
-            ((room.name, 3),),
-            True,
-            (room.name,),
-        ),
-    )
-    client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(return_value=(native_record,))
-    )
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan))
-
-    with (
-        patch("custom_components.matic_robot.dt_util.utcnow", return_value=now),
-        patch("custom_components.matic_robot.asyncio.sleep", AsyncMock()) as sleep,
-    ):
-        await _async_resume_native_reconciliation(
-            client,
-            coordinator,
-            manager,
-            "synthetic-serial",
-            pending,
-        )
-
-    sleep.assert_awaited_once_with(5)
-    client.async_get_cleaning_session_records.assert_awaited_once()
-    assert manager.ledger.pending_native_reconciliation("synthetic-serial") is None
-    room_history = manager.history.snapshot("synthetic-serial")["plan_history"]["away"][
-        "rooms"
-    ][room.id]
-    assert room_history["last_result"] == "completed"
-    assert room_history["last_duration_seconds"] == 3
-    await hass.async_block_till_done()
-    assert len(events) == 1
-    assert events[0].data["run_id"] == "synthetic-restart-run"
-    assert events[0].data["reason_code"] == "native_reconciled_completion"
-
-
-async def test_restart_recovery_expires_marker_after_transport_error(hass) -> None:
-    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
-    dispatched_at = now - timedelta(seconds=5)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    robot = manager.repository.robot("synthetic-serial")
-    robot["pending_native_reconciliation"] = {
-        "plan_id": "away",
-        "room_id": "room-kitchen",
-        "room": "Kitchen",
-        "dispatched_at": dispatched_at.isoformat(),
-        "expires_at": (now + timedelta(seconds=1)).isoformat(),
-    }
-    robot[STOP_FENCE_EXPIRES_AT] = (now + timedelta(seconds=1)).isoformat()
-    manager.control.arm_stop_pending("synthetic-serial", -1)
-    pending = manager.ledger.pending_native_reconciliation("synthetic-serial")
-    assert pending is not None
-    client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(
-            side_effect=CannotConnectError("history unavailable")
-        )
-    )
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan=None))
-
-    with (
-        patch(
-            "custom_components.matic_robot.dt_util.utcnow",
-            side_effect=(now, now + timedelta(seconds=2)),
-        ),
-        patch("custom_components.matic_robot.asyncio.sleep", AsyncMock()) as sleep,
-    ):
-        await _async_resume_native_reconciliation(
-            client,
-            coordinator,
-            manager,
-            "synthetic-serial",
-            pending,
-        )
-
-    sleep.assert_awaited_once_with(1)
-    client.async_get_cleaning_session_records.assert_awaited_once()
-    assert manager.ledger.pending_native_reconciliation("synthetic-serial") is None
-    assert STOP_FENCE_EXPIRES_AT not in manager.repository.robot("synthetic-serial")
-    manager.repository.store.async_save.assert_awaited_once()
-
-
-async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> None:
-    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    robot = manager.repository.robot("synthetic-serial")
-    robot["pending_native_reconciliation"] = {
-        "plan_id": "away",
-        "room_id": "room-kitchen",
-        "room": "Kitchen",
-        "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
-        "expires_at": (now + timedelta(seconds=10)).isoformat(),
-    }
-    pending = manager.ledger.pending_native_reconciliation("synthetic-serial")
-    assert pending is not None
-    replacement = {
-        **pending,
-        "dispatched_at": now.isoformat(),
-    }
-
-    async def replace_marker() -> tuple[CleaningSessionRecord, ...]:
-        robot["pending_native_reconciliation"] = replacement
-        return ()
-
-    client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(side_effect=replace_marker)
-    )
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan=None))
-
-    with (
-        patch("custom_components.matic_robot.dt_util.utcnow", return_value=now),
-        patch("custom_components.matic_robot.asyncio.sleep", AsyncMock()),
-        patch.object(
-            manager.ledger,
-            "async_import_native_history",
-            wraps=manager.ledger.async_import_native_history,
-        ) as import_history,
-    ):
-        await _async_resume_native_reconciliation(
-            client,
-            coordinator,
-            manager,
-            "synthetic-serial",
-            pending,
-        )
-
-    import_history.assert_not_awaited()
-    assert (
-        manager.ledger.pending_native_reconciliation("synthetic-serial") == replacement
     )
 
 
@@ -1049,57 +225,52 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
 @pytest.mark.parametrize("recovering_run", [False, True])
 @pytest.mark.parametrize("recovering_stop", [False, True])
 @pytest.mark.parametrize("initial_floor_present", [False, True])
-async def test_setup_refreshes_before_forwarding_platforms(
-    session_start: AsyncMock,
+async def test_setup_starts_the_session_before_forwarding_platforms(
+    robot_session: SimpleNamespace,
     native_history_error: bool,
     recovering_run: bool,
     recovering_stop: bool,
     initial_floor_present: bool,
 ) -> None:
-    coordinator_unsubscribe = MagicMock()
-    plan_unsubscribe = MagicMock()
     plans = MagicMock()
     plans.ledger.async_set_native_cleanings_enabled = AsyncMock()
     plans.recovery.recovery_run.return_value = {} if recovering_run else None
     plans.control.pending_stop_run_id.return_value = "run" if recovering_stop else None
     plans.catalog.areas.return_value = {}
-    plans.repository.async_add_listener.return_value = plan_unsubscribe
     plans.catalog.async_upgrade_area_bindings = AsyncMock(
-        side_effect=(
-            AreaBindingUpgradeResult(0, True),
-            AreaBindingUpgradeResult(0, True),
-            AreaBindingUpgradeResult(0, True),
-            AreaBindingUpgradeResult(0, True),
-            AreaBindingUpgradeResult(1, False),
-        )
+        return_value=AreaBindingUpgradeResult(0, False)
     )
     plans.ledger.async_process_native_history = AsyncMock(return_value=False)
+    plans.control.robot_generation.return_value = 3
     track_workspace_entry = MagicMock()
     photo_source = SimpleNamespace(activate_entry=MagicMock())
-    scheduled_state_flushes = []
 
-    def capture_state_flush(delay, callback):
-        handle = SimpleNamespace(cancel=MagicMock(), callback=callback, delay=delay)
-        scheduled_state_flushes.append(handle)
-        return handle
+    async def forward(_entry, _platforms) -> None:
+        robot_session.async_start.assert_awaited_once_with()
 
+    firmware_tracker = MagicMock()
     hass = SimpleNamespace(
-        loop=SimpleNamespace(call_later=capture_state_flush),
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
-        config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
-        bus=SimpleNamespace(
-            async_listen=MagicMock(return_value=MagicMock()), async_fire=MagicMock()
+        config_entries=SimpleNamespace(
+            async_forward_entry_setups=AsyncMock(side_effect=forward)
         ),
         data={
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
-                DATA_FIRMWARE_TRACKER: MagicMock(),
+                DATA_FIRMWARE_TRACKER: firmware_tracker,
                 DATA_PHOTO_ATTACHMENT_SOURCE: photo_source,
                 "workspace_socket": SimpleNamespace(track_entry=track_workspace_entry),
             }
         },
     )
     entry = _entry()
+    tasks: list[str] = []
+
+    def capture_task(_hass, target, name):
+        tasks.append(name)
+        target.close()
+
+    entry.async_create_background_task.side_effect = capture_task
     client = MagicMock()
     client.async_get_cleaning_session_snapshot = AsyncMock(
         side_effect=CannotConnectError("history unavailable")
@@ -1107,63 +278,20 @@ async def test_setup_refreshes_before_forwarding_platforms(
         else None,
         return_value=((), "history-revision"),
     )
-    coordinator = SimpleNamespace(
-        async_config_entry_first_refresh=AsyncMock(),
-        async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
-        async_watch_cues=AsyncMock(),
-        async_watch_floor_plan=AsyncMock(),
-        displayed_floor_mission_id=None,
-        data=SimpleNamespace(
-            telemetry=SimpleNamespace(native_history_revision="history-revision"),
-            floor_plan=FloorPlan(
-                42,
-                "synthetic-partition",
-                b"synthetic-partition",
-                (),
-            )
-            if native_history_error or initial_floor_present
-            else None,
-        ),
-        async_ack_native_history_revision=MagicMock(),
+    floor_plan = (
+        FloorPlan(42, "synthetic-partition", b"synthetic-partition", ())
+        if initial_floor_present
+        else None
     )
-    initial_floor_plan = coordinator.data.floor_plan
-    setup_floor_plan = FloorPlan(
-        42,
-        "synthetic-partition",
-        b"synthetic-partition",
-        (
-            Room(
-                "setup-room",
-                "Setup Room",
-                "setup-room",
-                b"setup-room",
-                ((-2.0, 0.0), (-1.0, 0.0), (-2.0, 1.0)),
-            ),
-        ),
-    )
-
-    def deliver_setup_floor_plan(_serial_number, _listener):
-        coordinator.data.floor_plan = setup_floor_plan
-        return plan_unsubscribe
-
-    plans.repository.async_add_listener.side_effect = deliver_setup_floor_plan
-    setup_scheduled = []
-
-    def capture_setup_tasks(_hass, target, name):
-        if name == "matic_robot custom area binding upgrade":
-            setup_scheduled.append(target)
-        else:
-            target.close()
-
-    entry.async_create_background_task.side_effect = capture_setup_tasks
-    map_unsubscribe = MagicMock()
+    robot_session.floor.value = floor_plan
+    robot_session.history.value = CleaningHistory(revision="history-revision")
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         set_expected_mission_id=MagicMock(),
         async_prime=AsyncMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
-        async_add_listener=MagicMock(return_value=map_unsubscribe),
+        async_add_listener=MagicMock(return_value=MagicMock()),
         floor_plan_is_current=MagicMock(return_value=True),
         mission_identity=None,
     )
@@ -1177,10 +305,6 @@ async def test_setup_refreshes_before_forwarding_platforms(
         patch(
             "custom_components.matic_robot.MaticHermesClient", return_value=client
         ) as client_factory,
-        patch(
-            "custom_components.matic_robot.MaticCoordinator",
-            return_value=coordinator,
-        ),
         patch("custom_components.matic_robot.HermesCredential.from_storage") as decode,
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True) as run_trails,
@@ -1195,8 +319,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
             "custom_components.matic_robot.async_collect_slam_history",
             return_value=MagicMock(),
         ) as collect_history,
+        patch("custom_components.matic_robot.session_listeners.async_listen") as listen,
         patch(
-            "custom_components.matic_robot.async_sync_custom_area_issue"
+            "custom_components.matic_robot.floor_sync.async_sync_custom_area_issue"
         ) as sync_area_issue,
         patch(
             "custom_components.matic_robot.dt_util.now",
@@ -1204,78 +329,27 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
-        track_workspace_entry.assert_called_once_with(entry)
-        photo_source.activate_entry.assert_called_once_with(entry.entry_id)
-        observe = client_factory.call_args.kwargs["observation_callback"]
-        observe({"kind": "started"})
-        with patch(
-            "custom_components.matic_robot.monotonic",
-            side_effect=[100.0, 100.5, 100.75, 101.5, 102.0, 103.0, 103.1],
-        ):
-            observe({"kind": "state", "state_codes": [106]})
-            observe({"kind": "state", "state_codes": [107]})
-            scheduled_state_flushes[0].callback()
-            observe({"kind": "state", "state_codes": [108]})
-            scheduled_state_flushes[1].callback()
-            observe({"kind": "state", "state_codes": [109]})
-            scheduled_state_flushes[2].callback()
-            observe({"kind": "state", "state_codes": [110]})
-            entry.async_on_unload.call_args_list[0].args[0]()
-        assert ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS == 1.0
-        assert hass.bus.async_fire.call_args_list[-5:] == [
-            call(
-                "matic_robot_activity_observed",
-                {"entry_id": entry.entry_id, "kind": "started"},
-            ),
-            call(
-                "matic_robot_activity_observed",
-                {
-                    "entry_id": entry.entry_id,
-                    "kind": "state",
-                    "state_codes": [106],
-                },
-            ),
-            call(
-                "matic_robot_activity_observed",
-                {
-                    "entry_id": entry.entry_id,
-                    "kind": "state",
-                    "state_codes": [108],
-                },
-            ),
-            call(
-                "matic_robot_activity_observed",
-                {
-                    "entry_id": entry.entry_id,
-                    "kind": "state",
-                    "state_codes": [109],
-                },
-            ),
-            call(
-                "matic_robot_activity_observed",
-                {
-                    "entry_id": entry.entry_id,
-                    "kind": "state",
-                    "state_codes": [110],
-                },
-            ),
-        ]
-        assert len(scheduled_state_flushes) == 4
-        scheduled_state_flushes[3].cancel.assert_called_once_with()
-    assert len(setup_scheduled) == 1
-    await setup_scheduled[0]
 
-    decode.assert_called_once_with("test-credential")
-    coordinator.async_config_entry_first_refresh.assert_awaited_once()
-    slam_map.async_prime.assert_awaited_once_with(client)
-    assert plans.catalog.async_upgrade_area_bindings.await_count == 2
-    assert plans.catalog.async_upgrade_area_bindings.await_args_list[0].args == (
-        "synthetic-serial",
-        initial_floor_plan,
+    # Client activity reaches the bus through one throttle the entry closes.
+    observe = client_factory.call_args.kwargs["observation_callback"]
+    assert isinstance(observe.__self__, ActivityEvents)
+    assert entry.async_on_unload.call_args_list[0].args[0] == (
+        observe.__self__.async_close
     )
-    assert plans.catalog.async_upgrade_area_bindings.await_args_list[1].args == (
-        "synthetic-serial",
-        setup_floor_plan,
+    assert client_factory.call_args.kwargs["timezone_identifier"] == (
+        "America/Los_Angeles"
+    )
+    decode.assert_called_once_with("test-credential")
+    hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+        entry, PLATFORMS
+    )
+    listen.assert_called_once_with(hass, entry, robot_session, firmware_tracker)
+    track_workspace_entry.assert_called_once_with(entry)
+    photo_source.activate_entry.assert_called_once_with(entry.entry_id)
+    slam_map.async_prime.assert_awaited_once_with(client)
+    plans.control.activate_robot.assert_called_once_with("synthetic-serial")
+    plans.catalog.async_upgrade_area_bindings.assert_awaited_once_with(
+        "synthetic-serial", floor_plan
     )
     plans.ledger.async_set_native_cleanings_enabled.assert_awaited_once_with(
         "synthetic-serial", True
@@ -1293,153 +367,54 @@ async def test_setup_refreshes_before_forwarding_platforms(
     else:
         plans.ledger.async_process_native_history.assert_awaited_once_with(
             "synthetic-serial",
-            initial_floor_plan,
+            floor_plan,
             (),
             coverage_verifier=client.async_confirm_coverage_receipt,
             current_floor_plan=ANY,
+            generation=3,
         )
-    if not native_history_error and initial_floor_present:
-        coordinator.async_ack_native_history_revision.assert_called_once_with(
-            "history-revision"
-        )
-    else:
-        coordinator.async_ack_native_history_revision.assert_not_called()
-    hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
-        entry, PLATFORMS
-    )
+    # Setup's history read counts only with a floor to import it into;
+    # otherwise the sync imports that revision again in the background.
+    imported = not native_history_error and initial_floor_present
+    assert tasks == [
+        "matic_robot saved map trash expiry",
+        *(
+            ["matic_robot managed run recovery"]
+            if recovering_run or recovering_stop
+            else []
+        ),
+        "matic_robot photo collector",
+        *([] if imported else ["matic_robot native history"]),
+        "matic_robot photographic map collector",
+        "matic_robot map history collector",
+        "matic_robot Wi-Fi survey collector",
+    ]
     plans.ledger.pending_native_reconciliation.assert_called_once_with(
         "synthetic-serial"
     )
-    assert entry.runtime_data.client is client
-    assert entry.runtime_data.slam_map is slam_map
-    assert entry.runtime_data.slam_history is slam_history
+    runtime = entry.runtime_data
+    assert runtime.client is client
+    assert runtime.session is robot_session
+    assert runtime.slam_map is slam_map
+    assert runtime.slam_history is slam_history
+    assert runtime.run_trails is run_trails.return_value
+    assert runtime.firmware_tracker is firmware_tracker
+    assert isinstance(runtime.photos, RobotPhotoStore)
     slam_map.async_load.assert_awaited_once()
-    assert slam_map.set_expected_mission_id.call_args_list[0].args == (
-        initial_floor_plan.mission_id if initial_floor_plan is not None else None,
-    )
-    assert slam_map.set_expected_mission_id.call_args_list[-1].args == (
-        setup_floor_plan.mission_id,
-    )
     slam_map.async_add_listener.assert_called_once()
+    assert slam_map.set_expected_mission_id.call_args.args == (
+        floor_plan.mission_id if floor_plan is not None else None,
+    )
     slam_history.async_load.assert_awaited_once()
     run_trails.return_value.async_load.assert_awaited_once_with()
-    assert entry.runtime_data.run_trails is run_trails.return_value
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 7 + (
-        recovering_run or recovering_stop
-    )
-    assert isinstance(entry.runtime_data.photos, RobotPhotoStore)
-    session_start.assert_awaited_once_with()
-    coordinator.async_watch_floor_plan.assert_called_once_with()
-    assert (
-        entry.runtime_data.firmware_tracker
-        is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
-    )
-    assert coordinator.async_add_listener.call_count == 2
-    trail_callback = coordinator.async_add_listener.call_args_list[0].args[0]
+    # Each pose extends the trail, and a state change can close a run.
+    trail_callback = robot_session.poses._listeners[0]
     assert trail_callback.func is observe_trail
-    assert trail_callback.args == (entry.runtime_data,)
-    assert entry.runtime_data.session.poses._listeners == [trail_callback]
-    sync_callback = coordinator.async_add_listener.call_args.args[0]
-    plans.repository.async_add_listener.assert_called_once_with(
-        "synthetic-serial", sync_callback
-    )
-    # A displayed-mission transition can revoke the floor before its
-    # replacement fetch completes; keep the map admission bound to that
-    # observed mission instead of clearing it back to an older floor.
-    coordinator.displayed_floor_mission_id = 84
-    coordinator.data.floor_plan = None
-    sync_callback()
-    assert slam_map.set_expected_mission_id.call_args_list[-1].args == (84,)
-    assert entry.async_on_unload.call_args_list[-2:] == [
-        ((coordinator_unsubscribe,), {}),
-        ((plan_unsubscribe,), {}),
-    ]
-    hass.bus.async_listen.assert_called_once()
-    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_native_history_updated"
-    sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
-
-    with patch(
-        "custom_components.matic_robot.async_sync_custom_area_issue"
-    ) as listener_sync:
-        scheduled = []
-        entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
-            scheduled.append(target)
-        )
-        partial_floor_plan = FloorPlan(
-            42,
-            "synthetic-partition",
-            b"synthetic-partition",
-            (
-                Room(
-                    "room",
-                    "Room",
-                    "room",
-                    b"room",
-                    ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
-                ),
-            ),
-        )
-        complete_floor_plan = FloorPlan(
-            42,
-            "synthetic-partition",
-            b"synthetic-partition",
-            (
-                *partial_floor_plan.rooms,
-                Room(
-                    "later-room",
-                    "Later Room",
-                    "later-room",
-                    b"later-room",
-                    ((2.0, 0.0), (3.0, 0.0), (2.0, 1.0)),
-                ),
-            ),
-        )
-        updated_floor_plan = FloorPlan(
-            42,
-            "synthetic-partition",
-            b"synthetic-partition",
-            (
-                *complete_floor_plan.rooms,
-                Room(
-                    "final-room",
-                    "Final Room",
-                    "final-room",
-                    b"final-room",
-                    ((4.0, 0.0), (5.0, 0.0), (4.0, 1.0)),
-                ),
-            ),
-        )
-        coordinator.data.floor_plan = partial_floor_plan
-        sync_callback()
-        coordinator.data.floor_plan = complete_floor_plan
-        sync_callback()
-        assert len(scheduled) == 1
-        await scheduled[0]
-        assert len(scheduled) == 2
-        await scheduled[1]
-        sync_callback()
-        assert len(scheduled) == 2
-        coordinator.data.floor_plan = updated_floor_plan
-        sync_callback()
-        assert len(scheduled) == 3
-        await scheduled[2]
-        plans.repository.async_add_listener.call_args.args[1]()
-
-    assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 10 + (
-        recovering_run or recovering_stop
-    )
-    assert plans.catalog.async_upgrade_area_bindings.await_count == 5
-    assert plans.catalog.async_upgrade_area_bindings.call_args.args == (
-        "synthetic-serial",
-        updated_floor_plan,
-    )
-    assert (
-        entry.async_create_background_task.call_args.args[2]
-        == "matic_robot custom area binding upgrade"
-    )
+    assert trail_callback.args == (runtime,)
+    assert trail_callback in robot_session.state._listeners
+    sync_area_issue.assert_called_once_with(hass, "entry", {}, floor_plan)
 
 
 @pytest.mark.parametrize(
@@ -1453,7 +428,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     ],
 )
 async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
-    hass, binding_version: int, expected_version: int
+    hass, robot_session: SimpleNamespace, binding_version: int, expected_version: int
 ) -> None:
     """The real setup listener must not alert/rebind current areas on safe churn."""
     serial = "synthetic-serial"
@@ -1489,7 +464,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         assert anchors
         assert all("boundary_mm" in anchor for anchor in anchors)
 
-    # This separately retained reviewable legacy area keeps the coordinator's
+    # This separately retained reviewable legacy area keeps the
     # binding-upgrade work pending, so the actual setup callback schedules the
     # manager operation while the current binding is checked for stability.
     old_frame = replace(
@@ -1541,19 +516,9 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     current_record = current_area.copy()
     current_binding = current_area["map_binding"].copy()
 
-    coordinator_unsubscribe = MagicMock()
     plan_unsubscribe = MagicMock()
-    # The first coordinator read has no usable floor, leaving the legacy
-    # binding upgrade pending until the safe map refresh is observed.
-    initial = None
-    coordinator = SimpleNamespace(
-        async_config_entry_first_refresh=AsyncMock(),
-        async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
-        async_watch_cues=AsyncMock(),
-        async_watch_floor_plan=AsyncMock(),
-        displayed_floor_mission_id=None,
-        data=SimpleNamespace(floor_plan=initial),
-    )
+    # The first read has no usable floor, leaving the legacy binding upgrade
+    # pending until the safe map refresh is observed.
     manager.repository.async_add_listener = MagicMock(return_value=plan_unsubscribe)
     scheduled_upgrades = []
 
@@ -1568,9 +533,6 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     client = MagicMock()
     client.async_get_cleaning_session_snapshot = AsyncMock(
         return_value=((), "history-revision")
-    )
-    coordinator.data.telemetry = SimpleNamespace(
-        native_history_revision="history-revision"
     )
     client.async_send_command = AsyncMock()
     slam_map = SimpleNamespace(
@@ -1597,10 +559,8 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
             new_callable=AsyncMock,
         ),
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
-        patch(
-            "custom_components.matic_robot.MaticCoordinator", return_value=coordinator
-        ),
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
+        patch("custom_components.matic_robot.session_listeners.async_listen"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True),
         patch(
@@ -1618,7 +578,6 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         ) as create_issue,
     ):
         assert await async_setup_entry(hass, entry) is True
-        sync_callback = coordinator.async_add_listener.call_args.args[0]
         refresh = replace(
             original,
             partition_protocol_id="refreshed-partition",
@@ -1639,20 +598,18 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         # listener's real scheduling path, while the remaining current v5 area
         # is the only saved target whose notification behavior is measured.
         manager.repository.robot(serial)["areas"].pop("legacy")
-        coordinator.data.floor_plan = refresh
-        sync_callback()
+        robot_session.floor.set(refresh)
         assert len(scheduled_upgrades) == 1
         await scheduled_upgrades.pop()
-        # Repeated callbacks on the same snapshot and another safe refresh
-        # must keep the confirmed binding quiet without scheduling writes.
-        sync_callback()
+        # Another check of the same floor and another safe refresh must keep
+        # the confirmed binding quiet without scheduling writes.
+        manager.repository.async_add_listener.call_args.args[1]()
         later_refresh = replace(
             refresh,
             partition_protocol_id="later-partition",
             partition_id_wire=b"later-partition",
         )
-        coordinator.data.floor_plan = later_refresh
-        sync_callback()
+        robot_session.floor.set(later_refresh)
 
     assert current_area == current_record
     assert current_area["map_binding"] == current_binding
@@ -1671,7 +628,9 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     client.async_send_command.assert_not_awaited()
 
 
-async def test_setup_closes_client_when_first_refresh_fails() -> None:
+async def test_setup_closes_client_when_the_session_cannot_start(
+    robot_session: SimpleNamespace,
+) -> None:
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
@@ -1685,16 +644,10 @@ async def test_setup_closes_client_when_first_refresh_fails() -> None:
     entry = _entry()
     entry.data.pop(CONF_HERMES_CREDENTIAL)
     client = MagicMock(async_shutdown=AsyncMock())
-    coordinator = SimpleNamespace(
-        async_config_entry_first_refresh=AsyncMock(side_effect=RuntimeError("offline"))
-    )
+    robot_session.async_start.side_effect = RuntimeError("offline")
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
-        patch(
-            "custom_components.matic_robot.MaticCoordinator",
-            return_value=coordinator,
-        ),
         pytest.raises(RuntimeError, match="offline"),
     ):
         await async_setup_entry(hass, entry)
@@ -1703,7 +656,7 @@ async def test_setup_closes_client_when_first_refresh_fails() -> None:
 
 
 async def test_revoked_credential_enters_reauthentication_before_setup(
-    session_start: AsyncMock,
+    robot_session: SimpleNamespace,
 ) -> None:
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
@@ -1717,11 +670,10 @@ async def test_revoked_credential_enters_reauthentication_before_setup(
     )
     entry = _entry()
     client = MagicMock(async_shutdown=AsyncMock())
-    session_start.side_effect = ConfigEntryAuthFailed("credential rejected")
+    robot_session.async_start.side_effect = ConfigEntryAuthFailed("credential rejected")
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
-        patch("custom_components.matic_robot.MaticCoordinator") as coordinator,
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
         patch("custom_components.matic_robot.SlamMapStore") as slam_store,
         patch("custom_components.matic_robot.SlamHistoryStore") as history_store,
@@ -1731,7 +683,6 @@ async def test_revoked_credential_enters_reauthentication_before_setup(
         await async_setup_entry(hass, entry)
 
     client.async_shutdown.assert_awaited_once_with()
-    coordinator.assert_not_called()
     hass.config_entries.async_forward_entry_setups.assert_not_awaited()
     slam_store.assert_not_called()
     history_store.assert_not_called()
@@ -1764,14 +715,6 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     client.async_get_cleaning_session_snapshot = AsyncMock(
         return_value=((), "history-revision")
     )
-    coordinator = SimpleNamespace(
-        async_config_entry_first_refresh=AsyncMock(),
-        async_add_listener=MagicMock(return_value=MagicMock()),
-        data=SimpleNamespace(
-            floor_plan=None,
-            telemetry=SimpleNamespace(native_history_revision="history-revision"),
-        ),
-    )
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         set_expected_mission_id=MagicMock(),
@@ -1787,10 +730,6 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
-        patch(
-            "custom_components.matic_robot.MaticCoordinator",
-            return_value=coordinator,
-        ),
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True),
@@ -2277,160 +1216,3 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
         await removing
 
     manager.async_remove_robot.assert_awaited_once_with("serial")
-
-
-async def test_finished_session_records_where_the_robot_worked(hass) -> None:
-    """A native history revision imports activity and separate room statistics."""
-    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
-
-    entry = MagicMock()
-    entry.entry_id = "entry-1"
-    unloads: list = []
-    entry.async_on_unload = unloads.append
-    client = SimpleNamespace(
-        async_get_cleaning_session_snapshot=AsyncMock(
-            return_value=(("record",), "revision-1")
-        )
-    )
-    plans = SimpleNamespace(
-        control=SimpleNamespace(),
-        ledger=SimpleNamespace(
-            async_process_native_history=AsyncMock(return_value=True)
-        ),
-    )
-    floor_plan = FloorPlan(7, "floor-plan", b"floor-plan", ())
-    acknowledged: set[str] = set()
-
-    def acknowledge(revision):
-        acknowledged.add(revision)
-
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=floor_plan,
-            telemetry=SimpleNamespace(native_history_revision="revision-1"),
-        ),
-        native_history_revision_acknowledged=lambda revision: revision in acknowledged,
-        native_history_revision_is_current=lambda revision: revision == "revision-1",
-        async_ack_native_history_revision=MagicMock(side_effect=acknowledge),
-    )
-
-    _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    assert unloads
-
-    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "other"})
-    await hass.async_block_till_done()
-    plans.ledger.async_process_native_history.assert_not_awaited()
-
-    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "entry-1"})
-    await hass.async_block_till_done()
-    plans.ledger.async_process_native_history.assert_not_awaited()
-
-    hass.bus.async_fire(
-        EVENT_NATIVE_HISTORY_UPDATED,
-        {"entry_id": "entry-1", "revision": "revision-1"},
-    )
-    await hass.async_block_till_done()
-    plans.ledger.async_process_native_history.assert_awaited_once_with(
-        "serial",
-        floor_plan,
-        ("record",),
-        coverage_verifier=None,
-        current_floor_plan=ANY,
-    )
-    floor_reader = plans.ledger.async_process_native_history.await_args.kwargs[
-        "current_floor_plan"
-    ]
-    assert floor_reader() == floor_plan
-    replacement_floor = FloorPlan(8, "replacement-floor", b"replacement", ())
-    coordinator.data.floor_plan = replacement_floor
-    assert floor_reader() == replacement_floor
-    hass.bus.async_fire(
-        EVENT_NATIVE_HISTORY_UPDATED,
-        {"entry_id": "entry-1", "revision": "revision-1"},
-    )
-    await hass.async_block_till_done()
-    plans.ledger.async_process_native_history.assert_awaited_once()
-
-
-async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
-    from custom_components.matic_robot.client.exceptions import MaticError
-    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
-
-    entry = MagicMock()
-    entry.entry_id = "entry-1"
-    entry.async_on_unload = MagicMock()
-    client = SimpleNamespace(
-        async_get_cleaning_session_snapshot=AsyncMock(side_effect=MaticError("down"))
-    )
-    plans = SimpleNamespace(
-        control=SimpleNamespace(),
-        ledger=SimpleNamespace(async_process_native_history=AsyncMock()),
-    )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(7, "floor-plan", b"floor-plan", ()),
-            telemetry=SimpleNamespace(native_history_revision="revision-1"),
-        ),
-        native_history_revision_acknowledged=lambda _revision: False,
-        native_history_revision_is_current=lambda revision: revision == "revision-1",
-        async_ack_native_history_revision=MagicMock(),
-    )
-
-    _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(
-        EVENT_NATIVE_HISTORY_UPDATED,
-        {"entry_id": "entry-1", "revision": "revision-1"},
-    )
-    await hass.async_block_till_done()
-
-    plans.ledger.async_process_native_history.assert_not_awaited()
-
-
-async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> None:
-    """An old event callback keeps its generation across a robot re-add."""
-    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
-
-    entry = MagicMock()
-    entry.entry_id = "entry-1"
-    entry.async_on_unload = MagicMock()
-    records_ready = asyncio.Event()
-    release_records = asyncio.Event()
-
-    async def get_records():
-        records_ready.set()
-        await release_records.wait()
-        return (("record",), "revision-1")
-
-    client = SimpleNamespace(async_get_cleaning_session_snapshot=get_records)
-    generation = 1
-    plans = SimpleNamespace(
-        control=SimpleNamespace(
-            robot_generation=MagicMock(side_effect=lambda _serial: generation)
-        ),
-        ledger=SimpleNamespace(
-            async_process_native_history=AsyncMock(return_value=True)
-        ),
-    )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=FloorPlan(7, "floor-plan", b"floor-plan", ()),
-            telemetry=SimpleNamespace(native_history_revision="revision-1"),
-        ),
-        native_history_revision_acknowledged=lambda _revision: False,
-        native_history_revision_is_current=lambda revision: revision == "revision-1",
-        async_ack_native_history_revision=MagicMock(),
-    )
-
-    _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(
-        EVENT_NATIVE_HISTORY_UPDATED,
-        {"entry_id": "entry-1", "revision": "revision-1"},
-    )
-    await records_ready.wait()
-
-    generation = 2
-    release_records.set()
-    await hass.async_block_till_done()
-
-    plans.ledger.async_process_native_history.assert_not_awaited()
-    coordinator.async_ack_native_history_revision.assert_not_called()

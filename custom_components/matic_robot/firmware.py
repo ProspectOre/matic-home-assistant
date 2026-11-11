@@ -7,7 +7,7 @@ import hashlib
 import secrets
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
@@ -18,10 +18,13 @@ from . import firmware_reports as reports
 from .client.api import MaticHermesClient
 from .client.endpoints import HERMES_ENDPOINTS, HermesEndpoint
 from .client.exceptions import MaticError
-from .client.models import HermesCollectionEntry, RobotState
+from .client.models import HermesCollectionEntry
 from .client.wire import wire_shape
 from .const import DOMAIN, EVENT_FIRMWARE_ANALYZED, EVENT_FIRMWARE_CHANGED
 from .repairs import repair_placeholders
+
+if TYPE_CHECKING:
+    from .session import RobotSession
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.firmware"
@@ -496,7 +499,7 @@ class FirmwareTracker:
             if action not in ("acknowledge", "delivered", "recheck"):
                 raise ValueError("Unknown firmware notification action")
             if action == "recheck":
-                # The coordinator owns bounded scans, including manual requests.
+                # The firmware watch owns bounded scans, including manual requests.
                 now = dt_util.utcnow()
                 last = dt_util.parse_datetime(report["last_checked_at"])
                 assert last is not None
@@ -842,21 +845,19 @@ async def _async_snapshot_endpoint(
     }
 
 
-async def async_build_firmware_snapshot(
-    client: MaticHermesClient, state: RobotState
-) -> dict[str, Any]:
+async def async_build_firmware_snapshot(session: RobotSession) -> dict[str, Any]:
     """Capture every known endpoint without retaining any payload bytes."""
     captured_at = snapshot_timestamp()
     semaphore = asyncio.Semaphore(4)
     endpoints = await asyncio.gather(
         *(
-            _async_snapshot_endpoint(client, endpoint, semaphore)
+            _async_snapshot_endpoint(session.client, endpoint, semaphore)
             for endpoint in HERMES_ENDPOINTS
         )
     )
-    firmware_version = (
-        state.telemetry.software_version or state.operational.software_version
-    )
+    telemetry = session.telemetry.value
+    operational = session.state.value.operational
+    firmware_version = telemetry.software_version or operational.software_version
     structural_endpoints = sum(
         any(entry.get("wire_shape") is not None for entry in endpoint["entries"])
         for endpoint in endpoints
@@ -871,8 +872,8 @@ async def async_build_firmware_snapshot(
         "analysis_version": ANALYSIS_VERSION,
         "captured_at": captured_at,
         "firmware_version": firmware_version,
-        "observation_context": state.operational.activity.value,
-        "protocol_version": state.telemetry.protocol_version,
+        "observation_context": operational.activity.value,
+        "protocol_version": telemetry.protocol_version,
         "endpoint_count": len(endpoints),
         "populated_endpoints": sum(
             endpoint["status"] == "populated" for endpoint in endpoints

@@ -23,7 +23,7 @@ async def async_get_config_entry_diagnostics(
     runtime = entry.runtime_data
     binding_names = (
         "client",
-        "coordinator",
+        "session",
         "cleaning_plans",
         "firmware_tracker",
         "slam_map",
@@ -46,14 +46,14 @@ async def async_get_config_entry_diagnostics(
     )
     if code["runtime_changed_during_capture"]:
         code["observed_code_matches_installed_source"] = False
-    state = runtime.coordinator.data
-    info = state.info
-    operational = state.operational
-    telemetry = state.telemetry
-    floor_plan = getattr(state, "floor_plan", None)
+    session = runtime.session
+    info = session.info
+    operational = session.state.value.operational
+    telemetry = session.telemetry.value
+    floor_plan = session.floor.value
     endpoint_health = runtime.client.endpoint_health
     command_health = runtime.client.command_health
-    bag_observation = runtime.coordinator.robot_health.bag_observation(operational)
+    bag_observation = session.health.bag_observation(operational)
     return {
         "runtime_code": code,
         "activity_observations": runtime.client.activity_journal.snapshot,
@@ -110,7 +110,7 @@ async def async_get_config_entry_diagnostics(
             "water_flow_factor": telemetry.water_flow_factor,
             "ssh_tunnel_permission": telemetry.ssh_tunnel_permission,
             "uploader_opt_in": telemetry.uploader_opt_in,
-            "active_cleaning_session": telemetry.active_cleaning_session,
+            "active_cleaning_session": session.state.value.session_active,
             "dock_detections": telemetry.dock_detections,
             "sink_summon_locations": telemetry.sink_summon_locations,
             "coverage_time_seconds": telemetry.coverage_time_seconds,
@@ -118,7 +118,7 @@ async def async_get_config_entry_diagnostics(
         "map": {
             "available": floor_plan is not None,
             "room_count": len(floor_plan.rooms) if floor_plan is not None else 0,
-            "pose_available": getattr(state, "pose", None) is not None,
+            "pose_available": session.pose_on(floor_plan) is not None,
         },
         "endpoint_health": {
             "observed": len(endpoint_health),
@@ -141,5 +141,5 @@ async def async_get_config_entry_diagnostics(
             },
         },
         "firmware_tracking": runtime.firmware_tracker.summary(entry.entry_id),
-        "last_update_success": runtime.coordinator.last_update_success,
+        "robot_reachable": session.error.value is None,
     }
