@@ -49,13 +49,12 @@ export async function installPanelFixture(page, {
   initialCatalogEntries = null,
   initialRobotStates = null,
   // Home Assistant's per-user frontend data (frontend/get_user_data), keyed by
-  // key. Null leaves the fixture without a websocket connection, as before.
-  userData = null,
+  // key. Null leaves the fixture without a websocket connection, so without a pose.
+  userData = {},
   // The Wi-Fi survey response. Null leaves the URL out of the catalog, as before.
   wifiSignal = null,
-  // Opt into the new-server workspace capability. Omitted continues to model
-  // older servers, which have no capability and therefore remain poll-only.
-  workspacePush = false,
+  // False models a server without the workspace capability, which pushes no pose.
+  workspacePush = true,
   // The carpet and vent response. Null leaves the URL out of the catalog.
   floorTypes = null,
 } = {}) {
@@ -126,7 +125,6 @@ export async function installPanelFixture(page, {
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic",
       delta_url: sceneDeltaPayload ? "/api/matic_robot/slam_delta/synthetic" : null,
-      pose_url: "/api/matic_robot/slam_pose/synthetic",
       history_url: "/api/matic_robot/slam_history/synthetic",
       areas_url: "/api/matic_robot/areas/synthetic",
       plans_url: "/api/matic_robot/plans/synthetic",
@@ -142,7 +140,6 @@ export async function installPanelFixture(page, {
       map_floor_ordinal: 1,
       history_count: 1,
       history_floor_count: 2,
-      ...(workspacePush ? { live_workspace_transport_enabled: true } : {}),
       map_health: "ready",
       stream_failures: 0,
       bootstrap_state: "complete",
@@ -260,7 +257,10 @@ export async function installPanelFixture(page, {
       }
       if (path.endsWith("slam_entries")) {
         catalogReads += 1;
-        const result = json({ entries: structuredClone(catalogEntries) });
+        // Home Assistant announces the workspace capability on every entry.
+        const result = json({ entries: catalogEntries.map((entry) => ({
+          ...(workspacePush ? { live_workspace_transport_enabled: true } : {}), ...structuredClone(entry),
+        })) });
         if (deferredCatalogs > 0) {
           deferredCatalogs -= 1;
           return new Promise((resolve) => pendingCatalogs.push(() => resolve(result)));
@@ -270,15 +270,8 @@ export async function installPanelFixture(page, {
       if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
       if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
-      if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
-        position: posePosition,
-        source: "latest_pose",
-        revision: 7,
-        pose_revision: 1,
-        map_floor_coherent: true,
-        map_session_key: entryB ? "b".repeat(64) : "a".repeat(64),
-        pose_freshness: "live",
-      });
+      // No live trail is stored before a run records a point.
+      if (path.endsWith("runs/synthetic-entry?trail=live")) return new Response(null, { status: 404 });
       if (/areas\/synthetic(?:-b)?$/.test(path)) {
         areaRequests.push({ method: "GET" });
         if (failedAreaReads > 0) {
@@ -343,9 +336,16 @@ export async function installPanelFixture(page, {
       }
       throw new Error(`unexpected synthetic request: ${path}`);
     };
-    // Only the frontend user data messages; anything else is not served here.
-    const userStore = userData ? structuredClone(userData) : null;
+    // Only the frontend user data and workspace messages; anything else is not served here.
+    const userStore = userData && structuredClone(userData);
     const userDataCalls = [];
+    const poseSubscribers = new Set();
+    const wirePose = (entryId, position) => ({
+      position, heading: null, source: position ? "exact_pose" : "current_area",
+      scene_revision: 7, scene_epoch: null, map_floor_coherent: true,
+      map_session_key: entryId.endsWith("-b") ? "b".repeat(64) : "a".repeat(64),
+      pose_age_seconds: position ? 0 : null,
+    });
     const userDataFailures = [];
     const workspaceCalls = [];
     let deferredUserDataReads = 0;
@@ -358,8 +358,9 @@ export async function installPanelFixture(page, {
             type: message.type,
             mapAvailable: panel?.getWorkspaceSnapshot?.().map.available === true,
           });
+        } else {
+          userDataCalls.push(structuredClone(message));
         }
-        userDataCalls.push(structuredClone(message));
         const failure = userDataFailures.findIndex((type) => type === message.type);
         if (failure >= 0) {
           userDataFailures.splice(failure, 1);
@@ -393,7 +394,7 @@ export async function installPanelFixture(page, {
         }
         throw new Error(`unexpected synthetic message: ${message.type}`);
       },
-      subscribeMessage: async (_callback, message) => {
+      subscribeMessage: async (callback, message) => {
         if (message?.type?.startsWith("matic_robot/workspace_")) {
           const panel = document.querySelector(MATIC_MAP_PANEL_TAG);
           workspaceCalls.push({
@@ -401,7 +402,13 @@ export async function installPanelFixture(page, {
             mapAvailable: panel?.getWorkspaceSnapshot?.().map.available === true,
           });
         }
-        return () => undefined;
+        if (message?.type !== "matic_robot/workspace_subscribe" || !message.poses) return () => undefined;
+        // Home Assistant sends the robot's position once the subscription is open.
+        const subscriber = (position, fields = {}) =>
+          callback({ type: "pose", pose: { ...wirePose(message.entry_id, position), ...fields } });
+        poseSubscribers.add(subscriber);
+        queueMicrotask(() => subscriber(posePosition));
+        return () => poseSubscribers.delete(subscriber);
       },
     } : null;
     const makePanel = () => {
@@ -526,6 +533,8 @@ export async function installPanelFixture(page, {
       areaRequests,
       userData: () => structuredClone(userStore),
       workspaceCalls,
+      // Push the robot's position, and any other wire fields, to every open workspace subscription.
+      pushPose: (position, fields = {}) => { for (const subscriber of poseSubscribers) subscriber(position, fields); },
       userDataCalls,
       // Reject the next frontend user data message of `type` once.
       failNextUserData: (type) => { userDataFailures.push(type); },

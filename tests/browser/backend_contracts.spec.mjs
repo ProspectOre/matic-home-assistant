@@ -21,7 +21,7 @@ test("catalog, pose, history, and area parsers reject their own malformed root s
     const { parseAreasCatalog, parseCatalog, parseHistoryCatalog, parsePose } = await import("/backend-contracts.js");
     const cases = [
       ["catalog", parseCatalog, {}, "invalid-catalog-entries"],
-      ["pose", parsePose, { position: null }, "invalid-pose-freshness"],
+      ["pose", parsePose, { position: null }, "invalid-pose-source"],
       ["history", parseHistoryCatalog, {}, "invalid-history-floors"],
       ["areas", parseAreasCatalog, { rooms: [], scene_url: "/api/matic_robot/scene" }, "invalid-area-list"],
     ];
@@ -37,7 +37,7 @@ test("catalog, pose, history, and area parsers reject their own malformed root s
 
   expect(result).toEqual([
     { name: "catalog", code: "invalid-catalog-entries", expected: "invalid-catalog-entries" },
-    { name: "pose", code: "invalid-pose-freshness", expected: "invalid-pose-freshness" },
+    { name: "pose", code: "invalid-pose-source", expected: "invalid-pose-source" },
     { name: "history", code: "invalid-history-floors", expected: "invalid-history-floors" },
     { name: "areas", code: "invalid-area-list", expected: "invalid-area-list" },
   ]);
@@ -48,8 +48,8 @@ test("pose heading is kept only beside a position and inside one turn", async ({
   const result = await page.evaluate(async () => {
     const { parsePose } = await import("/backend-contracts.js");
     const pose = (position, heading) => parsePose({
-      position, heading, source: "exact_pose", revision: 1, scene_revision: null, scene_epoch: null,
-      pose_revision: 1, map_floor_coherent: true, map_session_key: null, pose_freshness: "live",
+      position, heading, source: "exact_pose", scene_revision: null, scene_epoch: null,
+      map_floor_coherent: true, map_session_key: null, pose_age_seconds: 0,
     }).heading;
     return [
       pose([1, 2], 1.25),
@@ -63,19 +63,18 @@ test("pose heading is kept only beside a position and inside one turn", async ({
   expect(result).toEqual([1.25, -Math.PI, null, null, null, null]);
 });
 
-test("pose timing rejects non-finite and out-of-range values", async ({ page }) => {
+test("pose age is kept only inside the server's freshness window", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async () => {
     const { parsePose } = await import("/backend-contracts.js");
     const base = {
-      position: [1, 2], source: "exact_pose", revision: 1, scene_revision: null,
-      scene_epoch: null, pose_revision: 1, map_floor_coherent: true,
-      map_session_key: null, pose_freshness: "live",
+      position: [1, 2], source: "exact_pose", scene_revision: null, scene_epoch: null,
+      map_floor_coherent: true, map_session_key: null,
     };
-    const values = [0, 4, 60, -1, 61, NaN, Infinity, "4", null];
-    return values.map(value => parsePose({ ...base, pose_processing_seconds: value }).poseProcessingSeconds ?? null);
+    const values = [0, 4, 5, -2, -3, 6, NaN, Infinity, "4", null];
+    return values.map(value => parsePose({ ...base, pose_age_seconds: value }).ageSeconds);
   });
-  expect(result).toEqual([0, 4, 60, null, null, null, null, null, null]);
+  expect(result).toEqual([0, 4, 5, -2, null, null, null, null, null, null]);
 });
 
 test("the area catalog names the selected custom area, or none", async ({ page }) => {
@@ -129,7 +128,6 @@ test("catalog live workspace capability defaults off and validates explicit bool
       entry_id: "entry-a",
       scene_url: "/api/matic_robot/scene",
       delta_url: null,
-      pose_url: "/api/matic_robot/pose",
       history_url: "/api/matic_robot/history",
       areas_url: "/api/matic_robot/areas",
       plans_url: "/api/matic_robot/plans",

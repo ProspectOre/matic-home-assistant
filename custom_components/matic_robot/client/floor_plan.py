@@ -7,7 +7,7 @@ import struct
 import time
 from collections.abc import Sequence
 from hashlib import sha256
-from typing import cast
+from typing import TypeGuard, cast
 
 from google.protobuf.message import DecodeError
 
@@ -349,7 +349,7 @@ def pose_observation_age_seconds(
 
 def pose_observation_is_current(
     pose: RobotPose | None, floor_plan: FloorPlan | None, *, now: float | None = None
-) -> bool:
+) -> TypeGuard[RobotPose]:
     """Admit only a fresh native pose bound to this exact mission."""
     if pose is None or floor_plan is None or pose.mission_id != floor_plan.mission_id:
         return False

@@ -591,10 +591,11 @@ async function mountPanel(page, options) {
     document.body.append(window.__pinPanel);
   });
   const panel = page.locator(fixture.panelTag);
-  await expect.poll(() => page.evaluate(() => {
+  // The robot's position arrives over the websocket.
+  await expect.poll(() => page.evaluate((connected) => {
     const state = window.__pinPanel.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.map.exactPose;
-  })).toBe(true);
+    return state.resources.scene.status === "ready" && state.map.exactPose === connected;
+  }, options.userData !== null)).toBe(true);
   return panel;
 }
 const pins = (page) => page.evaluate(() => window.__pinPanel.getWorkspaceSnapshot().homePins);
@@ -746,7 +747,7 @@ test.describe("home shortcuts in Home Assistant's user data", () => {
   });
 
   test("without a websocket there is no switch and no shortcut, and nothing to report", async ({ page }) => {
-    const panel = await mountPanel(page, {});
+    const panel = await mountPanel(page, { userData: null });
     await expect.poll(() => pins(page)).toEqual({ status: "unavailable", pins: [] });
     await expect(panel.locator(".pins-error")).toHaveCount(0);
     await panel.getByRole("button", { name: "Your plans", exact: true }).click();

@@ -37,7 +37,7 @@ async function setup(page, failureMode) {
 
     const entry = { ...syntheticEntry(), runnerLocked: true, activePlan: true };
     const wireEntry = {
-      entry_id: entry.entryId, scene_url: entry.sceneUrl, delta_url: null, pose_url: entry.poseUrl,
+      entry_id: entry.entryId, scene_url: entry.sceneUrl, delta_url: null,
       history_url: entry.historyUrl, areas_url: entry.areasUrl, plans_url: entry.plansUrl,
       map_revision: entry.mapRevision, map_floor_coherent: entry.mapFloorCoherent,
       map_session_verified: entry.mapSessionVerified, map_session_key: entry.mapSessionKey,
@@ -167,7 +167,7 @@ for (const held of ["snapshot-pending", "subscription-pending"]) {
         snapshotCalls: h.stats.snapshotCalls, subscribeCalls: h.stats.subscribeCalls };
     });
     expect(after.guards).toEqual(before.guards);
-    expect(after.intervals).toBe(2);
+    expect(after.intervals).toBe(1);
     expect(after.rawFetchCalls).toBe(0);
     expect(held === "snapshot-pending" ? after.snapshotCalls : after.subscribeCalls).toBe(1);
     await page.evaluate(() => window.fallbackHarness.dispose());
@@ -194,13 +194,13 @@ for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) 
       + window.fallbackHarness.stats.snapshotCalls)).toBeGreaterThan(2);
     const stateBeforeDispose = await page.evaluate(() => ({ ...window.fallbackHarness.stats,
       intervalCount: window.fallbackHarness.intervals.size }));
-    expect(stateBeforeDispose.intervalCount).toBe(2);
+    expect(stateBeforeDispose.intervalCount).toBe(1);
     await page.evaluate(() => window.fallbackHarness.loseAdministrator());
     const afterAuthorizationLoss = await page.evaluate(() => ({ ...window.fallbackHarness.stats,
       intervalCount: window.fallbackHarness.intervals.size,
       clearedIntervals: window.fallbackHarness.clearedIntervals.length }));
     expect(afterAuthorizationLoss.intervalCount).toBe(0);
-    expect(afterAuthorizationLoss.clearedIntervals).toBe(2);
+    expect(afterAuthorizationLoss.clearedIntervals).toBe(1);
     expect(afterAuthorizationLoss.activeSubscriptions).toBe(0);
     await page.waitForTimeout(650);
     const afterRetryWindow = await page.evaluate(() => ({ ...window.fallbackHarness.stats,
@@ -213,7 +213,7 @@ for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) 
       intervalCount: window.fallbackHarness.intervals.size,
       clearedIntervals: window.fallbackHarness.clearedIntervals.length }));
     expect(disposed.intervalCount).toBe(0);
-    expect(disposed.clearedIntervals).toBe(2);
+    expect(disposed.clearedIntervals).toBe(1);
     expect(disposed.activeSubscriptions).toBe(0);
     expect(disposed.unsubscribeCalls).toBe(failureMode === "snapshot-unsupported" ? 1 : 0);
   });

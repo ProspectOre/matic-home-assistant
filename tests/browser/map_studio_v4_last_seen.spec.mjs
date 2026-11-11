@@ -38,7 +38,7 @@ test("last-seen trail annotations require the latest finished run and a matching
       seen: marker,
       resources: { ...base.resources,
         entry: { entryId: "entry", mapSessionKey: session, mapFloorCoherent: true, mapSessionVerified: true },
-        pose: { status: "ready", value: { position: null, mapSessionKey: session, freshness: "live" }, problem: null },
+        pose: { status: "ready", value: { position: null, mapSessionKey: session }, problem: null },
       },
     };
     const isDisplayable = canShowLastSeenDuringRun(state);
@@ -81,7 +81,7 @@ test("last-seen trail annotations require the latest finished run and a matching
     const liveState = {
       ...state, map: { ...state.map, exactPose: true },
       resources: { ...state.resources, scene: { status: "ready", value: { source: "live" }, problem: null }, pose: { status: "ready",
-        value: { position: [3, 4], mapSessionKey: session, freshness: "live", floorCoherent: true, heading: 0 }, problem: null } },
+        value: { position: [3, 4], mapSessionKey: session, floorCoherent: true, heading: 0 }, problem: null } },
     };
     const liveAccessibleDescription = describeMap(liveState);
     return {
@@ -137,7 +137,7 @@ test("last-seen history read is revoked when map identity becomes unverified", a
       host: { ...base.host, connected: true, robotConnected: true },
       resources: { ...base.resources,
         entry: { entryId: "entry", mapSessionKey: session, mapFloorCoherent: true, mapSessionVerified: true },
-        pose: { status: "ready", value: { position: null, mapSessionKey: session, freshness: "live" }, problem: null },
+        pose: { status: "ready", value: { position: null, mapSessionKey: session }, problem: null },
       },
     };
     const store = new WorkspaceStore(state);
@@ -210,7 +210,7 @@ test("incomplete native history does not fetch a trail or show an older last-see
       host: { ...base.host, connected: true, administrator: true, robotConnected: true },
       resources: { ...base.resources,
         entry: { entryId: "entry", mapSessionKey: session, mapFloorCoherent: true, mapSessionVerified: true },
-        pose: { status: "ready", value: { position: null, mapSessionKey: session, freshness: "live" }, problem: null },
+        pose: { status: "ready", value: { position: null, mapSessionKey: session }, problem: null },
       },
     };
     const reads = [];
@@ -258,8 +258,8 @@ test(`visible initial map loads the historical marker without a visibility trans
       resources: { ...base.resources,
         entry: { entryId: "entry", mapSessionKey: session, mapFloorCoherent: true, mapSessionVerified: true },
         scene: { status: "ready", value: { source: "live" }, problem: null },
-        pose: { status: "ready", value: { position: pose, mapSessionKey: session, freshness: "live",
-          nativeObservationAgeSeconds: null }, problem: null },
+        pose: { status: "ready", value: { position: pose, mapSessionKey: session,
+          ageSeconds: null }, problem: null },
       },
     };
     const history = { entry_id: "entry", map_session_key: session, robot_history: true,

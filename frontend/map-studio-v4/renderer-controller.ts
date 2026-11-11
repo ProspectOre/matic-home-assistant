@@ -3,6 +3,7 @@ import { liveCameraKey, mapCameraIdentity } from "./camera-preferences";
 import type { AreaCircle, PoseModel, SceneModel } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import type { RoomIdentityResult } from "./spatial-identity";
+import type { PoseMotion } from "./pose-motion";
 import { canShowExactPose, forcesTop, savedMapPosition, topView } from "./state";
 import { FrameGovernor } from "./frame-governor";
 import type { CanvasPalette } from "./theme-probe";
@@ -74,7 +75,11 @@ export class RendererController {
   readonly #modules: RendererModules;
   readonly #raster: FallbackRaster;
   readonly #overlay: RendererOverlay;
+  /** The latest state, with the robot where the pose motion draws it. */
   #state: WorkspaceState | null = null;
+  #stored: WorkspaceState | null = null;
+  #motion: PoseMotion | null = null;
+  #unwatchMotion: (() => void) | null = null;
   #scene: SceneModel | null = null;
   #sceneContext: string | null = null;
   #admittedScene: SceneModel | null = null;
@@ -237,7 +242,8 @@ export class RendererController {
     const previousScene = this.#scene;
     const admittedBefore = this.#admittedScene;
     const admittedContextBefore = this.#admittedContext;
-    this.#state = state;
+    this.#stored = state;
+    this.#state = this.#posed(state, performance.now());
     if (!state.pageActive) {
       if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
       this.#frame = null;
@@ -397,6 +403,25 @@ export class RendererController {
 
   #beforeReview: { readonly camera: CameraState; readonly fit: boolean } | null = null;
 
+  /** Draws the robot where `motion` puts it on each frame, between store updates. */
+  setMotion(motion: PoseMotion | null): void {
+    this.#unwatchMotion?.();
+    this.#motion = motion;
+    this.#unwatchMotion = motion?.subscribe(() => this.#requestFrame()) ?? null;
+  }
+
+  /** `pose` where the motion draws it at `now`, when the motion is on that pose's map. */
+  #live(pose: PoseModel | null, now: number): PoseModel | null {
+    const live = pose && this.#motion?.at(now);
+    return live && live.mapSessionKey === pose.mapSessionKey ? live : pose;
+  }
+
+  #posed(state: WorkspaceState, now: number): WorkspaceState {
+    const pose = state.resources.pose;
+    const live = this.#live(pose.value, now);
+    return live === pose.value ? state : { ...state, resources: { ...state.resources, pose: { ...pose, value: live } } };
+  }
+
   /** Follow loads its camera animation controller only after the user enables it. */
   updateFollow(pose: PoseModel | null, mode: "off" | "follow" | "ride", reducedMotion = this.#reducedMotion): void {
     if (mode === "off") {
@@ -406,7 +431,7 @@ export class RendererController {
     }
     this.#pendingFollow = { pose, mode, reducedMotion };
     if (this.#cameraFollow) {
-      this.#cameraFollow.update(pose, mode, reducedMotion);
+      this.#cameraFollow.update(this.#live(pose, performance.now()), mode, reducedMotion);
       return;
     }
     if (this.#modules.cameraFollowStatus !== "idle") return;
@@ -427,7 +452,7 @@ export class RendererController {
         disposed: () => this.#disposed,
       });
       const pending = this.#pendingFollow;
-      if (pending) this.#cameraFollow.update(pending.pose, pending.mode, pending.reducedMotion);
+      if (pending) this.#cameraFollow.update(this.#live(pending.pose, performance.now()), pending.mode, pending.reducedMotion);
     }).catch(() => {
       if (this.#disposed) return;
       this.#pendingFollow = null;
@@ -694,9 +719,25 @@ export class RendererController {
     this.#frame = null;
     if (this.#disposed || this.#state?.pageActive === false) return;
     if (this.#governor.begin(time, this.#state?.quality === "auto" && this.#mode === "webgl2")) this.#sceneDirty = true;
+    const moving = this.#move(time);
     const drawn = this.#sceneDirty || this.#overlayDirty ? this.#render() : null;
-    if (this.#governor.end(time, drawn === true, drawn === null)) this.#requestFrame();
+    if (this.#governor.end(time, drawn === true, drawn === null) || moving) this.#requestFrame();
   };
+
+  /** Moves the robot, and a camera following it, to where the motion is at `time`. */
+  #move(time: number): boolean {
+    const stored = this.#stored;
+    if (!stored || !this.#motion || !canShowExactPose(stored)) return false;
+    const posed = this.#posed(stored, time);
+    if (posed.resources.pose.value === this.#state?.resources.pose.value) return false;
+    this.#state = posed;
+    this.#overlayDirty = true;
+    // The robot's mesh is part of the scene; the 2D canvas draws it otherwise.
+    if (this.#robot()) this.#sceneDirty = true;
+    const follow = this.#pendingFollow;
+    if (follow) this.#cameraFollow?.update(posed.resources.pose.value, follow.mode, follow.reducedMotion);
+    return true;
+  }
 
   /** Draws what is dirty; true when that drew the scene from a camera that moved. */
   #render(): boolean {
@@ -924,6 +965,7 @@ export class RendererController {
     if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
     this.#frame = null;
     this.#pendingFollow = null;
+    this.#unwatchMotion?.();
     this.#modules.dispose();
     this.#cameraFollow?.dispose();
     if (this.#layersFrame !== null) window.cancelAnimationFrame(this.#layersFrame);
@@ -931,7 +973,7 @@ export class RendererController {
     this.#raster.dispose();
     this.#overlay.dispose();
     this.#scene = null;
-    this.#state = null;
+    this.#state = this.#stored = null;
     this.#admittedScene = null;
     this.#admittedContext = null;
   }

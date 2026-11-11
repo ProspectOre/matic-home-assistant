@@ -48,13 +48,13 @@ store, at most one snapshot a second. [Robot health](../custom_components/matic_
 shows an error code or bag flag once two samples 30 seconds apart carry it. A
 failed dial, or 10 seconds with no live state subscription, makes the robot
 and every entity unavailable until the next snapshot; the keepalive ping ends
-a silent connection. The session also raises the identity Repair, starts
-reauthentication when a dial or the state subscription is refused, and closes
-the client on unload and when Home Assistant stops.
+a silent connection. A `latest_pose` watch feeds the map trail and Matic Map.
+The session raises the identity Repair, starts reauthentication when a dial or
+subscription is refused, and closes on unload and when Home Assistant stops.
 
 The [coordinator](../custom_components/matic_robot/coordinator.py) is what
-entities read. It joins the session's state with what the robot does not push
-to it yet: the floor plan, pose, telemetry and run progress, read on a
+entities read. It joins the session's state and pose with what the robot does
+not push to it yet: the floor plan, telemetry and run progress, read on a
 heartbeat every 5 minutes while the robot is docked and every 30 seconds while
 it is out. It never reads robot state, and a heartbeat fails while the robot
 is unreachable. Cached geometry alone cannot establish the current floor.

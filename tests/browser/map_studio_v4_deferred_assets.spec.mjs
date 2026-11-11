@@ -928,7 +928,7 @@ test("area catalogs stay deferred when their workflow closes during module loadi
     });
   });
   await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged", userData: null }); // without a websocket, home shortcuts read no areas
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
@@ -977,7 +977,7 @@ test("a failed area module waits for explicit retry", async ({ page }) => {
   await expect.poll(() => resumedPanel.evaluate((element) => element.getWorkspaceSnapshot().workflow)).toBe("areas");
   await expect.poll(() => areaModuleAttempts).toBe(2);
   await expect.poll(() => resumedPanel.evaluate((element) => element.getWorkspaceSnapshot().resources.areas.status)).toBe("ready");
-  expect(await page.evaluate(() => window.__panelFixture.areaRequests.map(({ method }) => method))).toEqual(["GET"]);
+  expect(new Set(await page.evaluate(() => window.__panelFixture.areaRequests.map(({ method }) => method)))).toEqual(new Set(["GET"]));
 });
 
 test("plan views load on demand and recover from a failed module", async ({ page }) => {

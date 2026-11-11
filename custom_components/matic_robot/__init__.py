@@ -64,7 +64,7 @@ from .session import RobotSession
 from .slam_history import SlamHistoryStore
 from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapIdentity, SlamMapStore
-from .slam_view_data import observe_coordinator_trail
+from .slam_view_data import observe_trail
 from .wifi_survey import WifiSurveyStore
 
 __all__ = ["async_migrate_entry"]
@@ -328,11 +328,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             RobotPhotoStore(client),
         )
         entry.runtime_data = runtime_data
-        entry.async_on_unload(
-            coordinator.async_add_listener(
-                partial(observe_coordinator_trail, runtime_data)
-            )
-        )
+        # Every pose extends the trail; a heartbeat also closes a finished run.
+        observe = partial(observe_trail, runtime_data)
+        entry.async_on_unload(coordinator.async_add_listener(observe))
+        entry.async_on_unload(session.poses.subscribe(observe))
         workspace_socket = hass.data.get(DOMAIN, {}).get("workspace_socket")
         track_workspace_entry = getattr(workspace_socket, "track_entry", None)
         if callable(track_workspace_entry):
@@ -392,7 +391,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         entry.async_create_background_task(
             hass,
-            wifi_survey.async_collect(client, coordinator),
+            wifi_survey.async_collect(session, coordinator),
             f"{DOMAIN} Wi-Fi survey collector",
         )
 

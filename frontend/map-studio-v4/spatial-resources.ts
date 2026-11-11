@@ -1,7 +1,7 @@
 import { SpatialScene } from "./spatial-scene";
 import { SpatialPose } from "./spatial-pose";
 import { notice, type HassProjection, type ResourceStamp, type WorkspaceState } from "./contracts";
-import { entryFloorKey, entryMissionKey, entryBoundaryKey, entryCoherenceIdentity, entryManagedLock, entryIdentity, type MapEntry } from "./backend-contracts";
+import { entryFloorKey, entryMissionKey, entryBoundaryKey, entryCoherenceIdentity, entryManagedLock, entryIdentity, type MapEntry, type PoseModel } from "./backend-contracts";
 import type { MaticBackend } from "./backend";
 import {
   type CoherenceMachine,
@@ -28,7 +28,8 @@ interface SpatialResourceCallbacks {
   readonly sentWriteResources: () => readonly string[];
   readonly loadPlans: () => void;
   readonly resumeAreaCatalog: () => void;
-  readonly extendLiveTrail: (pose: NonNullable<WorkspaceState["resources"]["pose"]["value"]>) => void;
+  /** Each admitted position, or null once the robot can no longer be placed. */
+  readonly movePose: (pose: PoseModel | null) => void;
   readonly loadWorkspaceResources: (entry: MapEntry, stamp: ResourceStamp, resources: ReadonlySet<string>, refreshCatalog: boolean) => void;
 }
 
@@ -77,13 +78,12 @@ export class SpatialResources {
     this.#coherence = coherence;
     this.#requests = requests;
     this.#callbacks = callbacks;
-    this.#pose = new SpatialPose(store, backend, coherence, requests, {
+    this.#pose = new SpatialPose(store, coherence, {
       disposed: callbacks.disposed,
       pageActive: callbacks.pageActive,
-      projection: callbacks.projection,
       failed: (entry) => this.#recordSpatialReadFailure("pose", entry),
       recovered: (entry) => this.#resolveSpatialReadFailure("pose", entry),
-      extendLiveTrail: callbacks.extendLiveTrail,
+      moved: callbacks.movePose,
     });
     this.#scene = new SpatialScene(store, backend, coherence, requests, {
       disposed: callbacks.disposed,
@@ -93,7 +93,7 @@ export class SpatialResources {
       replacementFinished: (entry) => this.#finishSpatialReplacementRead(entry),
       recovered: (entry) => this.#resolveSpatialReadFailure("delta", entry),
       failed: (entry) => this.#recordSpatialReadFailure("delta", entry),
-      loadPose: (entry, stamp) => this.#pose.load(entry, stamp),
+      admitPose: () => this.#pose.admit(),
       loadFallback: (entry, stamp) => this.loadHistory(entry, stamp),
       loadPlans: () => {
         if (needsPlanCatalog(this.#store.value)) callbacks.loadPlans();
@@ -103,8 +103,7 @@ export class SpatialResources {
   }
 
   clearPoseExpiry(): void { this.#pose.clearExpiry(); }
-  cancelQueuedPose(): void { this.#pose.cancelQueued(); }
-  refreshPose(): Promise<void> { return this.#pose.refreshPose(); }
+  receivePose(entryId: string, pose: PoseModel): void { this.#pose.receive(entryId, pose); }
   stopDeltaStream(): void { this.#scene.stop(); }
   ownsLiveDelta(entry: MapEntry): boolean { return this.#scene.owns(entry); }
   async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
@@ -202,11 +201,9 @@ export class SpatialResources {
     if (!this.#callbacks.pageActive()) return;
     if (this.#store.value.wifiSignal && this.#startWifiSignal()) void this.#loadWifiSignal();
     if (this.#store.value.floorTypes && this.#startFloorTypes()) void this.#loadFloorTypes();
-    this.#pose.startPolling();
   }
 
   stopPolling(): void {
-    this.#pose.stopPolling();
     this.clearRecovery();
   }
 
@@ -544,7 +541,7 @@ export class SpatialResources {
     }
     if (coherent) {
       void this.#scene.load(entry, stamp);
-      void this.#pose.load(entry, stamp);
+      this.#pose.admit();
     }
   }
 

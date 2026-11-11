@@ -20,6 +20,11 @@ reused; a layer is rebuilt and uploaded when its data changes, not when the
 camera moves. A pointer that only moves the cursor mark redraws the 2D canvas
 and leaves WebGL alone. A still map draws nothing.
 
+The robot moves on every frame between the poses Home Assistant pushes: each
+frame places it between the last two, over the time between them. Its mesh is
+part of the scene, so such a frame redraws the scene as a camera frame does,
+uploading nothing. A robot that has stopped draws nothing.
+
 ## CI gate
 
 `tests/browser/map_studio_v4_frame_cost.spec.mjs` runs in the Browser UI
@@ -48,7 +53,10 @@ ceiling, half a 60 Hz frame, is a proposal until the owner agrees a limit.
 
 The same spec checks that a still map draws nothing, that a cursor move makes
 no WebGL call, and that the frames of a 400,000-point upload redraw the 2D
-canvas at most twice and read no layout.
+canvas at most twice and read no layout. A frame of a moving robot makes the
+draw calls of a camera frame and no more WebGL calls, one 2D canvas redraw, no
+upload or program call, reads no layout and creates no typed array; a pose
+where the robot already is draws nothing.
 
 ## Auto quality
 

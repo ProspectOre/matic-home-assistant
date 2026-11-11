@@ -54,7 +54,7 @@ export class CameraFollowController {
     const admitted = Boolean(state && state.dataMode === "live" && state.map.exactPose
       && state.map.floorCoherent && state.map.sessionVerified
       && state.resources.scene.value?.source === "live"
-      && pose && pose.position && pose.freshness === "live" && pose.floorCoherent
+      && pose && pose.position && pose.floorCoherent
       && pose.mapSessionKey !== null && pose.mapSessionKey === entry?.mapSessionKey
       && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading))));
     if (!admitted || !pose?.position) {

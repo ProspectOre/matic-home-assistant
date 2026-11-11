@@ -5,7 +5,6 @@ const secondEntry = () => ({
   entry_id: "synthetic-entry-b",
   scene_url: "/api/matic_robot/slam_scene/synthetic-b",
   delta_url: null,
-  pose_url: "/api/matic_robot/slam_pose/synthetic-b",
   history_url: "/api/matic_robot/slam_history/synthetic-b",
   areas_url: "/api/matic_robot/areas/synthetic-b",
   plans_url: "/api/matic_robot/plans/synthetic-b",
@@ -39,7 +38,6 @@ async function mountTwoRobotPanel(page) {
     entry_id: "synthetic-entry",
     map_session_key: "a".repeat(64),
     scene_url: entryB.scene_url.replace("synthetic-b", "synthetic"),
-    pose_url: entryB.pose_url.replace("synthetic-b", "synthetic"),
     history_url: entryB.history_url.replace("synthetic-b", "synthetic"),
     areas_url: entryB.areas_url.replace("synthetic-b", "synthetic"),
     plans_url: entryB.plans_url.replace("synthetic-b", "synthetic"),
@@ -207,10 +205,13 @@ test("@safety a removed requested robot never falls back to another loaded robot
   const { fixture, selector, entryA } = await mountTwoRobotPanel(page);
   const panel = page.locator(fixture.panelTag);
   await selector.selectOption("synthetic-entry-b");
+  await expect.poll(() => panel.evaluate((element) =>
+    element.getWorkspaceSnapshot().resources.entry?.entryId)).toBe("synthetic-entry-b");
+  // The workspace subscription, which brings the pose, opens once the map is drawn.
+  await page.clock.runFor(2_100);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
-    return state.map.available && state.map.exactPose
-      && state.resources.entry?.entryId === "synthetic-entry-b";
+    return state.map.available && state.map.exactPose;
   })).toBe(true);
 
   await panel.evaluate((element) => {
@@ -219,7 +220,7 @@ test("@safety a removed requested robot never falls back to another loaded robot
     element.hass = {
       ...element.hass,
       fetchWithAuth: async (path, init) => {
-        if (/\/slam_(?:scene|pose)\//.test(path)) {
+        if (/\/slam_scene\//.test(path)) {
           window.__removedEntryProbe.spatialReads.push(path.split("?", 1)[0]);
         }
         return originalFetch(path, init);
@@ -280,6 +281,9 @@ test("@safety a removed requested robot never falls back to another loaded robot
       }));
     }
   });
+  // A pose still pushed for the removed robot places nothing.
+  await page.evaluate(() => window.__panelFixture.pushPose([1, 1]));
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(false);
   expect(await page.evaluate(() => window.__removedEntryProbe.spatialReads)).toEqual([]);
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
 
@@ -288,6 +292,7 @@ test("@safety a removed requested robot never falls back to another loaded robot
     const state = element.getWorkspaceSnapshot();
     return [state.selection.entryId, state.resources.entry?.entryId ?? null];
   })).toEqual(["synthetic-entry", "synthetic-entry"]);
+  await page.clock.runFor(2_100);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
     return state.map.available && state.map.exactPose;

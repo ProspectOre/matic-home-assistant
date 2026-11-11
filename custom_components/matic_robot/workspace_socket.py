@@ -102,6 +102,9 @@ class WorkspaceSocket:
         self._history: dict[str, deque[dict[str, Any]]] = {}
         self._resource_revisions: dict[str, dict[str, int]] = {}
         self._subscriptions: dict[str, dict[ActiveConnection, int]] = {}
+        # Subscriptions that asked for pose events. An older panel did not, and
+        # treats an event it does not know as a broken stream.
+        self._pose_subscribers: dict[str, set[ActiveConnection]] = {}
         self._snapshots: dict[ActiveConnection, dict[str, _SnapshotCursor]] = {}
         self._unsubscribers: list[Any] = []
         self._tracked_entries: dict[str, _EntryListeners] = {}
@@ -142,6 +145,7 @@ class WorkspaceSocket:
         for entry_id in tuple(self._tracked_entries):
             self._untrack_entry(entry_id)
         self._subscriptions.clear()
+        self._pose_subscribers.clear()
         self._snapshots.clear()
         self._history.clear()
         self._resource_revisions.clear()
@@ -184,6 +188,7 @@ class WorkspaceSocket:
                 self._snapshots.pop(connection, None)
         for connection, msg_id in tuple(self._subscriptions.pop(entry_id, {}).items()):
             connection.subscriptions.pop(msg_id, None)
+        self._pose_subscribers.pop(entry_id, None)
 
     def _remove_entry(self, entry_id: str) -> None:
         """Notify listeners once, then discard state for an unloaded entry."""
@@ -290,6 +295,12 @@ class WorkspaceSocket:
                 )
             self._resource_revisions.setdefault(entry_id, {}).setdefault("history", 0)
 
+        session = getattr(runtime, "session", None)
+        if session is not None:
+            tracked.source_unsubscribers.append(
+                session.poses.subscribe(lambda: self._async_pose_changed(entry_id))
+            )
+
     def _close_entry_sources(self, entry_id: str) -> None:
         """Stop runtime publishers immediately when entry unloading begins."""
         tracked = self._tracked_entries.get(entry_id)
@@ -388,6 +399,39 @@ class WorkspaceSocket:
             ["scene"],
             bump_resources=[],
             bump_coherence=previous_boundary != current_boundary,
+        )
+        # The pose's projection depends on the floor plan and map verification,
+        # so a docked robot that sends nothing new still needs it republished.
+        if previous_boundary != current_boundary:
+            self._async_pose_changed(entry_id)
+
+    def _async_pose_changed(self, entry_id: str) -> None:
+        """Send the robot's new position to each subscription that asked for it."""
+        for connection in tuple(self._pose_subscribers.get(entry_id, ())):
+            self.send_pose(connection, entry_id)
+
+    def send_pose(self, connection: ActiveConnection, entry_id: str) -> None:
+        """Send one subscription the robot's position, if it asked for poses."""
+        tracked = self._tracked_entries.get(entry_id)
+        msg_id = self._subscriptions.get(entry_id, {}).get(connection)
+        if (
+            self._closed
+            or tracked is None
+            or tracked.sources_closed
+            or msg_id is None
+            or connection not in self._pose_subscribers.get(entry_id, ())
+        ):
+            return
+        from .frontend import DATA_SLAM_SCENE_VIEW
+        from .slam_view_data import pose_projection
+
+        pose = pose_projection(
+            entry_id,
+            tracked.entry.runtime_data,
+            self.hass.data.get(DATA_SLAM_SCENE_VIEW),
+        )
+        self._send_subscription_event(
+            entry_id, connection, msg_id, {"type": "pose", "pose": pose}
         )
 
     def _async_history_changed(self, entry_id: str) -> None:
@@ -757,10 +801,14 @@ class WorkspaceSocket:
         connection: ActiveConnection,
         entry_id: str,
         msg_id: int,
+        *,
+        poses: bool = False,
     ) -> list[dict[str, Any]]:
         """Subscribe and replay every invalidation since this connection's snapshot."""
         self._entry(entry_id)
         self._remove_subscription(connection, entry_id, unregister=True)
+        if poses:
+            self._pose_subscribers.setdefault(entry_id, set()).add(connection)
         cursor_record = self._snapshots.get(connection, {}).get(entry_id)
         cursor = (
             cursor_record.sequence
@@ -833,6 +881,7 @@ class WorkspaceSocket:
             subscriptions.pop(connection, None)
             if not subscriptions:
                 self._subscriptions.pop(entry_id, None)
+        self._pose_subscribers.get(entry_id, set()).discard(connection)
         if unregister and msg_id is not None:
             connection.subscriptions.pop(msg_id, None)
 
@@ -867,6 +916,7 @@ def websocket_snapshot(
         probatio.Required("type"): COMMAND_SUBSCRIBE,
         probatio.Required("version"): probatio.In([PROTOCOL_VERSION]),
         probatio.Required("entry_id"): str,
+        probatio.Optional("poses", default=False): bool,
     }
 )
 @callback
@@ -876,7 +926,9 @@ def websocket_subscribe(
     """Install an administrator subscription and return its handshake cursor."""
     _require_admin(connection)
     manager: WorkspaceSocket = hass.data[DOMAIN]["workspace_socket"]
-    replay = manager.subscribe(connection, msg["entry_id"], msg["id"])
+    replay = manager.subscribe(
+        connection, msg["entry_id"], msg["id"], poses=msg["poses"]
+    )
     sequence = manager._sequence.get(msg["entry_id"], 0)
     connection.send_result(
         msg["id"],
@@ -889,6 +941,7 @@ def websocket_subscribe(
     )
     for event in replay:
         manager._send_subscription_event(msg["entry_id"], connection, msg["id"], event)
+    manager.send_pose(connection, msg["entry_id"])
 
 
 async def async_register(hass: HomeAssistant) -> WorkspaceSocket:

@@ -31,7 +31,7 @@ async function loadCameraFollowHarness(page) {
       let camera = { ...manual };
       let fitActive = true;
       const pose = {
-        position: [3, 2], heading: 0.8, freshness: "live", floorCoherent: true,
+        position: [3, 2], heading: 0.8, floorCoherent: true,
         mapSessionKey: "session-a",
       };
       const controller = new CameraFollowController({
@@ -91,7 +91,7 @@ test("ride camera uses admitted heading, stays close, and restores on explicit e
     };
     renderer.setState(state);
     const overview = renderer.camera;
-    const pose = { position: [3, 2], heading: 0, freshness: "live", floorCoherent: true,
+    const pose = { position: [3, 2], heading: 0, floorCoherent: true,
       mapSessionKey: "session-a" };
     renderer.updateFollow(pose, "ride", true);
     await new Promise((resolve, reject) => {
@@ -147,7 +147,7 @@ test("stale or historical pose cannot start ride camera", async ({ page }) => {
     const state = { ...base, dataMode: "history", map: { ...base.map, exactPose: true } };
     renderer.setState(state);
     const before = renderer.camera;
-    renderer.updateFollow({ position: [3, 2], heading: 0, freshness: "live", floorCoherent: true,
+    renderer.updateFollow({ position: [3, 2], heading: 0, floorCoherent: true,
       mapSessionKey: "wrong-session" }, "ride", true);
     const after = renderer.camera;
     renderer.dispose();
@@ -253,7 +253,7 @@ test("explicit Follow exit restores fit behavior so a later resize refits the ma
     await waitFor("initial fit", () => renderer.diagnostics().fitActive
       && renderer.diagnostics().cameraDistance === renderer.diagnostics().fitDistance);
     const initialFit = renderer.diagnostics().fitDistance;
-    const pose = { position: [3, 2], heading: 0, freshness: "live", floorCoherent: true,
+    const pose = { position: [3, 2], heading: 0, floorCoherent: true,
       mapSessionKey: "session-a" };
     renderer.updateFollow(pose, "follow", true);
     await waitFor("follow start", () => !renderer.diagnostics().fitActive);

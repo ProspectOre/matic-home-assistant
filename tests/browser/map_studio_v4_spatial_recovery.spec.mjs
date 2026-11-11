@@ -9,7 +9,6 @@ function entry(entryId, suffix, sessionKey) {
     entry_id: entryId,
     scene_url: `/api/matic_robot/slam_scene/${suffix}`,
     delta_url: entryId.endsWith("-b") ? `/api/matic_robot/slam_delta/${suffix}` : null,
-    pose_url: `/api/matic_robot/slam_pose/${suffix}`,
     history_url: `/api/matic_robot/slam_history/${suffix}`,
     areas_url: `/api/matic_robot/areas/${suffix}`,
     plans_url: `/api/matic_robot/plans/${suffix}`,
@@ -69,17 +68,12 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
     const originalFetch = panel.hass.fetchWithAuth;
     const pendingSceneReleases = [];
     const probe = window.__spatialRecoveryProbe = {
-      poseReads: 0,
-      poseMismatches: 0,
       deltaReads: 0,
       deltaFailures: 0,
       sceneReads: 0,
       sceneAborts: 0,
       sceneHolds: 0,
-      badPose: false,
       failDelta: false,
-      deferGoodPose: false,
-      releaseGoodPose: null,
       pendingSceneCount: () => pendingSceneReleases.length,
       releaseNextScene: () => {
         const release = pendingSceneReleases.shift();
@@ -102,30 +96,9 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
           }
           return response;
         }
-        if (requestPath.endsWith("slam_pose/synthetic-b")) {
-          probe.poseReads += 1;
-          const response = await originalFetch(path, init);
-          const data = await response.json();
-          if (probe.badPose) {
-            probe.badPose = false;
-            probe.poseMismatches += 1;
-            data.map_session_key = "c".repeat(64);
-            return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-          }
-          const healthyPose = new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-          if (probe.deferGoodPose && probe.poseMismatches > 0) {
-            return new Promise((resolve) => {
-              probe.releaseGoodPose = () => {
-                probe.deferGoodPose = false;
-                resolve(healthyPose);
-              };
-            });
-          }
-          return healthyPose;
-        }
         if (requestPath.endsWith("slam_delta/synthetic-b")) {
           probe.deltaReads += 1;
-          const fail = probe.failDelta && probe.poseMismatches > 0;
+          const fail = probe.failDelta;
           if (fail) probe.deltaFailures += 1;
           return fail
             ? new Response("unavailable", { status: 503 })
@@ -140,6 +113,10 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   await expect(panel.locator("select.robot-switcher")).toHaveValue("synthetic-entry");
   await panel.locator("select.robot-switcher").selectOption("synthetic-entry-b");
   await expect(panel.locator("select.robot-switcher")).toHaveValue("synthetic-entry-b");
+  await expect.poll(() => panel.evaluate((element) =>
+    element.getWorkspaceSnapshot().resources.entry?.entryId)).toBe("synthetic-entry-b");
+  // The workspace subscription, which brings the pose, opens once the map is drawn.
+  await page.clock.runFor(2_100);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
     return state.map.available && state.map.exactPose && state.resources.entry?.entryId === "synthetic-entry-b";
@@ -150,17 +127,15 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
     const state = element.getWorkspaceSnapshot();
     return { generation: state.generation, sceneReads: window.__spatialRecoveryProbe.sceneReads };
   });
+  const mismatchedPose = () => page.evaluate(() => window.__panelFixture.pushPose([1, 1], { map_session_key: "c".repeat(64) }));
+  // The robot keeps reporting, so the pose outlives fast-forwards past its freshness window.
+  const robotReports = () => page.evaluate(() => window.__panelFixture.pushPose([1, 1]));
   await page.evaluate(() => {
     window.__spatialRecoveryProbe.failDelta = false;
-    window.__spatialRecoveryProbe.deferGoodPose = true;
     window.__spatialRecoveryProbe.sceneHolds = 1;
-    window.__spatialRecoveryProbe.badPose = true;
   });
-  await page.clock.fastForward(1_000);
-  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.poseMismatches)).toBeGreaterThan(0);
+  await mismatchedPose();
   await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.pendingSceneCount())).toBe(1);
-  await expect.poll(() => page.evaluate(() => typeof window.__spatialRecoveryProbe.releaseGoodPose === "function"))
-    .toBe(true);
   const oneRecoveryCatalog = await page.evaluate(() => window.__panelFixture.catalogReads);
   expect(oneRecoveryCatalog).toBeGreaterThan(beforeFault);
   const heldPoseAndScene = await panel.evaluate((element) => {
@@ -187,14 +162,10 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
 
   // The retry deadline may pass while the replacement scene is still being
   // built. It must keep that one owner alive instead of aborting and restarting.
-  // Let the matching pose finish before the normal pose request timeout, but
-  // keep the replacement scene pending. The marker must remain hidden until
-  // the scene boundary is admitted.
-  await page.evaluate(() => {
-    const probe = window.__spatialRecoveryProbe;
-    probe.sceneHolds = 1;
-    probe.releaseGoodPose();
-  });
+  // A matching pose arrives while the replacement scene is pending. The marker
+  // must remain hidden until the scene boundary is admitted.
+  await page.evaluate(() => { window.__spatialRecoveryProbe.sceneHolds = 1; });
+  await robotReports();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
   expect(await panel.evaluate(async (element) => {
     const { canShowExactPose, canStartMotion } = await import("/state-selectors-probe.js");
@@ -203,6 +174,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   })).toEqual({ readOnly: true, canShowExactPose: false, canStartMotion: false });
 
   await page.clock.fastForward(6_000);
+  await robotReports();
   const heldPastRetryDeadline = await panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
     return {
@@ -286,6 +258,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   });
   expect(contentRecovery.canStartMotion).toBe(true);
   await page.clock.fastForward(6_000);
+  await robotReports();
   expect(await panel.evaluate(async (element) => {
     const { canStartMotion } = await import("/state-selectors-probe.js");
     const state = element.getWorkspaceSnapshot();
@@ -321,11 +294,8 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
 
   const beforeHistoryRecovery = await page.evaluate(() => window.__panelFixture.catalogReads);
   await page.evaluate(() => window.__panelFixture.deferNextCatalog());
-  await page.evaluate(() => {
-    window.__spatialRecoveryProbe.badPose = true;
-    window.__spatialRecoveryProbe.failDelta = false;
-  });
-  await page.clock.fastForward(1_000);
+  await page.evaluate(() => { window.__spatialRecoveryProbe.failDelta = false; });
+  await mismatchedPose();
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingCatalogCount())).toBe(1);
   await panel.evaluate((element) => {
     element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-intent", {

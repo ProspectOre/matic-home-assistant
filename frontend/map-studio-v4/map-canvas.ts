@@ -10,6 +10,7 @@ import type { PropertyValues, TemplateResult } from "lit";
 import type { ColorScheme, DateFormat, Localize, NoticePlaceholders, WorkspaceIntent, WorkspaceState } from "./contracts";
 import type { OutlineEditor } from "./outline-editor";
 import { MAP_CANVAS_TAG } from "./element-tags";
+import { POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
 import { RendererController, topView, type CameraState, type RendererDiagnostics, type RendererModuleName, type RendererModuleStatus, type RendererSurfaceDetail } from "./renderer-controller";
 import { layersNeeded } from "./renderer-overlays";
@@ -384,6 +385,11 @@ export class MaticMapCanvasV4 extends LitElement {
       onCameraGesture: () => this.#unfollow(),
     });
     this.#renderer.setState(this.state);
+    this.dispatchEvent(new CustomEvent(POSE_MOTION_EVENT, {
+      bubbles: true,
+      composed: true,
+      detail: (motion) => this.#renderer?.setMotion(motion),
+    }) satisfies PoseMotionRequest);
     this.#schedulePalette();
   }
 

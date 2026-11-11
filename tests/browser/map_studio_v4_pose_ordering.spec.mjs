@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadPoseOrderingHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
+      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { workspacePoseConnection } from "./tests/browser/workspace_pose_connection.mjs";',
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -23,14 +23,14 @@ async function loadPoseOrderingHarness(page) {
 for (const scenario of [
   { name: "stale incoherent", sceneRevisionOffset: 0, sceneEpoch: "synthetic-scene-epoch", floorCoherent: false, mapSessionKey: null, invalidates: false },
   { name: "stale coherent", sceneRevisionOffset: 0, sceneEpoch: "synthetic-scene-epoch", floorCoherent: true, mapSessionKey: "b".repeat(64), invalidates: false },
-  { name: "current incoherent with lower raw revision", rawRevision: 0, sceneRevisionOffset: 1, sceneEpoch: "synthetic-scene-epoch", floorCoherent: false, mapSessionKey: null, invalidates: true },
+  { name: "current incoherent", sceneRevisionOffset: 1, sceneEpoch: "synthetic-scene-epoch", floorCoherent: false, mapSessionKey: null, invalidates: true },
   { name: "older revision from another epoch", sceneRevisionOffset: 0, sceneEpoch: "previous-epoch", floorCoherent: false, mapSessionKey: null, invalidates: true },
   { name: "incoherent response without scene provenance", sceneRevisionOffset: null, sceneEpoch: null, floorCoherent: false, mapSessionKey: null, invalidates: true },
 ]) {
-test(`${scenario.name} pose response is ordered against the admitted map revision`, async ({ page }) => {
+test(`${scenario.name} pushed pose is ordered against the admitted map revision`, async ({ page }) => {
   await loadPoseOrderingHarness(page);
   const result = await page.evaluate(async (scenario) => {
-    const { EffectController, WorkspaceStore, createGalleryState } = window.__poseOrderingModules;
+    const { EffectController, WorkspaceStore, createGalleryState, workspacePoseConnection } = window.__poseOrderingModules;
     const initial = createGalleryState("ready");
     const startRevision = initial.resources.entry.mapRevision;
     const entry = {
@@ -40,21 +40,12 @@ test(`${scenario.name} pose response is ordered against the admitted map revisio
       deltaUrl: "/pose-ordering-delta",
     };
     const store = new WorkspaceStore(initial);
-    let releasePose;
+    const connection = workspacePoseConnection();
     let admitDelta;
     let deltaRead = 0;
     const effects = new EffectController(store, {
       catalog: async () => [entry],
       scene: async () => ({ revision: startRevision, floorCoherent: true, scene: initial.resources.scene.value }),
-      pose: async () => new Promise(resolve => { releasePose = () => resolve({
-        ...initial.resources.pose.value,
-        revision: scenario.rawRevision ?? startRevision,
-        sceneRevision: scenario.sceneRevisionOffset === null
-          ? null : startRevision + scenario.sceneRevisionOffset,
-        sceneEpoch: scenario.sceneEpoch,
-        floorCoherent: scenario.floorCoherent,
-        mapSessionKey: scenario.mapSessionKey,
-      }); }),
       sceneDelta: async () => {
         deltaRead += 1;
         if (deltaRead === 1) return new Promise(resolve => {
@@ -67,18 +58,24 @@ test(`${scenario.name} pose response is ordered against the admitted map revisio
       plans: async () => initial.resources.plans.value,
       areas: async () => initial.resources.areas.value,
       dispose() {},
-    });
+    }, connection, true);
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92,
       robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "pose-ordering",
       entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
     try {
       await effects.refreshCatalog(true);
-      for (let i = 0; i < 100 && (!releasePose || !admitDelta); i++) await new Promise(resolve => setTimeout(resolve, 0));
-      if (!releasePose || !admitDelta) throw new Error("pose or delta request did not start");
+      // The pose subscription opens once the map is drawn.
+      for (let i = 0; i < 200 && (!connection.subscribed() || !admitDelta); i++) await new Promise(resolve => setTimeout(resolve, 10));
+      if (!connection.subscribed() || !admitDelta) throw new Error("pose subscription or delta request did not start");
       admitDelta();
       for (let i = 0; i < 100 && store.value.resources.entry.mapRevision !== startRevision + 1; i++) await new Promise(resolve => setTimeout(resolve, 0));
       const admittedGeneration = store.value.generation;
-      releasePose();
+      connection.push({
+        position: initial.resources.pose.value.position,
+        scene_revision: scenario.sceneRevisionOffset === null ? null : startRevision + scenario.sceneRevisionOffset,
+        scene_epoch: scenario.sceneEpoch, map_floor_coherent: scenario.floorCoherent,
+        map_session_key: scenario.mapSessionKey,
+      });
       for (let i = 0; i < 100 && store.value.generation === admittedGeneration; i++) await new Promise(resolve => setTimeout(resolve, 0));
       return {
         admittedRevision: store.value.resources.entry.mapRevision,

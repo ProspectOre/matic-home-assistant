@@ -70,7 +70,7 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 const entryFor = (overrides = {}) => ({
-  entryId: "robot-a", sceneUrl: "/scene", deltaUrl: null, poseUrl: "/pose", historyUrl: "/history",
+  entryId: "robot-a", sceneUrl: "/scene", deltaUrl: null, historyUrl: "/history",
   areasUrl: "/areas", plansUrl: "/plans", wifiHeatmapUrl: null, floorTypesUrl: null,
   mapRevision: 10, mapSceneEpoch: "epoch-a", mapFloorCoherent: true,
   mapSessionVerified: true, mapSessionKey: "session-a", selectedFloorOrdinal: 1,
@@ -113,10 +113,16 @@ const catalogOwner = (f, read, overrides = {}) => {
 const sceneOwner = (f, read, overrides = {}) => new SpatialScene(
   f.store, { scene: read }, f.coherence, f.requests, {
     ...f.callbacks, admitted() {}, replacementFinished() {}, recovered() {}, failed() {},
-    loadPose: async () => {}, loadPlans() {}, resumeAreaCatalog() {}, ...overrides,
+    admitPose() {}, loadPlans() {}, resumeAreaCatalog() {}, ...overrides,
   },
 );
 const sceneResponse = (label) => ({ floorCoherent: true, revision: 10, scene: { revision: 10, label } });
+const livePose = (overrides = {}) => ({
+  floorCoherent: true, mapSessionKey: "session-a", position: [1, 2], heading: null, ageSeconds: 0, ...overrides,
+});
+const poseOwner = (f, overrides = {}) => new SpatialPose(f.store, f.coherence, {
+  ...f.callbacks, failed() {}, recovered() {}, moved() {}, ...overrides,
+});
 
 test("forced catalog reads coalesce, discard the superseded response and retain the strongest invalidation", async () => {
   const f = fixture();
@@ -225,29 +231,57 @@ test("a history read from a retired generation cannot replace the current floor 
   assert.equal(f.store.value.generation, next.generation);
 });
 
-test("queued pose refresh follows the current generation and expiry belongs to its admitted pose", async (t) => {
+test("a pushed pose is admitted only to its robot's current map and its position expires with its observation", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.method(performance, "now", () => 0);
   const f = fixture();
-  const reads = [];
-  const owner = new SpatialPose(f.store, { pose: () => {
-    const read = deferred(); reads.push(read); return read.promise;
-  } }, f.coherence, f.requests, { ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {} });
-  const first = owner.load(f.entry, f.stamp);
-  const next = f.coherence.begin(f.entry.entryId, entryFloorKey(f.entry), entryMissionKey(f.entry), 10);
-  f.store.replace({ ...f.store.value, generation: next.generation });
-  await owner.refreshPose();
-  const pose = { floorCoherent: true, mapSessionKey: "session-a", position: [1, 2], freshness: "live", nativeObservationAgeSeconds: 0 };
-  reads[0].resolve({ ...pose, position: [99, 99] });
-  await first;
+  const moved = [];
+  const owner = poseOwner(f, { moved: (pose) => moved.push(pose) });
+  owner.receive("robot-b", livePose());
   assert.equal(f.store.value.resources.pose.value, null);
-  assert.equal(reads.length, 2);
-  reads[1].resolve(pose);
-  await flush();
-  assert.equal(f.store.value.resources.pose.value, pose);
+  const first = livePose({ ageSeconds: 0.75 });
+  owner.receive("robot-a", first);
+  assert.equal(f.store.value.resources.pose.value, first);
   assert.equal(f.store.value.map.exactPose, true);
-  t.mock.timers.tick(5_000);
+  // A step on the same map moves the robot without a store update.
+  const store = f.store.value;
+  const second = livePose({ ageSeconds: 0.75, position: [1.5, 2] });
+  owner.receive("robot-a", second);
+  assert.equal(f.store.value, store);
+  assert.deepEqual(moved, [first, second]);
+  t.mock.timers.tick(4_249);
+  assert.equal(f.store.value.map.exactPose, true);
+  t.mock.timers.tick(1);
+  // The expired pose keeps its map session, which the last-seen marker needs.
+  assert.deepEqual([f.store.value.resources.pose.value.mapSessionKey, f.store.value.resources.pose.value.position, f.store.value.map.exactPose], ["session-a", null, false]);
+  assert.equal(moved.at(-1), null);
+});
+
+test("a pose from another map session revokes the robot unless it predates the admitted scene", () => {
+  const f = fixture();
+  const failures = [];
+  const owner = poseOwner(f, { failed: (entry) => failures.push(entry.entryId) });
+  owner.receive("robot-a", livePose());
+  owner.receive("robot-a", livePose({ mapSessionKey: "session-b", sceneEpoch: "epoch-a", sceneRevision: 9 }));
+  assert.equal(f.store.value.map.exactPose, true);
+  assert.deepEqual(failures, []);
+  owner.receive("robot-a", livePose({ mapSessionKey: "session-b", sceneEpoch: "epoch-a", sceneRevision: 10 }));
   assert.equal(f.store.value.resources.pose.value, null);
   assert.equal(f.store.value.map.exactPose, false);
+  // The recovery's catalog re-admits the rejected pose without starting another.
+  owner.admit();
+  assert.deepEqual(failures, ["robot-a"]);
+});
+
+test("a pose that arrives after a disconnect revoked the map is not admitted", () => {
+  const f = fixture();
+  const moved = [];
+  const owner = poseOwner(f, { moved: (pose) => moved.push(pose) });
+  f.coherence.invalidate();
+  const store = f.store.value;
+  owner.receive("robot-a", livePose());
+  assert.equal(f.store.value, store);
+  assert.deepEqual(moved, []);
 });
 
 test("room previews retain the captured generation when an older request settles late", async () => {
@@ -431,59 +465,51 @@ test("disposing while run-history code loads cannot start a request or resurrect
   assert.equal(f.requests.has("runs"), false);
 });
 
-const spatialOwner = (f, pose) => new SpatialResources(f.store, {
+const spatialOwner = (f) => new SpatialResources(f.store, {
   history: async () => ({ entryId: f.entry.entryId, floors: [] }),
-  scene: async () => sceneResponse("live"), pose,
+  scene: async () => sceneResponse("live"),
 }, f.coherence, f.requests, {
   ...f.callbacks, refreshCatalog: async () => {}, cancelCatalogRecovery() {},
   abortResources: (except) => f.requests.abort(except), invalidateMotion() {},
-  loadPlans() {}, resumeAreaCatalog() {}, extendLiveTrail() {}, loadWorkspaceResources() {},
-});
-const livePose = (overrides = {}) => ({
-  floorCoherent: true, mapSessionKey: "session-a", position: [1, 2],
-  freshness: "live", nativeObservationAgeSeconds: 0, ...overrides,
+  loadPlans() {}, resumeAreaCatalog() {}, movePose() {}, loadWorkspaceResources() {},
 });
 
-test("slow server work does not consume fresh-pose lifetime twice", async (t) => {
+test("a pose's freshness counts its age when sent and the time since it arrived", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let now = 0;
   t.mock.method(performance, "now", () => now);
   const f = fixture();
-  const reply = deferred();
-  const owner = new SpatialPose(f.store, { pose: () => reply.promise }, f.coherence, f.requests, {
-    ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {},
-  });
-  const load = owner.load(f.entry, f.stamp);
-  now = 6_000;
-  reply.resolve(livePose({ nativeObservationAgeSeconds: 0.75, poseProcessingSeconds: 5.5 }));
-  await load;
+  const owner = poseOwner(f);
+  f.store.replace({ ...f.store.value, selection: { ...f.store.value.selection, floorId: "saved-1" } });
+  owner.receive("robot-a", livePose({ ageSeconds: 0.75 }));
+  assert.equal(f.store.value.map.exactPose, false);
+  // The map is admitted 3 s later, leaving 1.25 s of the observation's life.
+  now = 3_000;
+  f.store.replace({ ...f.store.value, selection: { ...f.store.value.selection, floorId: "current" } });
+  owner.admit();
   assert.equal(f.store.value.map.exactPose, true);
-  t.mock.timers.tick(3_749);
+  t.mock.timers.tick(1_249);
   assert.equal(f.store.value.map.exactPose, true);
   t.mock.timers.tick(1);
   assert.equal(f.store.value.map.exactPose, false);
-
-  const oldServer = deferred();
-  const conservative = new SpatialPose(f.store, { pose: () => oldServer.promise }, f.coherence, f.requests, {
-    ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {},
-  });
-  const pending = conservative.load(f.entry, f.stamp);
-  now += 6_000;
-  oldServer.resolve(livePose({ nativeObservationAgeSeconds: 0.75 }));
-  await pending;
-  assert.equal(f.store.value.map.exactPose, false);
+  now = 5_001; // Viewing a saved floor clears the pose; back on Live its session returns without a position.
+  f.store.replace({ ...f.store.value, resources: { ...f.store.value.resources, pose: { status: "idle", problem: null, value: null } } });
+  owner.admit();
+  assert.deepEqual([f.store.value.resources.pose.value?.mapSessionKey, f.store.value.resources.pose.value?.position, f.store.value.map.exactPose], ["session-a", null, false]);
 });
 
-test("a retained pose expires on its original deadline across a forced same-frame refresh", async (t) => {
+test("a catalog refresh re-admits the newest pose without extending its deadline", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
   const f = fixture();
-  const replacement = deferred();
-  let reads = 0;
-  const owner = spatialOwner(f, () => ++reads === 1 ? Promise.resolve(livePose()) : replacement.promise);
+  const owner = spatialOwner(f);
+  owner.receivePose("robot-a", livePose());
   owner.admitCatalog(f.entry, null, true, false, false);
   await flush();
   assert.equal(f.store.value.map.exactPose, true);
   const generation = f.store.value.generation;
+  now = 1_000;
   t.mock.timers.tick(1_000);
   owner.admitCatalog(f.entry, f.entry, true, false, false);
   await flush();
@@ -491,68 +517,26 @@ test("a retained pose expires on its original deadline across a forced same-fram
   assert.equal(f.store.value.map.exactPose, true);
   t.mock.timers.tick(4_000);
   assert.equal(f.store.value.map.exactPose, false);
-  assert.equal(f.store.value.resources.pose.value, null);
-  replacement.resolve(livePose({ position: [3, 4] }));
-  await flush();
+  assert.equal(f.store.value.resources.pose.value.position, null);
+  const current = livePose({ position: [3, 4] });
+  owner.receivePose("robot-a", current);
+  assert.equal(f.store.value.resources.pose.value, current);
   assert.equal(f.store.value.map.exactPose, true);
   owner.clearPoseExpiry();
 });
 
-test("a replacement observation keeps its own deadline when the retained pose would have expired", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const f = fixture();
-  const replacement = deferred();
-  let reads = 0;
-  const owner = spatialOwner(f, () => ++reads === 1 ? Promise.resolve(livePose()) : replacement.promise);
-  owner.admitCatalog(f.entry, null, true, false, false);
-  await flush();
-  t.mock.timers.tick(1_000);
-  owner.admitCatalog(f.entry, f.entry, true, false, false);
-  const current = livePose({ position: [5, 6] });
-  replacement.resolve(current);
-  await flush();
-  t.mock.timers.tick(4_000);
-  assert.equal(f.store.value.map.exactPose, true);
-  assert.equal(f.store.value.resources.pose.value, current);
-  t.mock.timers.tick(1_000);
-  assert.equal(f.store.value.map.exactPose, false);
-});
-
-test("live trail restore backfills the latest verified pose and rejects owner changes", async () => {
-  const f = fixture();
-  f.store.replace({ ...f.store.value, activity: "cleaning", owner: { entryKey: "robot-a", userKey: "user-a" },
-    trail: { id: "live", mapSessionKey: "session-a", segments: [[[0, 0]]], },
-    resources: { ...f.store.value.resources, pose: { status: "ready", problem: null, value: livePose({ position: [1, 1] }) } } });
-  const owner = new RunHistoryResources(f.store, {}, f.requests, { disposed: () => false, pageActive: () => true });
-  const restore = owner.restoreLiveTrail();
-  f.store.replace({ ...f.store.value, resources: { ...f.store.value.resources,
-    pose: { status: "ready", problem: null, value: livePose({ position: [2, 2] }) } } });
-  await restore;
-  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
-
-  const staleRestore = owner.restoreLiveTrail();
-  f.store.replace({ ...f.store.value, generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" } });
-  await staleRestore;
-  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
-  owner.dispose();
-});
-
-test("a forced catalog refresh cannot promote fallback, unknown-age or stale poses to exact", async () => {
-  for (const retained of [
-    livePose({ freshness: "coordinator_fallback" }),
-    livePose({ nativeObservationAgeSeconds: null }),
-    livePose({ nativeObservationAgeSeconds: 6 }),
-  ]) {
+test("a catalog refresh cannot promote an unknown-age or stale pose to exact", async () => {
+  for (const retained of [livePose({ ageSeconds: null }), livePose({ ageSeconds: 6 })]) {
     const f = fixture();
-    let reads = 0;
-    const owner = spatialOwner(f, () => ++reads === 1 ? Promise.resolve(retained) : new Promise(() => {}));
+    const owner = spatialOwner(f);
+    owner.receivePose("robot-a", retained);
     owner.admitCatalog(f.entry, null, true, false, false);
     await flush();
     assert.equal(f.store.value.map.exactPose, false);
     owner.admitCatalog(f.entry, f.entry, true, false, false);
     await flush();
-    assert.equal(f.store.value.resources.pose.value, retained);
-    assert.equal(f.store.value.map.exactPose, false);
+    assert.equal(f.store.value.map.exactPose, false); // An observation older than the window keeps only its session:
+    assert.deepEqual(f.store.value.resources.pose.value, retained.ageSeconds === null ? retained : { ...retained, position: null, heading: null });
   }
 });
 

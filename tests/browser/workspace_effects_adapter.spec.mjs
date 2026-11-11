@@ -21,7 +21,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
     const { EffectController, WorkspaceStore, canEditCoordinates, canStartMotion, BackendError, syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } = await import("/adapter.js");
     const callbacks = [];
     const wireCatalogEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
-      delta_url: entry.deltaUrl, pose_url: entry.poseUrl, history_url: entry.historyUrl,
+      delta_url: entry.deltaUrl, history_url: entry.historyUrl,
       areas_url: entry.areasUrl, plans_url: entry.plansUrl, map_revision: entry.mapRevision,
       live_workspace_transport_enabled: entry.liveWorkspaceTransportEnabled,
       map_scene_epoch: entry.mapSceneEpoch,
@@ -73,7 +73,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
       scene: async () => { counts.scene += 1; return ({ scene: { revision: 7, source: "live", buffer: new ArrayBuffer(0), pointOffset: 0,
         floorCount: 0, surfaceCount: 0, total: 0, etag: null,
         metadata: { metersPerCell: 0.05, origin: [0, 0], span: [1, 1], sampleStep: 1, rooms: [] } },
-        revision: 7, floorCoherent: true }); }, pose: async () => null, dispose() {},
+        revision: 7, floorCoherent: true }); }, dispose() {},
       setAccessDeniedHandler(handler) { this.accessDenied = handler; } };
     const projection = entryKey => ({ host: { connected: true, administrator: true, robotConnected: true, robotCount: 1 },
       activity: "idle", batteryPercent: 50, language: "en", userKey: "u", vacuumEntityId: "vacuum.x", entryKey,
@@ -296,10 +296,9 @@ test("authorization loss revokes retained floor proof before returning", async (
   await setup(page);
   await page.evaluate(() => {
     const h = window.adapterHarness;
-    h.backend.pose = async () => ({ position: [4.475, 3.475], source: "latest_pose",
-      revision: 7, poseRevision: 4, floorCoherent: true,
-      mapSessionKey: h.store.value.resources.entry.mapSessionKey, freshness: "live" });
-    return h.controller.refreshPose();
+    h.callbacks[0]({ type: "pose", pose: { position: [4.475, 3.475], heading: null, source: "exact_pose",
+      scene_revision: 7, scene_epoch: null, map_floor_coherent: true,
+      map_session_key: h.store.value.resources.entry.mapSessionKey, pose_age_seconds: 0 } });
   });
   await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.map.exactPose)).toBe(true);
   const before = await page.evaluate(() => {

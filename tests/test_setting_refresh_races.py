@@ -22,7 +22,6 @@ def _client() -> AsyncMock:
         50, (), (), False, False, False, False, False, False
     )
     client.async_get_floor_plan.return_value = None
-    client.async_get_pose.return_value = None
     client.async_get_telemetry.return_value = RobotTelemetry(deep_mop_enabled=False)
     client.add_connection_listener = MagicMock()
     return client

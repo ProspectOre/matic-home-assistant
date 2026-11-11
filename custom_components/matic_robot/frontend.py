@@ -31,7 +31,6 @@ from .slam_history_view import (
     MaticSlamHistorySceneView,
     MaticSlamHistoryView,
 )
-from .slam_pose_view import MaticSlamPoseView
 from .slam_run_history_view import MaticRunHistoryView
 from .slam_scene import MaticSlamDeltaView, MaticSlamSceneView
 from .wifi_survey import MaticWifiHeatmapView
@@ -85,7 +84,6 @@ MATIC_MAP_STUDIO_V4_PATH = f"{MATIC_MAP_STUDIO_V4_ROOT_PATH}/index.js"
 # serving a newly cache-busted module after an in-place integration reload.
 MATIC_MAP_PANEL_ELEMENT = f"matic-map-panel-v0-4-0-{MATIC_MAP_STUDIO_V4_VERSION}"
 DATA_SLAM_SCENE_VIEW = f"{__package__}_slam_scene_view"
-DATA_SLAM_POSE_VIEW = f"{__package__}_slam_pose_view"
 DATA_FLOOR_LAYERS_VIEW = f"{__package__}_floor_layers_view"
 DATA_RUN_THUMBNAIL_VIEW = f"{__package__}_run_thumbnail_view"
 
@@ -94,8 +92,6 @@ def clear_slam_scene_cache(hass: HomeAssistant, entry_id: str) -> None:
     """Purge private in-memory map data when an entry leaves service."""
     if scene_view := hass.data.get(DATA_SLAM_SCENE_VIEW):
         scene_view.clear_entry(entry_id)
-    if pose_view := hass.data.get(DATA_SLAM_POSE_VIEW):
-        pose_view.clear_entry(entry_id)
     if floor_layers_view := hass.data.get(DATA_FLOOR_LAYERS_VIEW):
         floor_layers_view.clear_entry(entry_id)
     if run_thumbnail_view := hass.data.get(DATA_RUN_THUMBNAIL_VIEW):
@@ -144,16 +140,13 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
         ]
     )
     scene_view = MaticSlamSceneView()
-    pose_view = MaticSlamPoseView(scene_view)
     hass.data[DATA_SLAM_SCENE_VIEW] = scene_view
-    hass.data[DATA_SLAM_POSE_VIEW] = pose_view
     floor_layers_view = MaticFloorLayersView()
     hass.data[DATA_FLOOR_LAYERS_VIEW] = floor_layers_view
     run_thumbnail_view = MaticRunThumbnailView()
     hass.data[DATA_RUN_THUMBNAIL_VIEW] = run_thumbnail_view
     hass.http.register_view(scene_view)
     hass.http.register_view(MaticSlamDeltaView(scene_view))
-    hass.http.register_view(pose_view)
     hass.http.register_view(MaticSlamHistoryView)
     hass.http.register_view(MaticSlamHistorySceneView)
     hass.http.register_view(MaticSlamHistoryManageView)
