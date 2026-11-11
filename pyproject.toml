@@ -57,10 +57,10 @@ testpaths = ["tests"]
 include = ["custom_components*"]
 
 [tool.coverage.run]
+branch = true
 omit = ["custom_components/matic_robot/client/proto/*"]
 
 [tool.coverage.report]
-fail_under = 100
 show_missing = true
 
 [tool.ruff]

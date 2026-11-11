@@ -1,7 +1,8 @@
-"""Layer, size and test-selection rules of the check command."""
+"""Layer, size, test-selection and coverage rules of the check command."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -192,25 +193,45 @@ def test_tests_follow_the_changed_file(
     assert check.tests_for([Path(changed)], tmp_path) == selected
 
 
-def test_deleted_and_renamed_files_count_as_changed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    answers = {
-        "for-each-ref": ["refs/remotes/origin/release/0.6"],
-        "merge-base": ["base"],
-        "rev-list": ["1"],
-        "diff": ["deleted.py", "edited.py"],
-        "ls-files": ["new.py"],
-    }
+def _answer(monkeypatch: pytest.MonkeyPatch, answers: dict[str, list[str]]) -> list:
+    """Answer each git command from a table and return the calls made."""
     calls = []
 
     def git(command: str, *arguments: str) -> list[str]:
         calls.append((command, *arguments))
-        return answers[command]
+        return answers.get(command, [])
 
     monkeypatch.setattr(check, "_git", git)
+    return calls
 
-    assert check.changed_files() == [
+
+def test_base_is_where_head_left_the_nearest_main_or_release_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distances = {"old..HEAD": ["40"], "near..HEAD": ["2"]}
+
+    def git(command: str, *arguments: str) -> list[str]:
+        if command == "for-each-ref":
+            return ["refs/remotes/origin/main", "refs/remotes/origin/release/0.6"]
+        if command == "merge-base":
+            return ["old" if arguments[1].endswith("/main") else "near"]
+        return distances[arguments[1]]
+
+    monkeypatch.setattr(check, "_git", git)
+    assert check.nearest_base() == "near"
+
+    monkeypatch.setattr(check, "_git", lambda *_: ["refs/remotes/origin/feature"])
+    assert check.nearest_base() is None
+
+
+def test_deleted_and_renamed_files_count_as_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _answer(
+        monkeypatch, {"diff": ["deleted.py", "edited.py"], "ls-files": ["new.py"]}
+    )
+
+    assert check.changed_files("base") == [
         Path("deleted.py"),
         Path("edited.py"),
         Path("new.py"),
@@ -219,7 +240,71 @@ def test_deleted_and_renamed_files_count_as_changed(
     assert ("diff", "--name-only", "--no-renames", "base") in calls
 
 
+def test_changed_lines_are_the_ones_a_diff_adds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    diff = f"""\
+--- a/{PACKAGE}/plans.py
++++ b/{PACKAGE}/plans.py
+@@ -3 +3,2 @@ def run() -> None:
++    first()
++    second()
+@@ -10,2 +10,0 @@
+-    removed()
+-    removed()
+@@ -20 +18 @@
+-    before()
++    after()
+--- a/{PACKAGE}/deleted.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-removed()
+-removed()
+--- a/{PACKAGE}/old_name.py
++++ b/{PACKAGE}/new_name.py
+@@ -7 +7 @@
+-    before()
++    after()
+"""
+    _write(tmp_path, {f"{PACKAGE}/untracked.py": "one()\ntwo()\n"})
+    monkeypatch.setattr(check, "ROOT", tmp_path)
+    calls = _answer(
+        monkeypatch,
+        {"diff": diff.splitlines(), "ls-files": [f"{PACKAGE}/untracked.py"]},
+    )
+
+    assert check.changed_lines("base") == {
+        f"{PACKAGE}/plans.py": {3, 4, 18},
+        f"{PACKAGE}/new_name.py": {7},
+        f"{PACKAGE}/untracked.py": {1, 2},
+    }
+    # Only the integration is measured, and a moved file is not new code.
+    assert calls[0][-2:] == ("--", PACKAGE)
+    assert "--find-renames" in calls[0]
+
+
+def test_untested_lines_and_branches_of_a_change_are_reported() -> None:
+    report = {
+        "files": {
+            "a.py": {
+                "missing_lines": [3, 8],
+                "missing_branches": [[4, 6], [4, -2], [9, 10]],
+            },
+            "b.py": {"missing_lines": [1], "missing_branches": [[1, 2]]},
+        }
+    }
+
+    assert check.untested(report, {"a.py": {3, 4}}) == [
+        "a.py:3: no test runs this line",
+        "a.py:4: no test goes from here to line 6",
+        "a.py:4: no test goes from here to the end of the function",
+    ]
+
+
 BUILD = ["npm", "run", "build:map-studio-v4"]
+
+
+GAP = {"missing_lines": [3], "missing_branches": []}
 
 
 @pytest.mark.parametrize(
@@ -234,9 +319,15 @@ BUILD = ["npm", "run", "build:map-studio-v4"]
         (["--all"], [], None, ["a.py: too long"], 1, check.FULL_SUITE),
         (["--all"], [], "build:map-studio-v4", [], 1, None),
         (["--all"], [], "no Node.js", [], 1, None),
+        # An untested line fails only where the change touches it.
+        (["--all"], [], "untested: old.py", [], 0, check.FULL_SUITE),
+        (["--all"], [], "untested: new.py", [], 1, check.FULL_SUITE),
+        (["--all"], None, "untested: new.py", [], 0, check.FULL_SUITE),
+        ([], [], "untested: new.py", [], 0, None),
     ],
 )
 def test_main_fails_when_any_check_fails(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     arguments: list[str],
     changed: list[Path] | None,
@@ -251,8 +342,22 @@ def test_main_fails_when_any_check_fails(
         commands.append(command)
         return SimpleNamespace(returncode=int(failing in command))
 
+    untested = str(failing).removeprefix("untested: ")
+    totals = {
+        "percent_statements_covered_display": "100",
+        "percent_branches_covered_display": "97",
+    }
+    (tmp_path / check.REPORT).write_text(
+        json.dumps({"files": {untested: GAP}, "totals": totals})
+    )
+    monkeypatch.setattr(check, "ROOT", tmp_path)
     monkeypatch.setattr(check.subprocess, "run", run)
-    monkeypatch.setattr(check, "changed_files", lambda: changed)
+    # No base is known exactly when nothing can say what changed.
+    monkeypatch.setattr(
+        check, "nearest_base", lambda: None if changed is None else "base"
+    )
+    monkeypatch.setattr(check, "changed_files", lambda base: changed)
+    monkeypatch.setattr(check, "changed_lines", lambda base: {"new.py": {3}})
     monkeypatch.setattr(check, "tests_for", lambda paths: [str(p) for p in paths])
     monkeypatch.setattr(check, "layer_violations", lambda: violations)
     monkeypatch.setattr(check, "_code_sizes", dict)
@@ -266,6 +371,18 @@ def test_main_fails_when_any_check_fails(
     assert pytest_runs == ([] if tests is None else [tests])
     # Tests read the built Matic Map, so every test run follows a build.
     assert (BUILD in commands) == (tests is not None or failing in BUILD)
+
+
+def test_base_that_is_not_a_commit_stops_the_check(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _answer(monkeypatch, {})
+
+    with pytest.raises(SystemExit):
+        check.main(["--all", "--base", "HEAD^1"])
+
+    assert calls == [("rev-parse", "--verify", "HEAD^1^{commit}")]
+    assert "--base HEAD^1 is not a commit in this checkout" in capsys.readouterr().err
 
 
 def test_matic_map_is_built_with_npm_and_installed_once(

@@ -8,8 +8,9 @@ and review.
 
 - `uv run scripts/check.py` runs the formatter, linter, type checker, layer and
   size rules, privacy scan, and the tests whose imports lead to a changed
-  file. Run it before every push. CI runs it with `--all`: every test, with
-  line coverage that must stay at 100%.
+  file. Run it before every push. CI runs it with `--all`: every test, and on
+  a pull request a test must run every line and take every branch the change
+  adds to `custom_components/matic_robot`. The rest has no minimum.
 - `uv run ruff format .` fixes formatting.
 - After changing dependencies in `pyproject.toml`, run `uv lock` and commit
   `uv.lock`. CI installs with `--locked` and fails on a stale lockfile.
