@@ -105,6 +105,7 @@ class Heartbeat:
             function=self.async_refresh,
         )
         self._unsubscribe: list[CALLBACK_TYPE] = []
+        self._reads = asyncio.Lock()
         self._stopped = False
         self._cached_floor_plan: FloorPlan | None = None
         # The displayed-mission stream is the first authority that can revoke
@@ -148,10 +149,15 @@ class Heartbeat:
         self._debouncer.async_shutdown()
 
     async def async_refresh(self) -> None:
-        """Read now and start the interval again."""
+        """Read now and start the interval again.
+
+        Reads run one at a time, so a read that started before a settings
+        write cannot publish over the read that follows the write.
+        """
         self._async_cancel_timer()
         try:
-            await self._async_read()
+            async with self._reads:
+                await self._async_read()
         finally:
             self._async_schedule()
 
@@ -210,7 +216,7 @@ class Heartbeat:
 
     @callback
     def _async_schedule(self) -> None:
-        # Reads can overlap; the one that finishes last sets the next tick.
+        # A queued read restarts the interval again when it finishes.
         self._async_cancel_timer()
         if self._stopped or self._entry.pref_disable_polling:
             return

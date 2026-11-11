@@ -115,6 +115,36 @@ async def test_a_state_pushed_during_a_heartbeat_outlives_it(hass) -> None:
     client.async_get_state.assert_awaited_once()
 
 
+async def test_a_read_after_a_write_publishes_after_an_older_read(hass) -> None:
+    client = _client()
+    session = await start_session(hass, client)
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    reads: list[int] = []
+
+    async def telemetry() -> RobotTelemetry:
+        reads.append(len(reads))
+        if read_started.is_set():
+            return RobotTelemetry(protocol_version=27)
+        read_started.set()
+        await release_read.wait()
+        return RobotTelemetry(protocol_version=26)
+
+    client.async_get_telemetry.side_effect = telemetry
+    session.heartbeat._slow_refresh_due = 0.0
+    heartbeat = asyncio.create_task(session.heartbeat.async_refresh())
+    await read_started.wait()
+    after_write = asyncio.create_task(session.heartbeat.async_request_full_refresh())
+    await asyncio.sleep(0)
+    assert reads == [0]
+    release_read.set()
+    await asyncio.gather(heartbeat, after_write)
+
+    assert session.telemetry.value.protocol_version == 27
+    assert session.heartbeat._cached_telemetry.protocol_version == 27
+
+
 async def test_nothing_is_read_while_the_robot_cannot_be_reached(hass) -> None:
     client = _client()
     session = await start_session(hass, client)
