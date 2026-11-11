@@ -39,7 +39,10 @@ jobs:
       matrix:
         python-version: ["3.14"]
     steps:
+      # With its parents, so check.py can tell what the head changes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - run: python3 .github/scripts/delivery-contract.py .
       # The required check is this job, so an edit run reports the last code
       # run of it rather than skipping, which would read as passing.
@@ -64,9 +67,18 @@ jobs:
           uv sync --locked
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
         if: ${{ !fromJSON(env.RECHECK) }}
-      # Builds Matic Map, which the tests read and the zip ships.
-      - run: python scripts/check.py --all
+      # Builds Matic Map, which the tests read and the zip ships. A pull
+      # request is checked out as its merge into the base branch, so the first
+      # parent is that branch and the change must come with tests. A release
+      # branch is exempt: its changes were held to that on their way in.
+      - run: python scripts/check.py --all ${BASE:+--base "$BASE"}
         if: ${{ !fromJSON(env.RECHECK) }}
+        env:
+          BASE: >-
+            ${{ github.event_name == 'pull_request'
+            && !(startsWith(github.head_ref, 'release/')
+            && github.event.pull_request.head.repo.full_name == github.repository)
+            && 'HEAD^1' || '' }}
       # The zip a release ships, kept so an unreleased head can be installed.
       - run: python scripts/release.py zip
         if: ${{ !fromJSON(env.RECHECK) }}

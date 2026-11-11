@@ -157,7 +157,8 @@ def test_ci_checks_and_keeps_the_zip_a_release_ships() -> None:
     build = commands.index("python scripts/release.py zip")
     upload = steps[build + 2]
 
-    assert commands.index("python scripts/check.py --all") < build
+    check = 'python scripts/check.py --all ${BASE:+--base "$BASE"}'
+    assert commands.index(check) < build
     assert commands[build + 1] == "python scripts/check_fresh_install.py"
     assert upload["uses"].startswith("actions/upload-artifact@")
     # Unarchived, the download is the zip itself rather than a zip of it.

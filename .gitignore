@@ -1,4 +1,5 @@
 .coverage
+coverage.json
 .build/
 .DS_Store
 .mypy_cache/
