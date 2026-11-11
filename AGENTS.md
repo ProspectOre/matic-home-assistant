@@ -33,3 +33,4 @@ release/tag; preserve stable releases and tags.
 
 - Follow the [delivery contract](https://github.com/ProspectOre/wiki/blob/main/workflows/delivery-contract.md); `.github/delivery-contract.json` allow-lists every workflow and `.github/scripts/delivery-contract.py` runs first in Test.
 - Test (`ci` job), Browser UI and Validate run on free hosted `ubuntu-latest` for every PR and push to main; `windows-assistive-qualification.yml` is manual only.
+- `release.yml` is manual and publishes the branch it is run on. It needs `scripts/release.py`, which only `release/0.6` has. `nightly.yml` tests `release/0.6` each day until that branch merges.
