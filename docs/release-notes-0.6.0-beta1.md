@@ -191,4 +191,4 @@ Entity IDs assume a robot named "Matic".
 Interior phase labels are inferred from one capture; follow/run-map pictures need hardware checks.
 The photo trial used equivalent manual commands; Photo patrol has not run installed.
 Beta 1 is blocked pending live-stream/map-update reconnect, loss/order, authorization, polling, host and device qualification.
-Push starts automatically when supported (no user toggle); older backends use polling, and Matic keeps checking status on a schedule. This may add network traffic and Home Assistant load; the hoped-for 70% reduction in requests has not been shown.
+Robot state now arrives only by push (no user toggle and no polling fallback); the map, position and settings are still read on a schedule, every 5 minutes while docked and every 30 seconds while the robot is out. A robot that never serves the state subscription would show as unavailable; no robot has been checked for this. The hoped-for 70% reduction in requests has not been shown.
