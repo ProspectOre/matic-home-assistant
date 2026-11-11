@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run format, lint, types, structure rules, the privacy scan and tests.
 
-A test runs if it imports a file changed since the nearest main or release
-branch, or a module that imports one. With --all, every test runs with
-coverage, as in CI.
+A test runs if its imports lead, through any number of modules, to a file
+changed since the nearest main or release branch. With --all, every test runs
+with coverage, as in CI.
 """
 
 from __future__ import annotations
@@ -155,7 +155,8 @@ def _baseline() -> dict[str, int]:
 def changed_files() -> list[Path] | None:
     """Return files changed since the nearest main or release branch.
 
-    None means no such branch is known, so every test should run.
+    Deleted files are included: their tests still have to run. None means no
+    such branch is known, so every test should run.
     """
     refs = _git("for-each-ref", "--format=%(refname)", "refs/remotes")
     bases = [
@@ -171,29 +172,38 @@ def changed_files() -> list[Path] | None:
     )
     names = _git("diff", "--name-only", nearest)
     names += _git("ls-files", "--others", "--exclude-standard")
-    return [Path(name) for name in names if (ROOT / name).is_file()]
+    return [Path(name) for name in names]
 
 
 def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
-    """Return changed test files and the test files that reach a changed one."""
+    """Return the test files whose imports or conftests reach a changed file."""
     touched = set(changed)
-    modules = {module_name(path) for path in touched if path.suffix == ".py"}
-    # Many modules are only tested through the module or helper importing them.
-    modules |= {
-        module_name(path.relative_to(root))
+    imports = {
+        path.relative_to(root): imported(root, path.relative_to(root))
         for directory in ("custom_components", "tests")
         for path in root.glob(f"{directory}/**/*.py")
-        if modules & imported(root, path.relative_to(root))
     }
+    reached = {module_name(path) for path in touched if path.suffix == ".py"}
+    # Most modules are only tested through the modules and helpers above them.
+    grew = True
+    while grew:
+        importers = {
+            module_name(path) for path, targets in imports.items() if reached & targets
+        }
+        grew = not importers <= reached
+        reached |= importers
     # A conftest applies to every test beneath it.
-    shared = {path.parent for path in touched if path.name == "conftest.py"}
-    tests = sorted(path.relative_to(root) for path in root.glob("tests/**/test_*.py"))
+    shared = {
+        path.parent
+        for path in touched | imports.keys()
+        if path.name == "conftest.py" and module_name(path) in reached
+    }
     return [
         str(path)
-        for path in tests
-        if path in touched
-        or not shared.isdisjoint(path.parents)
-        or modules & imported(root, path)
+        for path in sorted(imports)
+        if path.parts[0] == "tests"
+        and path.name.startswith("test_")
+        and (module_name(path) in reached or not shared.isdisjoint(path.parents))
     ]
 
 
@@ -215,7 +225,7 @@ def main(arguments: list[str] | None = None) -> int:
     if selected:
         commands["tests"] = [python, "-m", "pytest", *selected]
     else:
-        print("No test imports a changed file; CI runs every test.")
+        print("No test reaches a changed file; CI runs every test.")
 
     structure = [*layer_violations(), *size_violations(_code_sizes(), _baseline())]
     for violation in structure:

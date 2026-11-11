@@ -142,10 +142,13 @@ def test_file_sizes_are_held_to_the_ceiling_or_their_record(
     [
         (f"{PACKAGE}/plans.py", ["tests/test_direct.py", "tests/test_package.py"]),
         (f"{PACKAGE}/ledger.py", ["tests/test_direct.py", "tests/test_package.py"]),
+        (f"{PACKAGE}/wire.py", ["tests/test_direct.py", "tests/test_package.py"]),
         (f"{PACKAGE}/__init__.py", ["tests/test_domain.py"]),
+        (f"{PACKAGE}/deleted.py", ["tests/test_deleted.py"]),
         ("tests/e2e/simulator.py", ["tests/e2e/test_run.py"]),
         ("tests/e2e/mission.py", ["tests/e2e/test_run.py"]),
-        ("tests/e2e/conftest.py", ["tests/e2e/test_run.py"]),
+        ("tests/e2e/conftest.py", ["tests/e2e/test_run.py", "tests/e2e/test_stop.py"]),
+        ("tests/e2e/pairing.py", ["tests/e2e/test_run.py", "tests/e2e/test_stop.py"]),
         ("tests/test_domain.py", ["tests/test_domain.py"]),
         ("docs/guide.md", []),
     ],
@@ -158,18 +161,39 @@ def test_tests_follow_the_changed_file(
         {
             f"{PACKAGE}/__init__.py": "",
             f"{PACKAGE}/plans.py": "from . import ledger\n",
-            f"{PACKAGE}/ledger.py": "",
+            f"{PACKAGE}/ledger.py": "from . import wire\n",
+            f"{PACKAGE}/wire.py": "",
             "tests/e2e/simulator.py": "from . import mission\n",
             "tests/e2e/mission.py": "",
-            "tests/e2e/conftest.py": "",
+            "tests/e2e/pairing.py": "",
+            "tests/e2e/conftest.py": "from . import pairing\n",
             "tests/test_direct.py": f"from {INTEGRATION}.plans import Manager\n",
             "tests/test_package.py": f"from {INTEGRATION} import plans\n",
             "tests/test_domain.py": f"from {INTEGRATION} import DOMAIN\n",
+            "tests/test_deleted.py": f"from {INTEGRATION}.deleted import gone\n",
             "tests/e2e/test_run.py": "from .simulator import start\n",
+            "tests/e2e/test_stop.py": "",
         },
     )
 
     assert check.tests_for([Path(changed)], tmp_path) == selected
+
+
+def test_deleted_files_count_as_changed(monkeypatch: pytest.MonkeyPatch) -> None:
+    answers = {
+        "for-each-ref": ["refs/remotes/origin/release/0.6"],
+        "merge-base": ["base"],
+        "rev-list": ["1"],
+        "diff": ["deleted.py", "edited.py"],
+        "ls-files": ["new.py"],
+    }
+    monkeypatch.setattr(check, "_git", lambda command, *_: answers[command])
+
+    assert check.changed_files() == [
+        Path("deleted.py"),
+        Path("edited.py"),
+        Path("new.py"),
+    ]
 
 
 @pytest.mark.parametrize(
