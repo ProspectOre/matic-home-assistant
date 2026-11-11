@@ -22,7 +22,7 @@ Restart polling also has a ten-minute deadline; physical waits allow up to an ho
 | `backup` | Takes a backup with the host's automatic settings and checks every agent stored it encrypted. Fails if no new backup appears. |
 | `install` | Downloads the tag through HACS, restarts Home Assistant and waits until it is running again. |
 | `served_assets` | The loaded manifest version matches the tag. The icon and Matic Map URLs are content-addressed, so a 200 with the tag's exact bytes shows the running process loaded these files. |
-| `installed_files` | With `--ssh`, hashes every installed file on the host and compares the set with the tag (missing, extra and changed files). |
+| `installed_files` | With `--ssh`, hashes every installed file on the host and compares the set with the zip (missing, extra and changed files). |
 | `entities` | Exactly one Matic vacuum, and no enabled Matic entity is missing or unavailable, except Stop while the same robot's history confirms no plan is running. Expected idle unavailability is recorded in the receipt. |
 | `actions` | The registered `matic_robot` actions are exactly the ones in `services.yaml` at the tag. |
 | `assistant_tools` | With `--aspenos`, calls each home-mcp `matic_get_*` tool through its stdio bridge. |
@@ -34,10 +34,12 @@ installed now.
 ## Running it
 
 Run it from the repository's virtual environment on a machine that can reach the host, with the tag
-fetched locally (`git fetch origin tag v0.6.0b1`):
+fetched locally (`git fetch origin tag v0.6.0-beta1`) and the release's zip, the file HACS installs
+(`gh release download v0.6.0-beta1 --pattern matic_robot.zip`):
 
 ```sh
-HA_TOKEN=... .venv/bin/python scripts/installed_check.py v0.6.0b1 \
+HA_TOKEN=... .venv/bin/python scripts/installed_check.py v0.6.0-beta1 \
+  --zip matic_robot.zip \
   --url http://homeassistant.local:8123 \
   --receipts ~/Dev/sources/matic/qualification \
   --ssh homeassistant \
@@ -49,11 +51,12 @@ Add `--physical --room Kitchen` for the physical steps.
 ## Checking an unpublished candidate
 
 Before beta publication, install the reviewed commit only after the owner's approval,
-then check those files by their full commit ID:
+[from the zip its Test run kept](../CONTRIBUTING.md#install-a-branch-build), then check those files
+by their full commit ID:
 
 ```sh
 HA_TOKEN=... .venv/bin/python scripts/installed_check.py \
-  --commit FULL_REVIEWED_COMMIT_ID --skip-install \
+  --commit FULL_REVIEWED_COMMIT_ID --zip matic_robot.zip --skip-install \
   --url http://homeassistant.local:8123 \
   --receipts ~/Dev/sources/matic/qualification --ssh homeassistant
 ```
@@ -62,6 +65,9 @@ HA_TOKEN=... .venv/bin/python scripts/installed_check.py \
 The check reads committed files even if the local checkout has changes. Its receipt
 records the full commit and a null tag. No tag or GitHub release is created. Without
 `--physical`, it sends no cleaning or navigation command.
+
+Either way, the run stops before it contacts the host unless the zip holds exactly the commit's
+integration files plus the built Matic Map.
 
 ## Boundaries
 

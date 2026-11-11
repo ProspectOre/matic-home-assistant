@@ -3,7 +3,7 @@
 
 A test runs if it imports a file changed since the nearest main or release
 branch, or a module that imports one. With --all, every test runs with
-coverage, as in CI.
+coverage, as in CI. Tests read the built Matic Map, so it is built first.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ast
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping
@@ -39,11 +40,7 @@ CEILING = 1000
 # Larger files that predate the ceiling, each with the size it may not exceed.
 BASELINE = Path("scripts/oversize_files.txt")
 CODE_SUFFIXES = {".js", ".mjs", ".py", ".ts"}
-GENERATED = (
-    "custom_components/matic_robot/client/proto/",
-    "custom_components/matic_robot/map_studio_v4/",
-    "custom_components/matic_robot/matic_icons.js",
-)
+GENERATED = "custom_components/matic_robot/client/proto/"
 FULL_SUITE = ["--cov=custom_components/matic_robot", "--cov-report=term-missing"]
 
 
@@ -197,6 +194,14 @@ def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
     ]
 
 
+def build_commands(root: Path = ROOT) -> list[list[str]] | None:
+    """Return the commands that build Matic Map, or None without Node.js."""
+    if (npm := shutil.which("npm")) is None:
+        return None
+    build = [npm, "run", "build:map-studio-v4"]
+    return [build] if (root / "node_modules").is_dir() else [[npm, "ci"], build]
+
+
 def main(arguments: list[str] | None = None) -> int:
     """Run every check and report the ones that failed."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -207,23 +212,28 @@ def main(arguments: list[str] | None = None) -> int:
     selected = FULL_SUITE if changed is None else tests_for(changed)
     python = sys.executable
     commands = {
-        "format": [python, "-m", "ruff", "format", "--check", "."],
-        "lint": [python, "-m", "ruff", "check", "."],
-        "types": [python, "-m", "mypy", "custom_components/matic_robot"],
-        "privacy": [python, "scripts/check_public_tree.py"],
+        "format": [[python, "-m", "ruff", "format", "--check", "."]],
+        "lint": [[python, "-m", "ruff", "check", "."]],
+        "types": [[python, "-m", "mypy", "custom_components/matic_robot"]],
+        "privacy": [[python, "scripts/check_public_tree.py"]],
     }
-    if selected:
-        commands["tests"] = [python, "-m", "pytest", *selected]
-    else:
-        print("No test imports a changed file; CI runs every test.")
-
     structure = [*layer_violations(), *size_violations(_code_sizes(), _baseline())]
     for violation in structure:
         print(violation)
     failed = ["structure"] if structure else []
-    for name, command in commands.items():
+    if not selected:
+        print("No test imports a changed file; CI runs every test.")
+    elif (build := build_commands()) is None:
+        print("Tests read the built Matic Map; install Node.js 24 to build it.")
+        failed.append("tests")
+    else:
+        commands["tests"] = [*build, [python, "-m", "pytest", *selected]]
+    for name, steps in commands.items():
         print(f"--- {name}", flush=True)
-        if subprocess.run(command, cwd=ROOT, check=False).returncode:
+        # A failed step skips the rest: a failed build leaves nothing to test.
+        if any(
+            subprocess.run(step, cwd=ROOT, check=False).returncode for step in steps
+        ):
             failed.append(name)
     print(f"check: failed: {', '.join(failed)}" if failed else "check: ok")
     return 1 if failed else 0

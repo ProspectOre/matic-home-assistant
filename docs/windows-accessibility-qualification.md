@@ -6,7 +6,7 @@ routes. Run it with **Actions → Windows assistive qualification (manual) → R
 workflow**. Unsupported desktop, browser, or NVDA conditions fail with an
 explicit unqualified result.
 
-The job uses the committed Map Studio bundle and the synthetic local fixture.
+The job builds the Map Studio bundle and uses the synthetic local fixture.
 It has `contents: read`, uses no Home Assistant credentials or live services,
 and does not publish screenshots, video, traces, audio, transcripts, or browser
 artifacts. It downloads the official NVDA 2026.2 stable installer, verifies its

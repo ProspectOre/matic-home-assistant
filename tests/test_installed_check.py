@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -78,16 +79,22 @@ def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
             text=True,
         ).stdout.strip()
 
+    def zipped(blobs: dict[str, bytes]) -> Path:
+        with zipfile.ZipFile(tmp_path / "matic_robot.zip", "w") as bundle:
+            for name, data in blobs.items():
+                bundle.writestr(name, data)
+        return tmp_path / "matic_robot.zip"
+
     git("init", "-q")
-    for name, data in _blobs().items():
+    for name in ("manifest.json", "services.yaml"):
         path = tmp_path / INTEGRATION / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        path.write_bytes(_blobs()[name])
     (tmp_path / "README.md").write_text("outside the integration")
     git("add", ".")
     git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "c")
     git("tag", "v0.6.0b1")
-    candidate = Candidate.from_git(tmp_path, "v0.6.0b1")
+    candidate = Candidate.from_git(tmp_path, "v0.6.0b1", zipped(_blobs()))
     assert candidate.commit == git("rev-parse", "HEAD")
     assert candidate.version == "0.6.0b1"
     assert set(candidate.files) == set(_blobs())
@@ -95,7 +102,7 @@ def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
     commit = candidate.commit
     git("tag", "-d", "v0.6.0b1")
     (tmp_path / INTEGRATION / "manifest.json").write_text('{"version":"dirty"}')
-    unpublished = Candidate.from_commit(tmp_path, commit)
+    unpublished = Candidate.from_commit(tmp_path, commit, zipped(_blobs()))
     assert unpublished.tag is None
     assert unpublished.commit == commit
     assert unpublished.files == candidate.files
@@ -103,7 +110,14 @@ def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
     assert receipt.name.startswith(commit + "-")
     assert json.loads(receipt.read_text())["candidate"]["tag"] is None
     with pytest.raises(ValueError, match="full lowercase commit ID"):
-        Candidate.from_commit(tmp_path, "HEAD")
+        Candidate.from_commit(tmp_path, "HEAD", zipped(_blobs()))
+    for other in (
+        _blobs() | {"services.yaml": b"changed:\n"},
+        _blobs() | {"extra.py": b"not in the commit"},
+        {name: data for name, data in _blobs().items() if name != "manifest.json"},
+    ):
+        with pytest.raises(ValueError, match=f"was not built from {commit}"):
+            Candidate.from_commit(tmp_path, commit, zipped(other))
 
 
 def test_installed_files_must_match_exactly() -> None:
@@ -721,7 +735,7 @@ async def test_connect_failure_is_written_as_a_receipt(
     monkeypatch.setattr(
         Candidate,
         "from_commit" if by_commit else "from_git",
-        classmethod(lambda cls, repo, tag: candidate),
+        classmethod(lambda cls, repo, tag, archive: candidate),
     )
 
     async def fail_connect(self: HomeAssistant) -> None:
@@ -731,6 +745,7 @@ async def test_connect_failure_is_written_as_a_receipt(
     monkeypatch.setenv("HA_TOKEN", "test-token")
     args = argparse.Namespace(
         repo=ROOT,
+        zip=tmp_path / "matic_robot.zip",
         tag=candidate.tag,
         commit=candidate.commit if by_commit else None,
         token_file=None,
@@ -765,8 +780,9 @@ async def test_connect_failure_is_written_as_a_receipt(
 
 
 def test_physical_needs_a_room() -> None:
+    arguments = ["v0.6.0b1", "--zip", "z", "--url", "http://ha", "--receipts", "r"]
     with pytest.raises(SystemExit):
-        main(["v0.6.0b1", "--url", "http://ha", "--receipts", "r", "--physical"])
+        main([*arguments, "--physical"])
 
 
 @pytest.mark.parametrize(
@@ -782,7 +798,7 @@ def test_unpublished_selector_refuses_ambiguous_or_installing_runs(
     selection: list[str],
 ) -> None:
     with pytest.raises(SystemExit) as error:
-        main([*selection, "--url", "http://ha", "--receipts", "r"])
+        main([*selection, "--zip", "z", "--url", "http://ha", "--receipts", "r"])
     assert error.value.code == 2
 
 

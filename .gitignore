@@ -10,6 +10,10 @@ __pycache__/
 coverage.xml
 htmlcov/
 node_modules/
+# Built by `npm run build:map-studio-v4`. assets/ is checked in.
+custom_components/matic_robot/matic_icons.js
+custom_components/matic_robot/map_studio_v4/*
+!custom_components/matic_robot/map_studio_v4/assets/
 tests/browser/.generated/
 playwright-report/
 test-results/

@@ -48,8 +48,10 @@ an adapter can use [experimental pairing import](docs/hermes-pairing.md#pair-on-
 If no robot is found, add the integration manually; setup then asks for the
 robot's address (IP address or hostname, and port).
 
-For a manual install, copy `custom_components/matic_robot` into Home Assistant's
-`custom_components` directory and restart.
+For a manual install, download `matic_robot.zip` from a
+[release](https://github.com/ProspectOre/matic-home-assistant/releases), unpack it
+into `custom_components/matic_robot` in Home Assistant's configuration directory
+and restart.
 
 ### Local pairing
 

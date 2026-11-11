@@ -1,0 +1,78 @@
+name: Release
+
+# Publishes the branch it is run on as the release named by the tag. Only a
+# maintainer with the owner's approval runs it; CONTRIBUTING.md has the steps.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to create, such as v0.6.0-beta1 or v0.6.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One release at a time: pruning reads the releases another run may be adding.
+concurrency:
+  group: ${{ github.workflow }}
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  # npm packages run here, so this job cannot write to the repository.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - run: python scripts/release.py check "$TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: npm ci
+      - run: npm run build:map-studio-v4
+      - run: python scripts/release.py zip
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/matic_robot.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: matic_robot
+          path: dist/matic_robot.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: matic_robot
+          path: dist
+      - run: python scripts/release.py publish "$TAG"
+      - run: python scripts/release.py prune "$TAG"

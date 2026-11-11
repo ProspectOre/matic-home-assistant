@@ -2030,6 +2030,10 @@
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
+    },
+    "panel_missing": {
+      "title": "Matic Map is not installed",
+      "description": "This copy of the integration was installed without its Matic Map files, so the sidebar has no Matic Map. Download Matic (Unofficial) again in HACS, or replace `custom_components/matic_robot` with the contents of `matic_robot.zip` from a release, then restart Home Assistant."
     }
   },
   "services": {

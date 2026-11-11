@@ -144,6 +144,9 @@ Unpublished candidate from `release/0.6`; publication needs owner testing and ap
   older one-metre readings. Older integration versions cannot read that store;
   rolling back requires the matching pre-upgrade backup. A restore also returns
   the survey to the readings captured in that backup.
+- HACS installs `matic_robot.zip` from the release. For a manual install,
+  unpack that zip into `custom_components/matic_robot`; the repository's source
+  no longer contains the built Matic Map.
 
 ## Checks still needed
 
