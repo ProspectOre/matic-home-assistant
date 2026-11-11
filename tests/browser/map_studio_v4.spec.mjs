@@ -8846,7 +8846,7 @@ for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "u
     // The room-colour layer intentionally replaces the point cloud. This
     // safety case needs a published point scene so it can verify drawing is
     // rejected after publication; keep the fixture on the photo layer. Auto
-    // detail draws fewer points after three slow frames and stays there
+    // detail can draw fewer points after slow camera frames and stays there
     // while the map is idle, so it would never count as published.
     await gallery.evaluate((element) => {
       const state = element.getWorkspaceSnapshot();
