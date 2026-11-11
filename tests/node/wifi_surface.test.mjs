@@ -145,11 +145,16 @@ test("the survey reply keeps counts, ages and rooms, weakest room first", () => 
     cells: [{ x: 0.152, y: 0.152, dbm: -48, samples: 3, updatedAt: 100 }],
     rooms: [{ name: "Study", dbm: -71.5, weakest: -80, samples: 2 }, { name: "Kitchen", dbm: -50, weakest: -55, samples: 4 }] });
   assert.deepEqual(parseWifiSignal({ enabled: false, cells: [] }).rooms, []);
+  // The floor plan allows room names of 256 UTF-8 bytes.
+  const longest = "é".repeat(128);
+  assert.equal(parseWifiSignal({ enabled: true, cells: [], rooms: [{ name: longest, dbm: -50, weakest: -50, samples: 1 }] })
+    .rooms[0].name, longest);
   for (const reply of [
     { enabled: true, cells: [{ x: 0, y: 0, dbm: -50, samples: 0, updated_at: 1 }] },
     { enabled: true, cells: [{ x: 0, y: 0, dbm: -50, samples: 1.5, updated_at: 1 }] },
     { enabled: true, cells: [{ x: 0, y: 0, dbm: -50, samples: 1 }] },
     { enabled: true, cells: [], rooms: [{ name: " ", dbm: -50, weakest: -50, samples: 1 }] },
+    { enabled: true, cells: [], rooms: [{ name: `${longest}a`, dbm: -50, weakest: -50, samples: 1 }] },
     { enabled: true, cells: [], rooms: {} },
   ]) assert.throws(() => parseWifiSignal(reply), /invalid-wifi-signal/u);
 });

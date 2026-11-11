@@ -1,4 +1,4 @@
-import { ContractError } from "./backend-contracts";
+import { ContractError, boundedString } from "./backend-contracts";
 import type { WifiRoomSignal, WifiSignalCell, WifiSignalLayer } from "./contracts";
 
 const MAX_CELLS = 4096;
@@ -40,8 +40,8 @@ export const parseWifiSignal = (value: unknown): WifiSignalLayer => {
   });
   const summaries = rooms.map((candidate): WifiRoomSignal => {
     const room = record(candidate);
-    if (typeof room.name !== "string" || !room.name.trim() || room.name.length > 200) throw new ContractError("invalid-wifi-signal");
-    return { name: room.name, dbm: finite(room.dbm, -120, 0), weakest: finite(room.weakest, -120, 0), samples: count(room.samples) };
+    // Room names follow the floor plan's limit of 256 UTF-8 bytes.
+    return { name: boundedString(room.name, 256, "invalid-wifi-signal", true), dbm: finite(room.dbm, -120, 0), weakest: finite(room.weakest, -120, 0), samples: count(room.samples) };
   }).sort((left, right) => left.dbm - right.dbm);
   return { status: "ready", surveying: root.enabled, cells, rooms: summaries };
 };
