@@ -6,9 +6,19 @@ import asyncio
 from typing import Any
 
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import Context, Event, HomeAssistant, callback
+from homeassistant.core import (
+    Context,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
+)
+from homeassistant.helpers.event import async_track_state_change_event
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot.client.operational_state import (
+    decode_operational_state,
+)
 from custom_components.matic_robot.const import (
     DOMAIN,
     EVENT_PLAN_DOCKED,
@@ -21,11 +31,55 @@ from .sim_mission import parse_coverage_command
 VACUUM = "vacuum.simulated_matic"
 
 
+async def sighting(entry: MockConfigEntry, robot: SimulatedRobot) -> None:
+    """Do what half a minute of running does, now.
+
+    Wait for the robot's pushed state, count it as one health sample and run
+    one heartbeat.
+    """
+    session = entry.runtime_data.session
+    state = decode_operational_state(robot.kabuki_state())
+    async with asyncio.timeout(5):
+        # No event marks a snapshot that changes nothing entities show.
+        while (session._pending or session._raw) != state:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+    session._async_sample_health(None)
+    await entry.runtime_data.coordinator.async_refresh()
+
+
+async def poll(
+    hass: HomeAssistant, entry: MockConfigEntry, robot: SimulatedRobot
+) -> None:
+    """Take one sighting of the robot and let Home Assistant settle."""
+    await sighting(entry, robot)
+    await hass.async_block_till_done()
+
+
+async def state_becomes(hass: HomeAssistant, entity_id: str, state: str) -> None:
+    """Wait for an entity to reach ``state`` with nothing asking the robot."""
+    reached = asyncio.Event()
+
+    @callback
+    def changed(event: Event[EventStateChangedData]) -> None:
+        new_state = event.data["new_state"]
+        if new_state is not None and new_state.state == state:
+            reached.set()
+
+    unsubscribe = async_track_state_change_event(hass, entity_id, changed)
+    try:
+        current = hass.states.get(entity_id)
+        if current is None or current.state != state:
+            async with asyncio.timeout(10):
+                await reached.wait()
+    finally:
+        unsubscribe()
+
+
 class PlanRun:
     """A ``clean_room_sequence`` call running while the test drives the robot.
 
     The run blocks until the plan ends, so it runs as a task and the test
-    polls the coordinator in its place; ``async_block_till_done`` would wait
+    runs the heartbeat in its place; ``async_block_till_done`` would wait
     for the run itself.
     """
 
@@ -122,8 +176,8 @@ class PlanRun:
                 await self.poll()
 
     async def poll(self) -> None:
-        """Run one coordinator poll and let listeners react."""
-        await self.entry.runtime_data.coordinator.async_refresh()
+        """Take one sighting of the robot and let listeners react."""
+        await sighting(self.entry, self.robot)
         await asyncio.sleep(0.05)
 
     async def outcome(self) -> dict[str, Any]:
@@ -164,6 +218,8 @@ class PlanRun:
             while not call.done():
                 await self.poll()
         await call
+        # The robot's answer to the command is pushed, not read back.
+        await self.poll()
 
 
 def expect_finished(

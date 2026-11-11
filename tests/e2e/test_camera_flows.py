@@ -21,6 +21,7 @@ from custom_components.matic_robot import photo_patrol
 from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import DOCK_PAYLOAD, SimulatedRobot
+from .plan_run import poll
 from .sim_mission import SimFloor, two_room_floor
 
 VACUUM = "vacuum.simulated_matic"
@@ -119,7 +120,7 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
         captured_at=dt_util.utcnow(),
         photo_id=uuid4(),
     )
-    await loaded_entry.runtime_data.coordinator.async_refresh()
+    await poll(hass, loaded_entry, robot)
 
     events: list[dict[str, object]] = []
     hass.bus.async_listen(PHOTO_EVENT, lambda event: events.append(dict(event.data)))
@@ -187,7 +188,7 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
     # The patrol asked the robot to dock, but the simulator is still returning.
     # Let it arrive so this retry isolates the cooldown guard from the busy guard.
     robot.arrive_at_dock()
-    await loaded_entry.runtime_data.coordinator.async_refresh()
+    await poll(hass, loaded_entry, robot)
     assert loaded_entry.runtime_data.coordinator.data.operational.returning is False
 
     previous_commands = robot.received()
@@ -205,7 +206,7 @@ async def test_patrol_refuses_an_unknown_room_and_a_busy_robot_without_snapping(
     """An unresolved destination and a clean cannot result in a room label."""
     robot.set_collection("instamatic_snaps", [])
     await _configure_patrol(hass, loaded_entry)
-    await loaded_entry.runtime_data.coordinator.async_refresh()
+    await poll(hass, loaded_entry, robot)
 
     with pytest.raises(HomeAssistantError) as raised:
         await _patrol(hass, "Garage")
@@ -213,7 +214,7 @@ async def test_patrol_refuses_an_unknown_room_and_a_busy_robot_without_snapping(
     assert robot.received() == []
 
     robot.start_cleaning("Kitchen")
-    await loaded_entry.runtime_data.coordinator.async_refresh()
+    await poll(hass, loaded_entry, robot)
     with pytest.raises(HomeAssistantError) as raised:
         await _patrol(hass, "Study")
     assert raised.value.translation_key == "photo_patrol_robot_busy"
@@ -234,7 +235,7 @@ async def test_patrol_does_not_return_an_old_photo_and_docks_after_failure(
         captured_at=dt_util.utcnow() - timedelta(minutes=2),
         photo_id=uuid4(),
     )
-    await loaded_entry.runtime_data.coordinator.async_refresh()
+    await poll(hass, loaded_entry, robot)
 
     with pytest.raises(HomeAssistantError) as raised:
         await _patrol(hass, "Study")
@@ -254,7 +255,7 @@ async def test_unattended_patrol_requires_opt_in_and_respects_no_photo_rooms(
     floor_plan = loaded_entry.runtime_data.coordinator.data.floor_plan
     assert loaded_entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
     study_id = floor_plan.rooms[1].id
-    await loaded_entry.runtime_data.coordinator.async_refresh()
+    await poll(hass, loaded_entry, robot)
 
     with pytest.raises(HomeAssistantError) as raised:
         await _patrol(hass, "Study")
@@ -289,6 +290,8 @@ async def test_manual_photo_button_refuses_a_blocked_or_unverifiable_room(
         {"entity_id": VACUUM, "room": "Study"},
         blocking=True,
     )
+    # The robot pushes where it arrived; the service does not read it back.
+    await poll(hass, loaded_entry, robot)
     assert (
         loaded_entry.runtime_data.coordinator.data.operational.current_area == "Study"
     )
@@ -316,7 +319,7 @@ async def test_manual_photo_button_refuses_a_blocked_or_unverifiable_room(
     # A room label outside the current map also cannot authorize a snap.
     await _configure_patrol(hass, loaded_entry, blocked_rooms=[study_id])
     robot.set_current_area("Garage")
-    await loaded_entry.runtime_data.coordinator.async_refresh()
+    await poll(hass, loaded_entry, robot)
     with pytest.raises(HomeAssistantError) as raised:
         await hass.services.async_call(
             "button", "press", {"entity_id": button}, blocking=True
