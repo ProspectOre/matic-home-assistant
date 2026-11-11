@@ -220,9 +220,7 @@ def test_the_zip_of_this_checkout_loads_as_an_installed_integration(
     assert not any("__pycache__" in name for name in names)
 
 
-def test_a_zip_without_the_panel_fails_the_install_check(
-    checkout: Path, tmp_path: Path
-) -> None:
+def test_a_zip_without_the_panel_fails_the_install_check(tmp_path: Path) -> None:
     archive = tmp_path / "matic_robot.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr("manifest.json", "{}")
