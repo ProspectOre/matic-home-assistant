@@ -51,7 +51,6 @@ BINARY_SUFFIXES = {
 ALLOWED_BINARY_PATHS = {
     Path("custom_components/matic_robot/brand/icon.png"),
     Path("custom_components/matic_robot/brand/icon@2x.png"),
-    Path("custom_components/matic_robot/map_studio_v4/assets/robot-atlas.webp"),
     # The README screenshot: the synthetic stage home (docs/testing.md).
     Path("docs/images/matic-map.png"),
 }

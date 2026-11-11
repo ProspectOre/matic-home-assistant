@@ -3,7 +3,7 @@ import { liveCameraKey, mapCameraIdentity } from "./camera-preferences";
 import type { AreaCircle, PoseModel, SceneModel } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import type { RoomIdentityResult } from "./spatial-identity";
-import { forcesTop, savedMapPosition, topView } from "./state";
+import { canShowExactPose, forcesTop, savedMapPosition, topView } from "./state";
 import { FrameGovernor } from "./frame-governor";
 import type { CanvasPalette } from "./theme-probe";
 import { RendererCamera, angle, type CameraOrigin, type CameraState, type MapPoint } from "./renderer-camera";
@@ -99,6 +99,8 @@ export class RendererController {
   #cameraFollow: import("./camera-follow").CameraFollowController | null = null;
   #surfaceGeometry: import("./surface-geometry").SurfaceGeometry | null = null;
   #geometry: import("./overlay-geometry").OverlayGeometry | null = null;
+  /** undefined until the robot chunk and a context are here, null when its program fails. */
+  #robotMesh: import("./robot-model").RobotMesh | null | undefined;
   #pendingFollow: {
     readonly pose: PoseModel | null;
     readonly mode: "off" | "follow" | "ride";
@@ -133,6 +135,7 @@ export class RendererController {
       scene: () => this.#scene,
       state: () => this.#state,
       fallback: () => this.#mode === "canvas2d",
+      robotInScene: () => this.#robot() !== null,
       pixelRatio: () => this.#pixelRatio(),
       requestRender: (scene) => this.requestRender(scene),
       scheduleLayers: () => this.#scheduleLayers(),
@@ -745,6 +748,33 @@ export class RendererController {
     const camera = this.#view.current;
     geometry?.draw(this.#view.matrix, width, height, this.#pixelRatio(),
       height / (2 * camera.distance * (camera.orthographic ? 1 : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2))));
+    const pose = this.#state && canShowExactPose(this.#state) ? this.#state.resources.pose.value : null;
+    const robot = this.#robot();
+    const world = pose?.position && this.#view.worldOfMeters(pose.position[0], pose.position[1]);
+    if (robot && world && typeof pose?.heading === "number") {
+      robot.draw(this.#view.matrix, world[0], world[1], pose.heading,
+        this.#view.viewport.height / (2 * (camera.orthographic ? camera.distance : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2))),
+        this.#overlay.palette.accent);
+    }
+  }
+
+  /**
+   * The robot drawn in the scene, or null while the 2D overlay draws it:
+   * before its chunk loads, without WebGL, in forced colours or when its
+   * program fails.
+   */
+  #robot(): import("./robot-model").RobotMesh | null {
+    const gl = this.#points.gl;
+    const module = this.#modules.robot;
+    if (this.#mode !== "webgl2" || !gl || !module || this.#overlay.palette.forced) return null;
+    if (this.#robotMesh === undefined) {
+      try {
+        this.#robotMesh = new module.RobotMesh(gl);
+      } catch {
+        this.#robotMesh = null;
+      }
+    }
+    return this.#robotMesh;
   }
 
   /** Room colors replace the photo once the chunk that draws them is here. */
@@ -882,6 +912,8 @@ export class RendererController {
     this.#surfaceGeometry = null;
     this.#geometry?.dispose();
     this.#geometry = null;
+    this.#robotMesh?.dispose();
+    this.#robotMesh = undefined;
     this.#setSurfaceNeeded(false);
     if (this.#modules.surface && this.#modules.surfaceStatus === "failed") this.#modules.surfaceStatus = "ready";
     this.#points.release();

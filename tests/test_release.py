@@ -48,13 +48,11 @@ def checkout(tmp_path: Path) -> Path:
                 "__pycache__/\n"
                 f"{INTEGRATION}/matic_icons.js\n"
                 f"{INTEGRATION}/map_studio_v4/*\n"
-                f"!{INTEGRATION}/map_studio_v4/assets/\n"
             ),
             "pyproject.toml": '[project]\nversion = "0.6.0b1"\n',
             "docs/release-notes-0.6.0-beta1.md": "# Matic 0.6 beta 1\n\nNotes.\n",
             f"{INTEGRATION}/manifest.json": json.dumps({"version": "0.6.0b1"}),
             f"{INTEGRATION}/client/api.py": "",
-            f"{INTEGRATION}/map_studio_v4/assets/atlas.json": "{}",
         },
     )
     _git(tmp_path, "init", "-q")
@@ -170,7 +168,6 @@ def test_the_zip_holds_the_tracked_integration_and_the_built_panel(
         {
             f"{INTEGRATION}/.storage/map": "private",
             f"{INTEGRATION}/untracked.py": "",
-            f"{INTEGRATION}/map_studio_v4/assets/room.webp": "private",
             f"{INTEGRATION}/__pycache__/api.pyc": "",
             "README.md": "outside the integration",
         },
@@ -183,7 +180,6 @@ def test_the_zip_holds_the_tracked_integration_and_the_built_panel(
         assert bundle.namelist() == [
             "client/api.py",
             "manifest.json",
-            "map_studio_v4/assets/atlas.json",
             "map_studio_v4/chunks/a.js",
             "map_studio_v4/index.js",
             "matic_icons.js",
