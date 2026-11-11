@@ -237,7 +237,11 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   if (last && Math.hypot(x - last[0], y - last[1]) < 0.15) return;
   // Whole seconds, as the server keeps them.
   const point: TrailPoint = pose.observedAt ? [x, y, Math.round(pose.observedAt)] : [x, y];
-  store.dispatch({ type: "result", trail: { ...trail, segments: [...trail.segments.slice(0, -1), [...segment, point].slice(-MAX_POINTS)] } });
+  // Past the limit keep every other point, as the server's recorder does, so
+  // the run's first point and its time stay.
+  const points = segment.length < MAX_POINTS ? [...segment, point]
+    : [...segment.filter((_, index) => index % 2 === 0), point];
+  store.dispatch({ type: "result", trail: { ...trail, segments: [...trail.segments.slice(0, -1), points] } });
 };
 
 /**

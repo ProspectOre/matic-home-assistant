@@ -74,7 +74,7 @@ export const inspectAt = (
 /**
  * Where the inspected point sits along the trail, or null once the trail no
  * longer holds it. A point keeps its identity while the live trail grows and
- * drops its oldest points; a reloaded trail closes the card.
+ * thins; a reloaded trail closes the card.
  */
 const trailPlace = (state: WorkspaceState, inspected: Inspected) => {
   if (inspected.kind !== "trail" || !trailVisible(state)) return null;

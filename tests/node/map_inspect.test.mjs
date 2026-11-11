@@ -62,7 +62,7 @@ test("in a tilted view the reach is measured on screen", () => {
   assert.deepEqual(inspectAt(state(), scene, { x: 3.6, y: 0.4 }, tilted), { kind: "trail", point: trail.segments[1][0] });
 });
 
-test("an inspected trail point stays the same observation as the live trail drops its oldest", () => {
+test("an inspected trail point stays the same observation as the live trail changes", () => {
   const point = { kind: "trail", point: trail.segments[0][1] };
   const shifted = state({ trail: { ...trail, segments: [[trail.segments[0][1]], trail.segments[1]] } });
   assert.deepEqual(inspectMarker(shifted, point), { x: 3.2, y: 1 });
@@ -109,4 +109,17 @@ test("the live trail keeps each pose's robot time in whole seconds", () => {
   extendLiveTrail(store, pose(0, 1_800_000_000.6));
   extendLiveTrail(store, pose(1, null));
   assert.deepEqual(store.value.trail.segments, [[[0, 0, 1_800_000_001], [1, 0]]]);
+});
+
+test("a full live trail thins like the server's and keeps the run's first point", () => {
+  globalThis.window ??= globalThis;
+  const store = new WorkspaceStore();
+  const full = Array.from({ length: 4_000 }, (_, index) => [index, 0, 1_800_000_000 + index]);
+  store.replace({ ...store.value, activity: "cleaning", trail: { id: "live", mapSessionKey: "session-a", segments: [full] } });
+  extendLiveTrail(store, { position: [4_000, 0], mapSessionKey: "session-a", observedAt: 1_800_004_000 });
+  const [points] = store.value.trail.segments;
+  assert.equal(points.length, 2_001);
+  assert.equal(points[0], full[0], "the first point, and so the clean's start time, stays");
+  assert.equal(points[1], full[2]);
+  assert.deepEqual(points.at(-1), [4_000, 0, 1_800_004_000]);
 });
