@@ -2,10 +2,11 @@
 """Install a release candidate on a Home Assistant host and record a receipt.
 
 Run from the repository's virtual environment on a machine that can reach the
-host. Each step is recorded in a JSON receipt bound to the candidate tag and
-commit; the first failure stops the run. Physical steps run only with
-``--physical`` and after the owner types the room name to confirm the robot
-and home are ready. See docs/installed-check.md.
+host, with the candidate's matic_robot.zip. Each step is recorded in a JSON
+receipt bound to the candidate tag and commit; the first failure stops the
+run. Physical steps run only with ``--physical`` and after the owner types the
+room name to confirm the robot and home are ready. See
+docs/installed-check.md.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import zipfile
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -32,6 +34,8 @@ import aiohttp
 DOMAIN = "matic_robot"
 INTEGRATION = f"custom_components/{DOMAIN}"
 REPOSITORY = "ProspectOre/matic-home-assistant"
+# What `npm run build:map-studio-v4` adds to the committed files.
+BUILT = ("matic_icons.js", "map_studio_v4/")
 RECEIPT_SCHEMA = 1
 RESTART_TIMEOUT = 600.0
 PHYSICAL_TIMEOUT = 3600.0
@@ -67,37 +71,46 @@ class Candidate:
     served: dict[str, bytes]
 
     @classmethod
-    def from_git(cls, repo: Path, tag: str) -> Candidate:
-        """Read the candidate from the local checkout's copy of the tag."""
+    def from_git(cls, repo: Path, tag: str, archive: Path) -> Candidate:
+        """Read the candidate at the local checkout's copy of the tag."""
         commit = _git(repo, "rev-parse", f"refs/tags/{tag}^{{commit}}").decode().strip()
-        return cls._from_commit(repo, commit, tag)
+        return cls._from_commit(repo, commit, tag, archive)
 
     @classmethod
-    def from_commit(cls, repo: Path, commit: str) -> Candidate:
+    def from_commit(cls, repo: Path, commit: str, archive: Path) -> Candidate:
         """Read an unpublished candidate by its full commit ID, without a tag."""
         if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
             raise ValueError("the candidate needs a full lowercase commit ID")
         resolved = _git(repo, "rev-parse", "--verify", f"{commit}^{{commit}}")
         if resolved.decode().strip() != commit:
             raise ValueError("the candidate ID must identify a commit")
-        return cls._from_commit(repo, commit, None)
+        return cls._from_commit(repo, commit, None, archive)
 
     @classmethod
-    def _from_commit(cls, repo: Path, commit: str, tag: str | None) -> Candidate:
-        archive = _git(repo, "archive", "--format=tar", commit, INTEGRATION)
-        blobs: dict[str, bytes] = {}
-        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+    def _from_commit(
+        cls, repo: Path, commit: str, tag: str | None, archive: Path
+    ) -> Candidate:
+        """Read the zip, which must be the commit's files plus the built panel."""
+        with zipfile.ZipFile(archive) as bundle:
+            blobs = {name: bundle.read(name) for name in bundle.namelist()}
+        committed: dict[str, bytes] = {}
+        source = _git(repo, "archive", "--format=tar", commit, INTEGRATION)
+        with tarfile.open(fileobj=io.BytesIO(source)) as tar:
             for member in tar.getmembers():
                 if member.isfile() and (handle := tar.extractfile(member)):
                     path = PurePosixPath(member.name).relative_to(INTEGRATION)
-                    blobs[path.as_posix()] = handle.read()
+                    committed[path.as_posix()] = handle.read()
+        changed = {name for name in committed if blobs.get(name) != committed[name]}
+        added = blobs.keys() - committed.keys()
+        if differing := sorted(changed | {n for n in added if not n.startswith(BUILT)}):
+            raise ValueError(f"{archive} was not built from {commit}: {differing}")
         return cls.from_blobs(tag, commit, blobs)
 
     @classmethod
     def from_blobs(
         cls, tag: str | None, commit: str, blobs: Mapping[str, bytes]
     ) -> Candidate:
-        """Build the candidate from the integration's files at the tag."""
+        """Build the candidate from the files its zip installs."""
         version = json.loads(blobs["manifest.json"])["version"]
         services = re.findall(
             r"^([a-z_]+):", blobs["services.yaml"].decode(), re.MULTILINE
@@ -784,9 +797,9 @@ def _now() -> str:
 
 async def _main(args: argparse.Namespace) -> int:
     candidate = (
-        Candidate.from_commit(args.repo, args.commit)
+        Candidate.from_commit(args.repo, args.commit, args.zip)
         if args.commit
-        else Candidate.from_git(args.repo, args.tag)
+        else Candidate.from_git(args.repo, args.tag, args.zip)
     )
     receipt = Receipt(candidate)
     stage = "setup"
@@ -847,7 +860,10 @@ def _record_failure(receipt: Receipt, name: str, error: Exception | str) -> None
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "tag", nargs="?", help="release tag to install, for example v0.6.0b1"
+        "tag", nargs="?", help="release tag to install, for example v0.6.0-beta1"
+    )
+    parser.add_argument(
+        "--zip", type=Path, required=True, help="the candidate's matic_robot.zip"
     )
     parser.add_argument(
         "--commit", help="full unpublished commit ID to check with --skip-install"

@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import gzip
+import importlib.util
 import json
 import re
 import shutil
 import subprocess
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from homeassistant.components import frontend as ha_frontend
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.matic_robot import frontend
+from custom_components.matic_robot.const import DOMAIN
+from tests import conftest
 from tests.frontend_sources import shipped_modules, without_comments
 
 _MS_CUSTOM_PROPERTY_USE = re.compile(r"var\(\s*(--ms-[a-z0-9-]+)")
@@ -57,6 +64,67 @@ def test_v4_cache_key_tracks_packaged_module_tree() -> None:
     assert "matic-map-panel-v0-4-0" in _STUDIO_V4_JS
     assert "matic-map-studio-gallery-v0-4-0" not in _STUDIO_V4_JS
     assert not hasattr(frontend, "ROOM_PLAN_EDITOR_PATH")
+
+
+def test_a_copy_without_the_built_panel_still_imports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source checkout or archive has no panel; the integration must load."""
+    is_file = Path.is_file
+    built = {frontend.MATIC_ICONS_FILE, frontend.MATIC_MAP_STUDIO_V4_DIRECTORY}
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: built.isdisjoint((path, path.parent)) and is_file(path),
+    )
+    spec = importlib.util.spec_from_file_location(
+        f"{frontend.__package__}.frontend_without_panel", frontend.__file__
+    )
+    assert spec is not None and spec.loader is not None
+    copy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(copy)
+
+    assert frontend.PANEL_BUILT is True
+    assert copy.PANEL_BUILT is False
+    assert copy.MATIC_ICONS_VERSION == sha256(b"").hexdigest()[:12]
+
+
+async def test_a_copy_without_the_built_panel_raises_a_repair(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Say why Matic Map is absent instead of registering a blank page."""
+    monkeypatch.setattr(frontend, "PANEL_BUILT", False)
+    monkeypatch.setattr(hass, "http", MagicMock())
+    hass.data[ha_frontend.DATA_EXTRA_MODULE_URL] = set()
+    hass.data[DOMAIN] = {"workspace_socket": True}
+
+    await frontend.async_register_frontend(hass)
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "panel_missing")
+    assert issue is not None
+    assert issue.severity is ir.IssueSeverity.ERROR
+    assert issue.translation_key == "panel_missing"
+    assert issue.learn_more_url == frontend.RELEASES_URL
+    strings = json.loads(
+        frontend.MATIC_ICONS_FILE.with_name("strings.json").read_text(encoding="utf-8")
+    )
+    assert "matic_robot.zip" in strings["issues"]["panel_missing"]["description"]
+    assert "matic_robot.zip" in caplog.text
+    hass.http.async_register_static_paths.assert_not_called()
+    assert hass.data[ha_frontend.DATA_EXTRA_MODULE_URL] == set()
+    assert ha_frontend.DATA_PANELS not in hass.data
+
+
+def test_the_suite_stops_at_once_without_the_built_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One message, not a failure in every test that reads the bundle."""
+    conftest.pytest_sessionstart()
+    monkeypatch.setattr(frontend, "PANEL_BUILT", False)
+    with pytest.raises(pytest.exit.Exception, match="npm run build:map-studio-v4"):
+        conftest.pytest_sessionstart()
 
 
 def _startup_graph() -> tuple[int, dict[str, int]]:

@@ -1,5 +1,3 @@
 * text=auto eol=lf
 *.pem text eol=lf
 *.png binary
-custom_components/matic_robot/map_studio_v4/chunks/*.js -whitespace
-custom_components/matic_robot/map_studio_v4/material-icons.LICENSE.txt -text whitespace=cr-at-eol

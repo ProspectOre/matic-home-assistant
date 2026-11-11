@@ -13,8 +13,9 @@ and review.
 - `uv run ruff format .` fixes formatting.
 - After changing dependencies in `pyproject.toml`, run `uv lock` and commit
   `uv.lock`. CI installs with `--locked` and fails on a stale lockfile.
-- Frontend changes have their own commands; see
-  [CONTRIBUTING.md](CONTRIBUTING.md#frontend).
+- Matic Map's build output is not committed. The tests read it, so
+  `scripts/check.py` builds it first, which needs Node.js 24. Frontend changes
+  have their own commands; see [CONTRIBUTING.md](CONTRIBUTING.md#frontend).
 - Python 3.14 syntax is intended, including `except A, B:` without parentheses.
 - Home Assistant 2026.10 is the oldest supported version (`hacs.json`).
   `pyproject.toml` pins the version the tests run on.
@@ -77,6 +78,10 @@ modules.
 - Nightly runs the tests and the live lane on the oldest supported, newest
   stable and beta Home Assistant. GitHub starts it from the default branch
   only.
+- Test builds and keeps `matic_robot.zip`, the file HACS installs, for every
+  head it runs on. Release builds the same zip, publishes it as a release and
+  deletes superseded candidates. Only a maintainer with the owner's approval
+  runs it; see [CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 - `.github/delivery-contract.json` must list every workflow file.
   `.github/scripts/delivery-contract.py` checks that first in Test.
 

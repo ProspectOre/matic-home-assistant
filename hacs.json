@@ -1,5 +1,8 @@
 {
   "name": "Matic (Unofficial)",
   "homeassistant": "2026.10.0",
-  "render_readme": true
+  "render_readme": true,
+  "zip_release": true,
+  "filename": "matic_robot.zip",
+  "hide_default_branch": true
 }
