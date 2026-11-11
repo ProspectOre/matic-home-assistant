@@ -4,20 +4,23 @@
 A test runs if its imports lead, through any number of modules, to a file
 changed since the nearest main or release branch. Imports do not show what
 Home Assistant loads by name or which files a test reads, so --all runs every
-test with coverage, as CI does. Tests read the built Matic Map, so it is built
-first.
+test, as CI does, and then requires a test to run every line and take every
+branch the change adds to the integration. Tests read the built Matic Map, so
+it is built first.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import shutil
 import subprocess
 import sys
 from collections.abc import Container, Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).parents[1]
 PACKAGE = "custom_components.matic_robot"
@@ -43,7 +46,11 @@ CEILING = 1000
 BASELINE = Path("scripts/oversize_files.txt")
 CODE_SUFFIXES = {".js", ".mjs", ".py", ".ts"}
 GENERATED = "custom_components/matic_robot/client/proto/"
-FULL_SUITE = ["--cov=custom_components/matic_robot", "--cov-report=term-missing"]
+SOURCE = PACKAGE.replace(".", "/")
+REPORT = Path("coverage.json")
+FULL_SUITE = [f"--cov={SOURCE}", f"--cov-report=json:{REPORT}"]
+# The lines a diff hunk adds: `@@ -old +first,count @@`, count 1 when left out.
+HUNK = re.compile(r"@@ \S+ \+(\d+)(?:,(\d+))? @@")
 
 
 def module_name(path: Path) -> str:
@@ -159,13 +166,8 @@ def _baseline() -> dict[str, int]:
     return {path: int(lines) for path, lines in rows}
 
 
-def changed_files() -> list[Path] | None:
-    """Return files changed since the nearest main or release branch.
-
-    Deleted files are included, and a renamed file under both names: their
-    tests still have to run. None means no such branch is known, so every test
-    should run.
-    """
+def nearest_base() -> str | None:
+    """Return where HEAD left the nearest main or release branch, if one is known."""
     refs = _git("for-each-ref", "--format=%(refname)", "refs/remotes")
     bases = [
         base[0]
@@ -173,14 +175,68 @@ def changed_files() -> list[Path] | None:
         if (ref.endswith("/main") or "/release/" in ref)
         and (base := _git("merge-base", "HEAD", ref))
     ]
-    if not bases:
-        return None
-    nearest = min(
-        bases, key=lambda base: int(_git("rev-list", "--count", f"{base}..HEAD")[0])
+    return min(
+        bases,
+        key=lambda base: int(_git("rev-list", "--count", f"{base}..HEAD")[0]),
+        default=None,
     )
-    names = _git("diff", "--name-only", "--no-renames", nearest)
+
+
+def changed_files(base: str) -> list[Path]:
+    """Return files changed since a commit.
+
+    Deleted files are included, and a renamed file under both names: their
+    tests still have to run.
+    """
+    names = _git("diff", "--name-only", "--no-renames", base)
     names += _git("ls-files", "--others", "--exclude-standard")
     return [Path(name) for name in names]
+
+
+def changed_lines(base: str) -> dict[str, set[int]]:
+    """Return the lines of each integration file that a commit does not have.
+
+    A renamed file counts only where its text changed, a new file in full.
+    """
+    changed: dict[str, set[int]] = {}
+    lines: set[int] = set()
+    for line in _git(
+        "diff", "--unified=0", "--find-renames", "--dst-prefix=b/", base, "--", SOURCE
+    ):
+        if line.startswith("+++ b/"):
+            lines = changed.setdefault(line.removeprefix("+++ b/"), set())
+        elif hunk := HUNK.match(line):
+            first, count = int(hunk[1]), int(hunk[2] or 1)
+            lines.update(range(first, first + count))
+    for name in _git("ls-files", "--others", "--exclude-standard", "--", SOURCE):
+        size = len((ROOT / name).read_bytes().splitlines())
+        changed[name] = set(range(1, size + 1))
+    return changed
+
+
+def untested(
+    report: Mapping[str, Any], changed: Mapping[str, Container[int]]
+) -> list[str]:
+    """Return each changed line no test runs and changed branch no test takes.
+
+    `report` is coverage's JSON report, in which a negative branch target is
+    the way out of the function.
+    """
+    found = []
+    for name, file in report["files"].items():
+        lines = changed.get(name, ())
+        found += [
+            f"{name}:{line}: no test runs this line"
+            for line in file["missing_lines"]
+            if line in lines
+        ]
+        found += [
+            f"{name}:{line}: no test goes from here to "
+            + (f"line {target}" if target > 0 else "the end of the function")
+            for line, target in file["missing_branches"]
+            if line in lines
+        ]
+    return found
 
 
 def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
@@ -237,9 +293,21 @@ def main(arguments: list[str] | None = None) -> int:
     """Run every check and report the ones that failed."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--all", action="store_true", help="run every test with coverage, as CI does"
+        "--all",
+        action="store_true",
+        help="run every test and require tests for the changed lines, as CI does",
     )
-    changed = None if parser.parse_args(arguments).all else changed_files()
+    parser.add_argument(
+        "--base",
+        help="commit the change is measured from; "
+        "by default where HEAD left the nearest main or release branch",
+    )
+    options = parser.parse_args(arguments)
+    if options.base and not _git("rev-parse", "--verify", f"{options.base}^{{commit}}"):
+        parser.error(f"--base {options.base} is not a commit in this checkout")
+    base = options.base or nearest_base()
+    # Without a base nothing shows what changed, so every test runs.
+    changed = None if options.all or base is None else changed_files(base)
     selected = FULL_SUITE if changed is None else tests_for(changed)
     python = sys.executable
     commands = {
@@ -266,6 +334,21 @@ def main(arguments: list[str] | None = None) -> int:
             subprocess.run(step, cwd=ROOT, check=False).returncode for step in steps
         ):
             failed.append(name)
+    if changed is None and "tests" not in failed:
+        report = json.loads((ROOT / REPORT).read_text())
+        lines, branches = (
+            report["totals"][f"percent_{kind}_covered_display"]
+            for kind in ("statements", "branches")
+        )
+        print(
+            f"--- coverage\nTests run {lines}% of the integration's lines and"
+            f" {branches}% of its branches; no minimum."
+        )
+        if base is None:
+            print("No main or release branch is known; changed lines go unchecked.")
+        elif gaps := untested(report, changed_lines(base)):
+            print(*gaps, sep="\n")
+            failed.append("coverage")
     print(f"check: failed: {', '.join(failed)}" if failed else "check: ok")
     return 1 if failed else 0
 

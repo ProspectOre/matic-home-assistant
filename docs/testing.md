@@ -12,10 +12,10 @@ real home.
 
 | Tests | Where | What they prove |
 | --- | --- | --- |
-| Python | `tests/test_*.py` | The integration's logic, at 100% line coverage. `tests/test_release_metadata.py` also holds versions, the documented actions and entities, and the wording of the household guides ([copy style](copy-style.md)) to what the code ships. |
+| Python | `tests/test_*.py` | The integration's logic. A pull request needs one of them to run every line and take every branch it adds to `custom_components/matic_robot`. `tests/test_release_metadata.py` also holds versions, the documented actions and entities, and the wording of the household guides ([copy style](copy-style.md)) to what the code ships. |
 | Simulated robot | `tests/e2e` | Home Assistant, the config entry and the real client against [a simulated robot](e2e-harness.md), with nothing between them mocked. The [plan run contract](e2e-contract.md) lists the outcomes these tests hold. |
 | Frontend modules | `tests/node` | The build tools and the Matic Map modules that need no browser (`npm run test:build`). |
-| Browser | `tests/browser` | The committed Matic Map bundle on synthetic fixtures in Chromium, Firefox and WebKit, with emulated phone sizes (`npm run test:browser`). CI rebuilds the bundle and fails if it differs from the committed one. |
+| Browser | `tests/browser` | Matic Map, built by `npm run build:map-studio-v4`, on synthetic fixtures in Chromium, Firefox and WebKit, with emulated phone sizes (`npm run test:browser`). |
 | Live browser | `tests/live` | Matic Map inside a real Home Assistant frontend paired to the simulated robot (`npx playwright test --config playwright.live.config.mjs`). |
 | Public tree | `scripts/check_public_tree.py` | No private file type, address or identifier is committed. |
 
@@ -68,10 +68,10 @@ forced colors and zoom.
 ## Windows screen reader pilot
 
 **Windows assistive qualification (manual)** is an optional workflow started
-from the Actions tab. On a hosted Windows runner it turns on High Contrast,
-opens the committed Matic Map bundle in Edge and checks that Edge reports
-forced colors and that NVDA 2026.2 queues the expected phrases after real Tab
-and Insert+Tab key presses. `scripts/qualify_windows_accessibility.ps1` is the
+from the Actions tab. On a hosted Windows runner it builds Matic Map, turns on
+High Contrast, opens the build in Edge and checks that Edge reports forced
+colors and that NVDA 2026.2 queues the expected phrases after real Tab and
+Insert+Tab key presses. `scripts/qualify_windows_accessibility.ps1` is the
 whole procedure.
 
 It shows that NVDA generated speech, not that anyone heard it, and it is not a
