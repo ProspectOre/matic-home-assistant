@@ -22,6 +22,8 @@ interface GestureCallbacks {
   readonly onOutlinePoint?: (point: MapPoint, coordinateEdit: CoordinateEditCapture) => void;
   /** The user moved the camera by hand. */
   readonly onCameraGesture?: () => void;
+  /** A tap or click that moved the camera no further than a tap may. */
+  readonly onTap?: (point: MapPoint) => void;
 }
 
 interface PointerRecord {
@@ -469,6 +471,11 @@ export class GestureController {
           else if (result.status === "ambiguous") this.#callbacks.onRoomCandidates?.(result.roomIds);
         }).catch(() => undefined);
       }
+    }
+    if (event.type !== "pointercancel" && (this.#mode === "pan" || this.#mode === "orbit") && !this.#navigationUntilRelease
+      && Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) < 7) {
+      const point = this.#renderer.screenToMap(pointer.x, pointer.y);
+      if (point) this.#callbacks.onTap?.(point);
     }
     if (this.#mode === "paint" || this.#mode === "erase") this.#callbacks.onCirclePreview(null);
     if (this.#pointers.size === 0) {

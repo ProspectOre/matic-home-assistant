@@ -3,7 +3,7 @@ import type { WorkspaceState } from "./contracts";
 import type { CanvasPalette, Channel } from "./theme-probe";
 import { selectedRoomNames } from "./renderer-hit-test";
 import { roomColours, trailVisible } from "./renderer-overlays";
-import { wifiScaleBounds, wifiSignalHue } from "./wifi-scale";
+import { wifiSurface } from "./wifi-surface";
 
 /** Floor-plane vertices as world [x, z] pairs, in metres from the scene centre. */
 export type Ring = Float32Array;
@@ -29,14 +29,21 @@ export interface StrokeShape extends Paint {
   readonly dashed: boolean;
 }
 
-/** Soft discs, each [x, z, radius, red, green, blue] with colours from 0 to 1. */
-export interface DiscShape {
-  readonly kind: "discs";
-  readonly discs: Float32Array;
+/**
+ * The Wi-Fi estimate on the floor plane: per texel, premultiplied
+ * [dBm × opacity, opacity]. `corners` holds world [x, z] of its first texel's
+ * outer corner, then of the far ends of its first row and its first column.
+ */
+export interface SurfaceShape {
+  readonly kind: "surface";
+  readonly values: Float32Array<ArrayBuffer>;
+  readonly columns: number;
+  readonly rows: number;
+  readonly corners: Ring;
   readonly height: number;
 }
 
-export type OverlayShape = FillShape | StrokeShape | DiscShape;
+export type OverlayShape = FillShape | StrokeShape | SurfaceShape;
 
 // Put clearly separated hues first for ordinary homes. Larger maps retain a
 // unique color for every supported room; IDs, rather than metadata order,
@@ -131,18 +138,13 @@ export const overlayShapes = (scene: SceneModel, state: WorkspaceState, palette:
         outline(rings, colour, .8, 1.25, 0.05 * meters);
       }
     }
-    if (state.wifiSignal?.status === "ready") {
-      const { cells } = state.wifiSignal;
-      const bounds = wifiScaleBounds(cells, state.wifiScale);
-      const discs = new Float32Array(cells.length * 6);
-      cells.forEach((cell, index) => {
-        const [red, green, blue] = hsl(wifiSignalHue(cell.dbm, bounds), .75, .45);
-        // Bound smoothing to at most 0.6 m from a sample. Older, coarse readings
-        // retain a wider footprint; space beyond the estimate stays transparent.
-        discs.set([worldX(cell.x / meters - origin[0]), worldZ(cell.y / meters - origin[1]),
-          Math.max(0.45, Math.min(0.6, cell.size / 2 + 0.1)), red / 255, green / 255, blue / 255], index * 6);
-      });
-      shapes.push({ kind: "discs", discs, height: 0.1 * meters });
+    const surface = state.wifiSignal?.status === "ready"
+      ? wifiSurface(state.wifiSignal.cells, scene.metadata, Date.now() / 1000) : null;
+    if (surface) {
+      const { x, y, texel, width, height, values } = surface;
+      shapes.push({ kind: "surface", values, columns: width, rows: height, height: 0.1 * meters,
+        corners: fromMeters([[x, y], [x + width * texel, y], [x, y + height * texel]]) });
+      if (surface.deadZones.length) outline(surface.deadZones.map(fromMeters), palette.text, .9, 1.5, 0.1 * meters);
     }
   }
 

@@ -400,7 +400,8 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 53 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 53 fixed entities plus three opt-in sensors per mapped room: two
+    # statistics and the room's Wi-Fi signal.
     assert platform_counts == {
         "binary_sensor": 11,
         "button": 4,
@@ -410,13 +411,13 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "image": 1,
         "number": 1,
         "select": 4,
-        "sensor": 25,
+        "sensor": 27,
         "switch": 5,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 57
-    assert len({entity.unique_id for entity in entities}) == 57
+    assert len(entities) == 59
+    assert len({entity.unique_id for entity in entities}) == 59
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -482,7 +483,7 @@ async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
         ),
     )
     listener()
-    assert len(added) == 2
+    assert len(added) == 3
 
 
 async def test_bag_alerts_are_exposed_but_bag_statistics_stay_latent(

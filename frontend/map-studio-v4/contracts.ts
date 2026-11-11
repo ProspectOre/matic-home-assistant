@@ -205,21 +205,28 @@ export interface AdmittedManualRoomPreview {
 }
 
 export type PlanView = "run" | "edit";
-export type WifiScale = "absolute" | "relative";
-/** One surveyed map cell: its centre in metres and mean signal in dBm. */
+/** One surveyed map cell: its centre in metres, mean signal in dBm, reading count and newest reading in epoch seconds. */
 export interface WifiSignalCell {
   readonly x: number;
   readonly y: number;
   readonly dbm: number;
-  /** Grid resolution when this reading was collected, in metres. */
-  readonly size: number;
+  readonly samples: number;
+  readonly updatedAt: number;
+}
+
+/** The survey's summary of one room, weakest first in the layer. */
+export interface WifiRoomSignal {
+  readonly name: string;
+  readonly dbm: number;
+  readonly weakest: number;
+  readonly samples: number;
 }
 
 export interface WifiSignalLayer {
   readonly status: "loading" | "ready" | "failed";
   readonly surveying: boolean;
-  readonly cellSize: number;
   readonly cells: readonly WifiSignalCell[];
+  readonly rooms: readonly WifiRoomSignal[];
 }
 
 /** A closed outline in map metres; outlines inside another of the same layer are holes. */
@@ -426,6 +433,8 @@ export interface ReportedState {
   readonly robotLabel: string;
   readonly robots: readonly RobotChoice[];
   readonly locale: string;
+  /** Home Assistant's unit system measures length in miles and feet. */
+  readonly imperial: boolean;
 }
 
 /** What the user has open: the workflow, its drafts and selection, and the cameras. */
@@ -446,7 +455,6 @@ export interface ViewState {
   readonly view: MapView;
   readonly appearance: MapAppearance;
   readonly labelsVisible: boolean;
-  readonly wifiScale: WifiScale;
   readonly followMode: FollowMode;
   readonly homePresentation: { readonly view: MapView; readonly appearance: MapAppearance } | null;
   readonly roomCandidates: readonly string[];
@@ -490,7 +498,6 @@ export type WorkspaceIntent =
     }
   | { readonly type: "toggle-labels" }
   | { readonly type: "toggle-wifi-signal" }
-  | { readonly type: "set-wifi-scale"; readonly scale: WifiScale }
   | { readonly type: "toggle-floor-types" }
   | { readonly type: "set-follow-mode"; readonly mode: FollowMode }
   | { readonly type: "show-room-candidates"; readonly roomIds: readonly string[] }
@@ -629,7 +636,7 @@ export interface HassLike {
   readonly selectedLanguage?: string;
   /** The user's number and date formatting; `time_zone: "server"` means config.time_zone. */
   readonly locale?: { readonly language?: string; readonly time_zone?: string };
-  readonly config?: { readonly time_zone?: string };
+  readonly config?: { readonly time_zone?: string; readonly unit_system?: { readonly length?: string } };
   /** Home Assistant's theme state; `darkMode` is the mode its frontend shows. */
   readonly themes?: { readonly darkMode?: boolean };
   readonly states?: Readonly<Record<string, HassEntityLike>>;
@@ -686,6 +693,7 @@ export interface HassProjection {
   readonly currentArea: string | null;
   readonly robotRun: RobotRunStatus | null;
   readonly language: string;
+  readonly imperial: boolean;
   readonly dates: DateFormat;
   readonly userKey: string;
   readonly vacuumEntityId: string | null;
@@ -746,7 +754,6 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-camera": true,
   "toggle-labels": true,
   "toggle-wifi-signal": true,
-  "set-wifi-scale": true,
   "toggle-floor-types": true,
   "set-follow-mode": true,
   "show-room-candidates": true,

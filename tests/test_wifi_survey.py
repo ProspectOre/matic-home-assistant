@@ -18,7 +18,7 @@ from custom_components.matic_robot.client import hermes_commands as api_module
 from custom_components.matic_robot.client import wifi_status as telemetry_module
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.exceptions import CannotConnectError
-from custom_components.matic_robot.client.models import RobotPose
+from custom_components.matic_robot.client.models import FloorPlan, RobotPose, Room
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.wifi_survey import (
     CELL_SIZE_METERS,
@@ -511,15 +511,32 @@ async def test_heatmap_view_serves_the_current_floor_only(hass) -> None:
     assert missing.status == HTTPStatus.NOT_FOUND
 
     no_floor = json.loads((await view.get(_request(_hass(runtime)), "entry")).body)
-    assert no_floor == {"enabled": False, "cell_size": CELL_SIZE_METERS, "cells": []}
+    assert no_floor == {
+        "enabled": False,
+        "cell_size": CELL_SIZE_METERS,
+        "cells": [],
+        "rooms": [],
+    }
 
-    runtime.coordinator.data.floor_plan = SimpleNamespace(
-        mission_id=7, partition_id_wire=PARTITION
+    square = ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
+    far = tuple((x + 5, y) for x, y in square)
+    runtime.coordinator.data.floor_plan = FloorPlan(
+        7,
+        "partition",
+        PARTITION,
+        (
+            Room("room-1", "Kitchen", "p1", b"one", square),
+            Room("room-2", "Study", "p2", b"two", far),
+        ),
     )
     response = await view.get(_request(_hass(runtime)), "entry")
     assert response.headers["Cache-Control"].startswith("private")
     body = json.loads(response.body)
     assert [cell["dbm"] for cell in body["cells"]] == [-50.0]
+    # A room without readings is left out.
+    assert body["rooms"] == [
+        {"name": "Kitchen", "dbm": -50.0, "weakest": -50.0, "samples": 1}
+    ]
 
 
 async def test_survey_switch_and_clear_button_drive_the_store(hass) -> None:

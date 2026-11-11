@@ -518,7 +518,7 @@ export class EffectController {
         ? { command: "idle" as const } : {}),
       robotLabel: projection.robotLabel,
       robots: projection.robots,
-      locale: projection.language,
+      locale: projection.language, imperial: projection.imperial,
       selection: { entryId: projection.entryKey },
       ...(loadedPreferences ? {
         view: loadedPreferences.view,

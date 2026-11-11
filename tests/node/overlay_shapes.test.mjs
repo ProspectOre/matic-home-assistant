@@ -26,7 +26,7 @@ const scene = (rooms = [room("room-b", "Kitchen", 0), room("room-a", "Office", 6
 const state = (patch = {}) => ({
   labelsVisible: false, view: "top", appearance: "photo", workflow: "home", dataMode: "live",
   floor: { readOnly: false }, selection: { floorId: "current", roomIds: [] }, planDraft: { rooms: [] },
-  floorTypes: null, wifiSignal: null, wifiScale: "fixed", trail: null,
+  floorTypes: null, wifiSignal: null, trail: null,
   resources: { entry: { mapSessionKey: "session" }, plans: { value: null },
     areas: { value: { rooms: [{ roomId: "room-a", name: "Office" }, { roomId: "room-b", name: "Kitchen" }], zones: [] } } },
   ...patch,
@@ -126,15 +126,20 @@ test("floor types fill carpet and vents with their holes, on the live floor only
     "a held scene may belong to another floor");
 });
 
-test("Wi-Fi samples become discs of 0.45 to 0.6 m coloured from weak red to strong green", () => {
-  const cells = [{ x: 1, y: 2, dbm: -85, size: 0.2 }, { x: 2, y: 2, dbm: -50, size: 0.5 }, { x: 3, y: 2, dbm: -60, size: 4 }];
-  const [shape] = overlayShapes(scene(), state({ wifiSignal: { status: "ready", cells } }), PALETTE);
-  assert.equal(shape.kind, "discs");
-  const discs = Array.from({ length: 3 }, (_, index) => [...shape.discs.subarray(index * 6, index * 6 + 6)]);
-  close(discs.map(([x, z, radius]) => [x, z, radius]).flat(), [5, -5, 0.45, 4, -5, 0.45, 3, -5, 0.6]);
-  const [weak, strong] = discs.map(([, , , red, green, blue]) => [red, green, blue]);
-  assert.ok(weak[0] > weak[1] && strong[1] > strong[0], "weak is red, strong is green");
-  assert.ok(discs.flat().slice(3).every((value) => Number.isFinite(value)));
+test("Wi-Fi readings become one texture on the floor plane, with dead zones outlined", () => {
+  const now = Date.now() / 1000;
+  const cells = [{ x: 1.5, y: 2.5, dbm: -50, samples: 5, updatedAt: now }, { x: 2.5, y: 2.5, dbm: -95, samples: 5, updatedAt: now }];
+  // Without rooms nothing is clipped.
+  const [surface, outline] = overlayShapes(scene([]), state({ wifiSignal: { status: "ready", cells, rooms: [] } }), PALETTE);
+  assert.equal(surface.kind, "surface");
+  assert.equal(surface.values.length, surface.columns * surface.rows * 2);
+  // 0.1 m texels span the readings plus the 1.5 m reach and a texel: map x -0.1 to 4.1 m and
+  // y 0.9 to 4.1 m, mirrored in x like every shape.
+  assert.deepEqual([surface.columns, surface.rows], [42, 32]);
+  close(surface.corners, [6.1, -6.1, 1.9, -6.1, 6.1, -2.9]);
+  assert.deepEqual({ kind: outline.kind, colour: outline.colour, closed: outline.closed, rings: outline.rings.length },
+    { kind: "stroke", colour: PALETTE.text, closed: true, rings: 1 });
+  assert.equal(overlayShapes(scene(), state({ wifiSignal: { status: "ready", cells: [], rooms: [] } }), PALETTE).length, 0);
 });
 
 test("the travel path breaks at gaps over a metre and keeps a lone observation as a dot", () => {
@@ -163,11 +168,11 @@ test("shapes come in paint order: rooms, floor types, Wi-Fi, zones, travel path"
   const shapes = overlayShapes(scene([room("room-a", "Office", 0)]), state({
     labelsVisible: true, resources,
     floorTypes: { status: "ready", carpet: [square(1, 2, 3)], vent: [] },
-    wifiSignal: { status: "ready", cells: [{ x: 1, y: 2, dbm: -60, size: 0.5 }] },
+    wifiSignal: { status: "ready", cells: [{ x: 1, y: 2, dbm: -60, samples: 1, updatedAt: Date.now() / 1000 }], rooms: [] },
     trail: { id: "live", mapSessionKey: "session", segments: [[[1, 2], [1.5, 2]]] },
   }), PALETTE);
   assert.deepEqual(shapes.map(({ kind, height }) => [kind, Math.round(height * 1e3) / 1e3]), [
-    ["fill", 0.02], ["stroke", 0.02], ["fill", 0.005], ["stroke", 0.005], ["discs", 0.01],
+    ["fill", 0.02], ["stroke", 0.02], ["fill", 0.005], ["stroke", 0.005], ["surface", 0.01],
     ["fill", 0], ["stroke", 0], ["stroke", 0], ["stroke", 0],
   ]);
 });

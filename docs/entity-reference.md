@@ -37,6 +37,7 @@ are disabled by default; enable them from the device's entity list.
 | Firmware check status | `sensor.matic_firmware_compatibility` | on |
 | Cues voice status · Cues gesture status | `sensor.matic_cues_voice_status` · `sensor.matic_cues_gesture_status` | on |
 | Wi-Fi status · Wi-Fi signal | `sensor.matic_wifi_state` · `sensor.matic_wifi_signal` | off |
+| *Room* Wi-Fi signal, one per room | `sensor.matic_<room>_wifi_signal` | off |
 | Coverage time | `sensor.matic_coverage_time` | off |
 | Robot cleaning runs | `sensor.matic_local_cleaning_sessions` | off |
 | Cleaning · Charging · Low charge · Problem | `binary_sensor.matic_cleaning` · `_charging` · `_low_charge` · `_problem` | on |
@@ -52,10 +53,11 @@ off the dock, the robot runs one Wi-Fi scan every 30 seconds, the same scan the
 Matic app runs while its Wi-Fi screen is open. Each signal reading is stored
 against the robot's map position and shown in Matic Map: open **Map options** and turn on
 **Wi-Fi signal**. New readings require fresh positions and no more than half a
-metre of movement during a scan, which takes about seven seconds. Dots indicate
-approximate samples; rings retain older, coarser readings. Blank space has not
-been measured. Clear Wi-Fi survey deletes the readings, for example after you
-move your router.
+metre of movement during a scan, which takes about seven seconds. The map
+estimates the signal near each reading; blank space has not been measured. Each room's Wi-Fi signal sensor is the mean of the readings in
+that room, with its weakest reading and the number of readings as attributes;
+it is unknown until the room has a reading. Clear Wi-Fi survey deletes the
+readings, for example after you move your router.
 
 Matic 0.6 removed 14 entities that repeated another one; see
 [Removed in 0.6](release-notes-0.6.0-beta1.md#removed-in-06) for what to use

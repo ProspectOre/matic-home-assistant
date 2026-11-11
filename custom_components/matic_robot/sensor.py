@@ -43,6 +43,7 @@ from .entity import MaticEntity
 from .native_completion import native_room_key
 from .plan_model import plan_floor_token, room_cadence_identity
 from .room_statistics import native_statistics_have_ambiguous_floor
+from .wifi_room_sensor import MaticRoomWifiSignalSensor
 
 PARALLEL_UPDATES = 0
 
@@ -296,7 +297,7 @@ async def async_setup_entry(
     known_rooms: set[str] = set()
 
     def _new_room_entities() -> list[SensorEntity]:
-        """Build opt-in statistics sensors for rooms not yet seen."""
+        """Build opt-in statistics and Wi-Fi sensors for rooms not yet seen."""
         floor_plan = coordinator.data.floor_plan
         if floor_plan is None:
             return []
@@ -308,6 +309,7 @@ async def async_setup_entry(
             for entity in (
                 MaticRoomDurationSensor(entry, room),
                 MaticRoomLastCleanedSensor(entry, room),
+                MaticRoomWifiSignalSensor(entry, room),
             )
         ]
 

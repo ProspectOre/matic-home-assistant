@@ -8,7 +8,8 @@ come from a container and are labelled so.
 
 WebGL draws the scene's points or close-zoom surfaces and every floor-plane
 layer: room colors, room outlines, the selection, zones, floor types, the
-travel path and the Wi-Fi map. The 2D canvas above it holds what follows the
+travel path and the Wi-Fi map, which is interpolated once into a texture
+when its readings change. The 2D canvas above it holds what follows the
 camera in screen space: room names, the robot, the last-seen mark and the
 drawing tools. A browser without WebGL2, or one whose overlay programs do not
 link, paints the same shapes on the 2D canvas.
@@ -33,8 +34,8 @@ same on every machine, with every layer on, in the 3D and the top view.
 | Buffer and texture uploads | 0 | 0 |
 | Shader and program calls | 0 | 0 |
 | 2D canvas redraws | 1 | 1 |
-| Draw calls | 37 | 37 |
-| WebGL calls | 359 | 355 to 359 |
+| Draw calls | 39 | 39 |
+| WebGL calls | 379 | 375 to 379 |
 | Text measurements | 4 | 4 |
 | Median script time | 8 ms | 0.5 ms |
 

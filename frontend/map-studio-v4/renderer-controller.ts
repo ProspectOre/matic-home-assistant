@@ -192,6 +192,11 @@ export class RendererController {
     return this.#view.offsetMapPoint(point, horizontalMeters, verticalMeters);
   }
 
+  /** The layers chunk, once it has loaded. */
+  get layers(): typeof import("./renderer-layers") | null {
+    return this.#modules.layers;
+  }
+
   screenToMap(clientX: number, clientY: number): MapPoint | null {
     return this.#view.screenToMap(clientX, clientY);
   }
