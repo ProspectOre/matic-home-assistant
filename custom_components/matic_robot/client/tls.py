@@ -14,9 +14,9 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID, ObjectIdentifier
 
 from .exceptions import (
-    CannotConnectError,
     CertificateMismatchError,
     InvalidRobotCertificateError,
+    TransportError,
 )
 
 ROLE_OID = ObjectIdentifier("2.5.4.72")
@@ -126,7 +126,7 @@ async def async_fetch_peer_certificate(
             raise InvalidRobotCertificateError("peer did not present a certificate")
         return cast(bytes, certificate)
     except (OSError, TimeoutError) as err:
-        raise CannotConnectError(str(err)) from err
+        raise TransportError(str(err)) from err
     finally:
         if writer is not None:
             writer.close()

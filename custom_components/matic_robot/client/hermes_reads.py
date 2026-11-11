@@ -24,6 +24,9 @@ from .exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
     EndpointUnsupportedError,
+    ProtocolError,
+    RequestTimeoutError,
+    TransportError,
 )
 from .floor_plan import decode_floor_plans, decode_pose
 from .flythrough import Flythrough, decode_flythrough
@@ -93,11 +96,7 @@ class HermesReads:
 
     async def async_get_info(self) -> RobotInfo:
         """Read identity and connection metadata from the robot."""
-        if self._connection._channel is None:
-            await self._connection.async_connect()
-        channel = self._connection._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
+        channel = await self._connection.async_channel()
         async with (
             self._connection._map_stream_errors("info"),
             asyncio.timeout(_RPC_TIMEOUT),
@@ -121,16 +120,15 @@ class HermesReads:
     async def async_get_state(self) -> RobotOperationalState:
         """Read one authenticated snapshot from the ``kabuki_state`` property."""
         # The robot closes an otherwise healthy long-lived HTTP/2 session about
-        # once an hour. grpclib reports that closure on the next stream read;
-        # replace the pinned channel and retry this idempotent snapshot once so
-        # a routine transport rollover does not mark every HA entity unavailable.
-        await self._connection.async_connect()
-        failed_channel = self._connection._channel
+        # once an hour. A read in flight at that moment fails; repeat this
+        # idempotent snapshot once, on the channel the supervisor opens next,
+        # so a routine rollover does not mark every HA entity unavailable.
+        # A dial that fails is not such a read, so it is not repeated.
+        await self._connection.async_channel()
         try:
             payload = await self._collections.async_get_property("kabuki_state")
-        except CannotConnectError:
-            _LOGGER.debug("Retrying Hermes state read on a fresh pinned channel")
-            await self._connection._async_reconnect_after_read_failure(failed_channel)
+        except TransportError:
+            _LOGGER.debug("Retrying Hermes state read after a transport failure")
             payload = await self._collections.async_get_property("kabuki_state")
 
         try:
@@ -138,7 +136,7 @@ class HermesReads:
             self._connection.activity_journal.observe_state(state, "poll")
             return state
         except DecodeError as err:
-            raise CannotConnectError("Hermes returned malformed robot state") from err
+            raise ProtocolError("Hermes returned malformed robot state") from err
 
     async def async_get_run_progress(self) -> RunProgress | None:
         """Read elapsed and remaining time for the clean under way, if any."""
@@ -158,7 +156,7 @@ class HermesReads:
                     self._connection.activity_journal.observe_state(state, "push")
                     yield state
                 except DecodeError as err:
-                    raise CannotConnectError(
+                    raise ProtocolError(
                         "Hermes returned malformed subscribed robot state"
                     ) from err
         finally:
@@ -234,7 +232,7 @@ class HermesReads:
                 mapped_floors=mission_state.mapped_floors,
             )
         except DecodeError as err:
-            raise CannotConnectError("Hermes returned a malformed floor plan") from err
+            raise ProtocolError("Hermes returned a malformed floor plan") from err
 
     async def async_get_slam_tile_entry(self) -> HermesCollectionEntry:
         """Read the current local photorealistic SLAM tile."""
@@ -242,7 +240,7 @@ class HermesReads:
             "map_compressed_rgb", limit=1
         )
         if not entries or not entries[0].key or not entries[0].value:
-            raise CannotConnectError("Hermes returned no photorealistic SLAM tile")
+            raise ProtocolError("Hermes returned no photorealistic SLAM tile")
         return entries[0]
 
     async def async_get_pose(
@@ -254,23 +252,25 @@ class HermesReads:
             or not isinstance(expected_mission_id, int)
             or not 0 <= expected_mission_id <= 0xFFFFFFFF
         ):
-            raise CannotConnectError("active mission identity is unavailable for pose")
+            raise ProtocolError("active mission identity is unavailable for pose")
         iterator = self._collections.async_subscribe_collection_entries("latest_pose")
         try:
             deadline = monotonic() + _LATEST_POSE_READ_TIMEOUT
             for _ in range(_LATEST_POSE_ENTRY_LIMIT + 1):
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    raise CannotConnectError("latest pose read exceeded its time bound")
+                    raise RequestTimeoutError(
+                        "latest pose read exceeded its time bound"
+                    )
                 try:
                     async with asyncio.timeout(remaining):
                         entry = await anext(iterator)
                 except StopAsyncIteration as err:
-                    raise CannotConnectError(
+                    raise ProtocolError(
                         "latest pose stream ended without active pose"
                     ) from err
                 except TimeoutError as err:
-                    raise CannotConnectError(
+                    raise RequestTimeoutError(
                         "latest pose read exceeded its time bound"
                     ) from err
                 if len(entry.key) != 5:
@@ -294,9 +294,9 @@ class HermesReads:
                         mission_id=expected_mission_id,
                         observed_at=observed_at,
                     )
-            raise CannotConnectError("latest pose stream exceeded its entry bound")
+            raise ProtocolError("latest pose stream exceeded its entry bound")
         except DecodeError as err:
-            raise CannotConnectError("Hermes returned a malformed robot pose") from err
+            raise ProtocolError("Hermes returned a malformed robot pose") from err
         finally:
             await iterator.aclose()
 
@@ -308,9 +308,7 @@ class HermesReads:
                 expected_mission_token=expected_mission_token,
             )
         except DecodeError as err:
-            raise CannotConnectError(
-                "Hermes returned a malformed map flythrough"
-            ) from err
+            raise ProtocolError("Hermes returned a malformed map flythrough") from err
 
     async def async_subscribe_approximate_trajectory(
         self, floor_plan: FloorPlan
@@ -325,7 +323,7 @@ class HermesReads:
                     expected_mission_id=floor_plan.mission_id,
                 )
             except DecodeError as err:
-                raise CannotConnectError(
+                raise ProtocolError(
                     "Hermes returned a malformed approximate trajectory"
                 ) from err
 
@@ -544,7 +542,7 @@ class HermesReads:
             )
             value = await self._collections.async_get_property(name)
             if len(value) > max_bytes:
-                raise CannotConnectError("Hermes property exceeds its value byte limit")
+                raise ProtocolError("Hermes property exceeds its value byte limit")
             self._endpoint_health[name] = "ok"
             return value
         except (

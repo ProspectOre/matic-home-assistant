@@ -213,8 +213,6 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
         self._latest_cues_state: RobotOperationalState | None = None
         self._cues_push_sequence = 0
-        self._cues_states_received = 0
-        self._state_states_received = 0
         self._state_push_sequence = 0
         self._latest_state_operational: RobotOperationalState | None = None
         self._latest_received_state: RobotOperationalState | None = None
@@ -225,35 +223,16 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     async def async_watch_state(self) -> None:
         """Keep robot operational state current between coordinator polls."""
-        retry_delay = 1
-        while True:
-            try:
-                states_received = await self._async_consume_state_subscription()
-                if states_received > 1:
-                    retry_delay = 1
-            except asyncio.CancelledError:
-                raise
-            except MaticError as err:
-                _LOGGER.debug("Matic state subscription interrupted: %s", err)
-                if self._state_states_received > 1:
-                    retry_delay = 1
-            # Closing grpclib can replace task cancellation with a transport
-            # error. A retired runtime must finish instead of retrying that
-            # terminal failure through the normal subscription backoff.
-            if self.client.retired:
-                return
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+        await self.client.async_keep_subscribed(self._async_consume_state_subscription)
 
-    async def _async_consume_state_subscription(self) -> int:
+    async def _async_consume_state_subscription(self) -> None:
         """Consume one subscription, coalescing snapshots to a bounded rate."""
         pending: RobotOperationalState | None = None
         pending_poll_generation = 0
         pending_available = asyncio.Event()
-        states_received = 0
 
         async def _collect() -> None:
-            nonlocal pending, pending_poll_generation, states_received
+            nonlocal pending, pending_poll_generation
             # The first frame is the subscription baseline. Bind it to the
             # poll generation that existed before opening the stream, even if
             # the server or transport delays delivering it until a newer poll
@@ -263,7 +242,6 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             first_snapshot = True
             try:
                 async for state in self.client.async_subscribe_state():
-                    states_received += 1
                     self._state_push_sequence += 1
                     pending = state
                     pending_poll_generation = (
@@ -287,7 +265,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 pending_available.clear()
                 if pending is None:
                     await collector
-                    return states_received
+                    return
 
                 delay = next_update_at - monotonic()
                 if delay > 0:
@@ -310,92 +288,73 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
                 if collector.done() and pending is None:
                     await collector
-                    return states_received
+                    return
         finally:
-            self._state_states_received = states_received
-            self._cues_states_received = states_received
             if not collector.done():
                 collector.cancel()
             await asyncio.gather(collector, return_exceptions=True)
 
     async def async_watch_floor_plan(self) -> None:
         """Refresh floor geometry when the robot changes displayed mission."""
-        retry_delay = 1
-        while True:
+        await self.client.async_keep_subscribed(self._async_consume_displayed_mission)
+
+    async def _async_consume_displayed_mission(self) -> None:
+        """Follow one displayed-mission subscription until it ends."""
+        async for entry in self.client.async_subscribe_collection_entries(
+            "displayed_mission"
+        ):
             try:
-                states_received = 0
-                async for entry in self.client.async_subscribe_collection_entries(
-                    "displayed_mission"
-                ):
-                    try:
-                        mission_state = decode_mission_client_state(entry.value)
-                    except DecodeError:
-                        self._async_revoke_displayed_floor()
-                        continue
-                    active_floor = mission_state.active_floor
-                    if active_floor is None:
-                        self._async_revoke_displayed_floor()
-                        continue
-                    self._displayed_floor_unknown = False
-                    states_received += 1
-                    if states_received > 1:
-                        retry_delay = 1
-                    displayed_signature = mission_state.mapped_floors
-                    identity_changed = (
-                        self._displayed_floor_mission_id != active_floor.mission_id
-                        or self._displayed_floor_signature != displayed_signature
-                    )
-                    verified_conflict = (
-                        self._verified_floor_mission_id is not None
-                        and self._verified_floor_mission_id != active_floor.mission_id
-                    )
-                    floor_plan = self.data.floor_plan if self.data is not None else None
-                    published_map_matches = _floor_plan_matches_displayed(
-                        floor_plan, active_floor.mission_id, displayed_signature
-                    )
-                    verified_invalidated = (
-                        self._verified_floor_mission_id is not None
-                        and (verified_conflict or not published_map_matches)
-                    )
-                    invalidates_read = identity_changed or verified_invalidated
-                    invalidated_read = (
-                        invalidates_read and self._floor_reads_in_flight > 0
-                    )
-                    if invalidates_read:
-                        self._floor_read_generation += 1
-                    if verified_invalidated:
-                        # The displayed mission and floor signature are the
-                        # immediate localization authority for later reads.
-                        self._verified_floor_mission_id = None
-                    self._displayed_floor_mission_id = active_floor.mission_id
-                    self._displayed_floor_signature = displayed_signature
-                    if published_map_matches:
-                        if invalidated_read:
-                            # The matching published map remains valid, but a
-                            # read admitted under the prior identity was
-                            # revoked. Schedule its replacement immediately.
-                            self._map_refresh_due = 0.0
-                            await self.async_request_refresh()
-                        continue
-                    # This stream is the robot's immediate localization signal.
-                    # A previously verified map identity may only be a replayed
-                    # scene at the dock, so it cannot override this newer state.
+                mission_state = decode_mission_client_state(entry.value)
+            except DecodeError:
+                self._async_revoke_displayed_floor()
+                continue
+            active_floor = mission_state.active_floor
+            if active_floor is None:
+                self._async_revoke_displayed_floor()
+                continue
+            self._displayed_floor_unknown = False
+            displayed_signature = mission_state.mapped_floors
+            identity_changed = (
+                self._displayed_floor_mission_id != active_floor.mission_id
+                or self._displayed_floor_signature != displayed_signature
+            )
+            verified_conflict = (
+                self._verified_floor_mission_id is not None
+                and self._verified_floor_mission_id != active_floor.mission_id
+            )
+            floor_plan = self.data.floor_plan if self.data is not None else None
+            published_map_matches = _floor_plan_matches_displayed(
+                floor_plan, active_floor.mission_id, displayed_signature
+            )
+            verified_invalidated = self._verified_floor_mission_id is not None and (
+                verified_conflict or not published_map_matches
+            )
+            invalidates_read = identity_changed or verified_invalidated
+            invalidated_read = invalidates_read and self._floor_reads_in_flight > 0
+            if invalidates_read:
+                self._floor_read_generation += 1
+            if verified_invalidated:
+                # The displayed mission and floor signature are the
+                # immediate localization authority for later reads.
+                self._verified_floor_mission_id = None
+            self._displayed_floor_mission_id = active_floor.mission_id
+            self._displayed_floor_signature = displayed_signature
+            if published_map_matches:
+                if invalidated_read:
+                    # The matching published map remains valid, but a
+                    # read admitted under the prior identity was
+                    # revoked. Schedule its replacement immediately.
                     self._map_refresh_due = 0.0
-                    # Revoke the old floor before awaiting the replacement read.
-                    if self.data is not None and self.data.floor_plan is not None:
-                        self.async_set_updated_data(replace(self.data, floor_plan=None))
                     await self.async_request_refresh()
-            except asyncio.CancelledError:
-                raise
-            except MaticError as err:
-                _LOGGER.debug("Matic floor subscription interrupted: %s", err)
-            # Closing grpclib can replace task cancellation with a transport
-            # error. A retired runtime must finish instead of retrying that
-            # terminal failure through the normal subscription backoff.
-            if self.client.retired:
-                return
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+                continue
+            # This stream is the robot's immediate localization signal.
+            # A previously verified map identity may only be a replayed
+            # scene at the dock, so it cannot override this newer state.
+            self._map_refresh_due = 0.0
+            # Revoke the old floor before awaiting the replacement read.
+            if self.data is not None and self.data.floor_plan is not None:
+                self.async_set_updated_data(replace(self.data, floor_plan=None))
+            await self.async_request_refresh()
 
     @callback
     def _async_revoke_displayed_floor(self) -> None:

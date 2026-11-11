@@ -1672,7 +1672,7 @@ async def test_setup_closes_client_when_first_refresh_fails() -> None:
     )
     entry = _entry()
     entry.data.pop(CONF_HERMES_CREDENTIAL)
-    client = MagicMock()
+    client = MagicMock(async_shutdown=AsyncMock())
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(side_effect=RuntimeError("offline"))
     )
@@ -1687,7 +1687,7 @@ async def test_setup_closes_client_when_first_refresh_fails() -> None:
     ):
         await async_setup_entry(hass, entry)
 
-    client.close.assert_called_once()
+    client.async_shutdown.assert_awaited_once_with()
 
 
 async def test_revoked_credential_enters_reauthentication_before_setup() -> None:
@@ -1702,7 +1702,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
         },
     )
     entry = _entry()
-    client = MagicMock()
+    client = MagicMock(async_shutdown=AsyncMock())
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(
             side_effect=ConfigEntryAuthFailed("credential rejected")
@@ -1723,7 +1723,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
     ):
         await async_setup_entry(hass, entry)
 
-    client.close.assert_called_once()
+    client.async_shutdown.assert_awaited_once_with()
     hass.config_entries.async_forward_entry_setups.assert_not_awaited()
     slam_store.assert_not_called()
     history_store.assert_not_called()
@@ -1752,7 +1752,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
         },
     )
     entry = _entry()
-    client = MagicMock()
+    client = MagicMock(async_shutdown=AsyncMock())
     client.async_get_cleaning_session_snapshot = AsyncMock(
         return_value=((), "history-revision")
     )
@@ -1797,7 +1797,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     ):
         await async_setup_entry(hass, entry)
 
-    client.close.assert_called_once()
+    client.async_shutdown.assert_awaited_once_with()
     slam_map.async_shutdown.assert_awaited_once()
     slam_history.async_shutdown.assert_awaited_once()
 

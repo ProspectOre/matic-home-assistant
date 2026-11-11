@@ -2,6 +2,7 @@
 
 ``Faults`` breaks the streams of one collection or channel while the rest of
 the connection stays healthy. ``Link`` breaks the connection itself.
+``PingPolicedServer`` ends a connection that pings too often.
 """
 
 from __future__ import annotations
@@ -10,6 +11,13 @@ import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from enum import Enum, auto
+from time import monotonic
+from typing import Any
+
+from grpclib.protocol import H2Protocol
+from grpclib.server import Server
+from h2.errors import ErrorCodes
+from h2.events import PingReceived
 
 # An unterminated varint: no protobuf message starts this way.
 UNDECODABLE = b"\xff"
@@ -99,6 +107,8 @@ class Link:
     """
 
     def __init__(self) -> None:
+        # Dials that reached the robot.
+        self.connections = 0
         self._cut = False
         self._flowing = asyncio.Event()
         self._flowing.set()
@@ -154,6 +164,7 @@ class Link:
         robot_reader, robot_writer = await asyncio.open_connection(
             "127.0.0.1", self._robot_port
         )
+        self.connections += 1
         ends = (writer, robot_writer)
         self._open.update(ends)
         pumps = [
@@ -180,3 +191,38 @@ class Link:
                     return
                 writer.write(data)
                 await writer.drain()
+
+
+class _PingPolicedProtocol(H2Protocol):
+    def __init__(self, server: PingPolicedServer, *args: Any) -> None:
+        super().__init__(*args)
+        self._server = server
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        super().connection_made(transport)
+        self._pinged = monotonic()
+        self.processor.processors[PingReceived] = self._ping_received  # type: ignore[assignment]
+
+    def _ping_received(self, _event: PingReceived) -> None:
+        since, self._pinged = monotonic() - self._pinged, monotonic()
+        if since < self._server.min_ping_interval:
+            # What gRPC servers send to a client that pings too often.
+            self.connection._connection.close_connection(
+                ErrorCodes.ENHANCE_YOUR_CALM, b"too_many_pings"
+            )
+
+
+class PingPolicedServer(Server):
+    """A gRPC server that refuses HTTP/2 pings sent too often.
+
+    A ping that follows the previous one, or the start of its connection,
+    by less than ``min_ping_interval`` seconds is answered with GOAWAY
+    ``ENHANCE_YOUR_CALM``. The default answers every ping. The robot's own
+    policy is not known; this is the policy gRPC servers commonly apply.
+    """
+
+    min_ping_interval = 0.0
+
+    def _protocol_factory(self) -> H2Protocol:
+        plain = super()._protocol_factory()
+        return _PingPolicedProtocol(self, plain.handler, plain.config, plain.h2_config)

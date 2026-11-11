@@ -7,7 +7,6 @@ platforms, and the real Hermes client against a simulated robot. Nothing
 between Home Assistant and the network is mocked: the client dials the robot's
 mDNS name, completes TLS, pins the certificate, authenticates, and speaks gRPC
 over HTTP/2 to `tests/e2e/hermes_sim.py`.
-
 The tests run in the normal `pytest` command, so the Test workflow's `ci` job
 covers them on hosted `ubuntu-latest`.
 
@@ -65,6 +64,7 @@ messages, so the retry succeeds; an open subscription takes it at once.
 | `link.drop()` | Every open connection is reset; the next dial succeeds. |
 | `link.cut()` | Connections and new dials are reset until `link.restore()`. |
 | `link.stall()` | Connections stay open and nothing is delivered until `link.restore()`. |
+| `simulator.refuse_pings(seconds)` | A connection whose HTTP/2 pings come closer together gets GOAWAY `ENHANCE_YOUR_CALM`, as gRPC servers send. How the robot itself treats pings is not known. |
 
 ## Recorded responses
 
@@ -119,10 +119,10 @@ replaced before it is committed.
   cooldown, blocked-room manual snapshots, preview bytes, authentication and
   the 16-photo memory limit.
 - Entities go unavailable while the robot is off the network or silent, then
-  recover. A reset or an undecodable value makes the state stream resubscribe.
-- A plan start that is lost or never acknowledged fails the run and is not
-  sent again. Known gap (strict `xfail`, PRO-165): a gRPC message that is not
-  a `CollectionResponse` ends the state stream until reload.
+  recover. A reset or undecodable message makes the state stream resubscribe.
+- A keepalive ping finds a silent link with no request waiting; refused pings
+  double its interval; one stream's fault leaves the others open.
+- A lost or unacknowledged plan start fails the run and is not sent again.
 - A revoked credential starts reauthentication.
 - Client level: pairing window, unknown credentials, fingerprint and serial
   pinning, snapshot, tracked and pushed collections, unsupported endpoints.

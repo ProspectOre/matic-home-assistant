@@ -13,8 +13,9 @@ from uuid import UUID
 
 import pytest
 from google.protobuf.message import DecodeError
-from grpclib.const import Cardinality, Status
-from grpclib.exceptions import GRPCError, ProtocolError, StreamTerminatedError
+from grpclib.const import Status
+from grpclib.exceptions import GRPCError, StreamTerminatedError
+from grpclib.exceptions import ProtocolError as GrpcProtocolError
 from h2.exceptions import H2Error
 
 from custom_components.matic_robot.client.api import (
@@ -44,14 +45,15 @@ from custom_components.matic_robot.client.endpoints import (
 from custom_components.matic_robot.client.exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
-    CertificateMismatchError,
     CoverageGuardError,
     CoverageGuardReason,
     EndpointUnsupportedError,
     PairingModeRequiredError,
+    ProtocolError,
+    RequestTimeoutError,
     SinkLocationUnavailableError,
+    TransportError,
 )
-from custom_components.matic_robot.client.hermes_connection import HermesConnection
 from custom_components.matic_robot.client.mission import MissionClientState
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -72,7 +74,6 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
 )
 from custom_components.matic_robot.client.telemetry_fields import decode_text_field
 from custom_components.matic_robot.client.transport import (
-    MAX_HERMES_MESSAGE_BYTES,
     BoundedStream,
     _async_recv_bounded_message,
     async_connection_candidates,
@@ -82,6 +83,7 @@ from custom_components.matic_robot.client.wire import (
     first_bytes,
     uuid_string,
 )
+from tests.hermes_fakes import FakeChannel
 from tests.test_mission import _labeled as _labeled_floor
 from tests.test_mission import _state as _mission_client_state
 from tests.wire_builders import _bfield, _fixed64, _vfield
@@ -240,230 +242,57 @@ async def test_connection_candidates_survive_dns_failure(monkeypatch) -> None:
     ]
 
 
-async def test_async_context_manager_connects_and_closes() -> None:
+async def test_async_context_manager_connects_and_shuts_down() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection.async_connect = AsyncMock()
-    channel = SimpleNamespace(close=MagicMock())
-    client._connection._channel = channel
+    client._connection.async_channel = AsyncMock()
+    client._connection.async_shutdown = AsyncMock()
 
     async with client as entered:
         assert entered is client
 
-    client._connection.async_connect.assert_awaited_once()
-    channel.close.assert_called_once()
-    assert client._connection._channel is None
+    client._connection.async_channel.assert_awaited_once_with()
+    client._connection.async_shutdown.assert_awaited_once_with()
 
 
-async def test_connect_is_idempotent_and_reports_no_reachable_address(
-    monkeypatch,
-) -> None:
+async def test_async_context_manager_shuts_down_after_a_failed_connect() -> None:
+    """Nothing calls ``__aexit__`` then, and the supervisor would keep dialing."""
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._connection.async_channel = AsyncMock(side_effect=TransportError("offline"))
+    client._connection.async_shutdown = AsyncMock()
+
+    with pytest.raises(TransportError, match="offline"):
+        async with client:
+            pass
+
+    client._connection.async_shutdown.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize(
+    ("raised", "kind", "message"),
+    [
+        (TimeoutError(), RequestTimeoutError, "test timed out"),
+        (OSError("reset"), TransportError, "test connection failed"),
+        (StreamTerminatedError("dropped"), TransportError, "test connection failed"),
+        (GrpcProtocolError("bad frame"), TransportError, "test connection failed"),
+        (H2Error("synthetic"), TransportError, "test connection failed"),
+        (DecodeError("truncated"), ProtocolError, "test returned an undecodable"),
+        (
+            GRPCError(Status.UNAUTHENTICATED, "denied"),
+            AuthenticationRequiredError,
+            "denied",
+        ),
+        (GRPCError(Status.UNIMPLEMENTED), EndpointUnsupportedError, "not implemented"),
+        (GRPCError(Status.NOT_FOUND), EndpointUnsupportedError, "not implemented"),
+        (GRPCError(Status.INTERNAL, "boom"), ProtocolError, "boom"),
+        (GRPCError(Status.UNAVAILABLE), ProtocolError, "UNAVAILABLE"),
+    ],
+)
+async def test_stream_failure_is_raised_as_its_own_kind(raised, kind, message) -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._connection._channel = object()
-    await client.async_connect()
-
-    client._connection._channel = None
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
-        AsyncMock(return_value=object()),
-    )
-
-    class FailingChannel:
-        def __init__(self, host, port, **kwargs) -> None:
-            self.closed = False
-
-        async def __connect__(self):
-            raise OSError("offline")
-
-        def close(self) -> None:
-            self.closed = True
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
-        FailingChannel,
-    )
-    with pytest.raises(CannotConnectError, match="offline"):
-        await client.async_connect()
-
-
-async def test_connect_maps_transport_timeout_and_closes_candidate(monkeypatch) -> None:
-    """A TLS connection deadline is a client error, never a raw timeout."""
-    client = MaticHermesClient("192.0.2.1", 16320)
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
-        AsyncMock(return_value=object()),
-    )
-    channels = []
-
-    class TimedOutChannel:
-        def __init__(self, host, port, **kwargs) -> None:
-            self.closed = False
-            channels.append(self)
-
-        async def __connect__(self):
-            raise TimeoutError
-
-        def close(self) -> None:
-            self.closed = True
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
-        TimedOutChannel,
-    )
-
-    with pytest.raises(CannotConnectError, match="connection timed out"):
-        await client.async_connect()
-
-    assert channels and all(channel.closed for channel in channels)
-
-
-async def test_connect_cancellation_closes_unowned_candidate(monkeypatch) -> None:
-    client = MaticHermesClient("192.0.2.1", 16320)
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
-        AsyncMock(return_value=object()),
-    )
-    channels = []
-
-    class CancelledChannel:
-        def __init__(self, host, port, **kwargs) -> None:
-            self.closed = 0
-            channels.append(self)
-
-        async def __connect__(self):
-            raise asyncio.CancelledError
-
-        def close(self) -> None:
-            self.closed += 1
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
-        CancelledChannel,
-    )
-    with pytest.raises(asyncio.CancelledError):
-        await client.async_connect()
-    assert channels[0].closed == 1
-    assert client._connection._channel is None
-
-
-async def test_connect_h2_failure_closes_candidate_and_fails_over(monkeypatch) -> None:
-    client = MaticHermesClient("192.0.2.1", 16320)
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
-        AsyncMock(return_value=object()),
-    )
-    channels = []
-
-    class H2Channel:
-        def __init__(self, host, port, **kwargs) -> None:
-            self.closed = 0
-            channels.append(self)
-
-        async def __connect__(self):
-            if len(channels) == 1:
-                raise H2Error("synthetic h2 failure")
-
-        def close(self) -> None:
-            self.closed += 1
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
-        H2Channel,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.async_connection_candidates",
-        AsyncMock(return_value=["192.0.2.1", "192.0.2.2"]),
-    )
-    await client.async_connect()
-    assert channels[0].closed == 1
-    assert channels[1].closed == 0
-    assert client._connection._channel is channels[1]
-
-
-async def test_transport_error_mapping_includes_h2() -> None:
-    client = MaticHermesClient("192.0.2.1", 16320)
-    with pytest.raises(CannotConnectError, match="connection failed"):
+    with pytest.raises(kind, match=message) as caught:
         async with client._connection._map_stream_errors("test"):
-            raise H2Error("synthetic protocol failure")
-
-
-class _FakeProtocol:
-    def __init__(self, certificate: bytes | None, closed: list[bool]) -> None:
-        ssl_object = SimpleNamespace(getpeercert=lambda binary_form: certificate)
-        transport = SimpleNamespace(
-            get_extra_info=lambda name: ssl_object if name == "ssl_object" else None
-        )
-        self.connection = SimpleNamespace(_transport=transport)
-        self.processor = SimpleNamespace(close=lambda: closed.append(True))
-
-
-async def test_pinned_channel_revalidates_identity_on_every_connect(
-    monkeypatch,
-) -> None:
-    """Reconnects must re-run the pin, not trust the first handshake."""
-    from grpclib.client import Channel
-
-    from custom_components.matic_robot.client.transport import (
-        PinnedChannel,
-    )
-
-    closed: list[bool] = []
-    certificates = iter([b"pinned-cert", b"rotated-cert"])
-
-    async def fake_super_connection(self):
-        return _FakeProtocol(next(certificates), closed)
-
-    monkeypatch.setattr(Channel, "_create_connection", fake_super_connection)
-
-    seen: list[bytes] = []
-
-    def fake_validate(certificate, **kwargs):
-        seen.append(certificate)
-        if certificate != b"pinned-cert":
-            raise CertificateMismatchError("robot certificate changed")
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.transport.validate_certificate",
-        fake_validate,
-    )
-
-    channel = PinnedChannel(
-        "192.0.2.1",
-        16320,
-        ssl=object(),
-        expected_hostname="matic-example",
-        expected_serial="serial",
-        expected_fingerprint=None,
-    )
-
-    assert await channel._create_connection() is not None
-    with pytest.raises(CertificateMismatchError):
-        await channel._create_connection()
-
-    assert seen == [b"pinned-cert", b"rotated-cert"]
-    assert closed == [True]
-
-
-def test_pinned_channel_rejects_missing_certificate() -> None:
-    from custom_components.matic_robot.client.exceptions import (
-        InvalidRobotCertificateError,
-    )
-    from custom_components.matic_robot.client.transport import (
-        PinnedChannel,
-    )
-
-    channel = PinnedChannel(
-        "192.0.2.1",
-        16320,
-        ssl=object(),
-        expected_hostname=None,
-        expected_serial=None,
-        expected_fingerprint=None,
-    )
-
-    with pytest.raises(InvalidRobotCertificateError, match="did not present"):
-        channel._validate_peer(None)
-    with pytest.raises(InvalidRobotCertificateError, match="did not present"):
-        channel._validate_peer(SimpleNamespace(getpeercert=lambda binary_form: None))
+            raise raised
+    assert type(caught.value) is kind
 
 
 class _RawFrameStream:
@@ -524,7 +353,7 @@ async def test_known_property_assigns_semantic_frame_budget(
         lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
     )
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     assert await client.async_get_property(name) == b"value"
     assert stream.message_byte_limit == expected_limit
 
@@ -538,7 +367,7 @@ async def test_property_rejects_oversized_value_within_envelope_allowance(
         lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
     )
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     with pytest.raises(CannotConnectError, match="value byte limit"):
         await client.async_get_property("optional", max_bytes=8)
 
@@ -549,7 +378,7 @@ async def test_optional_property_drops_oversized_value_before_retention() -> Non
         return_value=b"x" * (64 * 1024 + 1)
     )
     assert await client._reads._async_optional_property("current_version") is None
-    assert client.endpoint_health["current_version"] == "CannotConnectError"
+    assert client.endpoint_health["current_version"] == "ProtocolError"
 
 
 async def test_bounded_grpc_frame_rejects_malformed_framing() -> None:
@@ -557,7 +386,7 @@ async def test_bounded_grpc_frame_rejects_malformed_framing() -> None:
         await _async_recv_bounded_message(_RawFrameStream(b""), MagicMock(), bytes)
         is None
     )
-    with pytest.raises(ProtocolError, match="header"):
+    with pytest.raises(GrpcProtocolError, match="header"):
         await _async_recv_bounded_message(
             _RawFrameStream(b"\x00\x00"), MagicMock(), bytes
         )
@@ -565,7 +394,7 @@ async def test_bounded_grpc_frame_rejects_malformed_framing() -> None:
         await _async_recv_bounded_message(
             _RawFrameStream(b"\x01" + struct.pack(">I", 0)), MagicMock(), bytes
         )
-    with pytest.raises(ProtocolError, match="body"):
+    with pytest.raises(GrpcProtocolError, match="body"):
         await _async_recv_bounded_message(
             _RawFrameStream(b"\x00" + struct.pack(">I", 2), b"x"),
             MagicMock(),
@@ -602,42 +431,25 @@ async def test_bounded_stream_dispatches_and_records_received_message() -> None:
     assert await stream.recv_message() is None
 
 
-def test_pinned_channel_uses_bounded_stream_for_every_rpc() -> None:
-    from custom_components.matic_robot.client.transport import (
-        PinnedChannel,
-    )
-
-    channel = PinnedChannel(
-        "192.0.2.1",
-        16320,
-        ssl=object(),
-        expected_hostname=None,
-        expected_serial=None,
-        expected_fingerprint=None,
-    )
-    stream = channel.request("/hermes.Test/Read", Cardinality.UNARY_UNARY, bytes, bytes)
-
-    assert isinstance(stream, BoundedStream)
-    assert MAX_HERMES_MESSAGE_BYTES > 0
-    channel.close()
-
-
-async def test_rpc_entry_points_reconnect_and_reject_unopened_channels() -> None:
+async def test_every_rpc_entry_point_raises_the_failed_dial() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection.async_connect = AsyncMock()
+    client._connection.async_channel = AsyncMock(side_effect=TransportError("offline"))
 
     calls = (
         client.async_get_info(),
         client.async_request_credential("40dd38c5-0492-49de-b333-41f16f67471e"),
+        client.async_get_state(),
         client.async_get_property("state"),
         client.async_get_collection_count("history"),
         client.async_get_collection_entries("history"),
+        client.async_get_tracked_collection_entries("history"),
+        anext(client.async_subscribe_collection_entries("live_map")),
         client._connection._async_send_channel_payload("user_command", b"payload"),
     )
     for call in calls:
-        with pytest.raises(CannotConnectError, match="did not open"):
+        with pytest.raises(TransportError, match="offline"):
             await call
-    assert client._connection.async_connect.await_count == len(calls)
+    assert client._connection.async_channel.await_count == len(calls)
 
 
 async def test_get_info_maps_response_and_grpc_errors(monkeypatch) -> None:
@@ -662,7 +474,7 @@ async def test_get_info_maps_response_and_grpc_errors(monkeypatch) -> None:
         "custom_components.matic_robot.client.hermes_reads.HermesDiscoveryRPCStub", Stub
     )
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     assert (await client.async_get_info()).serial_number == "serial"
 
     for status, error_type in (
@@ -689,7 +501,7 @@ async def test_request_credential_rejects_invalid_and_closed_pairing(
         "custom_components.matic_robot.client.hermes_connection.HermesAuthStub", Stub
     )
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     with pytest.raises(CannotConnectError, match="incomplete credential"):
         await client.async_request_credential("user")
 
@@ -715,13 +527,10 @@ async def test_request_credential_rejects_invalid_and_closed_pairing(
             await client.async_request_credential("user")
 
 
-async def test_handshake_guards_and_errors(monkeypatch) -> None:
+async def test_handshake_needs_a_credential_and_maps_errors(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    with pytest.raises(CannotConnectError, match="did not open"):
-        await client._connection._async_handshake()
-
-    client._connection._channel = object()
-    await client._connection._async_handshake()
+    channel = object()
+    await client._connection._async_handshake(channel)
     client._connection._credential = _credential()
 
     class Stub:
@@ -731,47 +540,65 @@ async def test_handshake_guards_and_errors(monkeypatch) -> None:
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_connection.HermesStub", Stub
     )
-    with pytest.raises(CannotConnectError, match="timed out"):
-        await client._connection._async_handshake()
+    with pytest.raises(RequestTimeoutError, match="timed out"):
+        await client._connection._async_handshake(channel)
 
     for status, error_type in (
         (Status.UNAUTHENTICATED, AuthenticationRequiredError),
-        (Status.INTERNAL, CannotConnectError),
+        (Status.INTERNAL, ProtocolError),
     ):
         Stub.__init__ = lambda self, channel, status=status: setattr(
             self, "Handshake", AsyncMock(side_effect=GRPCError(status, "failed"))
         )
         with pytest.raises(error_type):
-            await client._connection._async_handshake()
+            await client._connection._async_handshake(channel)
 
 
-async def test_state_read_reconnects_and_retries_stale_channel() -> None:
+async def test_state_read_is_repeated_once_after_a_transport_failure() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    failed_channel = SimpleNamespace(close=MagicMock())
-    fresh_channel = object()
-    client._connection._channel = failed_channel
-
-    async def connect_fresh_channel() -> None:
-        client._connection._channel = fresh_channel
-
-    client._connection._async_connect_locked = AsyncMock(
-        side_effect=connect_fresh_channel
-    )
+    client._connection.async_channel = AsyncMock(return_value=object())
     payload = KabukiOutputWire(states=[106]).SerializeToString()
     client._collections.async_get_property = AsyncMock(
-        side_effect=[CannotConnectError("stale stream"), payload]
+        side_effect=[TransportError("stale stream"), payload]
     )
 
     state = await client.async_get_state()
 
     assert state.activity is RobotActivity.DOCKED
-    assert client._connection._channel is fresh_channel
     assert client._collections.async_get_property.await_args_list == [
         mock_call("kabuki_state"),
         mock_call("kabuki_state"),
     ]
-    client._connection._async_connect_locked.assert_awaited_once_with()
-    failed_channel.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "failures",
+    [
+        [TransportError("stale stream"), TransportError("still down")],
+        [RequestTimeoutError("silent")],
+        [ProtocolError("no value")],
+    ],
+    ids=["second transport failure", "timeout", "unusable answer"],
+)
+async def test_state_read_raises_what_one_repeat_does_not_cure(failures) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._connection.async_channel = AsyncMock(return_value=object())
+    client._collections.async_get_property = AsyncMock(side_effect=failures)
+
+    with pytest.raises(type(failures[-1]), match=str(failures[-1])):
+        await client.async_get_state()
+
+    assert client._collections.async_get_property.await_count == len(failures)
+
+
+async def test_state_read_does_not_repeat_a_failed_dial() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._connection.async_channel = AsyncMock(side_effect=TransportError("offline"))
+
+    with pytest.raises(TransportError, match="offline"):
+        await client.async_get_state()
+
+    client._connection.async_channel.assert_awaited_once_with()
 
 
 async def test_state_subscription_decodes_updates_and_rejects_malformed() -> None:
@@ -788,21 +615,6 @@ async def test_state_subscription_decodes_updates_and_rejects_malformed() -> Non
     assert (await anext(updates)).activity is RobotActivity.DOCKED
     with pytest.raises(CannotConnectError, match="malformed subscribed"):
         await anext(updates)
-
-
-async def test_stale_reader_reuses_channel_replaced_by_concurrent_reader() -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    failed_channel = SimpleNamespace(close=MagicMock())
-    fresh_channel = SimpleNamespace(close=MagicMock())
-    client._connection._channel = fresh_channel
-    client._connection._async_connect_locked = AsyncMock()
-
-    await client._connection._async_reconnect_after_read_failure(failed_channel)
-
-    assert client._connection._channel is fresh_channel
-    client._connection._async_connect_locked.assert_not_awaited()
-    failed_channel.close.assert_not_called()
-    fresh_channel.close.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -823,7 +635,7 @@ async def test_get_property_accepts_all_verified_value_encodings(
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     assert await client.async_get_property("state") == expected
     assert stream.request.initial_request.collection_name == "state"
@@ -833,7 +645,7 @@ async def test_get_property_rejects_missing_empty_and_grpc_failures(
     monkeypatch,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     for response, message in (
         (None, "no value"),
@@ -852,7 +664,7 @@ async def test_get_property_rejects_missing_empty_and_grpc_failures(
         (TimeoutError(), CannotConnectError),
         (OSError("reset"), CannotConnectError),
         (StreamTerminatedError("dropped"), CannotConnectError),
-        (ProtocolError("bad frame"), CannotConnectError),
+        (GrpcProtocolError("bad frame"), CannotConnectError),
         (GRPCError(Status.UNAUTHENTICATED, "auth"), AuthenticationRequiredError),
         (GRPCError(Status.INTERNAL, "failed"), CannotConnectError),
     ):
@@ -880,7 +692,7 @@ async def test_get_collection_count_counts_values_and_stops_at_end(monkeypatch) 
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     assert await client.async_get_collection_count("history") == 2
     assert stream.request.initial_request.collection_name == "history"
@@ -896,7 +708,7 @@ async def test_get_collection_count_cancels_streams_at_the_hard_cap(
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     assert await client.async_get_collection_count("history") == 4096
     assert stream.cancelled is True
@@ -904,7 +716,7 @@ async def test_get_collection_count_cancels_streams_at_the_hard_cap(
 
 async def test_get_collection_count_translates_stream_errors(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     for error, error_type in (
         (GRPCError(Status.UNAUTHENTICATED, "auth"), AuthenticationRequiredError),
@@ -921,7 +733,7 @@ async def test_get_collection_count_translates_stream_errors(monkeypatch) -> Non
 
 async def test_bounded_collection_reads_cancel_idle_streams(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     for read in (
         client.async_get_collection_count("history"),
@@ -955,7 +767,7 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     entries = await client.async_get_collection_entries("history", limit=2)
     assert [(entry.key, entry.value) for entry in entries] == [
@@ -993,7 +805,7 @@ async def test_get_collection_entries_enforces_cumulative_byte_budget(
         10,
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     with pytest.raises(CannotConnectError, match="byte limit"):
         await client.async_get_collection_entries("history", limit=2)
@@ -1028,7 +840,7 @@ async def test_subscribe_collection_entries_yields_snapshot_and_updates(
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     entries = [
         entry async for entry in client.async_subscribe_collection_entries("live_map")
@@ -1054,7 +866,7 @@ async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     receive = asyncio.create_task(
         anext(client.async_subscribe_collection_entries("live_map"))
@@ -1077,7 +889,7 @@ async def test_subscribe_collection_entries_does_not_await_cancel_during_task_ca
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     receive = asyncio.create_task(
         anext(client.async_subscribe_collection_entries("kabuki_state"))
@@ -1091,43 +903,26 @@ async def test_subscribe_collection_entries_does_not_await_cancel_during_task_ca
     assert not stream.cancel_started.is_set()
 
 
-async def test_subscribe_collection_entries_reconnects_failed_channel(
+async def test_subscribe_collection_entries_raises_a_dropped_stream(
     monkeypatch,
 ) -> None:
     stream = _BidirectionalSequenceStream([])
     stream.recv_message = AsyncMock(side_effect=StreamTerminatedError("dropped"))
-    method = _OpenMethod(stream)
-    failed_channel = SimpleNamespace(close=MagicMock())
-    fresh_channel = object()
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_collections.HermesStub",
-        lambda channel: SimpleNamespace(FetchCollection=method),
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = failed_channel
+    client._connection.async_channel = AsyncMock(return_value=object())
 
-    async def connect_fresh_channel() -> None:
-        client._connection._channel = fresh_channel
-
-    client._connection._async_connect_locked = AsyncMock(
-        side_effect=connect_fresh_channel
-    )
-
-    with pytest.raises(CannotConnectError, match="connection failed"):
+    with pytest.raises(TransportError, match="connection failed"):
         await anext(client.async_subscribe_collection_entries("live_map"))
 
-    assert client._connection._channel is fresh_channel
-    client._connection._async_connect_locked.assert_awaited_once_with()
-    failed_channel.close.assert_called_once_with()
     assert stream.cancelled is True
 
 
-async def test_subscribe_collection_entries_requires_a_connected_channel() -> None:
+async def test_collection_entry_limit_is_bounded() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection.async_connect = AsyncMock()
-
-    with pytest.raises(CannotConnectError, match="channel did not open"):
-        await anext(client.async_subscribe_collection_entries("live_map"))
     with pytest.raises(ValueError, match="between"):
         await client.async_get_collection_entries("history", limit=0)
 
@@ -1153,7 +948,7 @@ async def test_get_tracked_collection_entries_acknowledges_complete_snapshot(
         lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     entries = await client.async_get_tracked_collection_entries("history", limit=8)
 
@@ -1356,7 +1151,7 @@ async def test_get_collection_entries_stop_at_stream_end_without_cancel(
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     entries = await client.async_get_collection_entries("history", limit=8)
     assert [(entry.key, entry.value) for entry in entries] == [(b"one", b"only")]
@@ -1408,7 +1203,7 @@ async def test_endpoint_inspection_routes_properties_collections_and_health() ->
 
 async def test_get_collection_entries_translates_stream_errors(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     for error, error_type in (
         (GRPCError(Status.UNAUTHENTICATED, "auth"), AuthenticationRequiredError),
         (GRPCError(Status.INTERNAL, "failed"), CannotConnectError),
@@ -1428,7 +1223,7 @@ async def test_raw_h2_stream_errors_map_to_cannot_connect(monkeypatch) -> None:
     from h2.exceptions import StreamClosedError
 
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     method = _OpenMethod(_Stream(error=StreamClosedError(63)))
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_collections.HermesStub",
@@ -1450,7 +1245,7 @@ async def test_cancel_of_robot_closed_stream_keeps_collected_data(
             raise StreamClosedError(63)
 
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     stream = _RobotClosedStream(response=_collection_response(direct=b"payload"))
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_collections.HermesStub",
@@ -1465,7 +1260,7 @@ async def test_cancel_of_robot_closed_stream_keeps_collected_data(
 
 async def test_collection_reads_are_wall_clock_bounded(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     clock = iter([0.0, 100.0, 0.0, 100.0])
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_collections.monotonic",
@@ -1508,7 +1303,7 @@ async def test_optional_telemetry_reads_fail_closed() -> None:
 
 async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     client._collections.async_get_property = AsyncMock(return_value=b"bad")
 
     async def pose_stream():
@@ -1617,7 +1412,7 @@ async def test_pose_acknowledges_foreign_before_selecting_active_record(
         lambda channel: SimpleNamespace(FetchCollection=method),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     pose = await client.async_get_pose(expected_mission_id=42)
 
@@ -2962,11 +2757,11 @@ async def test_get_slam_tile_entry_rejects_empty_maps(entries) -> None:
 
 async def test_send_channel_payload_translates_stream_errors(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     for error, error_type in (
-        (TimeoutError(), CannotConnectError),
+        (TimeoutError(), RequestTimeoutError),
         (GRPCError(Status.UNAUTHENTICATED, "auth"), AuthenticationRequiredError),
-        (GRPCError(Status.INTERNAL, "failed"), CannotConnectError),
+        (GRPCError(Status.INTERNAL, "failed"), ProtocolError),
     ):
         callback = MagicMock()
         method = _OpenMethod(_Stream(error=error))
@@ -2988,7 +2783,7 @@ async def test_send_channel_payload_records_acknowledgment_health(
     monkeypatch,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     acknowledged = _Stream(response=SimpleNamespace(ByteSize=lambda: 4))
     monkeypatch.setattr(
@@ -3016,7 +2811,7 @@ async def test_send_callback_marks_possible_delivery_before_response(
     monkeypatch,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     stream = _TimeoutStream()
     callback = MagicMock()
     monkeypatch.setattr(
@@ -3035,7 +2830,7 @@ async def test_send_callback_marks_possible_delivery_before_response(
 
 async def test_send_callback_does_not_mark_locally_rejected_write(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     stream = _FailedSendStream()
     callback = MagicMock()
     monkeypatch.setattr(
@@ -3062,133 +2857,40 @@ async def test_send_callback_does_not_mark_locally_rejected_write(monkeypatch) -
         ("async_set_water_flow", (1.4,), b"\x0a\x05\x0d" + struct.pack("<f", 0.8)),
     ),
 )
-async def test_retirement_revokes_late_setting_readback_without_resending(
-    method, args, old_state
+async def test_shutdown_ends_a_setting_readback_without_resending_or_redialing(
+    monkeypatch, method, args, old_state
 ) -> None:
-    """An acknowledged setting cannot reopen its old runtime after unload."""
-    client = MaticHermesClient("192.0.2.1", 16320)
-    channel = MagicMock()
-    client._connection._channel = channel
-    client._connection._async_send_channel_payload = AsyncMock()
-    client._connection._async_connect_locked = AsyncMock()
+    """An acknowledged setting cannot reopen its connection after unload."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.hermes_commands._SETTING_READBACK_INTERVAL_SECONDS",
+        0,
+    )
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def read(_name: str) -> bytes:
-        started.set()
-        await release.wait()
-        return old_state
+    class HeldRead(_Stream):
+        async def recv_message(self):
+            started.set()
+            await release.wait()
+            return _collection_response(direct=old_state)
 
-    client._collections.async_get_property = AsyncMock(side_effect=read)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.hermes_collections.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(HeldRead())),
+    )
+    client = MaticHermesClient("192.0.2.1", 16320)
+    dial = client._connection._supervisor._open = AsyncMock(return_value=FakeChannel())
+    client._connection._async_send_channel_payload = AsyncMock()
+
     task = asyncio.create_task(getattr(client, method)(*args))
     await started.wait()
     await client.async_shutdown()
     release.set()
-    with pytest.raises(CannotConnectError, match="retired"):
+
+    with pytest.raises(TransportError, match="closed"):
         await task
     client._connection._async_send_channel_payload.assert_awaited_once()
-    client._connection._async_connect_locked.assert_not_awaited()
-    channel.close.assert_called_once()
-    assert client._connection._channel is None
-    with pytest.raises(CannotConnectError, match="retired"):
-        await client._connection._async_reconnect_after_read_failure(channel)
-    with pytest.raises(CannotConnectError, match="retired"):
-        await HermesConnection._async_connect_locked(client._connection)
-
-
-async def test_retirement_during_tls_connect_closes_unpublished_channel(
-    monkeypatch,
-) -> None:
-    """A candidate dial completing after retirement cannot acquire ownership."""
-    client = MaticHermesClient("192.0.2.1", 16320)
-    started = asyncio.Event()
-    release = asyncio.Event()
-    closed = MagicMock()
-
-    class PendingChannel:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def __connect__(self) -> None:
-            started.set()
-            await release.wait()
-
-        def close(self) -> None:
-            closed()
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
-        AsyncMock(return_value=object()),
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
-        PendingChannel,
-    )
-    task = asyncio.create_task(client.async_connect())
-    await started.wait()
-    shutdown = asyncio.create_task(client.async_shutdown())
-    await asyncio.sleep(0)
-    assert client._connection._retired
-    assert not shutdown.done()
-    release.set()
-    with pytest.raises(CannotConnectError, match="retired"):
-        await task
-    await shutdown
-    closed.assert_called_once()
-    assert client._connection._channel is None
-
-
-async def test_retirement_revokes_captured_channel_and_pending_tls_protocol(
-    monkeypatch,
-) -> None:
-    """Old streams cannot use grpclib's transparent reconnect after unload."""
-    from grpclib.client import Channel
-
-    from custom_components.matic_robot.client.transport import (
-        PinnedChannel,
-    )
-
-    client = MaticHermesClient("192.0.2.1", 16320)
-    channel = PinnedChannel(
-        "192.0.2.1",
-        16320,
-        ssl=object(),
-        expected_hostname=None,
-        expected_serial=None,
-        expected_fingerprint=None,
-        is_retired=lambda: client._connection._retired,
-    )
-    started = asyncio.Event()
-    release = asyncio.Event()
-    closed: list[bool] = []
-
-    async def connect(self):
-        started.set()
-        await release.wait()
-        return _FakeProtocol(b"synthetic-cert", closed)
-
-    monkeypatch.setattr(Channel, "_create_connection", connect)
-    task = asyncio.create_task(channel._create_connection())
-    await started.wait()
-    client.retire()
-    release.set()
-    with pytest.raises(CannotConnectError, match="retired"):
-        await task
-    assert closed == [True]
-    with pytest.raises(CannotConnectError, match="retired"):
-        channel.request("/hermes.Test/Read", Cardinality.UNARY_UNARY, bytes, bytes)
-    with pytest.raises(CannotConnectError, match="retired"):
-        await channel._create_connection()
-    channel.close()
-
-
-def test_client_retirement_is_distinct_from_reusable_close() -> None:
-    client = MaticHermesClient("192.0.2.1", 16320)
-    assert not client.retired
-    client.close()
-    assert not client.retired
-    client.retire()
-    assert client.retired
+    dial.assert_awaited_once()
 
 
 async def test_unsupported_optional_endpoints_preserve_other_telemetry() -> None:

@@ -106,7 +106,7 @@ async def test_schedule_inspection_and_telemetry_ack_and_read_both_records(
     )
 
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
     client._reads._async_optional_property = AsyncMock(return_value=None)
     client._collections.async_get_collection_entries = AsyncMock(return_value=())
     client._collections.async_get_collection_count = AsyncMock(return_value=0)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from grpclib.const import Status
@@ -14,8 +15,12 @@ from h2.exceptions import H2Error
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.client.commands import encode_user_data
-from custom_components.matic_robot.client.exceptions import CannotConnectError
+from custom_components.matic_robot.client.exceptions import (
+    ProtocolError,
+    TransportError,
+)
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
+from tests.hermes_fakes import FakeChannel
 
 
 async def test_request_credential_uses_user_id_and_enables_metadata(
@@ -56,7 +61,7 @@ async def test_request_credential_uses_user_id_and_enables_metadata(
         FakeHermesStub,
     )
     client = MaticHermesClient("robot.invalid", 16320)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     credential = await client.async_request_credential(
         "40dd38c5-0492-49de-b333-41f16f67471e"
@@ -94,16 +99,14 @@ async def test_request_credential_maps_h2_transport_error() -> None:
             raise H2Error("synthetic auth transport failure")
 
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._connection._channel = object()
-
-    from unittest.mock import patch
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     with (
         patch(
             "custom_components.matic_robot.client.hermes_connection.HermesAuthStub",
             FailingAuthStub,
         ),
-        pytest.raises(CannotConnectError, match="credential request connection failed"),
+        pytest.raises(TransportError, match="credential request connection failed"),
     ):
         await client.async_request_credential("synthetic-user")
 
@@ -114,16 +117,6 @@ async def test_authenticated_connect_handshakes_on_the_created_channel(
     calls: list[tuple[object, object, dict[str, str]]] = []
     channels = []
     channel_metadata = []
-
-    class FakeChannel:
-        def __init__(self, host, port, *, ssl, **kwargs):
-            self.host = host
-
-        async def __connect__(self):
-            return None
-
-        def close(self):
-            return None
 
     class FakeHandshake:
         def __init__(self, channel) -> None:
@@ -156,11 +149,11 @@ async def test_authenticated_connect_handshakes_on_the_created_channel(
         FakeHermesStub,
     )
 
-    client = MaticHermesClient("192.0.2.1", 16320, credential=credential)
-    await client.async_connect()
+    async with MaticHermesClient("192.0.2.1", 16320, credential=credential) as client:
+        channel = await client._connection.async_channel()
 
     assert len(calls) == 1
-    assert calls[0][0] is client._connection._channel
+    assert calls[0][0] is channel
     assert calls[0][1].SerializeToString() == b""
     assert calls[0][2] == credential.metadata()
     assert channels[0].channel_name == "user_data"
@@ -192,7 +185,7 @@ async def test_user_command_routes_with_hermes_target_metadata(
         ).SerializeToString(),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=credential)
-    client._connection._channel = object()
+    client._connection.async_channel = AsyncMock(return_value=object())
 
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_connection.HermesStub",
@@ -211,7 +204,7 @@ async def test_connect_prefers_resolved_ipv4_and_falls_back_from_ipv6(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempted_hosts: list[str] = []
-    channels: list[tuple[str, int, object]] = []
+    dialed: list[tuple[str, int, object]] = []
 
     async def fake_getaddrinfo(host, port, *, type):
         assert host == "robot.local"
@@ -222,21 +215,12 @@ async def test_connect_prefers_resolved_ipv4_and_falls_back_from_ipv6(
             (socket.AF_INET, type, 6, "", ("192.0.2.2", port)),
         ]
 
-    class FakeChannel:
-        def __init__(self, host, port, *, ssl, **kwargs):
-            self.host = host
-            self.port = port
-            self.ssl = ssl
-            self.closed = False
-            channels.append((host, port, ssl))
-
+    class Ipv4Unreachable(FakeChannel):
         async def __connect__(self):
+            dialed.append((self.host, self.port, self.options["ssl"]))
             attempted_hosts.append(self.host)
             if self.host == "192.0.2.2":
                 raise OSError("synthetic failure")
-
-        def close(self):
-            self.closed = True
 
     context = object()
     monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_getaddrinfo)
@@ -246,44 +230,36 @@ async def test_connect_prefers_resolved_ipv4_and_falls_back_from_ipv6(
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
-        FakeChannel,
+        Ipv4Unreachable,
     )
 
-    client = MaticHermesClient(
+    async with MaticHermesClient(
         "2001:db8::1",
         16320,
         hostname="robot.local",
         serial_number="synthetic-serial",
         certificate_fingerprint="00" * 32,
-    )
-    await client.async_connect()
+    ) as client:
+        channel = await client._connection.async_channel()
 
     assert attempted_hosts == ["192.0.2.2", "2001:db8::2"]
-    assert channels == [
+    assert dialed == [
         ("192.0.2.2", 16320, context),
         ("2001:db8::2", 16320, context),
     ]
-    assert client._connection._channel is not None
-    assert client._connection._channel.host == "2001:db8::2"
+    assert channel.host == "2001:db8::2"
 
 
-async def test_failed_handshake_resets_channel_for_later_reconnect(
+async def test_failed_handshake_closes_its_channel_and_the_next_request_redials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = object()
-    channels: list[object] = []
+    channels: list[FakeChannel] = []
 
-    class FakeChannel:
-        def __init__(self, host, port, *, ssl, **kwargs):
-            self.host = host
-            self.closed = False
+    class Recorded(FakeChannel):
+        def __init__(self, host, port, **options) -> None:
+            super().__init__(host, port, **options)
             channels.append(self)
-
-        async def __connect__(self):
-            return None
-
-        def close(self):
-            self.closed = True
 
     fails = {"value": True}
 
@@ -303,7 +279,7 @@ async def test_failed_handshake_resets_channel_for_later_reconnect(
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
-        FakeChannel,
+        Recorded,
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_connection.HermesStub",
@@ -318,14 +294,13 @@ async def test_failed_handshake_resets_channel_for_later_reconnect(
     )
     client = MaticHermesClient("192.0.2.1", 16320, credential=credential)
 
-    with pytest.raises(CannotConnectError):
+    with pytest.raises(ProtocolError, match="handshake boom"):
         await client.async_connect()
-    assert client._connection._channel is None
-    assert channels[0].closed is True
+    assert channels[0].closed == 1
 
     fails["value"] = False
-    await client.async_connect()
-    assert client._connection._channel is channels[1]
+    assert await client._connection.async_channel() is channels[1]
+    await client.async_shutdown()
 
 
 async def _async_value(value):

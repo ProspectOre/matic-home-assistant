@@ -23,6 +23,7 @@ from custom_components.matic_robot.slam_map_store import (
     MAX_HEALTH_COUNTER,
     SlamMapStore,
 )
+from tests.hermes_fakes import keep_subscribed
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
@@ -1079,7 +1080,10 @@ async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> 
         yield HermesCollectionEntry(b"bad", b"bad")
         raise asyncio.CancelledError
 
-    client = SimpleNamespace(async_subscribe_collection_entries=live_entries)
+    client = SimpleNamespace(
+        async_subscribe_collection_entries=live_entries,
+        async_keep_subscribed=keep_subscribed(),
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await store.async_collect(client)
@@ -1227,36 +1231,36 @@ async def test_slam_map_store_prime_stops_if_closed_during_snapshot(hass) -> Non
 
 
 @pytest.mark.parametrize("fail_stream", [True, False])
-async def test_slam_map_store_retries_failed_or_finished_streams(
+async def test_slam_map_store_subscribes_again_after_failed_or_finished_streams(
     hass, fail_stream
 ) -> None:
     store = SlamMapStore(hass, "retry-entry")
+    subscriptions = 0
 
     async def entries(name):
+        nonlocal subscriptions
+        subscriptions += 1
         if fail_stream:
             raise CannotConnectError("synthetic disconnect")
         if False:
             yield HermesCollectionEntry(b"", b"")
 
-    client = SimpleNamespace(async_subscribe_collection_entries=entries)
+    client = SimpleNamespace(
+        async_subscribe_collection_entries=entries,
+        async_keep_subscribed=keep_subscribed(2),
+    )
 
-    with (
-        patch(
-            "custom_components.matic_robot.slam_map_store.asyncio.sleep",
-            side_effect=asyncio.CancelledError,
-        ) as sleep,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await store._async_collect_collection(
-            client, "map_compressed_rgb", structural=False
-        )
-    sleep.assert_awaited_once()
+    await store._async_collect_collection(
+        client, "map_compressed_rgb", structural=False
+    )
+
+    assert subscriptions == 2
     assert store.health.stream_state == "retrying"
     assert store.health.state == "degraded"
-    assert store.health.stream_failures == int(fail_stream)
+    assert store.health.stream_failures == 2 * int(fail_stream)
 
 
-async def test_slam_map_store_retries_unexpected_stream_errors(hass) -> None:
+async def test_slam_map_store_survives_unexpected_stream_errors(hass) -> None:
     store = SlamMapStore(hass, "unexpected-stream-entry")
 
     async def entries(name):
@@ -1264,22 +1268,18 @@ async def test_slam_map_store_retries_unexpected_stream_errors(hass) -> None:
         if False:
             yield HermesCollectionEntry(b"", b"")
 
-    client = SimpleNamespace(async_subscribe_collection_entries=entries)
+    client = SimpleNamespace(
+        async_subscribe_collection_entries=entries,
+        async_keep_subscribed=keep_subscribed(),
+    )
     updates: list[str] = []
     remove_listener = store.async_add_listener(
         lambda: updates.append(store.health.stream_state)
     )
 
-    with (
-        patch(
-            "custom_components.matic_robot.slam_map_store.asyncio.sleep",
-            side_effect=asyncio.CancelledError,
-        ),
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await store._async_collect_collection(
-            client, "map_compressed_rgb", structural=False
-        )
+    await store._async_collect_collection(
+        client, "map_compressed_rgb", structural=False
+    )
 
     assert updates == ["connecting", "retrying"]
     assert store.health.stream_failures == 1
@@ -1323,7 +1323,7 @@ async def test_slam_map_store_shutdown_resolves_delayed_private_write(hass) -> N
     assert restored.tile_count == 0
 
 
-async def test_slam_map_store_shutdown_prevents_stream_reconnect(hass) -> None:
+async def test_slam_map_store_shutdown_prevents_another_subscription(hass) -> None:
     store = SlamMapStore(hass, "collector-shutdown-entry")
     release = asyncio.Event()
     subscribed = asyncio.Event()
@@ -1337,20 +1337,18 @@ async def test_slam_map_store_shutdown_prevents_stream_reconnect(hass) -> None:
         if False:
             yield HermesCollectionEntry(b"", b"")
 
-    client = SimpleNamespace(async_subscribe_collection_entries=entries)
+    client = SimpleNamespace(
+        async_subscribe_collection_entries=entries,
+        async_keep_subscribed=keep_subscribed(2),
+    )
     collector = asyncio.create_task(store.async_collect(client))
     await subscribed.wait()
 
-    with patch(
-        "custom_components.matic_robot.slam_map_store.asyncio.sleep",
-        new_callable=AsyncMock,
-    ) as sleep:
-        await store.async_shutdown()
-        release.set()
-        await asyncio.wait_for(collector, 0.5)
+    await store.async_shutdown()
+    release.set()
+    await asyncio.wait_for(collector, 0.5)
 
     assert calls == {"map_compressed_rgb": 1, "map_integrated": 1}
-    sleep.assert_not_awaited()
 
 
 async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> None:
