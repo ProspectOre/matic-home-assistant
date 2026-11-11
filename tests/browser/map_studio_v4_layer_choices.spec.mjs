@@ -85,6 +85,11 @@ test("the layer toggles and key fit a phone", async ({ page }) => {
     expect(box.x >= 0 && box.y >= 0 && box.x + box.width <= 390 && box.y + box.height <= 844).toBe(true);
   }
   await page.screenshot({ path: test.info().outputPath("layers-mobile.png") });
+  // Help opens below the toggles stacked under Fit map.
+  await panel.getByRole("button", { name: "How to move the map", exact: true }).click();
+  const help = await panel.getByRole("dialog", { name: "How to move the map", exact: true }).boundingBox();
+  const tools = await panel.locator(".map-tools").boundingBox();
+  expect(help.y).toBeGreaterThanOrEqual(tools.y + tools.height);
 });
 
 const entry = (id, key, extra = {}) => ({
