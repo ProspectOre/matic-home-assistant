@@ -7260,15 +7260,13 @@ test.describe("Map Studio v0.4 foundation", () => {
     await send({ map_floor_coherent: false, map_session_key: null, position: null });
     await expect.poll(shown).toEqual({ exactPose: false, pose: null });
     // A point near the freshness limit keeps only its remaining lifetime, so a
-    // robot that stops reporting disappears without another message. Its map
-    // session stays for the last-seen marker.
+    // robot that stops reporting disappears without another message; its session stays for last-seen.
     await send({ map_floor_coherent: true, map_session_key: "a".repeat(64), position: [11, 13] });
     await expect.poll(async () => (await shown()).exactPose, { timeout: 10_000 }).toBe(true);
     await page.evaluate(() => window.__robotPoses.stream(false));
     await send({ pose_age_seconds: 3 });
     expect((await shown()).exactPose).toBe(true);
-    await expect.poll(async () => { const { exactPose, pose } = await shown(); return [exactPose, pose?.position, pose?.mapSessionKey]; },
-      { timeout: 2_500, intervals: [50, 100, 200] }).toEqual([false, null, "a".repeat(64)]);
+    await expect.poll(async () => { const { exactPose, pose } = await shown(); return [exactPose, pose?.position, pose?.mapSessionKey]; }, { timeout: 2_500, intervals: [50, 100, 200] }).toEqual([false, null, "a".repeat(64)]);
     await send({ pose_age_seconds: 0 });
     await expect.poll(async () => (await shown()).exactPose).toBe(true);
     await page.evaluate(() => window.__deltaPanel.remove());
