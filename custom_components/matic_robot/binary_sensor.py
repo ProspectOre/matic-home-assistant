@@ -26,6 +26,7 @@ class MaticBinarySensorDescription(BinarySensorEntityDescription):
     """Describe a Matic state predicate."""
 
     value_fn: Callable[[RobotState], bool | None]
+    attributes_fn: Callable[[RobotState], dict[str, object]] | None = None
 
 
 DESCRIPTIONS = (
@@ -120,6 +121,9 @@ DESCRIPTIONS = (
             if state.telemetry.maintenance_suggestions is None
             else bool(state.telemetry.maintenance_suggestions)
         ),
+        attributes_fn=lambda state: {
+            "recap_month": state.telemetry.maintenance_recap_month
+        },
     ),
 )
 
@@ -155,3 +159,9 @@ class MaticBinarySensor(MaticEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return the current predicate value."""
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return the description's attributes, if it has any."""
+        attributes_fn = self.entity_description.attributes_fn
+        return attributes_fn(self.coordinator.data) if attributes_fn else None
