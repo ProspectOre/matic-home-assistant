@@ -47,6 +47,7 @@ _ROOM_RESULTS = {
     "failed": "problem",
     "ended_unverified": "unconfirmed",
     "skipped": "skipped",
+    "unreachable": "unreachable",
     "running": "running",
     "suspended": "running",
     "verifying": "running",
@@ -227,7 +228,7 @@ def run_ending(run: Mapping[str, Any]) -> str:
         return "taken_over"
     if reason == "config_entry_unload":
         return "home_assistant"
-    if reason in {"interrupted", "stopped_in_place"}:
+    if reason in {"interrupted", "stopped_in_place", "native_task_ended"}:
         return "interrupted"
     return "unknown"
 

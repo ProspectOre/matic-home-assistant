@@ -81,6 +81,32 @@ The [OEM replay evidence](native-history-floor-evidence.md) establishes parser
 semantics. The installed Home Assistant runtime remains `v0.5.1-beta1`
 (`63c143c6`); source changes here are not deployment evidence.
 
+## Rooms the robot could not reach
+
+When a plan sends the robot to a room it cannot reach, such as one behind a
+closed door, the robot ends its mission and docks without entering the room.
+The integration does not treat that as a takeover. It reads the robot's record
+of the mission it started: a new single-room record with the stop reason
+`finished` and every requested mode **unattempted** means the room was
+unreachable. The room closes as **Couldn't reach** without credit, keeps its
+place in the rotation so it stays due, and the plan moves on to the next room.
+`matic_robot_room_skipped` fires with `reason_code: room_unreachable` and
+`cause: robot`.
+
+Any other ending is not unreachable. A mission the owner cancelled, one the
+robot cancelled, one with no stop reason, or one where the robot reached the
+room ends the plan as before, with `reason_code: native_task_ended`. Only a
+different active native task is reported as `native_task_taken_over`.
+
+The Matic app shows the same record as **Area inaccessible**. In the installed
+app (1.183.1, build 108; base APK SHA-256 `15f1ec48…c979fc546`, arm64 split
+`e7907cb2…dab2e43`), the native `sessionstopreason_title` binding returns
+"Area inaccessible" for `SessionStopReason.Finished`, "Stopped unexpectedly"
+for `BotCancelled`, and "Cancelled" for `UserCancelled`. The reported mission
+showed that title above its unattempted room. The robot's history keeps
+`Finished` at stop-reason field `5`, which the integration already decodes.
+How the app chooses where to show the title was not traced.
+
 ## Physical observations
 
 On November 1, 2026, two separately observed normal vacuum cleans completed on

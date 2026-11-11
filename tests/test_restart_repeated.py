@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.core import CoreState
 
+from custom_components.matic_robot.managed_observation import NativeRoomVerdict
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
@@ -107,8 +108,8 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
     entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = identity
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_verify_room_completion",
-            AsyncMock(return_value=True),
+            "custom_components.matic_robot.managed_observation._async_adjudicate_room_end",
+            AsyncMock(return_value=NativeRoomVerdict.COMPLETED),
         ),
         patch(
             "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",

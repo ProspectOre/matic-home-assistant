@@ -26,6 +26,7 @@ from custom_components.matic_robot.managed_area import _async_wait_for_area_end
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_observation import (
+    NativeRoomVerdict,
     _async_wait_for_owned_start,
 )
 from custom_components.matic_robot.managed_run import (
@@ -1334,8 +1335,8 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
             AsyncMock(return_value=False),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_verify_room_completion",
-            AsyncMock(return_value=True),
+            "custom_components.matic_robot.managed_observation._async_adjudicate_room_end",
+            AsyncMock(return_value=NativeRoomVerdict.COMPLETED),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_verify_leg_completion",
@@ -1416,8 +1417,12 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             0,
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_verify_room_completion",
-            AsyncMock(return_value=verified),
+            "custom_components.matic_robot.managed_observation._async_adjudicate_room_end",
+            AsyncMock(
+                return_value=NativeRoomVerdict.COMPLETED
+                if verified
+                else NativeRoomVerdict.UNVERIFIED
+            ),
         ) as room_history,
         patch(
             "custom_components.matic_robot.managed_observation._async_verify_leg_completion",

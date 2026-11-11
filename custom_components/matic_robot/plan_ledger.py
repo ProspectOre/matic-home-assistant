@@ -101,6 +101,29 @@ def _skip_room_record(
     record["last_result"] = "skipped"
     record["last_skipped"] = skipped_at
     record["skipped_runs"] = plan_timing._stored_count(record, "skipped_runs") + 1
+    _restore_opportunity(record, global_room, run_id=run_id)
+
+
+def _unreachable_room_record(
+    record: dict[str, Any],
+    global_room: dict[str, Any],
+    *,
+    run_id: str,
+    ended_at: str,
+) -> None:
+    """Close a room the robot could not reach, without credit, keeping it due."""
+    record["last_result"] = "unreachable"
+    record["last_unreachable"] = ended_at
+    record["unreachable_runs"] = (
+        plan_timing._stored_count(record, "unreachable_runs") + 1
+    )
+    _restore_opportunity(record, global_room, run_id=run_id)
+
+
+def _restore_opportunity(
+    record: dict[str, Any], global_room: dict[str, Any], *, run_id: str
+) -> None:
+    """Give back the rotation turn this run took from a room it did not clean."""
     for target in (record, global_room):
         baseline = target.pop("opportunity_before_run", None)
         if not isinstance(baseline, Mapping) or baseline.get("run_id") != run_id:
@@ -1696,6 +1719,29 @@ class PlanLedger:
                 native_history._global_room(robot, room),
                 run_id=run_id,
                 skipped_at=dt_util.utcnow().isoformat(),
+            )
+            robot["active_plan"] = None
+            return True
+
+        await self.repository.async_mutate_and_save(serial_number, mutate)
+
+    async def async_mark_unreachable(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        run_id: str | None,
+    ) -> None:
+        """Close a room the robot could not reach, keeping its rotation turn."""
+
+        def mutate() -> bool:
+            robot = self.repository.robot(serial_number)
+            _unreachable_room_record(
+                self.room(serial_number, plan_id, room),
+                native_history._global_room(robot, room),
+                run_id=run_id or "",
+                ended_at=dt_util.utcnow().isoformat(),
             )
             robot["active_plan"] = None
             return True
