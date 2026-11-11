@@ -227,7 +227,7 @@ export class EffectController {
       movePose: (pose) => {
         if (!pose) return this.#poseMotion?.clear();
         this.#poseMotion?.push(pose);
-        this.#runs?.extendLiveTrail(pose);
+        if (this.#runs || this.#store.value.trail?.id === "live") void this.#runResources().then((runs) => runs?.extendLiveTrail(pose));
       },
       loadWorkspaceResources: (entry, stamp, resources, refresh) => this.#loadWorkspaceResources(entry, stamp, resources, refresh),
     });

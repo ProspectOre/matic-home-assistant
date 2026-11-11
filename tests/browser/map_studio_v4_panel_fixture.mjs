@@ -270,6 +270,8 @@ export async function installPanelFixture(page, {
       if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
       if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
+      // No live trail is stored before a run records a point.
+      if (path.endsWith("runs/synthetic-entry?trail=live")) return new Response(null, { status: 404 });
       if (/areas\/synthetic(?:-b)?$/.test(path)) {
         areaRequests.push({ method: "GET" });
         if (failedAreaReads > 0) {

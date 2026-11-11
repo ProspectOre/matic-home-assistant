@@ -78,7 +78,23 @@ export class RunHistoryResources {
     if (urls.length) this.#store.dispatch({ type: "result", runThumbnails: {} });
   }
 
-  extendLiveTrail(pose: PoseModel): void { this.#runs?.extendLiveTrail(this.#store, pose); }
+  /**
+   * Adds a pose to the live trail. A reattached panel keeps the trail it was
+   * showing, so the trail code loads here when Robot trail was not opened by
+   * this owner; a pose whose user or robot changed while it loaded is dropped.
+   */
+  async extendLiveTrail(pose: PoseModel): Promise<void> {
+    if (!this.#runs) {
+      const { generation, owner, selection, trail } = this.#store.value;
+      if (trail?.id !== "live") return;
+      const runs = await import("./run-history-data");
+      this.#runs ??= runs;
+      const now = this.#store.value;
+      if (this.#callbacks.disposed() || now.generation !== generation || now.selection.entryId !== selection.entryId
+        || now.owner?.entryKey !== owner?.entryKey || now.owner?.userKey !== owner?.userKey) return;
+    }
+    this.#runs.extendLiveTrail(this.#store, pose);
+  }
 
   dispose(): void {
     this.#requests.cancel("runs");
