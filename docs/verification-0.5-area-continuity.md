@@ -1,15 +1,25 @@
 # 0.5 custom-area continuity qualification
-**Status: OPEN. Stable release certification is withheld.**
+
+At the RC35 checkpoint this qualification was open and 0.5.0 stable
+certification was withheld. This page retains that candidate's evidence and
+limits; see [0.5.0 qualification](verification-0.5-stable.md) for the later
+release decision. It does not certify later changes.
+
 ## Intended behavior
+
 A saved area remains usable across routine cleaning runs, supported map
 refinements, integration reloads, and Home Assistant restarts. These events
 must not require repeated confirmation or silently rewrite the area. A changed
 floor, displaced coordinate frame, changed room association, or insufficient
 historical evidence must remain blocked until reviewed.
+
 ## Candidate scope
+
 The RC35 change is based on reviewed main
 `37d1cf03cbf2526344b5561e12e26c77dd455ea9` (RC34). The accompanying PR and CI
-records identify the exact candidate head; this document alone is not a completed review or installation receipt.
+records identify the exact candidate head; this document alone is not a
+completed review or installation receipt.
+
 For the same mission, current v3 and v6 bindings can now survive simultaneous
 partition-identity and unrelated geometry changes after anchored validation.
 V3 requires complete room-frame snapshots for this exception. Saved/current
@@ -21,6 +31,7 @@ frame evidence retains the existing local-geometry checks. Fresh bounded binding
 digest before refinement recovery. Legacy v5 bindings retain their original
 local-hash and frame checks; their anchors are not silently rebased. Legacy
 bindings without adequate historical evidence retain their review requirement.
+
 Existing frame/local checks run before optional witness work. Witness work
 is admitted atomically only when needed and affordable; unchanged and
 retessellated large contours retain their established fallback.
@@ -28,38 +39,25 @@ For multi-room v6 areas with an unchanged aggregate local hash, legacy-valid
 rooms retain their proof and only failed frames need stronger witnesses.
 An aggregate local-hash mismatch still requires strong proof of every room;
 incomplete or changed circle-room associations cannot count as missing work.
+
 The change also closes a v3 association gap: an additional room covering saved
 circles can no longer pass merely because all original anchors still match.
 It does not add automatic rebinding or coordinate transformations.
+
 ## Source evidence
-The assembled PR #287 candidate passed **5,278 tests with 100.00% coverage**
-across 20,147 statements (`python -m pytest --cov=custom_components/matic_robot
---cov-report=term-missing`). Exact-head PR CI and complete regular review must
-pass before merging. Installed RC35, RC36 and RC37 retesting, including a supervised RC37 custom-area run, is recorded below.
-- Binding regressions cover partition churn, unrelated room changes,
-  containing-room contour reshaping, fractional wall refinements, new overlaps,
-  translations, room rekeys, missing historical evidence, and older versions.
-- Persisted v3/v6 integration cases cover manager refresh, real HA Store reload,
-  readiness, plan preview and service validation with unchanged areas and no
-  area writes or robot commands. Unsafe cases remain blocked.
-- Actual setup-listener cases cover repeated safe refreshes for v3 and v6,
-  scheduled manager reconciliation, no new HA Repair, no Store save, and a
-  valid saved-plan preview. These are controlled integration fixtures.
-- Migration defensive guards are checked independently as well as through the
-  stricter normal status path. No production guard was removed for coverage.
-- Legacy v3 records may omit the optional global-frame digest. Their original
-  local validation remains usable; strong recovery requires that digest and
-  safely reports changed geometry when it is absent. Persistence, reload,
-  readiness, preview and service-validation regressions cover this format.
-- Multi-room v3 areas finish every legacy frame check before any optional
-  witness query. A two-circle regression exercises both anchor orders and a
-  retessellated 1,204-point room whose frame query exceeds 10,000 work units.
+
+The [source evidence record](verification-0.5-area-source-evidence.md) retains
+the exact reviewed revisions, regressions and build results for this qualification.
+
 ## Installed and physical evidence
+
 Rows marked RC34 belong to the observed RC34 run. RC35 rows were observed on the
 installed RC35 prerelease (2026-10-21) through read-only Home Assistant reads and
 on-screen checks; no robot command was sent. Private raw
 receipts retain timestamps, plan/area identities, session fingerprints, state
-hashes, command journals, and preservation evidence. Private map data is not included here.
+hashes, command journals, and preservation evidence. Private map data is not
+included here.
+
 | Gate | Result |
 |---|---|
 | RC34 installation and restart | Pass: all 110 integration files match reviewed source; credentials/options, 77 entity identities, YAML and plan-store bytes preserved. |
@@ -83,20 +81,26 @@ hashes, command journals, and preservation evidence. Private map data is not inc
 | RC37 installation and label recheck | Pass: installed through Home Assistant updates after a HACS refresh; `update.matic_unofficial_update` reports 0.5.0rc37 and the integration entry is loaded after restart; the saved area reports `current`; both shortcuts show. In 2D with Room colors and with Photo, all twelve room names draw, including the small room that RC36 hid, with no overlapping labels. A map opened in a background browser tab showed "Map unavailable" until the tab was brought forward, after which the map loaded without a manual retry. |
 | RC37 supervised custom-area run | Pass: after a fresh owner preflight, the saved custom area was started from its Home shortcut with no confirmation, save or rebind; the robot cleaned for 331 s, returned to the dock and charged with no problem reported. Right after docking, and again after an idle integration reload, the same area reports `current`; on the same open page both shortcuts show, all twelve room names draw, and the robot marker is hidden once the docked pose stops updating (about three minutes old). |
 | Final physical/owner acceptance and stable publication | Open. |
+
 ## Reproduced release blockers
+
 Routine post-run contour refinement changed the containing-room bounds by up
 to 90 mm, its local occupancy and segment evidence, while retaining the same
 map session and room associations. The initial RC35 partition fix also rejected
 this recorded pair. Offline replay accepts the recorded contours with the area
 and binding unchanged. It reconstructs room IDs from saved anchors/API identities;
 installed RC35 readbacks report the saved area `current` after a full restart and
-two integration reloads with no confirmation, save or rebind. Do not use another confirmation to conceal a failure.
+two integration reloads with no confirmation, save or rebind. Do not use another
+confirmation to conceal a failure.
+
 The shortcut failure is a frontend recovery problem, not demonstrated storage
 loss. The returning same-user/same-entry lifecycle now rereads saved pins in source.
 The packaged-panel regression passes Chromium and WebKit with no preference
 writes or robot commands. Installed RC35 retesting passed: both shortcuts return
 on the same page after an integration reload.
+
 ## Room-color readability
+
 The 2D room palette now starts with sixteen perceptually separated colors and
 uses stronger fills. All 256 supported rooms retain distinct colors. Room IDs
 preserve assignment under metadata reordering. The backend carries its stable
@@ -113,6 +117,7 @@ and 91,984 on 24.22.0, within the unchanged 92,160-byte budget. Developer notes 
 a rendered HTML template. Syntax-aware build compaction removes ordinary HTML
 newline whitespace while preserving expressions, escapes and preformatted text;
 thirteen Node tests and the Browser workflow cover this build step.
+
 A real 256-room, tile-clipped map regression reproduces the metadata ceiling
 crossing introduced by room IDs. Lossless integer-coordinate serialization
 preserves every room and fractional center while reducing its metadata from
@@ -122,12 +127,15 @@ The encoded regression also passes through the real Chromium and WebKit scene
 parsers with all identities, 256-byte room names and geometry intact. Native
 room-name limits now follow the backend's 256 UTF-8 bytes in scenes, catalogs
 and previews; user-created area/plan name limits remain unchanged.
+
 ## Boundaries
+
 Source fixtures establish supported refinement behavior; the observed RC34 run
 establishes its named live sequence only. Neither proves every firmware/map
 transition. Larger containing-room boundary changes that no longer establish
 the saved absolute frame remain blocked. A firmware coordinate-frame migration
 would require a separately proven transform, not a relaxed validation check.
+
 The historical PR #283 pre-merge review-sequencing gap remains recorded in the
 [recovery receipt](verification-0.5-area-recovery.md). New reviews do not repair
 that historical sequence. The broader [acceptance matrix](acceptance-0.5.md),
