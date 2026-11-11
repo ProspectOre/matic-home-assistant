@@ -29,6 +29,7 @@ from custom_components.matic_robot.client.exceptions import (
     TransportError,
 )
 from custom_components.matic_robot.client.models import (
+    HermesCollectionEntry,
     RobotActivity,
     RobotOperationalState,
 )
@@ -52,12 +53,21 @@ def fast_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(transport, "KEEPALIVE_TIMEOUT_SECONDS", 0.2)
 
 
-class _KeptSubscription:
-    """A state subscription the client keeps open, as the integration does."""
+class _Watched:
+    """The state watch the integration keeps open."""
 
     def __init__(self) -> None:
         self.states: asyncio.Queue[RobotOperationalState] = asyncio.Queue()
+        self.statuses: list[str] = []
         self.interrupted = asyncio.Event()
+
+    async def receive(self, state: RobotOperationalState) -> None:
+        self.states.put_nowait(state)
+
+    def report(self, status: str) -> None:
+        self.statuses.append(status)
+        if status == "retrying":
+            self.interrupted.set()
 
     async def activity(self, activity: RobotActivity) -> None:
         """Wait for a pushed or resubscribed state with ``activity``."""
@@ -67,23 +77,14 @@ class _KeptSubscription:
 
 
 @asynccontextmanager
-async def _kept_subscription(
-    client: MaticHermesClient,
-) -> AsyncIterator[_KeptSubscription]:
-    kept = _KeptSubscription()
-
-    async def consume() -> None:
-        try:
-            async for state in client.async_subscribe_state():
-                kept.states.put_nowait(state)
-        except TransportError:
-            kept.interrupted.set()
-            raise
-
-    watcher = asyncio.create_task(client.async_keep_subscribed(consume))
-    await kept.activity(RobotActivity.DOCKED)
-    yield kept
-    # Closing the client is what ends a kept subscription.
+async def _watched_state(client: MaticHermesClient) -> AsyncIterator[_Watched]:
+    watched = _Watched()
+    watcher = asyncio.create_task(
+        client.async_watch_state(watched.receive, watched.report)
+    )
+    await watched.activity(RobotActivity.DOCKED)
+    yield watched
+    # Closing the client is what ends a watch.
     await client.async_shutdown()
     await watcher
 
@@ -264,7 +265,7 @@ async def test_read_on_a_silent_link_times_out_and_the_next_one_redials(
 async def test_keepalive_ends_a_silent_link_and_the_subscription_resumes(
     client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
 ) -> None:
-    async with _kept_subscription(client) as kept:
+    async with _watched_state(client) as kept:
         simulator.link.stall()
         # Nothing is requested or pushed: only the unanswered ping can tell.
         async with asyncio.timeout(5):
@@ -281,7 +282,7 @@ async def test_refused_pings_slow_the_keepalive_down(
 ) -> None:
     # A ping every 0.2 s is refused; one every 0.4 s, the doubled pace, is not.
     simulator.refuse_pings(faster_than=0.3)
-    async with _kept_subscription(client) as kept:
+    async with _watched_state(client) as kept:
         async with asyncio.timeout(5):
             await kept.interrupted.wait()
         robot.start_cleaning()
@@ -290,3 +291,64 @@ async def test_refused_pings_slow_the_keepalive_down(
         # Three more pings at the new pace, and no further redial.
         await asyncio.sleep(1.2)
         assert simulator.link.connections == 2
+
+
+async def test_watch_reopens_a_reset_subscription_and_reports_each_step(
+    client: MaticHermesClient, robot: SimulatedRobot, simulator: RunningSimulator
+) -> None:
+    async with _watched_state(client) as watched:
+        robot.faults.reset("kabuki_state")
+        async with asyncio.timeout(5):
+            await watched.interrupted.wait()
+        robot.start_cleaning()
+        await watched.activity(RobotActivity.CLEANING)
+
+        assert watched.statuses == [
+            "connecting",
+            "connected",
+            "retrying",
+            "connecting",
+            "connected",
+        ]
+        # The stream was reset; the connection was not.
+        assert simulator.link.connections == 1
+
+
+async def test_watch_delivers_a_collection_and_its_later_entries(
+    client: MaticHermesClient, robot: SimulatedRobot
+) -> None:
+    robot.set_collection("schedule_events", SCHEDULES[:1])
+    seen: asyncio.Queue[bytes] = asyncio.Queue()
+
+    async def receive(entry: HermesCollectionEntry) -> None:
+        seen.put_nowait(entry.key)
+
+    watcher = asyncio.create_task(client.async_watch("schedule_events", receive))
+    async with asyncio.timeout(5):
+        assert await seen.get() == b"a"
+        robot.set_collection("schedule_events", SCHEDULES[1:2])
+        assert await seen.get() == b"b"
+    await client.async_shutdown()
+    await watcher
+
+
+async def test_connection_listener_follows_a_cut_and_restored_link(
+    client: MaticHermesClient, simulator: RunningSimulator
+) -> None:
+    changed = asyncio.Event()
+    remove = client.add_connection_listener(changed.set)
+    assert client.connected and client.connection_error is None
+
+    simulator.link.cut()
+    simulator.link.drop()
+    async with asyncio.timeout(5):
+        while client.connection_error is None:
+            changed.clear()
+            await changed.wait()
+    assert not client.connected
+    assert isinstance(client.connection_error, TransportError)
+
+    simulator.link.restore()
+    await client.async_connect()
+    assert client.connected and client.connection_error is None
+    remove()

@@ -43,7 +43,7 @@ from custom_components.matic_robot.coordinator import (
     MaticCuesEvent,
 )
 from custom_components.matic_robot.robot_health import async_delete_robot_alert_issues
-from tests.hermes_fakes import FakeChannel, keep_subscribed
+from tests.hermes_fakes import FakeChannel, keep_subscribed, watch
 
 
 def _client() -> AsyncMock:
@@ -67,7 +67,13 @@ def _client() -> AsyncMock:
     client.async_get_pose.return_value = None
     client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
     client.async_keep_subscribed = keep_subscribed()
+    client.async_watch = _watch(client)
     return client
+
+
+def _watch(client: AsyncMock, runs: int = 1):
+    """Watch whatever ``async_subscribe_collection_entries`` a test sets later."""
+    return watch(lambda name: client.async_subscribe_collection_entries(name), runs)
 
 
 def _tracking_entry() -> SimpleNamespace:
@@ -1130,7 +1136,7 @@ async def test_floor_watcher_revokes_unknown_state_and_subscribes_again(
         raise MaticError("stream closed")
 
     client.async_subscribe_collection_entries = entries
-    client.async_keep_subscribed = keep_subscribed(2)
+    client.async_watch = _watch(client, 2)
     coordinator = _coordinator(hass, client)
     coordinator.async_request_refresh = AsyncMock()
 
@@ -2741,7 +2747,7 @@ async def test_watcher_finishes_when_a_closed_channel_replaces_its_cancellation(
 
     client.async_subscribe_collection_entries = subscription
     client.async_subscribe_state = subscription
-    client._connection._supervisor._open = AsyncMock(return_value=Channel())
+    client._connection.supervisor._open = AsyncMock(return_value=Channel())
     coordinator.async_request_refresh = AsyncMock()
     task = asyncio.create_task(getattr(coordinator, watcher)())
     await started.wait()

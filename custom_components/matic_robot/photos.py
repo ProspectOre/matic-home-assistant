@@ -109,14 +109,11 @@ class RobotPhotoStore:
 
     async def async_watch(self) -> None:
         """Follow the robot's photo collection, including photos from the app."""
-        await self._client.async_keep_subscribed(self._async_consume)
+        await self._client.async_watch(PHOTO_COLLECTION, self._async_add_entry)
 
-    async def _async_consume(self) -> None:
-        async for entry in self._client.async_subscribe_collection_entries(
-            PHOTO_COLLECTION
-        ):
-            if self._async_add_photos(_decode_photos((entry,))):
-                self._async_notify()
+    async def _async_add_entry(self, entry: HermesCollectionEntry) -> None:
+        if self._async_add_photos(_decode_photos((entry,))):
+            self._async_notify()
 
     @callback
     def _async_add_photos(self, photos: Iterable[RobotPhoto]) -> bool:

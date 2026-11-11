@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
+from typing import Any
 
+from custom_components.matic_robot.client import supervisor
 from custom_components.matic_robot.client.exceptions import MaticError
 
 
@@ -43,3 +45,20 @@ def keep_subscribed(
                 await consume()
 
     return async_keep_subscribed
+
+
+def watch(
+    subscribe: Callable[[str], AsyncGenerator[Any]], runs: int = 1
+) -> Callable[..., Awaitable[None]]:
+    """Return a fake client's ``async_watch`` that subscribes ``runs`` times."""
+
+    async def async_watch(
+        name: str,
+        on_entry: Callable[[Any], Awaitable[object]],
+        on_status: Callable[[supervisor.WatchStatus], object] | None = None,
+    ) -> None:
+        await supervisor.async_watch(
+            keep_subscribed(runs), lambda: subscribe(name), on_entry, on_status
+        )
+
+    return async_watch

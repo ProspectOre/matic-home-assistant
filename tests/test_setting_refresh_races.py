@@ -79,7 +79,7 @@ async def test_completed_setting_late_refresh_cannot_redial_a_shut_down_client(
     from custom_components.matic_robot.client.api import MaticHermesClient
 
     client = MaticHermesClient("robot.invalid", 16320)
-    dial = client._connection._supervisor._open = AsyncMock()
+    dial = client._connection.supervisor._open = AsyncMock()
     client._connection._async_send_channel_payload = AsyncMock()
     client._commands._async_confirm_setting_readback = AsyncMock()
     coordinator = _coordinator(hass, client)  # type: ignore[arg-type]

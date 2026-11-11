@@ -44,6 +44,7 @@ from .models import (
     RunProgress,
 )
 from .observations import ActivityJournal, ObservationCallback
+from .supervisor import WatchStatus, async_watch
 
 
 class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
@@ -119,6 +120,50 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """
         await self._connection.async_keep_subscribed(consume)
 
+    @property
+    def connected(self) -> bool:
+        """Whether the connection to the robot is open."""
+        return self._connection.supervisor.connected
+
+    @property
+    def connection_error(self) -> Exception | None:
+        """Why the last dial failed; None while connected or about to redial."""
+        return self._connection.supervisor.error
+
+    def add_connection_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Call ``listener`` after each dial and each loss; return its removal."""
+        return self._connection.supervisor.add_listener(listener)
+
+    async def async_watch(
+        self,
+        collection_name: str,
+        on_entry: Callable[[HermesCollectionEntry], Awaitable[object]],
+        on_status: Callable[[WatchStatus], object] | None = None,
+    ) -> None:
+        """Give ``on_entry`` a collection's snapshot and every later update.
+
+        The subscription is opened again whenever it ends, on the supervisor's
+        pacing, until the client shuts down.
+        """
+        await async_watch(
+            self.async_keep_subscribed,
+            lambda: self.async_subscribe_collection_entries(collection_name),
+            on_entry,
+            on_status,
+        )
+
+    async def async_watch_state(
+        self,
+        on_state: Callable[[RobotOperationalState], Awaitable[object]],
+        on_status: Callable[[WatchStatus], object] | None = None,
+    ) -> None:
+        """Give ``on_state`` every snapshot of ``kabuki_state``, like a watch."""
+        await async_watch(
+            self.async_keep_subscribed, self.async_subscribe_state, on_state, on_status
+        )
+
     async def async_shutdown(self) -> None:
         """Close the connection for good; every later request fails."""
         await self._connection.async_shutdown()
@@ -139,7 +184,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Read elapsed and remaining time for the clean under way, if any."""
         return await self._reads.async_get_run_progress()
 
-    async def async_subscribe_state(self) -> AsyncIterator[RobotOperationalState]:
+    async def async_subscribe_state(self) -> AsyncGenerator[RobotOperationalState]:
         """Yield live snapshots from the local ``kabuki_state`` property."""
         async with aclosing(self._reads.async_subscribe_state()) as values:
             async for value in values:

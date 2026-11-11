@@ -944,31 +944,19 @@ class SlamMapStore:
     async def _async_collect_collection(
         self, client: MaticHermesClient, name: str, structural: bool
     ) -> None:
-        await client.async_keep_subscribed(
-            partial(self._async_consume_collection, client, name, structural)
-        )
+        """Add the pages of one map collection for as long as the client runs."""
 
-    async def _async_consume_collection(
-        self, client: MaticHermesClient, name: str, structural: bool
-    ) -> None:
-        """Add the pages of one subscription until it ends."""
-        if self._closed:
-            return
-        self._set_stream_state(name, "connecting")
-        try:
-            async for entry in client.async_subscribe_collection_entries(name):
-                self._set_stream_state(name, "connected")
-                try:
-                    if structural:
-                        await self.async_add_structure(entry)
-                    else:
-                        await self.async_add(entry)
-                except DecodeError:
-                    self._record_invalid()
-                    self._notify_listeners()
-        except Exception:  # A failed private stream must not kill map collection.
-            self._stream_failures = _increment(self._stream_failures)
-        self._set_stream_state(name, "retrying")
+        async def add(entry: HermesCollectionEntry) -> None:
+            try:
+                if structural:
+                    await self.async_add_structure(entry)
+                else:
+                    await self.async_add(entry)
+            except DecodeError:
+                self._record_invalid()
+                self._notify_listeners()
+
+        await client.async_watch(name, add, partial(self._set_stream_state, name))
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Subscribe to content and health changes; return an unsubscribe callback."""
@@ -1271,6 +1259,8 @@ class SlamMapStore:
     def _set_stream_state(self, name: str, state: MapStreamState) -> None:
         if self._stream_states.get(name) == state:
             return
+        if state == "retrying":
+            self._stream_failures = _increment(self._stream_failures)
         self._stream_states[name] = state
         self._notify_listeners()
 

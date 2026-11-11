@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing, suppress
 from random import uniform
 from time import monotonic
+from typing import Literal
 
 from .exceptions import MaticError, TransportError
 from .transport import PinnedChannel
@@ -21,12 +22,50 @@ KEEPALIVE_SECONDS = 60.0
 _FIRST_DELAY = 1.0
 _MAX_DELAY = 30.0
 
+# A watch is ``connecting`` from the start of each subscription, ``connected``
+# from its first value and ``retrying`` once the subscription has ended.
+WatchStatus = Literal["connecting", "connected", "retrying"]
+
 
 async def _async_wait(event: asyncio.Event, seconds: float) -> None:
     """Wait for ``event``, for ``seconds`` at most."""
     with suppress(TimeoutError):
         async with asyncio.timeout(seconds):
             await event.wait()
+
+
+async def async_watch[T](
+    keep_subscribed: Callable[[Callable[[], Awaitable[object]]], Awaitable[None]],
+    subscribe: Callable[[], AsyncGenerator[T]],
+    on_value: Callable[[T], Awaitable[object]],
+    on_status: Callable[[WatchStatus], object] | None = None,
+) -> None:
+    """Give ``on_value`` each value of a subscription that reopens when it ends.
+
+    ``keep_subscribed`` is a supervisor's ``async_keep_subscribed``, which
+    paces the subscriptions and returns when the supervisor closes.
+    """
+
+    def report(status: WatchStatus) -> None:
+        if on_status is not None:
+            on_status(status)
+
+    async def consume() -> None:
+        report("connecting")
+        connected = False
+        try:
+            async with aclosing(subscribe()) as values:
+                async for value in values:
+                    if not connected:
+                        connected = True
+                        report("connected")
+                    await on_value(value)
+        except Exception:
+            report("retrying")
+            raise
+        report("retrying")
+
+    await keep_subscribed(consume)
 
 
 class Backoff:
@@ -68,6 +107,22 @@ class ConnectionSupervisor:
         self._closed = asyncio.Event()
         self._changed = asyncio.Event()
         self._redial = asyncio.Event()
+        self._listeners: list[Callable[[], None]] = []
+
+    @property
+    def connected(self) -> bool:
+        """Whether a channel is open."""
+        return self._channel is not None
+
+    @property
+    def error(self) -> Exception | None:
+        """Why the last dial failed; None while connected or about to redial."""
+        return self._error
+
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Call ``listener`` after each dial and each loss; return its removal."""
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener)
 
     async def async_channel(self) -> PinnedChannel:
         """Return the open channel; without one, have the task dial now.
@@ -129,6 +184,8 @@ class ConnectionSupervisor:
         self._channel, self._error = channel, error
         self._changed.set()
         self._changed = asyncio.Event()
+        for listener in tuple(self._listeners):
+            listener()
 
     async def _async_pause(self, seconds: float) -> None:
         """Wait before the next dial, or until a request asks for it."""
