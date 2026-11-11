@@ -1,17 +1,20 @@
-"""Tests for maintenance suggestions, the bag pass and their Repairs."""
+"""Tests for maintenance suggestions and the bag pass."""
 
 from __future__ import annotations
 
 import struct
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from google.protobuf.message import DecodeError
-from homeassistant.helpers import issue_registry as ir
 
-from custom_components.matic_robot.binary_sensor import DESCRIPTIONS
+from custom_components.matic_robot.binary_sensor import (
+    DESCRIPTIONS,
+    MaticBinarySensor,
+)
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.consumables import (
     MAX_BAG_PASS_PAYLOAD_BYTES,
@@ -24,11 +27,7 @@ from custom_components.matic_robot.client.models import (
     RobotTelemetry,
 )
 from custom_components.matic_robot.client.wire import WireField, packed_varints
-from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.maintenance import (
-    MaintenanceIssues,
-    async_delete_maintenance_issues,
-)
+from tests.test_entities import _entry
 from tests.wire_builders import _bfield, _vfield
 
 PASS_START = 1_782_432_000  # 2026-06-26 UTC
@@ -209,57 +208,18 @@ def test_maintenance_binary_sensor_follows_the_newest_recap() -> None:
     assert value(RobotTelemetry(maintenance_suggestions=(1, 3))) is True
 
 
-def _issue_ids(hass) -> set[str]:
-    return {
-        issue_id
-        for domain, issue_id in ir.async_get(hass).issues
-        if domain == DOMAIN and issue_id.startswith("maintenance_")
+def test_maintenance_binary_sensor_names_the_recap_month() -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=RobotTelemetry(
+            maintenance_recap_month="2026-10", maintenance_suggestions=(1,)
+        ),
+    )
+    sensors = {item.key: MaticBinarySensor(entry, item) for item in DESCRIPTIONS}
+
+    assert sensors["maintenance_suggested"].extra_state_attributes == {
+        "recap_month": "2026-10"
     }
-
-
-async def test_maintenance_issue_tracks_the_newest_recap(hass) -> None:
-    issues = MaintenanceIssues(hass, "entry")
-    MaintenanceIssues(hass, "other").async_sync(
-        RobotTelemetry(maintenance_recap_month="2026-10", maintenance_suggestions=(2,))
-    )
-
-    issues.async_sync(RobotTelemetry())
-    assert _issue_ids(hass) == {"maintenance_other_2026-10"}
-
-    october = RobotTelemetry(
-        maintenance_recap_month="2026-10", maintenance_suggestions=(1, 3)
-    )
-    issues.async_sync(october)
-    assert _issue_ids(hass) == {
-        "maintenance_entry_2026-10",
-        "maintenance_other_2026-10",
-    }
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, "maintenance_entry_2026-10")
-    assert issue is not None
-    assert issue.translation_key == "maintenance_suggested"
-    assert issue.severity is ir.IssueSeverity.WARNING
-    assert issue.is_fixable is False
-    assert issue.is_persistent is True
-    assert issue.translation_placeholders is not None
-    assert issue.translation_placeholders["month"] == "2026-10"
-
-    # An unreadable recap keeps what is shown; a repeat changes nothing.
-    issues.async_sync(RobotTelemetry())
-    issues.async_sync(october)
-    assert len(_issue_ids(hass)) == 2
-
-    issues.async_sync(
-        RobotTelemetry(maintenance_recap_month="2026-11", maintenance_suggestions=(1,))
-    )
-    assert _issue_ids(hass) == {
-        "maintenance_entry_2026-11",
-        "maintenance_other_2026-10",
-    }
-
-    issues.async_sync(
-        RobotTelemetry(maintenance_recap_month="2026-12", maintenance_suggestions=())
-    )
-    assert _issue_ids(hass) == {"maintenance_other_2026-10"}
-
-    async_delete_maintenance_issues(hass, "other")
-    assert _issue_ids(hass) == set()
+    assert sensors["cleaning"].extra_state_attributes is None

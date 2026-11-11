@@ -55,12 +55,10 @@ in the Matic app stays here until the integration reloads.
 ## Maintenance
 
 The robot's monthly cleaning recap can suggest maintenance. **Maintenance
-suggested** is on while the newest recap does, and a Repair names the recap
-month. The Repair clears when a newer recap stops suggesting maintenance, and
-dismissing it hides only that month's notice. The sensor stays unknown until a
-recap can be read. The recap lists parts by code, and which code means which
-part (brush roll, side brush, mop roll, caster and wedge) is not known yet, so
-check them all.
+suggested** is on while the newest recap does, and its `recap_month` attribute
+names that month. The sensor stays unknown until a recap can be read. The recap
+lists parts by code, and which code means which part (brush roll, side brush,
+mop roll, caster and wedge) is not known yet, so check them all.
 
 **Bag pass ends** shows when an active bag pass runs out, and is unknown without
 one.

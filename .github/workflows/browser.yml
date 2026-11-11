@@ -3,22 +3,29 @@ name: Browser UI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A push gets its own group: a shared one drops the queued run when another
+# merge lands behind it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   browser:
     runs-on: ubuntu-latest
-    # The complete cross-browser suite (2334 tests) ran 24.5 minutes on hosted
-    # runners in October 2026, so 40 leaves headroom.
-    timeout-minutes: 40
+    # Unsharded, the suite took 24.5 minutes for 2334 tests on hosted runners in
+    # October 2026. A shard is a quarter of the tests, not of the time: one is
+    # all WebKit, so 30 leaves headroom.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # Match the npm lockfile; browsers and OS dependencies are already installed.
     container:
       image: mcr.microsoft.com/playwright:v1.62.0-noble@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07
@@ -56,7 +63,13 @@ jobs:
             fi
             exit "$status"
           fi
-      - run: npm run test:browser
+      - run: npm run test:browser -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           # Firefox requires a Home directory owned by the container user.
           HOME: /root
+      # A retried test records a trace, and a retry fails the run.
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-traces-${{ matrix.shard }}
+          path: test-results/
