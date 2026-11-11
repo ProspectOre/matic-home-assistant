@@ -54,7 +54,7 @@ Start with [Contributing](../CONTRIBUTING.md) and [Security](../SECURITY.md).
 | Sharing the robot with the Matic app | [Working alongside the Matic app](coexistence.md) |
 | Words shown to users | [Copy style](copy-style.md) |
 | The robot's local protocol | [Robot protocol map](firmware-endpoint-map.md), [protocol notes](protocol-notes.md) and the [pairing import contract](pairing-import-contract.md) |
-| Tests and what each one proves | [Testing](testing.md), the [plan run contract](e2e-contract.md), the [simulated robot](e2e-harness.md), the [installed check](installed-check.md), the [upgrade drill](upgrade-drill.md) and the [map capacity lab](performance-map-lab.md) |
+| Tests and what each one proves | [Testing](testing.md), the [plan run contract](e2e-contract.md), the [simulated robot](e2e-harness.md), the [installed check](installed-check.md), the [upgrade drill](upgrade-drill.md), the [map capacity lab](performance-map-lab.md) and the [map frame cost](performance-frame-cost.md) |
 | Reviews and releases | [Contributing](../CONTRIBUTING.md#changes-and-pull-requests), the [roadmap](roadmap.md) and the [0.6 beta 1 draft notes](release-notes-0.6.0-beta1.md) |
 
 ## Older records

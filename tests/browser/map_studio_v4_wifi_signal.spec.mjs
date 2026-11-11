@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
+import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 // The Wi-Fi signal layer is off by default. Map options turns it on, which
@@ -76,11 +77,12 @@ test("Map options turns on the Wi-Fi signal layer and reads the survey", async (
 
 test("Wi-Fi colors can compare strong sampled spots without labeling them as poor signal", async ({ page }) => {
   test.setTimeout(60_000);
+  await paintOverlayOnCanvas(page);
   await page.addInitScript(() => {
     window.__wifiPaint = [];
     const original = CanvasGradient.prototype.addColorStop;
     CanvasGradient.prototype.addColorStop = function(offset, colour) {
-      if (offset === 0 && colour.startsWith("hsl(")) window.__wifiPaint.push(colour);
+      if (offset === 0 && colour.endsWith(",.65)")) window.__wifiPaint.push(colour);
       return original.call(this, offset, colour);
     };
   });
@@ -94,8 +96,9 @@ test("Wi-Fi colors can compare strong sampled spots without labeling them as poo
   const menu = panel.getByRole("menu", { name: "Map options" });
   await expect(menu.getByRole("menuitemradio", { name: "Signal strength" })).toHaveAttribute("aria-checked", "true");
   await expect(menu.getByRole("img", { name: "Color scale: -90 dBm – -35 dBm" })).toBeVisible();
+  // -59 dBm is hue 68 on the fixed scale and hue 0, the weakest, among the samples.
   await expect.poll(() => page.evaluate(() => window.__wifiPaint), { timeout: 15_000 }).toEqual(expect.arrayContaining([
-    "hsl(68 75% 45% / .65)",
+    "rgba(178,201,29,.65)",
   ]));
   await page.evaluate(() => { window.__wifiPaint = []; });
   await menu.getByRole("menuitemradio", { name: "Compare sampled spots" }).click();
@@ -107,7 +110,7 @@ test("Wi-Fi colors can compare strong sampled spots without labeling them as poo
   await expect(menu.getByText("Colors compare sampled spots, not absolute quality.")).toBeVisible();
   await expect(menu.getByText("Sampled range: -59 dBm – -41.3 dBm")).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__wifiPaint), { timeout: 15_000 }).toEqual(expect.arrayContaining([
-    "hsl(0 75% 45% / .65)",
+    "rgba(201,29,29,.65)",
   ]));
   await page.screenshot({ path: test.info().outputPath("wifi-relative-scale.png") });
   await page.evaluate(() => { window.__wifiSignalReply = { enabled: true, cell_size: 0.3048, cells: [
@@ -224,6 +227,7 @@ test("the row stays hidden without a survey endpoint", async ({ page }) => {
 });
 
 test("renderer colours each surveyed cell by signal on the live floor only", async ({ page }) => {
+  await paintOverlayOnCanvas(page);
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseWifiSignal } from "./frontend/map-studio-v4/wifi-signal";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/wifi-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
@@ -238,15 +242,28 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     const fills = [];
     const wifiGradients = new WeakSet();
     const addColorStop = CanvasGradient.prototype.addColorStop;
+    // The hue of each cell's centre colour.
+    const hue = (colour) => {
+      const [red, green, blue] = colour.match(/\d+/gu).map(Number);
+      const max = Math.max(red, green, blue), range = max - Math.min(red, green, blue);
+      const sector = max === red ? (green - blue) / range % 6 : max === green ? (blue - red) / range + 2 : (red - green) / range + 4;
+      return Math.round((sector * 60 + 360) % 360);
+    };
     CanvasGradient.prototype.addColorStop = function(offset, colour) {
-      if (offset === 0 && colour.startsWith("hsl(")) { fills.push(colour); wifiGradients.add(this); }
+      if (offset === 0 && colour.endsWith(",.65)")) { fills.push(hue(colour)); wifiGradients.add(this); }
       return addColorStop.call(this, offset, colour);
     };
-    const renderer = new RendererController(scene, overlay);
+    let status = "idle";
+    const renderer = new RendererController(scene, overlay, {
+      onModuleStatus: (module, next) => { if (module === "renderer-layers") status = next; },
+    });
     const initial = createGalleryState("ready");
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const wifiSignal = parseWifiSignal(survey);
     renderer.setState({ ...initial, wifiSignal });
+    for (let attempt = 0; attempt < 120 && status !== "ready"; attempt += 1) await frame();
+    fills.length = 0;
+    renderer.requestRender();
     await frame();
     const live = fills.splice(0);
     const strong = parseWifiSignal({ enabled: true, cell_size: 0.3048, cells: [
@@ -292,40 +309,14 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     return { live, absoluteStrong, relativeStrong, relativeUniform, history, retained, rejected, roomColours };
   }, SURVEY);
   // The fixed scale distinguishes strong readings without saturating at -50 dBm.
-  expect(result.live).toEqual(["hsl(92 75% 45% / .65)", "hsl(4 75% 45% / .65)"]);
-  expect(result.absoluteStrong).toEqual(["hsl(68 75% 45% / .65)", "hsl(106 75% 45% / .65)"]);
-  expect(result.relativeStrong).toEqual(["hsl(0 75% 45% / .65)", "hsl(120 75% 45% / .65)"]);
-  expect(result.relativeUniform).toEqual(["hsl(58 75% 45% / .65)", "hsl(62 75% 45% / .65)"]);
+  expect(result.live).toEqual([92, 4]);
+  expect(result.absoluteStrong).toEqual([68, 106]);
+  expect(result.relativeStrong).toEqual([0, 120]);
+  expect(result.relativeUniform).toEqual([58, 62]);
   expect(result.history).toEqual([]);
   // A retained read-only scene waits for the live one before cells draw.
   expect(result.retained).toEqual([]);
   // Room colors fill rooms at 94% opacity; the cells must paint over them.
   expect(result.roomColours).toEqual({ roomFills: true, cellsAbove: true });
   expect(result.rejected).toEqual([true, true, true, true, true, true]);
-});
-
-test("Wi-Fi heat fades near each sample without rings", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { drawMapLayers } from "./frontend/map-studio-v4/renderer-layers";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
-  await page.route("**/wifi-marks.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
-  await page.goto("/");
-  const result = await page.evaluate(async () => {
-    const { drawMapLayers } = await import("/wifi-marks.js");
-    const transforms = [], gradients = [], fills = [];
-    const context = {
-      save() {}, restore() {},
-      transform(...args) { transforms.push(args); },
-      createRadialGradient() { const stops = []; gradients.push(stops); return { addColorStop(offset, colour) { stops.push([offset, colour]); } }; },
-      fillRect(...args) { fills.push(args); },
-    };
-    const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" }, wifiScale: "absolute",
-      wifiSignal: { status: "ready", cellSize: 0.3048, cells: [
-        { x: 0, y: 0, dbm: -55, size: 0.3048 }, { x: 2, y: 0, dbm: -75, size: 0.5 },
-        { x: 4, y: 0, dbm: -75, size: 1 },
-      ] } };
-    drawMapLayers(context, state, (x, y) => ({ x: x * 100, y: y * 100 }));
-    return { transforms, gradients, fills };
-  });
-  expect(result.transforms.map(t => Math.round(t[0]))).toEqual([45, 45, 60]);
-  expect(result.fills).toEqual([[-1, -1, 2, 2], [-1, -1, 2, 2], [-1, -1, 2, 2]]);
-  expect(result.gradients.every(stops => stops[0][0] === 0 && stops.at(-1)[0] === 1 && stops.at(-1)[1].endsWith("/ 0)"))).toBe(true);
 });

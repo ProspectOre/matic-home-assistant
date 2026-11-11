@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
+import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 // Robot zones arrive with the areas catalog. No-go zones are drawn read-only
@@ -61,6 +62,7 @@ test("Your areas notes a saved area that reaches into a no-go zone", async ({ pa
 });
 
 test("renderer shades no-go zones, only outlines robot-made zones and skips history maps", async ({ page }) => {
+  await paintOverlayOnCanvas(page);
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zones-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
@@ -72,29 +74,39 @@ test("renderer shades no-go zones, only outlines robot-made zones and skips hist
       document.body.append(canvas);
     }
     const context = overlay.getContext("2d");
-    const fills = [], dashes = [];
-    const { fill, setLineDash } = context;
-    context.fill = function(rule, ...rest) { if (typeof rule === "string") fills.push(rule); return fill.call(this, rule, ...rest); };
-    context.setLineDash = function(segments) { dashes.push(segments.length); return setLineDash.call(this, segments); };
-    const renderer = new RendererController(scene, overlay);
-    const initial = createGalleryState("ready");
+    const paints = [];
+    const { fill, stroke, clearRect } = context;
+    // Every redraw of the canvas starts by clearing it.
+    context.clearRect = function(...args) { paints.length = 0; return clearRect.apply(this, args); };
+    context.fill = function(rule, ...rest) { if (rule === "evenodd") paints.push(`fill ${this.fillStyle}`); return fill.call(this, rule, ...rest); };
+    context.stroke = function(...args) { paints.push(`stroke ${this.strokeStyle}${this.getLineDash().length ? " dashed" : ""}`); return stroke.apply(this, args); };
+    let layers = "idle";
+    const renderer = new RendererController(scene, overlay, {
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") layers = status; },
+    });
+    renderer.setPalette({ accent: [12, 120, 200], onAccent: [255, 255, 255], text: [20, 30, 40], quiet: [70, 80, 90],
+      plate: [250, 250, 250], roomFill: [231, 238, 242], forced: false });
+    const initial = { ...createGalleryState("ready"), optionalUiReady: true, labelsVisible: false };
     const zone = (kind) => ({ kind, outline, holes: [[[1, 1], [1.2, 1], [1.2, 1.2]]], roomIds: [], areaIds: [] });
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const withZones = { ...initial, resources: { ...initial.resources, areas: { status: "ready", problem: null,
-      value: { ...initial.resources.areas.value, zones: [zone("no_go"), zone("unknown")] } } } };
+    const withZones = { ...initial, resources: { ...initial.resources, pose: { ...initial.resources.pose, value: null },
+      areas: { status: "ready", problem: null,
+        value: { ...initial.resources.areas.value, zones: [zone("no_go"), zone("unknown")] } } } };
     renderer.setState(withZones);
+    for (let attempt = 0; attempt < 120 && layers !== "ready"; attempt += 1) await frame();
+    renderer.requestRender();
     await frame();
-    const live = { fills: fills.splice(0), dashes: dashes.splice(0) };
+    const live = [...paints];
     renderer.setState({ ...withZones, dataMode: "history" });
     await frame();
     renderer.dispose();
-    return { ...live, historyFills: fills, historyDashes: dashes };
+    return { live, history: paints };
   }, NO_GO);
-  // One even-odd fill (the no-go zone with its hole); the unknown zone is a
-  // dashed outline only.
-  expect(result.fills).toEqual(["evenodd"]);
-  expect(result.dashes).toEqual([0, 0, 2, 0]);
+  // The no-go zone is one even-odd fill around its hole and a solid outline;
+  // the unknown zone is a dashed outline only.
+  expect(result.live).toEqual([
+    "fill rgba(20, 30, 40, 0.22)", "stroke rgba(20, 30, 40, 0.9)", "stroke rgba(20, 30, 40, 0.6) dashed",
+  ]);
   // A history map draws neither.
-  expect(result.historyFills).toEqual([]);
-  expect(result.historyDashes).toEqual([]);
+  expect(result.history).toEqual([]);
 });

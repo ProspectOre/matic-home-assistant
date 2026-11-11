@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
+import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 // Carpet and vents are off by default. Map options turns the layer on, which
@@ -109,6 +110,7 @@ test("the row stays hidden without the endpoint", async ({ page }) => {
 });
 
 test("renderer fills carpet even-odd and vents on the live floor only", async ({ page }) => {
+  await paintOverlayOnCanvas(page);
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseFloorTypes } from "./frontend/map-studio-v4/floor-types";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/floor-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
@@ -126,11 +128,17 @@ test("renderer fills carpet even-odd and vents on the live floor only", async ({
       if (args[0] === "evenodd") fills.push(String(context.fillStyle));
       return fill(...args);
     };
-    const renderer = new RendererController(scene, overlay);
-    const initial = createGalleryState("ready");
+    let status = "idle";
+    const renderer = new RendererController(scene, overlay, {
+      onModuleStatus: (module, next) => { if (module === "renderer-layers") status = next; },
+    });
+    const initial = { ...createGalleryState("ready"), labelsVisible: false };
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const floorTypes = parseFloorTypes(layers);
     renderer.setState({ ...initial, floorTypes });
+    for (let attempt = 0; attempt < 120 && status !== "ready"; attempt += 1) await frame();
+    fills.length = 0;
+    renderer.requestRender();
     await frame();
     const live = fills.splice(0);
     renderer.setState({ ...initial, floorTypes, dataMode: "history" });
@@ -151,8 +159,7 @@ test("renderer fills carpet even-odd and vents on the live floor only", async ({
     ].map((value) => { try { parseFloorTypes(value); return false; } catch { return true; } });
     return { live, history, retained, rejected };
   }, LAYERS);
-  // The canvas reports the hsl() colours as hex.
-  expect(result.live).toHaveLength(2);
+  expect(result.live).toEqual(["rgba(166, 103, 48, 0.35)", "rgba(25, 145, 230, 0.35)"]);
   expect(result.history).toEqual([]);
   expect(result.retained).toEqual([]);
   expect(result.rejected).toEqual([true, true, true, true, true, true]);

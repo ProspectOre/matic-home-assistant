@@ -24,7 +24,7 @@ async function loadRenderer(page) {
       LINK_STATUS: 0x8b82, UNSIGNED_SHORT: 0x1403, UNSIGNED_BYTE: 0x1401,
       DEPTH_TEST: 0x0b71, LEQUAL: 0x0203, BLEND: 0x0be2, SRC_ALPHA: 0x0302,
       ONE_MINUS_SRC_ALPHA: 0x0303, ONE: 1, COLOR_BUFFER_BIT: 0x4000,
-      DEPTH_BUFFER_BIT: 0x0100, POINTS: 0x0000, TRIANGLES: 0x0004,
+      DEPTH_BUFFER_BIT: 0x0100, POINTS: 0x0000, TRIANGLES: 0x0004, TRIANGLE_STRIP: 0x0005,
     };
     const contexts = [];
     const originalGetContext = HTMLCanvasElement.prototype.getContext;
@@ -48,10 +48,13 @@ async function loadRenderer(page) {
         deleteBuffer() {}, deleteVertexArray() {},
         bufferData() {}, bufferSubData(_target, _offset, bytes) { this.uploadedBytes += bytes.byteLength; }, getError() { return 0; },
         drawArrays(_mode, first, count) { this.pointDraws.push({ first, count }); },
-        drawArraysInstanced(_mode, _first, _vertices, count) {
+        drawArraysInstanced(mode, _first, _vertices, count) {
+          // Surfaces are triangle lists; the overlay geometry draws strips.
+          if (mode !== constants.TRIANGLES) return;
           this.instancedDraws.push(count);
           if (window.__surfaceLifecycle?.slowDraw) {
-            const deadline = performance.now() + 24;
+            // Longer than the touch limit on whichever refresh the next frame lands.
+            const deadline = performance.now() + 60;
             while (performance.now() < deadline) { /* exercise the real slow-frame policy */ }
           }
         },
@@ -329,16 +332,17 @@ for (const touch of [false, true]) {
       await frame();
       const before = harness.contexts[0].instancedDraws.at(-1) ?? 0;
       harness.slowDraw = true;
-      for (let index = 0; index < 9; index += 1) { renderer.requestRender(); await frame(); }
+      // Two slow samples of four frames that move the camera reduce detail; the first sample may hold earlier frames.
+      for (let index = 0; index < 14; index += 1) { renderer.panBy(index % 2 ? -1 : 1, 0); await frame(); }
       const after = harness.contexts[0].instancedDraws.at(-1) ?? 0;
-      const frameMs = renderer.diagnostics().lastFrameMs;
+      const frameMs = renderer.diagnostics().frameMs;
       renderer.dispose();
       canvases.forEach((canvas) => canvas.remove());
       return { before, after, frameMs, uploadedBytes: harness.contexts[0].uploadedBytes, details };
     });
     expect(outcome.uploadedBytes).toBeGreaterThanOrEqual(600_000 * 8);
     expect(outcome.before).toBe(touch ? 300_000 : 600_000);
-    expect(outcome.frameMs).toBeGreaterThan(18);
+    expect(outcome.frameMs).toBeGreaterThan(touch ? 40 : 24);
     expect(outcome.after).toBeGreaterThan(0);
     expect(outcome.after).toBeLessThan(outcome.before);
     expect(outcome.details).toContain("limited");

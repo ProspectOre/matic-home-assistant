@@ -12,6 +12,7 @@ import type { OutlineEditor } from "./outline-editor";
 import { MAP_CANVAS_TAG } from "./element-tags";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
 import { RendererController, topView, type CameraState, type RendererDiagnostics, type RendererModuleName, type RendererModuleStatus, type RendererSurfaceDetail } from "./renderer-controller";
+import { layersNeeded } from "./renderer-overlays";
 import {
   canSelectRooms,
   canShowExactPose,
@@ -160,7 +161,6 @@ export class MaticMapCanvasV4 extends LitElement {
        appearance switch steps down to make room (map-surfaces.md §4). */
     .map-chip { position: absolute; inset-block-start: var(--row); inset-inline: 0; margin-inline: auto; inline-size: fit-content; max-inline-size: 100%; padding: var(--ms-space-1) var(--ms-space-3); font-size: var(--ms-t-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
     .map-rail:has(.map-chip) .appearance-switch { inset-block-start: calc(2 * var(--row)); }
-    .map-root:has(.map-chip) .scene-canvas { filter: saturate(0.35); }
 
     .map-dock {
       inset-inline: 0;
@@ -503,17 +503,9 @@ export class MaticMapCanvasV4 extends LitElement {
 
   #rendererStatus(showScene: boolean) {
     const state = this.state;
-    const currentFloor = state.dataMode === "live" && !state.floor.readOnly
-      && state.selection.floorId === "current";
-    const trail = state.trail;
-    const trailVisible = Boolean(trail && state.dataMode === "live"
-      && (trail.id === "live" || state.workflow === "runs")
-      && trail.mapSessionKey === state.resources.entry?.mapSessionKey);
-    const roomNamesNeeded = Boolean(showScene && state.optionalUiReady && state.labelsVisible
-      && (state.resources.scene.value?.metadata.rooms.length ?? 0) > 0);
-    const layersNeeded = Boolean(roomNamesNeeded || (currentFloor && (state.wifiSignal || state.floorTypes)) || trailVisible);
+    const needed = layersNeeded(state, state.resources.scene.value);
     const retry = (event: Event) => this.retry ? this.retry(event) : window.location.reload();
-    const layers = layersNeeded && this.#rendererLayersStatus !== "idle"
+    const layers = (needed === "now" || (needed && showScene)) && this.#rendererLayersStatus !== "idle"
       ? chunkStatus(this.#rendererLayersStatus, this.localize, retry, {
         loading: { key: "v4_renderer_layers_loading", fallback: "Loading map details and room names…" },
         failed: { key: "v4_renderer_layers_failed", fallback: "Some map details or room names aren't available, so they aren't shown. Reload the page to try again." },

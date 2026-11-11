@@ -1,10 +1,11 @@
-import type { FloorTypeOutline, WifiSignalCell, WorkspaceState } from "./contracts";
-import { wifiScaleBounds, wifiSignalHue } from "./wifi-scale";
+import type { WorkspaceState } from "./contracts";
 import type { SceneRoom } from "./backend-contracts";
 import type { CanvasPalette } from "./theme-probe";
 import { rgba } from "./theme-probe";
 import { clamp } from "./shared-primitives";
 import { canShowExactPose } from "./state";
+
+export { OverlayGeometry } from "./overlay-geometry";
 
 export interface MapPoint {
   readonly x: number;
@@ -153,74 +154,6 @@ export function drawRoomNames(
   return { offsets: labelOffsets, retryWithoutHistory: false };
 }
 
-/** Paint map layers that users can enable from Map options. */
-export function drawMapLayers(
-  context: CanvasRenderingContext2D,
-  state: WorkspaceState,
-  project: ProjectMeters,
-): void {
-  const currentFloor = state.dataMode === "live" && !state.floor.readOnly
-    && state.selection.floorId === "current";
-  if (currentFloor) {
-    if (state.floorTypes?.status === "ready") {
-      drawFloorType(context, state.floorTypes.carpet, "hsl(28 55% 42%)", project);
-      drawFloorType(context, state.floorTypes.vent, "hsl(205 80% 50%)", project);
-    }
-    if (state.wifiSignal?.status === "ready") {
-      drawWifiSignal(context, state.wifiSignal.cells, state.wifiScale, project);
-    }
-  }
-}
-
-export function drawRunTrail(
-  context: CanvasRenderingContext2D,
-  state: WorkspaceState,
-  palette: CanvasPalette,
-  project: ProjectMeters,
-): void {
-  // A trail is drawn only over the map session it was recorded on
-  // (run_history.py); a past run's trail only while Cleaning history is open.
-  const trail = state.trail;
-  if (!trail || state.dataMode !== "live"
-    || (trail.id !== "live" && state.workflow !== "runs")
-    || trail.mapSessionKey !== state.resources.entry?.mapSessionKey) return;
-  const isolated: MapPoint[] = [];
-  context.beginPath();
-  for (const segment of trail.segments) {
-    let previous: { x: number; y: number; point: MapPoint; linked: boolean } | null = null;
-    const finishPoint = () => { if (previous && !previous.linked) isolated.push(previous.point); };
-    segment.forEach(([x, y]) => {
-      const point = project(x, y, 0, false);
-      if (!point) { finishPoint(); previous = null; return; }
-      // A long gap contains no evidence of the path between observations.
-      const linked = previous !== null && Math.hypot(x - previous.x, y - previous.y) <= 1;
-      if (linked) context.lineTo(point.x, point.y);
-      else { finishPoint(); context.moveTo(point.x, point.y); }
-      previous = { x, y, point, linked };
-    });
-    finishPoint();
-  }
-  context.save();
-  context.lineJoin = context.lineCap = "round";
-  context.strokeStyle = rgba(palette.onAccent, 1);
-  context.lineWidth = 4;
-  context.stroke();
-  context.strokeStyle = rgba(palette.accent, 1);
-  context.lineWidth = 2;
-  context.stroke();
-  // A lone observation would otherwise have no stroked line at all.
-  for (const [radius, colour] of [[2, palette.onAccent], [1, palette.accent]] as const) {
-    context.beginPath();
-    for (const point of isolated) {
-      context.moveTo(point.x + radius, point.y);
-      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
-    }
-    context.fillStyle = rgba(colour, 1);
-    context.fill();
-  }
-  context.restore();
-}
-
 export function drawLastSeenDuringRun(
   context: CanvasRenderingContext2D,
   state: WorkspaceState,
@@ -266,68 +199,3 @@ export const canShowLastSeenDuringRun = (state: WorkspaceState): boolean => {
     && marker.mapSessionKey === entry.mapSessionKey
     && marker.mapSessionKey === state.resources.pose.value?.mapSessionKey;
 };
-
-function drawWifiSignal(
-  context: CanvasRenderingContext2D,
-  cells: readonly WifiSignalCell[],
-  scale: WorkspaceState["wifiScale"],
-  project: ProjectMeters,
-): void {
-  context.save();
-  const bounds = wifiScaleBounds(cells, scale);
-  for (const cell of cells) {
-    // Bound smoothing to at most 0.6 m from a sample. Older, coarse readings
-    // retain a wider footprint; space beyond the estimate stays transparent.
-    const radius = Math.max(0.45, Math.min(0.6, cell.size / 2 + 0.1));
-    const centre = project(cell.x, cell.y, 0.1, false);
-    // Derive the local projection near the sample. Projecting the full
-    // footprint can cross behind the camera at close zoom and hide it.
-    const step = 0.01;
-    const east = project(cell.x + step, cell.y, 0.1, false);
-    const north = project(cell.x, cell.y + step, 0.1, false);
-    if (!centre || !east || !north) continue;
-    const hue = wifiSignalHue(cell.dbm, bounds);
-    context.save();
-    context.transform((east.x - centre.x) * radius / step, (east.y - centre.y) * radius / step,
-      (north.x - centre.x) * radius / step, (north.y - centre.y) * radius / step, centre.x, centre.y);
-    const gradient = context.createRadialGradient(0, 0, 0, 0, 0, 1);
-    gradient.addColorStop(0, `hsl(${hue} 75% 45% / .65)`);
-    gradient.addColorStop(0.65, `hsl(${hue} 75% 45% / .4)`);
-    gradient.addColorStop(1, `hsl(${hue} 75% 45% / 0)`);
-    context.fillStyle = gradient;
-    context.fillRect(-1, -1, 2, 2);
-    context.restore();
-  }
-  context.restore();
-}
-
-// Even-odd fill keeps the holes the integration traces inside a rug.
-function drawFloorType(
-  context: CanvasRenderingContext2D,
-  outlines: readonly FloorTypeOutline[],
-  colour: string,
-  project: ProjectMeters,
-): void {
-  if (!outlines.length) return;
-  context.save();
-  context.beginPath();
-  for (const outline of outlines) {
-    let started = false;
-    for (const [x, y] of outline) {
-      const point = project(x, y, 0.05, false);
-      if (!point) continue;
-      if (started) context.lineTo(point.x, point.y);
-      else context.moveTo(point.x, point.y);
-      started = true;
-    }
-    if (started) context.closePath();
-  }
-  context.globalAlpha = 0.35;
-  context.fillStyle = colour;
-  context.fill("evenodd");
-  context.globalAlpha = 0.8;
-  context.strokeStyle = colour;
-  context.lineWidth = 1.25;
-  context.stroke();
-  context.restore();
-}

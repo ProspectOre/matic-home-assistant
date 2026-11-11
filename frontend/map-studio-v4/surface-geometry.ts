@@ -20,6 +20,8 @@ export interface SurfaceFrame {
   readonly adaptiveQuality?: boolean;
   readonly maxVisiblePoints: number | null;
   readonly camera: CameraState;
+  /** Scales the photo's colour, from 0 for grey to 1 as recorded. */
+  readonly saturation: number;
 }
 
 interface Plane { readonly x: number; readonly y: number; readonly z: number; readonly w: number; }
@@ -144,9 +146,14 @@ void main() {
 
 const fragmentSource = `#version 300 es
 precision highp float;
+uniform float uSaturation;
 in vec3 vColor;
 out vec4 outColor;
-void main(){outColor=vec4(pow(vColor,vec3(0.94)),1.0);}`;
+void main(){
+  vec3 colour=pow(vColor,vec3(0.94));
+  // The weights of CSS saturate().
+  outColor=vec4(mix(vec3(dot(colour,vec3(0.213,0.715,0.072))),colour,uSaturation),1.0);
+}`;
 
 const readRuns = (scene: SceneModel): NonNullable<SceneModel["tileIndex"]> | null => {
   const index = scene.tileIndex;
@@ -189,7 +196,7 @@ export class SurfaceGeometry {
     matrix: WebGLUniformLocation | null; center: WebGLUniformLocation | null;
     meters: WebGLUniformLocation | null; eye: WebGLUniformLocation | null;
     direction: WebGLUniformLocation | null; ortho: WebGLUniformLocation | null;
-    faces: WebGLUniformLocation | null;
+    faces: WebGLUniformLocation | null; saturation: WebGLUniformLocation | null;
   };
   #disposed = false;
   readonly #floorRanges = new Uint32Array(MAX_TILE_RUNS * 2);
@@ -236,6 +243,7 @@ export class SurfaceGeometry {
       direction: gl.getUniformLocation(program, "uViewDirection"),
       ortho: gl.getUniformLocation(program, "uOrthographic"),
       faces: gl.getUniformLocation(program, "uFaces"),
+      saturation: gl.getUniformLocation(program, "uSaturation"),
     };
   }
 
@@ -323,6 +331,7 @@ export class SurfaceGeometry {
     gl.uniformMatrix4fv(this.#uniforms.matrix, false, frame.matrix);
     gl.uniform2f(this.#uniforms.center, (scene.metadata.span[0] - 1) / 2, (scene.metadata.span[1] - 1) / 2);
     gl.uniform1f(this.#uniforms.meters, scene.metadata.metersPerCell);
+    gl.uniform1f(this.#uniforms.saturation, frame.saturation);
     const { camera } = frame;
     const horizontal = Math.cos(camera.pitch);
     const dx = Math.sin(camera.yaw) * horizontal;
