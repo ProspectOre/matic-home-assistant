@@ -32,4 +32,4 @@ release/tag; preserve stable releases and tags.
 ## CI
 
 - Follow the [delivery contract](https://github.com/ProspectOre/wiki/blob/main/workflows/delivery-contract.md); `.github/delivery-contract.json` allow-lists every workflow and `.github/scripts/delivery-contract.py` runs first in Test.
-- Test (`ci` job), Browser UI and Validate run on free hosted `ubuntu-latest` for every PR and push to main; `windows-assistive-qualification.yml` is manual only.
+- Test (`ci` job), Browser UI and Validate run on free hosted `ubuntu-latest` for every PR and every push to main or a release branch. Nightly runs the suite and the live lane on the minimum, current and beta Home Assistant, scheduled from the default branch only. `windows-assistive-qualification.yml` is manual only.
