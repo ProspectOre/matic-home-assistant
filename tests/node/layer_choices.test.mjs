@@ -5,13 +5,13 @@ import { build } from "esbuild";
 
 const { outputFiles } = await build({
   stdin: {
-    contents: 'export { parseLayerChoices, rememberLayer } from "./layer-choices"; export { parsePreferences } from "./preferences";',
+    contents: 'export { LayerRestore, parseLayerChoices, rememberLayer } from "./layer-choices"; export { parsePreferences } from "./preferences";',
     resolveDir: fileURLToPath(new URL("../../frontend/map-studio-v4", import.meta.url)),
     loader: "ts",
   },
   bundle: true, write: false, platform: "node", format: "esm", target: "es2022",
 });
-const { parseLayerChoices, rememberLayer, parsePreferences } = await import(
+const { LayerRestore, parseLayerChoices, rememberLayer, parsePreferences } = await import(
   `data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString("base64")}`,
 );
 
@@ -60,4 +60,19 @@ test("the robot changed last is kept when a seventeenth robot is recorded", () =
   const layerChoices = Object.fromEntries(Array.from({ length: 16 }, (_, index) => [`robot-${index}`, { trail: true, wifi: false, floorTypes: false }]));
   const next = rememberLayer(state({ layerChoices, selection: { entryId: "robot-new" } }), { type: "toggle-wifi-signal" });
   assert.deepEqual(Object.keys(next), [...Object.keys(layerChoices).slice(1), "robot-new"]);
+});
+
+test("switching back to a robot restores its layers even when the other robot's map never came in", () => {
+  let listener;
+  const routed = [];
+  new LayerRestore({ subscribe: (next) => { listener = next; return () => {}; } }, (intent) => routed.push(intent.type));
+  const robot = (entryId, ready) => state({
+    owner: { userKey: "user" }, optionalUiReady: true, map: { available: ready }, dataMode: "live",
+    selection: { entryId }, resources: { entry: { entryId, wifiHeatmapUrl: "/wifi" } },
+    layerChoices: { "robot-a": { trail: false, wifi: true, floorTypes: false } },
+  });
+  listener(robot("robot-a", true));
+  listener(robot("robot-b", false));
+  listener(robot("robot-a", true));
+  assert.deepEqual(routed, ["toggle-wifi-signal", "toggle-wifi-signal"]);
 });

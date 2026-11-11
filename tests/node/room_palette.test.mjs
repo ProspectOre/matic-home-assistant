@@ -25,6 +25,14 @@ test("rooms that share a wall or sit within 30 cm are neighbours; rooms further 
   assert.deepEqual(roomNeighbours(rooms, CELL).map((set) => [...set].sort()), [[1], [0, 2], [1], []]);
 });
 
+test("walls 28.5 cm apart are neighbours wherever their corners fall; walls 31.5 cm apart are not", () => {
+  // 1.5 cm cells, the robot's own scale; the second room is shifted along the wall.
+  const near = [square("a", 0, 0, 200), square("b", 219, 10, 200)];
+  const far = [square("a", 0, 0, 200), square("b", 221, 10, 200)];
+  assert.deepEqual(roomNeighbours(near, 0.015).map((set) => [...set]), [[1], [0]]);
+  assert.deepEqual(roomNeighbours(far, 0.015).map((set) => [...set]), [[], []]);
+});
+
 test("in a three by three grid no room shares a colour with any room it touches, corners included", () => {
   const rooms = [];
   for (let row = 0; row < 3; row += 1) for (let column = 0; column < 3; column += 1) {

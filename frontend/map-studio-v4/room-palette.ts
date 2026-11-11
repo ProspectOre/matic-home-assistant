@@ -15,33 +15,48 @@ export const ROOM_PALETTE: readonly Channel[] = [
 // Rooms closer than this share a wall or a doorway.
 const NEIGHBOUR_METERS = 0.3;
 
+type Piece = [room: number, ax: number, ay: number, bx: number, by: number];
+
+const toPiece = (x: number, y: number, [, ax, ay, bx, by]: Piece): number => {
+  const dx = bx - ax, dy = by - ay;
+  const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - ax - dx * t, y - ay - dy * t);
+};
+
 /** Pairs of rooms whose outlines come within NEIGHBOUR_METERS of each other. */
 export const roomNeighbours = (rooms: readonly SceneRoom[], metersPerCell: number): Set<number>[] => {
   const reach = NEIGHBOUR_METERS / metersPerCell;
   const neighbours = rooms.map(() => new Set<number>());
-  // Points every `reach` cells along each outline, bucketed by `reach`, so a
-  // point need only be compared with those in the nine buckets around it.
-  const buckets = new Map<string, [number, number, number][]>();
+  // Outlines are cut into pieces no longer than `reach`. Two such pieces that
+  // come within `reach` have an end within `reach` of the other piece, and
+  // midpoints at most twice `reach` apart, so pieces are bucketed by midpoint
+  // in cells that size and compared only with the nine buckets around them.
+  const size = 2 * reach;
+  const buckets = new Map<string, Piece[]>();
   rooms.forEach((room, index) => {
     const boundary = room.boundary;
     boundary.forEach(([x0, y0], corner) => {
       const [x1, y1] = boundary[(corner + 1) % boundary.length]!;
       const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / reach));
       for (let step = 0; step < steps; step += 1) {
-        const x = x0 + (x1 - x0) * step / steps, y = y0 + (y1 - y0) * step / steps;
-        const column = Math.floor(x / reach), row = Math.floor(y / reach);
+        const piece: Piece = [index,
+          x0 + (x1 - x0) * step / steps, y0 + (y1 - y0) * step / steps,
+          x0 + (x1 - x0) * (step + 1) / steps, y0 + (y1 - y0) * (step + 1) / steps];
+        const column = Math.floor((piece[1] + piece[3]) / 2 / size), row = Math.floor((piece[2] + piece[4]) / 2 / size);
         for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1) {
-          for (const [other, ox, oy] of buckets.get(`${column + dx},${row + dy}`) ?? []) {
-            if (other !== index && Math.hypot(x - ox, y - oy) <= reach) {
-              neighbours[index]!.add(other);
-              neighbours[other]!.add(index);
+          for (const other of buckets.get(`${column + dx},${row + dy}`) ?? []) {
+            if (other[0] === index || neighbours[index]!.has(other[0])) continue;
+            if (Math.min(toPiece(piece[1], piece[2], other), toPiece(piece[3], piece[4], other),
+              toPiece(other[1], other[2], piece), toPiece(other[3], other[4], piece)) <= reach) {
+              neighbours[index]!.add(other[0]);
+              neighbours[other[0]]!.add(index);
             }
           }
         }
         const key = `${column},${row}`;
         const bucket = buckets.get(key);
-        if (bucket) bucket.push([index, x, y]);
-        else buckets.set(key, [[index, x, y]]);
+        if (bucket) bucket.push(piece);
+        else buckets.set(key, [piece]);
       }
     });
   });

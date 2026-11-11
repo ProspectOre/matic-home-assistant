@@ -51,10 +51,13 @@ export class LayerRestore {
   constructor(store: WorkspaceStore, route: (intent: WorkspaceIntent) => void) {
     this.#unsubscribe = store.subscribe((state) => {
       const entry = state.resources.entry;
+      const key = `${state.owner?.userKey}\n${state.selection.entryId}`;
+      if (key === this.#restored) return;
+      // Switching away forgets the restore even before the next map is in,
+      // since the switch clears the layers and switching back must restore them.
+      this.#restored = "";
       if (!state.owner || !state.optionalUiReady || !state.map.available
         || !entry || entry.entryId !== state.selection.entryId) return;
-      const key = `${state.owner.userKey}\n${entry.entryId}`;
-      if (key === this.#restored) return;
       this.#restored = key;
       const saved = state.layerChoices[entry.entryId] ?? NONE;
       const shown = shownLayers(state);
