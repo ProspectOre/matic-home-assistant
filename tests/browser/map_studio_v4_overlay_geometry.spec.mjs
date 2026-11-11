@@ -307,30 +307,34 @@ test("a saved map fades its photo and keeps its room colors", async ({ page }) =
     const rooms = [await pixels({ ...live, appearance: "rooms" }), await pixels({ ...saved, appearance: "rooms" })];
     const mode = renderer.diagnostics().mode;
     renderer.dispose();
-    // The largest difference from a saved pixel to the live one faded to 0.35, over the photo's opaque pixels.
-    let photoError = 0, photoPixels = 0, chroma = 0;
+    // How far the saved photo's colour sits from its grey, as a share of the live photo's, fitted over the
+    // opaque pixels. A pixel where points overlap is rounded to 8 bits after each blend, so single pixels
+    // stray by a level or two; the fit averages that out.
+    let photoPixels = 0, chroma = 0, product = 0, square = 0;
+    const greyOf = (pixels, index) => 0.213 * pixels[index] + 0.715 * pixels[index + 1] + 0.072 * pixels[index + 2];
     for (let index = 0; index < photo[0].length; index += 4) {
       if (photo[0][index + 3] !== 255) continue;
-      const [r, g, b] = photo[0].slice(index, index + 3);
-      const grey = 0.213 * r + 0.715 * g + 0.072 * b;
-      chroma = Math.max(chroma, Math.max(r, g, b) - Math.min(r, g, b));
+      const [liveGrey, savedGrey] = [greyOf(photo[0], index), greyOf(photo[1], index)];
       for (let channel = 0; channel < 3; channel += 1) {
-        const expected = grey + (photo[0][index + channel] - grey) * 0.35;
-        photoError = Math.max(photoError, Math.abs(photo[1][index + channel] - expected));
+        const away = photo[0][index + channel] - liveGrey;
+        chroma = Math.max(chroma, Math.abs(away));
+        product += (photo[1][index + channel] - savedGrey) * away;
+        square += away * away;
       }
       photoPixels += 1;
     }
+    const saturation = product / square;
     let roomPixels = 0, roomDifference = 0;
     for (let index = 0; index < rooms[0].length; index += 1) {
       if (index % 4 === 3 && rooms[0][index] > 0) roomPixels += 1;
       roomDifference = Math.max(roomDifference, Math.abs(rooms[0][index] - rooms[1][index]));
     }
-    return { mode, photoPixels, photoError, chroma, roomPixels, roomDifference };
+    return { mode, photoPixels, saturation, chroma, roomPixels, roomDifference };
   });
   test.skip(result.mode !== "webgl2", "WebGL2 is unavailable in this browser project");
   expect(result.photoPixels).toBeGreaterThan(1_000);
-  expect(result.chroma, "the photo has colour to fade").toBeGreaterThan(20);
-  expect(result.photoError, "the saved photo is the live one at 0.35 saturation").toBeLessThanOrEqual(2);
+  expect(result.chroma, "the photo has colour to fade").toBeGreaterThan(10);
+  expect(Math.abs(result.saturation - 0.35), `the saved photo has ${result.saturation} of the live one's colour`).toBeLessThan(0.02);
   expect(result.roomPixels).toBeGreaterThan(1_000);
   expect(result.roomDifference, "room colors draw as on the live map").toBe(0);
 });

@@ -383,16 +383,18 @@ export class OverlayGeometry {
         continue;
       }
       const closed = shape.kind === "fill" || shape.closed;
+      // A lone observation is a dot the width of the line. WebKit draws no cap on a
+      // zero-length line, so the dot is filled after the stroke.
+      const dots: MapPoint[] = [];
       context.beginPath();
       for (const ring of shape.rings) {
         let started = false;
         for (let offset = 0; offset < ring.length; offset += 2) {
           const point = project(ring[offset]!, shape.height, ring[offset + 1]!);
           if (!point) continue;
-          if (started) context.lineTo(point.x, point.y);
+          if (ring.length === 2) dots.push(point);
+          else if (started) context.lineTo(point.x, point.y);
           else context.moveTo(point.x, point.y);
-          // A lone observation needs a zero-length line for its round cap.
-          if (ring.length === 2) context.lineTo(point.x, point.y);
           started = true;
         }
         if (started && closed) context.closePath();
@@ -407,6 +409,14 @@ export class OverlayGeometry {
         context.setLineDash(shape.dashed ? [5, 4] : []);
         context.strokeStyle = rgba(shape.colour, shape.alpha);
         context.stroke();
+        if (!dots.length) continue;
+        context.beginPath();
+        for (const { x, y } of dots) {
+          context.moveTo(x + shape.width / 2, y);
+          context.arc(x, y, shape.width / 2, 0, Math.PI * 2);
+        }
+        context.fillStyle = context.strokeStyle;
+        context.fill();
       }
     }
     context.restore();
