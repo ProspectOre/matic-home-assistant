@@ -133,7 +133,13 @@ test("the travel path is the accent on a light edge, stops at a gap and marks a 
     expectColour(halo[path], over(PALETTE.accent, 0.5, PALETTE.onAccent), 6, `${path} edge`);
     expectColour(gap[path], GREY, 0, `${path} two metres with no observation`);
     expectColour(dot[path], PALETTE.accent, 3, `${path} lone observation`);
-    expectColour(dotHalo[path], over(PALETTE.onAccent, 0.5), 12, `${path} lone observation's edge`);
+    // The light edge's outer circle crosses this pixel, which is about half covered. Engines
+    // antialias a curve differently: Chromium's 2D canvas covers half, WebKit's a quarter.
+    const [red, green, blue] = dotHalo[path];
+    expect(Math.max(red, green, blue) - Math.min(red, green, blue), `${path} lone observation's edge is untinted`)
+      .toBeLessThanOrEqual(3);
+    expect(red, `${path} lone observation's edge`).toBeGreaterThanOrEqual(over(PALETTE.onAccent, 0.2)[0]);
+    expect(red, `${path} lone observation's edge`).toBeLessThanOrEqual(over(PALETTE.onAccent, 0.6)[0]);
   }
 });
 
