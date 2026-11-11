@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from hashlib import sha256
 from inspect import signature
 from pathlib import Path
@@ -13,8 +14,10 @@ from homeassistant.components.http import (  # type: ignore[attr-defined,unused-
     StaticPathConfig,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 
 from .area_views import MaticAreasView
+from .const import DOMAIN
 from .daily_limit_view import MaticDailyLimitView
 from .floor_layers import MaticFloorLayersView
 from .photos import MaticRobotPhotoPreviewView, MaticRobotPhotoView
@@ -34,12 +37,23 @@ from .slam_scene import MaticSlamDeltaView, MaticSlamSceneView
 from .wifi_survey import MaticWifiHeatmapView
 from .workspace_socket import async_register as async_register_workspace_socket
 
+_LOGGER = logging.getLogger(__name__)
+RELEASES_URL = "https://github.com/ProspectOre/matic-home-assistant/releases"
+MATIC_ICONS_FILE = Path(__file__).with_name("matic_icons.js")
+MATIC_MAP_STUDIO_V4_DIRECTORY = Path(__file__).with_name("map_studio_v4")
+# A release zip holds the built panel. A source checkout or archive has none
+# until `npm run build:map-studio-v4` runs, and registers no panel.
+PANEL_BUILT = (
+    MATIC_ICONS_FILE.is_file()
+    and (MATIC_MAP_STUDIO_V4_DIRECTORY / "index.js").is_file()
+)
+
 # Keep the custom icons cache-busted by both integration and asset versions.
 MANIFEST_VERSION = json.loads(
     Path(__file__).with_name("manifest.json").read_text(encoding="utf-8")
 )["version"]
 MATIC_ICONS_VERSION = sha256(
-    Path(__file__).with_name("matic_icons.js").read_bytes()
+    MATIC_ICONS_FILE.read_bytes() if PANEL_BUILT else b""
 ).hexdigest()[:12]
 MATIC_ICONS_PATH = f"/matic_robot/{MANIFEST_VERSION}-{MATIC_ICONS_VERSION}/icons.js"
 
@@ -60,7 +74,6 @@ def _tree_version(path: Path) -> str:
 # Map Studio is a strict TypeScript/Lit module tree. Its entry and lazy
 # workflow chunks share one content-bound URL root so an upgrade cannot mix
 # generations.
-MATIC_MAP_STUDIO_V4_DIRECTORY = Path(__file__).with_name("map_studio_v4")
 MATIC_MAP_STUDIO_V4_VERSION = _tree_version(MATIC_MAP_STUDIO_V4_DIRECTORY)
 MATIC_MAP_STUDIO_V4_ROOT_PATH = (
     f"/matic_robot/{MANIFEST_VERSION}-{MATIC_MAP_STUDIO_V4_VERSION}/map-studio-v4"
@@ -98,11 +111,29 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticRobotPhotoPreviewView)
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
+    if not PANEL_BUILT:
+        _LOGGER.error(
+            "This copy of the integration was installed without its Matic Map"
+            " files, so the sidebar has no Matic Map. Download it again in HACS,"
+            " or replace custom_components/matic_robot with the contents of"
+            " matic_robot.zip from %s",
+            RELEASES_URL,
+        )
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            "panel_missing",
+            is_fixable=False,
+            learn_more_url=RELEASES_URL,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="panel_missing",
+        )
+        return
     await hass.http.async_register_static_paths(
         [
             StaticPathConfig(
                 MATIC_ICONS_PATH,
-                str(Path(__file__).with_name("matic_icons.js")),
+                str(MATIC_ICONS_FILE),
                 cache_headers=True,
             ),
             StaticPathConfig(

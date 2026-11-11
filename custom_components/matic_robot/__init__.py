@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -23,6 +24,7 @@ from .area_binding_repairs import (
     async_delete_custom_area_issue,
     async_sync_custom_area_issue,
 )
+from .blueprint_update import async_check_blueprints
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
@@ -131,6 +133,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     await async_register_frontend(hass)
     await async_register_services(hass)
     hass.data[DOMAIN][DATA_LLM_API] = async_register_matic_llm_api(hass)
+    async_at_started(hass, async_check_blueprints)
     return True
 
 

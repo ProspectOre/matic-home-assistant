@@ -31,10 +31,7 @@ async def async_setup_entry(
     """Set up verified Matic command buttons."""
     async_add_entities(
         [
-            MaticPlanButton(entry, "run_selected_plan"),
-            MaticPlanButton(entry, "intelligent_clean"),
-            MaticPlanButton(entry, "clean_entire_plan"),
-            MaticPlanButton(entry, "stop_intelligent_cleaning"),
+            MaticPlanButton(entry),
             MaticAreaButton(entry),
             MaticWifiSurveyClearButton(entry),
             MaticTakePhotoButton(entry),
@@ -49,10 +46,6 @@ class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
         super().__init__(entry)
         self._published_floor_coherent = self._floor_coherent()
 
-    @property
-    def _uses_floor_coherence(self) -> bool:
-        return True
-
     def _floor_coherent(self) -> bool:
         floor_plan = self.coordinator.data.floor_plan
         return bool(
@@ -64,14 +57,13 @@ class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
         )
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe only buttons whose availability follows floor identity."""
+        """Follow the floor identity that availability depends on."""
         await super().async_added_to_hass()
-        if self._uses_floor_coherence:
-            self.async_on_remove(
-                self._config_entry.runtime_data.slam_map.async_add_listener(
-                    self._async_floor_coherence_updated
-                )
+        self.async_on_remove(
+            self._config_entry.runtime_data.slam_map.async_add_listener(
+                self._async_floor_coherence_updated
             )
+        )
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -90,26 +82,21 @@ class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
 
 
 class MaticPlanButton(_MaticFloorBoundButton):
-    """Run one native saved-plan operation for this robot."""
+    """Run the default saved plan for this robot."""
 
-    # Map Studio and the standard vacuum controls cover everyday use. These
-    # alternate entry points remain available for dashboards and automations.
+    # Matic Map and the standard vacuum controls cover everyday use. This
+    # entry point is for dashboards and automations.
     _attr_entity_registry_enabled_default = False
+    _attr_translation_key = "run_selected_plan"
 
-    def __init__(self, entry: MaticConfigEntry, service: str) -> None:
+    def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._service = service
         self._serial_number = self.coordinator.data.info.serial_number
         self._plans = entry.runtime_data.cleaning_plans
-        self._attr_translation_key = service
-        self._attr_unique_id = f"{self._serial_number}_{service}"
-
-    @property
-    def _uses_floor_coherence(self) -> bool:
-        return self._service != "stop_intelligent_cleaning"
+        self._attr_unique_id = f"{self._serial_number}_run_selected_plan"
 
     async def async_added_to_hass(self) -> None:
-        """Refresh availability when plans or managed runs change."""
+        """Refresh availability when plans change."""
         await super().async_added_to_hass()
         self.async_on_remove(
             self._plans.repository.async_add_listener(
@@ -123,15 +110,9 @@ class MaticPlanButton(_MaticFloorBoundButton):
 
     @property
     def available(self) -> bool:
-        """Expose only plan operations that can succeed now."""
+        """Offer the button only while the default plan can run."""
         if not super().available:
             return False
-        if self._service == "stop_intelligent_cleaning":
-            return (
-                self._plans.history.snapshot(self._serial_number)["active_plan"]
-                is not None
-            )
-
         floor_plan = self.coordinator.data.floor_plan
         if not self._floor_coherent() or floor_plan is None:
             return False
@@ -165,10 +146,10 @@ class MaticPlanButton(_MaticFloorBoundButton):
         )
 
     async def async_press(self) -> None:
-        """Invoke the selected saved-plan operation."""
+        """Run the default plan the way it is saved."""
         await self.hass.services.async_call(
             DOMAIN,
-            self._service,
+            "run_selected_plan",
             {ATTR_ENTITY_ID: self._vacuum_entity_id()},
             blocking=True,
         )

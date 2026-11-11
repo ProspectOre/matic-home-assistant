@@ -9,8 +9,8 @@ const bundle = await build({
       export { MAX_ROOM_SEQUENCE_SIZE } from "./frontend/map-studio-v4/contracts";
       export { WorkspaceStore, manualRoomPreviewKey, selectGoToRoomAction } from "./frontend/map-studio-v4/state";
       export { notice } from "./frontend/map-studio-v4/contracts";
-      export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
-      export { syntheticEntry } from "./frontend/map-studio-v4/synthetic-fixtures";`,
+      export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
+      export { syntheticEntry } from "./frontend/map-studio-v4-review/synthetic-fixtures";`,
     resolveDir: process.cwd(),
   },
   bundle: true, format: "esm", write: false,
@@ -610,12 +610,12 @@ test("@safety a generation and selection change discard old responses before adm
     // Let the first request attach its resolver before invalidating its generation.
     for (let i = 0; i < 20 && h.pending.length < 1; i++) await new Promise(resolve => setTimeout(resolve, 0));
     const generation = h.store.value.generation;
-    h.store.patch({ generation: generation + 1 });
+    h.store.replace({ ...h.store.value, generation: generation + 1 });
     for (let i = 0; i < 20 && h.pending.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 0));
     h.pending[0]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "b".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], missionBoundaries: [], blocker: null });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterGenerationLate = h.store.value.manualRoomPreview.value?.preview.previewToken ?? null;
-    h.store.patch({ selection: { ...h.store.value.selection,
+    h.store.replace({ ...h.store.value, selection: { ...h.store.value.selection,
       roomSettings: [{ roomId: "room-a", cleaningMode: "mop", coverageSetting: "standard" }] } });
     for (let i = 0; i < 20 && h.pending.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 0));
     h.pending[1]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "c".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], missionBoundaries: [], blocker: null });
@@ -670,7 +670,7 @@ test("a queue change is sent only while the robot cleans, and its notice says wh
     const initial = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen", scope: queueScope() };
     await h.effects.executeAction(initial);
     const idle = h.calls.length;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     const skip = { ...initial, scope: queueScope() };
     h.holdService = true;
@@ -684,9 +684,9 @@ test("a queue change is sent only while the robot cleans, and its notice says wh
     await sent;
     const done = { notice: h.store.value.notice, pending: h.store.value.queuePending };
     // A clean started from Matic Map stays "starting" until its run ends.
-    h.store.patch({ command: "starting" });
+    h.store.replace({ ...h.store.value, command: "starting" });
     await h.effects.executeAction({ ...skip, change: "clean_room_next", scope: queueScope() });
-    h.store.patch({ command: "idle" });
+    h.store.replace({ ...h.store.value, command: "idle" });
     h.serviceError = Object.assign(new Error("refused"), { translation_domain: "matic_robot", translation_key: "queue_last_room" });
     await h.effects.executeAction({ ...skip, scope: queueScope() });
     const refused = h.store.value.notice;
@@ -716,7 +716,7 @@ test("a robot change ends a pending queue change, and its late reply changes not
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const sent = h.effects.executeAction({ id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen",
@@ -738,7 +738,7 @@ test("a connection drop keeps a sent queue change pending until its reply settle
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const state = h.store.value;
@@ -747,7 +747,7 @@ test("a connection drop keeps a sent queue change pending until its reply settle
     const sent = h.effects.executeAction(action);
     for (let i = 0; i < 20 && !h.releaseService; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     const beforeDrop = h.store.value.queuePending;
-    h.store.patch({ host: { ...h.store.value.host, connected: false } });
+    h.store.replace({ ...h.store.value, host: { ...h.store.value.host, connected: false } });
     const afterDrop = h.store.value.queuePending;
     h.releaseService();
     await sent;
@@ -764,7 +764,7 @@ test("an uncertain timed out action requires explicit recovery and a late reply 
     const h = window.manualPreviewHarness;
     const nativeSetTimeout = window.setTimeout.bind(window);
     window.setTimeout = ((callback, delay, ...args) => nativeSetTimeout(callback, delay === 50_000 ? 20 : delay, ...args));
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const action = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen", scope: h.queueScope() };
@@ -798,7 +798,7 @@ test("a generic transport rejection remains fenced until the owner explicitly ch
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const action = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen", scope: h.queueScope() };
@@ -833,7 +833,7 @@ test("a post-send integration readback timeout remains uncertain", async ({ page
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.serviceError = Object.assign(new Error("robot readback timed out"), {
       translation_domain: "matic_robot", translation_key: "queue_change_failed",
@@ -851,7 +851,7 @@ test("a battery-only refresh leaves a retained queue action valid", async ({ pag
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     const action = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen", scope: h.queueScope() };
     h.projection = { ...h.projection, activity: "cleaning", batteryPercent: 51 };
@@ -869,7 +869,7 @@ test("a robot switch isolates a held queue action from the new robot's pending s
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const state = h.store.value;
@@ -899,7 +899,7 @@ test("an old owner's late queue reply cannot clear the current owner's operation
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const state = h.store.value;
@@ -907,7 +907,7 @@ test("an old owner's late queue reply cannot clear the current owner's operation
     const first = h.effects.executeAction(firstAction);
     for (let i = 0; i < 20 && h.calls.length < 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     h.effects.sync({ ...h.projection, userKey: "another-user", activity: "cleaning" });
-    h.store.patch({ resources: { ...h.store.value.resources, plans: {
+    h.store.replace({ ...h.store.value, resources: { ...h.store.value.resources, plans: {
       status: "ready", problem: null, value: state.resources.plans.value,
     } } });
     const afterOwnerSwitch = h.store.value.queuePending;
@@ -933,7 +933,7 @@ for (const transition of ["owner", "robot"]) {
     await setupEffects(page);
     const result = await page.evaluate(async (kind) => {
       const h = window.manualPreviewHarness;
-      h.store.patch({ activity: "cleaning" });
+      h.store.replace({ ...h.store.value, activity: "cleaning" });
       await h.waitQueueController();
       h.holdService = true;
       const action = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen", scope: h.queueScope() };
@@ -941,8 +941,8 @@ for (const transition of ["owner", "robot"]) {
       for (let i = 0; i < 20 && h.calls.length < 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
       if (kind === "owner") {
         const owner = h.store.value.owner;
-        h.store.patch({ owner: { ...owner, userKey: "other-user" } });
-        h.store.patch({ owner });
+        h.store.replace({ ...h.store.value, owner: { ...owner, userKey: "other-user" } });
+        h.store.replace({ ...h.store.value, owner });
       } else {
         h.effects.sync({ ...h.projection, vacuumEntityId: "vacuum.other" });
         h.effects.sync(h.projection);
@@ -964,24 +964,24 @@ for (const transition of ["owner", "access", "floor", "catalog"]) {
     await setupEffects(page);
     const result = await page.evaluate(async (transition) => {
       const h = window.manualPreviewHarness;
-      h.store.patch({ activity: "cleaning" });
+      h.store.replace({ ...h.store.value, activity: "cleaning" });
       await h.waitQueueController();
       const state = h.store.value;
       const action = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen",
         scope: h.queueScope(state) };
       if (transition === "owner") {
-        h.store.patch({ owner: { ...state.owner, userKey: "another-user" } });
-        h.store.patch({ owner: state.owner });
+        h.store.replace({ ...h.store.value, owner: { ...state.owner, userKey: "another-user" } });
+        h.store.replace({ ...h.store.value, owner: state.owner });
       }
       else if (transition === "access") h.accessDenied();
       else if (transition === "floor") {
-        h.store.patch({ selection: { ...state.selection, floorId: "another-floor" } });
-        h.store.patch({ selection: state.selection });
+        h.store.replace({ ...h.store.value, selection: { ...state.selection, floorId: "another-floor" } });
+        h.store.replace({ ...h.store.value, selection: state.selection });
       } else {
-        h.store.patch({ resources: { ...state.resources, plans: {
+        h.store.replace({ ...h.store.value, resources: { ...state.resources, plans: {
           status: "ready", problem: null, value: structuredClone(state.resources.plans.value),
         } } });
-        h.store.patch({ resources: state.resources });
+        h.store.replace({ ...h.store.value, resources: state.resources });
       }
       await h.effects.executeAction(action);
       const output = { calls: h.calls.length, queuePending: h.store.value.queuePending,
@@ -998,7 +998,7 @@ test("a duplicate queue click cannot retire the matching pending service", async
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const state = h.store.value;
@@ -1024,7 +1024,7 @@ test("a held queue reply survives controller disposal and reconnects to the remo
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
     const { QueueActionController, notice } = await import("/manual-preview-test.js");
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const action = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen", scope: h.queueScope() };
@@ -1033,7 +1033,7 @@ test("a held queue reply survives controller disposal and reconnects to the remo
     const oldEffects = h.effects;
     oldEffects.dispose();
     const detached = { pending: h.store.value.queuePending, notice: h.store.value.notice?.key ?? null };
-    h.store.patch({ pageActive: true });
+    h.store.replace({ ...h.store.value, pageActive: true });
     const remountedController = new QueueActionController({ store: h.store, backend: { service: async () => undefined },
       helpers: { notice }, projection: () => ({ entityId: h.projection.vacuumEntityId,
         entryKey: h.projection.entryKey }), allowed: () => true, disposed: () => false });
@@ -1057,7 +1057,7 @@ test("a queue action without captured scope is inert", async ({ page }) => {
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.effects.executeAction({ id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen" });
     const output = { calls: h.calls.length, pending: h.store.value.queuePending };
     h.effects.dispose();
@@ -1070,7 +1070,7 @@ test("a floor switch during a queue service clears only its pending state and su
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
-    h.store.patch({ activity: "cleaning" });
+    h.store.replace({ ...h.store.value, activity: "cleaning" });
     await h.waitQueueController();
     h.holdService = true;
     const state = h.store.value;
@@ -1078,7 +1078,7 @@ test("a floor switch during a queue service clears only its pending state and su
       scope: h.queueScope(state) };
     const sent = h.effects.executeAction(action);
     for (let i = 0; i < 20 && !h.releaseService; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-    h.store.patch({ selection: { ...h.store.value.selection, floorId: "another-floor" } });
+    h.store.replace({ ...h.store.value, selection: { ...h.store.value.selection, floorId: "another-floor" } });
     const stillPending = h.store.value.queuePending;
     h.releaseService();
     await sent;

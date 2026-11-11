@@ -17,6 +17,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The pilot loads the built bundle, which is not committed.
+      - run: npm run build:map-studio-v4
       - name: Run bounded Windows AT experiment
         shell: pwsh
         run: ./scripts/qualify_windows_accessibility.ps1

@@ -4,7 +4,7 @@ blueprint:
     Starts with the rooms that have waited longest since a successful clean,
     then continues through the saved plan. Rooms that failed, were cancelled,
     or were interrupted stay due. It starts only when the robot is docked or
-    idle.
+    idle. Needs Matic (Unofficial) 0.5.4 or later.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/room_rotation.yaml
   input:
@@ -47,8 +47,9 @@ conditions:
     state: [docked, idle]
 
 actions:
-  - action: matic_robot.intelligent_clean
+  - action: matic_robot.run_selected_plan
     target:
       entity_id: !input vacuum
     data: >-
-      {{ {'plan': plan_name | trim} if (plan_name or '') | trim else {} }}
+      {{ dict({'plan': plan_name | trim} if (plan_name or '') | trim else {},
+              run_behavior='intelligent') }}

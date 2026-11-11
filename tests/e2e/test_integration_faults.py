@@ -21,7 +21,13 @@ from custom_components.matic_robot import managed_dispatch
 from custom_components.matic_robot.client import hermes_collections, hermes_connection
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 
-from .hermes_sim import STOP_PAYLOAD, Phase, RunningSimulator, SimulatedRobot
+from .hermes_sim import (
+    DOCK_PAYLOAD,
+    STOP_PAYLOAD,
+    Phase,
+    RunningSimulator,
+    SimulatedRobot,
+)
 from .sim_faults import Faults
 from .sim_mission import SimFloor, parse_coverage_command, two_room_floor
 
@@ -176,8 +182,10 @@ async def test_unacknowledged_plan_start_is_stopped_and_not_sent_again(
     await _failed_plan_start(hass, monkeypatch)
 
     # The robot reports the session this run dispatched, so the run may stop
-    # it. The start itself went out once.
-    start, stop = robot.received()
+    # it. The start itself went out once. A background task docks the
+    # stopped robot, and its command may not have arrived yet.
+    start, stop, *later = robot.received()
     assert parse_coverage_command(start, 0) is not None
     assert stop == STOP_PAYLOAD
+    assert later in ([], [DOCK_PAYLOAD])
     assert robot.session is None

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -78,16 +79,22 @@ def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
             text=True,
         ).stdout.strip()
 
+    def zipped(blobs: dict[str, bytes]) -> Path:
+        with zipfile.ZipFile(tmp_path / "matic_robot.zip", "w") as bundle:
+            for name, data in blobs.items():
+                bundle.writestr(name, data)
+        return tmp_path / "matic_robot.zip"
+
     git("init", "-q")
-    for name, data in _blobs().items():
+    for name in ("manifest.json", "services.yaml"):
         path = tmp_path / INTEGRATION / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        path.write_bytes(_blobs()[name])
     (tmp_path / "README.md").write_text("outside the integration")
     git("add", ".")
     git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "c")
     git("tag", "v0.6.0b1")
-    candidate = Candidate.from_git(tmp_path, "v0.6.0b1")
+    candidate = Candidate.from_git(tmp_path, "v0.6.0b1", zipped(_blobs()))
     assert candidate.commit == git("rev-parse", "HEAD")
     assert candidate.version == "0.6.0b1"
     assert set(candidate.files) == set(_blobs())
@@ -95,7 +102,7 @@ def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
     commit = candidate.commit
     git("tag", "-d", "v0.6.0b1")
     (tmp_path / INTEGRATION / "manifest.json").write_text('{"version":"dirty"}')
-    unpublished = Candidate.from_commit(tmp_path, commit)
+    unpublished = Candidate.from_commit(tmp_path, commit, zipped(_blobs()))
     assert unpublished.tag is None
     assert unpublished.commit == commit
     assert unpublished.files == candidate.files
@@ -103,7 +110,14 @@ def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
     assert receipt.name.startswith(commit + "-")
     assert json.loads(receipt.read_text())["candidate"]["tag"] is None
     with pytest.raises(ValueError, match="full lowercase commit ID"):
-        Candidate.from_commit(tmp_path, "HEAD")
+        Candidate.from_commit(tmp_path, "HEAD", zipped(_blobs()))
+    for other in (
+        _blobs() | {"services.yaml": b"changed:\n"},
+        _blobs() | {"extra.py": b"not in the commit"},
+        {name: data for name, data in _blobs().items() if name != "manifest.json"},
+    ):
+        with pytest.raises(ValueError, match=f"was not built from {commit}"):
+            Candidate.from_commit(tmp_path, commit, zipped(other))
 
 
 def test_installed_files_must_match_exactly() -> None:
@@ -215,119 +229,34 @@ def _statuses(receipt: dict[str, Any]) -> dict[str, str]:
 
 
 class EntityCheckHomeAssistant:
-    def __init__(self, history: dict[str, Any] | None = None) -> None:
+    def __init__(self, sensor_state: str | None) -> None:
         self.registry = [
-            {
-                "entity_id": ROBOT,
-                "platform": "matic_robot",
-                "disabled_by": None,
-                "config_entry_id": "entry-a",
-                "unique_id": "serial_vacuum",
-            },
-            {
-                "entity_id": "button.renamed_stop",
-                "platform": "matic_robot",
-                "disabled_by": None,
-                "config_entry_id": "entry-a",
-                "unique_id": "serial_stop_intelligent_cleaning",
-            },
-            {
-                "entity_id": "sensor.renamed_history",
-                "platform": "matic_robot",
-                "disabled_by": None,
-                "config_entry_id": "entry-a",
-                "unique_id": "serial_cleaning_history",
-            },
+            {"entity_id": entity_id, "platform": "matic_robot", "disabled_by": None}
+            for entity_id in (ROBOT, "sensor.battery")
         ]
-        self.states = [
-            {"entity_id": ROBOT, "state": "docked"},
-            {"entity_id": "button.renamed_stop", "state": "unavailable"},
-        ]
-        if history is not None:
-            self.states.append({"entity_id": "sensor.renamed_history", **history})
+        self.states = [{"entity_id": ROBOT, "state": "docked"}]
+        if sensor_state is not None:
+            self.states.append({"entity_id": "sensor.battery", "state": sensor_state})
 
     async def call(self, method: str) -> Any:
         return self.registry if method == "config/entity_registry/list" else self.states
 
 
-async def test_entities_accepts_idle_stop_when_history_confirms_idle() -> None:
+async def test_entities_count_enabled_entities_and_read_the_robot_state() -> None:
+    check = InstalledCheck(EntityCheckHomeAssistant("87"), _candidate(), Options())  # type: ignore[arg-type]
+    assert await check.entities() == {"enabled": 2, "robot_state": "docked"}
+
+
+@pytest.mark.parametrize("sensor_state", ["unavailable", None])
+async def test_entities_fail_an_enabled_entity_without_an_available_state(
+    sensor_state: str | None,
+) -> None:
     check = InstalledCheck(
-        EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}}),
+        EntityCheckHomeAssistant(sensor_state),  # type: ignore[arg-type]
         _candidate(),
         Options(),
-    )  # type: ignore[arg-type]
-    evidence = await check.entities()
-    assert evidence["enabled"] == 3
-    assert evidence["expected_unavailable"] == ["button.renamed_stop"]
-
-
-async def test_entities_reports_no_expected_unavailable_for_available_stop() -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.states[1]["state"] = "unknown"
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    assert (await check.entities())["expected_unavailable"] == []
-
-
-@pytest.mark.parametrize(
-    "history",
-    [
-        {"state": "0", "attributes": {"plan_running": True}},
-        {"state": "0", "attributes": {"plan_running": None}},
-        {"state": "unknown", "attributes": {"plan_running": False}},
-        {"state": "unavailable", "attributes": {"plan_running": False}},
-        None,
-    ],
-)
-async def test_entities_fail_stop_button_without_explicit_available_idle_state(
-    history: dict[str, Any] | None,
-) -> None:
-    check = InstalledCheck(EntityCheckHomeAssistant(history), _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed, match=r"button\.renamed_stop"):
-        await check.entities()
-
-
-async def test_entities_do_not_use_idle_sensor_from_another_entry() -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.registry[-1]["config_entry_id"] = "entry-b"
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed, match=r"button\.renamed_stop"):
-        await check.entities()
-
-
-@pytest.mark.parametrize(
-    ("button_entity", "history_entity"),
-    [
-        ("sensor.stop_like", "sensor.renamed_history"),
-        ("button.renamed_stop", "binary_sensor.history_like"),
-    ],
-)
-async def test_entities_require_button_and_sensor_domains_for_exception(
-    button_entity: str, history_entity: str
-) -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.registry[1]["entity_id"] = button_entity
-    ha.registry[2]["entity_id"] = history_entity
-    ha.states[1]["entity_id"] = button_entity
-    ha.states[2]["entity_id"] = history_entity
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed):
-        await check.entities()
-
-
-async def test_entities_still_fail_other_unavailable_buttons() -> None:
-    ha = EntityCheckHomeAssistant({"state": "0", "attributes": {"plan_running": False}})
-    ha.registry.append(
-        {
-            "entity_id": "button.other",
-            "platform": "matic_robot",
-            "disabled_by": None,
-            "config_entry_id": "entry-a",
-            "unique_id": "serial_other_button",
-        }
     )
-    ha.states.append({"entity_id": "button.other", "state": "unavailable"})
-    check = InstalledCheck(ha, _candidate(), Options())  # type: ignore[arg-type]
-    with pytest.raises(CheckFailed, match=r"button\.other"):
+    with pytest.raises(CheckFailed, match=r"sensor\.battery"):
         await check.entities()
 
 
@@ -721,7 +650,7 @@ async def test_connect_failure_is_written_as_a_receipt(
     monkeypatch.setattr(
         Candidate,
         "from_commit" if by_commit else "from_git",
-        classmethod(lambda cls, repo, tag: candidate),
+        classmethod(lambda cls, repo, tag, archive: candidate),
     )
 
     async def fail_connect(self: HomeAssistant) -> None:
@@ -731,6 +660,7 @@ async def test_connect_failure_is_written_as_a_receipt(
     monkeypatch.setenv("HA_TOKEN", "test-token")
     args = argparse.Namespace(
         repo=ROOT,
+        zip=tmp_path / "matic_robot.zip",
         tag=candidate.tag,
         commit=candidate.commit if by_commit else None,
         token_file=None,
@@ -765,8 +695,9 @@ async def test_connect_failure_is_written_as_a_receipt(
 
 
 def test_physical_needs_a_room() -> None:
+    arguments = ["v0.6.0b1", "--zip", "z", "--url", "http://ha", "--receipts", "r"]
     with pytest.raises(SystemExit):
-        main(["v0.6.0b1", "--url", "http://ha", "--receipts", "r", "--physical"])
+        main([*arguments, "--physical"])
 
 
 @pytest.mark.parametrize(
@@ -782,7 +713,7 @@ def test_unpublished_selector_refuses_ambiguous_or_installing_runs(
     selection: list[str],
 ) -> None:
     with pytest.raises(SystemExit) as error:
-        main([*selection, "--url", "http://ha", "--receipts", "r"])
+        main([*selection, "--zip", "z", "--url", "http://ha", "--receipts", "r"])
     assert error.value.code == 2
 
 

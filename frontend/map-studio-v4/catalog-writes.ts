@@ -92,17 +92,17 @@ export const setDailyRoomLimit = async (context: CatalogWriteContext, roomId: st
     && store.value.resources.plans.value?.floorToken === catalog?.floorToken;
   if (!catalog?.entryId || !catalog.floorToken || !catalog.rooms.some((room) => room.roomId === roomId) || !current()
     || !context.helpers.canEditCoordinates(store.value)) return;
-  store.patch({ command: "pending", notice: null });
+  store.dispatch({ type: "result", command: "pending", notice: null });
   try {
     context.markSent();
     await backend.setDailyRoomLimit(catalog.entryId, catalog.floorToken, roomId, limit, signal);
     if (!current()) return;
-    store.patch({ command: "idle", manualRoomPreview: { status: "idle", value: null, problem: null } });
+    store.dispatch({ type: "result", command: "idle", manualRoomPreview: { status: "idle", value: null, problem: null } });
     context.release();
     await context.effects.loadPlans({ force: true, inPlace: true });
     context.settled(current());
   } catch (error) {
-    if (!context.helpers.isAbort(error) && current()) store.patch({ command: "idle", notice: context.failure });
+    if (!context.helpers.isAbort(error) && current()) store.dispatch({ type: "result", command: "idle", notice: context.failure });
   }
 };
 
@@ -119,7 +119,7 @@ export const setDeepMop = async (context: CatalogWriteContext): Promise<void> =>
     || !store.value.host.administrator || context.helpers.hasStoppableWork(store.value)
     || store.value.deepMop?.enabled !== setting.enabled) return;
   const enabled = !setting.enabled;
-  store.patch({ command: "pending", pendingAction: "set-deep-mop", notice: null });
+  store.dispatch({ type: "result", command: "pending", pendingAction: "set-deep-mop", notice: null });
   try {
     context.markSent();
     await backend.service("switch", enabled ? "turn_on" : "turn_off", {}, setting.entityId, { acknowledgementTimeout: "mutation" });
@@ -147,10 +147,10 @@ export const setDeepMop = async (context: CatalogWriteContext): Promise<void> =>
       });
       if (done) unsubscribe();
     });
-    if (current()) store.patch({ command: "idle", notice: confirmed ? null : context.failure });
+    if (current()) store.dispatch({ type: "result", command: "idle", notice: confirmed ? null : context.failure });
     context.settled(confirmed && current());
   } catch (error) {
-    if (!context.helpers.isAbort(error) && current()) store.patch({ command: "idle", notice: context.failure });
+    if (!context.helpers.isAbort(error) && current()) store.dispatch({ type: "result", command: "idle", notice: context.failure });
   }
 };
 
@@ -162,7 +162,7 @@ export const saveArea = async (context: CatalogWriteContext): Promise<void> => {
   if (!entry || !canEditCoordinates(state) || !draft.name.trim() || !state.draw.circles.length) return;
   if (!draftIsLive(state, store.value)) return;
   const current = (): boolean => !context.disposed() && !signal.aborted;
-  store.patch({ command: "pending", notice: notice("info", "v4_notice_area_saving", "Saving area…") });
+  store.dispatch({ type: "result", command: "pending", notice: notice("info", "v4_notice_area_saving", "Saving area…") });
   try {
     context.markSent();
     const id = await backend.saveArea(entry.areasUrl, {
@@ -184,11 +184,12 @@ export const saveArea = async (context: CatalogWriteContext): Promise<void> => {
     } : null;
     // The write acknowledgement is the save boundary. Refreshing the list
     // must not leave a successfully saved draft dirty or restore it after Back.
-    store.patch({
+    store.dispatch({
+      type: "transition",
       command: "idle", notice: notice("success", "v4_notice_area_saved", "Area saved"),
       ...(savedDraft ? {
         dialog: latest.dialog === "discardDraft" ? null : latest.dialog,
-        selection: { ...latest.selection, areaId: id },
+        selection: { areaId: id },
         areaDraft: savedDraft,
         draw: { ...latest.draw, dirty: false, strokeCount: 0, undo: [], redo: [], outlineUndo: [], outlineRedo: [] },
       } : {}),
@@ -204,7 +205,7 @@ export const saveArea = async (context: CatalogWriteContext): Promise<void> => {
       && areas.areas.some((area) => area.id === id)) effects.selectArea(id);
   } catch (error) {
     if (isAbort(error) || !current()) return;
-    store.patch({ command: "idle", notice: context.failure });
+    store.dispatch({ type: "result", command: "idle", notice: context.failure });
   }
 };
 
@@ -224,7 +225,7 @@ export const deleteArea = async (context: CatalogWriteContext): Promise<void> =>
   const areaId = state.selection.areaId;
   if (!entry || !areaId || !canEditCoordinates(state)) return;
   const current = (): boolean => !context.disposed() && !signal.aborted;
-  store.patch({ command: "pending", notice: null });
+  store.dispatch({ type: "result", command: "pending", notice: null });
   try {
     context.markSent();
     const conflict = await context.backend.deleteArea(entry.areasUrl, areaId, signal);
@@ -234,7 +235,8 @@ export const deleteArea = async (context: CatalogWriteContext): Promise<void> =>
       const plans = conflictPlans(conflict);
       if (!plans) throw new context.helpers.BackendError("area-delete-failed", 409);
       const names = new Intl.ListFormat(state.locale, { type: "conjunction" }).format(plans.map((name) => `"${name}"`));
-      store.patch({
+      store.dispatch({
+        type: "result",
         command: "idle",
         notice: plans.length === 1
           ? notice("error", "v4_notice_area_in_plans_one", "Can't delete this area because it's all that {plans} cleans. Edit or delete that plan first.", { plans: names })
@@ -242,18 +244,18 @@ export const deleteArea = async (context: CatalogWriteContext): Promise<void> =>
       });
       return;
     }
-    store.patch({ command: "idle", notice: notice("success", "v4_notice_area_deleted", "Area deleted") });
+    store.dispatch({ type: "result", command: "idle", notice: notice("success", "v4_notice_area_deleted", "Area deleted") });
     // As a deleted plan returns to the picker, a deleted area returns to Your areas.
     const latest = store.value;
     if (latest.workflow === "areaReview" && latest.selection.areaId === areaId && latest.selection.entryId === state.selection.entryId) {
       context.effects.selectArea(null);
-      store.patch({ workflow: "areas" });
+      store.dispatch({ type: "transition", workflow: "areas" });
     }
     await context.effects.loadAreas();
     // Home Assistant took the area out of every plan that cleaned it.
     if (current()) await context.effects.loadPlans({ force: true, inPlace: true });
   } catch (error) {
-    if (!isAbort(error) && current()) store.patch({ command: "idle", notice: context.failure });
+    if (!isAbort(error) && current()) store.dispatch({ type: "result", command: "idle", notice: context.failure });
   }
 };
 
@@ -281,10 +283,7 @@ export const savePlan = async (context: CatalogWriteContext): Promise<void> => {
     const savedDraft = store.value.workflow === "plan"
       && store.value.planDraft === draft ? { ...draft, id: savedId, dirty: false, parkedRooms: [], parkedAreas: [] } : null;
     if (savedDraft) {
-      store.patch({
-        planDraft: savedDraft,
-        selection: { ...store.value.selection, planId: savedId },
-      });
+      store.dispatch({ type: "transition", planDraft: savedDraft, selection: { planId: savedId } });
       // The saved draft is clean, so the plan returns to Run (plan.md §5).
       store.dispatch({ type: "set-plan-view", view: "run" });
     }
@@ -310,11 +309,12 @@ export const deletePlan = async (context: CatalogWriteContext): Promise<void> =>
   if (deleted) {
     const current = store.value;
     if (current.selection.entryId === entryId && current.planDraft.id === planId) {
-      store.patch({
-        selection: { ...current.selection, planId: null },
+      store.dispatch({
+        type: "transition",
+        selection: { planId: null },
         planDraft: context.helpers.initialWorkspaceState().planDraft,
       });
-      if (current.workflow === "plan") store.patch({ workflow: "plans", precisionOpen: false });
+      if (current.workflow === "plan") store.dispatch({ type: "transition", workflow: "plans", precisionOpen: false });
     }
     await refreshPlansAfterWrite(context);
   }
@@ -381,7 +381,7 @@ export const deleteSharedCadence = async (context: CatalogWriteContext, action: 
   if (!request || state.selection.entryId !== live.selection.entryId
     || !context.helpers.sharedDeleteCurrent(live, request)
     || !context.helpers.canEditCoordinates(live)) {
-    store.patch({ notice: context.helpers.notice("warning", "v4_notice_shared_schedule_changed", "The shared schedule changed. Review plans before trying again.") });
+    store.dispatch({ type: "result", notice: context.helpers.notice("warning", "v4_notice_shared_schedule_changed", "The shared schedule changed. Review plans before trying again.") });
     return;
   }
   const failure = context.helpers.notice("error", "v4_notice_shared_schedule_delete_failed", "The shared schedule wasn't deleted; reload plans, then try again.");
@@ -404,22 +404,22 @@ export const deleteSharedCadence = async (context: CatalogWriteContext, action: 
   );
   // serviceMutation dispatches synchronously before its first await. Fence
   // that original wire immediately, including entry changes and remounts.
-  store.patch({ planWriteBlock: "pending" });
+  store.dispatch({ type: "result", planWriteBlock: "pending" });
   const sent = await sending;
   if (!sent) {
     if (!uncertain && !acknowledged) {
-      store.patch({ planWriteBlock: null });
+      store.dispatch({ type: "result", planWriteBlock: null });
       return;
     }
     // Timeout and disposal do not cancel a transmitted service request. Stop
     // stays available while the outcome is unknown; no write is sent twice.
     if (uncertain) {
-      store.patch({ notice: context.helpers.notice("warning", "v4_notice_shared_schedule_delete_unknown", "Home Assistant hasn't confirmed deletion. Reload plans after its reply to resume editing.") });
+      store.dispatch({ type: "result", notice: context.helpers.notice("warning", "v4_notice_shared_schedule_delete_unknown", "Home Assistant hasn't confirmed deletion. Reload plans after its reply to resume editing.") });
       await (uncertain as { completion?: Promise<unknown> }).completion?.catch(() => {});
     }
     // The store outlives a detached controller. Its replacement can release
     // this fence with a fresh read once the original wire has settled.
-    store.patch({ planWriteBlock: "refresh" });
+    store.dispatch({ type: "result", planWriteBlock: "refresh" });
     if (context.disposed()) return;
     const fresh = await context.effects.loadPlans({ force: true });
     if (fresh && context.projection()?.entryKey === owner?.entryKey
@@ -430,7 +430,7 @@ export const deleteSharedCadence = async (context: CatalogWriteContext, action: 
         && !fresh.plans.some((plan) => plan.rooms.some((savedRoom) => savedRoom.roomId === action.roomId && savedRoom.cadence?.scope === "shared"))
         && latest.selection.floorId === state.selection.floorId
         && latest.draftFloorOrdinal === state.draftFloorOrdinal && latest.draftMapSessionKey === state.draftMapSessionKey);
-      store.patch({ notice: deleted
+      store.dispatch({ type: "result", notice: deleted
         ? context.helpers.notice("success", "v4_notice_shared_schedule_deleted", "Shared schedule deleted")
         : context.helpers.notice("warning", "v4_notice_shared_schedule_delete_not_confirmed", "Deletion wasn't confirmed. Review the refreshed plans before trying again.") });
       context.settled(deleted);
@@ -438,7 +438,7 @@ export const deleteSharedCadence = async (context: CatalogWriteContext, action: 
     return;
   }
   let refreshed: import("./backend-contracts").PlansCatalog | null = null;
-  store.patch({ command: "pending", pendingAction: "save-plan", planWriteBlock: "refresh" });
+  store.dispatch({ type: "result", command: "pending", pendingAction: "save-plan", planWriteBlock: "refresh" });
   try {
     const payload = response && typeof response === "object" && !Array.isArray(response)
       ? ((response as { response?: unknown }).response ?? response) : null;
@@ -464,8 +464,9 @@ export const deleteSharedCadence = async (context: CatalogWriteContext, action: 
           sharedDeleteToken: _token, ...rest } = catalogRoom;
         return rest;
       });
-      store.patch({
-        resources: { ...current.resources, plans: { ...current.resources.plans, value: { ...currentCatalog, plans, rooms } } },
+      store.dispatch({
+        type: "transition",
+        resources: { plans: { ...current.resources.plans, value: { ...currentCatalog, plans, rooms } } },
         ...(current.planDraft.id === action.planId ? {
           planDraft: { ...current.planDraft, rooms: current.planDraft.rooms.map((draftRoom) =>
             draftRoom.roomId === action.roomId && draftRoom.cadence?.scope === "shared" ? withoutRoomCadence(draftRoom) : draftRoom) },
@@ -475,13 +476,13 @@ export const deleteSharedCadence = async (context: CatalogWriteContext, action: 
         } : {}),
       });
     } else if (!acknowledged) {
-      store.patch({ notice: context.helpers.notice("error", "v4_notice_shared_schedule_delete_unverified", "Home Assistant accepted the change but couldn't confirm which plans were updated. Reload plans before saving.") });
+      store.dispatch({ type: "result", notice: context.helpers.notice("error", "v4_notice_shared_schedule_delete_unverified", "Home Assistant accepted the change but couldn't confirm which plans were updated. Reload plans before saving.") });
     }
     refreshed = await refreshPlansAfterWrite(context);
   } finally {
     if (!context.disposed() && !context.signal.aborted
       && store.value.selection.entryId === state.selection.entryId && store.value.command === "pending") {
-      store.patch({ command: "idle" });
+      store.dispatch({ type: "result", command: "idle" });
     }
   }
   const latest = store.value;
@@ -508,20 +509,21 @@ export const setPlanEnabled = async (context: CatalogWriteContext, enabled: bool
   const writer = planWriter(context);
   if (!id || !writer || !switchable(state) || !switchable(store.value)) return;
   const switched = store.dispatch({ type: "set-plan-enabled", enabled }).planDraft;
-  store.patch({ command: "pending", pendingAction: "save-plan", notice: null });
+  store.dispatch({ type: "result", command: "pending", pendingAction: "save-plan", notice: null });
   const catalog = await effects.loadPlans({ force: true, inPlace: true });
   const plan = catalog?.plans.find((candidate) => candidate.id === id);
   // Deleted elsewhere: there is nothing to switch, and the read has already
   // left Run for Your plans and said so (effects.ts loadPlans).
   if (catalog && !plan) {
-    if (writer.current() && store.value.command === "pending") store.patch({ command: "idle" });
+    if (writer.current() && store.value.command === "pending") store.dispatch({ type: "result", command: "idle" });
     return;
   }
   const sent = catalog && plan
     ? await writer.send("save_plan", planSaveRequest({ ...draftForPlan(plan), enabled }, catalog.selectedPlan === id))
     : writer.current() ? false : null;
   if (sent === null) return;
-  store.patch({
+  store.dispatch({
+    type: "transition",
     command: "idle",
     notice: !sent ? context.failure : enabled
       ? notice("success", "v4_notice_plan_on", "Plan turned on")
@@ -536,7 +538,8 @@ export const setPlanEnabled = async (context: CatalogWriteContext, enabled: bool
 const refreshPlansAfterWrite = (context: CatalogWriteContext) => {
   const acknowledged = context.store.value.notice;
   return context.effects.loadPlans({ force: true, inPlace: true, onError: () => {
-    if (context.store.value.notice === acknowledged) context.store.patch({
+    if (context.store.value.notice === acknowledged) context.store.dispatch({
+      type: "result",
       notice: context.helpers.notice("warning", "v4_notice_plans_refresh_failed", "Home Assistant made the change but couldn't reload your plans, so open Your plans again."),
     });
   } });
@@ -598,10 +601,10 @@ const serviceMutation = async (
   const { notice, canEditCoordinates } = context.helpers;
   const writer = planWriter(context);
   if (!writer || !canEditCoordinates(context.state)) return false;
-  context.store.patch({ command: "pending", pendingAction: "save-plan", notice: notice("info", "v4_notice_saving", "Saving…") });
+  context.store.dispatch({ type: "result", command: "pending", pendingAction: "save-plan", notice: notice("info", "v4_notice_saving", "Saving…") });
   let failure = context.failure;
   const sent = await writer.send(service, data, onAcknowledged, (error) => { failure = failureForError?.(error) ?? context.failure; });
-  if (sent !== null) context.store.patch({ command: "idle", notice: sent ? success : failure });
+  if (sent !== null) context.store.dispatch({ type: "result", command: "idle", notice: sent ? success : failure });
   return sent === true;
 };
 
@@ -680,7 +683,7 @@ export const runPlanPreflight = async (context: PlanPreflightContext): Promise<v
     const latest = store.value;
     if (!context.disposed() && latest.selection.entryId === context.entryId
       && latest.generation === context.generation && latest.command === "pending"
-      && latest.pendingAction === "run-plan") store.patch({ command: "idle" });
+      && latest.pendingAction === "run-plan") store.dispatch({ type: "result", command: "idle" });
   };
   // The module itself can finish loading after a floor, plan or owner change.
   if (!current()) return;
@@ -693,17 +696,17 @@ export const runPlanPreflight = async (context: PlanPreflightContext): Promise<v
   if (!current()) return;
   releasePending();
   if (!catalog) {
-    store.patch({ notice: context.failure });
+    store.dispatch({ type: "result", notice: context.failure });
     return;
   }
   const preview = catalog.plans.find((candidate) => candidate.id === plan)?.nextRunPreview;
   const token = preview?.previewToken ?? "";
   if (!preview || preview.blocker || !/^[0-9a-f]{64}$/u.test(token)) {
-    store.patch({ notice: notice("warning", "v4_notice_plan_preview_none", "This plan has no next-run preview; review its rooms and schedules.") });
+    store.dispatch({ type: "result", notice: notice("warning", "v4_notice_plan_preview_none", "This plan has no next-run preview; review its rooms and schedules.") });
     return;
   }
   if (JSON.stringify(displayedPreview) !== JSON.stringify(preview)) {
-    store.patch({ notice: notice("info", "v4_notice_plan_preview_changed", "The next run changed; check it before you run the plan.") });
+    store.dispatch({ type: "result", notice: notice("info", "v4_notice_plan_preview_changed", "The next run changed; check it before you run the plan.") });
     return;
   }
   await context.start(token);

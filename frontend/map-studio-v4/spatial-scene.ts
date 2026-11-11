@@ -85,15 +85,15 @@ export class SpatialScene {
       // next verified catalog poll instead of orphaning its loading state.
       if (!response.floorCoherent) {
         const state = this.#store.value;
-        this.#store.patch({
+        this.#store.dispatch({
+          type: "result",
           coherence: "verifying",
           resources: {
-            ...state.resources,
             scene: resource("error", state.resources.scene.value, "map-rechecking"),
             pose: resource("idle", null),
           },
-          map: { ...state.map, available: state.resources.scene.value !== null, floorCoherent: false, exactPose: false },
-          floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
+          map: { available: state.resources.scene.value !== null, floorCoherent: false, exactPose: false },
+          floor: { readOnly: state.resources.scene.value !== null },
         });
         this.#callbacks.replacementFinished(entry);
         return;
@@ -109,16 +109,15 @@ export class SpatialScene {
       const state = this.#store.value;
       const settledEntry = { ...state.resources.entry ?? entry, mapRevision: response.revision };
       this.#callbacks.admitted(settledEntry);
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         coherence: settledEntry.health === "problem" || settledEntry.health === "limited" ? "degraded" : "current",
         resources: {
-          ...state.resources,
           entry: settledEntry,
           scene: resource("ready", response.scene),
         },
-        map: { ...state.map, available: true },
+        map: { available: true },
         floor: {
-          ...state.floor,
           readOnly: false,
           displayName: state.resources.history.value?.floors.find((floor) => floor.active)?.label
             || (settledEntry.selectedFloorOrdinal ? `Floor ${settledEntry.selectedFloorOrdinal}` : "Current floor"),
@@ -140,9 +139,9 @@ export class SpatialScene {
       if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed() || !this.#coherence.accepts(stamp)) return;
       if (error instanceof BackendError && error.code === "request-timeout") {
         const state = this.#store.value;
-        this.#store.patch({
+        this.#store.dispatch({
+          type: "result",
           resources: {
-            ...state.resources,
             scene: resource("loading", state.resources.scene.value, "scene-building"),
           },
         });
@@ -162,10 +161,10 @@ export class SpatialScene {
         && entry.mapSessionKey !== null
         && pose?.position !== null
         && pose?.mapSessionKey === entry.mapSessionKey;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         coherence: "degraded",
         resources: {
-          ...state.resources,
           scene: resource(
             "error",
             state.resources.scene.value,
@@ -173,7 +172,6 @@ export class SpatialScene {
           ),
         },
         map: {
-          ...state.map,
           available: state.resources.scene.value !== null,
           exactPose: retainsVerifiedPose,
         },
@@ -226,17 +224,16 @@ export class SpatialScene {
             || !this.#coherence.accepts(stamp)) return;
           if (!response.floorCoherent) {
             const state = this.#store.value;
-            this.#store.patch({
+            this.#store.dispatch({
+              type: "result",
               coherence: "verifying",
               map: {
-                ...state.map,
                 available: state.resources.scene.value !== null,
                 floorCoherent: false,
                 exactPose: false,
               },
-              floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
+              floor: { readOnly: state.resources.scene.value !== null },
               resources: {
-                ...state.resources,
                 scene: resource("error", state.resources.scene.value, "map-rechecking"),
                 pose: resource("idle", null),
               },
@@ -257,15 +254,13 @@ export class SpatialScene {
           entry = { ...entry, mapRevision: response.revision };
           this.#callbacks.recovered(entry);
           this.#callbacks.admitted(entry);
-          const state = this.#store.value;
-          this.#store.patch({
+          this.#store.dispatch({
+            type: "result",
             resources: {
-              ...state.resources,
               entry,
               scene: resource("ready", scene),
             },
             map: {
-              ...state.map,
               available: true,
               floorCoherent: true,
             },

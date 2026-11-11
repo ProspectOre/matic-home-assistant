@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadCameraFollowHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { CameraFollowController } from "./frontend/map-studio-v4/camera-follow"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { CameraFollowController } from "./frontend/map-studio-v4/camera-follow"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -62,7 +62,7 @@ async function loadCameraFollowHarness(page) {
 test("ride camera uses admitted heading, stays close, and restores on explicit exit", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -126,7 +126,7 @@ test("ride camera uses admitted heading, stays close, and restores on explicit e
 test("stale or historical pose cannot start ride camera", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -160,7 +160,7 @@ test("stale or historical pose cannot start ride camera", async ({ page }) => {
 test("source renderer fits first-launch 3D at its high overview angle", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -214,7 +214,7 @@ test("Ride to Follow restores the manual view with reduced motion and explicit o
 test("explicit Follow exit restores fit behavior so a later resize refits the map", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -278,7 +278,7 @@ test("explicit Follow exit restores fit behavior so a later resize refits the ma
 test("efficient LOD keeps framebuffer coverage from collapsing when it strides packed points", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -382,7 +382,7 @@ test("Ride to Follow animates from the restored manual view; manual interruption
 test("optional renderer chunks report delayed and failed imports and ignore late disposal completions", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,

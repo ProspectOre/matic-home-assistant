@@ -131,7 +131,7 @@ async def test_credited_intermediate_leg_does_not_authorize_offline_queue_replay
     manager, entry, checkpoint, room = recovery_state
     next_room = CleaningRoom("office", "Office", "vacuum", "quick")
     await manager.ledger.async_begin_run(
-        "serial", "plan", "run", 2, trigger="automation", service="clean_entire_plan"
+        "serial", "plan", "run", 2, trigger="automation", service="run_selected_plan"
     )
     checkpoint["rooms"] = [asdict(room), asdict(next_room)]
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)

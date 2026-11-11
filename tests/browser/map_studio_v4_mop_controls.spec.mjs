@@ -7,7 +7,7 @@ async function harness(page) {
     export { HassAdapter } from "./frontend/map-studio-v4/hass-adapter";
     export { EffectController } from "./frontend/map-studio-v4/effects";
     export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+    export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";
     export { roomsSummary } from "./frontend/map-studio-v4/rooms-view";
   `, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route(`**${HARNESS}`, route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
@@ -168,7 +168,7 @@ test("double-pass remains pending through a map session change and works without
     run.release();
     run.effects.sync({ ...run.projection, deepMop: { ...run.projection.deepMop, enabled: true } });
     await run.operation;
-    run.store.patch({ coherence: "unavailable", map: { ...run.store.value.map, complete: false } });
+    run.store.replace({ ...run.store.value, coherence: "unavailable", map: { ...run.store.value.map, complete: false } });
   });
   await startWrite(page);
   await expect.poll(() => page.evaluate(() => window.__mop.calls.length)).toBe(2);

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 test("comparison loads pinned scene URLs and clears without choosing a replacement when one disappears", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { MaticMapComparisonV4 } from "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { MaticMapComparisonV4 } from "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -76,7 +76,7 @@ test("comparison loads pinned scene URLs and clears without choosing a replaceme
 test("comparison aborts both source reads and clears selection when administrator access is lost", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { MaticMapComparisonV4 } from "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { MaticMapComparisonV4 } from "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -126,7 +126,7 @@ test("comparison aborts both source reads and clears selection when administrato
 test("comparison does not retry a pair continuously after source reads return 503", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { MaticMapComparisonV4 } from "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { MaticMapComparisonV4 } from "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -185,7 +185,7 @@ for (const coverageCase of ["matching", "mismatched frame", "bad checksum"]) {
     });
     const bundle = await build({
       stdin: {
-        contents: 'import "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
+        contents: 'import "./frontend/map-studio-v4/map-comparison-element"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
         resolveDir: process.cwd(),
       }, bundle: true, format: "esm", write: false,
     });

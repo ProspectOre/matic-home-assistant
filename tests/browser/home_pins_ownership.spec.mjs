@@ -8,7 +8,7 @@ const bundle = await build({
   stdin: {
     contents: `export { EffectController } from "./frontend/map-studio-v4/effects";
       export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-      export { syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } from "./frontend/map-studio-v4/synthetic-fixtures";`,
+      export { syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } from "./frontend/map-studio-v4-review/synthetic-fixtures";`,
     resolveDir: process.cwd(),
   },
   bundle: true, format: "esm", write: false,

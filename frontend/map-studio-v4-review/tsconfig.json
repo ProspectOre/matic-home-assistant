@@ -1,0 +1,4 @@
+{
+  "extends": "../map-studio-v4/tsconfig.json",
+  "include": ["./**/*.ts"]
+}

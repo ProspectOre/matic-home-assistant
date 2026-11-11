@@ -110,9 +110,9 @@ export class CatalogResources {
     const controller = this.#requests.begin("catalog");
     if (spatialRecoveryOwner) spatialRecoveryOwner.bind(controller);
     const previous = this.#store.value.resources.catalog.value;
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "result",
       resources: {
-        ...this.#store.value.resources,
         catalog: resource("loading", previous),
       },
     });
@@ -130,10 +130,10 @@ export class CatalogResources {
         && (!spatialRecoveryOwner || !spatialRecoveryOwner.isCurrent())) {
         // A fresh catalog may refresh the runner lock and entry list while a
         // spatial read is cooling down, but it cannot restart the same frame.
-        this.#store.patch({
+        this.#store.dispatch({
+          type: "result",
           managedLock: entryManagedLock(selected),
           resources: {
-            ...this.#store.value.resources,
             catalog: resource(entries.length ? "ready" : "empty", entries),
             entry: currentEntry,
           },
@@ -155,10 +155,10 @@ export class CatalogResources {
         // completed delta, or while the initial full scene is downloading.
         selected = { ...selected, mapRevision: currentEntry.mapRevision };
       }
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         managedLock: selected ? entryManagedLock(selected) : false,
         resources: {
-          ...this.#store.value.resources,
           catalog: resource(entries.length ? "ready" : "empty", entries),
           entry: selected,
         },
@@ -181,10 +181,10 @@ export class CatalogResources {
         this.#callbacks.clearPrivate("access-required", this.#callbacks.projection()?.entryKey ?? null);
         return;
       }
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         coherence: this.#store.value.resources.scene.value ? "degraded" : "unavailable",
         resources: {
-          ...this.#store.value.resources,
           catalog: resource("error", previous, problemCode(error, "catalog-unavailable")),
         },
       });
@@ -220,7 +220,7 @@ export class CatalogResources {
     }
     const shown = !inPlace || state.resources.plans.status !== "ready";
     if (shown && this.#callbacks.pageActive()) {
-      this.#store.patch({ resources: { ...state.resources, plans: resource("loading", state.resources.plans.value) } });
+      this.#store.dispatch({ type: "result", resources: { plans: resource("loading", state.resources.plans.value) } });
     }
     let resources = await this.#loadPlanResources();
     if (!resources && scope === this.#planResourcesFailureScope) {
@@ -265,8 +265,7 @@ export class CatalogResources {
           && this.#store.value.owner?.userKey === owner?.userKey
           && this.#store.value.selection.entryId === entryId) {
           this.#planResourcesFailureScope = `${generation}:${userKey}:${entryId ?? ""}`;
-          const resources = this.#store.value.resources;
-          this.#store.patch({ resources: { ...resources, plans: resource("error", resources.plans.value, "plan-module-unavailable") } });
+          this.#store.dispatch({ type: "result", resources: { plans: resource("error", this.#store.value.resources.plans.value, "plan-module-unavailable") } });
         }
         return null;
       });
@@ -311,8 +310,7 @@ export class CatalogResources {
   #areaResourcesUnavailable(context: string, onlyIfNeeded = false, problem = "areas-unavailable"): void {
     if (this.#callbacks.disposed() || context !== this.#areaContext() || (onlyIfNeeded && !this.#areasNeeded())) return;
     this.#areaResourcesFailureContext = context;
-    const resources = this.#store.value.resources;
-    this.#store.patch({ resources: { ...resources, areas: resource("error", resources.areas.value, problem) } });
+    this.#store.dispatch({ type: "result", resources: { areas: resource("error", this.#store.value.resources.areas.value, problem) } });
   }
 
   #areaContext(): string {

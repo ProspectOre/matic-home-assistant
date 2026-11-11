@@ -24,7 +24,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-  "build>=1",
   "dbus-fast>=1.83.0",
   "gazetteer-matcher==1.1.0",
   "hassil==3.12.1",
@@ -56,28 +55,6 @@ testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["custom_components*"]
-
-[tool.setuptools.package-data]
-"custom_components.matic_robot" = [
-  "brand/*.png",
-  "brand/*.svg",
-  "manifest.json",
-  "quality_scale.yaml",
-  "*.js",
-  "map_studio_v4/*.js",
-  "map_studio_v4/**/*.js",
-  "map_studio_v4/*.js.LEGAL.txt",
-  "map_studio_v4/**/*.js.LEGAL.txt",
-  "map_studio_v4/material-icons.LICENSE.txt",
-  "map_studio_v4/assets/*.json",
-  "map_studio_v4/assets/*.webp",
-  "client/matic_intermediate_ca.pem",
-  "client/proto/*.proto",
-  "services.yaml",
-  "icons.json",
-  "strings.json",
-  "translations/*.json",
-]
 
 [tool.coverage.run]
 omit = ["custom_components/matic_robot/client/proto/*"]

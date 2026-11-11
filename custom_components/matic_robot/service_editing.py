@@ -22,7 +22,6 @@ from .plan_model import (
     SharedRoomScheduleLockedError,
     SharedRoomScheduleMapChangedError,
     SharedRoomScheduleStaleError,
-    plan_entries,
     plan_floor_token,
     room_cadence_identity,
 )
@@ -30,35 +29,25 @@ from .room_coherence import current_floor_plan as _current_floor_plan
 from .service_context import ServiceRuntime
 from .service_names import (
     SERVICE_DELETE_PLAN,
-    SERVICE_DELETE_PLAN_ROOM,
     SERVICE_DELETE_ROOM_SCHEDULE,
     SERVICE_LIST_PLANS,
-    SERVICE_MOVE_PLAN_ROOM,
     SERVICE_RESET_PLAN_HISTORY,
     SERVICE_RESET_ROOM_CADENCE,
     SERVICE_SAVE_PLAN,
-    SERVICE_SAVE_PLAN_ROOM,
-    SERVICE_SELECT_PLAN,
 )
 from .service_plans import (
-    _invalid_room_position,
     _normalize_saved_area,
     _normalize_saved_room,
     _plan_cadence_bindings,
-    _plan_entry_position,
     _plan_request_error,
     _resolve_saved_plan,
-    _saved_plan_entries,
 )
 from .service_schemas import (
-    DELETE_PLAN_ROOM_SCHEMA,
     DELETE_ROOM_SCHEDULE_SCHEMA,
     LIST_PLANS_SCHEMA,
-    MOVE_PLAN_ROOM_SCHEMA,
     PLAN_REFERENCE_SCHEMA,
     RESET_PLAN_HISTORY_SCHEMA,
     RESET_ROOM_CADENCE_SCHEMA,
-    SAVE_PLAN_ROOM_SCHEMA,
     SAVE_PLAN_SCHEMA,
 )
 
@@ -288,205 +277,5 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
         SERVICE_DELETE_PLAN,
         context._require_matic_control(hass, async_delete_plan),
         schema=PLAN_REFERENCE_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def async_select_plan(call: ServiceCall) -> dict[str, Any]:
-        """Choose the plan used by native plan entities and buttons."""
-        _entity_id, _entry, serial_number, _room_map = context._saved_plan_context(
-            hass, call, require_rooms=False
-        )
-        plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
-        await manager.catalog.async_select_plan(serial_number, plan["id"])
-        return {"selected_plan_id": plan["id"], "selected_plan_name": plan["name"]}
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SELECT_PLAN,
-        context._require_matic_control(hass, async_select_plan),
-        schema=PLAN_REFERENCE_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def async_save_plan_room(call: ServiceCall) -> dict[str, Any]:
-        """Append or replace one mapped room and its settings."""
-        _entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
-        )
-        plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
-        entries = _saved_plan_entries(plan)
-        item = call.data["room"]
-        saved_entry: dict[str, Any]
-        if "area" in item:
-            saved_entry = _normalize_saved_area(manager, serial_number, entry, item)
-        else:
-            room = _normalize_saved_room(item, room_map)
-            saved_entry = {"kind": "room", "room_id": room["room_id"]}
-            if any(saved["room_id"] == room["room_id"] for saved in plan["rooms"]):
-                plan["rooms"] = [
-                    room if saved["room_id"] == room["room_id"] else saved
-                    for saved in plan["rooms"]
-                ]
-            else:
-                plan["rooms"].append(room)
-        key = "area_id" if saved_entry["kind"] == "area" else "room_id"
-        position = next(
-            (
-                index
-                for index, saved in enumerate(entries)
-                if saved["kind"] == saved_entry["kind"]
-                and saved[key] == saved_entry[key]
-            ),
-            None,
-        )
-        if position is None:
-            entries.append(saved_entry)
-            position = len(entries) - 1
-        else:
-            entries[position] = saved_entry
-        plan["entries"] = entries
-        plan_id = plan.pop("id")
-        cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
-        try:
-            await manager.catalog.async_save_plan(
-                serial_number,
-                plan_id,
-                plan,
-                select=False,
-                floor_token=cadence_floor_token,
-                room_identities=room_identities,
-            )
-        except ValueError as err:
-            raise _plan_request_error(err) from err
-        persisted = manager.catalog.plan(serial_number, plan_id)
-        if saved_entry["kind"] == "area":
-            return {
-                "plan_id": plan_id,
-                "position": position + 1,
-                "area": plan_entries(persisted)[position],
-            }
-        persisted_room = next(
-            saved
-            for saved in persisted["rooms"]
-            if saved["room_id"] == saved_entry["room_id"]
-        )
-        return {
-            "plan_id": plan_id,
-            "position": position + 1,
-            "room": persisted_room,
-        }
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SAVE_PLAN_ROOM,
-        context._require_matic_control(hass, async_save_plan_room),
-        schema=SAVE_PLAN_ROOM_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def async_delete_plan_room(call: ServiceCall) -> dict[str, Any]:
-        """Delete one mapped room from a plan."""
-        _entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
-        )
-        plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
-        entries = _saved_plan_entries(plan)
-        position = _plan_entry_position(manager, serial_number, room_map, call, entries)
-        removed = entries.pop(position)
-        deleted: dict[str, Any] = removed
-        if removed["kind"] == "room":
-            deleted = next(
-                room for room in plan["rooms"] if room["room_id"] == removed["room_id"]
-            )
-            plan["rooms"].remove(deleted)
-            sensors = plan.get("occupancy_sensors")
-            if isinstance(sensors, dict):
-                sensors.pop(str(removed["room_id"]), None)
-        plan["entries"] = entries
-        if not entries:
-            plan["enabled"] = False
-        plan_id = plan.pop("id")
-        cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
-        try:
-            await manager.catalog.async_save_plan(
-                serial_number,
-                plan_id,
-                plan,
-                select=False,
-                floor_token=cadence_floor_token,
-                room_identities=room_identities,
-            )
-        except ValueError as err:
-            raise _plan_request_error(err) from err
-        return {"plan_id": plan_id, "deleted": deleted}
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_PLAN_ROOM,
-        context._require_matic_control(hass, async_delete_plan_room),
-        schema=DELETE_PLAN_ROOM_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def async_move_plan_room(call: ServiceCall) -> dict[str, Any]:
-        """Move one mapped room to an exact one-based position."""
-        _entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
-        )
-        plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
-        entries = _saved_plan_entries(plan)
-        position = (
-            _plan_entry_position(manager, serial_number, room_map, call, entries) + 1
-        )
-        new_position = call.data["new_position"]
-        if not 1 <= new_position <= len(entries):
-            raise _invalid_room_position(new_position, len(entries))
-        moved = entries.pop(position - 1)
-        entries.insert(new_position - 1, moved)
-        rooms_by_id = {room["room_id"]: room for room in plan["rooms"]}
-        plan["rooms"] = [
-            rooms_by_id[saved["room_id"]]
-            for saved in entries
-            if saved["kind"] == "room"
-        ]
-        plan["entries"] = entries
-        plan_id = plan.pop("id")
-        cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
-        try:
-            await manager.catalog.async_save_plan(
-                serial_number,
-                plan_id,
-                plan,
-                select=False,
-                floor_token=cadence_floor_token,
-                room_identities=room_identities,
-            )
-        except ValueError as err:
-            raise _plan_request_error(err) from err
-        persisted = manager.catalog.plan(serial_number, plan_id)
-        if moved["kind"] == "area":
-            return {
-                "plan_id": plan_id,
-                "previous_position": position,
-                "position": new_position,
-                "area": plan_entries(persisted)[new_position - 1],
-            }
-        persisted_room = next(
-            saved
-            for saved in persisted["rooms"]
-            if saved["room_id"] == moved["room_id"]
-        )
-        return {
-            "plan_id": plan_id,
-            "previous_position": position,
-            "position": new_position,
-            "room": persisted_room,
-        }
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_MOVE_PLAN_ROOM,
-        context._require_matic_control(hass, async_move_plan_room),
-        schema=MOVE_PLAN_ROOM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )

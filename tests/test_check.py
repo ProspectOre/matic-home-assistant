@@ -219,6 +219,9 @@ def test_deleted_and_renamed_files_count_as_changed(
     assert ("diff", "--name-only", "--no-renames", "base") in calls
 
 
+BUILD = ["npm", "run", "build:map-studio-v4"]
+
+
 @pytest.mark.parametrize(
     ("arguments", "changed", "failing", "violations", "status", "tests"),
     [
@@ -229,6 +232,8 @@ def test_deleted_and_renamed_files_count_as_changed(
         (["--all"], [], "pytest", [], 1, check.FULL_SUITE),
         (["--all"], [], "ruff", [], 1, check.FULL_SUITE),
         (["--all"], [], None, ["a.py: too long"], 1, check.FULL_SUITE),
+        (["--all"], [], "build:map-studio-v4", [], 1, None),
+        (["--all"], [], "no Node.js", [], 1, None),
     ],
 )
 def test_main_fails_when_any_check_fails(
@@ -252,7 +257,24 @@ def test_main_fails_when_any_check_fails(
     monkeypatch.setattr(check, "layer_violations", lambda: violations)
     monkeypatch.setattr(check, "_code_sizes", dict)
     monkeypatch.setattr(check, "_baseline", dict)
+    monkeypatch.setattr(
+        check, "build_commands", lambda: None if failing == "no Node.js" else [BUILD]
+    )
 
     assert check.main(arguments) == status
     pytest_runs = [command[3:] for command in commands if "pytest" in command]
     assert pytest_runs == ([] if tests is None else [tests])
+    # Tests read the built Matic Map, so every test run follows a build.
+    assert (BUILD in commands) == (tests is not None or failing in BUILD)
+
+
+def test_matic_map_is_built_with_npm_and_installed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(check.shutil, "which", lambda name: None)
+    assert check.build_commands(tmp_path) is None
+
+    monkeypatch.setattr(check.shutil, "which", lambda name: name)
+    assert check.build_commands(tmp_path) == [["npm", "ci"], BUILD]
+    (tmp_path / "node_modules").mkdir()
+    assert check.build_commands(tmp_path) == [BUILD]

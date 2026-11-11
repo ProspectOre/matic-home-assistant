@@ -1,1 +1,0 @@
-async function e(e,t,i,a,n){if(!e.ok)throw a("request-failed",e.status);if("image/webp"!==e.headers.get("Content-Type")?.split(";",1)[0])throw n("invalid-thumbnail");return new Blob([await i(e,t,8388608,"invalid-thumbnail")],{type:"image/webp"})}export{e as runThumbnailResponse};

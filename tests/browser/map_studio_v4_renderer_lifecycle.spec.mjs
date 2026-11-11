@@ -3,7 +3,7 @@ import { build } from "esbuild";
 
 test("@safety renderer releases old scenes on hidden owner changes and scene removal, but retains on ordinary hide", async ({ page }) => {
   const bundle = await build({
-    stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() },
+    stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";', resolveDir: process.cwd() },
     bundle: true, format: "esm", write: false,
   });
   await page.route("**/renderer-owner-lifecycle.js", route => route.fulfill({
