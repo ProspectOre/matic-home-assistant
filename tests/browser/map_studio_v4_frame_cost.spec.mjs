@@ -17,8 +17,9 @@ const CAMERA_FRAME = {
   programCalls: 0,
   // The 2D canvas holds labels and markers, which follow the camera.
   overlayRedraws: 1,
-  drawCalls: 37,
-  glCalls: 359,
+  // The robot's mesh is one draw call and six WebGL calls.
+  drawCalls: 38,
+  glCalls: 365,
   textMeasures: 4,
 };
 // Median script time of a camera frame, in milliseconds. The container that
@@ -127,6 +128,8 @@ async function loadRenderer(page) {
       ] },
       resources: { ...base.resources,
         entry: base.resources.entry && { ...base.resources.entry, mapSessionKey: key },
+        // A heading turns the robot's dot into its mesh.
+        pose: { ...base.resources.pose, value: { ...base.resources.pose.value, heading: 0.6 } },
         areas: { ...base.resources.areas, value: { ...base.resources.areas.value, zones: [
           { kind: "no_go", outline: ring(5.2, 1, 1.6, 1.2), holes: [[[5.6, 1.3], [6.2, 1.3], [5.9, 1.8]]], roomIds: [], areaIds: [] },
           { kind: "unknown", outline: ring(1, 4, 1.6, 1.4), holes: [], roomIds: [], areaIds: [] },

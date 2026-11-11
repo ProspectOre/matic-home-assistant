@@ -420,8 +420,10 @@ export class RendererCamera {
     lookAt(this.#view, camera.targetX + Math.sin(camera.yaw) * horizontal, Math.sin(camera.pitch) * camera.distance,
       camera.targetZ + Math.cos(camera.yaw) * horizontal, camera.targetX, 0, camera.targetZ);
     if (camera.orthographic) {
+      // The eye is `distance` above the floor, so the far plane reaches past it
+      // at every zoom the camera allows.
       orthographic(this.#projection, -camera.distance * aspect, camera.distance * aspect,
-        -camera.distance, camera.distance, -this.radius * 4, this.radius * 4);
+        -camera.distance, camera.distance, -this.radius * 4, camera.distance + this.radius * 4);
     } else {
       perspective(this.#projection, PERSPECTIVE_FIELD_OF_VIEW, aspect, 0.02, Math.max(60, this.radius * 12));
     }
@@ -460,6 +462,14 @@ export class RendererCamera {
       x: (xNormalized * 0.5 + 0.5) * bounds.width,
       y: (-yNormalized * 0.5 + 0.5) * bounds.height,
     };
+  }
+
+  /** The world x and z of a map point in metres, or null without a scene. */
+  worldOfMeters(x: number, y: number): readonly [x: number, z: number] | null {
+    const scene = this.#host.scene();
+    const world = scene && this.#worldForCell(x / scene.metadata.metersPerCell - scene.metadata.origin[0],
+      y / scene.metadata.metersPerCell - scene.metadata.origin[1]);
+    return world ? [world[0], world[2]] : null;
   }
 
   projectMeters(x: number, y: number, height = 0, clipToViewport = true, matrix = this.matrix): MapPoint | null {
