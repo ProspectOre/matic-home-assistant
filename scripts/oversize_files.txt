@@ -10,7 +10,7 @@ custom_components/matic_robot/sensor.py 1420
 custom_components/matic_robot/slam_map_store.py 1363
 custom_components/matic_robot/vacuum.py 1441
 frontend/map-studio-v4/effects.ts 1190
-frontend/map-studio-v4/shell.ts 1740
+frontend/map-studio-v4/shell.ts 1738
 frontend/map-studio-v4/state.ts 1322
 tests/browser/map_studio_v4.spec.mjs 11082
 tests/browser/map_studio_v4_deferred_assets.spec.mjs 1098

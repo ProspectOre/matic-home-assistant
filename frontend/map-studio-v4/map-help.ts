@@ -119,9 +119,9 @@ export const renderMapHelp = ({ state, coarse, t, close }: MapHelpContext) => {
       .map-rail:has(.map-chip) { --help-top: calc(2 * var(--row)); }
       .map-rail:has(.map-chip):has(.appearance-switch) { --help-top: calc(3 * var(--row)); }
       /* Below the layer toggles stacked under Fit map: n buttons, their gaps and the group's padding. */
-      :host(:not([data-short])) .map-rail:has(.map-tools > :nth-child(2)) { --tools-top: calc(2 * var(--ms-control) + 3 * var(--ms-space-1) + var(--ms-space-2)); }
-      :host(:not([data-short])) .map-rail:has(.map-tools > :nth-child(3)) { --tools-top: calc(3 * var(--ms-control) + 4 * var(--ms-space-1) + var(--ms-space-2)); }
-      :host(:not([data-short])) .map-rail:has(.map-tools > :nth-child(4)) { --tools-top: calc(4 * var(--ms-control) + 5 * var(--ms-space-1) + var(--ms-space-2)); }
+      :host(:not([data-sheet-full])) .map-rail:has(.map-tools > :nth-child(2)) { --tools-top: calc(2 * var(--ms-control) + 3 * var(--ms-space-1) + var(--ms-space-2)); }
+      :host(:not([data-sheet-full])) .map-rail:has(.map-tools > :nth-child(3)) { --tools-top: calc(3 * var(--ms-control) + 4 * var(--ms-space-1) + var(--ms-space-2)); }
+      :host(:not([data-sheet-full])) .map-rail:has(.map-tools > :nth-child(4)) { --tools-top: calc(4 * var(--ms-control) + 5 * var(--ms-space-1) + var(--ms-space-2)); }
       .navigation-help { --top: max(var(--help-top), var(--tools-top, 0px)); position: absolute; inset-block-start: var(--top); inset-inline-end: 0; max-block-size: calc(100% - var(--top) - var(--help-bottom)); overflow: auto; box-sizing: border-box; inline-size: 22rem; max-inline-size: 100%; padding: 0.8rem 0.9rem; font-size: 0.74rem; line-height: 1.45; }
       .navigation-help header { display: flex; align-items: center; justify-content: space-between; gap: var(--ms-space-2); margin-block-end: 0.5rem; }
       .navigation-help h2 { margin: 0; font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }

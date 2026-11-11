@@ -154,7 +154,9 @@ export class MaticMapCanvasV4 extends LitElement {
       /* Fit is 44px wide with an 8px gap. */
       inset-inline: auto 52px;
     }
-    :host([data-short]) :is(.camera-steps, [data-quick-layer]) { display: none; }
+    :host([data-short]) .camera-steps { display: none; }
+    /* A phone's full sheet leaves no room under Fit for the layer toggles; Map options keeps them. */
+    :host([data-sheet-full]) [data-quick-layer] { display: none; }
 
     .map-tools, .view-switch, .appearance-switch, .camera-steps { display: flex; }
 

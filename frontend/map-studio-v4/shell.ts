@@ -1400,6 +1400,7 @@ export class MaticMapShellV4 extends LitElement {
     const state: WorkspaceState = this.#pinRun ? { ...this.state, workflow: "none" } : this.state;
     const narrow = this.#sheet.narrow ?? state.narrowHint;
     const compact = narrow && this.#sheet.compact;
+    const fullSheet = narrow && !state.fullMap && this.#sheet.detent === "full";
     const options = this.#options.value;
     const status = statusCopy(state, this.localize, this.dates);
     const shortSmartStop = this.#homeSmartStopSummary(state);
@@ -1558,16 +1559,13 @@ export class MaticMapShellV4 extends LitElement {
                 .onDrawOverlayStatus=${this.#drawOverlayStatusChanged}
                 .retry=${this.#retry}
                 .narrow=${narrow}
-                ?data-short=${compact && !state.fullMap && this.#sheet.detent === "full"}
+                ?data-short=${compact && fullSheet}
+                ?data-sheet-full=${fullSheet}
                 .help=${help}
                 .recipes=${state.workflow === "draw" ? this.#views.value?.drawRecipes(this.#t) ?? null : null}
               >${this.#floorSwitcher(state)}
-                ${narrow && !state.fullMap && this.#sheet.detent === "full" ? html`
-                  <button
-                    class="sheet-scrim"
-                    slot="scrim"
-                    data-map-control
-                    type="button"
+                ${fullSheet ? html`
+                  <button class="sheet-scrim" slot="scrim" data-map-control type="button"
                     aria-label=${this.#t("v4_collapse_sheet", "Collapse panel")}
                     @click=${() => this.#sheet.setDetent("peek")}
                   ></button>
