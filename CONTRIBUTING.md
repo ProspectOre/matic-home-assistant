@@ -21,9 +21,9 @@ stable release on `main`.
 ## Check your change
 
 `uv run scripts/check.py` runs the formatter, linter, type checker, layer and
-size rules, privacy scan, and the tests that import a changed file or a module
-that imports one. CI runs the same command with `--all`, which runs every test
-and requires 100% line coverage. `uv run ruff format .` fixes formatting.
+size rules, privacy scan, and the tests whose imports lead to a changed file.
+CI runs the same command with `--all`, which runs every test and requires 100%
+line coverage. `uv run ruff format .` fixes formatting.
 
 The tests read Matic Map, the sidebar panel, which is built from
 `frontend/map-studio-v4` and not committed. `scripts/check.py` builds it before
