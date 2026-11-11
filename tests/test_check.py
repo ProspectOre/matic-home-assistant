@@ -143,7 +143,15 @@ def test_file_sizes_are_held_to_the_ceiling_or_their_record(
         (f"{PACKAGE}/plans.py", ["tests/test_direct.py", "tests/test_package.py"]),
         (f"{PACKAGE}/ledger.py", ["tests/test_direct.py", "tests/test_package.py"]),
         (f"{PACKAGE}/wire.py", ["tests/test_direct.py", "tests/test_package.py"]),
-        (f"{PACKAGE}/__init__.py", ["tests/test_domain.py"]),
+        (
+            f"{PACKAGE}/__init__.py",
+            [
+                "tests/test_deleted.py",
+                "tests/test_direct.py",
+                "tests/test_domain.py",
+                "tests/test_package.py",
+            ],
+        ),
         (f"{PACKAGE}/deleted.py", ["tests/test_deleted.py"]),
         ("tests/e2e/simulator.py", ["tests/e2e/test_run.py"]),
         ("tests/e2e/mission.py", ["tests/e2e/test_run.py"]),

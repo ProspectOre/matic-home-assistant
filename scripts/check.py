@@ -2,8 +2,9 @@
 """Run format, lint, types, structure rules, the privacy scan and tests.
 
 A test runs if its imports lead, through any number of modules, to a file
-changed since the nearest main or release branch. With --all, every test runs
-with coverage, as in CI.
+changed since the nearest main or release branch. Imports do not show what
+Home Assistant loads by name or which files a test reads, so --all runs every
+test with coverage, as CI does.
 """
 
 from __future__ import annotations
@@ -184,6 +185,16 @@ def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
         for path in root.glob(f"{directory}/**/*.py")
     }
     reached = {module_name(path) for path in touched if path.suffix == ".py"}
+    # A changed package initializer runs on every import beneath the package.
+    beneath = tuple(
+        f"{module_name(path)}." for path in touched if path.name == "__init__.py"
+    )
+    reached |= {
+        target
+        for targets in imports.values()
+        for target in targets
+        if target.startswith(beneath)
+    }
     # Most modules are only tested through the modules and helpers above them.
     grew = True
     while grew:
