@@ -183,7 +183,7 @@ async def test_unacknowledged_plan_start_is_stopped_and_not_sent_again(
 
     # The robot reports the session this run dispatched, so the run may stop
     # it. The start itself went out once.
-    start, stop = robot.received()[:2]
+    start, stop = robot.received()
     assert parse_coverage_command(start, 0) is not None
     assert stop == STOP_PAYLOAD
     assert robot.session is None

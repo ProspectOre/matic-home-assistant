@@ -807,7 +807,7 @@ class _Hermes(HermesBase):
                         Status.INVALID_ARGUMENT,
                         f"acknowledged {ack.sequence_id} instead of {sequence}",
                     )
-            if not tracking or await self._reset(stream, name, sent):
+            if await self._reset(stream, name, sent) or not tracking:
                 return
             await self._robot.wait_for_change(name, seen)
 
