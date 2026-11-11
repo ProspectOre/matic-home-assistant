@@ -110,3 +110,15 @@ def test_poses_stop_for_a_demoted_user_and_an_unloading_entry() -> None:
     manager.send_pose(kept, "entry-a")
     assert len(_poses(kept)) == 2
     assert "entry-a" not in manager._pose_subscribers
+
+
+def test_a_new_map_authority_republishes_the_pose() -> None:
+    manager, entry, socket_hass = _workspace()
+    connection = _subscribe(socket_hass, 1, poses=True)
+    manager._async_scene_changed("entry-a")
+    assert len(_poses(connection)) == 1
+
+    # A robot that sends no new pose still gets one projected on the new authority.
+    entry.runtime_data.slam_map.live_session_verified = False
+    manager._async_scene_changed("entry-a")
+    assert len(_poses(connection)) == 2
