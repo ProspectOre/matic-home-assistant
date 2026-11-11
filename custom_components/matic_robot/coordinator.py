@@ -329,8 +329,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     async def _async_update_data(self) -> RobotState:
         """Read what the robot does not push and join it with what it does."""
-        if (error := self.session.error.value) is not None:
-            raise _update_error(error)
+        self._raise_if_unreachable()
         self.session.async_flush_state()
         full_refresh_generation = self._full_refresh_generation
         floor_read_generation = self._floor_read_generation
@@ -402,9 +401,16 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             state = replace(
                 state, floor_plan=self._current_published_floor_plan(), pose=None
             )
-        # A state pushed during the reads above is newer than the one they
-        # started from, and nothing may await between here and publication.
+        # An outage found during the reads above fails this heartbeat, and a
+        # state pushed during them is newer than the one they started from.
+        # Nothing may await between here and publication.
+        self._raise_if_unreachable()
         return self._with_live_state(state)
+
+    def _raise_if_unreachable(self) -> None:
+        """Fail a heartbeat that would mark an unreachable robot available."""
+        if (error := self.session.error.value) is not None:
+            raise _update_error(error)
 
     @property
     def floor_read_generation(self) -> int:

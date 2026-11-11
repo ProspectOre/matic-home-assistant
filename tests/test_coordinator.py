@@ -966,6 +966,24 @@ async def test_entities_are_unavailable_while_the_robot_cannot_be_reached(hass) 
     await coordinator.async_shutdown()
 
 
+async def test_an_outage_found_during_a_heartbeat_fails_that_heartbeat(hass) -> None:
+    client = _client()
+    coordinator = await start_coordinator(hass, client)
+    connection_changed = client.add_connection_listener.call_args.args[0]
+
+    async def read_that_finds_the_robot_gone() -> RobotTelemetry:
+        client.connection_error = MaticError("offline")
+        connection_changed()
+        raise MaticError("offline")
+
+    client.async_get_telemetry.side_effect = read_that_finds_the_robot_gone
+    await coordinator.async_refresh()
+
+    # The reads are optional, so only the session can fail the heartbeat.
+    assert coordinator.last_update_success is False
+    assert str(coordinator.last_exception) == "offline"
+
+
 async def test_the_heartbeat_is_slow_on_the_dock_and_restarts_when_that_changes(
     hass,
 ) -> None:
