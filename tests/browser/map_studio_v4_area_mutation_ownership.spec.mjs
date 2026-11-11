@@ -72,7 +72,8 @@ async function createPendingAreaSave(page, { holdPlans = false, existingAreaId =
     });
     await run.effects.refreshCatalog(true);
     const current = store.value;
-    store.patch({
+    store.replace({
+      ...store.value,
       workflow: "areaReview",
       areaDraft: { ...current.areaDraft, id: existingAreaId, name: existingAreaId ? "Hallway" : "First area", status: existingAreaId ? "stale" : "new", canRebind: Boolean(existingAreaId), dirty: !existingAreaId },
       draw: { ...current.draw, circles: [{ x: 1, y: 1, radius: 0.2 }], dirty: true },
@@ -242,7 +243,7 @@ test.describe("area save ownership across map transitions", () => {
       const run = window.__areaMutationOwnership;
       const save = run.saves[0];
       const laterDraft = { ...run.store.value.areaDraft, name: "Later area", dirty: true };
-      run.store.patch({ areaDraft: laterDraft });
+      run.store.replace({ ...run.store.value, areaDraft: laterDraft });
       save.resolve("first-area");
       await run.saving;
       const value = {
@@ -288,14 +289,16 @@ test.describe("a failed area write", () => {
         await effects.refreshCatalog(true);
         const current = store.value;
         if (write === "save") {
-          store.patch({
+          store.replace({
+            ...store.value,
             workflow: "areaReview",
             areaDraft: { ...current.areaDraft, id: null, name: "First area", dirty: true },
             draw: { ...current.draw, circles: [{ x: 1, y: 1, radius: 0.2 }], dirty: true },
           });
           await effects.saveArea();
         } else {
-          store.patch({
+          store.replace({
+            ...store.value,
             workflow: "areaReview",
             selection: { ...current.selection, areaId: "entryway" },
             areaDraft: { ...current.areaDraft, id: "entryway", name: "Entryway", status: "current", canRebind: false, dirty: false },

@@ -148,7 +148,7 @@ export class EffectController {
   }
   saveHomePin(pin: HomePin, pinned: boolean, previous: readonly HomePin[]): boolean {
     if (!this.#pins || this.#store.value.homePins.status !== "ready") {
-      this.#store.patch({ notice: notice("warning", "v4_pins_unavailable", "Home shortcuts are still loading. Try again shortly.") });
+      this.#store.dispatch({ type: "result", notice: notice("warning", "v4_pins_unavailable", "Home shortcuts are still loading. Try again shortly.") });
       return false;
     }
     this.#pins.saveHomePin(pin, pinned, previous);
@@ -156,7 +156,7 @@ export class EffectController {
   }
   moveHomePin(pin: HomePin, direction: -1 | 1): void {
     if (!this.#pins || this.#store.value.homePins.status !== "ready") {
-      this.#store.patch({ notice: notice("warning", "v4_pins_unavailable", "Home shortcuts are still loading. Try again shortly.") });
+      this.#store.dispatch({ type: "result", notice: notice("warning", "v4_pins_unavailable", "Home shortcuts are still loading. Try again shortly.") });
       return;
     }
     this.#pins.moveHomePin(pin, direction);
@@ -176,7 +176,7 @@ export class EffectController {
     // A retained ready projection belongs to the prior controller's persistence
     // helper. Keep controls unavailable until this controller reloads it.
     if (store.value.homePins.status === "ready") {
-      store.patch({ homePins: { status: "loading", pins: [] } });
+      store.dispatch({ type: "result", homePins: { status: "loading", pins: [] } });
     }
     // A remounted controller continues the store's existing public generation
     // sequence while keeping the coherence machine as the sole authority.
@@ -214,7 +214,7 @@ export class EffectController {
         }
         if (this.#store.value.command === "pending" && this.#store.value.pendingAction === "save-plan"
           && this.#unsentWrites.has("plan-mutation")) {
-          this.#store.patch({ command: "idle", notice: null });
+          this.#store.dispatch({ type: "result", command: "idle", notice: null });
         }
       },
       sentWriteResources: () => MUTATION_RESOURCES.filter((name) =>
@@ -252,7 +252,7 @@ export class EffectController {
           ?? actionUnconfirmedNotice;
       },
     });
-    this.#store.patch({ pageActive: this.#pageLifecycle.active });
+    this.#store.dispatch({ type: "result", pageActive: this.#pageLifecycle.active });
     this.#optionalScope = this.#pinScope(store.value) + `:${store.value.selection.floorId}`;
     this.#storeUnsubscribe = store.subscribe((state) => {
       this.#observePreferences(state);
@@ -283,12 +283,12 @@ export class EffectController {
 
   #startPinsAdmission(): void {
     this.#cancelPinsAdmission?.();
-    this.#store.patch({ optionalUiReady: false });
+    this.#store.dispatch({ type: "result", optionalUiReady: false });
     this.#cancelPinsAdmission = scheduleAfterMapAdmission(
       this.#store,
       (state) => this.#pinContextActive(state),
       () => {
-        this.#store.patch({ optionalUiReady: true });
+        this.#store.dispatch({ type: "result", optionalUiReady: true });
         void this.#pinResources(false, true);
         if (this.#store.value.activity === "cleaning" && this.#store.value.resources.plans.status === "idle"
           && canReadFloorResources(this.#store.value)) {
@@ -332,7 +332,7 @@ export class EffectController {
         const current = this.#store.value;
         if (!this.#disposed && scope === this.#pinScope(current) && this.#pinContextActive(current)) {
           this.#pinImportFailureScope = scope;
-          this.#store.patch({ homePins: { status: "error", pins: [] },
+          this.#store.dispatch({ type: "result", homePins: { status: "error", pins: [] },
             notice: notice("warning", "v4_shortcuts_unavailable", "Home Assistant couldn't load your home shortcuts.") });
         }
         return null;
@@ -384,9 +384,9 @@ export class EffectController {
     this.#spatialResources.cancelQueuedPose();
     this.#workspace.pause();
     const state = this.#store.value;
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "result",
       resources: {
-        ...state.resources,
         catalog: cancelLoading(state.resources.catalog),
         scene: cancelLoading(state.resources.scene),
         history: cancelLoading(state.resources.history),
@@ -399,7 +399,7 @@ export class EffectController {
 
   async #resumePage(): Promise<void> {
     if (this.#disposed || !this.#pageLifecycle.active) return;
-    this.#store.patch({ pageActive: true });
+    this.#store.dispatch({ type: "result", pageActive: true });
     this.#startPinsAdmission();
     const projection = this.#projection;
     if (this.#disposed || this.#accessDenied || !this.#pageLifecycle.active || !projection?.host.connected || !projection.host.administrator
@@ -439,7 +439,7 @@ export class EffectController {
   #showRoomPreviewFailure(): void {
     const state = this.#store.value;
     if (!this.#disposed && state.workflow === "rooms" && state.manualRoomPreview.status !== "error") {
-      this.#store.patch({ manualRoomPreview: resource("error", null, "preview-unavailable") });
+      this.#store.dispatch({ type: "result", manualRoomPreview: resource("error", null, "preview-unavailable") });
     }
   }
 
@@ -481,7 +481,7 @@ export class EffectController {
       const revalidate = authorizationRestored || (!this.#hostConnected && projection.host.connected);
       this.#projection = projection;
       this.#hostConnected = projection.host.connected;
-      this.#store.patch({ host: projection.host });
+      this.#store.dispatch({ type: "result", host: projection.host });
       if (revalidate && projection.host.administrator && projection.host.connected
         && this.#store.value.pageActive) void this.executeAction("recheck-status");
       return;
@@ -502,7 +502,8 @@ export class EffectController {
       this.#preferenceUser = projection.userKey;
       this.#preferenceSnapshot = loadedPreferences;
     }
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "transition",
       owner: { userKey: projection.userKey, entryKey: projection.entryKey },
       host: projection.host,
       activity: projection.activity,
@@ -518,7 +519,7 @@ export class EffectController {
       robotLabel: projection.robotLabel,
       robots: projection.robots,
       locale: projection.language,
-      selection: { ...this.#store.value.selection, entryId: projection.entryKey },
+      selection: { entryId: projection.entryKey },
       ...(loadedPreferences ? {
         view: loadedPreferences.view,
         appearance: loadedPreferences.appearance,
@@ -541,7 +542,7 @@ export class EffectController {
       if (wasConnected) {
         // Revoke admission before cancellation: an aborted transport may still
         // settle, but none of its resources belong to the offline workspace.
-        this.#store.patch({ generation: this.#coherence.invalidate() });
+        this.#store.dispatch({ type: "result", generation: this.#coherence.invalidate() });
         this.#spatialResources.stopDeltaStream();
         this.#spatialResources.resetIdentity();
       }
@@ -551,20 +552,16 @@ export class EffectController {
       this.#abortResources();
       const state = this.#store.value;
       const retainedScene = state.resources.scene.value;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         coherence: retainedScene ? "degraded" : "unavailable",
         resources: {
-          ...state.resources,
           catalog: cancelLoading(state.resources.catalog),
           plans: cancelLoading(state.resources.plans),
           areas: cancelLoading(state.resources.areas),
           pose: resource("idle", null),
         },
-        map: {
-          ...state.map,
-          available: retainedScene !== null,
-          exactPose: false,
-        },
+        map: { available: retainedScene !== null, exactPose: false },
       });
       return;
     }
@@ -591,15 +588,15 @@ export class EffectController {
       this.#stopPolling();
       const state = this.#store.value;
       const retainedScene = state.resources.scene.value;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         coherence: retainedScene ? "degraded" : "unavailable",
         resources: {
-          ...state.resources,
           catalog: cancelLoading(state.resources.catalog),
           scene: cancelLoading(state.resources.scene),
           pose: resource("idle", null),
         },
-        map: { ...state.map, available: retainedScene !== null, exactPose: false },
+        map: { available: retainedScene !== null, exactPose: false },
       });
       return;
     }
@@ -652,7 +649,7 @@ export class EffectController {
   #abortResources(except: readonly string[] = []): void {
     const mutationCancelled = this.#requests.abort([...except, "wifi-signal", "floor-types"]);
     if (mutationCancelled && this.#store.value.command === "pending") {
-      this.#store.patch({ command: "idle", notice: null });
+      this.#store.dispatch({ type: "result", command: "idle", notice: null });
     }
   }
 
@@ -665,7 +662,8 @@ export class EffectController {
     this.#abortResources();
     const state = this.#store.value;
     const empty = initialWorkspaceState();
-    this.#store.patch({
+    this.#store.dispatch({
+      type: "transition",
       command: "idle",
       queuePending: false,
       followMode: "off",
@@ -712,7 +710,7 @@ export class EffectController {
     this.#clearPrivate("access-required", this.#store.value.selection.entryId);
     // Do not advertise Stop from the old session's operational projection.
     // A fresh authenticated read or HA identity change restores that owner.
-    this.#store.patch({ activity: "idle", smartStop: null, robotRun: null,
+    this.#store.dispatch({ type: "result", activity: "idle", smartStop: null, robotRun: null,
       lastRun: null, homePins: initialWorkspaceState().homePins });
   }
 
@@ -752,9 +750,10 @@ export class EffectController {
       && !(fallback && (!fallback.historyRecordId || historyIds.includes(fallback.historyRecordId)))) return;
     this.#requests.cancel("history-scene");
     this.#requests.cancel("history");
-    this.#store.patch({
-      resources: { ...state.resources, scene: resource("error", null, "history-source-missing"), pose: resource("idle", null) },
-      map: { ...state.map, available: false, exactPose: false },
+    this.#store.dispatch({
+      type: "result",
+      resources: { scene: resource("error", null, "history-source-missing"), pose: resource("idle", null) },
+      map: { available: false, exactPose: false },
       historyCameras: {},
       notice: notice("warning", "v4_history_source_missing", "This saved map is no longer available. Choose another map or return to Live."),
     });
@@ -769,16 +768,17 @@ export class EffectController {
     if (state.comparisonActive === value) return;
     if (value) {
       if (!state.host.administrator || !state.host.connected || state.workflow !== "history") return;
-      this.#store.patch({ comparisonActive: true, followMode: "off", fullMap: false });
+      this.#store.dispatch({ type: "transition", comparisonActive: true, followMode: "off", fullMap: false });
       this.#spatialResources.stopPolling();
       this.#spatialResources.invalidateFence(state.pageActive, MUTATION_RESOURCES);
-      this.#store.patch({
-        resources: { ...this.#store.value.resources, scene: resource("idle", null), pose: resource("idle", null) },
-        map: { ...this.#store.value.map, available: false, exactPose: false },
+      this.#store.dispatch({
+        type: "result",
+        resources: { scene: resource("idle", null), pose: resource("idle", null) },
+        map: { available: false, exactPose: false },
       });
       return;
     }
-    this.#store.patch({ comparisonActive: false });
+    this.#store.dispatch({ type: "result", comparisonActive: false });
     if (this.#disposed || !this.#store.value.pageActive || !this.#store.value.host.administrator) return;
     await this.refreshCatalog(true);
     if (this.#store.value.dataMode === "history" && this.#store.value.selection.historyId) {
@@ -803,7 +803,7 @@ export class EffectController {
       const entry = this.#store.value.resources.entry;
       const stamp = this.#coherence.current();
       if (entry && stamp) {
-        this.#store.patch({ resources: { ...this.#store.value.resources, history: resource("loading", this.#store.value.resources.history.value) } });
+        this.#store.dispatch({ type: "result", resources: { history: resource("loading", this.#store.value.resources.history.value) } });
         await this.#spatialResources.loadHistory(entry, stamp);
       }
     }
@@ -814,7 +814,7 @@ export class EffectController {
 
   // The home plan card passes origin "home" (home-rooms.md §5 Cards).
   selectPlan(planId: string | null, preserveNotice = false, origin?: PlanOrigin): void {
-    this.#store.patch(planSelection(this.#store.value, planId, preserveNotice, origin));
+    this.#store.dispatch({ type: "transition", ...planSelection(this.#store.value, planId, preserveNotice, origin) });
     // Edit offers the saved custom areas, so a plan reads them as Your areas does.
     if (this.#store.value.resources.areas.status === "idle") void this.loadAreas();
   }
@@ -829,7 +829,7 @@ export class EffectController {
   }
 
   selectArea(areaId: string | null): void {
-    this.#store.patch(areaSelection(this.#store.value, areaId));
+    this.#store.dispatch({ type: "transition", ...areaSelection(this.#store.value, areaId) });
   }
 
   saveArea(settled?: SaveSettled): Promise<void> {
@@ -889,7 +889,7 @@ export class EffectController {
       const admitted = resource === "setting-mutation" ? canChangeRobotSetting(live) : canEditCoordinates(live);
       if (controller.signal.aborted || !admitted || live.command === "pending") return;
       if (!writes) {
-        this.#store.patch({ notice: failure });
+        this.#store.dispatch({ type: "result", notice: failure });
         return;
       }
       await run(writes, {
@@ -927,11 +927,11 @@ export class EffectController {
       case "recheck-status": {
         if (this.#store.value.rechecking) return;
         const entryId = this.#store.value.selection.entryId;
-        this.#store.patch({ rechecking: true });
+        this.#store.dispatch({ type: "result", rechecking: true });
         try {
           await this.refreshCatalog(true);
         } finally {
-          if (!this.#disposed) this.#store.patch({ rechecking: false });
+          if (!this.#disposed) this.#store.dispatch({ type: "result", rechecking: false });
         }
         const state = this.#store.value;
         if (this.#accessDenied && !this.#disposed && state.selection.entryId === entryId
@@ -948,7 +948,7 @@ export class EffectController {
           && state.resources.catalog.status === "ready"
           && state.host.connected && state.host.robotConnected
           && state.coherence === "current" && state.command === "failed") {
-          this.#store.patch({ command: "idle", notice: statusRefreshedNotice });
+          this.#store.dispatch({ type: "result", command: "idle", notice: statusRefreshedNotice });
         }
         return;
       }
@@ -977,10 +977,10 @@ export class EffectController {
         const displayedPreview = initial.resources.plans.value?.plans
           .find((candidate) => candidate.id === plan)?.nextRunPreview;
         if (!displayedPreview || !/^[0-9a-f]{64}$/u.test(displayedPreview.previewToken ?? "")) {
-          this.#store.patch({ notice: planPreviewMissingNotice });
+          this.#store.dispatch({ type: "result", notice: planPreviewMissingNotice });
           return;
         }
-        this.#store.patch({ command: "pending", pendingAction: "run-plan", notice: null });
+        this.#store.dispatch({ type: "result", command: "pending", pendingAction: "run-plan", notice: null });
         // This read owns a pending preflight, not a transmitted command.
         // Page/floor invalidation cancels it without abandoning a running job.
         // The read is fresh and in place, so Run plan keeps its view and reason.
@@ -993,7 +993,7 @@ export class EffectController {
               && latest.generation === generation && latest.workflow === "plan"
               && latest.selection.planId === initial.selection.planId
               && (latest.selection.planId || latest.resources.plans.value?.selectedPlan) === plan
-              && latest.planDraft === initial.planDraft) this.#store.patch({ notice: planPreviewRefreshFailedNotice });
+              && latest.planDraft === initial.planDraft) this.#store.dispatch({ type: "result", notice: planPreviewRefreshFailedNotice });
             return;
           }
           await writes.runPlanPreflight({
@@ -1013,13 +1013,13 @@ export class EffectController {
           const latest = this.#store.value;
           if (!this.#disposed && latest.selection.entryId === entryId && latest.generation === generation
             && latest.command === "pending" && latest.pendingAction === "run-plan") {
-            this.#store.patch({ command: "idle", notice: planPreviewRefreshFailedNotice });
+            this.#store.dispatch({ type: "result", command: "idle", notice: planPreviewRefreshFailedNotice });
           }
         } finally {
           this.#requests.release("plan-preflight", preflight);
           const latest = this.#store.value;
           if (!this.#disposed && latest.selection.entryId === entryId && latest.generation === generation
-            && latest.command === "pending" && latest.pendingAction === "run-plan") this.#store.patch({ command: "idle" });
+            && latest.command === "pending" && latest.pendingAction === "run-plan") this.#store.dispatch({ type: "result", command: "idle" });
         }
         return;
       }
@@ -1123,17 +1123,17 @@ export class EffectController {
       || state.queueControllerStatus === "error") return;
     // Keep a sentinel assigned before patching: subscribers run synchronously.
     this.#queueActionsLoad = Promise.resolve();
-    this.#store.patch({ queueControllerStatus: "loading" });
+    this.#store.dispatch({ type: "result", queueControllerStatus: "loading" });
     this.#queueActionsLoad = (async (): Promise<void> => {
       const writes = await this.#catalogWritesModule();
       if (this.#disposed) return;
       if (!writes) {
-        this.#store.patch({ queueControllerStatus: "error" });
+        this.#store.dispatch({ type: "result", queueControllerStatus: "error" });
         return;
       }
       const latest = this.#store.value;
       if (!this.#queueEligible(latest)) {
-        this.#store.patch({ queueControllerStatus: "idle" });
+        this.#store.dispatch({ type: "result", queueControllerStatus: "idle" });
         return;
       }
       const controller = writes.createQueueActionController({
@@ -1152,9 +1152,9 @@ export class EffectController {
         return;
       }
       this.#queueActions = controller;
-      this.#store.patch({ queueControllerStatus: "ready" });
+      this.#store.dispatch({ type: "result", queueControllerStatus: "ready" });
     })().catch(() => {
-      if (!this.#disposed) this.#store.patch({ queueControllerStatus: "error" });
+      if (!this.#disposed) this.#store.dispatch({ type: "result", queueControllerStatus: "error" });
     }).finally(() => { this.#queueActionsLoad = null; });
   }
 
@@ -1175,7 +1175,7 @@ export class EffectController {
     this.#storeUnsubscribe = null;
     this.#queueActions?.dispose();
     this.#queueActions = null;
-    this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false, queueControllerStatus: "idle" });
+    this.#store.dispatch({ type: "result", manualRoomPreview: resource("idle", null), rechecking: false, queueControllerStatus: "idle" });
     this.#catalog.stopPolling();
     this.#spatialResources.dispose();
     this.#cancelPinsAdmission?.();

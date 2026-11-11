@@ -67,28 +67,28 @@ export class RobotMotionController {
     const settlingCommand = stopping ? "settling" : "starting";
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
     this.#settleTimer = null;
-    this.#store.patch({ command: settlingCommand, notice: null });
+    this.#store.dispatch({ type: "result", command: settlingCommand, notice: null });
     try {
       await this.#backend.service(domain, service, data, entityId);
       if (!current()) return;
       if (stopping && data.stop_now !== true && this.#store.value.smartStop) {
         // The backend has confirmed that this run will finish its current
         // entry; the user can now choose the explicit immediate override.
-        this.#store.patch({ command: "idle" });
+        this.#store.dispatch({ type: "result", command: "idle" });
         return;
       }
       if (domain === "matic_robot" && (service === "clean_room_sequence" || service === "run_selected_plan")) {
         // These services return when their managed run ends, not when its
         // initial command is accepted. Do not show a new Starting interval.
-        this.#store.patch({ command: "idle" });
+        this.#store.dispatch({ type: "result", command: "idle" });
         void this.#callbacks.refreshCatalog();
         return;
       }
-      this.#store.patch({ command: settlingCommand });
+      this.#store.dispatch({ type: "result", command: settlingCommand });
       if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
       this.#settleTimer = window.setTimeout(() => {
         this.#settleTimer = null;
-        if (current() && this.#store.value.command === settlingCommand) this.#store.patch({ command: "idle" });
+        if (current() && this.#store.value.command === settlingCommand) this.#store.dispatch({ type: "result", command: "idle" });
       }, 15_000);
     } catch (error) {
       if (!current()) return;
@@ -101,7 +101,8 @@ export class RobotMotionController {
         failureNotice = writes;
       }
       if (!current()) return;
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         command: "failed",
         notice: failureNotice,
       });

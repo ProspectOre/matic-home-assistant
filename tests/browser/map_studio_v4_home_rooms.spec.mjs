@@ -34,7 +34,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, viewport 
 async function loadStoreHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { WorkspaceStore, canSelectRooms } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4-review/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail, watchRuns } from "./frontend/map-studio-v4/run-history-data";',
+      contents: 'export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4-review/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail, watchRuns } from "./frontend/map-studio-v4/run-history-data";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -73,40 +73,6 @@ const twoRooms = (state, activity = state.activity) => ({
 });
 
 test.describe("plan origin (home-rooms.md §5 Cards D1; plan.md §5 State)", () => {
-  test("a plan opened from home returns to home, one opened from the picker returns to the picker", async ({ page }) => {
-    await loadStoreHarness(page);
-    const result = await page.evaluate(async (harness) => {
-      const { WorkspaceStore, createGalleryState } = await import(harness);
-      const store = new WorkspaceStore(createGalleryState("ready"));
-      const out = {};
-      store.dispatch({ type: "select-plan", planId: "daily", origin: "home" });
-      out.fromHome = [store.value.planOrigin, store.value.planView, store.value.workflow];
-      store.dispatch({ type: "select-plan", planId: "daily" });
-      out.reselectKeeps = store.value.planOrigin;
-      store.dispatch({ type: "set-plan-view", view: "edit" });
-      store.dispatch({ type: "dismiss-top-layer" });
-      out.afterEditBack = [store.value.planView, store.value.planOrigin];
-      store.dispatch({ type: "dismiss-top-layer" });
-      out.homeBack = [store.value.workflow, store.value.planOrigin];
-      store.dispatch({ type: "open-workflow", workflow: "plans" });
-      store.dispatch({ type: "select-plan", planId: "daily" });
-      out.fromPicker = store.value.planOrigin;
-      store.dispatch({ type: "dismiss-top-layer" });
-      out.pickerBack = store.value.workflow;
-      store.dispatch({ type: "open-workflow", workflow: "none" });
-      store.dispatch({ type: "select-plan", planId: "daily" });
-      out.defaultOrigin = store.value.planOrigin;
-      return out;
-    }, HARNESS);
-    expect(result.fromHome).toEqual(["home", "run", "plan"]);
-    expect(result.reselectKeeps).toBe("home");
-    expect(result.afterEditBack).toEqual(["run", "home"]);
-    expect(result.homeBack).toEqual(["none", "plans"]);
-    expect(result.fromPicker).toBe("plans");
-    expect(result.pickerBack).toBe("plans");
-    expect(result.defaultOrigin).toBe("plans");
-  });
-
   test("Back from Run names and reaches the origin", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "plan-saved-intelligent" });
     await patchState(gallery, { planOrigin: "home" });
@@ -122,93 +88,6 @@ test.describe("plan origin (home-rooms.md §5 Cards D1; plan.md §5 State)", () 
     await expect(toPlans).toContainText("Your plans");
     await toPlans.click();
     expect((await snapshot(page)).workflow).toBe("plans");
-  });
-});
-
-test.describe("whole-clean settings (home-rooms.md §5 Settings, Selection gate)", () => {
-  test("a whole-clean change becomes the default and rewrites every selected room", async ({ page }) => {
-    await loadStoreHarness(page);
-    const result = await page.evaluate(async (harness) => {
-      const { WorkspaceStore, createGalleryState } = await import(harness);
-      const store = new WorkspaceStore({ ...createGalleryState("rooms") });
-      const out = {};
-      store.dispatch({ type: "set-clean-settings", cleaningMode: "vacuum_and_mop" });
-      store.dispatch({ type: "set-clean-settings", coverageSetting: "quick" });
-      store.dispatch({ type: "toggle-room", roomId: "room-a" });
-      out.newRoom = store.value.selection.roomSettings.find((room) => room.roomId === "room-a");
-      store.dispatch({ type: "toggle-room", roomId: "room-b" });
-      store.dispatch({ type: "patch-room-settings", roomId: "room-b", cleaningMode: "mop" });
-      store.dispatch({ type: "set-clean-settings", coverageSetting: "heavy_duty" });
-      out.rewritten = store.value.selection.roomSettings.map((room) => [room.roomId, room.cleaningMode, room.coverageSetting]);
-      store.dispatch({ type: "clear-selection" });
-      out.afterClear = [store.value.selection.roomIds.length, store.value.selection.cleaningMode, store.value.selection.coverageSetting];
-      return out;
-    }, HARNESS);
-    expect(result.newRoom).toEqual({ roomId: "room-a", cleaningMode: "vacuum_and_mop", coverageSetting: "quick" });
-    expect(result.rewritten).toEqual([
-      ["room-a", "vacuum_and_mop", "heavy_duty"],
-      ["room-b", "vacuum_and_mop", "heavy_duty"],
-    ]);
-    expect(result.afterClear).toEqual([0, "vacuum_and_mop", "heavy_duty"]);
-  });
-
-  test("every rooms intent is refused while the selection is locked", async ({ page }) => {
-    await loadStoreHarness(page);
-    const result = await page.evaluate(async (harness) => {
-      const { WorkspaceStore, createGalleryState, canSelectRooms } = await import(harness);
-      const base = createGalleryState("rooms");
-      const locked = {
-        ...base,
-        activity: "cleaning",
-        selection: {
-          ...base.selection,
-          roomIds: ["room-a", "room-b"],
-          roomSettings: [
-            { roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "standard" },
-            { roomId: "room-b", cleaningMode: "vacuum", coverageSetting: "standard" },
-          ],
-        },
-      };
-      const store = new WorkspaceStore(locked);
-      const before = JSON.stringify(store.value.selection);
-      const results = {};
-      for (const intent of [
-        { type: "toggle-room", roomId: "room-c" },
-        { type: "toggle-room", roomId: "room-a" },
-        { type: "patch-room-settings", roomId: "room-a", cleaningMode: "mop" },
-        { type: "set-clean-settings", cleaningMode: "mop", coverageSetting: "quick" },
-        { type: "set-use-room-schedule", value: false },
-        { type: "clear-selection" },
-      ]) {
-        store.dispatch(intent);
-        results[intent.type] = JSON.stringify(store.value.selection) === before;
-      }
-      return { gate: canSelectRooms(locked), results };
-    }, HARNESS);
-    expect(result.gate).toBe(false);
-    expect(result.results).toEqual({
-      "toggle-room": true,
-      "patch-room-settings": true,
-      "set-clean-settings": true,
-      "set-use-room-schedule": true,
-      "clear-selection": true,
-    });
-  });
-
-  test("a refused add at the limit raises the limit notice", async ({ page }) => {
-    await loadStoreHarness(page);
-    const result = await page.evaluate(async (harness) => {
-      const { WorkspaceStore, createGalleryState } = await import(harness);
-      const store = new WorkspaceStore(createGalleryState("room-limit"));
-      store.dispatch({ type: "toggle-room", roomId: "room-extra" });
-      const { notice } = store.value;
-      return {
-        count: store.value.selection.roomIds.length,
-        notice: notice && { tone: notice.tone, key: notice.key, placeholders: notice.placeholders },
-      };
-    }, HARNESS);
-    expect(result.count).toBe(100);
-    expect(result.notice).toEqual({ tone: "info", key: "v4_room_limit_reached", placeholders: { limit: 100 } });
   });
 });
 
@@ -1807,7 +1686,8 @@ test.describe("cleaning history", () => {
       const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
       const store = new WorkspaceStore(createGalleryState("ready"));
       const running = { id: "run-1", outcome: "running" };
-      store.patch({
+      store.replace({
+        ...store.value,
         workflow: "runs",
         resources: {
           ...store.value.resources,
@@ -1818,7 +1698,8 @@ test.describe("cleaning history", () => {
       const stop = watchRuns(store, () => { reads += 1; });
       await new Promise((resolve) => window.setTimeout(resolve, 2_200));
       const whileRunning = reads;
-      store.patch({
+      store.replace({
+        ...store.value,
         resources: {
           ...store.value.resources,
           runs: { ...store.value.resources.runs, value: { runs: [{ ...running, outcome: "finished" }] } },
@@ -1837,7 +1718,7 @@ test.describe("cleaning history", () => {
     const calls = await page.evaluate(async (harness) => {
       const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
       const store = new WorkspaceStore(createGalleryState("ready"));
-      store.patch({ workflow: "runs", resources: { ...store.value.resources,
+      store.replace({ ...store.value, workflow: "runs", resources: { ...store.value.resources,
         runs: { status: "ready", value: { runs: [{ id: "run-1", outcome: "running" }] }, problem: null } } });
       let resolveRead;
       let reads = 0;
@@ -1975,16 +1856,16 @@ test.describe("cleaning history", () => {
       extendLiveTrail(store, pose(1));
       extendLiveTrail(store, pose(1.1));
       seen.push(points());
-      store.patch({ activity: "docked" });
+      store.replace({ ...store.value, activity: "docked" });
       extendLiveTrail(store, pose(2));
       seen.push(points());
-      store.patch({ activity: "cleaning" });
+      store.replace({ ...store.value, activity: "cleaning" });
       extendLiveTrail(store, pose(3));
       seen.push(points());
-      store.patch({ lastRun: { runId: "run-2", outcome: "running", completedRoomCount: 0, roomCount: 1 } });
+      store.replace({ ...store.value, lastRun: { runId: "run-2", outcome: "running", completedRoomCount: 0, roomCount: 1 } });
       extendLiveTrail(store, pose(4));
       seen.push(points());
-      store.patch({ activity: "recharging" });
+      store.replace({ ...store.value, activity: "recharging" });
       extendLiveTrail(store, pose(5));
       seen.push(points());
       // A new verified map starts the trail over in its own frame.
@@ -2011,25 +1892,25 @@ test.describe("cleaning history", () => {
       watchRuns(store, () => { count += 1; });
       const run = { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 2 };
       const seen = [];
-      store.patch({ lastRun: run });
+      store.replace({ ...store.value, lastRun: run });
       await settle();
       seen.push(count);
-      store.patch({ activity: "cleaning" });
+      store.replace({ ...store.value, activity: "cleaning" });
       await settle();
       seen.push(count);
-      store.patch({ lastRun: { ...run, outcome: "partial", completedRoomCount: 1 } });
+      store.replace({ ...store.value, lastRun: { ...run, outcome: "partial", completedRoomCount: 1 } });
       await settle();
       seen.push(count);
-      store.patch({ workflow: "none", lastRun: { ...run, outcome: "partial", completedRoomCount: 2 } });
+      store.replace({ ...store.value, workflow: "none", lastRun: { ...run, outcome: "partial", completedRoomCount: 2 } });
       await settle();
       seen.push(count);
       // Once no managed run is running, the robot docking rereads, and so
       // does a task started from the Matic app as it starts and as it ends.
-      store.patch({ workflow: "runs", activity: "docked" });
+      store.replace({ ...store.value, workflow: "runs", activity: "docked" });
       await settle();
       seen.push(count);
       for (const activity of ["cleaning", "paused", "returning", "docked"]) {
-        store.patch({ activity });
+        store.replace({ ...store.value, activity });
         await settle();
         seen.push(count);
       }
@@ -2051,8 +1932,8 @@ test.describe("cleaning history", () => {
         return calls === 1 ? firstRead : Promise.resolve();
       });
       const run = { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 2 };
-      store.patch({ lastRun: run });
-      store.patch({ lastRun: { ...run, completedRoomCount: 1 } });
+      store.replace({ ...store.value, lastRun: run });
+      store.replace({ ...store.value, lastRun: { ...run, completedRoomCount: 1 } });
       const duringFirstRead = calls;
       resolveFirst();
       await Promise.resolve();

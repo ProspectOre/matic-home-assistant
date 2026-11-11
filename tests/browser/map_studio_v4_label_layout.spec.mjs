@@ -357,14 +357,14 @@ test("room names wait for first-map admission, retain live/history comparison la
       const store = new WorkspaceStore({ ...noMap, optionalUiReady: false });
       const unsubscribe = store.subscribe((state) => late.setState(state));
       const cancelAdmission = scheduleAfterMapAdmission(store, (state) => state.pageActive,
-        () => store.patch({ optionalUiReady: true }), 2_000);
+        () => store.replace({ ...store.value, optionalUiReady: true }), 2_000);
       await new Promise(resolve => window.setTimeout(resolve, 2_100));
       await frame();
       const noMapLoads = lateLoads;
       const fallbackReady = store.value.optionalUiReady;
       const lateState = stateFor({ optionalUiReady: true, labelsVisible: true, view: "top",
         map: { ...base.map, available: true } });
-      store.patch({ map: lateState.map, resources: lateState.resources });
+      store.replace({ ...store.value, map: lateState.map, resources: lateState.resources });
       requestAnimationFrame(() => { lateFirstFrame = true; });
       for (let attempt = 0; attempt < 20 && !lateLoads; attempt += 1) await frame();
       const lateAdmission = { fallbackReady, noMapLoads, lateLoads, importAfterFirstFrame };

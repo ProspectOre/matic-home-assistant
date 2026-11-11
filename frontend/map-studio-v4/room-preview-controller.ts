@@ -119,7 +119,7 @@ export class RoomPreviewController {
       this.#requests.cancel("room-preview");
       this.#manualPreviewRequestIdentity = "";
       if (state.manualRoomPreview.status !== "idle" || state.manualRoomPreview.value !== null) {
-        this.#store.patch({ manualRoomPreview: this.#helpers.resource("idle", null) });
+        this.#store.dispatch({ type: "result", manualRoomPreview: this.#helpers.resource("idle", null) });
       }
       return;
     }
@@ -135,7 +135,7 @@ export class RoomPreviewController {
     this.#requests.current("room-preview")?.abort();
     this.#manualPreviewRequestIdentity = identity;
     const controller = this.#requests.begin("room-preview");
-    this.#store.patch({ manualRoomPreview: this.#helpers.resource("loading", null) });
+    this.#store.dispatch({ type: "result", manualRoomPreview: this.#helpers.resource("loading", null) });
     void this.#loadManualRoomPreview(capture, controller);
   }
 
@@ -149,7 +149,7 @@ export class RoomPreviewController {
       );
       if (!this.#manualPreviewCaptureCurrent(capture) || controller.signal.aborted
         || preview.entryId !== capture.entryId) return null;
-      this.#store.patch({ manualRoomPreview: this.#helpers.resource("ready", {
+      this.#store.dispatch({ type: "result", manualRoomPreview: this.#helpers.resource("ready", {
         key: capture.key,
         generation: capture.generation,
         floorKey: capture.floorKey,
@@ -159,7 +159,7 @@ export class RoomPreviewController {
       return preview;
     } catch (error) {
       if (this.#helpers.isAbort(error) || controller.signal.aborted || !this.#manualPreviewCaptureCurrent(capture)) return null;
-      this.#store.patch({ manualRoomPreview: this.#helpers.resource("error", null, this.#helpers.problemCode(error, "preview-unavailable")) });
+      this.#store.dispatch({ type: "result", manualRoomPreview: this.#helpers.resource("error", null, this.#helpers.problemCode(error, "preview-unavailable")) });
       return null;
     } finally {
       this.#requests.release("room-preview", controller);
@@ -180,7 +180,7 @@ export class RoomPreviewController {
     this.#manualPreviewPreflight = true;
     const controller = this.#requests.begin("room-preview");
     this.#manualPreviewRequestIdentity = this.#manualPreviewIdentity(capture);
-    this.#store.patch({ manualRoomPreview: this.#helpers.resource("loading", null), notice: null });
+    this.#store.dispatch({ type: "result", manualRoomPreview: this.#helpers.resource("loading", null), notice: null });
     try {
       const latestPreview = await this.#backend.previewRoomSequence(
         capture.entityId,
@@ -198,20 +198,22 @@ export class RoomPreviewController {
         preview: latestPreview,
       } as const;
       if (latestPreview.blocker || latestPreview.rooms.length === 0) {
-        this.#store.patch({
+        this.#store.dispatch({
+          type: "result",
           manualRoomPreview: this.#helpers.resource("ready", latestAdmission),
           notice: this.#notices.roomPreviewBlocked,
         });
         return;
       }
       if (manualPreviewValue(admitted.preview) !== manualPreviewValue(latestPreview)) {
-        this.#store.patch({
+        this.#store.dispatch({
+          type: "result",
           manualRoomPreview: this.#helpers.resource("ready", latestAdmission),
           notice: this.#notices.roomPreviewChanged,
         });
         return;
       }
-      this.#store.patch({ manualRoomPreview: this.#helpers.resource("ready", latestAdmission), notice: null });
+      this.#store.dispatch({ type: "result", manualRoomPreview: this.#helpers.resource("ready", latestAdmission), notice: null });
       if (!this.#manualPreviewCaptureCurrent(capture) || !this.#helpers.canStartMotion(this.#store.value)) return;
       await this.#callbacks.dispatchMotion("matic_robot", "clean_room_sequence", {
         rooms: capture.rooms,
@@ -222,7 +224,8 @@ export class RoomPreviewController {
       });
     } catch (error) {
       if (!this.#helpers.isAbort(error) && !controller.signal.aborted && this.#manualPreviewCaptureCurrent(capture)) {
-        this.#store.patch({
+        this.#store.dispatch({
+          type: "result",
           manualRoomPreview: this.#helpers.resource("error", null, this.#helpers.problemCode(error, "preview-unavailable")),
           notice: this.#notices.roomPreviewFailed,
         });

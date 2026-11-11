@@ -41,7 +41,7 @@ export class AreaResources {
       this.#recoveryAttempt = null;
       this.#requests.current("areas")?.abort();
       if (state.resources.areas.status === "loading") {
-        this.#store.patch({ resources: { ...state.resources, areas: cancelLoading(state.resources.areas) } });
+        this.#store.dispatch({ type: "result", resources: { areas: cancelLoading(state.resources.areas) } });
         state = this.#store.value;
       }
     }
@@ -63,8 +63,7 @@ export class AreaResources {
   ): Promise<AreasCatalog | null> {
     if (this.#callbacks.disposed() || !this.#callbacks.pageActive()) {
       this.#requests.current("areas")?.abort();
-      const resources = this.#store.value.resources;
-      this.#store.patch({ resources: { ...resources, areas: resource("idle", resources.areas.value) } });
+      this.#store.dispatch({ type: "result", resources: { areas: resource("idle", this.#store.value.resources.areas.value) } });
       return null;
     }
     const entry = this.#store.value.resources.entry;
@@ -81,8 +80,9 @@ export class AreaResources {
         && canReadFloorResources(state) && this.#callbacks.context() === requestedContext);
     };
     let discarded = false;
-    this.#store.patch({
-      resources: { ...this.#store.value.resources, areas: resource("loading", this.#store.value.resources.areas.value) },
+    this.#store.dispatch({
+      type: "result",
+      resources: { areas: resource("loading", this.#store.value.resources.areas.value) },
     });
     try {
       const areas = await this.#backend.areas(entry.areasUrl, controller.signal);
@@ -90,8 +90,9 @@ export class AreaResources {
       if (!readStillCurrent() || !currentEntry) { discarded = true; return null; }
       if (areas.sceneUrl !== currentEntry.sceneUrl) throw new BackendError("areas-unavailable");
       this.#recoveryAttempt = null;
-      this.#store.patch({
-        resources: { ...this.#store.value.resources, areas: resource("ready", areas) },
+      this.#store.dispatch({
+        type: "result",
+        resources: { areas: resource("ready", areas) },
       });
       const selectedId = this.#store.value.selection.areaId;
       const current = this.#store.value;
@@ -103,8 +104,9 @@ export class AreaResources {
       const selectedExists = areas.areas.some((area) => area.id === selectedId);
       if (reconcileDraft && selectedId !== null && !selectedExists
         && (current.draw.dirty || current.areaDraft.dirty)) {
-        this.#store.patch({
-          selection: { ...current.selection, areaId: null },
+        this.#store.dispatch({
+          type: "transition",
+          selection: { areaId: null },
           areaDraft: {
             ...current.areaDraft,
             id: null,
@@ -115,16 +117,16 @@ export class AreaResources {
           notice: areaRemovedNotice,
         });
       } else if (reconcileDraft && !current.draw.dirty && !current.areaDraft.dirty) {
-        this.#store.patch(areaSelection(this.#store.value, selectedExists ? selectedId : null));
+        this.#store.dispatch({ type: "transition", ...areaSelection(this.#store.value, selectedExists ? selectedId : null) });
       }
       return areas;
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed()) return null;
       if (!readStillCurrent()) { discarded = true; return null; }
       // A failed read keeps the last catalog.
-      this.#store.patch({
+      this.#store.dispatch({
+        type: "result",
         resources: {
-          ...this.#store.value.resources,
           areas: resource("error", this.#store.value.resources.areas.value, problemCode(error, "areas-unavailable")),
         },
       });
@@ -133,8 +135,7 @@ export class AreaResources {
       const stillOwner = this.#requests.current("areas") === controller;
       this.#requests.release("areas", controller);
       if (discarded && stillOwner && this.#store.value.resources.areas.status === "loading") {
-        const resources = this.#store.value.resources;
-        this.#store.patch({ resources: { ...resources, areas: cancelLoading(resources.areas) } });
+        this.#store.dispatch({ type: "result", resources: { areas: cancelLoading(this.#store.value.resources.areas) } });
         this.resumeAreas();
         this.#callbacks.resumePins();
       }

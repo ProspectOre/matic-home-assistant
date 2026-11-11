@@ -32,7 +32,7 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     const legacySubscriptions = callbacks.length;
     legacy.dispose();
     const enabledStore = new WorkspaceStore();
-    enabledStore.patch({ map: { ...enabledStore.value.map, available: true } });
+    enabledStore.replace({ ...enabledStore.value, map: { ...enabledStore.value.map, available: true } });
     const enabled = new EffectController(enabledStore, backend, connection, true);
     enabled.sync(projection("entry-a"));
     const waitForSubscription = async (index) => {
@@ -48,14 +48,14 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterInvalidation = catalogCalls;
     enabled.sync(projection("entry-b"));
-    enabledStore.patch({ map: { ...enabledStore.value.map, available: true } });
+    enabledStore.replace({ ...enabledStore.value, map: { ...enabledStore.value.map, available: true } });
     await waitForSubscription(1);
     const afterEntryChange = { subscriptions: callbacks.length, unsubscribed };
     callbacks[1]({ type: "resync", reason: "entry_removed" });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterEntryRemoved = unsubscribed;
     enabled.sync(projection("entry-c"));
-    enabledStore.patch({ map: { ...enabledStore.value.map, available: true } });
+    enabledStore.replace({ ...enabledStore.value, map: { ...enabledStore.value.map, available: true } });
     await waitForSubscription(2);
     const afterEntryRemovedReplacement = callbacks.length;
     enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, administrator: false } });
@@ -108,11 +108,11 @@ test("production transport follows the admitted entry capability", async ({ page
       language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
       entryKey: entry.entryId, robotLabel: "Matic", robots: base.robots };
     const store = new WorkspaceStore();
-    store.patch({ map: { ...store.value.map, available: true } });
+    store.replace({ ...store.value, map: { ...store.value.map, available: true } });
     const controller = new EffectController(store, backend, connection);
     controller.sync(projection);
     for (let attempt = 0; attempt < 100 && store.value.resources.catalog.status !== "ready"; attempt += 1) await new Promise(resolve => setTimeout(resolve, 0));
-    store.patch({ map: { ...store.value.map, available: true } });
+    store.replace({ ...store.value, map: { ...store.value.map, available: true } });
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
     if (callbacks.length !== 1) throw new Error("ready catalog capability did not enable production transport");
@@ -172,11 +172,11 @@ test("an old enabled catalog row cannot start transport for a changed entry", as
       language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
       entryKey, robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
     const store = new WorkspaceStore();
-    store.patch({ map: { ...store.value.map, available: true } });
+    store.replace({ ...store.value, map: { ...store.value.map, available: true } });
     const controller = new EffectController(store, backend, connection);
     controller.sync(projection(oldEntry.entryId));
     for (let attempt = 0; attempt < 100 && store.value.resources.catalog.status !== "ready"; attempt += 1) await new Promise(resolve => setTimeout(resolve, 0));
-    store.patch({ map: { ...store.value.map, available: true } });
+    store.replace({ ...store.value, map: { ...store.value.map, available: true } });
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
     if (callbacks.length !== 1) throw new Error("initial enabled entry did not start transport");
@@ -319,7 +319,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       };
       run.callbacks = callbacks;
       run.store = new WorkspaceStore();
-      if (enabled && !forceFallback) run.store.patch({ map: { ...run.store.value.map, available: true } });
+      if (enabled && !forceFallback) run.store.replace({ ...run.store.value, map: { ...run.store.value.map, available: true } });
       run.effects = new EffectController(run.store, backend, connection, enabled);
       run.effects.sync(makeProjection());
       return run;
@@ -360,7 +360,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       },
       release(runName) { runs[runName].pendingCatalog.shift()?.(); },
       disposeRun(runName) { finishRun(runs[runName]); },
-      admitImmediateMap() { runs.immediateEnabled.store.patch({ map: { ...runs.immediateEnabled.store.value.map, available: true } }); },
+      admitImmediateMap() { runs.immediateEnabled.store.replace({ ...runs.immediateEnabled.store.value, map: { ...runs.immediateEnabled.store.value.map, available: true } }); },
       measure() {
         return Object.fromEntries(Object.entries(runs).map(([name, run]) => [name, {
           catalogReads: run.catalogCalls,

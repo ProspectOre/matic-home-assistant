@@ -164,7 +164,7 @@ for (const context of ["disposed", "robot", "user"]) {
         if (context === "disposed") effects.dispose();
         else effects.sync({ ...projection, ...(context === "robot" ? { entryKey: "other-entry", vacuumEntityId: "vacuum.other" } : { userKey: "two" }) });
         await Promise.resolve(); await Promise.resolve();
-        store.patch({ command: "idle", notice: null, planDraft: { ...store.value.planDraft, name: "New context draft", dirty: true } });
+        store.replace({ ...store.value, command: "idle", notice: null, planDraft: { ...store.value.planDraft, name: "New context draft", dirty: true } });
         const before = JSON.stringify({ command: store.value.command, notice: store.value.notice, draft: store.value.planDraft });
         finish(); await pending;
         const after = JSON.stringify({ command: store.value.command, notice: store.value.notice, draft: store.value.planDraft });
@@ -196,7 +196,7 @@ for (const context of ["disposed", "robot", "user", "floor", "pagehide"]) {
       if (context === "floor") {
         // History is lazy; simulate its already-admitted catalog so this test
         // exercises a real floor transition while the write module loads.
-        store.patch({ resources: { ...store.value.resources, history: initial.resources.history } });
+        store.replace({ ...store.value, resources: { ...store.value.resources, history: initial.resources.history } });
       }
       const pending = effects.savePlan();
       if (context === "disposed") effects.dispose();
@@ -230,7 +230,7 @@ for (const navigation of ["invalid-floor", "dirty-floor", "invalid-history", "di
         service: async (...args) => { calls.push(args); }, dispose() {} });
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic",
         robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
-      store.patch({ resources: { ...store.value.resources, history: initial.resources.history },
+      store.replace({ ...store.value, resources: { ...store.value.resources, history: initial.resources.history },
         ...(navigation.startsWith("dirty") ? { workflow: "draw", draw: { ...store.value.draw, dirty: true } } : {}) });
       const pending = effects.savePlan();
       if (navigation.endsWith("floor")) await effects.selectFloor(navigation === "invalid-floor" ? "missing-floor" : "saved-1");
@@ -260,7 +260,7 @@ for (const navigation of ["floor", "history"]) {
       service: () => { calls += 1; return new Promise((resolve) => { finish = resolve; }); }, dispose() {} });
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic",
       robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
-    store.patch({ resources: { ...store.value.resources, history: initial.resources.history } });
+    store.replace({ ...store.value, resources: { ...store.value.resources, history: initial.resources.history } });
     const pending = effects.savePlan((saved) => { settled = saved; });
     for (let i = 0; i < 50 && !finish; i++) await new Promise((resolve) => setTimeout(resolve, 0));
     if (!finish) throw new Error("plan save was not transmitted");
@@ -292,7 +292,7 @@ test("floor change cancels a plan toggle while its catalog preflight is held", a
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic",
       robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
     await effects.refreshCatalog(true);
-    store.patch({ workflow: "plan", planView: "run", planDraft: { ...initial.planDraft, dirty: false },
+    store.replace({ ...store.value, workflow: "plan", planView: "run", planDraft: { ...initial.planDraft, dirty: false },
       resources: { ...store.value.resources, history: initial.resources.history, plans: initial.resources.plans } });
     holdRead = true;
     const pending = effects.setPlanEnabled(false);
@@ -415,7 +415,7 @@ for (const action of ["saveArea", "deleteArea"]) {
         await effects[action]();
         effects.sync({ ...projection, userKey: "two" });
         await Promise.resolve(); await Promise.resolve();
-        store.patch({ notice: null });
+        store.replace({ ...store.value, notice: null });
         const before = JSON.stringify(store.value);
         finish(); await pending;
         const unchanged = JSON.stringify(store.value) === before;
@@ -577,7 +577,7 @@ for (const outcome of ["success", "failure", "settle-timer"]) {
       const pending = effects.executeAction("run-area");
       if (outcome === "settle-timer") { finish(); await pending; }
       await effects.refreshCatalog(true);
-      store.patch({ command: "starting", notice: { tone: "info", key: "v4_notice_new_floor_action", fallback: "New floor action" } });
+      store.replace({ ...store.value, command: "starting", notice: { tone: "info", key: "v4_notice_new_floor_action", fallback: "New floor action" } });
       if (outcome !== "settle-timer") { finish(); await pending; }
       window.qualityMotion = { store, effects };
       return store.value.command;
@@ -627,7 +627,7 @@ for (const rejected of [false, true]) {
       const effects = new EffectController(store, { catalog: async () => [initial.resources.entry], scene: aborted, pose: aborted, history: aborted, plans: aborted,
         service: () => { calls += 1; return new Promise((resolve, reject) => { finish = () => rejected ? reject(new Error("Late failure")) : resolve(); }); }, dispose() {} });
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
-      store.patch({ resources: { ...store.value.resources, history: initial.resources.history } });
+      store.replace({ ...store.value, resources: { ...store.value.resources, history: initial.resources.history } });
       const pending = effects.savePlan();
       for (let i = 0; i < 20 && !finish; i++) await new Promise((resolve) => setTimeout(resolve, 0));
       await effects.selectFloor("saved-1");
@@ -664,7 +664,7 @@ for (const sameFloor of [true, false]) {
       entry = sameFloor ? initial.resources.entry : { ...initial.resources.entry, selectedFloorOrdinal: 9, mapFloorOrdinal: 9, mapSessionKey: "new-floor" };
       await effects.refreshCatalog(true);
       if (sameFloor) {
-        store.patch({ map: initial.map, coherence: "current" });
+        store.replace({ ...store.value, map: initial.map, coherence: "current" });
         await effects.loadAreas();
       }
       const restored = { name: store.value.areaDraft.name, plan: store.value.planDraft.name, count: store.value.draw.circles.length };
@@ -701,7 +701,7 @@ for (const kind of ["plan", "area"]) {
       });
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       await effects.refreshCatalog(true);
-      store.patch({ map: initial.map, coherence: "current" });
+      store.replace({ ...store.value, map: initial.map, coherence: "current" });
       const load = () => plan ? effects.loadPlans({ force: true }) : effects.loadAreas();
       await load();
       if (plan) {
@@ -710,7 +710,7 @@ for (const kind of ["plan", "area"]) {
         store.dispatch({ type: "set-plan-view", view: "edit" });
       } else {
         effects.selectArea("entryway");
-        store.patch({ workflow: "areaReview" });
+        store.replace({ ...store.value, workflow: "areaReview" });
       }
       const shell = document.createElement(SHELL_TAG);
       shell.state = store.value;
@@ -805,7 +805,7 @@ for (const way of ["Escape", "Cancel", "outside"]) {
       });
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       await effects.refreshCatalog(true);
-      store.patch({ map: initial.map, coherence: "current" });
+      store.replace({ ...store.value, map: initial.map, coherence: "current" });
       await effects.loadPlans({ force: true });
       effects.selectPlan("daily");
       store.dispatch({ type: "set-plan-view", view: "edit" });
@@ -910,7 +910,7 @@ test("external Area deletion preserves a dirty draft and turns later save into a
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
     await effects.refreshCatalog(true);
     await effects.refreshCatalog(true);
-    store.patch({ map: initial.map, coherence: "current" });
+    store.replace({ ...store.value, map: initial.map, coherence: "current" });
     await effects.loadAreas();
     const afterConflict = {
       selectedId: store.value.selection.areaId,
@@ -958,7 +958,7 @@ test("external Area deletion still reconciles a clean selection", async ({ page 
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
     await effects.refreshCatalog(true);
     await effects.refreshCatalog(true);
-    store.patch({ map: initial.map, coherence: "current" });
+    store.replace({ ...store.value, map: initial.map, coherence: "current" });
     await effects.loadAreas();
     const result = { selectedId: store.value.selection.areaId, name: store.value.areaDraft.name, dirty: store.value.areaDraft.dirty, circles: store.value.draw.circles.length, notice: store.value.notice };
     effects.dispose();

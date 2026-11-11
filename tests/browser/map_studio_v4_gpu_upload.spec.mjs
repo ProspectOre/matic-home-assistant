@@ -910,7 +910,7 @@ test("@safety live camera survives history and rejects a replaced session during
       }
       return predicate();
     };
-    const sync = (patch) => { store.patch(patch); renderer.setState(store.value); };
+    const sync = (patch) => { store.replace({ ...store.value, ...patch }); renderer.setState(store.value); };
     const scenePatch = (scene) => ({ resources: { ...store.value.resources,
       scene: { status: "ready", value: scene, problem: null } } });
     const complete = (scene) => waitFor(() => renderer.diagnostics().sceneRevision === scene.revision

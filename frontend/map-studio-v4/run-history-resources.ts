@@ -40,7 +40,7 @@ export class RunHistoryResources {
         this.#owner = owner;
         this.#retireThumbnails();
         this.#requests.cancel("last-seen");
-        if (state.seen) this.#store.patch({ seen: undefined });
+        if (state.seen) this.#store.dispatch({ type: "result", seen: undefined });
       }
       const entry = state.resources.entry;
       const context = [state.generation, state.owner?.userKey, state.owner?.entryKey,
@@ -56,7 +56,7 @@ export class RunHistoryResources {
         || !entry.mapSessionVerified || state.selection.floorId !== "current"
         || state.seen?.mapSessionKey !== state.resources.pose.value?.mapSessionKey
         || state.seen?.entryId !== entry.entryId || state.seen?.mapSessionKey !== entry.mapSessionKey) && state.seen) {
-        this.#store.patch({ seen: undefined });
+        this.#store.dispatch({ type: "result", seen: undefined });
       }
       if (entry && entry.mapFloorCoherent && entry.mapSessionVerified
         && entry.mapSessionKey === state.resources.pose.value?.mapSessionKey
@@ -75,7 +75,7 @@ export class RunHistoryResources {
     for (const timer of retired.timers) window.clearTimeout(timer);
     const urls = Object.values(this.#store.value.runThumbnails);
     for (const url of urls) URL.revokeObjectURL(url);
-    if (urls.length) this.#store.patch({ runThumbnails: {} });
+    if (urls.length) this.#store.dispatch({ type: "result", runThumbnails: {} });
   }
 
   extendLiveTrail(pose: PoseModel): void { this.#runs?.extendLiveTrail(this.#store, pose); }
@@ -137,7 +137,7 @@ export class RunHistoryResources {
           activeEntry?.mapSessionVerified, now.resources.pose.value?.mapSessionKey].join("|") === identity
         && now.resources.pose.value?.mapSessionKey === session;
     };
-    this.#store.patch({ seen: undefined });
+    this.#store.dispatch({ type: "result", seen: undefined });
     this.#runs ??= await import("./run-history-data");
     try {
       const history = this.#runs.parseRunHistory(await this.#backend.runs(entry.entryId, null, controller.signal));
@@ -152,7 +152,7 @@ export class RunHistoryResources {
       if (!current()) return;
       const marker = this.#runs.lastSeenDuringLatestRun(history, trail, entry.entryId, session);
       if (marker && !canShowExactPose(this.#store.value)) {
-        this.#store.patch({ seen: marker });
+        this.#store.dispatch({ type: "result", seen: marker });
       }
     } catch {
       // History is optional; never replace the live-position status with a read error.
@@ -180,7 +180,7 @@ export class RunHistoryResources {
     const entry = this.#store.value.resources.entry;
     const controller = this.#requests.begin(name);
     try {
-      if (name === "trail" && !trail) this.#store.patch({ trail: null });
+      if (name === "trail" && !trail) this.#store.dispatch({ type: "result", trail: null });
       else if (entry && this.#callbacks.pageActive()) {
         this.#runs = await import("./run-history-data");
         if (controller.signal.aborted || this.#callbacks.disposed()) return;

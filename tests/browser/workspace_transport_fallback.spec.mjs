@@ -238,7 +238,7 @@ for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) 
       .toMatchObject({ mopProgress: 1, mopDue: true, nextMopIn: 1 });
     await page.evaluate(() => {
       const h = window.fallbackHarness;
-      h.store.patch({ planDraft: { ...h.store.value.planDraft, name: "My unsaved edit", dirty: true } });
+      h.store.replace({ ...h.store.value, planDraft: { ...h.store.value.planDraft, name: "My unsaved edit", dirty: true } });
       h.updateSavedPlan("Changed elsewhere", "vacuum");
     });
     const draft = await page.evaluate(() => window.fallbackHarness.store.value.planDraft);

@@ -88,16 +88,16 @@ export class SpatialPose {
           && pose.sceneEpoch === currentEntry.mapSceneEpoch
           && pose.sceneRevision != null
           && pose.sceneRevision < currentEntry.mapRevision) return;
-        this.#store.patch({
-          resources: { ...this.#store.value.resources, pose: resource("idle", null) },
-          map: { ...this.#store.value.map, exactPose: false },
+        this.#store.dispatch({
+          type: "result",
+          resources: { pose: resource("idle", null) },
+          map: { exactPose: false },
         });
         this.clearExpiry();
         this.#callbacks.failed(currentEntry);
         return;
       }
       this.#callbacks.recovered(currentEntry);
-      const state = this.#store.value;
       const requestElapsedMs = Math.max(0, performance.now() - requestStartedAt);
       const ageKnown = pose.nativeObservationAgeSeconds === undefined
         || typeof pose.nativeObservationAgeSeconds === "number";
@@ -110,17 +110,12 @@ export class SpatialPose {
       const exactLivePose = pose.position !== null && pose.freshness === "live"
         && ageKnown && remainingFreshMs > 0;
       this.clearExpiry();
-      this.#store.patch({
-        resources: {
-          ...state.resources,
-          pose: resource("ready", pose),
-        },
-        map: {
-          ...state.map,
-          // Only a live response can confirm the current robot position. A
-          // coordinator fallback has no independently verifiable freshness.
-          exactPose: exactLivePose,
-        },
+      this.#store.dispatch({
+        type: "result",
+        resources: { pose: resource("ready", pose) },
+        // Only a live response can confirm the current robot position. A
+        // coordinator fallback has no independently verifiable freshness.
+        map: { exactPose: exactLivePose },
       });
       if (exactLivePose) this.#callbacks.extendLiveTrail(pose);
       if (exactLivePose) {
@@ -137,9 +132,10 @@ export class SpatialPose {
           if (latest.resources.pose.value !== pose || !latest.map.exactPose
             || !latestEntry || entryCoherenceIdentity(latestEntry) !== frame
             || !latest.map.floorCoherent) return;
-          this.#store.patch({
-            resources: { ...latest.resources, pose: resource("idle", null) },
-            map: { ...latest.map, exactPose: false },
+          this.#store.dispatch({
+            type: "result",
+            resources: { pose: resource("idle", null) },
+            map: { exactPose: false },
           });
         }, remainingFreshMs);
       }
@@ -153,18 +149,11 @@ export class SpatialPose {
         || !currentEntry
         || currentEntry.mapSessionKey !== entry.mapSessionKey
         || !this.#store.value.map.floorCoherent) return;
-      const state = this.#store.value;
       this.clearExpiry();
-      this.#store.patch({
-        resources: {
-          ...state.resources,
-          pose: resource(
-            "error",
-            null,
-            problemCode(error, "pose-unavailable"),
-          ),
-        },
-        map: { ...state.map, exactPose: false },
+      this.#store.dispatch({
+        type: "result",
+        resources: { pose: resource("error", null, problemCode(error, "pose-unavailable")) },
+        map: { exactPose: false },
       });
     } finally {
       this.#requests.release("pose", controller);

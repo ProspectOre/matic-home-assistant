@@ -109,7 +109,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
     // Exercise visible history and a pinned plan: hidden resources deliberately
     // no longer reload on every workspace invalidation.
     await h.controller.openWorkflow("history");
-    h.store.patch({ homePins: { status: "ready", pins: [{ kind: "plan", id: "synthetic-plan" }] } });
+    h.store.replace({ ...h.store.value, homePins: { status: "ready", pins: [{ kind: "plan", id: "synthetic-plan" }] } });
   });
 }
 
@@ -146,7 +146,7 @@ test("a ready-looking shortcut state cannot mutate before its persistence loader
     h.controller = new h.controller.constructor(h.store, h.backend, null, true);
     h.controller.sync(h.projection("synthetic-entry"));
     // Simulate a stale ready projection arriving before the new lazy module.
-    h.store.patch({ homePins: { status: "ready", pins: [{ kind: "plan", id: "retained" }] } });
+    h.store.replace({ ...h.store.value, homePins: { status: "ready", pins: [{ kind: "plan", id: "retained" }] } });
     const before = structuredClone(h.store.value.homePins);
     const accepted = h.controller.saveHomePin({ kind: "plan", id: "retained" }, false, before.pins);
     return { accepted, before, after: h.store.value.homePins, notice: h.store.value.notice?.key };
@@ -409,7 +409,7 @@ test("an authorization snapshot invalidates spatial caches even when its floor i
         edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value) };
       const services = [];
       h.backend.service = async (...args) => { services.push(args); };
-      h.store.patch({ activity: "cleaning" });
+      h.store.replace({ ...h.store.value, activity: "cleaning" });
       await h.controller.executeAction("stop");
       const catalogStillPending = Boolean(h.catalogResolve);
       h.controller.dispose();
