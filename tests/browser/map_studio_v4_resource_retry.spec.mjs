@@ -34,6 +34,8 @@ async function mountPanelWithFailedRequest(page, resource) {
     window.__resourcePanel = panel;
     document.body.append(panel);
   }, resource);
+  // Map pins read both catalogs once the map is in, so arm the failure after that read.
+  await expect.poll(() => page.evaluate((name) => window.__resourcePanel.getWorkspaceSnapshot().resources[name].status, resource)).toBe("ready");
 }
 
 test("area review reports a failed reload and Try again recovers", async ({ page }) => {

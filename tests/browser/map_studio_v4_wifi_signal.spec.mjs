@@ -240,6 +240,9 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     }
     const context = overlay.getContext("2d");
     const fills = [];
+    // The fallback raster redraws the overlay as each chunk lands, so keep the newest draw only.
+    const clearRect = context.clearRect.bind(context);
+    context.clearRect = (...args) => { fills.length = 0; return clearRect(...args); };
     const wifiGradients = new WeakSet();
     const addColorStop = CanvasGradient.prototype.addColorStop;
     // The hue of each cell's centre colour.
