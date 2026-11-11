@@ -100,32 +100,34 @@ export const perspectiveBoundsFitDistance = (
   return Math.max(0.1, distance);
 };
 
-export const multiply = (left: Float32Array, right: Float32Array): Float32Array => {
-  const result = new Float32Array(16);
+// The matrix builders write into `out` and return it, so a frame allocates
+// none. `out` must not be one of `multiply`'s operands.
+export const multiply = (out: Float32Array, left: Float32Array, right: Float32Array): Float32Array => {
   for (let column = 0; column < 4; column += 1) {
     for (let row = 0; row < 4; row += 1) {
       let value = 0;
       for (let index = 0; index < 4; index += 1) {
         value += (left[index * 4 + row] ?? 0) * (right[column * 4 + index] ?? 0);
       }
-      result[column * 4 + row] = value;
+      out[column * 4 + row] = value;
     }
   }
-  return result;
+  return out;
 };
 
-export const perspective = (fieldOfView: number, aspect: number, near: number, far: number): Float32Array => {
+export const perspective = (out: Float32Array, fieldOfView: number, aspect: number, near: number, far: number): Float32Array => {
   const focal = 1 / Math.tan(fieldOfView / 2);
-  const result = new Float32Array(16);
-  result[0] = focal / aspect;
-  result[5] = focal;
-  result[10] = (far + near) / (near - far);
-  result[11] = -1;
-  result[14] = (2 * far * near) / (near - far);
-  return result;
+  out.fill(0);
+  out[0] = focal / aspect;
+  out[5] = focal;
+  out[10] = (far + near) / (near - far);
+  out[11] = -1;
+  out[14] = (2 * far * near) / (near - far);
+  return out;
 };
 
 export const orthographic = (
+  out: Float32Array,
   left: number,
   right: number,
   bottom: number,
@@ -133,44 +135,45 @@ export const orthographic = (
   near: number,
   far: number,
 ): Float32Array => {
-  const result = new Float32Array(16);
-  result[0] = 2 / (right - left);
-  result[5] = 2 / (top - bottom);
-  result[10] = -2 / (far - near);
-  result[12] = -(right + left) / (right - left);
-  result[13] = -(top + bottom) / (top - bottom);
-  result[14] = -(far + near) / (far - near);
-  result[15] = 1;
-  return result;
+  out.fill(0);
+  out[0] = 2 / (right - left);
+  out[5] = 2 / (top - bottom);
+  out[10] = -2 / (far - near);
+  out[12] = -(right + left) / (right - left);
+  out[13] = -(top + bottom) / (top - bottom);
+  out[14] = -(far + near) / (far - near);
+  out[15] = 1;
+  return out;
 };
 
-export const lookAt = (eye: readonly number[], target: readonly number[]): Float32Array => {
-  const forwardLength = Math.hypot(
-    (eye[0] ?? 0) - (target[0] ?? 0),
-    (eye[1] ?? 0) - (target[1] ?? 0),
-    (eye[2] ?? 0) - (target[2] ?? 0),
-  ) || 1;
-  const z = [
-    ((eye[0] ?? 0) - (target[0] ?? 0)) / forwardLength,
-    ((eye[1] ?? 0) - (target[1] ?? 0)) / forwardLength,
-    ((eye[2] ?? 0) - (target[2] ?? 0)) / forwardLength,
-  ];
-  const rightLength = Math.hypot(z[2] ?? 0, z[0] ?? 0) || 1;
-  const x = [(z[2] ?? 0) / rightLength, 0, -(z[0] ?? 0) / rightLength];
-  const y = [
-    (z[1] ?? 0) * (x[2] ?? 0),
-    (z[2] ?? 0) * (x[0] ?? 0) - (z[0] ?? 0) * (x[2] ?? 0),
-    -(z[1] ?? 0) * (x[0] ?? 0),
-  ];
-  return new Float32Array([
-    x[0] ?? 0, y[0] ?? 0, z[0] ?? 0, 0,
-    x[1] ?? 0, y[1] ?? 0, z[1] ?? 0, 0,
-    x[2] ?? 0, y[2] ?? 0, z[2] ?? 0, 0,
-    -((x[0] ?? 0) * (eye[0] ?? 0) + (x[1] ?? 0) * (eye[1] ?? 0) + (x[2] ?? 0) * (eye[2] ?? 0)),
-    -((y[0] ?? 0) * (eye[0] ?? 0) + (y[1] ?? 0) * (eye[1] ?? 0) + (y[2] ?? 0) * (eye[2] ?? 0)),
-    -((z[0] ?? 0) * (eye[0] ?? 0) + (z[1] ?? 0) * (eye[1] ?? 0) + (z[2] ?? 0) * (eye[2] ?? 0)),
-    1,
-  ]);
+/** A view matrix looking from the eye at the target, with the floor's normal up. */
+export const lookAt = (
+  out: Float32Array,
+  eyeX: number,
+  eyeY: number,
+  eyeZ: number,
+  targetX: number,
+  targetY: number,
+  targetZ: number,
+): Float32Array => {
+  const forwardLength = Math.hypot(eyeX - targetX, eyeY - targetY, eyeZ - targetZ) || 1;
+  const zX = (eyeX - targetX) / forwardLength;
+  const zY = (eyeY - targetY) / forwardLength;
+  const zZ = (eyeZ - targetZ) / forwardLength;
+  const rightLength = Math.hypot(zZ, zX) || 1;
+  const xX = zZ / rightLength;
+  const xZ = -zX / rightLength;
+  const yX = zY * xZ;
+  const yY = zZ * xX - zX * xZ;
+  const yZ = -zY * xX;
+  out[0] = xX; out[1] = yX; out[2] = zX; out[3] = 0;
+  out[4] = 0; out[5] = yY; out[6] = zY; out[7] = 0;
+  out[8] = xZ; out[9] = yZ; out[10] = zZ; out[11] = 0;
+  out[12] = -(xX * eyeX + xZ * eyeZ);
+  out[13] = -(yX * eyeX + yY * eyeY + yZ * eyeZ);
+  out[14] = -(zX * eyeX + zY * eyeY + zZ * eyeZ);
+  out[15] = 1;
+  return out;
 };
 
 export const pointInPolygon = (x: number, y: number, boundary: readonly (readonly [number, number])[]): boolean => {

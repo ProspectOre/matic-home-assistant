@@ -1,30 +1,20 @@
-import { PERSPECTIVE_FIELD_OF_VIEW, sceneGeometryBounds, perspectiveBoundsFitDistance, multiply, perspective, orthographic, lookAt, pointInPolygon } from "./renderer-math";
-import { clamp } from "./shared-primitives";
-import { liveCameraKey, cameraPreferences, mapCameraIdentity } from "./camera-preferences";
-import type { AreaCircle, MapZoneOverlay, PoseModel, SceneModel } from "./backend-contracts";
-import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
+import { PERSPECTIVE_FIELD_OF_VIEW } from "./renderer-math";
+import { liveCameraKey, mapCameraIdentity } from "./camera-preferences";
+import type { AreaCircle, PoseModel, SceneModel } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import type { RoomIdentityResult } from "./spatial-identity";
-import { canShowExactPose, hasCoordinateEditAdmission, forcesTop, topView } from "./state";
-import { rgba, type CanvasPalette, type Channel } from "./theme-probe";
-import type { drawRobot as DrawRobot } from "./robot-model";
-import type { ChunkStatus } from "./lazy-chunk";
+import { forcesTop, savedMapPosition, topView } from "./state";
+import { FrameGovernor } from "./frame-governor";
+import type { CanvasPalette } from "./theme-probe";
+import { RendererCamera, angle, type CameraOrigin, type CameraState, type MapPoint } from "./renderer-camera";
+import { RendererGl, advanceUpload, samePointLayout, validDeltaBlocks, type GpuUpload } from "./renderer-gl";
+import { containsMapPoint, roomAt, roomCandidatesAt } from "./renderer-hit-test";
+import { RendererModules, type ModuleCallbacks } from "./renderer-modules";
+import { FallbackRaster, RendererOverlay, layersNeeded, roomColours } from "./renderer-overlays";
 
-export type RendererModuleName = "renderer-layers" | "draw-overlays" | "camera-follow" | "surface-geometry";
-export type RendererModuleStatus = ChunkStatus;
+export type { CameraOrigin, CameraState, MapPoint } from "./renderer-camera";
+export type { RendererModuleName, RendererModuleStatus } from "./renderer-modules";
 export type RendererSurfaceDetail = "limited" | "sampled" | null;
-const OPTIONAL_MODULE_TIMEOUT_MS = 20_000;
-
-interface OptionalModuleLoad {
-  timer: number | null;
-  settled: boolean;
-  reject: (error: Error) => void;
-}
-
-export interface MapPoint {
-  readonly x: number;
-  readonly y: number;
-}
 
 export interface RendererDiagnostics {
   readonly mode: "webgl2" | "canvas2d" | "unavailable";
@@ -32,36 +22,15 @@ export interface RendererDiagnostics {
   readonly sceneRevision: number | null;
   readonly sourcePoints: number;
   readonly renderedPoints: number;
-  readonly lastFrameMs: number;
-  readonly slowFrames: number;
+  readonly frameMs: number;
+  readonly detailScale: number;
   readonly cameraDistance: number;
   readonly fitDistance: number;
   readonly fitActive: boolean;
   readonly topPixelsPerMeter: number;
 }
 
-export interface CameraState {
-  readonly yaw: number;
-  readonly pitch: number;
-  readonly distance: number;
-  readonly targetX: number;
-  readonly targetZ: number;
-  readonly orthographic: boolean;
-}
-
-export interface CameraOrigin {
-  readonly xPercent: number;
-  readonly yPercent: number;
-}
-
-interface ViewportBounds {
-  readonly width: number;
-  readonly height: number;
-  readonly left: number;
-  readonly top: number;
-}
-
-interface RendererCallbacks {
+interface RendererCallbacks extends ModuleCallbacks {
   readonly onCamera?: (
     camera: CameraState,
     zoomPercent: number,
@@ -73,331 +42,69 @@ interface RendererCallbacks {
   readonly onViewport?: () => void;
   readonly onProblem?: (problem: string) => void;
   readonly onMode?: (mode: RendererDiagnostics["mode"]) => void;
-  readonly onModuleStatus?: (module: RendererModuleName, status: RendererModuleStatus) => void;
   readonly onSurfaceDetail?: (detail: RendererSurfaceDetail) => void;
-  readonly loadRendererLayers?: () => Promise<typeof import("./renderer-layers")>;
-  readonly loadDrawOverlays?: () => Promise<typeof import("./draw-overlays")>;
-  readonly loadCameraFollow?: () => Promise<typeof import("./camera-follow")>;
-  readonly loadSurfaceGeometry?: () => Promise<typeof import("./surface-geometry")>;
 }
-
-const angle = (value: number): number => {
-  let result = value;
-  while (result > Math.PI) result -= Math.PI * 2;
-  while (result < -Math.PI) result += Math.PI * 2;
-  return result;
-};
 
 const qualityScale = (quality: MapQuality): number =>
   quality === "efficient" ? .35 : quality === "balanced" ? .65 : 1;
 
-const sceneCenter = (scene: SceneModel): readonly [number, number] => {
-  const meters = scene.metadata.metersPerCell;
-  return [
-    (scene.metadata.origin[0] + (scene.metadata.span[0] - 1) / 2) * meters,
-    (scene.metadata.origin[1] + (scene.metadata.span[1] - 1) / 2) * meters,
-  ];
-};
-
-const rebaseTarget = (
-  targetX: number,
-  targetZ: number,
-  previousScene: SceneModel,
-  nextScene: SceneModel,
-): readonly [number, number] => {
-  const previousCenter = sceneCenter(previousScene);
-  const nextCenter = sceneCenter(nextScene);
-  return [
-    targetX + (nextCenter[0] - previousCenter[0]),
-    targetZ + (previousCenter[1] - nextCenter[1]),
-  ];
-};
-
-const rebaseCameraTarget = (
-  camera: CameraState,
-  previousScene: SceneModel,
-  nextScene: SceneModel,
-): CameraState => {
-  const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
-  return {
-    ...camera,
-    // World X is measured from the scene centre in the opposite direction;
-    // world Z is measured from the scene centre in the same direction.
-    targetX,
-    targetZ,
-  };
-};
-
 export { topView } from "./state";
-/** Room colors replace the photo wherever the map shows the top view. */
-const roomColours = (state: WorkspaceState | null): boolean =>
-  !!state && topView(state) === "top" && state.appearance === "rooms";
-
-// Put clearly separated hues first for ordinary homes. Larger maps retain a
-// unique color for every supported room; IDs, rather than metadata order,
-// determine the palette position. Boundaries and labels also identify rooms.
-const ROOM_COLORS: readonly Channel[] = [
-  [47, 158, 220], [13, 255, 13], [255, 13, 13], [215, 13, 255],
-  [255, 185, 115], [7, 140, 7], [13, 53, 255], [140, 63, 115],
-  [11, 217, 182], [255, 115, 185], [178, 129, 80], [35, 105, 140],
-  [137, 98, 217], [217, 11, 148], [150, 178, 9], [140, 74, 7],
-];
-const roomColor = (index: number, palette: CanvasPalette): Channel => {
-  if (palette.forced) return palette.roomFill;
-  const slot = ((index - ROOM_COLORS.length) * 149 + 53) & 255;
-  const color = ROOM_COLORS[index] ?? [40 + Math.floor(slot / 32) * 30,
-    40 + Math.floor(slot / 4) % 8 * 30, 40 + slot % 4 * 70];
-  return color.map((value, channel) => Math.round(value * .8
-    + (palette.roomFill[channel] ?? 0) * .2)) as unknown as Channel;
-};
-
-const cameraPreferenceIsFit = (view: MapView, preference: CameraPreference | undefined): boolean => {
-  if (!preference) return true;
-  const top = view === "top";
-  return Math.abs(preference.zoom - 1) < 0.001
-    && Math.abs(preference.targetX) < 0.001
-    && Math.abs(preference.targetZ) < 0.001
-    && Math.abs(angle(preference.yaw - (top ? 0 : -Math.PI / 4))) < 0.001
-    && (top || Math.abs(preference.pitch - 1.12) < 0.001);
-};
-
-const cameraPreferenceIsHomeFit = (
-  view: MapView,
-  preference: CameraPreference | undefined,
-  homeTargetX: number,
-  homeTargetZ: number,
-): boolean => Boolean(preference
-  && (Math.abs(preference.targetX - homeTargetX) < 0.001
-    && Math.abs(preference.targetZ - homeTargetZ) < 0.001
-    || cameraPreferenceIsFit(view, preference))
-  && cameraPreferenceIsFit(view, { ...preference, targetX: 0, targetZ: 0 }));
-
-const rebaseCameraPreferences = (
-  cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
-  previousScene: SceneModel,
-  nextScene: SceneModel,
-  previousHome: Readonly<Record<MapView, number>>,
-  nextHome: Readonly<Record<MapView, number>>,
-  previousHomeTarget: Readonly<{ x: number; z: number }>,
-  nextHomeTarget: Readonly<{ x: number; z: number }>,
-): Partial<Record<MapView, CameraPreference>> => Object.fromEntries(
-  Object.entries(cameras).map(([view, camera]) => {
-    const mapView = view as MapView;
-    if (!camera) return [view, camera];
-    // A fitted camera follows the geometry center and remains fitted when the
-    // admitted floor's actual bounds move. Legacy fit preferences use (0, 0);
-    // current ones store the prior geometry-centered home target.
-    if (cameraPreferenceIsFit(mapView, camera)
-      || cameraPreferenceIsHomeFit(mapView, camera, previousHomeTarget.x, previousHomeTarget.z)) {
-      return [view, {
-        ...camera,
-        zoom: 1,
-        targetX: nextHomeTarget.x,
-        targetZ: nextHomeTarget.z,
-      }];
-    }
-    const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
-    const oldHome = previousHome[mapView];
-    const newHome = nextHome[mapView];
-    const zoom = oldHome > 0 && newHome > 0
-      ? camera.zoom * newHome / oldHome
-      : camera.zoom;
-    return [view, { ...camera, targetX, targetZ, zoom }];
-  }),
-) as Partial<Record<MapView, CameraPreference>>;
 
 const sceneContext = (state: WorkspaceState): string => {
   return `${state.dataMode}|${state.selection.entryId ?? "none"}|${state.selection.floorId}`
     + `|${state.selection.historyId ?? "none"}|${mapCameraIdentity(state)}`;
 };
 
-const GPU_UPLOAD_CHUNK_BYTES = 512 * 1024;
-const GPU_UPLOAD_FAIR_SHARE_BYTES = GPU_UPLOAD_CHUNK_BYTES / 2;
-const GPU_DELTA_BLOCK_BYTES = SCENE_DELTA_DIRTY_BLOCK_BYTES;
-const GPU_DELTA_MAX_BLOCKS = 256;
 // Touch-device qualification showed GPU/presentation delay despite short
 // JavaScript frames. Auto bounds the point workload and, because fill cost
 // grows with device pixels (150% zoom on a tablet: touch-to-present p95 86 ms
 // at full density, 74 ms within this budget), each canvas's backing store.
 const AUTO_TOUCH_POINT_LIMIT = 350_000;
 const AUTO_TOUCH_CANVAS_PIXELS = 1_100_000;
-const AUTO_QUALITY_SLOW_FRAME_MS = 18;
-const AUTO_QUALITY_FAST_FRAME_MS = 12;
-const AUTO_QUALITY_SLOW_FRAMES_TO_REDUCE = 3;
-const AUTO_QUALITY_FAST_FRAMES_TO_RECOVER = 120;
-const AUTO_QUALITY_REDUCTION_RATIO = 0.75;
-const AUTO_QUALITY_RECOVERY_STEP = 0.25;
-const AUTO_QUALITY_MIN_SCALE = 0.25;
-
-const sameSceneTransform = (left: SceneModel, right: SceneModel): boolean =>
-  left.metadata.metersPerCell === right.metadata.metersPerCell
-  && left.metadata.origin[0] === right.metadata.origin[0]
-  && left.metadata.origin[1] === right.metadata.origin[1]
-  && left.metadata.span[0] === right.metadata.span[0]
-  && left.metadata.span[1] === right.metadata.span[1];
-
-const samePointLayout = (left: SceneModel, right: SceneModel): boolean =>
-  left.pointOffset === right.pointOffset
-  && left.floorCount === right.floorCount
-  && left.surfaceCount === right.surfaceCount
-  && left.total === right.total
-  && left.source === right.source
-  && sameSceneTransform(left, right);
-
-const validDeltaBlocks = (scene: SceneModel, baseRevision: number): readonly number[] | null => {
-  const hint = scene.deltaHint;
-  if (!hint || hint.baseRevision !== baseRevision || scene.revision <= baseRevision
-    || hint.blockBytes !== GPU_DELTA_BLOCK_BYTES
-    || hint.dirtyBlocks.length > GPU_DELTA_MAX_BLOCKS) return null;
-  const blockCount = Math.ceil(scene.total * 8 / GPU_DELTA_BLOCK_BYTES);
-  let previous = -1;
-  for (const block of hint.dirtyBlocks) {
-    if (!Number.isSafeInteger(block) || block <= previous || block >= blockCount) return null;
-    previous = block;
-  }
-  return hint.dirtyBlocks;
-};
-
-const insertSortedUniqueBlock = (blocks: number[], value: number): void => {
-  let low = 0;
-  let high = blocks.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    const current = blocks[middle]!;
-    if (current === value) return;
-    if (current < value) low = middle + 1;
-    else high = middle;
-  }
-  blocks.splice(low, 0, value);
-};
-
-const hasEligibleDirtyBlock = (
-  blocks: readonly number[],
-  totalBytes: number,
-  frontierBytes: number,
-): boolean => {
-  const first = blocks[0];
-  if (first === undefined) return false;
-  // Blocks are kept ascending, so eligibility is determined by the first one.
-  return Math.min(totalBytes, (first + 1) * GPU_DELTA_BLOCK_BYTES) <= frontierBytes;
-};
-
-// Matches the literal colours the overlay shipped with, so nothing changes
-// until a host wires `readCanvasPalette()` through `setPalette()`.
-const DEFAULT_PALETTE: CanvasPalette = {
-  accent: [6, 120, 206],
-  onAccent: [255, 255, 255],
-  text: [38, 50, 56],
-  quiet: [75, 92, 105],
-  plate: [250, 252, 253],
-  roomFill: [231, 238, 242],
-  forced: false,
-};
-
-
-interface GpuUpload {
-  scene: SceneModel;
-  revision: number;
-  readonly context: string;
-  generation: number;
-  readonly contextGeneration: number;
-  readonly buffer: WebGLBuffer;
-  readonly staging: boolean;
-  seed: "scene" | "copy";
-  readonly previousScene: SceneModel | null;
-  frontierBytes: number;
-  /** Unique pending blocks kept in ascending offset order. */
-  readonly dirtyBlocks: number[];
-  readonly transitionBlocks: Set<number>;
-}
+// A saved map's photo is faded so it is not taken for the live map. Room
+// colors and the shapes over it keep their colour.
+const SAVED_MAP_SATURATION = 0.35;
 
 export class RendererController {
   readonly #sceneCanvas: HTMLCanvasElement;
   readonly #overlayCanvas: HTMLCanvasElement;
   readonly #callbacks: RendererCallbacks;
-  #gl: WebGL2RenderingContext | null = null;
-  #overlay: CanvasRenderingContext2D | null = null;
-  #fallbackCanvas: HTMLCanvasElement | null = null;
-  #fallback: CanvasRenderingContext2D | null = null;
-  #program: WebGLProgram | null = null;
-  #buffer: WebGLBuffer | null = null;
-  #stagingBuffer: WebGLBuffer | null = null;
-  #bufferCapacities = new WeakMap<WebGLBuffer, number>();
-  #vertexArray: WebGLVertexArrayObject | null = null;
-  #viewProjection: WebGLUniformLocation | null = null;
-  #center: WebGLUniformLocation | null = null;
-  #viewportPixels: WebGLUniformLocation | null = null;
-  #meters: WebGLUniformLocation | null = null;
-  #sampleStep: WebGLUniformLocation | null = null;
-  #maxPointPixels: WebGLUniformLocation | null = null;
+  readonly #points = new RendererGl();
+  readonly #view: RendererCamera;
+  readonly #modules: RendererModules;
+  readonly #raster: FallbackRaster;
+  readonly #overlay: RendererOverlay;
   #state: WorkspaceState | null = null;
-  #circlePreview: { readonly circles: readonly AreaCircle[]; readonly capture: CoordinateEditCapture } | null = null;
   #scene: SceneModel | null = null;
   #sceneContext: string | null = null;
   #admittedScene: SceneModel | null = null;
   #admittedContext: string | null = null;
   #upload: GpuUpload | null = null;
   #frame: number | null = null;
-  #roomNameAdmissionFrame: number | null = null;
-  #fallbackProjection: {
-    readonly scene: SceneModel;
-    readonly matrix: Float32Array;
-    readonly width: number;
-    readonly height: number;
-  } | null = null;
-  #fallbackFrame: number | null = null;
+  // What the next frame redraws. A frame that only advances an upload leaves
+  // the 2D canvas alone; one that only moves the cursor leaves the scene.
+  #sceneDirty = false;
+  #overlayDirty = false;
+  #layersFrame: number | null = null;
   #resizeObserver: ResizeObserver;
-  #camera: CameraState = {
-    yaw: -Math.PI / 4,
-    pitch: 0.82,
-    distance: 12,
-    targetX: 0,
-    targetZ: 0,
-    orthographic: false,
-  };
-  #homeThree = 12;
-  #homeTop = 8;
-  #homeTargetX = 0;
-  #homeTargetZ = 0;
-  #radius = 4;
-  readonly #geometryBoundsCache = new WeakMap<SceneModel, ReturnType<typeof sceneGeometryBounds>>();
-  #matrix: Float32Array<ArrayBufferLike> = new Float32Array(16);
-  #cursor: MapPoint | null = null;
   #mode: RendererDiagnostics["mode"] = "unavailable";
   #modeReported = false;
   #contextGeneration = 0;
-  #initializedPoints = 0;
   #renderedPoints = 0;
-  #lastFrameMs = 0;
-  #slowFrames = 0;
-  #fastFrames = 0;
-  #qualityScale = 1;
   readonly #touch = window.matchMedia("(any-pointer: coarse)").matches;
-  #viewport = { width: 1, height: 1, left: 0, top: 0 };
-  #fitActive = true;
+  readonly #governor = new FrameGovernor(this.#touch);
+  /** The view-projection the scene was last drawn with. */
+  readonly #drawnMatrix = new Float32Array(16);
   #disposed = false;
-  #rendererLayers: typeof import("./renderer-layers") | null = null;
-  #rendererLayersStatus: RendererModuleStatus = "idle";
-  #drawOverlays: typeof import("./draw-overlays") | null = null;
-  #drawOverlaysStatus: RendererModuleStatus = "idle";
   #cameraFollow: import("./camera-follow").CameraFollowController | null = null;
-  #cameraFollowStatus: RendererModuleStatus = "idle";
-  #surfaceModule: typeof import("./surface-geometry") | null = null;
   #surfaceGeometry: import("./surface-geometry").SurfaceGeometry | null = null;
-  #surfaceStatus: RendererModuleStatus = "idle";
-  #surfaceNeeded = false;
-  #surfaceSupported = true;
-  #moduleTimeouts = new Map<RendererModuleName, OptionalModuleLoad>();
+  #geometry: import("./overlay-geometry").OverlayGeometry | null = null;
   #pendingFollow: {
     readonly pose: PoseModel | null;
     readonly mode: "off" | "follow" | "ride";
     readonly reducedMotion: boolean;
   } | null = null;
   #reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  /** undefined until a heading needs it, null while loading or after a failed load. */
-  #robotModel: typeof DrawRobot | null | undefined;
-  #palette: CanvasPalette = DEFAULT_PALETTE;
-  #labelOffsets = new Map<string, readonly [x: number, y: number]>();
 
   constructor(
     sceneCanvas: HTMLCanvasElement,
@@ -407,17 +114,41 @@ export class RendererController {
     this.#sceneCanvas = sceneCanvas;
     this.#overlayCanvas = overlayCanvas;
     this.#callbacks = callbacks;
-    this.#overlay = overlayCanvas.getContext("2d", { alpha: true });
+    const requestRender = (): void => this.requestRender();
+    this.#view = new RendererCamera(sceneCanvas, {
+      scene: () => this.#scene,
+      state: () => this.#state,
+      requestRender,
+      onCamera: callbacks.onCamera,
+      onCameraPreferences: callbacks.onCameraPreferences,
+    });
+    this.#modules = new RendererModules(callbacks, { disposed: () => this.#disposed, requestRender });
+    this.#raster = new FallbackRaster(this.#view, {
+      scene: () => this.#scene,
+      active: () => !this.#disposed && this.#state?.pageActive === true && this.#mode === "canvas2d",
+      rendered: (points) => { this.#renderedPoints = points; },
+      requestRender,
+    });
+    this.#overlay = new RendererOverlay(overlayCanvas, this.#view, this.#modules, this.#raster, {
+      scene: () => this.#scene,
+      state: () => this.#state,
+      fallback: () => this.#mode === "canvas2d",
+      pixelRatio: () => this.#pixelRatio(),
+      requestRender: (scene) => this.requestRender(scene),
+      scheduleLayers: () => this.#scheduleLayers(),
+    });
     this.#sceneCanvas.addEventListener("webglcontextlost", this.#contextLost);
     this.#sceneCanvas.addEventListener("webglcontextrestored", this.#contextRestored);
     this.#initWebGl();
     this.#resizeObserver = new ResizeObserver(() => {
-      const previousThree = this.#homeThree;
-      const previousTop = this.#homeTop;
-      this.#updateHomeDistances();
-      if (this.#fitActive
-        && (previousThree !== this.#homeThree || previousTop !== this.#homeTop)) {
-        this.fit(false);
+      // Layout is clean here, so frames use this size instead of measuring.
+      this.#view.measureViewport();
+      const previousThree = this.#view.homeThree;
+      const previousTop = this.#view.homeTop;
+      this.#view.updateHomeDistances();
+      if (this.#view.fitActive
+        && (previousThree !== this.#view.homeThree || previousTop !== this.#view.homeTop)) {
+        this.#view.fit(false);
       } else {
         this.requestRender();
       }
@@ -426,80 +157,74 @@ export class RendererController {
   }
 
   get camera(): CameraState {
-    return { ...this.#camera };
-  }
-
-  #clampDistance(distance: number, top = this.#camera.orthographic): number {
-    const home = top ? this.#homeTop : this.#homeThree;
-    // Keep the gesture range while allowing every numeric tier on small or
-    // elongated maps, and use the same bounds when restoring preferences.
-    return clamp(distance,
-      Math.min(Math.max(0.2, this.#radius * 0.04), home / 10),
-      Math.max(this.#radius * 8, home));
-  }
-
-  #targetBounds(): { readonly x: number; readonly z: number } {
-    const span = this.#scene?.metadata.span;
-    const meters = this.#scene?.metadata.metersPerCell;
-    if (!span || meters === undefined) return { x: this.#radius, z: this.#radius };
-    return {
-      x: Math.max(0.5, span[0] * meters * 0.55),
-      z: Math.max(0.5, span[1] * meters * 0.55),
-    };
+    return { ...this.#view.current };
   }
 
   setCamera(camera: CameraState, notify = true): void {
-    const target = this.#targetBounds();
-    this.#camera = {
-      yaw: angle(camera.yaw),
-      pitch: camera.orthographic
-        ? Math.PI / 2 - 0.018
-        : clamp(camera.pitch, 0.18, 1.38),
-      distance: this.#clampDistance(camera.distance, camera.orthographic),
-      targetX: clamp(camera.targetX, -target.x, target.x),
-      targetZ: clamp(camera.targetZ, -target.z, target.z),
-      orthographic: camera.orthographic,
-    };
-    this.#fitActive = false;
-    this.requestRender();
-    if (notify) this.#notifyCamera();
+    this.#view.set(camera, notify);
   }
 
-  cameraAfterPan(
-    camera: CameraState,
-    deltaX: number,
-    deltaY: number,
-    anchorX?: number,
-    anchorY?: number,
-  ): CameraState {
-    const bounds = this.#measureViewport();
-    const startX = anchorX ?? bounds.left + bounds.width / 2;
-    const startY = anchorY ?? bounds.top + bounds.height / 2;
-    const start = this.#screenToMapForPan(startX, startY, camera);
-    const end = this.#screenToMapForPan(startX + deltaX, startY + deltaY, camera);
-    const target = this.#targetBounds();
-    // Unproject both ends of the gesture onto the floor plane. This accounts
-    // for perspective and pitch, where a fixed world-per-pixel scale can vary
-    // dramatically between the foreground and horizon. Bound the result so
-    // near-horizon drags cannot fling the camera across an entire map.
-    const maxPan = Math.max(0.5, this.#radius * 2);
-    const rawX = start && end ? end.x - start.x : 0;
-    const rawZ = start && end ? start.y - end.y : 0;
-    const length = Math.hypot(rawX, rawZ);
-    const scale = length > maxPan ? maxPan / length : 1;
-    return {
-      ...camera,
-      targetX: clamp(
-        camera.targetX + rawX * scale,
-        -target.x,
-        target.x,
-      ),
-      targetZ: clamp(
-        camera.targetZ + rawZ * scale,
-        -target.z,
-        target.z,
-      ),
-    };
+  cameraAfterPan(camera: CameraState, deltaX: number, deltaY: number, anchorX?: number, anchorY?: number): CameraState {
+    return this.#view.afterPan(camera, deltaX, deltaY, anchorX, anchorY);
+  }
+
+  frameCircles(circles: readonly AreaCircle[]): void {
+    this.#view.frameCircles(circles);
+  }
+
+  setCirclePreview(circles: readonly AreaCircle[] | null, capture?: CoordinateEditCapture): void {
+    this.#overlay.setCirclePreview(circles, capture);
+  }
+
+  setPalette(palette: CanvasPalette): void {
+    this.#overlay.setPalette(palette);
+  }
+
+  setCursor(point: MapPoint | null): void {
+    this.#overlay.setCursor(point);
+  }
+
+  mapToScreen(point: MapPoint): MapPoint | null {
+    return this.#view.mapToScreen(point);
+  }
+
+  offsetMapPoint(point: MapPoint, horizontalMeters: number, verticalMeters: number): MapPoint | null {
+    return this.#view.offsetMapPoint(point, horizontalMeters, verticalMeters);
+  }
+
+  screenToMap(clientX: number, clientY: number): MapPoint | null {
+    return this.#view.screenToMap(clientX, clientY);
+  }
+
+  roomAt(clientX: number, clientY: number): string | null {
+    const map = this.screenToMap(clientX, clientY);
+    return map && this.#scene && this.#state ? roomAt(this.#scene, this.#state, map) : null;
+  }
+
+  async roomCandidatesAt(clientX: number, clientY: number): Promise<RoomIdentityResult> {
+    const map = this.screenToMap(clientX, clientY);
+    if (!map || !this.#scene || !this.#state) return { status: "unmatched" };
+    return roomCandidatesAt(this.#scene, this.#state, map);
+  }
+
+  containsMapPoint(point: MapPoint): boolean {
+    return this.#scene !== null && containsMapPoint(this.#scene, point);
+  }
+
+  fit(notify = true, view?: MapView): void {
+    this.#view.fit(notify, view);
+  }
+
+  zoomAt(factor: number, clientX?: number, clientY?: number): void {
+    this.#view.zoomAt(factor, clientX, clientY);
+  }
+
+  panBy(deltaX: number, deltaY: number): void {
+    this.#view.panBy(deltaX, deltaY);
+  }
+
+  orbitBy(deltaX: number, deltaY: number): void {
+    this.#view.orbitBy(deltaX, deltaY);
   }
 
   setState(state: WorkspaceState): void {
@@ -510,10 +235,10 @@ export class RendererController {
     const admittedBefore = this.#admittedScene;
     const admittedContextBefore = this.#admittedContext;
     this.#state = state;
-    if (!state.pageActive || !state.labelsVisible) this.#cancelRoomNameAdmission();
-    if (!state.pageActive && this.#frame !== null) {
-      window.cancelAnimationFrame(this.#frame);
+    if (!state.pageActive) {
+      if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
       this.#frame = null;
+      this.#governor.pause();
     }
     const scene = state.resources.scene.value;
     const holdingScene = state.dataMode === "live" && state.floor.readOnly && scene !== null && scene === this.#scene
@@ -522,7 +247,7 @@ export class RendererController {
     const ownerChanged = Boolean(previous && (state.owner?.userKey !== previous.owner?.userKey
       || state.selection.entryId !== previous.selection.entryId));
     const cameraContextChanged = !holdingScene && context !== this.#sceneContext;
-    if (cameraContextChanged || (previous && topView(previous) !== view)) this.#labelOffsets.clear();
+    if (cameraContextChanged || (previous && topView(previous) !== view)) this.#overlay.clearLabels();
     const liveKey = liveCameraKey(state);
     const liveCameraChanged = liveKey !== null && liveKey !== liveCameraKey(previous);
     this.#admittedScene = scene;
@@ -533,7 +258,7 @@ export class RendererController {
       if (scene === null || context !== this.#sceneContext || ownerChanged) this.#clearSceneOwnership();
       else {
         this.#cancelGpuUpload(true);
-        this.#cancelFallback();
+        this.#raster.cancel();
       }
     } else if (scene !== null && context !== null) {
       // A held scene keeps its admitted context. Let its upload finish (or
@@ -542,7 +267,7 @@ export class RendererController {
       const targetChanged = scene !== admittedBefore || sceneContextKey !== admittedContextBefore;
       const currentUpload = this.#upload;
       const frontNeedsMaterialization = this.#mode === "webgl2" && !currentUpload
-        && this.#initializedPoints < scene.total;
+        && this.#points.initializedPoints < scene.total;
       const pendingSuccessorBlocks = currentUpload && currentUpload.context === sceneContextKey
         && currentUpload.contextGeneration === this.#contextGeneration
         && samePointLayout(currentUpload.scene, scene)
@@ -561,7 +286,7 @@ export class RendererController {
         || scene !== this.#scene || sceneContextKey !== this.#sceneContext)) {
         const sameSceneContext = this.#scene !== null && this.#sceneContext === sceneContextKey;
         const compatible = sameSceneContext && samePointLayout(this.#scene!, scene);
-        const publishedFrontComplete = Boolean(this.#scene && this.#initializedPoints >= this.#scene.total);
+        const publishedFrontComplete = Boolean(this.#scene && this.#points.initializedPoints >= this.#scene.total);
         const publishedSuccessorBlocks = !currentUpload && compatible && publishedFrontComplete
           ? validDeltaBlocks(scene, this.#scene?.revision ?? -1)
           : null;
@@ -586,7 +311,7 @@ export class RendererController {
             this.#sceneContext = sceneContextKey;
             rebasedPreferences = this.#installScene(
               scene,
-              sameSceneContext && !this.#fitActive,
+              sameSceneContext && !this.#view.fitActive,
               previousScene,
               sameSceneContext,
               previous ? topView(previous) : null,
@@ -598,21 +323,17 @@ export class RendererController {
           this.#sceneContext = sceneContextKey;
           rebasedPreferences = this.#installScene(
             scene,
-            sameSceneContext && !this.#fitActive,
+            sameSceneContext && !this.#view.fitActive,
             previousScene,
             sameSceneContext,
             previous ? topView(previous) : null,
           );
         }
       }
-    } else if (this.#scene !== null || this.#upload !== null || this.#stagingBuffer !== null) {
+    } else if (this.#scene !== null || this.#upload !== null || this.#points.stagingBuffer !== null) {
       this.#clearSceneOwnership();
     }
-    if (!previous || previous.quality !== state.quality) {
-      this.#qualityScale = qualityScale(state.quality);
-      this.#slowFrames = 0;
-      this.#fastFrames = 0;
-    }
+    if (!previous || previous.quality !== state.quality) this.#governor.reset(qualityScale(state.quality));
     // Leaving the area review gives back the camera the user had before it
     // framed the area (map-surfaces.md §5): live when Draw follows, else as
     // the top view's saved preference, so the 3D view is untouched.
@@ -623,19 +344,19 @@ export class RendererController {
       this.#beforeReview = null;
       // Leaving a forced top view reads preferences again below. Carry the
       // restored camera into that read instead of the review's framed state.
-      rebasedPreferences = { ...rebasedPreferences, top: this.#preferenceOf(camera, fit) };
+      rebasedPreferences = { ...rebasedPreferences, top: this.#view.preferenceOf(camera, fit) };
       if (view === "top") {
-        this.#camera = camera;
-        this.#fitActive = fit;
+        this.#view.current = camera;
+        this.#view.fitActive = fit;
         // The review can change the canvas size (especially on phones). Its
         // resize lands while framing has disabled fit, so a saved fit camera
         // may carry the old viewport's distance. Refit against the current
         // viewport; manual cameras keep their exact saved distance.
-        if (fit) this.fit(false, view);
-        this.#notifyCamera();
+        if (fit) this.#view.fit(false, view);
+        this.#view.notify();
         published = true;
       } else {
-        this.#callbacks.onCameraPreferences?.({ top: this.#preferenceOf(camera, fit) });
+        this.#callbacks.onCameraPreferences?.({ top: this.#view.preferenceOf(camera, fit) });
       }
     }
     // Entering or leaving a workflow that looks straight down re-reads the
@@ -644,45 +365,34 @@ export class RendererController {
     const leftTop = forcesTop(previous) && !forcesTop(state);
     if (!previous || previous.view !== state.view || enteredTop || leftTop
       || (!holdingScene && (cameraContextChanged || liveCameraChanged))) {
-      this.#applyPreferredCamera(view, state, rebasedPreferences);
+      this.#view.applyPreferred(view, state, rebasedPreferences);
     }
     if (previous?.workflow !== "areaReview" && state.workflow === "areaReview" && state.draw.circles.length) {
-      this.#beforeReview = { camera: this.#camera, fit: this.#fitActive };
-      this.frameCircles(state.draw.circles);
+      this.#beforeReview = { camera: this.#view.current, fit: this.#view.fitActive };
+      this.#view.frameCircles(state.draw.circles);
       published = true;
     }
     if (state.workflow === "draw"
       && previous?.draw.zoomPercent !== state.draw.zoomPercent
-      && Math.round(this.#homeTop / this.#camera.distance * 100) !== state.draw.zoomPercent) {
-      this.#camera = {
-        ...this.#camera,
+      && Math.round(this.#view.homeTop / this.#view.current.distance * 100) !== state.draw.zoomPercent) {
+      this.#view.current = {
+        ...this.#view.current,
         orthographic: true,
         pitch: Math.PI / 2 - 0.018,
-        distance: this.#homeTop * 100 / state.draw.zoomPercent,
+        distance: this.#view.homeTop * 100 / state.draw.zoomPercent,
       };
-      this.#fitActive = state.draw.zoomPercent === 100
-        && Math.abs(this.#camera.targetX - this.#homeTargetX) < 0.001
-        && Math.abs(this.#camera.targetZ - this.#homeTargetZ) < 0.001
-        && Math.abs(angle(this.#camera.yaw)) < 0.001;
+      this.#view.fitActive = state.draw.zoomPercent === 100
+        && Math.abs(this.#view.current.targetX - this.#view.homeTargetX) < 0.001
+        && Math.abs(this.#view.current.targetZ - this.#view.homeTargetZ) < 0.001
+        && Math.abs(angle(this.#view.current.yaw)) < 0.001;
     }
     // Publish only the final effective camera. Its percentage also updates the
     // draw control; echoing that rounded percentage must not move the camera.
-    if (!published && (rebasedPreferences || enteredTop || liveCameraChanged)) this.#notifyCamera();
+    if (!published && (rebasedPreferences || enteredTop || liveCameraChanged)) this.#view.notify();
     this.requestRender();
   }
 
   #beforeReview: { readonly camera: CameraState; readonly fit: boolean } | null = null;
-
-  #preferenceOf(camera: CameraState, fit: boolean, home = this.#homeTop): CameraPreference {
-    if (fit) return { yaw: camera.orthographic ? 0 : -Math.PI / 4,
-      pitch: camera.orthographic ? Math.PI / 2 - 0.018 : 1.12, zoom: 1,
-      targetX: this.#homeTargetX, targetZ: this.#homeTargetZ };
-    return { yaw: camera.yaw, pitch: camera.pitch, zoom: home / camera.distance, targetX: camera.targetX, targetZ: camera.targetZ };
-  }
-
-  #preferenceIsHomeFit(view: MapView, preference: CameraPreference): boolean {
-    return cameraPreferenceIsHomeFit(view, preference, this.#homeTargetX, this.#homeTargetZ);
-  }
 
   /** Follow loads its camera animation controller only after the user enables it. */
   updateFollow(pose: PoseModel | null, mode: "off" | "follow" | "ride", reducedMotion = this.#reducedMotion): void {
@@ -696,21 +406,21 @@ export class RendererController {
       this.#cameraFollow.update(pose, mode, reducedMotion);
       return;
     }
-    if (this.#cameraFollowStatus !== "idle") return;
-    this.#setModuleStatus("camera-follow", "loading");
-    void this.#loadOptionalModule("camera-follow", this.#callbacks.loadCameraFollow ?? (() => import("./camera-follow"))).then(({ CameraFollowController }) => {
+    if (this.#modules.cameraFollowStatus !== "idle") return;
+    this.#modules.setStatus("camera-follow", "loading");
+    void this.#modules.loadCameraFollow().then(({ CameraFollowController }) => {
       if (this.#disposed) return;
-      this.#setModuleStatus("camera-follow", "ready");
+      this.#modules.setStatus("camera-follow", "ready");
       this.#cameraFollow = new CameraFollowController({
         state: () => this.#state,
-        camera: () => this.#camera,
-        setCamera: (camera) => { this.#camera = camera; },
-        fitActive: () => this.#fitActive,
-        worldForMeters: (x, y) => this.#worldForMeters(x, y),
-        radius: () => this.#radius,
-        setFitActive: (active) => { this.#fitActive = active; },
+        camera: () => this.#view.current,
+        setCamera: (camera) => { this.#view.current = camera; },
+        fitActive: () => this.#view.fitActive,
+        worldForMeters: (x, y) => this.#view.worldForMeters(x, y),
+        radius: () => this.#view.radius,
+        setFitActive: (active) => { this.#view.fitActive = active; },
         requestRender: () => this.requestRender(),
-        notifyCamera: () => this.#notifyCamera(),
+        notifyCamera: () => this.#view.notify(),
         disposed: () => this.#disposed,
       });
       const pending = this.#pendingFollow;
@@ -718,7 +428,7 @@ export class RendererController {
     }).catch(() => {
       if (this.#disposed) return;
       this.#pendingFollow = null;
-      this.#setModuleStatus("camera-follow", "failed");
+      this.#modules.setStatus("camera-follow", "failed");
     });
   }
 
@@ -728,170 +438,9 @@ export class RendererController {
     this.#cameraFollow?.cancel(restore);
   }
 
-  /** The world position of a map point in metres (the overlay's coordinate space). */
-  #worldForMeters(x: number, y: number): readonly [number, number] | null {
-    const scene = this.#scene;
-    if (!scene) return null;
-    const world = this.#worldForCell(x / scene.metadata.metersPerCell - scene.metadata.origin[0], y / scene.metadata.metersPerCell - scene.metadata.origin[1]);
-    return world ? [world[0], world[2]] : null;
-  }
-
-  /** Frames the circles' bounds in the top view with a 12 % margin and publishes the camera. */
-  frameCircles(circles: readonly AreaCircle[]): void {
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (const circle of circles) {
-      for (const [x, y] of [[circle.x - circle.radius, circle.y - circle.radius], [circle.x + circle.radius, circle.y + circle.radius]] as const) {
-        const world = this.#worldForMeters(x, y);
-        if (!world) return;
-        minX = Math.min(minX, world[0]); maxX = Math.max(maxX, world[0]);
-        minZ = Math.min(minZ, world[1]); maxZ = Math.max(maxZ, world[1]);
-      }
-    }
-    if (!Number.isFinite(minX)) return;
-    const viewport = this.#measureViewport();
-    const aspect = Math.max(0.2, viewport.width / Math.max(1, viewport.height));
-    const distance = Math.max((maxZ - minZ) / 2, (maxX - minX) / (2 * aspect)) * 1.12;
-    this.setCamera({
-      yaw: 0,
-      pitch: Math.PI / 2 - 0.018,
-      distance,
-      targetX: (minX + maxX) / 2,
-      targetZ: (minZ + maxZ) / 2,
-      orthographic: true,
-    });
-  }
-
-  setCirclePreview(circles: readonly AreaCircle[] | null, capture?: CoordinateEditCapture): void {
-    this.#circlePreview = circles && capture ? { circles, capture } : null;
-    this.requestRender();
-  }
-
-  #applyPreferredCamera(
-    view: MapView,
-    state: WorkspaceState,
-    rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null,
-  ): void {
-    const top = view === "top";
-    const home = top ? this.#homeTop : this.#homeThree;
-    const preference = rebasedPreferences?.[view] ?? cameraPreferences(state)[view];
-    if (!preference) {
-      this.fit(false, view);
-      return;
-    }
-    const target = this.#targetBounds();
-    this.#fitActive = this.#preferenceIsHomeFit(view, preference);
-    this.#camera = {
-      yaw: preference.yaw,
-      pitch: top ? Math.PI / 2 - 0.018 : preference.pitch,
-      distance: this.#clampDistance(home / clamp(preference.zoom, 0.01, 100), top),
-      targetX: clamp(preference.targetX, -target.x, target.x),
-      targetZ: clamp(preference.targetZ, -target.z, target.z),
-      orthographic: top,
-    };
-  }
-
-  #compile(type: number, source: string): WebGLShader {
-    const gl = this.#gl;
-    if (!gl) throw new Error("webgl-unavailable");
-    const shader = gl.createShader(type);
-    if (!shader) throw new Error("shader-unavailable");
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      gl.deleteShader(shader);
-      throw new Error("shader-failed");
-    }
-    return shader;
-  }
-
   #initWebGl(): void {
     try {
-      this.#gl = this.#sceneCanvas.getContext("webgl2", {
-        alpha: true,
-        antialias: true,
-        depth: true,
-        powerPreference: "high-performance",
-      });
-      const gl = this.#gl;
-      if (!gl) throw new Error("webgl2-unavailable");
-      // Near-plane points have no stable projected footprint, so keep their
-      // sprites finite. Otherwise use the projected cell diagonal to cover
-      // adjacent samples without changing their map-space area.
-      const vertex = this.#compile(gl.VERTEX_SHADER, `#version 300 es
-        precision highp float;
-        precision highp int;
-        layout(location = 0) in uvec2 aXY;
-        layout(location = 1) in uint aHeight;
-        layout(location = 2) in vec3 aColor;
-        uniform mat4 uViewProjection;
-        uniform vec2 uCenter;
-        uniform vec2 uViewportSize;
-        uniform float uMetersPerCell;
-        uniform float uSampleStep;
-        uniform float uMaxPointPixels;
-        out vec3 vColor;
-        void main() {
-          vec3 world = vec3(
-            -(float(aXY.x) - uCenter.x) * uMetersPerCell,
-            float(aHeight) * uMetersPerCell,
-            (float(aXY.y) - uCenter.y) * uMetersPerCell
-          );
-          vec4 clip = uViewProjection * vec4(world, 1.0);
-          gl_Position = clip;
-          float cellMeters = uMetersPerCell * uSampleStep;
-          vec4 clipX = uViewProjection * vec4(world + vec3(cellMeters, 0.0, 0.0), 1.0);
-          vec4 clipZ = uViewProjection * vec4(world + vec3(0.0, 0.0, cellMeters), 1.0);
-          float cellDiameter = 1.0;
-          if (clip.w > 0.02 && clipX.w > 0.02 && clipZ.w > 0.02) {
-            vec2 cellX = (clipX.xy / clipX.w - clip.xy / clip.w) * uViewportSize * 0.5;
-            vec2 cellZ = (clipZ.xy / clipZ.w - clip.xy / clip.w) * uViewportSize * 0.5;
-            float projectedDiameter = max(length(cellX + cellZ), length(cellX - cellZ));
-            if (!isnan(projectedDiameter) && !isinf(projectedDiameter)) {
-              cellDiameter = projectedDiameter;
-            }
-          }
-          gl_PointSize = clamp(cellDiameter, 1.0, uMaxPointPixels);
-          vColor = aColor;
-        }
-      `);
-      const fragment = this.#compile(gl.FRAGMENT_SHADER, `#version 300 es
-        precision highp float;
-        in vec3 vColor;
-        out vec4 outColor;
-        void main() {
-          vec2 point = gl_PointCoord * 2.0 - 1.0;
-          float radius = length(point);
-          float edgeWidth = max(fwidth(radius), 0.001);
-          float edge = 1.0 - smoothstep(1.0 - edgeWidth * 0.5, 1.0 + edgeWidth * 0.5, radius);
-          if (edge <= 0.0) discard;
-          outColor = vec4(pow(vColor, vec3(0.94)), edge);
-        }
-      `);
-      const program = gl.createProgram();
-      if (!program) throw new Error("program-unavailable");
-      gl.attachShader(program, vertex);
-      gl.attachShader(program, fragment);
-      gl.linkProgram(program);
-      gl.deleteShader(vertex);
-      gl.deleteShader(fragment);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error("program-failed");
-      this.#program = program;
-      this.#viewProjection = gl.getUniformLocation(program, "uViewProjection");
-      this.#center = gl.getUniformLocation(program, "uCenter");
-      this.#viewportPixels = gl.getUniformLocation(program, "uViewportSize");
-      this.#meters = gl.getUniformLocation(program, "uMetersPerCell");
-      this.#sampleStep = gl.getUniformLocation(program, "uSampleStep");
-      this.#maxPointPixels = gl.getUniformLocation(program, "uMaxPointPixels");
-      this.#buffer = gl.createBuffer();
-      this.#vertexArray = gl.createVertexArray();
-      gl.bindVertexArray(this.#vertexArray);
-      if (!this.#buffer) throw new Error("buffer-unavailable");
-      this.#bindVertexBuffer(this.#buffer);
-      gl.bindVertexArray(null);
-      gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl.LEQUAL);
-      gl.enable(gl.BLEND);
-      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      this.#points.init(this.#sceneCanvas);
       this.#setMode("webgl2");
       this.#contextGeneration += 1;
     } catch {
@@ -900,136 +449,29 @@ export class RendererController {
     }
   }
 
-  #installScene(
-    scene: SceneModel | null,
-    preserveCamera = false,
-    previousScene: SceneModel | null = null,
-    rebasePreferences = false,
-    preferenceView: MapView | null = null,
-  ): Partial<Record<MapView, CameraPreference>> | null {
-    this.#cancelFallback();
-    if (!scene) {
-      this.#renderedPoints = 0;
-      this.#initializedPoints = 0;
-      this.requestRender();
-      return null;
-    }
-    const meters = scene.metadata.metersPerCell;
-    const bounds = this.#sceneGeometryBounds(scene).floor;
-    const width = Math.max(1, bounds.maxX - bounds.minX + 1) * meters;
-    const depth = Math.max(1, bounds.maxY - bounds.minY + 1) * meters;
-    const previousHomeTarget = { x: this.#homeTargetX, z: this.#homeTargetZ };
-    this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
-    this.#homeTargetX = -((bounds.minX + bounds.maxX) / 2 - (scene.metadata.span[0] - 1) / 2) * meters;
-    this.#homeTargetZ = ((bounds.minY + bounds.maxY) / 2 - (scene.metadata.span[1] - 1) / 2) * meters;
-    const previousHome = { three: this.#homeThree, top: this.#homeTop } as const;
-    this.#updateHomeDistances();
-    if (preserveCamera && previousScene) {
-      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), false);
-    }
-    else this.fit(false, preferenceView ?? undefined);
-    const state = this.#state;
-    if (rebasePreferences && previousScene && state) {
-      const nextHome = { three: this.#homeThree, top: this.#homeTop } as const;
-      const preferences = rebaseCameraPreferences(
-        cameraPreferences(state),
-        previousScene,
-        scene,
-        previousHome,
-        nextHome,
-        previousHomeTarget,
-        { x: this.#homeTargetX, z: this.#homeTargetZ },
-      );
-      const effectiveView = preferenceView
-        ?? (topView(state));
-      const home = effectiveView === "top" ? this.#homeTop : this.#homeThree;
-      preferences[effectiveView] = this.#preferenceOf(this.#camera, false, home);
-      this.#callbacks.onCameraPreferences?.(preferences);
-      return preferences;
-    }
-    return null;
-  }
-
-  #updateHomeDistances(): void {
-    const scene = this.#scene;
-    if (!scene) return;
-    const { floor: bounds, all: sceneBounds } = this.#sceneGeometryBounds(scene);
-    const meters = scene.metadata.metersPerCell;
-    const width = Math.max(1, bounds.maxX - bounds.minX + 1) * meters;
-    const depth = Math.max(1, bounds.maxY - bounds.minY + 1) * meters;
-    const viewport = this.#measureViewport();
-    const aspect = Math.max(0.2, viewport.width / Math.max(1, viewport.height));
-    // A high three-quarter angle keeps a recognisable floor overview while
-    // preserving the complete admitted scene footprint on first launch.
-    const centerX = (bounds.minX + bounds.maxX) / 2;
-    const centerZ = (bounds.minY + bounds.maxY) / 2;
-    this.#homeThree = perspectiveBoundsFitDistance({
-      minX: -(sceneBounds.maxX - centerX) * meters,
-      maxX: -(sceneBounds.minX - centerX) * meters,
-      minZ: (sceneBounds.minY - centerZ) * meters,
-      maxZ: (sceneBounds.maxY - centerZ) * meters,
-      minHeight: sceneBounds.minHeight * meters,
-      maxHeight: sceneBounds.maxHeight * meters,
-    }, aspect, 1.12, -Math.PI / 4, 0.05);
-    this.#homeTop = Math.max(depth / 2, width / (2 * aspect)) * 1.12;
-  }
-
-  #sceneGeometryBounds(scene: SceneModel): ReturnType<typeof sceneGeometryBounds> {
-    let bounds = this.#geometryBoundsCache.get(scene);
-    if (!bounds) {
-      bounds = sceneGeometryBounds(
-        scene.buffer, scene.pointOffset, scene.floorCount, scene.total, scene.metadata.span,
-      );
-      this.#geometryBoundsCache.set(scene, bounds);
-    }
-    return bounds;
-  }
-
   #clearSceneOwnership(): void {
     this.#cancelGpuUpload(true);
-    this.#cancelFallback();
-    this.#deleteFrontBuffer();
-    if (this.#stagingBuffer && this.#gl) this.#gl.deleteBuffer(this.#stagingBuffer);
-    this.#stagingBuffer = null;
+    this.#raster.cancel();
+    this.#points.deleteFrontBuffer();
+    this.#points.deleteStagingBuffer();
     this.#scene = null;
     this.#sceneContext = null;
     this.#renderedPoints = 0;
-    this.#initializedPoints = 0;
-    this.#labelOffsets.clear();
+    this.#points.initializedPoints = 0;
+    this.#overlay.clearLabels();
     this.#surfaceGeometry?.clearDetail();
-  }
-
-
-
-  #bindVertexBuffer(buffer: WebGLBuffer, step = 1, first = 0): void {
-    const gl = this.#gl;
-    if (!gl || !this.#vertexArray) return;
-    gl.bindVertexArray(this.#vertexArray);
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribIPointer(0, 2, gl.UNSIGNED_SHORT, 8 * step, 8 * first);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_BYTE, 8 * step, 8 * first + 4);
-    gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 3, gl.UNSIGNED_BYTE, true, 8 * step, 8 * first + 5);
-    gl.bindVertexArray(null);
-  }
-
-  #deleteFrontBuffer(): void {
-    if (this.#buffer && this.#gl) this.#gl.deleteBuffer(this.#buffer);
-    this.#buffer = null;
   }
 
   #cancelGpuUpload(clearPartialFront: boolean): void {
     const upload = this.#upload;
     if (!upload) return;
     this.#upload = null;
-    if (!upload.staging && clearPartialFront && this.#buffer === upload.buffer) {
-      this.#deleteFrontBuffer();
+    if (!upload.staging && clearPartialFront && this.#points.buffer === upload.buffer) {
+      this.#points.deleteFrontBuffer();
       this.#scene = null;
       this.#sceneContext = null;
       this.#renderedPoints = 0;
-      this.#initializedPoints = 0;
+      this.#points.initializedPoints = 0;
     }
   }
 
@@ -1042,32 +484,12 @@ export class RendererController {
     seed: "scene" | "copy" = "scene",
     dirtyBlocks: readonly number[] = [],
   ): void {
-    const gl = this.#gl;
-    if (!gl || this.#mode !== "webgl2" || !state.pageActive || this.#disposed) return;
-    let buffer = staging ? this.#stagingBuffer : this.#buffer;
-    if (!buffer && !staging && this.#stagingBuffer) {
-      buffer = this.#stagingBuffer;
-      this.#stagingBuffer = null;
-    }
-    if (!buffer) {
-      try {
-        buffer = gl.createBuffer();
-      } catch {
-        this.#transitionToFallback();
-        return;
-      }
-    }
+    if (!this.#points.gl || this.#mode !== "webgl2" || !state.pageActive || this.#disposed) return;
+    const buffer = this.#points.uploadBuffer(staging, scene.total * 8, seed === "scene");
     if (!buffer) {
       this.#transitionToFallback();
       return;
     }
-    if (staging) this.#stagingBuffer = buffer;
-    else this.#buffer = buffer;
-    if (!this.#allocateGpuBuffer(buffer, scene.total * 8, seed === "scene")) {
-      this.#transitionToFallback();
-      return;
-    }
-    if (!staging) this.#bindVertexBuffer(buffer);
     this.#upload = {
       scene,
       revision: scene.revision,
@@ -1083,10 +505,10 @@ export class RendererController {
       transitionBlocks: new Set(dirtyBlocks),
     };
     if (!staging) {
-      this.#initializedPoints = 0;
+      this.#points.initializedPoints = 0;
       this.#renderedPoints = 0;
     }
-    this.requestRender();
+    this.requestRender(true, false);
   }
 
   #advanceGpuUpload(
@@ -1097,55 +519,27 @@ export class RendererController {
   ): boolean {
     const upload = this.#upload;
     if (!upload || upload.context !== context || upload.contextGeneration !== this.#contextGeneration
-      || !samePointLayout(upload.scene, scene)) return false;
-    const combined = new Set(upload.transitionBlocks);
-    for (const block of dirtyBlocks) combined.add(block);
-    if (combined.size > GPU_DELTA_MAX_BLOCKS) return false;
-
-    upload.scene = scene;
-    upload.revision = scene.revision;
-    upload.generation = state.generation;
-    upload.transitionBlocks.clear();
-    for (const block of combined) upload.transitionBlocks.add(block);
-    if (upload.seed === "copy") {
-      for (const block of dirtyBlocks) {
-        insertSortedUniqueBlock(upload.dirtyBlocks, block);
-      }
-    } else {
-      const uploadedBlocks = Math.ceil(upload.frontierBytes / GPU_DELTA_BLOCK_BYTES);
-      for (const block of dirtyBlocks) {
-        if (block < uploadedBlocks) insertSortedUniqueBlock(upload.dirtyBlocks, block);
-      }
-    }
-    this.requestRender();
+      || !samePointLayout(upload.scene, scene)
+      || !advanceUpload(upload, scene, state.generation, dirtyBlocks)) return false;
+    this.requestRender(true, false);
     return true;
   }
 
-  #allocateGpuBuffer(buffer: WebGLBuffer, byteLength: number, reset: boolean): boolean {
-    const gl = this.#gl;
-    if (!gl) return false;
-    const capacity = this.#bufferCapacities.get(buffer) ?? 0;
-    if (!reset && capacity >= byteLength) return true;
-    try {
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, byteLength, gl.DYNAMIC_DRAW);
-      if (this.#hasGlError()) return false;
-      this.#bufferCapacities.set(buffer, byteLength);
-      return true;
-    } catch {
-      return false;
+  #installScene(
+    scene: SceneModel | null,
+    preserveCamera = false,
+    previousScene: SceneModel | null = null,
+    rebasePreferences = false,
+    preferenceView: MapView | null = null,
+  ): Partial<Record<MapView, CameraPreference>> | null {
+    this.#raster.cancel();
+    if (!scene) {
+      this.#renderedPoints = 0;
+      this.#points.initializedPoints = 0;
+      this.requestRender();
+      return null;
     }
-  }
-
-  #hasGlError(): boolean {
-    const gl = this.#gl;
-    if (!gl) return true;
-    try {
-      const error = gl.getError();
-      return typeof error === "number" && error !== gl.NO_ERROR;
-    } catch {
-      return true;
-    }
+    return this.#view.installScene(scene, preserveCamera, previousScene, rebasePreferences, preferenceView);
   }
 
   #transitionToFallback(): void {
@@ -1161,7 +555,7 @@ export class RendererController {
       if (scene !== previousScene || context !== previousContext) {
         this.#scene = scene;
         this.#sceneContext = context;
-        this.#installScene(scene, sameContext && !this.#fitActive, previousScene, sameContext,
+        this.#installScene(scene, sameContext && !this.#view.fitActive, previousScene, sameContext,
           topView(state));
       }
     } else if (!scene && previousScene) {
@@ -1173,142 +567,56 @@ export class RendererController {
     this.requestRender();
   }
 
-  #uploadFrontier(upload: GpuUpload, maximumBytes: number): number {
-    const gl = this.#gl;
-    const bytesRemaining = upload.scene.total * 8 - upload.frontierBytes;
-    const byteCount = Math.min(bytesRemaining, maximumBytes);
-    if (!gl || byteCount <= 0) return 0;
-    if (upload.seed === "copy") {
-      if (!this.#buffer || this.#buffer === upload.buffer) return -1;
-      gl.bindBuffer(gl.COPY_READ_BUFFER, this.#buffer);
-      gl.bindBuffer(gl.COPY_WRITE_BUFFER, upload.buffer);
-      gl.copyBufferSubData(gl.COPY_READ_BUFFER, gl.COPY_WRITE_BUFFER,
-        upload.frontierBytes, upload.frontierBytes, byteCount);
-    } else {
-      const bytes = new Uint8Array(
-        upload.scene.buffer,
-        upload.scene.pointOffset + upload.frontierBytes,
-        byteCount,
-      );
-      gl.bindBuffer(gl.ARRAY_BUFFER, upload.buffer);
-      gl.bufferSubData(gl.ARRAY_BUFFER, upload.frontierBytes, bytes);
-    }
-    if (this.#hasGlError()) return -1;
-    upload.frontierBytes += byteCount;
-    if (!upload.staging) this.#initializedPoints = upload.frontierBytes / 8;
-    return byteCount;
-  }
-
-  #uploadDirtyBlocks(upload: GpuUpload, maximumBytes: number): number {
-    const gl = this.#gl;
-    if (!gl || maximumBytes <= 0) return 0;
-    const totalBytes = upload.scene.total * 8;
-    let uploaded = 0;
-    for (let index = 0; index < upload.dirtyBlocks.length;) {
-      const block = upload.dirtyBlocks[index]!;
-      const start = block * GPU_DELTA_BLOCK_BYTES;
-      const end = Math.min(totalBytes, start + GPU_DELTA_BLOCK_BYTES);
-      const length = end - start;
-      if (end > upload.frontierBytes) break;
-      if (uploaded + length > maximumBytes) {
-        index += 1;
-        continue;
-      }
-      const bytes = new Uint8Array(upload.scene.buffer, upload.scene.pointOffset + start, length);
-      gl.bindBuffer(gl.ARRAY_BUFFER, upload.buffer);
-      gl.bufferSubData(gl.ARRAY_BUFFER, start, bytes);
-      if (this.#hasGlError()) return -1;
-      upload.dirtyBlocks.splice(index, 1);
-      uploaded += length;
-    }
-    return uploaded;
-  }
-
   #uploadGpuChunk(): void {
     const upload = this.#upload;
-    const gl = this.#gl;
-    if (!upload || !gl) return;
+    if (!upload || !this.#points.gl) return;
     if (!this.#uploadIsCurrent(upload)) {
       this.#cancelGpuUpload(true);
       return;
     }
     const byteLength = upload.scene.total * 8;
-    const pendingFrontier = upload.frontierBytes < byteLength;
-    let remainingBudget = GPU_UPLOAD_CHUNK_BYTES;
-    try {
-      const frontierLimit = pendingFrontier && upload.dirtyBlocks.length > 0
-        ? GPU_UPLOAD_FAIR_SHARE_BYTES
-        : GPU_UPLOAD_CHUNK_BYTES;
-      const frontierBytes = this.#uploadFrontier(upload, frontierLimit);
-      if (frontierBytes < 0) return this.#transitionToFallback();
-      remainingBudget -= frontierBytes;
-
-      const canPatch = hasEligibleDirtyBlock(
-        upload.dirtyBlocks,
-        byteLength,
-        upload.frontierBytes,
-      );
-      const patchLimit = pendingFrontier && canPatch
-        ? Math.min(GPU_UPLOAD_FAIR_SHARE_BYTES, remainingBudget)
-        : canPatch ? remainingBudget : 0;
-      const patchBytes = this.#uploadDirtyBlocks(upload, patchLimit);
-      if (patchBytes < 0) return this.#transitionToFallback();
-      remainingBudget -= patchBytes;
-
-      const hasEligiblePatch = hasEligibleDirtyBlock(
-        upload.dirtyBlocks,
-        byteLength,
-        upload.frontierBytes,
-      );
-      if (pendingFrontier && remainingBudget > 0 && !hasEligiblePatch) {
-        if (this.#uploadFrontier(upload, remainingBudget) < 0) return this.#transitionToFallback();
-      }
-    } catch {
-      // Both upload failures and thrown WebGL calls select the same fallback.
-      this.#transitionToFallback();
-      return;
-    }
+    if (!this.#points.uploadChunk(upload)) return this.#transitionToFallback();
 
     if (!this.#uploadIsCurrent(upload)) {
       this.#cancelGpuUpload(true);
       return;
     }
     if (upload.frontierBytes < byteLength || upload.dirtyBlocks.length > 0) {
-      this.requestRender();
+      this.requestRender(true, false);
       return;
     }
     if (upload.staging) {
       const currentState = this.#state;
       if (!currentState) return;
       const currentView = topView(currentState);
-      const previousBuffer = this.#buffer;
-      this.#buffer = upload.buffer;
-      this.#stagingBuffer = previousBuffer;
-      this.#bindVertexBuffer(upload.buffer);
+      const previousBuffer = this.#points.buffer;
+      this.#points.buffer = upload.buffer;
+      this.#points.stagingBuffer = previousBuffer;
+      this.#points.bindVertexBuffer(upload.buffer);
       this.#scene = upload.scene;
       this.#sceneContext = upload.context;
       this.#upload = null;
-      this.#initializedPoints = upload.scene.total;
+      this.#points.initializedPoints = upload.scene.total;
       this.#renderedPoints = upload.scene.total;
       const rebased = this.#installScene(
         upload.scene,
         // Input remains live on the published front during staging. Honor
         // the user's latest pan/zoom or Fit, rather than the upload's start.
-        !this.#fitActive,
+        !this.#view.fitActive,
         upload.previousScene,
         true,
         currentView,
       );
       if (rebased) {
-        this.#applyPreferredCamera(currentView, currentState, rebased);
-        this.#notifyCamera();
+        this.#view.applyPreferred(currentView, currentState, rebased);
+        this.#view.notify();
       }
       if (this.#admittedScene !== upload.scene && this.#state) this.setState(this.#state);
     } else {
       this.#upload = null;
       this.#scene = upload.scene;
       this.#sceneContext = upload.context;
-      this.#initializedPoints = upload.scene.total;
+      this.#points.initializedPoints = upload.scene.total;
       this.#renderedPoints = upload.scene.total;
     }
   }
@@ -1322,15 +630,13 @@ export class RendererController {
       && upload.context === this.#admittedContext
       && upload.generation === state.generation
       && upload.contextGeneration === this.#contextGeneration
-      && (upload.staging ? this.#stagingBuffer === upload.buffer : this.#buffer === upload.buffer);
+      && (upload.staging ? this.#points.stagingBuffer === upload.buffer : this.#points.buffer === upload.buffer);
   }
 
   #initFallback(): void {
-    this.#cancelFallback();
+    this.#raster.cancel();
     this.#setMode("canvas2d");
-    this.#fallbackCanvas = document.createElement("canvas");
-    this.#fallback = this.#fallbackCanvas.getContext("2d", { alpha: true });
-    if (!this.#fallback) {
+    if (!this.#raster.init()) {
       this.#setMode("unavailable");
       this.#callbacks.onProblem?.("renderer-unavailable");
     }
@@ -1343,85 +649,19 @@ export class RendererController {
     this.#callbacks.onMode?.(mode);
   }
 
-  #buildFallback(scene: SceneModel): void {
-    const context = this.#fallback;
-    const canvas = this.#fallbackCanvas;
-    if (!context || !canvas) return;
-    this.#cancelFallback();
-    const projection = {
-      scene,
-      matrix: new Float32Array(this.#matrix),
-      width: this.#viewport.width,
-      height: this.#viewport.height,
-    };
-    this.#fallbackProjection = projection;
-    // Cache the camera-aligned raster, capped at four MiB regardless of zoom
-    // or display density. Animation frames only composite this cached layer.
-    const scale = Math.min(window.devicePixelRatio || 1,
-      1024 / Math.max(1, projection.width), 1024 / Math.max(1, projection.height));
-    canvas.width = Math.max(1, Math.round(projection.width * scale));
-    canvas.height = Math.max(1, Math.round(projection.height * scale));
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    this.#renderedPoints = 0;
-    const view = new DataView(scene.buffer, scene.pointOffset, scene.total * 8);
-    const step = Math.max(1, Math.ceil(scene.total / 50_000));
-    let index = 0;
-    let rendered = 0;
-    const drawChunk = (): void => {
-      if (this.#disposed || !this.#state?.pageActive || this.#mode !== "canvas2d"
-        || scene !== this.#scene || projection !== this.#fallbackProjection) return;
-      this.#fallbackFrame = null;
-      const started = performance.now();
-      let processed = 0;
-      while (index < scene.total && processed < 2_000) {
-        const offset = index * 8;
-        const point = this.#projectCell(view.getUint16(offset, true), view.getUint16(offset + 2, true),
-          view.getUint8(offset + 4), true, projection.matrix, projection);
-        if (point) {
-          context.fillStyle = `rgb(${view.getUint8(offset + 5)} ${view.getUint8(offset + 6)} ${view.getUint8(offset + 7)})`;
-          context.fillRect(point.x - 0.75, point.y - 0.75, 1.5, 1.5);
-        }
-        index += step;
-        processed += 1;
-        rendered += 1;
-        if (processed % 64 === 0 && performance.now() - started >= 4) break;
-      }
-      this.#renderedPoints = rendered;
-      this.requestRender();
-      if (index < scene.total) this.#fallbackFrame = window.setTimeout(drawChunk, 0);
-    };
-    this.#fallbackFrame = window.setTimeout(drawChunk, 0);
-  }
-
-  #cancelFallback(): void {
-    if (this.#fallbackFrame !== null) window.clearTimeout(this.#fallbackFrame);
-    this.#fallbackFrame = null;
-    this.#fallbackProjection = null;
-  }
-
-  #measureViewport(): ViewportBounds {
-    const bounds = this.#sceneCanvas.getBoundingClientRect();
-    this.#viewport = {
-      width: bounds.width,
-      height: bounds.height,
-      left: bounds.left,
-      top: bounds.top,
-    };
-    return this.#viewport;
-  }
-
   /** Device pixels per CSS pixel for both canvases; never below CSS
    * resolution, so labels stay legible within the touch budget. */
   #pixelRatio(): number {
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
     if (!this.#touch || this.#state?.quality !== "auto") return ratio;
-    const area = Math.max(1, this.#viewport.width * this.#viewport.height);
+    const area = Math.max(1, this.#view.viewport.width * this.#view.viewport.height);
     return Math.min(ratio, Math.max(1, Math.sqrt(AUTO_TOUCH_CANVAS_PIXELS / area)));
   }
 
-  #resize(): void {
+  /** Sizes both canvases to the cached viewport; true when either changed. */
+  #resize(): boolean {
     let resized = false;
-    const bounds = this.#measureViewport();
+    const bounds = this.#view.size();
     const ratio = this.#pixelRatio();
     const width = Math.max(1, Math.round(bounds.width * ratio));
     const height = Math.max(1, Math.round(bounds.height * ratio));
@@ -1433,732 +673,146 @@ export class RendererController {
       }
     }
     if (resized) this.#callbacks.onViewport?.();
+    return resized;
   }
 
-  #cameraMatrix(camera: CameraState = this.#camera): Float32Array {
-    const bounds = this.#viewport;
-    const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
-    const horizontal = Math.cos(camera.pitch) * camera.distance;
-    const eye = [
-      camera.targetX + Math.sin(camera.yaw) * horizontal,
-      Math.sin(camera.pitch) * camera.distance,
-      camera.targetZ + Math.cos(camera.yaw) * horizontal,
-    ];
-    const target = [camera.targetX, 0, camera.targetZ];
-    const view = lookAt(eye, target);
-    const projection = camera.orthographic
-      ? orthographic(
-        -camera.distance * aspect,
-        camera.distance * aspect,
-        -camera.distance,
-        camera.distance,
-        -this.#radius * 4,
-        this.#radius * 4,
-      )
-      : perspective(PERSPECTIVE_FIELD_OF_VIEW, aspect, 0.02, Math.max(60, this.#radius * 12));
-    return multiply(projection, view);
+  requestRender(scene = true, overlay = true): void {
+    this.#sceneDirty ||= scene;
+    this.#overlayDirty ||= overlay;
+    this.#requestFrame();
   }
 
-  requestRender(): void {
+  #requestFrame(): void {
     if (this.#frame !== null || this.#disposed || this.#state?.pageActive === false) return;
-    this.#frame = window.requestAnimationFrame(() => {
-      this.#frame = null;
-      this.#render();
-    });
+    this.#frame = window.requestAnimationFrame(this.#onFrame);
   }
 
-  #render(): void {
+  readonly #onFrame = (time: number): void => {
+    this.#frame = null;
     if (this.#disposed || this.#state?.pageActive === false) return;
-    const started = performance.now();
+    if (this.#governor.begin(time, this.#state?.quality === "auto" && this.#mode === "webgl2")) this.#sceneDirty = true;
+    const drawn = this.#sceneDirty || this.#overlayDirty ? this.#render() : null;
+    if (this.#governor.end(time, drawn === true, drawn === null)) this.#requestFrame();
+  };
+
+  /** Draws what is dirty; true when that drew the scene from a camera that moved. */
+  #render(): boolean {
+    let scene = this.#sceneDirty;
+    let overlay = this.#overlayDirty;
+    this.#sceneDirty = false;
+    this.#overlayDirty = false;
     this.#uploadGpuChunk();
-    this.#resize();
-    this.#matrix = this.#cameraMatrix();
-    if (this.#mode === "webgl2") this.#renderWebGl();
-    else this.#renderFallback();
-    this.#renderOverlay();
-    this.#lastFrameMs = performance.now() - started;
-    this.#updateAdaptiveQuality(this.#lastFrameMs);
+    if (this.#resize()) scene = overlay = true;
+    const matrix = this.#view.cameraMatrix(this.#view.current, this.#view.matrix);
+    const moved = scene && matrix.some((value, index) => value !== this.#drawnMatrix[index]);
+    if (moved) this.#drawnMatrix.set(matrix);
+    const geometry = this.#overlayGeometry();
+    if (scene && this.#mode === "webgl2") this.#renderWebGl(geometry);
+    else if (scene) this.#renderFallback(geometry);
+    if (overlay) this.#overlay.render(geometry);
+    return moved;
   }
 
-  #updateAdaptiveQuality(frameMs: number): void {
-    if (this.#state?.quality !== "auto" || this.#mode !== "webgl2") {
-      this.#slowFrames = 0;
-      this.#fastFrames = 0;
-      return;
-    }
-    const previousScale = this.#qualityScale;
-    if (frameMs > AUTO_QUALITY_SLOW_FRAME_MS) {
-      this.#slowFrames += 1;
-      this.#fastFrames = 0;
-      if (this.#slowFrames >= AUTO_QUALITY_SLOW_FRAMES_TO_REDUCE) {
-        this.#qualityScale = Math.max(
-          AUTO_QUALITY_MIN_SCALE,
-          this.#qualityScale * AUTO_QUALITY_REDUCTION_RATIO,
-        );
-        this.#slowFrames = 0;
+  /** The floor-plane shapes for this frame; null until their chunk and a scene are here. */
+  #overlayGeometry(): import("./overlay-geometry").OverlayGeometry | null {
+    const layers = this.#modules.layers;
+    if (!layers || !this.#scene || !this.#state) return null;
+    if (!this.#geometry) {
+      // A context that cannot build the programs leaves the shapes to Canvas 2D.
+      try {
+        this.#geometry = new layers.OverlayGeometry(this.#points.gl);
+      } catch {
+        this.#geometry = new layers.OverlayGeometry(null);
       }
-    } else if (frameMs < AUTO_QUALITY_FAST_FRAME_MS) {
-      this.#fastFrames += 1;
-      this.#slowFrames = 0;
-      if (this.#fastFrames >= AUTO_QUALITY_FAST_FRAMES_TO_RECOVER) {
-        this.#qualityScale = Math.min(1, this.#qualityScale + AUTO_QUALITY_RECOVERY_STEP);
-        this.#fastFrames = 0;
-      }
-    } else {
-      // The 12–18 ms band is inconclusive; break both consecutive-frame runs
-      // instead of letting noisy boundary measurements flap the detail tier.
-      this.#slowFrames = 0;
-      this.#fastFrames = 0;
     }
-    if (this.#qualityScale !== previousScale) this.requestRender();
+    this.#geometry.update(this.#scene, this.#state, this.#overlay.palette);
+    return this.#geometry;
   }
 
-  #renderWebGl(): void {
-    const gl = this.#gl;
-    const scene = this.#scene;
+  #renderWebGl(geometry: import("./overlay-geometry").OverlayGeometry | null): void {
+    const gl = this.#points.gl;
     if (!gl) return;
-    gl.viewport(0, 0, this.#sceneCanvas.width, this.#sceneCanvas.height);
+    const { width, height } = this.#sceneCanvas;
+    gl.viewport(0, 0, width, height);
     gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if (!scene || !this.#program || !this.#vertexArray || !this.#buffer) {
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+    this.#drawScenePoints(gl, geometry !== null && roomColours(this.#state));
+    const camera = this.#view.current;
+    geometry?.draw(this.#view.matrix, width, height, this.#pixelRatio(),
+      height / (2 * camera.distance * (camera.orthographic ? 1 : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2))));
+  }
+
+  /** Room colors replace the photo once the chunk that draws them is here. */
+  #drawScenePoints(gl: WebGL2RenderingContext, roomColours: boolean): void {
+    const scene = this.#scene;
+    const { buffer, vertexArray } = this.#points;
+    if (!scene || !this.#points.ready || !buffer || !vertexArray) {
       this.#setSurfaceNeeded(false);
       return;
     }
-    if (roomColours(this.#state)) {
+    if (roomColours) {
       this.#setSurfaceNeeded(false);
       this.#renderedPoints = 0;
       return;
     }
-    const initializedPoints = Math.min(scene.total, this.#initializedPoints);
-    const cellPixels = scene.metadata.metersPerCell * this.#viewport.height
-      / (2 * this.#camera.distance * (this.#camera.orthographic ? 1 : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2)));
+    const initializedPoints = Math.min(scene.total, this.#points.initializedPoints);
+    const saturation = this.#state && savedMapPosition(this.#state) ? SAVED_MAP_SATURATION : 1;
+    const cellPixels = scene.metadata.metersPerCell * this.#view.viewport.height
+      / (2 * this.#view.current.distance * (this.#view.current.orthographic ? 1 : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2)));
     const surfaceNeeded = this.#state?.optionalUiReady === true && cellPixels > 2.5;
     const surfaceSupported = Boolean(scene.tileIndex || scene.total <= AUTO_TOUCH_POINT_LIMIT);
     this.#setSurfaceNeeded(surfaceNeeded, surfaceSupported);
-    if (surfaceNeeded && surfaceSupported && this.#surfaceStatus === "idle") this.#loadSurfaceGeometry();
-    if (surfaceNeeded && surfaceSupported && this.#surfaceModule && this.#surfaceStatus === "ready") {
+    if (surfaceNeeded && surfaceSupported && this.#modules.surfaceStatus === "idle") this.#modules.loadSurface();
+    if (surfaceNeeded && surfaceSupported && this.#modules.surface && this.#modules.surfaceStatus === "ready") {
       try {
-        this.#surfaceGeometry ??= new this.#surfaceModule.SurfaceGeometry(gl, this.#callbacks.onSurfaceDetail);
-        this.#renderedPoints = this.#surfaceGeometry.draw({ scene, matrix: this.#matrix,
-          buffer: this.#buffer, vertexArray: this.#vertexArray, initializedPoints,
-          qualityScale: this.#qualityScale,
+        this.#surfaceGeometry ??= new this.#modules.surface.SurfaceGeometry(gl, this.#callbacks.onSurfaceDetail);
+        this.#renderedPoints = this.#surfaceGeometry.draw({ scene, matrix: this.#view.matrix,
+          buffer, vertexArray, initializedPoints,
+          qualityScale: this.#governor.scale,
           adaptiveQuality: this.#state?.quality === "auto",
           maxVisiblePoints: this.#touch && this.#state?.quality === "auto" ? AUTO_TOUCH_POINT_LIMIT : null,
-          camera: this.#camera });
+          camera: this.#view.current, saturation });
         return;
       } catch {
         this.#surfaceGeometry?.clearDetail();
         this.#surfaceGeometry?.dispose();
         this.#surfaceGeometry = null;
-        this.#setModuleStatus("surface-geometry", "failed");
+        this.#modules.setStatus("surface-geometry", "failed");
       }
     }
+    const auto = this.#state?.quality === "auto";
     const step = Math.max(
-      Math.ceil(1 / this.#qualityScale),
-      this.#touch && this.#state?.quality === "auto"
-        ? Math.ceil(initializedPoints / AUTO_TOUCH_POINT_LIMIT) : 1,
+      auto ? this.#governor.stride(initializedPoints) : Math.ceil(1 / this.#governor.scale),
+      this.#touch && auto ? Math.ceil(initializedPoints / AUTO_TOUCH_POINT_LIMIT) : 1,
     );
-    gl.useProgram(this.#program);
-    gl.bindVertexArray(this.#vertexArray);
-    gl.uniformMatrix4fv(this.#viewProjection, false, this.#matrix);
-    gl.uniform2f(this.#center, (scene.metadata.span[0] - 1) / 2, (scene.metadata.span[1] - 1) / 2);
-    gl.uniform2f(this.#viewportPixels, this.#sceneCanvas.width, this.#sceneCanvas.height);
-    gl.uniform1f(this.#meters, scene.metadata.metersPerCell);
-    // Strided points represent a lower-density sample of the packed scene.
-    // Grow splats by the square root of the stride to recover some coverage
-    // without treating packed order as a regular 2D grid; the existing point
-    // caps bound overlap where nearby samples are clustered.
-    gl.uniform1f(this.#sampleStep, scene.metadata.sampleStep * Math.sqrt(step));
-    const ratio = this.#pixelRatio();
-    // The producer groups points by tile and then by floor/surface. Drawing
-    // a prefix would crop later tiles and starve surfaces at lower quality.
-    // Stride each range instead, using only its initialized upload frontier.
-    const floorAvailable = Math.min(scene.floorCount, initializedPoints);
-    const surfaceAvailable = Math.min(
-      scene.surfaceCount,
-      Math.max(0, initializedPoints - scene.floorCount),
-    );
-    const floorCount = Math.ceil(floorAvailable / step);
-    const surfaceCount = Math.ceil(surfaceAvailable / step);
-    if (floorCount > 0) {
-      this.#bindVertexBuffer(this.#buffer, step);
-      gl.bindVertexArray(this.#vertexArray);
-      gl.uniform1f(this.#maxPointPixels, 4.5 * ratio);
-      gl.drawArrays(gl.POINTS, 0, floorCount);
-    }
-    if (surfaceCount > 0) {
-      this.#bindVertexBuffer(this.#buffer, step, scene.floorCount);
-      gl.bindVertexArray(this.#vertexArray);
-      gl.uniform1f(this.#maxPointPixels, 7 * ratio);
-      gl.drawArrays(gl.POINTS, 0, surfaceCount);
-    }
-    gl.bindVertexArray(null);
-    this.#renderedPoints = floorCount + surfaceCount;
+    this.#renderedPoints = this.#points.drawPoints(scene, this.#view.matrix,
+      this.#sceneCanvas.width, this.#sceneCanvas.height, step, this.#pixelRatio(), saturation);
   }
 
-  #renderFallback(): void {
+  #renderFallback(geometry: import("./overlay-geometry").OverlayGeometry | null): void {
     const scene = this.#scene;
-    if (this.#mode !== "canvas2d" || !scene
-      || roomColours(this.#state)) {
-      this.#cancelFallback();
+    if (this.#mode !== "canvas2d" || !scene || (geometry && roomColours(this.#state))) {
+      this.#raster.cancel();
       this.#renderedPoints = 0;
       return;
     }
-    const projection = this.#fallbackProjection;
-    if (!projection || projection.scene !== scene
-      || projection.width !== this.#viewport.width || projection.height !== this.#viewport.height
-      || !projection.matrix.every((value, index) => value === this.#matrix[index])) {
-      this.#buildFallback(scene);
-    }
-  }
-
-  #worldForCell(x: number, y: number, height = 0): readonly [number, number, number] | null {
-    const scene = this.#scene;
-    if (!scene) return null;
-    return [
-      -(x - (scene.metadata.span[0] - 1) / 2) * scene.metadata.metersPerCell,
-      height * scene.metadata.metersPerCell,
-      (y - (scene.metadata.span[1] - 1) / 2) * scene.metadata.metersPerCell,
-    ];
-  }
-
-  #projectCell(x: number, y: number, height = 0, clipToViewport = true, matrix = this.#matrix,
-    bounds: Pick<ViewportBounds, "width" | "height"> = this.#viewport): MapPoint | null {
-    const world = this.#worldForCell(x, y, height);
-    if (!world) return null;
-    const [worldX, worldY, worldZ] = world;
-    const clipX = (matrix[0] ?? 0) * worldX + (matrix[4] ?? 0) * worldY + (matrix[8] ?? 0) * worldZ + (matrix[12] ?? 0);
-    const clipY = (matrix[1] ?? 0) * worldX + (matrix[5] ?? 0) * worldY + (matrix[9] ?? 0) * worldZ + (matrix[13] ?? 0);
-    const clipW = (matrix[3] ?? 0) * worldX + (matrix[7] ?? 0) * worldY + (matrix[11] ?? 0) * worldZ + (matrix[15] ?? 0);
-    if (clipW <= 0.001) return null;
-    const xNormalized = clipX / clipW;
-    const yNormalized = clipY / clipW;
-    if (!Number.isFinite(xNormalized) || !Number.isFinite(yNormalized)) return null;
-    if (clipToViewport
-      && (Math.abs(xNormalized) > 1.15 || Math.abs(yNormalized) > 1.15)) return null;
-    return {
-      x: (xNormalized * 0.5 + 0.5) * bounds.width,
-      y: (-yNormalized * 0.5 + 0.5) * bounds.height,
-    };
-  }
-
-  #projectMeters(x: number, y: number, height = 0, clipToViewport = true, matrix = this.#matrix): MapPoint | null {
-    const scene = this.#scene;
-    if (!scene) return null;
-    const cellX = x / scene.metadata.metersPerCell - scene.metadata.origin[0];
-    const cellY = y / scene.metadata.metersPerCell - scene.metadata.origin[1];
-    return this.#projectCell(cellX, cellY, height, clipToViewport, matrix);
-  }
-
-  #renderOverlay(): void {
-    const context = this.#overlay;
-    const scene = this.#scene;
-    const state = this.#state;
-    if (!context) return;
-    const ratio = this.#pixelRatio();
-    const bounds = this.#viewport;
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    context.clearRect(0, 0, bounds.width, bounds.height);
-    if (!scene || !state) return;
-    if (state.workflow === "draw" || state.workflow === "areaReview") this.#loadDrawOverlays();
-    const currentFloor = state.dataMode === "live" && !state.floor.readOnly
-      && state.selection.floorId === "current";
-    const trail = state.trail;
-    const trailVisible = Boolean(trail && state.dataMode === "live"
-      && (trail.id === "live" || state.workflow === "runs")
-      && trail.mapSessionKey === state.resources.entry?.mapSessionKey);
-    if (state.seen || trailVisible || (currentFloor && (state.wifiSignal || state.floorTypes))) {
-      this.#loadRendererLayers();
-    }
-    if (state.optionalUiReady && state.map.available && state.labelsVisible && scene.metadata.rooms.length > 0) {
-      this.#scheduleRoomNameLayers();
-    }
-    const palette = this.#palette;
-    const colours = roomColours(state);
-    if (this.#mode === "canvas2d" && this.#fallbackCanvas
-      && !colours) {
-      // A WebGL canvas cannot acquire a 2D context after context loss.
-      context.drawImage(this.#fallbackCanvas, 0, 0, bounds.width, bounds.height);
-    }
-    // Drawn above the room fills, which are nearly opaque in Room colors, and
-    // below the room names. A retained scene stays read-only until the live
-    // one is admitted, so its geometry may belong to another floor or frame.
-    let layersPending = currentFloor;
-    const drawLayers = (): void => {
-      if (!layersPending) return;
-      layersPending = false;
-      if (this.#rendererLayers) {
-        this.#rendererLayers.drawMapLayers(context, state, (x, y, height, clip) =>
-          this.#projectMeters(x, y, height, clip));
-      }
-    };
-    const selectedNames = this.#selectedRoomNames(state);
-    // Every room draws with Room names on or in Room colors; otherwise only
-    // the selected ones (home-rooms.md §5 Parity, R9).
-    const allRooms = state.labelsVisible || colours;
-    if (allRooms || selectedNames.size) {
-      // IDs keep each room's hue stable when scene metadata is reordered.
-      const roomIndexes = new Map(scene.metadata.rooms.map((room) => room.id).sort()
-        .map((id, index) => [id, index]));
-      context.lineWidth = 1.5;
-      for (const room of scene.metadata.rooms) {
-        const selected = selectedNames.has(room.name.toLocaleLowerCase());
-        if (!allRooms && !selected) continue;
-        context.lineWidth = selected ? 3 : colours ? 2 : 1.5;
-        context.strokeStyle = selected ? rgba(palette.accent, 1)
-          : colours || palette.forced ? rgba(palette.text, 1) : rgba(palette.quiet, .7);
-        context.fillStyle = colours
-          ? rgba(roomColor(roomIndexes.get(room.id) ?? 0, palette), .94)
-          : selected ? rgba(palette.accent, .26) : rgba(palette.plate, .04);
-        context.beginPath();
-        const step = Math.max(1, Math.ceil(room.boundary.length / 512));
-        let started = false;
-        for (let index = 0; index < room.boundary.length; index += step) {
-          const point = room.boundary[index];
-          if (!point) continue;
-          // Keep the complete polygon in one camera space and let Canvas clip
-          // it to the viewport. Dropping off-screen vertices creates artificial
-          // chords whose shape changes as the camera zooms or pans.
-          const projected = this.#projectCell(point[0], point[1], 0.2, false);
-          if (!projected) continue;
-          if (!started) context.moveTo(projected.x, projected.y);
-          else context.lineTo(projected.x, projected.y);
-          started = true;
-        }
-        if (started) {
-          context.closePath();
-          context.fill();
-          context.stroke();
-        }
-      }
-      drawLayers();
-      if (state.labelsVisible && state.optionalUiReady && this.#rendererLayers) {
-        const result = this.#rendererLayers.drawRoomNames(
-          context,
-          scene.metadata.rooms,
-          palette,
-          { width: bounds.width, height: bounds.height },
-          state,
-          selectedNames,
-          this.#labelOffsets,
-          (x, y, height, clip) => this.#projectCell(x, y, height, clip),
-        );
-        this.#labelOffsets = result.offsets;
-        if (result.retryWithoutHistory) {
-          this.#labelOffsets.clear();
-          this.#renderOverlay();
-          return;
-        }
-      }
-    }
-    if (!state.labelsVisible) this.#labelOffsets.clear();
-    drawLayers();
-    const preview = this.#circlePreview;
-    const circles = preview && hasCoordinateEditAdmission(state, preview.capture)
-      ? preview.circles
-      : state.draw.circles;
-    this.#drawOverlays?.drawTaskOverlays(context, state, circles, this.#cursor, palette,
-      bounds.width, bounds.height,
-      (x, y, height, clip) => this.#projectMeters(x, y, height, clip));
-    // Zones describe the robot's current map, so a saved history map leaves them out.
-    if (state.dataMode === "live" && state.selection.floorId === "current") {
-      this.#drawZones(context, state.resources.areas.value?.zones ?? [], palette);
-    }
-    // A trail is drawn only over the map session it was recorded on
-    // (run_history.py); a past run's trail only while Cleaning history is open.
-    if (trailVisible) this.#rendererLayers?.drawRunTrail(
-      context,
-      state,
-      palette,
-      (x, y, height, clip) => this.#projectMeters(x, y, height, clip),
-    );
-    const pose = state.resources.pose.value;
-    if (state.seen) {
-      this.#rendererLayers?.drawLastSeenDuringRun(context, state, palette,
-        (x, y, height, clip) => this.#projectMeters(x, y, height, clip));
-    }
-    if (canShowExactPose(state) && pose?.position) {
-      // Pose coordinates share the floor-plan's meter space. Scene geometry is
-      // stored in origin-relative cells, so it must cross the same conversion
-      // boundary as custom-area coordinates before projection.
-      const marker = this.#projectMeters(pose.position[0], pose.position[1], 3);
-      const heading = pose.heading;
-      if (marker && typeof heading === "number") {
-        if (this.#robotModel === undefined) {
-          // Heading rendering stays in a lazy chunk; a dot stands in if the
-          // chunk itself is unavailable. The chunk owns the vector fallback.
-          this.#robotModel = null;
-          import("./robot-model").then(({ drawRobot }) => {
-            this.#robotModel = drawRobot;
-            this.requestRender();
-          }, () => undefined);
-        }
-        const [x, y] = pose.position;
-        const metersPerCell = scene.metadata.metersPerCell;
-        if (this.#robotModel?.(context, (forward, left, height) => this.#projectMeters(
-          x + forward * Math.cos(heading) - left * Math.sin(heading),
-          y + forward * Math.sin(heading) + left * Math.cos(heading),
-          height / metersPerCell,
-          false,
-        ), heading, palette, this.#camera.pitch, () => this.requestRender())) return;
-      }
-      if (marker) {
-        context.beginPath();
-        context.arc(marker.x, marker.y, 7, 0, Math.PI * 2);
-        context.fillStyle = rgba(palette.accent, 1);
-        context.fill();
-        context.strokeStyle = rgba(palette.onAccent, 1);
-        context.lineWidth = 3;
-        context.stroke();
-      }
-    }
-  }
-
-  #drawZones(context: CanvasRenderingContext2D, zones: readonly MapZoneOverlay[], palette: CanvasPalette): void {
-    // Read-only: no-go zones are shaded and outlined; zones the robot made
-    // itself, whose meaning is not known, get only a dashed outline.
-    for (const zone of zones) {
-      context.beginPath();
-      for (const ring of [zone.outline, ...zone.holes]) {
-        ring.forEach(([x, y], index) => {
-          const p = this.#projectMeters(x, y, 0, false);
-          if (p) { if (index === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
-        });
-        context.closePath();
-      }
-      if (zone.kind === "no_go") {
-        context.fillStyle = rgba(palette.text, .22);
-        context.fill("evenodd");
-      }
-      context.setLineDash(zone.kind === "no_go" ? [] : [5, 4]);
-      context.strokeStyle = rgba(palette.text, zone.kind === "no_go" ? .9 : .6);
-      context.lineWidth = 1.5;
-      context.stroke();
-      context.setLineDash([]);
-    }
-  }
-
-  #selectedRoomNames(state: WorkspaceState): Set<string> {
-    const rooms = state.resources.plans.value?.rooms || state.resources.areas.value?.rooms || [];
-    // Rooms and plan draw their own selections; home draws none (R9).
-    const selectedRoomIds = new Set(state.workflow === "plan"
-      ? state.planDraft.rooms.map((room) => room.roomId)
-      : state.workflow === "rooms" ? state.selection.roomIds : []);
-    const selectedNames = new Set<string>();
-    for (const room of rooms) {
-      if (selectedRoomIds.has(room.roomId)) selectedNames.add(room.name.toLocaleLowerCase());
-    }
-    return selectedNames;
-  }
-
-  #loadRendererLayers(): void {
-    if (this.#rendererLayersStatus !== "idle" || this.#disposed) return;
-    this.#loadRenderModule("renderer-layers", this.#callbacks.loadRendererLayers ?? (() => import("./renderer-layers")),
-      (layers) => { this.#rendererLayers = layers; });
-  }
-
-  #scheduleRoomNameLayers(): void {
-    if (this.#rendererLayersStatus !== "idle" || this.#roomNameAdmissionFrame !== null || this.#disposed) return;
-    // Let the late-admitted map get one paint opportunity before requesting
-    // its optional label code (the bounded no-map UI fallback may have fired).
-    this.#roomNameAdmissionFrame = window.requestAnimationFrame(() => {
-      this.#roomNameAdmissionFrame = null;
-      const state = this.#state;
-      if (this.#disposed || !state?.pageActive || !state.map.available || !state.optionalUiReady
-        || !state.labelsVisible || !this.#scene?.metadata.rooms.length) return;
-      this.#loadRendererLayers();
-    });
-  }
-
-  #cancelRoomNameAdmission(): void {
-    if (this.#roomNameAdmissionFrame !== null) window.cancelAnimationFrame(this.#roomNameAdmissionFrame);
-    this.#roomNameAdmissionFrame = null;
-  }
-
-  #loadDrawOverlays(): void {
-    if (this.#drawOverlaysStatus !== "idle" || this.#disposed) return;
-    this.#loadRenderModule("draw-overlays", this.#callbacks.loadDrawOverlays ?? (() => import("./draw-overlays")),
-      (overlays) => { this.#drawOverlays = overlays; });
-  }
-
-  #setModuleStatus(module: RendererModuleName, status: RendererModuleStatus): void {
-    if (module === "renderer-layers") this.#rendererLayersStatus = status;
-    else if (module === "draw-overlays") this.#drawOverlaysStatus = status;
-    else if (module === "camera-follow") this.#cameraFollowStatus = status;
-    else this.#surfaceStatus = status;
-    this.#callbacks.onModuleStatus?.(module, module === "surface-geometry"
-      ? !this.#surfaceNeeded ? "idle" : this.#surfaceSupported ? status : "failed" : status);
+    this.#raster.update(scene);
   }
 
   #setSurfaceNeeded(needed: boolean, supported = true): void {
     if (!needed || !supported) this.#surfaceGeometry?.clearDetail();
-    if (this.#surfaceNeeded === needed && this.#surfaceSupported === supported) return;
-    this.#surfaceNeeded = needed;
-    this.#surfaceSupported = supported;
-    this.#callbacks.onModuleStatus?.("surface-geometry", !needed ? "idle" : supported ? this.#surfaceStatus : "failed");
+    this.#modules.setSurfaceNeeded(needed, supported);
   }
 
-  #loadSurfaceGeometry(): void {
-    if (this.#surfaceStatus !== "idle" || this.#disposed) return;
-    this.#loadRenderModule("surface-geometry", this.#callbacks.loadSurfaceGeometry ?? (() => import("./surface-geometry")),
-      (module) => { this.#surfaceModule = module; });
-  }
-
-  #loadRenderModule<T>(module: RendererModuleName, load: () => Promise<T>, accept: (value: T) => void): void {
-    this.#setModuleStatus(module, "loading");
-    void this.#loadOptionalModule(module, load).then((value) => {
-      if (this.#disposed) return;
-      accept(value);
-      this.#setModuleStatus(module, "ready");
-      this.requestRender();
-    }, () => {
-      if (!this.#disposed) this.#setModuleStatus(module, "failed");
+  #scheduleLayers(): void {
+    if (this.#modules.layersStatus !== "idle" || this.#layersFrame !== null || this.#disposed) return;
+    // Let the late-admitted map get one paint opportunity before requesting
+    // its outlines and labels (the bounded no-map UI fallback may have fired).
+    this.#layersFrame = window.requestAnimationFrame(() => {
+      this.#layersFrame = null;
+      const state = this.#state;
+      if (!this.#disposed && state?.pageActive && layersNeeded(state, this.#scene)) this.#modules.loadLayers();
     });
-  }
-
-  #loadOptionalModule<T>(module: RendererModuleName, load: () => Promise<T>): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      // Native import completion callbacks retain this small record and the
-      // timer map, never the renderer controller. Disposal settles the outer
-      // promise even if the browser keeps a failed/hung module fetch pending.
-      const activeLoads = this.#moduleTimeouts;
-      const record: OptionalModuleLoad = {
-        timer: null,
-        settled: false,
-        reject: (error) => reject(error),
-      };
-      const settle = (error: unknown, value?: T): void => {
-        if (record.settled) return;
-        record.settled = true;
-        if (record.timer !== null) window.clearTimeout(record.timer);
-        if (activeLoads.get(module) === record) activeLoads.delete(module);
-        if (error !== null) reject(error);
-        else resolve(value as T);
-      };
-      record.reject = (error) => settle(error);
-      activeLoads.set(module, record);
-      record.timer = window.setTimeout(() => {
-        settle(new Error("renderer-module-timeout"));
-      }, OPTIONAL_MODULE_TIMEOUT_MS);
-      Promise.resolve().then(load).then(
-        (value) => settle(null, value),
-        (error: unknown) => settle(error),
-      );
-    });
-  }
-
-  setPalette(palette: CanvasPalette): void {
-    this.#palette = palette;
-    this.requestRender();
-  }
-
-  setCursor(point: MapPoint | null): void {
-    this.#cursor = point;
-    this.requestRender();
-  }
-
-  mapToScreen(point: MapPoint): MapPoint | null {
-    if (!this.#scene) return null;
-    const bounds = this.#measureViewport();
-    if (!bounds.width || !bounds.height) return null;
-    return this.#projectMeters(point.x, point.y, 0, false, this.#cameraMatrix());
-  }
-
-  offsetMapPoint(point: MapPoint, horizontalMeters: number, verticalMeters: number): MapPoint | null {
-    const projected = this.mapToScreen(point);
-    if (!projected) return null;
-    const bounds = this.#viewport;
-    const worldPerPixel = this.#camera.distance * 2 / bounds.height;
-    return this.screenToMap(
-      bounds.left + projected.x + horizontalMeters / worldPerPixel,
-      bounds.top + projected.y + verticalMeters / worldPerPixel,
-    );
-  }
-
-  screenToMap(clientX: number, clientY: number): MapPoint | null {
-    return this.#screenToMap(clientX, clientY, this.#camera);
-  }
-
-  #screenToMap(clientX: number, clientY: number, camera: CameraState): MapPoint | null {
-    const scene = this.#scene;
-    if (!scene) return null;
-    const bounds = this.#measureViewport();
-    if (!bounds.width || !bounds.height) return null;
-    // Invert the floor-plane homography, including perspective division in 3D.
-    const matrix = this.#cameraMatrix(camera);
-    const x = (clientX - bounds.left) / bounds.width * 2 - 1;
-    const y = 1 - (clientY - bounds.top) / bounds.height * 2;
-    const a = matrix[0]! - x * matrix[3]!;
-    const b = matrix[8]! - x * matrix[11]!;
-    const c = matrix[1]! - y * matrix[3]!;
-    const d = matrix[9]! - y * matrix[11]!;
-    const determinant = a * d - b * c;
-    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
-    const u = x * matrix[15]! - matrix[12]!;
-    const v = y * matrix[15]! - matrix[13]!;
-    const worldX = (u * d - b * v) / determinant;
-    const worldZ = (a * v - u * c) / determinant;
-    if (matrix[3]! * worldX + matrix[11]! * worldZ + matrix[15]! <= 0) return null;
-    const cellX = -worldX / scene.metadata.metersPerCell + (scene.metadata.span[0] - 1) / 2;
-    const cellY = worldZ / scene.metadata.metersPerCell + (scene.metadata.span[1] - 1) / 2;
-    return {
-      x: (cellX + scene.metadata.origin[0]) * scene.metadata.metersPerCell,
-      y: (cellY + scene.metadata.origin[1]) * scene.metadata.metersPerCell,
-    };
-  }
-
-  #screenToMapForPan(clientX: number, clientY: number, camera: CameraState): MapPoint | null {
-    const bounds = this.#measureViewport();
-    const centerY = bounds.top + bounds.height / 2;
-    const center = this.#screenToMap(clientX, centerY, camera);
-    if (!center) return this.#screenToMap(clientX, clientY, camera);
-    const maxOffset = Math.max(0.5, Math.min(this.#radius * 2, camera.distance * 4));
-    const isSafe = (point: MapPoint | null): point is MapPoint => Boolean(point
-      && Math.hypot(point.x - center.x, point.y - center.y) <= maxOffset);
-    const direct = this.#screenToMap(clientX, clientY, camera);
-    if (isSafe(direct)) return direct;
-
-    // A drag can begin above the floor-plane horizon, where no ground point
-    // exists. Clamp that endpoint to the nearest safe point toward the view
-    // center; this lets the same drag start moving once it crosses the horizon
-    // without feeding an unbounded near-horizon intersection into the camera.
-    let safeY = centerY;
-    let unsafeY = clientY;
-    let safePoint = center;
-    for (let attempt = 0; attempt < 16; attempt += 1) {
-      const candidateY = (safeY + unsafeY) / 2;
-      const candidate = this.#screenToMap(clientX, candidateY, camera);
-      if (isSafe(candidate)) {
-        safeY = candidateY;
-        safePoint = candidate;
-      } else {
-        unsafeY = candidateY;
-      }
-    }
-    return safePoint;
-  }
-
-  roomAt(clientX: number, clientY: number): string | null {
-    const map = this.screenToMap(clientX, clientY);
-    const scene = this.#scene;
-    const state = this.#state;
-    if (!map || !scene || !state) return null;
-    const cellX = map.x / scene.metadata.metersPerCell - scene.metadata.origin[0];
-    const cellY = map.y / scene.metadata.metersPerCell - scene.metadata.origin[1];
-    const hits = scene.metadata.rooms.filter((room) => pointInPolygon(cellX, cellY, room.boundary));
-    if (hits.length !== 1) return null;
-    const hit = hits[0]!;
-    const catalogRooms = this.#catalogRoomIdentities(state);
-    const exact = catalogRooms.filter((item) => item.roomId === hit.id);
-    if (/^room_[a-f0-9]{16}$/u.test(hit.id) && exact.length === 1) return hit.id;
-    const key = hit.name.normalize("NFKC").trim().toLocaleLowerCase();
-    if (!key) return null;
-    const candidates = [...new Set(catalogRooms.filter((item) => item.name.normalize("NFKC").trim().toLocaleLowerCase() === key).map((item) => item.roomId))];
-    return candidates.length === 1 ? candidates[0]! : null;
-  }
-
-  async roomCandidatesAt(clientX: number, clientY: number): Promise<RoomIdentityResult> {
-    const map = this.screenToMap(clientX, clientY);
-    const scene = this.#scene;
-    const state = this.#state;
-    if (!map || !scene || !state) return { status: "unmatched" };
-    const cellX = map.x / scene.metadata.metersPerCell - scene.metadata.origin[0];
-    const cellY = map.y / scene.metadata.metersPerCell - scene.metadata.origin[1];
-    const { resolveSceneRoomHits } = await import("./spatial-identity");
-    return resolveSceneRoomHits(scene.metadata.rooms,
-      (room) => pointInPolygon(cellX, cellY, room.boundary), this.#catalogRoomIdentities(state));
-  }
-
-  containsMapPoint(point: MapPoint): boolean {
-    const scene = this.#scene;
-    if (!scene) return false;
-    const cellX = point.x / scene.metadata.metersPerCell - scene.metadata.origin[0];
-    const cellY = point.y / scene.metadata.metersPerCell - scene.metadata.origin[1];
-    return scene.metadata.rooms.some((room) => pointInPolygon(cellX, cellY, room.boundary));
-  }
-
-  #catalogRoomIdentities(state: WorkspaceState): readonly { readonly roomId: string; readonly name: string }[] {
-    const rooms = [
-      ...(state.resources.plans.value?.rooms ?? []),
-      ...(state.resources.areas.value?.rooms ?? []),
-    ];
-    return [...new Map(rooms.map((room) => [room.roomId, { roomId: room.roomId, name: room.name }])).values()];
-  }
-
-  fit(
-    notify = true,
-    view: MapView = this.#state ? topView(this.#state) : "three",
-  ): void {
-    const top = view === "top";
-    this.#camera = {
-      yaw: top ? 0 : -Math.PI / 4,
-      pitch: top ? Math.PI / 2 - 0.018 : 1.12,
-      distance: top ? this.#homeTop : this.#homeThree,
-      targetX: this.#homeTargetX,
-      targetZ: this.#homeTargetZ,
-      orthographic: top,
-    };
-    this.#fitActive = true;
-    this.requestRender();
-    if (notify) this.#notifyCamera();
-  }
-
-  zoomAt(factor: number, clientX?: number, clientY?: number): void {
-    const before = clientX === undefined || clientY === undefined ? null : this.screenToMap(clientX, clientY);
-    this.#camera = {
-      ...this.#camera,
-      distance: this.#clampDistance(this.#camera.distance / factor),
-    };
-    this.#fitActive = false;
-    if (before && clientX !== undefined && clientY !== undefined) {
-      const after = this.screenToMap(clientX, clientY);
-      if (after) {
-        this.#camera = {
-          ...this.#camera,
-          targetX: this.#camera.targetX - (before.x - after.x),
-          targetZ: this.#camera.targetZ + (before.y - after.y),
-        };
-      }
-    }
-    this.requestRender();
-    this.#notifyCamera(clientX, clientY);
-  }
-
-  panBy(deltaX: number, deltaY: number): void {
-    this.setCamera(this.cameraAfterPan(this.#camera, deltaX, deltaY));
-  }
-
-  orbitBy(deltaX: number, deltaY: number): void {
-    if (this.#camera.orthographic) {
-      this.panBy(deltaX, deltaY);
-      return;
-    }
-    this.#camera = {
-      ...this.#camera,
-      yaw: angle(this.#camera.yaw + deltaX * 0.006),
-      pitch: clamp(this.#camera.pitch - deltaY * 0.004, 0.18, 1.38),
-    };
-    this.#fitActive = false;
-    this.requestRender();
-    this.#notifyCamera();
-  }
-
-  #notifyCamera(clientX?: number, clientY?: number): void {
-    const home = this.#camera.orthographic ? this.#homeTop : this.#homeThree;
-    const bounds = clientX === undefined || clientY === undefined
-      ? this.#viewport
-      : this.#measureViewport();
-    const origin = clientX === undefined || clientY === undefined || !bounds.width || !bounds.height
-      ? undefined
-      : {
-        xPercent: clamp((clientX - bounds.left) / bounds.width * 100, 0, 100),
-        yPercent: clamp((clientY - bounds.top) / bounds.height * 100, 0, 100),
-      };
-    this.#callbacks.onCamera?.(
-      this.camera,
-      Math.round(home / this.#camera.distance * 100),
-      origin,
-    );
   }
 
   diagnostics(): RendererDiagnostics {
@@ -2168,12 +822,12 @@ export class RendererController {
       sceneRevision: this.#scene?.revision ?? null,
       sourcePoints: this.#scene?.total ?? 0,
       renderedPoints: this.#renderedPoints,
-      lastFrameMs: Math.round(this.#lastFrameMs * 100) / 100,
-      slowFrames: this.#slowFrames,
-      cameraDistance: this.#camera.distance,
-      fitDistance: this.#camera.orthographic ? this.#homeTop : this.#homeThree,
-      fitActive: this.#fitActive,
-      topPixelsPerMeter: Math.min(this.#viewport.height, this.#viewport.width * 5) / (2 * this.#camera.distance),
+      frameMs: Math.round(this.#governor.frameMs * 100) / 100,
+      detailScale: this.#governor.scale,
+      cameraDistance: this.#view.current.distance,
+      fitDistance: this.#view.current.orthographic ? this.#view.homeTop : this.#view.homeThree,
+      fitActive: this.#view.fitActive,
+      topPixelsPerMeter: Math.min(this.#view.viewport.height, this.#view.viewport.width * 5) / (2 * this.#view.current.distance),
     };
   }
 
@@ -2185,7 +839,7 @@ export class RendererController {
   readonly #contextRestored = (): void => {
     const previousScene = this.#scene;
     const previousContext = this.#sceneContext;
-    this.#cancelFallback();
+    this.#raster.cancel();
     this.#releaseWebGl();
     this.#initWebGl();
     const scene = this.#admittedScene;
@@ -2193,14 +847,14 @@ export class RendererController {
     const state = this.#state;
     if (this.#mode === "webgl2" && scene && context && state?.pageActive) {
       const sameContext = previousScene !== null && previousContext === context;
-      this.#deleteFrontBuffer();
+      this.#points.deleteFrontBuffer();
       this.#scene = scene;
       this.#sceneContext = context;
       let rebased: Partial<Record<MapView, CameraPreference>> | null = null;
       if (scene !== previousScene) {
         rebased = this.#installScene(
           scene,
-          sameContext && !this.#fitActive,
+          sameContext && !this.#view.fitActive,
           previousScene,
           sameContext,
           topView(state),
@@ -2209,8 +863,8 @@ export class RendererController {
       this.#startGpuUpload(scene, context, state, false, previousScene);
       if (rebased) {
         const view = topView(state);
-        this.#applyPreferredCamera(view, state, rebased);
-        this.#notifyCamera();
+        this.#view.applyPreferred(view, state, rebased);
+        this.#view.notify();
       }
     }
     this.requestRender();
@@ -2218,24 +872,14 @@ export class RendererController {
 
   #releaseWebGl(): void {
     this.#cancelGpuUpload(false);
-    const gl = this.#gl;
     if (!this.#disposed) this.#surfaceGeometry?.clearDetail();
     this.#surfaceGeometry?.dispose();
     this.#surfaceGeometry = null;
+    this.#geometry?.dispose();
+    this.#geometry = null;
     this.#setSurfaceNeeded(false);
-    if (this.#surfaceModule && this.#surfaceStatus === "failed") this.#surfaceStatus = "ready";
-    if (gl) {
-      if (this.#buffer) gl.deleteBuffer(this.#buffer);
-      if (this.#stagingBuffer) gl.deleteBuffer(this.#stagingBuffer);
-      if (this.#vertexArray) gl.deleteVertexArray(this.#vertexArray);
-      if (this.#program) gl.deleteProgram(this.#program);
-    }
-    this.#buffer = null;
-    this.#stagingBuffer = null;
-    this.#vertexArray = null;
-    this.#program = null;
-    this.#gl = null;
-    this.#initializedPoints = 0;
+    if (this.#modules.surface && this.#modules.surfaceStatus === "failed") this.#modules.surfaceStatus = "ready";
+    this.#points.release();
     this.#renderedPoints = 0;
   }
 
@@ -2248,23 +892,14 @@ export class RendererController {
     if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
     this.#frame = null;
     this.#pendingFollow = null;
-    for (const [module, record] of this.#moduleTimeouts) {
-      if (record.timer !== null) window.clearTimeout(record.timer);
-      record.timer = null;
-      if (this.#moduleTimeouts.get(module) === record) this.#moduleTimeouts.delete(module);
-      record.reject(new Error("renderer-module-disposed"));
-    }
+    this.#modules.dispose();
     this.#cameraFollow?.dispose();
-    this.#cancelRoomNameAdmission();
-    this.#cancelFallback();
+    if (this.#layersFrame !== null) window.cancelAnimationFrame(this.#layersFrame);
     this.#releaseWebGl();
-    this.#fallbackCanvas = null;
-    this.#fallback = null;
-    this.#overlay = null;
-    this.#circlePreview = null;
+    this.#raster.dispose();
+    this.#overlay.dispose();
     this.#scene = null;
     this.#state = null;
-    this.#labelOffsets.clear();
     this.#admittedScene = null;
     this.#admittedContext = null;
   }

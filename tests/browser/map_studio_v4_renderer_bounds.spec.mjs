@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { writeFile } from "node:fs/promises";
 
+import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
+
 test("scene parser retains native room labels up to the UTF-8 byte limit", async ({ page }) => {
   const bundle = await build({
     stdin: {
@@ -55,6 +57,7 @@ test("scene parser retains native room labels up to the UTF-8 byte limit", async
 });
 
 test("precomputes room selection once for the supported 100-room bound", async ({ page }) => {
+  await paintOverlayOnCanvas(page);
   const bundle = await build({
     stdin: {
       contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
@@ -132,9 +135,16 @@ test("precomputes room selection once for the supported 100-room bound", async (
       if (this.canvas === overlayCanvas) fillStyles.push(String(this.fillStyle));
       return originalFill.apply(this, args);
     };
-    const renderer = new RendererController(sceneCanvas, overlayCanvas);
+    let layersStatus = "idle";
+    const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") layersStatus = status; },
+    });
     renderer.setState(state);
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (let attempt = 0; attempt < 120 && layersStatus !== "ready"; attempt += 1) await frame();
+    fillStyles.length = 0;
+    renderer.requestRender();
+    await frame();
     renderer.dispose();
     CanvasRenderingContext2D.prototype.fill = originalFill;
     sceneCanvas.remove();
@@ -149,6 +159,7 @@ test("precomputes room selection once for the supported 100-room bound", async (
 });
 
 test("all 256 room colors stay distinct by room ID, retain selection and labels, and yield to forced colors", async ({ page }) => {
+  await paintOverlayOnCanvas(page);
   const bundle = await build({
     stdin: {
       contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { parseSceneBuffer } from "./frontend/map-studio-v4/scene-parser";',
@@ -229,14 +240,12 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
       renderer.setState(makeState(orderedRooms, options));
       const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       await frame();
-      if (options.labelsVisible) {
-        for (let attempt = 0; attempt < 120 && layersStatus !== "ready" && layersStatus !== "failed"; attempt += 1) await frame();
-        if (layersStatus !== "ready") throw new Error(`Room labels did not load: ${layersStatus}`);
-        await frame();
-        fills.length = 0; strokes.length = 0; widths.length = 0; textCount = 0;
-        renderer.requestRender();
-        await frame();
-      }
+      for (let attempt = 0; attempt < 120 && layersStatus !== "ready" && layersStatus !== "failed"; attempt += 1) await frame();
+      if (layersStatus !== "ready") throw new Error(`Room outlines and labels did not load: ${layersStatus}`);
+      await frame();
+      fills.length = 0; strokes.length = 0; widths.length = 0; textCount = 0;
+      renderer.requestRender();
+      await frame();
       const diagnostics = renderer.diagnostics();
       const png = options.preview ? overlayCanvas.toDataURL() : null;
       renderer.dispose();
@@ -366,6 +375,7 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
 });
 
 test("room labels draw after every room fill so an overlapping room cannot cover a name", async ({ page }) => {
+  await paintOverlayOnCanvas(page);
   const bundle = await build({
     stdin: {
       contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',

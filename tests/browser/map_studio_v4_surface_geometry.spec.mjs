@@ -31,9 +31,11 @@ async function loadSurfaceRenderer(page, { slowDraws = 0 } = {}) {
         if (!wrapped) {
           wrapped = new Proxy(native, { get(target, property) {
             if (property === "drawArraysInstanced") return (...args) => {
-              if (window.__slowSurfaceDrawsRemaining > 0) {
+              // Surfaces are triangle lists; the overlay geometry draws strips.
+              if (args[0] === target.TRIANGLES && window.__slowSurfaceDrawsRemaining > 0) {
                 window.__slowSurfaceDrawsRemaining -= 1;
-                const until = performance.now() + 24;
+                // Longer than the desktop limit on whichever refresh the next frame lands.
+                const until = performance.now() + 40;
                 while (performance.now() < until) { /* simulate a slow submitted surface frame */ }
               }
               return target.drawArraysInstanced(...args);
@@ -128,22 +130,20 @@ async function renderFixture(page, { floorCells, surfaceCells = [], quality = "m
     renderer.setState(stateFor(base, scene));
     const centerX = (31.5 - (64 - 1) / 2) * -0.015;
     const centerZ = (18.5 - (32 - 1) / 2) * 0.015;
-    renderer.setCamera({ yaw: -Math.PI / 4, pitch: 0.8148, distance: 0.46,
-      targetX: centerX, targetZ: centerZ, orthographic: false }, false);
+    const camera = { yaw: -Math.PI / 4, pitch: 0.8148, distance: 0.46,
+      targetX: centerX, targetZ: centerZ, orthographic: false };
+    renderer.setCamera(camera, false);
     const gl = canvas.getContext("webgl2");
-    const slowFrameSamples = [];
-    let previousSlowDraws = window.__slowSurfaceDrawsRemaining;
     for (let attempt = 0; attempt < 120; attempt += 1) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
-      const diagnostics = renderer.diagnostics();
-      if (window.__slowSurfaceDrawsRemaining < previousSlowDraws && diagnostics.lastFrameMs > 18) {
-        slowFrameSamples.push({ frameMs: diagnostics.lastFrameMs, slowFrames: diagnostics.slowFrames });
+      // Auto times the frames that move the camera.
+      if (window.__slowSurfaceDrawsRemaining > 0) {
+        renderer.setCamera(attempt % 2 ? camera : { ...camera, yaw: camera.yaw + 1e-4 }, false);
       }
-      previousSlowDraws = window.__slowSurfaceDrawsRemaining;
-      if (window.__slowSurfaceDrawsRemaining > 0) renderer.setCamera(renderer.camera, false);
       if (renderer.diagnostics().sceneRevision === 1 && renderer.diagnostics().renderedPoints >= scene.total
         && surfaceStatus === "ready" && window.__slowSurfaceDrawsRemaining === 0) break;
     }
+    renderer.setCamera(camera, false);
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     gl.finish();
     const initialPixels = new Uint8Array(canvas.width * canvas.height * 4);
@@ -153,13 +153,13 @@ async function renderFixture(page, { floorCells, surfaceCells = [], quality = "m
     window.__activeSurfaceFixture = { renderer, canvas, overlay, stateFor, base, scene, encodeScene, quality,
       get surfaceStatus() { return surfaceStatus; } };
     return { diagnostics: renderer.diagnostics(), surfaceStatus, visiblePixels, context: gl.getContextAttributes(),
-      slowDrawsUsed: slowDraws - window.__slowSurfaceDrawsRemaining, slowFrameSamples };
+      slowDrawsUsed: slowDraws - window.__slowSurfaceDrawsRemaining };
   }, { floorCells, surfaceCells, quality, slowDraws });
 }
 
 for (const quality of ["maximum", "auto"]) {
   test(`@safety close oblique floor cells fill their measured area across a tile seam at ${quality} quality`, async ({ page }) => {
-    const slowDraws = quality === "auto" ? 8 : 0;
+    const slowDraws = quality === "auto" ? 20 : 0;
     const webgl2Available = await loadSurfaceRenderer(page, { slowDraws });
     test.skip(!webgl2Available, "WebGL2 is unavailable in this browser project");
     const result = await renderFixture(page, { floorCells: baseFloor(), quality, slowDraws });
@@ -168,9 +168,8 @@ for (const quality of ["maximum", "auto"]) {
     expect(result.visiblePixels).toBeGreaterThan(0);
     expect(result.context.preserveDrawingBuffer).toBe(true);
     if (quality === "auto") {
-      expect(result.slowDrawsUsed).toBe(8);
-      expect(result.slowFrameSamples.length, "Auto reduces detail after repeated slow surface frames")
-        .toBeGreaterThanOrEqual(3);
+      expect(result.slowDrawsUsed).toBe(20);
+      expect(result.diagnostics.detailScale, "Auto reduces detail after repeated slow surface frames").toBeLessThan(1);
     }
     const sampled = await page.evaluate(() => {
       const fixture = window.__activeSurfaceFixture;
@@ -275,8 +274,9 @@ test("@safety close oblique surface voxels form an occluding wall face instead o
     const horizontal = Math.cos(camera.pitch) * camera.distance;
     const eye = [camera.targetX + Math.sin(camera.yaw) * horizontal,
       Math.sin(camera.pitch) * camera.distance, camera.targetZ + Math.cos(camera.yaw) * horizontal];
-    const matrix = multiply(perspective(PERSPECTIVE_FIELD_OF_VIEW, canvas.width / canvas.height, 0.02, 60),
-      lookAt(eye, [camera.targetX, 0, camera.targetZ]));
+    const matrix = multiply(new Float32Array(16),
+      perspective(new Float32Array(16), PERSPECTIVE_FIELD_OF_VIEW, canvas.width / canvas.height, 0.02, 60),
+      lookAt(new Float32Array(16), ...eye, camera.targetX, 0, camera.targetZ));
     const project = ([x, y, z]) => {
       const world = [-(x - (span[0] - 1) / 2) * meters, y * meters, (z - (span[1] - 1) / 2) * meters];
       const clipX = matrix[0] * world[0] + matrix[4] * world[1] + matrix[8] * world[2] + matrix[12];

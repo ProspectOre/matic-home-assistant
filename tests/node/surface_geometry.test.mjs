@@ -72,6 +72,7 @@ const frameFor = (tileIndex) => ({
   buffer: {}, vertexArray: {}, initializedPoints: 4, qualityScale: 1,
   maxVisiblePoints: 350_000,
   camera: { yaw: 0, pitch: Math.PI / 4, distance: 14, targetX: 0, targetZ: 0, orthographic: false },
+  saturation: 1,
 });
 
 test("valid floor and surface runs cull outside tiles while retaining the visible layer", () => {

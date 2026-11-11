@@ -5,6 +5,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
+import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
 import { installPanelFixture, openPlanPicker } from "./map_studio_v4_panel_fixture.mjs";
 
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
@@ -1584,6 +1585,8 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
   });
 
   test("an uncatalogued room cannot be tapped, a held tap reaches the reducer, and the selection draws with Room names off (R9, Review Focus 1)", async ({ page }) => {
+    // The selection's fill is counted on the 2D canvas.
+    await paintOverlayOnCanvas(page);
     await loadStoreHarness(page);
     const result = await page.evaluate(async (harness) => {
       const { RendererController, GestureController, WorkspaceStore, createGalleryState } = await import(harness);
@@ -1595,8 +1598,16 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
           document.body.append(element);
         }
         canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {};
+        // Each redraw starts by clearing the canvas; the shapes' fills are the even-odd ones.
+        let fills = 0;
+        const context = overlay.getContext("2d"), { fill, clearRect } = context;
+        context.clearRect = function(...args) { fills = 0; return clearRect.apply(this, args); };
+        context.fill = function(rule, ...rest) { if (rule === "evenodd") fills += 1; return fill.call(this, rule, ...rest); };
         const store = new WorkspaceStore(state);
-        const renderer = new RendererController(canvas, overlay);
+        let layers = "idle";
+        const renderer = new RendererController(canvas, overlay, {
+          onModuleStatus: (module, status) => { if (module === "renderer-layers") layers = status; },
+        });
         renderer.setState(store.value);
         let taps = 0;
         const gestures = new GestureController(canvas, renderer, { state: () => store.value, drawReady: () => true, onRoom: (roomId) => { taps += 1; store.dispatch({ type: "toggle-room", roomId }); }, onCircles: () => {}, onCirclePreview: () => {} });
@@ -1604,7 +1615,12 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
         const tap = (x, y) => {
           for (const type of ["pointerdown", "pointerup"]) canvas.dispatchEvent(new PointerEvent(type, { pointerId: 1, isPrimary: true, pointerType: "mouse", clientX: x, clientY: y, bubbles: true }));
         };
-        const settle = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        // The chunk that draws the selection loads after the first frame that needs it.
+        const settle = async () => {
+          do await frames(); while (layers === "loading");
+          await frames();
+        };
         const scan = (want) => {
           for (let y = 20; y < 520; y += 10) for (let x = 20; x < 700; x += 10) {
             const room = renderer.roomAt(bounds.left + x, bounds.top + y);
@@ -1613,15 +1629,11 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
           }
           return null;
         };
-        const alphaAt = (point) => {
-          const ratio = window.devicePixelRatio || 1;
-          return overlay.getContext("2d").getImageData(Math.round((point.x - bounds.left) * ratio), Math.round((point.y - bounds.top) * ratio), 1, 1).data[3];
-        };
         const dispose = () => { gestures.dispose(); renderer.dispose(); canvas.remove(); overlay.remove(); };
-        return { store, renderer, tap, settle, scan, alphaAt, taps: () => taps, dispose };
+        return { store, renderer, tap, settle, scan, fills: () => fills, taps: () => taps, dispose };
       };
       const base = createGalleryState("rooms");
-      const bare = { ...base, view: "top", labelsVisible: false, appearance: "photo", selection: { ...base.selection, roomIds: [], roomSettings: [] } };
+      const bare = { ...base, optionalUiReady: true, view: "top", labelsVisible: false, appearance: "photo", selection: { ...base.selection, roomIds: [], roomSettings: [] } };
       // Kitchen loses its catalog entry.
       const plans = bare.resources.plans.value;
       const uncatalogued = { ...bare, resources: { ...bare.resources, areas: { ...bare.resources.areas, value: bare.resources.areas.value ? { ...bare.resources.areas.value, rooms: bare.resources.areas.value.rooms.filter((room) => room.roomId !== "room-a") } : null }, plans: { ...bare.resources.plans, value: { ...plans, rooms: plans.rooms.map((room) => room.roomId === "room-a" ? { ...room, name: "Elsewhere" } : room) } } } };
@@ -1638,15 +1650,15 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
       await h.settle();
       const hit = h.scan("hit");
       out.hit = hit?.room ?? null;
-      out.alphaBefore = h.alphaAt(hit);
+      out.fillsBefore = h.fills();
       h.tap(hit.x, hit.y);
       out.selected = h.store.value.selection.roomIds;
       h.renderer.setState(h.store.value);
       await h.settle();
-      out.alphaSelected = h.alphaAt(hit);
+      out.fillsSelected = h.fills();
       h.renderer.setState({ ...h.store.value, workflow: "none" });
       await h.settle();
-      out.alphaHome = h.alphaAt(hit);
+      out.fillsHome = h.fills();
       h.dispose();
 
       h = mount({ ...bare, coherence: "verifying" });
@@ -1667,10 +1679,9 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
     expect(result.orphanTaps).toBe(0);
     expect(result.orphanSelection).toEqual([]);
     expect(result.hit).toMatch(/^room-/);
-    expect(result.alphaBefore).toBe(0);
     expect(result.selected).toEqual([result.hit]);
-    expect(result.alphaSelected).toBeGreaterThan(0);
-    expect(result.alphaHome).toBe(0);
+    expect(result.fillsSelected).toBe(result.fillsBefore + 1);
+    expect(result.fillsHome).toBe(result.fillsBefore);
     expect(result.heldTaps).toBe(1);
     expect(result.heldSelection).toEqual([]);
     expect(result.planTaps).toBe(0);

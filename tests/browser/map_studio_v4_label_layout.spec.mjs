@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { writeFile } from "node:fs/promises";
 
+import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
+
 for (const [width, height, count, expected, mobile] of [
   [900, 700, 12, 12, false],
   [390, 126, 12, null, false],
@@ -9,6 +11,8 @@ for (const [width, height, count, expected, mobile] of [
   [390, 126, 12, null, true],
 ]) {
   test(`room labels stay readable at ${width}x${height}${mobile ? " @mobile" : ""}`, async ({ page }) => {
+    // The room fills this reads its anchors from.
+    await paintOverlayOnCanvas(page);
     const bundle = await build({
       stdin: {
         contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
@@ -270,7 +274,7 @@ test("room labels move continuously with small map pans", async ({ page }) => {
 test("room names wait for first-map admission, retain live/history comparison labels, and report failure", async ({ page }) => {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { scheduleAfterMapAdmission } from "./frontend/map-studio-v4/map-admission-gate";',
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { scheduleAfterMapAdmission } from "./frontend/map-studio-v4/map-admission-gate"; export { OverlayGeometry } from "./frontend/map-studio-v4/overlay-geometry";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -280,7 +284,7 @@ test("room names wait for first-map admission, retain live/history comparison la
   }));
   await page.goto("/", { waitUntil: "domcontentloaded" });
   const outcome = await page.evaluate(async () => {
-    const { RendererController, createGalleryState, WorkspaceStore, scheduleAfterMapAdmission } = await import("/label-admission.js");
+    const { RendererController, createGalleryState, WorkspaceStore, scheduleAfterMapAdmission, OverlayGeometry } = await import("/label-admission.js");
     const base = createGalleryState("ready");
     const room = { id: "label-room", roomId: "label-room", name: "Label room",
       center: [50, 50], boundary: [[40, 40], [60, 40], [60, 60], [40, 60]] };
@@ -315,7 +319,7 @@ test("room names wait for first-map admission, retain live/history comparison la
       await frame();
       const whileLoading = { loads, names: names.length, statuses: [...statuses], mode: renderer.diagnostics().mode };
       resolveLoad({
-        drawMapLayers() {}, drawRunTrail() {},
+        OverlayGeometry,
         drawRoomNames(context, rooms, _palette, _bounds, _area, _selected, _positions, _previous) {
           for (const label of rooms) context.fillText(label.name, 80, 80);
           return { offsets: new Map(), retryWithoutHistory: false };
@@ -347,7 +351,7 @@ test("room names wait for first-map admission, retain live/history comparison la
         loadRendererLayers: async () => {
           lateLoads += 1;
           importAfterFirstFrame = lateFirstFrame;
-          return { drawMapLayers() {}, drawRunTrail() {}, drawRoomNames: () => ({ offsets: new Map(), retryWithoutHistory: false }) };
+          return { OverlayGeometry, drawRoomNames: () => ({ offsets: new Map(), retryWithoutHistory: false }) };
         },
       });
       const noMap = stateFor({ optionalUiReady: true, labelsVisible: true, view: "top",
