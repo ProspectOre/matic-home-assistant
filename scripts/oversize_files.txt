@@ -32,7 +32,7 @@ tests/test_camera_ai.py 1172
 tests/test_config_flow.py 1711
 tests/test_config_flow_import.py 1037
 tests/test_config_flow_paths.py 1211
-tests/test_coordinator.py 2458
+tests/test_coordinator.py 2485
 tests/test_daily_room_limit.py 1433
 tests/test_entities.py 3244
 tests/test_firmware.py 1246

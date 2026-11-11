@@ -501,6 +501,33 @@ async def test_floor_watcher_refreshes_changed_mission_and_labels(
     assert coordinator._map_refresh_due == 0.0
 
 
+async def test_a_repeated_displayed_mission_leaves_admitted_floor_reads_alone(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    floor = MappedFloor(42, "Main", "1" * 64)
+    client.async_get_floor_plan.return_value = FloorPlan(
+        42, "partition", b"", (), mapped_floors=(floor,)
+    )
+    coordinator = await start_coordinator(hass, client)
+    await _sighting(coordinator)
+    coordinator.async_request_refresh = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(floor, (floor,)),
+    )
+    entry = HermesCollectionEntry(b"", b"same")
+    await coordinator._async_displayed_mission(entry)
+    generation = coordinator.floor_read_generation
+    floor_plan = coordinator.data.floor_plan
+
+    await coordinator._async_displayed_mission(entry)
+
+    assert coordinator.floor_read_generation == generation
+    assert coordinator.data.floor_plan is floor_plan is not None
+    coordinator.async_request_refresh.assert_not_awaited()
+
+
 async def test_floor_watcher_revokes_verified_map_after_same_mission_signature_change(
     hass, monkeypatch
 ) -> None:
