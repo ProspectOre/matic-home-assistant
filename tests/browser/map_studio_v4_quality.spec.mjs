@@ -67,6 +67,7 @@ async function loadQualityModules(page) {
       export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4-review/gallery-state";
       export { PreferenceStore, preferencesKey } from "./frontend/map-studio-v4/preferences";
       export { PLAN_TOOLS_TAG, PLAN_VIEWS_TAG, SHELL_TAG, WORKFLOW_TAG } from "./frontend/map-studio-v4/element-tags";
+      export { workspacePoseConnection } from "./tests/browser/workspace_pose_connection.mjs";
       import "./frontend/map-studio-v4/shell";`, resolveDir: process.cwd() },
     bundle: true, format: "esm", write: false,
   });
@@ -112,24 +113,25 @@ for (const action of ["save-plan", "clean-rooms"]) {
 test("a new session on the same floor waits for its scene even when pose arrives first @safety", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {
-    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const { EffectController, WorkspaceStore, createGalleryState, workspacePoseConnection } = await import("/quality-modules.js");
     const initial = createGalleryState("ready");
     const store = new WorkspaceStore(initial);
-    const next = { ...initial.resources.entry, mapSessionKey: "new-session", deltaUrl: null };
+    const next = { ...initial.resources.entry, mapSessionKey: "c".repeat(64), deltaUrl: null };
     let releaseScene;
+    const connection = workspacePoseConnection();
     const effects = new EffectController(store, {
       catalog: async () => [next],
       scene: () => new Promise(resolve => { releaseScene = () => resolve({ revision: next.mapRevision, floorCoherent: true, scene: { ...initial.resources.scene.value, replacement: true } }); }),
-      pose: async () => ({ ...initial.resources.pose.value, mapSessionKey: next.mapSessionKey }),
       history: async () => initial.resources.history.value,
       plans: async () => initial.resources.plans.value,
       areas: async () => initial.resources.areas.value,
       dispose() {},
-    });
+    }, connection, true);
     try {
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       await effects.refreshCatalog(true);
-      for (let i = 0; i < 20 && (!releaseScene || !store.value.map.exactPose); i++) await new Promise(resolve => setTimeout(resolve, 0));
+      for (let i = 0; i < 300 && (!releaseScene || !connection.subscribed()); i++) await new Promise(resolve => setTimeout(resolve, 10));
+      connection.push({ position: initial.resources.pose.value.position, map_session_key: next.mapSessionKey });
       const paused = { retained: store.value.resources.scene.value === initial.resources.scene.value,
         readOnly: store.value.floor.readOnly, poseReady: store.value.map.exactPose };
       releaseScene();
@@ -1051,24 +1053,22 @@ for (const change of ["user", "robot"]) {
 test("a rejected pose session cannot be resurrected by a same-floor catalog refresh @safety", async ({ page }) => {
   await loadQualityModules(page);
   await page.evaluate(async () => {
-    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const { EffectController, WorkspaceStore, createGalleryState, workspacePoseConnection } = await import("/quality-modules.js");
     const initial = createGalleryState("ready");
     const store = new WorkspaceStore(initial);
-    let poses = 0;
     window.poseRecoveryCatalogs = 0;
     const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+    const connection = workspacePoseConnection();
     const effects = new EffectController(store, {
       catalog: async () => { window.poseRecoveryCatalogs += 1; return [initial.resources.entry]; },
-      pose: async () => {
-        poses += 1;
-        if (poses > 1) return new Promise(() => {});
-        return { ...initial.resources.pose.value, floorCoherent: true, mapSessionKey: "different-session" };
-      }, scene: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {},
-    });
+      scene: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {},
+    }, connection, true);
     window.poseRecoveryStore = store;
     window.poseRecoveryEffects = effects;
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
-    void effects.refreshCatalog(true);
+    await effects.refreshCatalog(true);
+    for (let i = 0; i < 300 && !connection.subscribed(); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    connection.push({ position: initial.resources.pose.value.position, map_session_key: "d".repeat(64) });
   });
   await expect.poll(() => page.evaluate(() => window.poseRecoveryCatalogs)).toBeGreaterThanOrEqual(2);
   const result = await page.evaluate(() => ({ exactPose: window.poseRecoveryStore.value.map.exactPose, pose: window.poseRecoveryStore.value.resources.pose.value }));

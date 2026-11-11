@@ -78,24 +78,22 @@ export class RunHistoryResources {
     if (urls.length) this.#store.dispatch({ type: "result", runThumbnails: {} });
   }
 
-  extendLiveTrail(pose: PoseModel): void { this.#runs?.extendLiveTrail(this.#store, pose); }
-
-  async restoreLiveTrail(): Promise<void> {
-    const state = this.#store.value;
-    const trail = state.trail;
-    const pose = state.resources.pose.value;
-    const owner = state.owner;
-    const entryId = state.selection.entryId;
-    if (trail?.id !== "live" || !pose || pose.mapSessionKey !== trail.mapSessionKey
-      || !pose.position || !owner || !entryId || this.#callbacks.disposed()) return;
-    this.#runs ??= await import("./run-history-data");
-    const current = this.#store.value;
-    if (this.#callbacks.disposed() || current.generation !== state.generation
-      || current.owner?.entryKey !== owner.entryKey || current.owner?.userKey !== owner.userKey
-      || current.selection.entryId !== entryId || current.trail?.id !== "live"
-      || current.trail.mapSessionKey !== trail.mapSessionKey
-      || current.resources.pose.value?.mapSessionKey !== trail.mapSessionKey) return;
-    this.#runs.extendLiveTrail(this.#store, current.resources.pose.value);
+  /**
+   * Adds a pose to the live trail. A reattached panel keeps the trail it was
+   * showing, so the trail code loads here when Robot trail was not opened by
+   * this owner; a pose whose user or robot changed while it loaded is dropped.
+   */
+  async extendLiveTrail(pose: PoseModel): Promise<void> {
+    if (!this.#runs) {
+      const { generation, owner, selection, trail } = this.#store.value;
+      if (trail?.id !== "live") return;
+      const runs = await import("./run-history-data");
+      this.#runs ??= runs;
+      const now = this.#store.value;
+      if (this.#callbacks.disposed() || now.generation !== generation || now.selection.entryId !== selection.entryId
+        || now.owner?.entryKey !== owner?.entryKey || now.owner?.userKey !== owner?.userKey) return;
+    }
+    this.#runs.extendLiveTrail(this.#store, pose);
   }
 
   dispose(): void {

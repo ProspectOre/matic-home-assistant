@@ -864,7 +864,6 @@ test("@safety EffectController serializes requested history/live scenes and drop
       entry_id: entry.entryId,
       scene_url: entry.sceneUrl,
       delta_url: entry.deltaUrl,
-      pose_url: entry.poseUrl,
       history_url: entry.historyUrl,
       areas_url: entry.areasUrl,
       plans_url: entry.plansUrl,

@@ -801,7 +801,7 @@ def test_coordinator_push_reconnect_replays_gap_and_recovers_after_overflow() ->
     websocket_subscribe(
         SimpleNamespace(data={DOMAIN: {"workspace_socket": manager}}),
         first,
-        {"id": 2, "entry_id": "entry-a", "version": 1},
+        {"id": 2, "entry_id": "entry-a", "version": 1, "poses": False},
     )
 
     publish_cleaning(True)
@@ -821,7 +821,7 @@ def test_coordinator_push_reconnect_replays_gap_and_recovers_after_overflow() ->
     websocket_subscribe(
         hass,
         reconnected,
-        {"id": 4, "entry_id": "entry-a", "version": 1},
+        {"id": 4, "entry_id": "entry-a", "version": 1, "poses": False},
     )
     replayed = reconnected.send_event.call_args.args[1]
     assert replayed["type"] == "invalidate"
@@ -838,7 +838,7 @@ def test_coordinator_push_reconnect_replays_gap_and_recovers_after_overflow() ->
     websocket_subscribe(
         hass,
         overflow_connection,
-        {"id": 6, "entry_id": "entry-a", "version": 1},
+        {"id": 6, "entry_id": "entry-a", "version": 1, "poses": False},
     )
     assert overflow_connection.send_event.call_args.args == (
         6,
@@ -852,7 +852,7 @@ def test_coordinator_push_reconnect_replays_gap_and_recovers_after_overflow() ->
     websocket_subscribe(
         hass,
         overflow_connection,
-        {"id": 8, "entry_id": "entry-a", "version": 1},
+        {"id": 8, "entry_id": "entry-a", "version": 1, "poses": False},
     )
     assert overflow_connection.send_event.call_count == 0
 
@@ -996,7 +996,7 @@ def test_unloaded_entry_and_subscribe_request_authorization() -> None:
         websocket_subscribe(
             hass,
             _connection(admin=False),
-            {"id": 9, "entry_id": "entry-a", "version": 1},
+            {"id": 9, "entry_id": "entry-a", "version": 1, "poses": False},
         )
 
     connection = _connection()
@@ -1005,7 +1005,7 @@ def test_unloaded_entry_and_subscribe_request_authorization() -> None:
         websocket_subscribe(
             hass,
             connection,
-            {"id": 10, "entry_id": "entry-a", "version": 1},
+            {"id": 10, "entry_id": "entry-a", "version": 1, "poses": False},
         )
 
 
@@ -1049,7 +1049,7 @@ def test_websocket_subscribe_returns_handshake_and_replays_snapshot_gap() -> Non
     websocket_subscribe(
         hass,
         connection,
-        {"id": 12, "entry_id": "entry-a", "version": 1},
+        {"id": 12, "entry_id": "entry-a", "version": 1, "poses": False},
     )
 
     connection.send_result.assert_called_once_with(
@@ -1110,14 +1110,14 @@ def test_workspace_callbacks_use_home_assistant_numeric_unsubscribe_ids() -> Non
     websocket_subscribe(
         hass,
         connection,
-        {"id": 24, "entry_id": "entry-a", "version": 1},
+        {"id": 24, "entry_id": "entry-a", "version": 1, "poses": False},
     )
     assert set(connection.subscriptions) == {24}
 
     websocket_subscribe(
         hass,
         connection,
-        {"id": 26, "entry_id": "entry-a", "version": 1},
+        {"id": 26, "entry_id": "entry-a", "version": 1, "poses": False},
     )
     assert set(connection.subscriptions) == {26}
     assert manager._subscriptions == {"entry-a": {connection: 26}}

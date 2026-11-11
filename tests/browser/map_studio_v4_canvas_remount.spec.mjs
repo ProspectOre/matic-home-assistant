@@ -68,3 +68,32 @@ test("reattaching one panel restores its same canvas renderer and gesture contro
     }, restored)).toBe(true);
   }
 });
+
+test("a reattached panel keeps growing the live trail it was showing", async ({ page }) => {
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "typescript",
+    initialRobotStates: { "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry" } } },
+  });
+  await page.evaluate(() => {
+    window.__trailPanel = window.__panelFixture.createPanel();
+    document.body.append(window.__trailPanel);
+  });
+  const panel = page.locator(fixture.panelTag);
+  const snapshot = () => panel.evaluate((element) => element.getWorkspaceSnapshot());
+  await expect.poll(async () => (await snapshot()).map.exactPose).toBe(true);
+  await panel.evaluate((element) => element.shadowRoot.querySelector("matic-map-shell-v4")
+    .dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "show-trail", trail: "live" }, bubbles: true, composed: true,
+    })));
+  await expect.poll(async () => (await snapshot()).trail?.id).toBe("live");
+  const lastPoint = async () => (await snapshot()).trail?.segments.at(-1)?.at(-1) ?? null;
+  await page.evaluate(() => window.__panelFixture.pushPose([1, 1]));
+  await expect.poll(lastPoint).toEqual([1, 1]);
+
+  await panel.evaluate((element) => element.remove());
+  await page.evaluate(() => document.body.append(window.__trailPanel));
+  await expect.poll(async () => (await snapshot()).map.exactPose).toBe(true);
+  expect((await snapshot()).trail?.id).toBe("live");
+  await page.evaluate(() => window.__panelFixture.pushPose([2, 1]));
+  await expect.poll(lastPoint).toEqual([2, 1]);
+});

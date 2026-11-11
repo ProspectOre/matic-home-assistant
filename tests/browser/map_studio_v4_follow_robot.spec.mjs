@@ -21,7 +21,8 @@ const openFollowing = async (page) => {
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(panelTag);
   const following = () => panel.evaluate((element) => element.getWorkspaceSnapshot().followMode === "follow");
-  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+  // Following needs the robot's position, which arrives once the workspace subscription opens.
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
   expect(await following()).toBe(false);
 
   await clickInShadow(panel, "[aria-controls=map-options]");

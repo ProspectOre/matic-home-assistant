@@ -102,7 +102,6 @@ export const syntheticEntry = (): MapEntry => ({
   liveWorkspaceTransportEnabled: false,
   sceneUrl: "/api/matic_robot/slam_scene/synthetic",
   deltaUrl: "/api/matic_robot/slam_delta/synthetic",
-  poseUrl: "/api/matic_robot/slam_pose/synthetic",
   historyUrl: "/api/matic_robot/slam_history/synthetic",
   areasUrl: "/api/matic_robot/areas/synthetic",
   plansUrl: "/api/matic_robot/plans/synthetic",
@@ -225,17 +224,16 @@ export const syntheticHistory = (): HistoryCatalog => ({
 });
 
 export const syntheticPose = (): PoseModel => ({
-  // The pose API returns map meters, not scene-cell coordinates. This point is
+  // A pose is in map meters, not scene-cell coordinates. This point is
   // the exact center of the synthetic scene after applying its origin.
   position: [4.475, 3.475],
   source: "latest_pose",
-  revision: 7,
   sceneRevision: 7,
   sceneEpoch: "synthetic-scene-epoch",
-  poseRevision: 4,
   floorCoherent: true,
   mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
-  freshness: "live",
+  ageSeconds: 0.2,
+  heading: null,
 });
 
 // Cleaning history: the last run stopped early, an earlier one finished with a

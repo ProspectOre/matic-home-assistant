@@ -163,7 +163,9 @@ test("saved-area confirmation writes the same ID, reads it back as current, and 
   })).toEqual({ command: "idle", draftId: AREA_ID, status: "current", canRebind: false, savedStatus: "current", savedCanRebind: false });
 
   const areaRequests = await page.evaluate(() => window.__panelFixture.areaRequests);
-  expect(areaRequests.map((request) => request.method)).toEqual(["GET", "GET", "POST", "GET"]);
+  // How many reads precede the write depends on when the workflow opens; one write is read back.
+  const methods = areaRequests.map((request) => request.method);
+  expect(methods.slice(methods.indexOf("POST"))).toEqual(["POST", "GET"]);
   const post = areaRequests.find((request) => request.method === "POST");
   expect(post.body).toMatchObject({ area_id: AREA_ID, name: "Office" });
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);

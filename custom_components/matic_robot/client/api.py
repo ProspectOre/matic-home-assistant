@@ -157,6 +157,16 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             on_status,
         )
 
+    async def async_watch_poses(
+        self, on_pose: Callable[[RobotPose], Awaitable[object]]
+    ) -> None:
+        """Give ``on_pose`` each mission's latest pose, like a watch."""
+        await async_watch(
+            self._connection.async_keep_subscribed,
+            self._reads.async_subscribe_poses,
+            on_pose,
+        )
+
     async def async_shutdown(self) -> None:
         """Close the connection for good; every later request fails."""
         await self._connection.async_shutdown()
@@ -194,12 +204,6 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     async def async_get_slam_tile_entry(self) -> HermesCollectionEntry:
         """Read the current local photorealistic SLAM tile."""
         return await self._reads.async_get_slam_tile_entry()
-
-    async def async_get_pose(
-        self, *, expected_mission_id: int | None = None
-    ) -> RobotPose:
-        """Read the uniquely keyed latest local pose for the active mission."""
-        return await self._reads.async_get_pose(expected_mission_id=expected_mission_id)
 
     async def async_get_flythrough(self, *, expected_mission_token: str) -> Flythrough:
         """Read the native map tour correlated to the active SLAM mission."""

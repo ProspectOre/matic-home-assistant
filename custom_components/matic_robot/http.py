@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from . import MaticConfigEntry, MaticRuntimeData
 
 SCENE_API_URL = "/api/matic_robot/slam_scene/{entry_id}"
-POSE_API_URL = "/api/matic_robot/slam_pose/{entry_id}"
 CATALOG_API_URL = "/api/matic_robot/slam_entries"
 DELTA_API_URL = "/api/matic_robot/slam_delta/{entry_id}"
 HISTORY_API_URL = "/api/matic_robot/slam_history/{entry_id}"
@@ -39,11 +38,6 @@ PRIVATE_NO_STORE_HEADERS = {
 def scene_api_url(entry_id: str) -> str:
     """Return the authenticated scene URL for one config entry."""
     return SCENE_API_URL.format(entry_id=entry_id)
-
-
-def pose_api_url(entry_id: str) -> str:
-    """Return the authenticated live-pose URL for one config entry."""
-    return POSE_API_URL.format(entry_id=entry_id)
 
 
 def delta_api_url(entry_id: str) -> str:

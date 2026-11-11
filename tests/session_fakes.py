@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from custom_components.matic_robot.client.models import RobotOperationalState
+from custom_components.matic_robot.client.models import (
+    RobotOperationalState,
+    RobotPose,
+)
 from custom_components.matic_robot.coordinator import MaticCoordinator
 from custom_components.matic_robot.session import RobotSession
 
@@ -46,3 +49,9 @@ async def push_state(
     """Publish ``state`` as the robot's next pushed snapshot."""
     await coordinator.client.async_watch_state.call_args.args[0](state)
     coordinator.session.async_flush_state()
+
+
+async def push_pose(coordinator: MaticCoordinator, pose: RobotPose) -> None:
+    """Publish ``pose`` as the robot's newest on its mission."""
+    await coordinator.client.async_watch_poses.call_args.args[0](pose)
+    coordinator.session._pose_publish.flush()

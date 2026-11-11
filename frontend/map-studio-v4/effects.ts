@@ -53,6 +53,7 @@ import { WorkspaceSynchronizer } from "./workspace-synchronizer";
 import { RobotMotionController } from "./robot-motion-controller";
 import { ResourceRequests } from "./resource-requests";
 import { SpatialResources } from "./spatial-resources";
+import type { PoseMotion } from "./pose-motion";
 
 type CatalogWrites = typeof import("./catalog-writes");
 type QueueActions = InstanceType<typeof import("./queue-action-controller").QueueActionController>;
@@ -88,6 +89,7 @@ export class EffectController {
   readonly #coherence: CoherenceMachine;
   readonly #backend: MaticBackend;
   readonly #workspaceConnection: WorkspaceConnection | null;
+  readonly #poseMotion: PoseMotion | null;
   readonly #pageLifecycle: PageLifecycle;
   readonly #preferences = new PreferenceStore();
   #preferenceSnapshot: MapPreferences | null = null;
@@ -131,8 +133,6 @@ export class EffectController {
     return this.#catalog.loadAreas(options);
   }
 
-  refreshPose(): Promise<void> { return this.#spatialResources.refreshPose(); }
-
   selectFloor(floorId: string): Promise<void> { return this.#spatialResources.selectFloor(floorId); }
 
   selectHistory(snapshotId: string | null): Promise<void> { return this.#spatialResources.selectHistory(snapshotId); }
@@ -171,8 +171,10 @@ export class EffectController {
     backend: MaticBackend,
     workspaceConnection: WorkspaceConnection | null = null,
     workspaceTransportOverride?: boolean,
+    poseMotion: PoseMotion | null = null,
   ) {
     this.#store = store;
+    this.#poseMotion = poseMotion;
     // A retained ready projection belongs to the prior controller's persistence
     // helper. Keep controls unavailable until this controller reloads it.
     if (store.value.homePins.status === "ready") {
@@ -198,6 +200,7 @@ export class EffectController {
         loadResources: (entry, stamp, resources, refreshCatalogProjection) =>
           this.#loadWorkspaceResources(entry, stamp, resources, refreshCatalogProjection),
         spatialRecoveryBlocks: (entry) => this.#spatialResources.recoveryPending(entry, true),
+        receivePose: (entryId, pose) => this.#spatialResources.receivePose(entryId, pose),
       },
     );
     this.#spatialResources = new SpatialResources(store, backend, this.#coherence, this.#requests, {
@@ -221,7 +224,11 @@ export class EffectController {
         this.#requests.has(name) && !this.#unsentWrites.has(name)),
       loadPlans: () => this.#catalog.loadPlans(),
       resumeAreaCatalog: () => this.#catalog.resumeAreas(),
-      extendLiveTrail: (pose) => this.#runs?.extendLiveTrail(pose),
+      movePose: (pose) => {
+        if (!pose) return this.#poseMotion?.clear();
+        this.#poseMotion?.push(pose);
+        if (this.#runs || this.#store.value.trail?.id === "live") void this.#runResources().then((runs) => runs?.extendLiveTrail(pose));
+      },
       loadWorkspaceResources: (entry, stamp, resources, refresh) => this.#loadWorkspaceResources(entry, stamp, resources, refresh),
     });
     this.#catalog = new CatalogResources(store, backend, this.#coherence, this.#requests, {
@@ -294,7 +301,6 @@ export class EffectController {
           && canReadFloorResources(this.#store.value)) {
           void this.loadPlans();
         }
-        if (this.#store.value.trail?.id === "live") void this.#restoreLiveTrail();
       },
     );
   }
@@ -348,14 +354,6 @@ export class EffectController {
     this.#pins?.resume();
   }
 
-  async #restoreLiveTrail(): Promise<void> {
-    if (this.#store.value.trail?.id !== "live") return;
-    const runs = await this.#runResources();
-    if (!runs || this.#disposed || this.#store.value.trail?.id !== "live") return;
-    await this.#spatialResources.refreshPose();
-    if (!this.#disposed && this.#store.value.trail?.id === "live") await runs.restoreLiveTrail();
-  }
-
   #runResources(): Promise<InstanceType<typeof import("./run-history-resources").RunHistoryResources> | null> {
     if (this.#runs) return Promise.resolve(this.#runs);
     if (this.#disposed) return Promise.resolve(null);
@@ -381,7 +379,7 @@ export class EffectController {
     // Robot settings survive map changes; coordinate writes keep their frame.
     this.#abortResources(MUTATION_RESOURCES);
     this.#catalog.cancelQueued();
-    this.#spatialResources.cancelQueuedPose();
+    this.#poseMotion?.clear();
     this.#workspace.pause();
     const state = this.#store.value;
     this.#store.dispatch({
@@ -548,7 +546,7 @@ export class EffectController {
       }
       this.#stopPolling();
       this.#catalog.cancelQueued();
-      this.#spatialResources.cancelQueuedPose();
+      this.#poseMotion?.clear();
       this.#abortResources();
       const state = this.#store.value;
       const retainedScene = state.resources.scene.value;
@@ -583,7 +581,7 @@ export class EffectController {
         this.#spatialResources.invalidateFence();
         this.#abortResources();
         this.#catalog.cancelQueued();
-        this.#spatialResources.cancelQueuedPose();
+        this.#poseMotion?.clear();
       }
       this.#stopPolling();
       const state = this.#store.value;

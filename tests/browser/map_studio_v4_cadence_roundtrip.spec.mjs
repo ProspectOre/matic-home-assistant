@@ -579,8 +579,14 @@ for (const afterTimeout of [false, true]) {
       document.body.append(window.__remountDeletePanel);
     });
     await expect.poll(() => page.evaluate(() => window.__remountDeletePanel.getWorkspaceSnapshot().planWriteBlock)).toBe("pending");
+    const readsBefore = await page.evaluate(() => window.__panelFixture.planReads);
     await page.evaluate(() => window.__panelFixture.releaseService());
-    await expect.poll(() => page.evaluate(() => window.__remountDeletePanel.getWorkspaceSnapshot().planWriteBlock)).toBe("refresh");
+    // The settled wire leaves the fence for a fresh plan read, which the
+    // replacement controller may already have made.
+    await expect.poll(() => page.evaluate((reads) => {
+      const block = window.__remountDeletePanel.getWorkspaceSnapshot().planWriteBlock;
+      return block === "refresh" || (block === null && window.__panelFixture.planReads > reads);
+    }, readsBefore)).toBe(true);
     await expect.poll(() => page.evaluate(() => {
       const state = window.__remountDeletePanel.getWorkspaceSnapshot();
       return { coherence: state.coherence, pageActive: state.pageActive, readOnly: state.floor.readOnly };

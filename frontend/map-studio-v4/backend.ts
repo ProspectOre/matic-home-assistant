@@ -8,7 +8,6 @@ import {
   SCENE_MAX_BYTES,
   isPrivatePath,
   parseCatalog,
-  parsePose,
   type AreaCircle,
   type AreasCatalog,
   type CleaningMode,
@@ -17,7 +16,6 @@ import {
   type MapEntry,
   type ManualRoomSequencePreview,
   type PlansCatalog,
-  type PoseModel,
   type SceneModel,
 } from "./backend-contracts";
 import { SceneParser as SceneParserImplementation, type SceneParser } from "./scene-parser";
@@ -33,7 +31,6 @@ const REQUEST_TIMEOUTS = {
   catalog: 10_000,
   scene: 60_000,
   delta: 35_000,
-  pose: 10_000,
   history: 15_000,
   runs: 25_000,
   workflow: 15_000,
@@ -414,10 +411,6 @@ export class MaticBackend {
         };
       },
     );
-  }
-
-  async pose(path: string, signal?: AbortSignal): Promise<PoseModel> {
-    return parsePose(await this.#json("pose", path, REQUEST_TIMEOUTS.pose, signal));
   }
 
   async history(path: string, signal?: AbortSignal): Promise<HistoryCatalog> {

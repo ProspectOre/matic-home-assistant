@@ -44,7 +44,12 @@ from custom_components.matic_robot.coordinator import (
 )
 from custom_components.matic_robot.robot_health import async_delete_robot_alert_issues
 from tests.hermes_fakes import FakeChannel, watch
-from tests.session_fakes import push_state, session_entry, start_coordinator
+from tests.session_fakes import (
+    push_pose,
+    push_state,
+    session_entry,
+    start_coordinator,
+)
 
 
 def _client() -> AsyncMock:
@@ -65,7 +70,6 @@ def _client() -> AsyncMock:
         50, (), (), False, False, False, False, False, False
     )
     client.async_get_floor_plan.return_value = None
-    client.async_get_pose.return_value = None
     client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
     client.async_watch = _watch(client)
     client.add_connection_listener = MagicMock()
@@ -963,7 +967,7 @@ async def test_entities_are_unavailable_while_the_robot_cannot_be_reached(hass) 
     listener = MagicMock()
     coordinator.async_add_listener(listener)
     connection_changed = client.add_connection_listener.call_args.args[0]
-    reads = client.async_get_pose.await_count + client.async_get_telemetry.await_count
+    reads = client.async_get_telemetry.await_count
 
     client.connection_error = MaticError("offline")
     connection_changed()
@@ -974,10 +978,7 @@ async def test_entities_are_unavailable_while_the_robot_cannot_be_reached(hass) 
     await coordinator.async_refresh()
     assert coordinator.last_update_success is False
     assert str(coordinator.last_exception) == "offline"
-    assert (
-        client.async_get_pose.await_count + client.async_get_telemetry.await_count
-        == reads
-    )
+    assert client.async_get_telemetry.await_count == reads
 
     client.connection_error = AuthenticationRequiredError("expired")
     connection_changed()
@@ -1061,7 +1062,6 @@ async def test_run_progress_is_read_only_during_a_clean(hass) -> None:
 async def test_optional_map_failures_do_not_hide_core_state(hass) -> None:
     client = _client()
     client.async_get_floor_plan.side_effect = MaticError("no floor plan")
-    client.async_get_pose.side_effect = MaticError("no pose")
 
     state = await (await start_coordinator(hass, client))._async_update_data()
 
@@ -1069,54 +1069,35 @@ async def test_optional_map_failures_do_not_hide_core_state(hass) -> None:
     assert state.pose is None
 
 
-async def test_pose_read_waits_for_identified_floor(hass) -> None:
-    client = _client()
-    floor = FloorPlan(42, "partition", b"", ())
-    started, release = asyncio.Event(), asyncio.Event()
-
-    async def read_floor(**_kwargs):
-        started.set()
-        await release.wait()
-        return floor
-
-    client.async_get_floor_plan.side_effect = read_floor
-    coordinator = await start_coordinator(hass, client)
-    pending = asyncio.create_task(coordinator._async_update_data())
-    await started.wait()
-    client.async_get_pose.assert_not_awaited()
-    release.set()
-    state = await pending
-    assert state.floor_plan == floor
-    client.async_get_pose.assert_awaited_once_with(expected_mission_id=42)
-
-
-async def test_pose_read_is_skipped_without_a_floor(hass) -> None:
-    client = _client()
-    await (await start_coordinator(hass, client))._async_update_data()
-    client.async_get_pose.assert_not_awaited()
-
-
-async def test_optional_pose_failure_preserves_identified_floor(hass) -> None:
+async def test_a_heartbeat_joins_the_newest_pose_on_the_current_floor(hass) -> None:
     client = _client()
     floor = FloorPlan(42, "partition", b"", ())
     client.async_get_floor_plan.return_value = floor
-    client.async_get_pose.side_effect = MaticError("no active-mission pose")
-    state = await (await start_coordinator(hass, client))._async_update_data()
+    coordinator = await start_coordinator(hass, client)
+    here = RobotPose(1, 2, 0, mission_id=42, observed_at=1_000_000.0)
+    await push_pose(coordinator, here)
+    await push_pose(coordinator, RobotPose(3, 4, 0, mission_id=84))
+
+    state = await coordinator._async_update_data()
+
     assert state.floor_plan == floor
-    assert state.pose is None
+    assert state.pose == here
 
 
-async def test_floor_revocation_during_pose_read_clears_pose_publication(hass) -> None:
+async def test_floor_revocation_during_the_reads_clears_pose_publication(hass) -> None:
     client = _client()
     client.async_get_floor_plan.return_value = FloorPlan(42, "partition", b"", ())
     coordinator = await start_coordinator(hass, client)
+    await push_pose(
+        coordinator, RobotPose(1, 2, 0, mission_id=42, observed_at=1_000_000.0)
+    )
 
-    async def read_pose(**_kwargs):
+    async def read_telemetry():
         coordinator._floor_read_generation += 1
         coordinator._displayed_floor_unknown = True
-        return RobotPose(1, 2, 0, mission_id=42, observed_at=1_000_000.0)
+        return RobotTelemetry()
 
-    client.async_get_pose.side_effect = read_pose
+    client.async_get_telemetry.side_effect = read_telemetry
     state = await coordinator._async_update_data()
     assert state.floor_plan is None
     assert state.pose is None
@@ -1417,7 +1398,6 @@ async def test_coordinator_caches_slow_reads_and_can_force_them(hass) -> None:
     assert client.async_get_floor_plan.await_count == 1
     assert client.async_get_telemetry.await_count == 1
     assert client.async_get_state.await_count == 1
-    assert client.async_get_pose.await_count == 2
 
     coordinator.async_refresh = AsyncMock()
     await coordinator.async_request_full_refresh()
@@ -2353,6 +2333,7 @@ async def test_watcher_finishes_when_a_closed_channel_replaces_its_cancellation(
     client.async_get_state = _client().async_get_state
     watch_state = client.async_watch_state
     client.async_watch_state = AsyncMock()
+    client.async_watch_poses = AsyncMock()
     coordinator = await start_coordinator(hass, client)
     wrapper = Wrapper()
     started = asyncio.Event()

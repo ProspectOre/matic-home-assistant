@@ -132,7 +132,7 @@ test("removed pin IDs are reconciled without disturbing surviving shortcut order
 
 test("entry change hides the previous entry choices until the new owner's pins settle", async ({ page }) => {
   const a = { entry_id: "synthetic-entry", scene_url: "/api/matic_robot/slam_scene/synthetic", delta_url: null,
-    pose_url: "/api/matic_robot/slam_pose/synthetic", history_url: "/api/matic_robot/slam_history/synthetic",
+    history_url: "/api/matic_robot/slam_history/synthetic",
     areas_url: "/api/matic_robot/areas/synthetic", plans_url: "/api/matic_robot/plans/synthetic", map_revision: 7,
     map_floor_coherent: true, map_session_verified: true, map_session_key: "a".repeat(64), map_complete: true,
     map_truncated: false, selected_floor_ordinal: 1, map_floor_ordinal: 1, history_count: 1, history_floor_count: 2,
@@ -140,7 +140,7 @@ test("entry change hides the previous entry choices until the new owner's pins s
     bootstrap_structure_seen: true, bootstrap_failures: 0, runner_locked: false, stop_settle_pending: false,
     active_plan: false, native_reconciliation_pending: false, native_session_active: false };
   const b = { ...a, entry_id: "synthetic-entry-b", scene_url: a.scene_url.replace("synthetic", "synthetic-b"),
-    pose_url: a.pose_url.replace("synthetic", "synthetic-b"), history_url: a.history_url.replace("synthetic", "synthetic-b"),
+    history_url: a.history_url.replace("synthetic", "synthetic-b"),
     areas_url: a.areas_url.replace("synthetic", "synthetic-b"), plans_url: a.plans_url.replace("synthetic", "synthetic-b"), map_session_key: "b".repeat(64) };
   const fixture = await installPanelFixture(page, { moduleSource: "typescript", initialCatalogEntries: [a, b],
     initialRobotStates: { "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: a.entry_id } },
@@ -214,7 +214,7 @@ test("same entry recovery restores the saved home shortcuts without writing user
   await page.evaluate(() => {
     const entry = {
       entry_id: "synthetic-entry", scene_url: "/api/matic_robot/slam_scene/synthetic", delta_url: null,
-      pose_url: "/api/matic_robot/slam_pose/synthetic", history_url: "/api/matic_robot/slam_history/synthetic",
+      history_url: "/api/matic_robot/slam_history/synthetic",
       areas_url: "/api/matic_robot/areas/synthetic", plans_url: "/api/matic_robot/plans/synthetic",
       map_revision: 7, map_floor_coherent: true, map_session_verified: true, map_session_key: "a".repeat(64),
       map_complete: true, map_truncated: false, selected_floor_ordinal: 1, map_floor_ordinal: 1,

@@ -22,7 +22,6 @@ function liveEntry({ delta = false } = {}) {
     entry_id: "synthetic-entry",
     scene_url: "/api/matic_robot/slam_scene/synthetic",
     delta_url: delta ? "/api/matic_robot/slam_delta/synthetic" : null,
-    pose_url: "/api/matic_robot/slam_pose/synthetic",
     history_url: "/api/matic_robot/slam_history/synthetic",
     areas_url: "/api/matic_robot/areas/synthetic",
     plans_url: "/api/matic_robot/plans/synthetic",
@@ -169,16 +168,14 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
     const originalFetch = panel.hass.fetchWithAuth;
-    window.__pageLifecycleProbe = { hold: false, pending: [], deltaReads: 0, poseReads: 0 };
+    window.__pageLifecycleProbe = { hold: false, pending: [], deltaReads: 0 };
     panel.hass = {
       ...panel.hass,
       fetchWithAuth: async (path, init) => {
         const probe = window.__pageLifecycleProbe;
-        const isPose = path.includes("slam_pose/");
         const isDelta = path.includes("slam_delta/");
-        if (probe.hold && (isPose || isDelta)) {
-          if (isPose) probe.poseReads += 1;
-          if (isDelta) probe.deltaReads += 1;
+        if (probe.hold && isDelta) {
+          probe.deltaReads += 1;
           return new Promise((resolve) => {
             const pending = { path, resolve, aborted: false };
             probe.pending.push(pending);
@@ -192,10 +189,11 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
     document.body.append(panel);
   });
   const panel = page.locator(fixture.panelTag);
-  await expect.poll(() => panel.evaluate((element) => {
-    const state = element.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.map.exactPose;
-  })).toBe(true);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status))
+    .toBe("ready");
+  // The workspace subscription, which brings the pose, opens once the map is drawn.
+  await page.clock.runFor(2_100);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
   const beforeSuspend = await panel.evaluate((element) => element.getWorkspaceSnapshot());
   const generation = beforeSuspend.generation;
   // This scenario checks retention of the top-view camera; Home now starts in 3D.
@@ -216,7 +214,7 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
   await page.clock.fastForward(1_000);
   await expect.poll(() => page.evaluate(() => {
     const probe = window.__pageLifecycleProbe;
-    return probe.poseReads > 0 && probe.deltaReads > 0;
+    return probe.deltaReads > 0;
   })).toBe(true);
 
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
@@ -234,16 +232,10 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
     "document:visibilitychange": 1,
   });
 
-  // Late responses from the revoked generation must not re-admit pose or delta.
+  // A late delta or a pose sent while suspended must not re-admit the map or the robot.
   await page.evaluate(() => {
-    for (const pending of window.__pageLifecycleProbe.pending) {
-      pending.resolve(pending.path.includes("slam_pose/")
-        ? new Response(JSON.stringify({
-          position: [1, 1], source: "latest_pose", revision: 7, pose_revision: 1,
-          map_floor_coherent: true, map_session_key: "a".repeat(64), pose_freshness: "live",
-        }), { headers: { "Content-Type": "application/json" } })
-        : new Response(null, { status: 204 }));
-    }
+    for (const pending of window.__pageLifecycleProbe.pending) pending.resolve(new Response(null, { status: 204 }));
+    window.__panelFixture.pushPose([1, 1]);
   });
   await page.clock.fastForward(0);
   const afterLateResponse = await panel.evaluate((element) => element.getWorkspaceSnapshot());
@@ -252,13 +244,11 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
 
   const readsWhileSuspended = await page.evaluate(() => ({
     catalog: window.__panelFixture.catalogReads,
-    pose: window.__pageLifecycleProbe.poseReads,
     delta: window.__pageLifecycleProbe.deltaReads,
   }));
   await page.clock.fastForward(5_000);
   expect(await page.evaluate(() => ({
     catalog: window.__panelFixture.catalogReads,
-    pose: window.__pageLifecycleProbe.poseReads,
     delta: window.__pageLifecycleProbe.deltaReads,
   }))).toEqual(readsWhileSuspended);
 
@@ -270,10 +260,11 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
   expect(whileCatalogHeld.map.exactPose).toBe(false);
   expect(whileCatalogHeld.coherence).not.toBe("current");
   await page.evaluate(() => window.__panelFixture.releaseCatalog());
-  await expect.poll(() => panel.evaluate((element) => {
-    const state = element.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.map.exactPose;
-  })).toBe(true);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status))
+    .toBe("ready");
+  // The workspace subscription, which brings the pose, opens once the map is drawn.
+  await page.clock.runFor(2_100);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
   const resumed = await panel.evaluate((element) => element.getWorkspaceSnapshot());
   expect(resumed.draw.strokeCount).toBe(2);
   expect(resumed.cameras.top).toEqual(retainedCamera);
@@ -388,10 +379,11 @@ test("@safety page suspension aborts saved-plan preflight and preserves its draf
   });
 
   const panel = page.locator(fixture.panelTag);
-  await expect.poll(() => panel.evaluate((element) => {
-    const state = element.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.map.exactPose;
-  })).toBe(true);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status))
+    .toBe("ready");
+  // The workspace subscription, which brings the pose, opens once the map is drawn.
+  await page.clock.runFor(2_100);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.exactPose)).toBe(true);
   await panel.evaluate((element) => {
     const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
     shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {

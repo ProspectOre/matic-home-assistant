@@ -24,7 +24,6 @@ from .client.slam_tiles import (
 from .entity import MaticEntity
 from .floor_render import render_floor_plan
 from .http import (
-    pose_api_url,
     scene_api_url,
 )
 from .slam_map_store import SlamMapStore
@@ -430,7 +429,6 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             ),
             "source": "local_robot_slam",
             "scene_url": scene_api_url(self._config_entry.entry_id),
-            "pose_url": pose_api_url(self._config_entry.entry_id),
         }
 
 

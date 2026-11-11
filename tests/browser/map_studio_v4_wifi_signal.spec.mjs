@@ -251,6 +251,9 @@ test("the renderer paints the surface on the live floor only, over room colours"
     }
     const context = overlay.getContext("2d");
     const painted = [];
+    // The fallback raster redraws the overlay as each chunk lands, so keep the newest draw only.
+    const clearRect = context.clearRect.bind(context);
+    context.clearRect = (...args) => { painted.length = 0; return clearRect(...args); };
     const fill = context.fill.bind(context);
     context.fill = (...args) => { painted.push(String(context.fillStyle)); return fill(...args); };
     const drawImage = context.drawImage.bind(context);

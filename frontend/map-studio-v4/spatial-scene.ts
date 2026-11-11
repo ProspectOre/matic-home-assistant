@@ -13,7 +13,7 @@ interface SpatialSceneCallbacks {
   readonly replacementFinished: (entry: MapEntry) => void;
   readonly recovered: (entry: MapEntry) => void;
   readonly failed: (entry: MapEntry) => void;
-  readonly loadPose: (entry: MapEntry, stamp: ResourceStamp) => Promise<void>;
+  readonly admitPose: () => void;
   readonly loadFallback: (entry: MapEntry, stamp: ResourceStamp) => Promise<void>;
   readonly loadPlans: () => void;
   readonly resumeAreaCatalog: () => void;
@@ -265,7 +265,7 @@ export class SpatialScene {
               floorCoherent: true,
             },
           });
-          void this.#callbacks.loadPose(entry, stamp);
+          this.#callbacks.admitPose();
         } finally {
           this.#requests.release("delta", controller);
         }

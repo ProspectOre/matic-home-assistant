@@ -2095,7 +2095,6 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
         "robot_location_source": "exact_pose",
         "source": "local_robot_slam",
         "scene_url": "/api/matic_robot/slam_scene/entry",
-        "pose_url": "/api/matic_robot/slam_pose/entry",
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
 

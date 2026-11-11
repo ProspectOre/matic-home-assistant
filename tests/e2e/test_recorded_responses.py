@@ -6,7 +6,9 @@ the facts the recording states, and Home Assistant must show its entities.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from enum import Enum
 from typing import Any
 
@@ -34,8 +36,14 @@ def robot(recording: Recording) -> SimulatedRobot:
 
 
 async def _pose(client: MaticHermesClient) -> Any:
-    floor_plan = await client.async_get_floor_plan()
-    return await client.async_get_pose(expected_mission_id=floor_plan.mission_id)
+    poses: asyncio.Queue[Any] = asyncio.Queue()
+    watch = asyncio.create_task(client.async_watch_poses(poses.put))
+    try:
+        return await poses.get()
+    finally:
+        watch.cancel()
+        with suppress(asyncio.CancelledError):
+            await watch
 
 
 # The client read behind each key of a recording's ``expect``.

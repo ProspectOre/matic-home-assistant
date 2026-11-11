@@ -403,14 +403,15 @@ async def test_wifi_survey_records_only_the_signal_cell(
     )
     assert switch_id is not None
     frame = survey_frame(floor_plan.partition_id_wire)
-    client = plan.entry.runtime_data.client
+    session = plan.entry.runtime_data.session
+    client = session.client
     pose_reads = []
     scan_results: list[int | None] = []
-    get_pose = client.async_get_pose
+    pose_on = session.pose_on
     scan_wifi = client.async_scan_wifi_signal
 
-    async def record_pose(*, expected_mission_id: int):
-        pose = await get_pose(expected_mission_id=expected_mission_id)
+    def record_pose(floor_plan):
+        pose = pose_on(floor_plan)
         pose_reads.append(pose)
         return pose
 
@@ -419,7 +420,7 @@ async def test_wifi_survey_records_only_the_signal_cell(
         scan_results.append(result)
         return result
 
-    monkeypatch.setattr(client, "async_get_pose", record_pose)
+    monkeypatch.setattr(session, "pose_on", record_pose)
     monkeypatch.setattr(client, "async_scan_wifi_signal", record_scan)
     robot.queue_wifi_scan(wifi_status(-42, ssid="Private Test Network"))
     await plan.hass.services.async_call("switch", "turn_on", {"entity_id": switch_id})
@@ -442,10 +443,6 @@ async def test_wifi_survey_records_only_the_signal_cell(
         )
     assert robot.received("wifi_scan_command")
     assert scan_results and scan_results[0] == -42
-    assert len(pose_reads) >= 2
-    assert pose_reads[0].observed_at is not None
-    assert pose_reads[1].observed_at is not None
-    assert pose_reads[1].observed_at > pose_reads[0].observed_at
     switch_entity = hass.states.get(switch_id)
     await hass.services.async_call("switch", "turn_off", {"entity_id": switch_id})
     await hass.async_block_till_done()

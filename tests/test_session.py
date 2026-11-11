@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -21,12 +21,17 @@ from custom_components.matic_robot.client.exceptions import (
     TransportError,
 )
 from custom_components.matic_robot.client.models import (
+    FloorPlan,
     RobotInfo,
     RobotOperationalState,
+    RobotPose,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.session import (
     HEALTH_SAMPLE_SECONDS,
+    MAX_POSE_MISSIONS,
+    POSE_PUBLISH_SECONDS,
+    STATE_PUBLISH_SECONDS,
     UNREACHABLE_AFTER_SECONDS,
     RobotSession,
     Store,
@@ -34,6 +39,14 @@ from custom_components.matic_robot.session import (
 
 DOCKED = RobotOperationalState(50, (), (), False, True, False, False, False, False)
 IDENTITY_ISSUE = "robot_identity_changed_entry"
+
+
+def _pose(mission_id: int, x: float) -> RobotPose:
+    return RobotPose(x, 0.0, 0.0, mission_id, 1_800_000_000.0)
+
+
+def _floor(mission_id: int) -> FloorPlan:
+    return FloorPlan(mission_id, "Home", b"partition", ())
 
 
 def _client() -> AsyncMock:
@@ -77,7 +90,11 @@ class _Robot:
         self.client = client
         self.session = session
         self.push, self._on_status = client.async_watch_state.call_args.args
+        (self._on_pose,) = client.async_watch_poses.call_args.args
         self.connection_changed = client.add_connection_listener.call_args.args[0]
+
+    def pose(self, pose: RobotPose) -> None:
+        self._hass.async_create_task(self._on_pose(pose))
 
     def status(self, status: str, error: Exception | None = None) -> None:
         self._on_status(status, error)
@@ -168,14 +185,13 @@ async def test_pushes_are_published_at_most_once_an_interval(hass) -> None:
         lambda: published.append(session.state.value.operational.battery_percentage)
     )
 
-    with patch("custom_components.matic_robot.session.STATE_PUBLISH_SECONDS", 3600):
-        await robot.push(replace(DOCKED, battery_percentage=49))
-        await robot.push(replace(DOCKED, battery_percentage=48))
-        await robot.push(replace(DOCKED, battery_percentage=47))
-        assert published == [49]
+    await robot.push(replace(DOCKED, battery_percentage=49))
+    await robot.push(replace(DOCKED, battery_percentage=48))
+    await robot.push(replace(DOCKED, battery_percentage=47))
+    assert published == [49]
 
-        session.async_flush_state()
-        session.async_flush_state()
+    session.async_flush_state()
+    session.async_flush_state()
 
     assert published == [49, 47]
 
@@ -184,13 +200,50 @@ async def test_a_waiting_push_is_published_when_its_interval_ends(hass) -> None:
     robot = await _started(hass)
     session = robot.session
 
-    with patch("custom_components.matic_robot.session.STATE_PUBLISH_SECONDS", 0.01):
-        await robot.push(replace(DOCKED, battery_percentage=49))
-        await robot.push(replace(DOCKED, battery_percentage=48))
-        assert session.state.value.operational.battery_percentage == 49
-        await robot.wait(1)
+    await robot.push(replace(DOCKED, battery_percentage=49))
+    await robot.push(replace(DOCKED, battery_percentage=48))
+    assert session.state.value.operational.battery_percentage == 49
+    await robot.wait(STATE_PUBLISH_SECONDS)
 
     assert session.state.value.operational.battery_percentage == 48
+
+
+async def test_poses_are_kept_per_mission_and_published_ten_times_a_second(
+    hass,
+) -> None:
+    robot = await _started(hass)
+    session = robot.session
+    published: list[dict] = []
+    session.poses.subscribe(lambda: published.append(session.poses.value))
+
+    robot.pose(_pose(42, 1.0))
+    robot.pose(_pose(84, 5.0))
+    robot.pose(_pose(42, 2.0))
+    await hass.async_block_till_done()
+    assert published == [{42: _pose(42, 1.0)}]
+
+    await robot.wait(POSE_PUBLISH_SECONDS)
+    assert published[-1] == {42: _pose(42, 2.0), 84: _pose(84, 5.0)}
+    assert session.pose_on(_floor(84)) == _pose(84, 5.0)
+    assert session.pose_on(_floor(7)) is None
+    assert session.pose_on(None) is None
+
+
+async def test_the_least_recently_updated_mission_gives_way_to_a_new_one(
+    hass,
+) -> None:
+    robot = await _started(hass)
+
+    for mission_id in range(MAX_POSE_MISSIONS):
+        robot.pose(_pose(mission_id, 1.0))
+    robot.pose(_pose(0, 2.0))
+    robot.pose(_pose(MAX_POSE_MISSIONS, 1.0))
+    await robot.wait(POSE_PUBLISH_SECONDS)
+
+    poses = robot.session.poses.value
+    assert len(poses) == MAX_POSE_MISSIONS
+    assert 1 not in poses
+    assert poses[0] == _pose(0, 2.0)
 
 
 async def test_a_push_keeps_only_the_values_a_frame_may_omit(hass) -> None:
@@ -270,8 +323,7 @@ async def test_a_failed_dial_is_an_outage_until_the_next_live_snapshot(hass) -> 
     assert session.error.value is error
 
     # A snapshot left waiting by the dead subscription is not the robot's word.
-    with patch("custom_components.matic_robot.session.STATE_PUBLISH_SECONDS", 0):
-        await robot.push(replace(DOCKED, battery_percentage=49))
+    await robot.push(replace(DOCKED, battery_percentage=49))
     assert session.error.value is not None
 
     robot.client.connection_error, robot.client.connected = None, True
@@ -354,13 +406,15 @@ async def test_stop_closes_the_client_and_ignores_what_arrives_later(hass) -> No
     robot = await _started(hass)
     session = robot.session
     remove_listener = robot.client.add_connection_listener.return_value
-    with patch("custom_components.matic_robot.session.STATE_PUBLISH_SECONDS", 3600):
-        await robot.push(replace(DOCKED, battery_percentage=49))
-        await robot.push(replace(DOCKED, battery_percentage=48))
-        robot.status("retrying")
+    await robot.push(replace(DOCKED, battery_percentage=49))
+    await robot.push(replace(DOCKED, battery_percentage=48))
+    robot.pose(_pose(42, 1.0))
+    robot.pose(_pose(42, 2.0))
+    robot.status("retrying")
 
-        await session.async_stop()
-        await robot.push(replace(DOCKED, battery_percentage=47))
+    await session.async_stop()
+    await robot.push(replace(DOCKED, battery_percentage=47))
+    robot.pose(_pose(42, 3.0))
     robot.status("retrying")
     await robot.wait(UNREACHABLE_AFTER_SECONDS + HEALTH_SAMPLE_SECONDS)
 
@@ -368,6 +422,7 @@ async def test_stop_closes_the_client_and_ignores_what_arrives_later(hass) -> No
     remove_listener.assert_called_once_with()
     assert session.error.value is None
     assert session.state.value.operational.battery_percentage == 49
+    assert session.pose_on(_floor(42)) == _pose(42, 1.0)
 
 
 async def test_home_assistant_stopping_closes_the_client(hass) -> None:

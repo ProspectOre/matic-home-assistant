@@ -5,7 +5,6 @@ const entry = (id, slug, session) => ({
   entry_id: id,
   scene_url: `/api/matic_robot/slam_scene/${slug}`,
   delta_url: null,
-  pose_url: `/api/matic_robot/slam_pose/${slug}`,
   history_url: `/api/matic_robot/slam_history/${slug}`,
   areas_url: `/api/matic_robot/areas/${slug}`,
   plans_url: `/api/matic_robot/plans/${slug}`,
