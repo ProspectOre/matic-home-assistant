@@ -178,10 +178,11 @@ def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
     """Return changed test files and the test files that reach a changed one."""
     touched = set(changed)
     modules = {module_name(path) for path in touched if path.suffix == ".py"}
-    # Many modules are only tested through the module that imports them.
+    # Many modules are only tested through the module or helper importing them.
     modules |= {
         module_name(path.relative_to(root))
-        for path in root.glob("custom_components/**/*.py")
+        for directory in ("custom_components", "tests")
+        for path in root.glob(f"{directory}/**/*.py")
         if modules & imported(root, path.relative_to(root))
     }
     # A conftest applies to every test beneath it.
