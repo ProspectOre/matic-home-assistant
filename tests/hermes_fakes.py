@@ -55,7 +55,7 @@ def watch(
     async def async_watch(
         name: str,
         on_entry: Callable[[Any], Awaitable[object]],
-        on_status: Callable[[supervisor.WatchStatus], object] | None = None,
+        on_status: supervisor.OnWatchStatus | None = None,
     ) -> None:
         await supervisor.async_watch(
             keep_subscribed(runs), lambda: subscribe(name), on_entry, on_status

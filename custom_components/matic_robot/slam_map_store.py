@@ -956,7 +956,9 @@ class SlamMapStore:
                 self._record_invalid()
                 self._notify_listeners()
 
-        await client.async_watch(name, add, partial(self._set_stream_state, name))
+        await client.async_watch(
+            name, add, lambda status, _error: self._set_stream_state(name, status)
+        )
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Subscribe to content and health changes; return an unsubscribe callback."""

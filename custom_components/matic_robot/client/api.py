@@ -44,7 +44,7 @@ from .models import (
     RunProgress,
 )
 from .observations import ActivityJournal, ObservationCallback
-from .supervisor import WatchStatus, async_watch
+from .supervisor import OnWatchStatus, async_watch
 
 
 class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
@@ -117,7 +117,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     @property
     def connection_error(self) -> Exception | None:
-        """Why requests fail: the last dial's failure or a refused credential."""
+        """Why the last dial failed; None while connected or about to redial."""
         return self._connection.supervisor.error
 
     def add_connection_listener(
@@ -130,7 +130,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
         collection_name: str,
         on_entry: Callable[[HermesCollectionEntry], Awaitable[object]],
-        on_status: Callable[[WatchStatus], object] | None = None,
+        on_status: OnWatchStatus | None = None,
     ) -> None:
         """Give ``on_entry`` a collection's snapshot and every later update.
 
@@ -147,7 +147,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     async def async_watch_state(
         self,
         on_state: Callable[[RobotOperationalState], Awaitable[object]],
-        on_status: Callable[[WatchStatus], object] | None = None,
+        on_status: OnWatchStatus | None = None,
     ) -> None:
         """Give ``on_state`` every snapshot of ``kabuki_state``, like a watch."""
         await async_watch(

@@ -36,7 +36,7 @@ async def start_coordinator(
     entry = entry or session_entry()
     session = RobotSession(hass, entry, client)
     await session.async_start()
-    client.async_watch_state.call_args.args[1]("connected")
+    client.async_watch_state.call_args.args[1]("connected", None)
     return MaticCoordinator(hass, session, entry, **options)
 
 

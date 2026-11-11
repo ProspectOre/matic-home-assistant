@@ -76,8 +76,11 @@ class _Robot:
         self._now = dt_util.utcnow()
         self.client = client
         self.session = session
-        self.push, self.status = client.async_watch_state.call_args.args
+        self.push, self._on_status = client.async_watch_state.call_args.args
         self.connection_changed = client.add_connection_listener.call_args.args[0]
+
+    def status(self, status: str, error: Exception | None = None) -> None:
+        self._on_status(status, error)
 
     async def wait(self, seconds: float) -> None:
         self._now += timedelta(seconds=seconds)
@@ -312,6 +315,20 @@ async def test_a_rejected_credential_starts_reauthentication(hass) -> None:
 
     robot.session._entry.async_start_reauth.assert_called_once_with(hass)
     assert robot.session.error.value is not None
+
+
+async def test_a_refused_state_subscription_starts_reauthentication_at_once(
+    hass,
+) -> None:
+    robot = await _started(hass)
+    refused = AuthenticationRequiredError("expired")
+
+    robot.status("retrying", TransportError("stream reset"))
+    assert robot.session.error.value is None
+    robot.status("retrying", refused)
+
+    assert robot.session.error.value is refused
+    robot.session._entry.async_start_reauth.assert_called_once_with(hass)
 
 
 async def test_identity_repair_lasts_until_the_pinned_robot_answers(hass) -> None:

@@ -18,8 +18,6 @@ import pytest
 from custom_components.matic_robot.client import (
     hermes_collections,
     hermes_connection,
-    supervisor,
-    transport,
 )
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.commands import UserCommand
@@ -46,13 +44,6 @@ def short_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(hermes_connection, "_RPC_TIMEOUT", 0.2)
 
 
-@pytest.fixture
-def fast_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ping every 0.2 s, not every minute, and wait 0.2 s for the answer."""
-    monkeypatch.setattr(supervisor, "KEEPALIVE_SECONDS", 0.2)
-    monkeypatch.setattr(transport, "KEEPALIVE_TIMEOUT_SECONDS", 0.2)
-
-
 class _Watched:
     """The state watch the integration keeps open."""
 
@@ -64,7 +55,7 @@ class _Watched:
     async def receive(self, state: RobotOperationalState) -> None:
         self.states.put_nowait(state)
 
-    def report(self, status: str) -> None:
+    def report(self, status: str, _error: Exception | None) -> None:
         self.statuses.append(status)
         if status == "retrying":
             self.interrupted.set()

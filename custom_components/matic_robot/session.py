@@ -229,19 +229,21 @@ class RobotSession:
     def _async_sample_health(self, _now: datetime) -> None:
         """Count the newest snapshot as one sighting of its errors and bag flags."""
         if self._state_live:
+            self.async_flush_state()
             self.state.set(self._live(self.health.observe(self._raw)))
 
     @callback
-    def _async_watch_status(self, status: WatchStatus) -> None:
+    def _async_watch_status(self, status: WatchStatus, error: Exception | None) -> None:
         """Start or end the wait that turns a dead state watch into an outage."""
         self._state_live = status == "connected"
         if self._state_live:
             self._async_cancel_unreachable_timer()
-        elif (
-            self._unreachable_timer is None
-            and self.error.value is None
-            and not self._stopped
-        ):
+        elif self._stopped:
+            return
+        elif isinstance(error, AuthenticationRequiredError):
+            # Waiting does not help a refused credential.
+            self._async_set_unreachable(error)
+        elif self._unreachable_timer is None and self.error.value is None:
             self._unreachable_timer = async_call_later(
                 self.hass, UNREACHABLE_AFTER_SECONDS, self._async_watch_timed_out
             )
@@ -261,13 +263,13 @@ class RobotSession:
             return
         self._async_track_identity(error)
         self._async_set_unreachable(error)
-        if isinstance(error, AuthenticationRequiredError):
-            self._entry.async_start_reauth(self.hass)
 
     @callback
     def _async_set_unreachable(self, error: Exception) -> None:
         self._async_cancel_unreachable_timer()
         self.error.set(error)
+        if isinstance(error, AuthenticationRequiredError):
+            self._entry.async_start_reauth(self.hass)
 
     @callback
     def _async_cancel_unreachable_timer(self) -> None:

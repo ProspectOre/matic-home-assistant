@@ -10,7 +10,7 @@ from random import uniform
 from time import monotonic
 from typing import Literal
 
-from .exceptions import AuthenticationRequiredError, MaticError, TransportError
+from .exceptions import MaticError, TransportError
 from .transport import PinnedChannel
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,8 +23,10 @@ _FIRST_DELAY = 1.0
 _MAX_DELAY = 30.0
 
 # A watch is ``connecting`` from the start of each subscription, ``connected``
-# from its first value and ``retrying`` once the subscription has ended.
+# from its first value and ``retrying`` once the subscription has ended. A
+# status is reported with the error that ended the subscription, if one did.
 WatchStatus = Literal["connecting", "connected", "retrying"]
+OnWatchStatus = Callable[[WatchStatus, Exception | None], object]
 
 
 async def _async_wait(event: asyncio.Event, seconds: float) -> None:
@@ -38,7 +40,7 @@ async def async_watch[T](
     keep_subscribed: Callable[[Callable[[], Awaitable[object]]], Awaitable[None]],
     subscribe: Callable[[], AsyncGenerator[T]],
     on_value: Callable[[T], Awaitable[object]],
-    on_status: Callable[[WatchStatus], object] | None = None,
+    on_status: OnWatchStatus | None = None,
 ) -> None:
     """Give ``on_value`` each value of a subscription that reopens when it ends.
 
@@ -46,9 +48,9 @@ async def async_watch[T](
     paces the subscriptions and returns when the supervisor closes.
     """
 
-    def report(status: WatchStatus) -> None:
+    def report(status: WatchStatus, error: Exception | None = None) -> None:
         if on_status is not None:
-            on_status(status)
+            on_status(status, error)
 
     async def consume() -> None:
         report("connecting")
@@ -60,8 +62,8 @@ async def async_watch[T](
                         connected = True
                         report("connected")
                     await on_value(value)
-        except Exception:
-            report("retrying")
+        except Exception as err:
+            report("retrying", err)
             raise
         report("retrying")
 
@@ -102,8 +104,7 @@ class ConnectionSupervisor:
         self._keepalive_seconds = KEEPALIVE_SECONDS
         self._task: asyncio.Task[None] | None = None
         self._channel: PinnedChannel | None = None
-        # Why requests fail now: the last dial's error, a subscription's
-        # refused credential, or the close.
+        # Why requests fail now: the last dial's error, or the close.
         self._error: Exception | None = None
         self._closed = asyncio.Event()
         self._changed = asyncio.Event()
@@ -117,7 +118,7 @@ class ConnectionSupervisor:
 
     @property
     def error(self) -> Exception | None:
-        """Why requests fail: the last dial's failure or a refused credential."""
+        """Why the last dial failed; None while connected or about to redial."""
         return self._error
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -156,9 +157,6 @@ class ConnectionSupervisor:
                 await consume()
             except MaticError as err:
                 _LOGGER.debug("Hermes subscription interrupted: %s", err)
-                if isinstance(err, AuthenticationRequiredError):
-                    # Every request on this connection carries that credential.
-                    self._publish(self._channel, err)
             # A closed channel can turn a task's cancellation into a transport
             # error, so the close must end this wait and the loop.
             await _async_wait(self._closed, backoff.delay(monotonic() - started))
