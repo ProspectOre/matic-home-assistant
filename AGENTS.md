@@ -1,35 +1,87 @@
 # AGENTS
 
-## Review contract
+Facts an agent needs to change this repository. Everything it refers to is in
+this repository. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, pull requests
+and review.
 
-Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Every candidate requires an authentic complete Codex review bound to its exact head and intended base, meaningful required CI, finding dispositions and a designated-owner manual merge. The request coordinator and bespoke custom status gate are retired by owner approval. Request regular `@codex review` directly on each opened or pushed PR head; check existing requests to avoid duplicates. Preserve historical review gaps and keep runtime, physical, release and human approval boundaries separate.
+## Commands
 
-## Workspace and writing
+- `uv run scripts/check.py` runs the formatter, linter, type checker, layer and
+  size rules, privacy scan, and the tests that import a changed file or a
+  module that imports one. Run it before every push. CI runs it with `--all`:
+  every test, with line coverage that must stay at 100%.
+- `uv run ruff format .` fixes formatting.
+- After changing dependencies in `pyproject.toml`, run `uv lock` and commit
+  `uv.lock`. CI installs with `--locked` and fails on a stale lockfile.
+- Frontend changes have their own commands; see
+  [CONTRIBUTING.md](CONTRIBUTING.md#frontend).
+- Python 3.14 syntax is intended, including `except A, B:` without parentheses.
+- Home Assistant 2026.10 is the oldest supported version (`hacs.json`).
+  `pyproject.toml` pins the version the tests run on.
 
-- Inherit the shared [AGENTS.md](https://github.com/ProspectOre/dev-workspace/blob/main/AGENTS.md) (`/Users/alec/Dev/AGENTS.md` when present; native `xcode-tools` preference included); this file adds repository facts only.
-- Before substantive work, at material milestones and at handoff, follow the canonical [Linear work-tracking workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/linear-work-tracking.md). When local ancestor or wiki files are absent, read the linked canonical sources through existing authorized session connectors as that workflow requires; report unavailable routes separately.
-- Write commits, PR text, reviews, comments and docs as plain, specific, human-quality prose: no AI slop such as filler, hype, restated summaries or decorative emoji. Attribution trailers and tool footers are tolerated here, overriding the shared rule, and nothing checks for them. Commit as the account owner; name branches by purpose.
+## Layers
 
-## OEM app and protocol research
+`scripts/check.py` fails on an import that crosses one of these lines:
 
-Learn from the installed Matic OEM app on the Samsung tablet or an equivalent
-authorized device before declaring a capability or protocol field unavailable.
-Decompilation and reverse engineering are authorized research techniques. Follow
-the [OEM research workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/oem-protocol-research.md)
-(`/Users/alec/Dev/wiki/workflows/oem-protocol-research.md` locally): verify installed
-app and artifact identity, trace wire fields through the OEM decoder and UI, and
-distinguish parser omissions from absent protocol evidence. Keep private captures
-and vendor binaries out of the public tree; device changes and physical acceptance
-remain separate from read-only research and synthetic tests.
+- `custom_components/matic_robot/client/` is the robot protocol client. It
+  imports nothing from Home Assistant or from the rest of the integration.
+- The plan core holds plan values and accounting rules; `PLAN_CORE` in
+  `scripts/check.py` lists its modules. It imports the client and itself,
+  never Home Assistant.
+- Entity platforms, the modules with `async_setup_entry` such as `sensor.py`
+  and `vacuum.py`, do not import each other. Shared code goes in a module both
+  import.
 
-## Release candidate cleanup
+It also holds every code file to 1,000 lines. `scripts/oversize_files.txt`
+records each older, larger file at the size it may not exceed, so put new code
+and new tests in a new file. [Architecture](docs/architecture.md) maps the
+modules.
 
-After publishing a new RC, keep only its RC GitHub release and remote/local tag.
-Remove superseded RC releases/tags, retaining reviewed commit IDs in qualification
-receipts and preserving rollback copies. When publishing stable, retire its RC
-release/tag; preserve stable releases and tags.
+## Privacy
+
+- Use synthetic fixtures. Keep credentials, serial numbers, MAC and IP
+  addresses, room names, maps, photos, captures, backups and Home Assistant
+  storage out of files, commits, issues and pull requests. The privacy scan
+  rejects the common ones.
+- Robot traffic stays on the local network. Keep TLS validation, certificate
+  pinning and diagnostic redaction intact.
+
+## Robot behavior
+
+- Never guess a command, enum or payload. A new command needs a payload
+  fixture recorded from a robot and one check on a robot. If you cannot run
+  that check, say so in the pull request.
+- Before calling a field or capability unavailable, establish whether the
+  robot never sends it or the parser drops it.
+- Code that reads robot state or sends a command follows
+  [working alongside the Matic app](docs/coexistence.md).
+- Pairing changes keep the scoped BlueZ agent and cover success, malformed,
+  rejected and expired codes, cancellation and a missing adapter.
+- Entities become unavailable when the robot is unreachable, and unloading the
+  entry releases everything it started. Use Home Assistant's asynchronous APIs.
+
+## Running without a robot
+
+- `tests/e2e` runs Home Assistant and the real client against the simulated
+  robot in `tests/e2e/hermes_sim.py`, as part of pytest.
+- `uv run tests/live/server.py` serves Home Assistant with that robot paired.
+  [CONTRIBUTING.md](CONTRIBUTING.md#run-without-a-robot) has the steps.
+- A simulator pass shows that the integration agrees with the simulator. It is
+  not evidence about a real robot; do not present it as such.
 
 ## CI
 
-- Follow the [delivery contract](https://github.com/ProspectOre/wiki/blob/main/workflows/delivery-contract.md); `.github/delivery-contract.json` allow-lists every workflow and `.github/scripts/delivery-contract.py` runs first in Test.
-- Test (`ci` job), Browser UI and Validate run on free hosted `ubuntu-latest` for every PR and every push to main or a release branch. Nightly runs the suite and the live lane on the minimum, current and beta Home Assistant, scheduled from the default branch only. `windows-assistive-qualification.yml` is manual only.
+- Test, Browser UI and Validate run on GitHub-hosted runners for every pull
+  request and every push to `main` or a release branch. A test rejects any
+  other runner.
+- Nightly runs the tests and the live lane on the oldest supported, newest
+  stable and beta Home Assistant. GitHub starts it from the default branch
+  only.
+- `.github/delivery-contract.json` must list every workflow file.
+  `.github/scripts/delivery-contract.py` checks that first in Test.
+
+## Writing
+
+Write comments, commits, pull request text and docs plainly and specifically:
+no filler, hype or restated summaries. Name branches by purpose. Never add AI
+or tool attribution or co-author trailers.

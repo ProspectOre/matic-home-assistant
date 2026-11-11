@@ -1,24 +1,58 @@
 # Contributing
 
-## Development
+Bug reports, protocol findings and pull requests are welcome. You do not need a
+robot: the tests and a local Home Assistant both run against a simulated one.
 
-Requires Python 3.14 and Node.js for frontend work.
+## Set up
 
-The [test extra](pyproject.toml) pins the Home Assistant test dependencies.
-The integration supports Home Assistant 2026.10 and later ([HACS metadata](hacs.json)).
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/). It
+downloads Python 3.14 and the locked dependencies the first time you run a
+command.
 
 ```sh
-python -m venv .venv
-.venv/bin/pip install -e '.[test]'
-.venv/bin/pytest --cov=custom_components/matic_robot --cov-report=term-missing
-.venv/bin/ruff check .
-.venv/bin/ruff format --check .
-.venv/bin/mypy custom_components/matic_robot
-.venv/bin/python scripts/check_public_tree.py
+git clone https://github.com/ProspectOre/matic-home-assistant
+cd matic-home-assistant
+uv run scripts/check.py
 ```
 
-For Map Studio changes, use Node.js 24, matching CI. Install dependencies and
-Playwright browsers in the checkout, then build and run the frontend checks:
+Base new work on the open `release/X.Y` branch. Base a fix for the current
+stable release on `main`.
+
+## Check your change
+
+`uv run scripts/check.py` runs the formatter, linter, type checker, layer and
+size rules, privacy scan, and the tests that import a changed file or a module
+that imports one. CI runs the same command with `--all`, which runs every test
+and requires 100% line coverage. `uv run ruff format .` fixes formatting.
+
+Without uv, install the `test` extra into a Python 3.14 environment and run
+`python scripts/check.py`.
+
+## Run without a robot
+
+```sh
+uv run tests/live/server.py
+```
+
+This starts Home Assistant at <http://127.0.0.1:8123> with a simulated robot
+already paired and no login. The first start takes about a minute while Home
+Assistant installs its frontend. Matic Map is in the sidebar.
+
+A second port moves the robot:
+
+```sh
+curl -X POST http://127.0.0.1:8124/step/start_cleaning
+curl http://127.0.0.1:8124/state
+```
+
+`STEPS` in [tests/live/server.py](tests/live/server.py) names every step, and
+the [harness guide](docs/e2e-harness.md) says what the simulator does and does
+not model. The same simulator backs `tests/e2e`, so a behavior you can show in
+the browser can usually be pinned in a test.
+
+## Frontend
+
+Matic Map lives in `frontend/map-studio-v4`. Use Node.js 24, as CI does.
 
 ```sh
 npm ci
@@ -28,70 +62,51 @@ npm run build:map-studio-v4
 npm run test:browser
 ```
 
-On Linux, `npx playwright install --with-deps chromium firefox webkit` also
-installs required system packages and may require administrator privileges.
-The browser suite includes desktop engines and emulated mobile viewports;
-physical-device qualification is separate. Do not share a symlinked
-`node_modules` directory across worktrees: module resolution can change the
-generated chunks. Commit the rebuilt bundle with its source. For bounded
-synthetic capacity and retention measurements, see the
-[lab procedure](docs/performance-map-lab.md).
-
-Python 3.14's unparenthesized multiple exception types are intentional project
-style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
-
-## CI routing
-
-Matic is a public repository. Test, Browser, and Validate run on standard
-GitHub-hosted `ubuntu-latest` runners, which are
-[free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
-Use the existing hosted workflows; private-repository paid-minute limits and
-missing self-hosted runners do not block this route. A local Linux VM is not a
-prerequisite. Larger runners and storage/cache allowances have separate billing.
-Recheck the route if repository visibility or runner configuration changes.
-
-Hosted CI does not replace exact-head review, manual merge, approved RC
-installation, runtime verification, physical acceptance, or release permission.
-For complete comparison review, preserved historical evidence and the owner merge
-checklist, see [Review and manual merge](docs/maintenance-reviews.md).
+Commit the rebuilt bundle with its source; CI rebuilds it and fails on a
+difference. On Linux, `npx playwright install --with-deps` also installs system
+packages and may need administrator rights. Give each worktree its own
+`node_modules`: a shared, symlinked one can change the generated chunks.
 
 ## Changes and pull requests
 
-- Explain the user-visible change briefly; update relevant docs and tests.
-- Write commits and PR text plainly and specifically; avoid filler and boilerplate.
-- Use synthetic fixtures. Keep credentials, identifiers, room names, maps,
-  captures, backups, raw timings, and Home Assistant storage out of public files and discussion.
-- Preserve TLS validation, certificate pinning, diagnostic privacy, entity availability, and unload cleanup.
-- Changes that read robot state or send commands follow the
-  [rules for working alongside the Matic app](docs/coexistence.md); say in the PR which rules apply.
-- New commands require an exact synthetic fixture, successful robot validation, and Home Assistant-native error handling. Never guess enums or payloads.
-- Pairing changes must preserve the scoped BlueZ agent and cover success, malformed/rejected/expired codes, cancellation, and unavailable adapters.
-- Tests must retain 100% coverage. Required CI, privacy, HACS, Hassfest, and review must pass before a manual merge.
+A change keeps the rules in [AGENTS.md](AGENTS.md), which apply to people and
+coding agents alike and cover privacy and new robot commands. It also updates
+the docs and tests it affects.
+
+The pull request template asks what changed, how you tested it, the firmware
+you tested with, the [coexistence rules](docs/coexistence.md) the change
+touches, and a screenshot for UI changes. Take screenshots from the simulator
+so no real home appears.
+
+Before a pull request merges:
+
+- CI passes: Test, Browser UI and Validate.
+- Every pull request gets an automated code review of its whole diff. A
+  maintainer requests it, so you need no account with any AI service. Answer
+  each finding with a fix or a reason.
+- A maintainer merges by hand. Auto-merge and force pushes stay off.
+
+Maintainers request the review by commenting `@codex review` on each pushed
+head, unless a request for that head is already pending.
 
 ## Documentation
 
-Lead with what users can do, especially plan logic and Home Assistant workflows
-that add to the native app. Verify feature claims against code and native-app
-comparisons against Matic documentation. Keep instructions in one task-specific
-guide and link to it. Include limits only where they affect the task; avoid
-repeated warnings. Preserve release notes as historical records, focused on
-user-visible changes. Keep test logs and development diaries out of user docs.
+Write one guide per task and link to it instead of repeating it. Lead with what
+the user can do. Check feature claims against the code. Keep test logs and
+development history out of user docs.
 
 ## Releasing
 
-1. Complete the [review and manual-merge checklist](docs/maintenance-reviews.md).
-2. With release authorization, merge into `release/X.Y` and publish its candidate
-   as a GitHub pre-release.
-3. Install it through HACS beta versions and restart Home Assistant.
-4. Verify the loaded version, changed behavior, and guarded failure on the robot.
-5. With stable-release approval, merge `release/X.Y` into `main`, publish `vX.Y.Z`
-   from the qualified merge commit and delete `release/X.Y`. Stable hotfixes
-   go to `main` by PR.
+Maintainers publish releases, and the owner approves each one.
 
-If a candidate fails, fix it and publish the next candidate. Group related fixes
-into one release.
-
-Keep only the current RC in the public release/tag list. After publishing a new
-RC, remove superseded RC GitHub releases and remote/local tags. Record prior
-reviewed commit IDs in qualification receipts and preserve rollback copies. When
-publishing stable, retire its RC release/tag; keep stable releases and tags.
+1. Merge reviewed work into `release/X.Y` and publish a candidate from it as a
+   GitHub pre-release.
+2. Install the candidate through HACS beta versions, restart Home Assistant,
+   and verify the loaded version, the changed behavior and a guarded failure
+   on a robot.
+3. If the candidate fails, fix it and publish the next one. Keep only the
+   newest candidate's release and tag; record the commit of each earlier one
+   and keep a copy to roll back to.
+4. Merge `release/X.Y` into `main`, publish `vX.Y.Z` from that merge commit,
+   then delete the branch and the candidate's release and tag. Stable releases
+   and tags stay. A fix for a stable release reaches `main` by pull request.
