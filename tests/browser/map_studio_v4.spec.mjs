@@ -8834,10 +8834,12 @@ for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "u
     const gallery = await loadGallery(page, { scenario: "draw" });
     // The room-colour layer intentionally replaces the point cloud. This
     // safety case needs a published point scene so it can verify drawing is
-    // rejected after publication; keep the fixture on the photo layer.
+    // rejected after publication; keep the fixture on the photo layer. Auto
+    // detail draws fewer points after three slow frames and stays there
+    // while the map is idle, so it would never count as published.
     await gallery.evaluate((element) => {
       const state = element.getWorkspaceSnapshot();
-      element.replaceWorkspaceState({ ...state, appearance: "photo" });
+      element.replaceWorkspaceState({ ...state, appearance: "photo", quality: "maximum" });
     });
     const map = gallery.locator(".map-root");
     const renderer = gallery.locator("matic-map-canvas-v4");
