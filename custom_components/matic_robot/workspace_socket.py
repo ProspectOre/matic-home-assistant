@@ -400,6 +400,10 @@ class WorkspaceSocket:
             bump_resources=[],
             bump_coherence=previous_boundary != current_boundary,
         )
+        # The pose's projection depends on the floor plan and map verification,
+        # so a docked robot that sends nothing new still needs it republished.
+        if previous_boundary != current_boundary:
+            self._async_pose_changed(entry_id)
 
     def _async_pose_changed(self, entry_id: str) -> None:
         """Send the robot's new position to each subscription that asked for it."""
