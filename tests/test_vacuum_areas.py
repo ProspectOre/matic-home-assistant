@@ -19,7 +19,7 @@ from custom_components.matic_robot.vacuum_catalog import (
 
 def _auto_map(entity: MaticVacuum) -> None:
     entity._segment_catalog.auto_map(
-        entity.hass, entity.entity_id, entity.coordinator.data.floor_plan
+        entity.hass, entity.entity_id, entity.session.floor.value
     )
 
 
@@ -27,7 +27,7 @@ def _reconcile(entity: MaticVacuum) -> None:
     entity._segment_catalog.reconcile(
         entity.hass,
         entity.entity_id,
-        entity.coordinator.data.floor_plan,
+        entity.session.floor.value,
         entity.async_create_segments_issue,
     )
 
@@ -101,17 +101,18 @@ def _vacuum(*, with_floor_plan: bool = True) -> MaticVacuum:
         True,
         "test",
     )
-    coordinator = SimpleNamespace(
-        data=SimpleNamespace(
-            info=info,
-            floor_plan=floor_plan,
-            telemetry=SimpleNamespace(software_version="v-test"),
-            operational=SimpleNamespace(software_version=None),
+    session = SimpleNamespace(
+        info=info,
+        floor=SimpleNamespace(value=floor_plan),
+        telemetry=SimpleNamespace(value=SimpleNamespace(software_version="v-test")),
+        state=SimpleNamespace(
+            value=SimpleNamespace(operational=SimpleNamespace(software_version=None))
         ),
+        heartbeat=SimpleNamespace(),
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             cleaning_plans=SimpleNamespace(cancel=MagicMock(return_value=False)),
         )
     )
@@ -145,7 +146,7 @@ def test_auto_mapping_writes_only_unconfigured_exact_matches() -> None:
     assert options["last_seen_segments"] == [
         {"id": "room-1", "name": "Kitchen", "group": "Current floor"}
     ]
-    scope = _floor_scope(entity.coordinator.data.floor_plan)
+    scope = _floor_scope(entity.session.floor.value)
     assert options["matic_floor_scope"] == scope
     assert options["matic_floor_catalogs"] == {
         scope: {
@@ -255,7 +256,7 @@ def test_segment_change_check_requires_a_local_floor_plan() -> None:
 
 def test_segment_check_initializes_a_missing_catalog_for_a_known_floor() -> None:
     entity = _vacuum()
-    scope = _floor_scope(entity.coordinator.data.floor_plan)
+    scope = _floor_scope(entity.session.floor.value)
     entity_entry = SimpleNamespace(options={"vacuum": {"matic_floor_scope": scope}})
     entity_registry = MagicMock()
     entity_registry.async_get.return_value = entity_entry
@@ -297,7 +298,7 @@ def test_matching_legacy_catalog_is_bound_to_the_current_floor() -> None:
         _reconcile(entity)
 
     updated = entity_registry.async_update_entity_options.call_args.args[2]
-    scope = _floor_scope(entity.coordinator.data.floor_plan)
+    scope = _floor_scope(entity.session.floor.value)
     assert updated["matic_floor_scope"] == scope
     assert updated["area_mapping"] == {"kitchen": ["room-1"]}
     assert (
@@ -322,7 +323,7 @@ def test_segment_option_parsing_is_defensive_and_catalogs_are_bounded() -> None:
 def test_segment_change_repair_is_deduplicated_and_resets() -> None:
     entity = _vacuum()
     entity.async_create_segments_issue = MagicMock()
-    scope = _floor_scope(entity.coordinator.data.floor_plan)
+    scope = _floor_scope(entity.session.floor.value)
     old_payload = [{"id": "old", "name": "Old room", "group": "Current floor"}]
     entity_entry = SimpleNamespace(
         options={
@@ -360,7 +361,7 @@ def test_floor_swap_stores_and_restores_floor_specific_area_mapping() -> None:
     """Expected partition changes swap catalogs without raising a Repair."""
     entity = _vacuum()
     entity.async_create_segments_issue = MagicMock()
-    current_plan = entity.coordinator.data.floor_plan
+    current_plan = entity.session.floor.value
     current_scope = _floor_scope(current_plan)
     previous_plan = FloorPlan(
         2,
@@ -406,7 +407,7 @@ def test_floor_swap_stores_and_restores_floor_specific_area_mapping() -> None:
             "last_seen_segments": current_options["last_seen_segments"],
         }
         entity_entry.options = {"vacuum": current_options}
-        entity.coordinator.data.floor_plan = previous_plan
+        entity.session.floor.value = previous_plan
         entity_registry.async_update_entity_options.reset_mock()
         _reconcile(entity)
 
@@ -421,7 +422,7 @@ def test_returning_to_changed_cataloged_floor_raises_repair() -> None:
     """Revalidate a retained floor catalog against its current room topology."""
     entity = _vacuum()
     entity.async_create_segments_issue = MagicMock()
-    current_scope = _floor_scope(entity.coordinator.data.floor_plan)
+    current_scope = _floor_scope(entity.session.floor.value)
     previous_plan = FloorPlan(
         2,
         "previous-partition",
@@ -511,14 +512,14 @@ def test_new_floor_is_auto_mapped_in_the_same_idle_update() -> None:
             "custom_components.matic_robot.vacuum_catalog.ar.async_get",
             return_value=area_registry,
         ),
-        patch.object(MaticEntity, "_handle_coordinator_update"),
+        patch.object(MaticEntity, "_handle_store_update"),
     ):
-        entity._handle_coordinator_update()
+        entity._handle_store_update()
 
     current_options = entity_entry.options["vacuum"]
     assert entity_registry.async_update_entity_options.call_count == 2
     assert current_options["matic_floor_scope"] == _floor_scope(
-        entity.coordinator.data.floor_plan
+        entity.session.floor.value
     )
     assert current_options["area_mapping"] == {"kitchen": ["room-1"]}
 
@@ -527,7 +528,7 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
     """A pre-upgrade mismatch warns once without discarding the old mapping."""
     entity = _vacuum()
     entity.async_create_segments_issue = MagicMock()
-    shed_plan = entity.coordinator.data.floor_plan
+    shed_plan = entity.session.floor.value
     home_plan = FloorPlan(
         3,
         "home-partition",
@@ -559,7 +560,7 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
         }
         assert shed_options["area_mapping"] == home_mapping
         assert shed_options["last_seen_segments"] == home_payload
-        shed_scope = _floor_scope(entity.coordinator.data.floor_plan)
+        shed_scope = _floor_scope(entity.session.floor.value)
         assert shed_options["matic_floor_catalogs"][shed_scope] == {
             "last_seen_segments": [
                 {"id": "room-1", "name": "Kitchen", "group": "Current floor"}
@@ -568,7 +569,7 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
         entity.async_create_segments_issue.assert_called_once()
 
         entity_entry.options = {"vacuum": shed_options}
-        entity.coordinator.data.floor_plan = home_plan
+        entity.session.floor.value = home_plan
         entity_registry.async_update_entity_options.reset_mock()
         _reconcile(entity)
 
@@ -578,7 +579,7 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
     assert "matic_unscoped_catalog" not in restored_home
 
     entity_entry.options = {"vacuum": restored_home}
-    entity.coordinator.data.floor_plan = shed_plan
+    entity.session.floor.value = shed_plan
     entity_registry.async_update_entity_options.reset_mock()
     with patch(
         "custom_components.matic_robot.vacuum_catalog.er.async_get",
@@ -614,8 +615,8 @@ async def test_lifecycle_runs_area_mapping_and_change_checks() -> None:
     calls.clear()
     entity._segment_catalog.auto_map.reset_mock()
     entity._segment_catalog.reconcile.reset_mock()
-    with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
-        entity._handle_coordinator_update()
+    with patch.object(MaticEntity, "_handle_store_update") as parent_update:
+        entity._handle_store_update()
     assert calls == ["segments", "map"]
     entity._segment_catalog.auto_map.assert_called_once()
     entity._segment_catalog.reconcile.assert_called_once()
@@ -635,8 +636,8 @@ def test_dock_after_stop_is_skipped_before_the_entity_is_registered() -> None:
     schedule.assert_not_called()
 
     entity.entity_id = "vacuum.test"
-    entity.coordinator.client = MagicMock()
-    entity.coordinator.async_request_refresh = AsyncMock()
+    entity.session.client = MagicMock()
+    entity.session.heartbeat.async_request_refresh = AsyncMock()
     with patch(
         "custom_components.matic_robot.vacuum.schedule_dock_after_stop"
     ) as schedule:
@@ -651,8 +652,8 @@ async def test_dock_after_stop_callback_closes_the_correlated_run() -> None:
     entity.entity_id = "vacuum.test"
     entity._plans.ledger = SimpleNamespace(async_mark_run_docked=AsyncMock())
     entity._plans.control = SimpleNamespace(stop_fence_token=MagicMock(return_value=23))
-    entity.coordinator.client = MagicMock()
-    entity.coordinator.async_request_refresh = AsyncMock()
+    entity.session.client = MagicMock()
+    entity.session.heartbeat.async_request_refresh = AsyncMock()
     with patch(
         "custom_components.matic_robot.vacuum.schedule_dock_after_stop"
     ) as schedule:

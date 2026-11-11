@@ -366,10 +366,12 @@ async def _plan_services(hass, manager):
     entry = SimpleNamespace(
         entry_id="entry",
         runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(floor_plan=floor_plan),
-                async_request_refresh=AsyncMock(),
-                async_confirm_room_completed=MagicMock(),
+            session=SimpleNamespace(
+                floor=SimpleNamespace(value=floor_plan),
+                heartbeat=SimpleNamespace(
+                    async_request_refresh=AsyncMock(),
+                    async_confirm_room_completed=MagicMock(),
+                ),
             ),
             client=SimpleNamespace(
                 async_get_active_cleaning_session_state=AsyncMock(),

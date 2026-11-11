@@ -301,7 +301,9 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
         return ()
 
     if stage == "refresh":
-        entry.runtime_data.coordinator.async_request_refresh.side_effect = interrupt
+        entry.runtime_data.session.heartbeat.async_request_refresh.side_effect = (
+            interrupt
+        )
     elif stage == "history":
         client.async_get_cleaning_session_records.side_effect = interrupt
     else:

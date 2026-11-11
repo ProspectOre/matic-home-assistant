@@ -105,7 +105,7 @@ class MaticAreasView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        floor_plan = runtime.coordinator.data.floor_plan
+        floor_plan = runtime.session.floor.value
         if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
             return web.Response(
                 status=HTTPStatus.CONFLICT,
@@ -122,7 +122,7 @@ class MaticAreasView(HomeAssistantView):
                     "X-Matic-Areas-Conflict": "no-rooms",
                 },
             )
-        serial_number = str(runtime.coordinator.data.info.serial_number)
+        serial_number = str(runtime.session.info.serial_number)
         areas = []
         room_geometry = None
         for area_id, area in runtime.cleaning_plans.catalog.areas(
@@ -173,7 +173,7 @@ class MaticAreasView(HomeAssistantView):
                     serial_number
                 ),
                 "zones": self._zones(
-                    runtime.coordinator.data.telemetry.zones, floor_plan, areas
+                    runtime.session.telemetry.value.zones, floor_plan, areas
                 ),
             },
             headers=PRIVATE_NO_STORE_HEADERS,
@@ -193,7 +193,7 @@ class MaticAreasView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        floor_plan = runtime.coordinator.data.floor_plan
+        floor_plan = runtime.session.floor.value
         map_identity = runtime.slam_map.mission_identity
         if (
             floor_plan is None
@@ -208,7 +208,7 @@ class MaticAreasView(HomeAssistantView):
             body = await request.json(loads=json.loads)
             if (
                 runtime_for_entry(hass, entry_id) is not runtime
-                or runtime.coordinator.data.floor_plan != floor_plan
+                or runtime.session.floor.value != floor_plan
                 or runtime.slam_map.mission_identity != map_identity
                 or not runtime.slam_map.floor_plan_is_current(floor_plan)
             ):
@@ -230,7 +230,7 @@ class MaticAreasView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS
             )
-        serial_number = str(runtime.coordinator.data.info.serial_number)
+        serial_number = str(runtime.session.info.serial_number)
         saved = runtime.cleaning_plans.catalog.areas(serial_number)
         requested_id = body.get("area_id")
         if requested_id is None:
@@ -257,7 +257,7 @@ class MaticAreasView(HomeAssistantView):
             """Keep request identities valid through the area metadata commit."""
             if (
                 runtime_for_entry(hass, entry_id) is not runtime
-                or runtime.coordinator.data.floor_plan != floor_plan
+                or runtime.session.floor.value != floor_plan
                 or runtime.slam_map.mission_identity != map_identity
                 or not runtime.slam_map.floor_plan_is_current(floor_plan)
             ):
@@ -321,7 +321,7 @@ class MaticAreasView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         area_id = str(request.query.get("area_id", ""))
-        serial_number = str(runtime.coordinator.data.info.serial_number)
+        serial_number = str(runtime.session.info.serial_number)
         if area_id not in runtime.cleaning_plans.catalog.areas(serial_number):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS

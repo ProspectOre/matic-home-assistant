@@ -286,25 +286,29 @@ async def test_legacy_coarse_cells_keep_their_positions_across_finer_samples(
     assert restored.cells(7, FRAME) == expected
 
 
-def _coordinator(*, charging: bool = False, mission: int | None = 7):
+def _sampling_session(
+    *poses: RobotPose | None,
+    dbm: int | None = -55,
+    charging: bool = False,
+    mission: int | None = 7,
+    expected_mission: int | None = None,
+) -> SimpleNamespace:
+    """Return the session stores a sample reads, on floor 7 unless told."""
     floor_plan = (
         SimpleNamespace(mission_id=7, partition_id_wire=PARTITION)
         if mission is not None
         else None
     )
     return SimpleNamespace(
-        data=SimpleNamespace(
-            floor_plan=floor_plan,
-            operational=SimpleNamespace(is_charging=charging),
+        floor=SimpleNamespace(value=floor_plan),
+        state=SimpleNamespace(
+            value=SimpleNamespace(operational=SimpleNamespace(is_charging=charging))
         ),
-        expected_floor_mission_id=mission,
-    )
-
-
-def _sampling_session(
-    *poses: RobotPose | None, dbm: int | None = -55
-) -> SimpleNamespace:
-    return SimpleNamespace(
+        heartbeat=SimpleNamespace(
+            expected_floor_mission_id=(
+                mission if expected_mission is None else expected_mission
+            )
+        ),
         pose_on=MagicMock(side_effect=list(poses)),
         client=SimpleNamespace(async_scan_wifi_signal=AsyncMock(return_value=dbm)),
     )
@@ -313,9 +317,8 @@ def _sampling_session(
 async def test_sample_pairs_the_scan_with_the_pose_around_it(hass) -> None:
     store = WifiSurveyStore(hass, "entry")
     session = _sampling_session(_pose(1.0, 1.0, 98.0), _pose(1.2, 1.0, 99.0))
-    coordinator = _coordinator()
     with patch.object(wifi_survey, "time", return_value=99.0):
-        await store._async_sample(session, coordinator)
+        await store._async_sample(session)
     assert store.cells(7, FRAME) == [
         {
             "x": 1.067,
@@ -326,7 +329,7 @@ async def test_sample_pairs_the_scan_with_the_pose_around_it(hass) -> None:
             "updated_at": 99,
         }
     ]
-    session.pose_on.assert_called_with(coordinator.data.floor_plan)
+    session.pose_on.assert_called_with(session.floor.value)
 
 
 @pytest.mark.parametrize(("distance", "accepted"), [(0.3048, True), (0.305, False)])
@@ -336,7 +339,7 @@ async def test_sample_limits_movement_to_one_foot(
     store = WifiSurveyStore(hass, "entry")
     session = _sampling_session(_pose(0, 0, 98.0), _pose(distance, 0, 99.0))
     with patch.object(wifi_survey, "time", return_value=99.0):
-        await store._async_sample(session, _coordinator())
+        await store._async_sample(session)
     assert bool(store.cells(7, FRAME)) is accepted
 
 
@@ -349,7 +352,7 @@ async def test_sample_from_before_a_clear_is_dropped(hass) -> None:
         return -55
 
     session.client.async_scan_wifi_signal.side_effect = _scan_then_clear
-    await store._async_sample(session, _coordinator())
+    await store._async_sample(session)
     assert store.cells(7, FRAME) == []
 
 
@@ -363,7 +366,7 @@ async def test_sample_taken_while_the_survey_is_turned_off_is_dropped(hass) -> N
         return -55
 
     session.client.async_scan_wifi_signal.side_effect = _scan_then_opt_out
-    await store._async_sample(session, _coordinator())
+    await store._async_sample(session)
     assert store.cells(7, FRAME) == []
 
 
@@ -380,52 +383,38 @@ async def test_sample_is_dropped_when_the_frame_changes_during_the_scan(
 ) -> None:
     store = WifiSurveyStore(hass, "entry")
     assert store.add_sample(7, FRAME, 5.0, 5.0, -40, 1.0)
-    coordinator = _coordinator()
     session = _sampling_session(_pose(1.0, 1.0, 10.0), _pose(1.2, 1.0, 12.0))
 
     async def _scan_then_move() -> int | None:
-        coordinator.data.floor_plan = replacement
+        session.floor.value = replacement
         return -55
 
     session.client.async_scan_wifi_signal.side_effect = _scan_then_move
-    await store._async_sample(session, coordinator)
+    await store._async_sample(session)
     assert [cell["dbm"] for cell in store.cells(7, FRAME)] == [-40.0]
 
 
 @pytest.mark.parametrize(
-    ("coordinator", "session"),
+    "session",
     [
-        (SimpleNamespace(data=None, expected_floor_mission_id=None), None),
-        (_coordinator(charging=True), None),
-        (_coordinator(mission=None), None),
-        (
-            SimpleNamespace(
-                data=_coordinator().data,
-                expected_floor_mission_id=8,
-            ),
-            None,
-        ),
-        (
-            _coordinator(),
-            _sampling_session(_pose(0, 0, 1.0), _pose(0, 0, 2.0), dbm=None),
-        ),
-        (_coordinator(), _sampling_session(_pose(0, 0, 1.0), _pose(0, 0, 1.0))),
-        (_coordinator(), _sampling_session(_pose(0, 0, None), _pose(0, 0, 2.0))),
-        (_coordinator(), _sampling_session(_pose(0, 0, 1.0), _pose(0, 0, None))),
-        (_coordinator(), _sampling_session(_pose(0, 0, 1.0), _pose(2.1, 0, 8.0))),
-        (_coordinator(), _sampling_session(_pose(0, 0, 10.0), _pose(0.51, 0, 12.0))),
-        (_coordinator(), _sampling_session(_pose(0, 0, 10.0), _pose(0.305, 0, 12.0))),
-        (_coordinator(), _sampling_session(_pose(0, 0, 10.0), _pose(0, 0, 20.0))),
-        (_coordinator(), _sampling_session(None, _pose(0, 0, 2.0))),
-        (_coordinator(), _sampling_session(_pose(0, 0, 1.0), None)),
+        _sampling_session(mission=None),
+        _sampling_session(charging=True),
+        _sampling_session(expected_mission=8),
+        _sampling_session(_pose(0, 0, 1.0), _pose(0, 0, 2.0), dbm=None),
+        _sampling_session(_pose(0, 0, 1.0), _pose(0, 0, 1.0)),
+        _sampling_session(_pose(0, 0, None), _pose(0, 0, 2.0)),
+        _sampling_session(_pose(0, 0, 1.0), _pose(0, 0, None)),
+        _sampling_session(_pose(0, 0, 1.0), _pose(2.1, 0, 8.0)),
+        _sampling_session(_pose(0, 0, 10.0), _pose(0.51, 0, 12.0)),
+        _sampling_session(_pose(0, 0, 10.0), _pose(0.305, 0, 12.0)),
+        _sampling_session(_pose(0, 0, 10.0), _pose(0, 0, 20.0)),
+        _sampling_session(None, _pose(0, 0, 2.0)),
+        _sampling_session(_pose(0, 0, 1.0), None),
     ],
 )
-async def test_sample_skips_without_a_trustworthy_pose_and_scan(
-    hass, coordinator, session
-) -> None:
+async def test_sample_skips_without_a_trustworthy_pose_and_scan(hass, session) -> None:
     store = WifiSurveyStore(hass, "entry")
-    session = session or _sampling_session()
-    await store._async_sample(session, coordinator)
+    await store._async_sample(session)
     assert store.cells(7, FRAME) == []
 
 
@@ -434,7 +423,7 @@ async def test_sample_skips_a_failed_scan(hass) -> None:
     session = _sampling_session(_pose(0, 0, 1.0))
     session.client.async_scan_wifi_signal.side_effect = CannotConnectError("gone")
     with patch.object(wifi_survey, "time", return_value=1.0):
-        await store._async_sample(session, _coordinator())
+        await store._async_sample(session)
     assert store.cells(7, FRAME) == []
 
 
@@ -443,7 +432,7 @@ async def test_collector_samples_only_while_enabled(hass, monkeypatch) -> None:
     store = WifiSurveyStore(hass, "entry")
     calls: list[bool] = []
 
-    async def _sample(_session, _coordinator) -> None:
+    async def _sample(_session) -> None:
         calls.append(store.enabled)
         if len(calls) == 2:
             await store.async_shutdown()
@@ -454,7 +443,7 @@ async def test_collector_samples_only_while_enabled(hass, monkeypatch) -> None:
 
     store.set_enabled(True)
     with patch.object(store, "_async_sample", side_effect=_sample):
-        await asyncio.wait_for(store.async_collect(MagicMock(), MagicMock()), 1)
+        await asyncio.wait_for(store.async_collect(MagicMock()), 1)
     assert calls == [True, True]
     store.set_enabled(False)
 
@@ -470,7 +459,7 @@ async def test_collector_starts_scans_on_a_fixed_cadence(hass) -> None:
         sleeps.append(delay)
         clock[0] += delay
 
-    async def _sample(_session, _coordinator) -> None:
+    async def _sample(_session) -> None:
         duration = next(scans)
         clock[0] += duration
         if not duration:
@@ -482,7 +471,7 @@ async def test_collector_starts_scans_on_a_fixed_cadence(hass) -> None:
         patch.object(wifi_survey.asyncio, "sleep", side_effect=_sleep),
         patch.object(store, "_async_sample", side_effect=_sample),
     ):
-        await store.async_collect(MagicMock(), MagicMock())
+        await store.async_collect(MagicMock())
     # A 7 s scan leaves 23 s to the next start; a 40 s scan runs past it.
     assert sleeps == [30.0, 23.0, 0.0]
 
@@ -510,7 +499,7 @@ async def test_heatmap_view_serves_the_current_floor_only(hass) -> None:
     survey.add_sample(8, FRAME, 0.0, 0.0, -70, 1.0)
     runtime = SimpleNamespace(
         wifi_survey=survey,
-        coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=None)),
+        session=SimpleNamespace(floor=SimpleNamespace(value=None)),
     )
     view = MaticWifiHeatmapView()
 
@@ -520,7 +509,7 @@ async def test_heatmap_view_serves_the_current_floor_only(hass) -> None:
     no_floor = json.loads((await view.get(_request(_hass(runtime)), "entry")).body)
     assert no_floor == {"enabled": False, "cell_size": CELL_SIZE_METERS, "cells": []}
 
-    runtime.coordinator.data.floor_plan = SimpleNamespace(
+    runtime.session.floor.value = SimpleNamespace(
         mission_id=7, partition_id_wire=PARTITION
     )
     response = await view.get(_request(_hass(runtime)), "entry")

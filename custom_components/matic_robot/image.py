@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 from homeassistant.components.image import ImageEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .entity import MaticEntity
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -36,10 +40,11 @@ class MaticLatestPhotoImage(MaticEntity, ImageEntity):
         MaticEntity.__init__(self, entry)
         ImageEntity.__init__(self, hass)
         self._photos = entry.runtime_data.photos
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_latest_photo"
-        )
+        self._attr_unique_id = f"{self.session.info.serial_number}_latest_photo"
         self._sync_photo()
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     async def async_added_to_hass(self) -> None:
         """Follow new photos."""

@@ -42,7 +42,7 @@ class MaticSlamHistoryView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        floor_plan = runtime.coordinator.data.floor_plan
+        floor_plan = runtime.session.floor.value
         floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
         current_token = (
             runtime.slam_map.mission_identity.mission_token

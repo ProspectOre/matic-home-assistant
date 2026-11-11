@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -22,11 +22,20 @@ from .client.exceptions import (
     InvalidRobotCertificateError,
     MaticError,
 )
-from .client.models import FloorPlan, RobotInfo, RobotOperationalState, RobotPose
+from .client.models import (
+    FloorPlan,
+    RobotInfo,
+    RobotOperationalState,
+    RobotPose,
+    RobotTelemetry,
+    RunProgress,
+)
 from .client.supervisor import WatchStatus
 from .const import DOMAIN
+from .heartbeat import Heartbeat
 from .repairs import repair_placeholders
 from .robot_health import RobotHealth
+from .stores import CleaningHistory, LiveState, Store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,46 +113,13 @@ class _Throttle:
         self._publish()
 
 
-class Store[T]:
-    """The latest value of one kind of robot data, with change listeners."""
-
-    def __init__(self, value: T) -> None:
-        self.value = value
-        self._listeners: list[Callable[[], None]] = []
-
-    @callback
-    def set(self, value: T) -> None:
-        """Replace the value and tell the listeners, unless it is unchanged."""
-        if value == self.value:
-            return
-        self.value = value
-        for listener in tuple(self._listeners):
-            listener()
-
-    @callback
-    def subscribe(self, listener: Callable[[], None]) -> CALLBACK_TYPE:
-        """Call ``listener`` after each change; return its removal."""
-        self._listeners.append(listener)
-        return lambda: self._listeners.remove(listener)
-
-
-@dataclass(frozen=True, slots=True)
-class LiveState:
-    """The robot's newest state snapshot as entities show it.
-
-    ``session_active`` is the snapshot's task evidence, taken before
-    unconfirmed error codes are hidden from ``operational``.
-    """
-
-    operational: RobotOperationalState
-    session_active: bool | None
-
-
 class RobotSession:
-    """Own one robot's client and the state and poses its watches deliver.
+    """Own one robot's client and a store for each kind of data read from it.
 
     The ``kabuki_state`` watch is the only writer of ``state``, and the
     ``latest_pose`` watch of ``poses``, the newest pose on each mission's map.
+    ``heartbeat`` reads what the robot does not push into ``floor``,
+    ``telemetry``, ``progress`` (the running clean's time) and ``history``.
     ``error`` holds why the robot cannot be reached: a dial failed, or the
     state watch has had no live subscription for ``UNREACHABLE_AFTER_SECONDS``.
     The next snapshot from a live subscription clears it.
@@ -160,6 +136,11 @@ class RobotSession:
         self.health = RobotHealth(hass, entry.entry_id)
         self.error: Store[Exception | None] = Store(None)
         self.poses: Store[dict[int | None, RobotPose]] = Store({})
+        self.floor: Store[FloorPlan | None] = Store(None)
+        self.telemetry: Store[RobotTelemetry] = Store(RobotTelemetry())
+        self.progress: Store[RunProgress | None] = Store(None)
+        self.history: Store[CleaningHistory] = Store(CleaningHistory())
+        self.heartbeat = Heartbeat(hass, entry, self)
         self._entry = entry
         self._raw: RobotOperationalState
         self._pending: RobotOperationalState | None = None
@@ -179,7 +160,7 @@ class RobotSession:
         self._stopped = False
 
     async def async_start(self) -> None:
-        """Connect, read the robot's identity and state, and start the watch.
+        """Read the robot's identity and state; start the watches and heartbeat.
 
         Raises what Home Assistant expects from a failed setup.
         """
@@ -220,6 +201,7 @@ class RobotSession:
             self.client.async_watch_poses(self._async_receive_pose),
             f"{DOMAIN} pose watch",
         )
+        await self.heartbeat.async_start()
 
     def pose_on(self, floor_plan: FloorPlan | None) -> RobotPose | None:
         """Return the newest pose on this floor plan's map, however old."""
@@ -236,6 +218,7 @@ class RobotSession:
         self._state_publish.cancel()
         self._pose_publish.cancel()
         self._async_cancel_unreachable_timer()
+        await self.heartbeat.async_stop()
         await self.client.async_shutdown()
 
     async def _async_hass_stopping(self, _event: Event) -> None:

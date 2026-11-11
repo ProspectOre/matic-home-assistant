@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
@@ -11,6 +14,7 @@ from . import MaticConfigEntry
 from .client.commands import CleaningMode, CoverageSetting
 from .const import CONF_CLEANING_MODE, CONF_COVERAGE_SETTING
 from .entity import MaticEntity
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -63,18 +67,19 @@ class MaticCleaningModeSelect(MaticEntity, SelectEntity):
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._attr_options = [value.value for value in CleaningMode]
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_cleaning_mode"
-        )
+        self._attr_unique_id = f"{self.session.info.serial_number}_cleaning_mode"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     @property
     def current_option(self) -> str:
         """Return the mode for the next clean."""
-        return self.coordinator.cleaning_mode.value
+        return self._config_entry.runtime_data.cleaning_mode.value
 
     async def async_select_option(self, option: str) -> None:
         """Set the mode for the next clean."""
-        self.coordinator.cleaning_mode = CleaningMode(option)
+        self._config_entry.runtime_data.cleaning_mode = CleaningMode(option)
         options = dict(self._config_entry.options)
         options[CONF_CLEANING_MODE] = option
         self.hass.config_entries.async_update_entry(self._config_entry, options=options)
@@ -89,16 +94,19 @@ class MaticCoverageSettingSelect(MaticEntity, SelectEntity):
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._attr_options = [value.value for value in CoverageSetting]
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_coverage"
+        self._attr_unique_id = f"{self.session.info.serial_number}_coverage"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     @property
     def current_option(self) -> str:
         """Return the coverage pass for the next clean."""
-        return self.coordinator.coverage_setting.value
+        return self._config_entry.runtime_data.coverage_setting.value
 
     async def async_select_option(self, option: str) -> None:
         """Set the coverage pass for the next clean."""
-        self.coordinator.coverage_setting = CoverageSetting(option)
+        self._config_entry.runtime_data.coverage_setting = CoverageSetting(option)
         options = dict(self._config_entry.options)
         options[CONF_COVERAGE_SETTING] = option
         self.hass.config_entries.async_update_entry(self._config_entry, options=options)
@@ -112,9 +120,12 @@ class MaticSavedPlanSelect(MaticEntity, SelectEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._history = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_saved_cleaning_plan"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to saved-plan changes."""
@@ -161,9 +172,12 @@ class MaticCustomAreaSelect(MaticEntity, SelectEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.coordinator.data.info.serial_number
+        self._serial_number = self.session.info.serial_number
         self._areas = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_custom_cleaning_area"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to custom-area changes."""

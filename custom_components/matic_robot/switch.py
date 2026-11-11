@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.const import EntityCategory
@@ -14,6 +16,7 @@ from . import MaticConfigEntry
 from .client.exceptions import MaticError
 from .const import DOMAIN
 from .entity import MaticEntity
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -84,9 +87,10 @@ class MaticSettingSwitch(MaticEntity, SwitchEntity):
     ) -> None:
         super().__init__(entry)
         self.entity_description = description
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_{description.key}"
-        )
+        self._attr_unique_id = f"{self.session.info.serial_number}_{description.key}"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.telemetry,)
 
     @property
     def extra_state_attributes(self) -> dict[str, str]:
@@ -100,7 +104,7 @@ class MaticSettingSwitch(MaticEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         """Return the decoded robot setting."""
         value = getattr(
-            self.coordinator.data.telemetry,
+            self.session.telemetry.value,
             self.entity_description.telemetry_attribute,
         )
         return value if isinstance(value, bool) else None
@@ -122,9 +126,9 @@ class MaticSettingSwitch(MaticEntity, SwitchEntity):
         setting = self.entity_description.api_setting
         try:
             if setting == "deep_mop":
-                await self.coordinator.client.async_set_deep_mop(enabled)
+                await self.session.client.async_set_deep_mop(enabled)
             else:
-                await self.coordinator.client.async_set_binary_setting(
+                await self.session.client.async_set_binary_setting(
                     setting,
                     enabled,
                 )
@@ -133,7 +137,7 @@ class MaticSettingSwitch(MaticEntity, SwitchEntity):
                 translation_domain=DOMAIN,
                 translation_key="setting_unconfirmed",
             ) from None
-        await self.coordinator.async_request_full_refresh()
+        await self.session.heartbeat.async_request_full_refresh()
 
 
 class MaticWifiSurveySwitch(MaticEntity, SwitchEntity):
@@ -145,7 +149,10 @@ class MaticWifiSurveySwitch(MaticEntity, SwitchEntity):
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._survey = entry.runtime_data.wifi_survey
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_wifi_survey"
+        self._attr_unique_id = f"{self.session.info.serial_number}_wifi_survey"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     @property
     def is_on(self) -> bool:

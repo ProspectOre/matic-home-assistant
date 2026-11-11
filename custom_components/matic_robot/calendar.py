@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta
+from typing import Any
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.core import HomeAssistant
@@ -12,6 +14,7 @@ from homeassistant.util import dt as dt_util
 from . import MaticConfigEntry
 from .entity import MaticEntity
 from .native_schedules import schedule_occurrences
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -47,17 +50,21 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_native_schedules"
+        self._attr_unique_id = f"{self.session.info.serial_number}_native_schedules"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.telemetry, self.session.floor)
+
+    def _occurrences(self, start: datetime, end: datetime) -> list[CalendarEvent]:
+        return schedule_occurrences(
+            self.session.telemetry.value, self.session.floor.value, start, end
         )
 
     @property
     def event(self) -> CalendarEvent | None:
         """Return the run in progress or the next one within a week."""
         now = dt_util.now()
-        events = schedule_occurrences(
-            self.coordinator.data, now, now + _UPCOMING_WINDOW
-        )
+        events = self._occurrences(now, now + _UPCOMING_WINDOW)
         return events[0] if events else None
 
     @property
@@ -72,9 +79,7 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
         upcoming = next(
             (
                 event
-                for event in schedule_occurrences(
-                    self.coordinator.data, now, now + _UPCOMING_WINDOW
-                )
+                for event in self._occurrences(now, now + _UPCOMING_WINDOW)
                 if event.start_datetime_local.timestamp() > now.timestamp()
             ),
             None,
@@ -96,4 +101,4 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
         self, hass: HomeAssistant, start_date: datetime, end_date: datetime
     ) -> list[CalendarEvent]:
         """Return scheduled runs in the requested window."""
-        return schedule_occurrences(self.coordinator.data, start_date, end_date)
+        return self._occurrences(start_date, end_date)

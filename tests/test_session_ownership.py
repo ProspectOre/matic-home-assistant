@@ -1619,10 +1619,10 @@ async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
         nonlocal current_identity
         current_identity = REPLACEMENT
 
-    entry.runtime_data.coordinator.client.async_start_mixed_coverage = AsyncMock(
+    entry.runtime_data.session.client.async_start_mixed_coverage = AsyncMock(
         side_effect=start_mixed_coverage
     )
-    entry.runtime_data.coordinator.async_request_refresh = AsyncMock(
+    entry.runtime_data.session.heartbeat.async_request_refresh = AsyncMock(
         side_effect=refresh_after_dispatch
     )
 
@@ -1664,12 +1664,12 @@ async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
         )
 
     assert error.value.translation_key == "room_taken_over"
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     client.async_start_mixed_coverage.assert_awaited_once()
     assert (
         client.async_start_mixed_coverage.await_args.kwargs["session_id"] == session_id
     )
-    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once()
+    entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once()
     assert bound == [None]
     sender.assert_not_awaited()
 

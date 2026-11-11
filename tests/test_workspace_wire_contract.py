@@ -54,19 +54,17 @@ def _synthetic_workspace_hass() -> tuple[SimpleNamespace, str]:
         catalog_for_mission=lambda _mission: (),
         catalogs_by_mission=dict,
     )
-    coordinator = SimpleNamespace(
-        last_update_success=True,
-        data=SimpleNamespace(
-            info=SimpleNamespace(serial_number="synthetic-serial"),
-            floor_plan=floor_plan,
-            telemetry=SimpleNamespace(active_cleaning_session=False),
-        ),
+    session = SimpleNamespace(
+        info=SimpleNamespace(serial_number="synthetic-serial"),
+        error=SimpleNamespace(value=None),
+        floor=SimpleNamespace(value=floor_plan),
+        state=SimpleNamespace(value=SimpleNamespace(session_active=False)),
     )
     entry = SimpleNamespace(
         entry_id=entry_id,
         state=ConfigEntryState.LOADED,
         runtime_data=SimpleNamespace(
-            coordinator=coordinator,
+            session=session,
             slam_map=slam_map,
             cleaning_plans=cleaning_plans,
             slam_history=slam_history,

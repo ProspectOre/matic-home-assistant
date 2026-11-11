@@ -291,12 +291,10 @@ class RobotTelemetry:
     water_flow_factor: float | None = None
     ssh_tunnel_permission: bool | None = None
     uploader_opt_in: bool | None = None
-    active_cleaning_session: bool | None = None
     dock_detections: int | None = None
     sink_summon_locations: int | None = None
     zones: tuple[MapZone, ...] = ()
     coverage_time_seconds: int | None = None
-    run_progress: RunProgress | None = None
     # Raw part codes from the newest monthly recap. None when it could not be
     # read; empty when it suggests nothing.
     maintenance_suggestions: tuple[int, ...] | None = None
@@ -449,17 +447,6 @@ class HermesCollectionEntry:
     value: bytes
     sequence_start_ns: int | None = field(default=None, compare=False)
     sequence_no: int | None = field(default=None, compare=False)
-
-
-@dataclass(frozen=True, slots=True)
-class RobotState:
-    """Latest coordinated state."""
-
-    info: RobotInfo
-    operational: RobotOperationalState
-    floor_plan: FloorPlan | None = None
-    pose: RobotPose | None = None
-    telemetry: RobotTelemetry = field(default_factory=RobotTelemetry)
 
 
 @dataclass(frozen=True, slots=True)

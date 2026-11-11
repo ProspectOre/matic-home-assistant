@@ -3,33 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from datetime import datetime
 from functools import partial
-from time import monotonic
-from typing import Any, cast
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
-from .area_binding import binding_for_floor_plan
-from .area_binding_repairs import (
-    async_delete_custom_area_issue,
-    async_sync_custom_area_issue,
-)
+from . import session_listeners
+from .activity_events import ActivityEvents
+from .area_binding_repairs import async_delete_custom_area_issue
 from .blueprint_update import async_check_blueprints
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
-from .client.exceptions import MaticError
-from .client.models import FloorPlan
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,
@@ -42,19 +35,16 @@ from .const import (
     DATA_LLM_API,
     DATA_PLAN_MANAGER,
     DOMAIN,
-    EVENT_ACTIVITY_OBSERVED,
-    EVENT_NATIVE_HISTORY_UPDATED,
     PLATFORMS,
 )
-from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
+from .floor_sync import AreaBindingSync, async_follow_slam_mission
 from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
-from .managed_reconciliation import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .media_source import DATA_PHOTO_ATTACHMENT_SOURCE
 from .migrations import async_migrate_entry
+from .native_history_sync import NativeHistorySync, async_resume_native_reconciliation
 from .photos import RobotPhotoStore
-from .plan_model import plan_floor_token
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
 from .robot_health import async_delete_robot_alert_issues
@@ -63,30 +53,23 @@ from .services import async_register_services
 from .session import RobotSession
 from .slam_history import SlamHistoryStore
 from .slam_history_collector import async_collect_slam_history
-from .slam_map_store import SlamMapIdentity, SlamMapStore
+from .slam_map_store import SlamMapStore
 from .slam_view_data import observe_trail
 from .wifi_survey import WifiSurveyStore
 
 __all__ = ["async_migrate_entry"]
 
-_LOGGER = logging.getLogger(__name__)
-
-FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS = 2
-FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS = 2
-FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
-FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
-FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS = 30
-FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS = 300
-ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS = 1.0
-
 
 @dataclass(slots=True)
 class MaticRuntimeData:
-    """Runtime data held by the config entry."""
+    """Runtime data held by the config entry.
+
+    ``cleaning_mode`` and ``coverage_setting`` are the defaults a clean
+    started from Home Assistant uses; their select entities change them.
+    """
 
     client: MaticHermesClient
     session: RobotSession
-    coordinator: MaticCoordinator
     cleaning_plans: CleaningPlanManager
     firmware_tracker: FirmwareTracker
     slam_map: SlamMapStore
@@ -94,6 +77,8 @@ class MaticRuntimeData:
     run_trails: RunTrails
     wifi_survey: WifiSurveyStore
     photos: RobotPhotoStore
+    cleaning_mode: CleaningMode = CleaningMode.BOTH
+    coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -139,71 +124,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
-    """Set up an unofficial Matic robot integration from a config entry."""
-
-    next_state_event_at = 0.0
-    pending_state_observation: dict[str, Any] | None = None
-    pending_state_timer: asyncio.TimerHandle | None = None
-
-    def _async_flush_pending_state() -> None:
-        nonlocal next_state_event_at, pending_state_observation, pending_state_timer
-        pending_state_timer = None
-        observation = pending_state_observation
-        pending_state_observation = None
-        if observation is None:
-            return
-        now = monotonic()
-        if now < next_state_event_at:
-            _schedule_pending_state_flush(next_state_event_at - now)
-            pending_state_observation = observation
-            return
-        next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
-        hass.bus.async_fire(
-            EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
-        )
-
-    def _schedule_pending_state_flush(delay: float) -> None:
-        nonlocal pending_state_timer
-        loop = getattr(hass, "loop", None)
-        if loop is not None:
-            pending_state_timer = loop.call_later(delay, _async_flush_pending_state)
-
-    @callback
-    def _async_observe_activity(observation: dict[str, Any]) -> None:
-        nonlocal next_state_event_at, pending_state_observation, pending_state_timer
-        if observation.get("kind") == "state":
-            now = monotonic()
-            if now < next_state_event_at:
-                pending_state_observation = dict(observation)
-                if pending_state_timer is None:
-                    _schedule_pending_state_flush(next_state_event_at - now)
-                return
-            next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
-            if pending_state_timer is not None:
-                pending_state_timer.cancel()
-                pending_state_timer = None
-            pending_state_observation = None
-        hass.bus.async_fire(
-            EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
-        )
-
-    def _cancel_pending_state_timer() -> None:
-        nonlocal pending_state_observation, pending_state_timer
-        if pending_state_timer is not None:
-            pending_state_timer.cancel()
-            pending_state_timer = None
-        observation = pending_state_observation
-        pending_state_observation = None
-        if observation is not None:
-            hass.bus.async_fire(
-                EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
-            )
-
-    entry.async_on_unload(_cancel_pending_state_timer)
-
+def _client(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    observe: Callable[[dict[str, Any]], None],
+) -> MaticHermesClient:
+    """Build the robot client from the entry's connection data."""
     offset = dt_util.now().utcoffset()
-    client = MaticHermesClient(
+    return MaticHermesClient(
         entry.data[CONF_HOST],
         entry.data[CONF_PORT],
         hostname=entry.data[CONF_HOSTNAME],
@@ -212,96 +140,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         credential=HermesCredential.from_storage(entry.data[CONF_HERMES_CREDENTIAL])
         if CONF_HERMES_CREDENTIAL in entry.data
         else None,
-        observation_callback=_async_observe_activity,
+        observation_callback=observe,
         timezone_identifier=hass.config.time_zone,
         seconds_from_gmt=int(offset.total_seconds()) if offset is not None else 0,
     )
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
+    """Set up an unofficial Matic robot integration from a config entry."""
+    activity = ActivityEvents(hass, entry.entry_id)
+    entry.async_on_unload(activity.async_close)
+    client = _client(hass, entry, activity.async_observe)
     session = RobotSession(hass, entry, client)
     slam_map: SlamMapStore | None = None
     slam_history: SlamHistoryStore | None = None
     wifi_survey: WifiSurveyStore | None = None
     try:
         await session.async_start()
-        firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
-        coordinator = MaticCoordinator(
-            hass,
-            session,
-            entry,
-            cleaning_mode=CleaningMode(
-                entry.options.get(CONF_CLEANING_MODE, CleaningMode.BOTH)
-            ),
-            coverage_setting=CoverageSetting(
-                entry.options.get(CONF_COVERAGE_SETTING, CoverageSetting.OPTIMAL)
-            ),
-            firmware_tracker=firmware_tracker,
-        )
-        await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
-        robot_generation = plans.control.activate_robot(serial_number)
+        plans.control.activate_robot(serial_number)
         await plans.ledger.async_set_native_cleanings_enabled(
             serial_number, entry.options.get(CONF_INCLUDE_NATIVE_CLEANINGS, True)
         )
-
         entry.async_on_unload(
             entry.add_update_listener(
                 _entry_update_listener(entry, plans, serial_number)
             )
         )
         area_binding_upgrade = await plans.catalog.async_upgrade_area_bindings(
-            serial_number, coordinator.data.floor_plan
+            serial_number, session.floor.value
         )
-        area_binding_upgrade_pending = area_binding_upgrade.pending
-        area_binding_upgrade_in_progress = False
-        area_binding_upgrade_last_floor_plan = coordinator.data.floor_plan
-        initial_floor_plan = coordinator.data.floor_plan
-        initial_floor_token = (
-            plan_floor_token(initial_floor_plan)
-            if initial_floor_plan is not None
-            else None
-        )
-        try:
-            (
-                native_history,
-                native_history_revision,
-            ) = await client.async_get_cleaning_session_snapshot()
-        except MaticError as err:
-            _LOGGER.debug("Native cleaning history recovery is unavailable: %s", err)
-        else:
-            kwargs = (
-                {"generation": robot_generation}
-                if isinstance(robot_generation, int)
-                else {}
-            )
-            processed = await plans.ledger.async_process_native_history(
-                serial_number,
-                initial_floor_plan,
-                native_history,
-                coverage_verifier=getattr(
-                    client, "async_confirm_coverage_receipt", None
-                ),
-                current_floor_plan=lambda: coordinator.data.floor_plan,
-                **kwargs,
-            )
-            if (
-                processed is not None
-                and coordinator.data.floor_plan is not None
-                and initial_floor_token is not None
-                and plan_floor_token(coordinator.data.floor_plan) == initial_floor_token
-                and native_history_revision
-                == coordinator.data.telemetry.native_history_revision
-                and (
-                    not isinstance(robot_generation, int)
-                    or plans.control.robot_generation(serial_number) == robot_generation
-                )
-            ):
-                coordinator.async_ack_native_history_revision(native_history_revision)
+        native_history = NativeHistorySync(hass, entry, session, plans, serial_number)
+        await native_history.async_import_initial()
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
+        floor_plan = session.floor.value
         slam_map.set_expected_mission_id(
-            coordinator.data.floor_plan.mission_id
-            if coordinator.data.floor_plan is not None
-            else None
+            floor_plan.mission_id if floor_plan is not None else None
         )
         await slam_map.async_prime(client)
         slam_history = SlamHistoryStore(hass, entry.entry_id)
@@ -315,10 +191,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await run_trails.async_load()
         wifi_survey = WifiSurveyStore(hass, entry.entry_id)
         await wifi_survey.async_load()
+        firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         runtime_data = MaticRuntimeData(
             client,
             session,
-            coordinator,
             plans,
             firmware_tracker,
             slam_map,
@@ -326,17 +202,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             run_trails,
             wifi_survey,
             RobotPhotoStore(client),
+            cleaning_mode=CleaningMode(
+                entry.options.get(CONF_CLEANING_MODE, CleaningMode.BOTH)
+            ),
+            coverage_setting=CoverageSetting(
+                entry.options.get(CONF_COVERAGE_SETTING, CoverageSetting.OPTIMAL)
+            ),
         )
         entry.runtime_data = runtime_data
-        # Every pose extends the trail; a heartbeat also closes a finished run.
+        # Every pose extends the trail; a state change can close a finished run.
         observe = partial(observe_trail, runtime_data)
-        entry.async_on_unload(coordinator.async_add_listener(observe))
+        entry.async_on_unload(session.state.subscribe(observe))
         entry.async_on_unload(session.poses.subscribe(observe))
         workspace_socket = hass.data.get(DOMAIN, {}).get("workspace_socket")
         track_workspace_entry = getattr(workspace_socket, "track_entry", None)
         if callable(track_workspace_entry):
             track_workspace_entry(entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        session_listeners.async_listen(hass, entry, session, firmware_tracker)
         if (
             plans.recovery.recovery_run(serial_number) is not None
             or plans.control.pending_stop_run_id(serial_number) is not None
@@ -348,31 +231,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             )
         entry.async_create_background_task(
             hass,
-            coordinator.async_watch_floor_plan(),
-            f"{DOMAIN} displayed floor collector",
-        )
-        entry.async_create_background_task(
-            hass,
             runtime_data.photos.async_watch(),
             f"{DOMAIN} photo collector",
         )
-        _schedule_native_reconciliation_recovery(
-            hass,
-            entry,
-            client,
-            coordinator,
-            plans,
-            serial_number,
-        )
-        _register_native_history_sync(
-            hass,
-            entry,
-            client,
-            coordinator,
-            plans,
-            serial_number,
-        )
-        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+        async_resume_native_reconciliation(hass, entry, session, plans, serial_number)
+        native_history.async_start()
+        async_follow_slam_mission(hass, entry, slam_map, session)
         entry.async_create_background_task(
             hass,
             slam_map.async_collect(client),
@@ -384,74 +248,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 hass,
                 slam_map,
                 slam_history,
-                lambda: coordinator.data.floor_plan,
-                coordinator.async_add_listener,
+                lambda: session.floor.value,
+                session.floor.subscribe,
             ),
             f"{DOMAIN} map history collector",
         )
         entry.async_create_background_task(
             hass,
-            wifi_survey.async_collect(session, coordinator),
+            wifi_survey.async_collect(session),
             f"{DOMAIN} Wi-Fi survey collector",
         )
-
-        def _schedule_area_binding_upgrade(floor_plan: FloorPlan) -> None:
-            nonlocal area_binding_upgrade_in_progress
-            nonlocal area_binding_upgrade_last_floor_plan
-            area_binding_upgrade_in_progress = True
-            area_binding_upgrade_last_floor_plan = floor_plan
-            entry.async_create_background_task(
-                hass,
-                _async_upgrade_area_bindings(floor_plan),
-                f"{DOMAIN} custom area binding upgrade",
-            )
-
-        async def _async_upgrade_area_bindings(floor_plan: FloorPlan) -> None:
-            nonlocal area_binding_upgrade_in_progress, area_binding_upgrade_pending
-            try:
-                result = await plans.catalog.async_upgrade_area_bindings(
-                    serial_number, floor_plan
-                )
-                area_binding_upgrade_pending = result.pending
-            finally:
-                area_binding_upgrade_in_progress = False
-                latest_floor_plan = coordinator.data.floor_plan
-                if (
-                    area_binding_upgrade_pending
-                    and latest_floor_plan != floor_plan
-                    and _floor_plan_supports_area_binding(latest_floor_plan)
-                ):
-                    assert latest_floor_plan is not None
-                    _schedule_area_binding_upgrade(latest_floor_plan)
-
-        def _async_sync_area_issue() -> None:
-            nonlocal area_binding_upgrade_in_progress
-            floor_plan = coordinator.data.floor_plan
-            slam_map.set_expected_mission_id(
-                floor_plan.mission_id
-                if floor_plan is not None
-                else coordinator.displayed_floor_mission_id
-            )
-            if (
-                area_binding_upgrade_pending
-                and not area_binding_upgrade_in_progress
-                and floor_plan != area_binding_upgrade_last_floor_plan
-                and _floor_plan_supports_area_binding(floor_plan)
-            ):
-                assert floor_plan is not None
-                _schedule_area_binding_upgrade(floor_plan)
-            async_sync_custom_area_issue(
-                hass,
-                entry.entry_id,
-                plans.catalog.areas(serial_number),
-                floor_plan,
-            )
-
-        entry.async_on_unload(coordinator.async_add_listener(_async_sync_area_issue))
-        entry.async_on_unload(
-            plans.repository.async_add_listener(serial_number, _async_sync_area_issue)
-        )
-        _async_sync_area_issue()
+        AreaBindingSync(
+            hass,
+            entry,
+            session,
+            slam_map,
+            plans,
+            serial_number,
+            upgrade_pending=area_binding_upgrade.pending,
+        ).async_start()
     except BaseException:
         if wifi_survey is not None:
             await wifi_survey.async_shutdown()
@@ -465,353 +280,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
     activate_photo_entry = getattr(photo_source, "activate_entry", None)
     if callable(activate_photo_entry):
         activate_photo_entry(entry.entry_id)
-    return True
-
-
-def _register_slam_map_floor_plan_sync(
-    hass: HomeAssistant,
-    entry: MaticConfigEntry,
-    slam_map: SlamMapStore,
-    coordinator: MaticCoordinator,
-) -> None:
-    """Refresh a cached floor plan when both map layers prove a new mission.
-
-    The map store switches missions only after photographic and structural
-    evidence agree.  That is the safe point to bypass the normal slow
-    floor-plan cache: without it, a robot that has already localized on a
-    different mapped floor can remain falsely marked as transitioning until
-    the next periodic map poll.
-    """
-    refresh_in_progress = False
-    last_attempted_identity: SlamMapIdentity | None = None
-    identity_changed: asyncio.Event | None = None
-
-    async def _async_wait_for_identity_change(
-        wake_on_identity_change: asyncio.Event, delay: int
-    ) -> bool:
-        sleep_task = asyncio.create_task(asyncio.sleep(delay))
-        identity_task = asyncio.create_task(wake_on_identity_change.wait())
-        tasks = (sleep_task, identity_task)
-        try:
-            done, _pending = await asyncio.wait(
-                tasks, return_when=asyncio.FIRST_COMPLETED
-            )
-            return identity_task in done
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _async_refresh_floor_plan(
-        identity: SlamMapIdentity, wake_on_identity_change: asyncio.Event
-    ) -> None:
-        nonlocal refresh_in_progress, last_attempted_identity, identity_changed
-        try:
-            for round_ in range(FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS):
-                for attempt in range(FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS):
-                    if slam_map.mission_identity != identity or not getattr(
-                        slam_map, "live_session_verified", True
-                    ):
-                        # A newer verified mission arrived while the robot was
-                        # answering, or this mission lost its live proof. The
-                        # finally block schedules a fresh bounded recheck after
-                        # this task releases its guard.
-                        last_attempted_identity = None
-                        return
-                    await coordinator.async_request_floor_plan_refresh(
-                        identity.mission_id
-                    )
-                    if slam_map.mission_identity != identity or not getattr(
-                        slam_map, "live_session_verified", True
-                    ):
-                        last_attempted_identity = None
-                        return
-                    floor_plan = coordinator.data.floor_plan
-                    if floor_plan is not None and slam_map.floor_plan_is_current(
-                        floor_plan
-                    ):
-                        return
-                    if attempt + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS:
-                        await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS)
-                # A floor-plan response can trail the verified SLAM mission.
-                # Retry it once after a short bounded backoff instead of
-                # leaving an otherwise-localized map stale for the normal
-                # fifteen-minute cache interval.
-                if round_ + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS:
-                    await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS)
-
-            # Some robots keep returning the previous floor plan for longer
-            # than the fast transition burst above. Keep the map fail-closed,
-            # but continue one low-frequency read at a bounded exponential
-            # backoff so a verified live mission cannot remain stranded until
-            # an unrelated identity or restart changes the state.
-            recovery_delay = FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS
-            while True:
-                identity_woke = await _async_wait_for_identity_change(
-                    wake_on_identity_change, recovery_delay
-                )
-                if identity_woke:
-                    # This worker is tied to the old recovery attempt. Even if
-                    # the identity is later reverified with equal value, the
-                    # latched wake belongs to this worker and must not be reused
-                    # to spin through the recovery loop.
-                    wake_on_identity_change.clear()
-                    return
-                if slam_map.mission_identity != identity or not getattr(
-                    slam_map, "live_session_verified", True
-                ):
-                    last_attempted_identity = None
-                    return
-                floor_plan = coordinator.data.floor_plan
-                if floor_plan is not None and slam_map.floor_plan_is_current(
-                    floor_plan
-                ):
-                    return
-                await coordinator.async_request_floor_plan_refresh(identity.mission_id)
-                if slam_map.mission_identity != identity or not getattr(
-                    slam_map, "live_session_verified", True
-                ):
-                    last_attempted_identity = None
-                    return
-                floor_plan = coordinator.data.floor_plan
-                if floor_plan is not None and slam_map.floor_plan_is_current(
-                    floor_plan
-                ):
-                    return
-                recovery_delay = min(
-                    recovery_delay * 2,
-                    FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS,
-                )
-        finally:
-            identity_changed = None
-            refresh_in_progress = False
-            _async_sync_floor_plan()
-
-    def _async_sync_floor_plan() -> None:
-        nonlocal refresh_in_progress, last_attempted_identity, identity_changed
-        floor_plan = coordinator.data.floor_plan
-        identity = slam_map.mission_identity
-        if identity is None or identity.mission_id is None:
-            return
-        # A retained map is intentionally incoherent after a restart until
-        # both collection streams have supplied new pages. It is not a floor
-        # transition, so do not spend the bounded refresh budget or mark this
-        # identity attempted before live collection makes it actionable.
-        if not getattr(slam_map, "live_session_verified", True):
-            last_attempted_identity = None
-            return
-        if floor_plan is not None and slam_map.floor_plan_is_current(floor_plan):
-            last_attempted_identity = None
-            return
-        # A busy SLAM stream can publish many pages before the floor-plan
-        # endpoint catches up. Keep one recovery task per verified mission,
-        # rather than one coordinator refresh per page.
-        if refresh_in_progress:
-            if identity != last_attempted_identity and identity_changed is not None:
-                identity_changed.set()
-            return
-        if identity == last_attempted_identity:
-            return
-        refresh_in_progress = True
-        last_attempted_identity = identity
-        identity_changed = asyncio.Event()
-        entry.async_create_background_task(
-            hass,
-            _async_refresh_floor_plan(identity, identity_changed),
-            f"{DOMAIN} current floor map refresh",
-        )
-
-    entry.async_on_unload(slam_map.async_add_listener(_async_sync_floor_plan))
-    _async_sync_floor_plan()
-
-
-def _register_native_history_sync(
-    hass: HomeAssistant,
-    entry: MaticConfigEntry,
-    client: MaticHermesClient,
-    coordinator: MaticCoordinator,
-    plans: CleaningPlanManager,
-    serial_number: str,
-) -> None:
-    """Import native activity and separate room statistics, including revisions.
-
-    Managed plans retain their own completion requirements. Native mode
-    results can update room sensors without advancing managed counts or
-    cadence; late results must not replay the public cleaning-finished event.
-    """
-    generation = (
-        plans.control.robot_generation(serial_number)
-        if hasattr(plans.control, "robot_generation")
-        else None
-    )
-    refresh_lock = asyncio.Lock()
-    active = True
-
-    async def _async_sync(event: Event) -> None:
-        if event.data.get("entry_id") != entry.entry_id:
-            return
-        revision = event.data.get("revision")
-        if not isinstance(revision, str):
-            return
-        if refresh_lock.locked():
-            # The coordinator keeps emitting the latest unacknowledged revision
-            # on later polls; dropping this notification avoids a task backlog.
-            return
-        async with refresh_lock:
-            if (
-                not active
-                or coordinator.native_history_revision_acknowledged(revision)
-                or not coordinator.native_history_revision_is_current(revision)
-                or (
-                    generation is not None
-                    and plans.control.robot_generation(serial_number) != generation
-                )
-            ):
-                return
-            try:
-                (
-                    records,
-                    fetched_revision,
-                ) = await client.async_get_cleaning_session_snapshot()
-            except MaticError as err:
-                _LOGGER.debug("Native cleaning history sync is unavailable: %s", err)
-                return
-            if (
-                not active
-                or fetched_revision != revision
-                or not coordinator.native_history_revision_is_current(revision)
-                or (
-                    generation is not None
-                    and plans.control.robot_generation(serial_number) != generation
-                )
-            ):
-                return
-            floor_plan = coordinator.data.floor_plan
-            if floor_plan is None:
-                return
-            floor_token = plan_floor_token(floor_plan)
-            kwargs = {} if generation is None else {"generation": generation}
-            processed = await plans.ledger.async_process_native_history(
-                serial_number,
-                floor_plan,
-                records,
-                coverage_verifier=getattr(
-                    client, "async_confirm_coverage_receipt", None
-                ),
-                current_floor_plan=lambda: coordinator.data.floor_plan,
-                **kwargs,
-            )
-            if (
-                processed is None
-                or not active
-                or coordinator.data.floor_plan is None
-                or plan_floor_token(coordinator.data.floor_plan) != floor_token
-                or not coordinator.native_history_revision_is_current(revision)
-                or (
-                    generation is not None
-                    and plans.control.robot_generation(serial_number) != generation
-                )
-            ):
-                return
-            coordinator.async_ack_native_history_revision(revision)
-
-    def _async_deactivate() -> None:
-        nonlocal active
-        active = False
-
-    entry.async_on_unload(
-        hass.bus.async_listen(EVENT_NATIVE_HISTORY_UPDATED, _async_sync)
-    )
-    entry.async_on_unload(_async_deactivate)
-
-
-def _schedule_native_reconciliation_recovery(
-    hass: HomeAssistant,
-    entry: MaticConfigEntry,
-    client: MaticHermesClient,
-    coordinator: MaticCoordinator,
-    plans: CleaningPlanManager,
-    serial_number: str,
-) -> None:
-    """Resume a durable late-completion watcher after entry setup."""
-    pending = plans.ledger.pending_native_reconciliation(serial_number)
-    if not isinstance(pending, dict):
-        return
-    task = entry.async_create_background_task(
-        hass,
-        _async_resume_native_reconciliation(
-            client,
-            coordinator,
-            plans,
-            serial_number,
-            pending,
-            generation=(
-                plans.control.robot_generation(serial_number)
-                if hasattr(plans.control, "robot_generation")
-                else None
-            ),
-        ),
-        f"{DOMAIN} native stop recovery",
-    )
-    if isinstance(task, asyncio.Task):
-        plans.control.register_reconciliation_task(serial_number, task)
-
-
-async def _async_resume_native_reconciliation(
-    client: MaticHermesClient,
-    coordinator: MaticCoordinator,
-    plans: CleaningPlanManager,
-    serial_number: str,
-    pending: dict[str, str],
-    *,
-    generation: int | None = None,
-) -> None:
-    """Poll native history for only a retained marker's remaining window."""
-    dispatched_at = cast(datetime, dt_util.parse_datetime(pending["dispatched_at"]))
-    expires_at = cast(datetime, dt_util.parse_datetime(pending["expires_at"]))
-    while plans.ledger.pending_native_reconciliation(serial_number) == pending:
-        remaining = (expires_at - dt_util.utcnow()).total_seconds()
-        if remaining <= 0:
-            plans.control.stop_pending(serial_number)
-            await plans.ledger.async_clear_native_reconciliation(
-                serial_number,
-                pending["plan_id"],
-                pending["room_id"],
-                dispatched_at,
-            )
-            return
-        await asyncio.sleep(min(OEM_STOP_RECONCILIATION_POLL_SECONDS, remaining))
-        if plans.ledger.pending_native_reconciliation(serial_number) == pending:
-            try:
-                native_history = await client.async_get_cleaning_session_records()
-            except MaticError as err:
-                _LOGGER.debug(
-                    "Native cleaning history recovery is unavailable: %s", err
-                )
-            else:
-                if plans.ledger.pending_native_reconciliation(serial_number) == pending:
-                    kwargs = {} if generation is None else {"generation": generation}
-                    await plans.ledger.async_import_native_history(
-                        serial_number,
-                        coordinator.data.floor_plan,
-                        native_history,
-                        coverage_verifier=getattr(
-                            client, "async_confirm_coverage_receipt", None
-                        ),
-                        current_floor_plan=lambda: coordinator.data.floor_plan,
-                        **kwargs,
-                    )
-
-
-def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
-    """Return whether a floor plan can safely produce an area binding."""
-    if floor_plan is None:
-        return False
-    try:
-        binding_for_floor_plan(floor_plan)
-    except OverflowError, TypeError, ValueError:
-        return False
     return True
 
 

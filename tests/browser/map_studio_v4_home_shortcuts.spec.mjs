@@ -201,7 +201,7 @@ test("same entry recovery restores the saved home shortcuts without writing user
   expect(baseline.userDataCalls).toBe(1);
 
   // Mirror an integration reload while the panel remains mounted: the robot
-  // temporarily has no entry in the coordinator catalog or HA state.
+  // temporarily has no entry in the catalog or HA state.
   await page.evaluate(() => {
     window.__panelFixture.setCatalogEntries([]);
     const { hass } = window.__pinPanel;

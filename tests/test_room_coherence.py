@@ -58,7 +58,7 @@ async def _registered_robot(hass, *, current: bool = True):
     )
     entry.add_to_hass(hass)
     entry.runtime_data = SimpleNamespace(
-        coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+        session=SimpleNamespace(floor=SimpleNamespace(value=floor_plan)),
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=current)),
     )
     entity = er.async_get(hass).async_get_or_create(

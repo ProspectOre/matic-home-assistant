@@ -126,7 +126,7 @@ async def async_photo_patrol(
             raise _error("photo_patrol_rooms_unavailable")
         if forbidden.intersection(room_ids):
             raise _error("photo_patrol_room_blocked")
-        operational = entry.runtime_data.coordinator.data.operational
+        operational = entry.runtime_data.session.state.value.operational
         if operational.cleaning or operational.paused or operational.returning:
             raise _error("photo_patrol_robot_busy")
         battery = operational.battery_percentage
@@ -374,8 +374,7 @@ def _arrived_at(state: RobotOperationalState, room: str) -> bool:
 
 def _room_area_name(entry: MaticConfigEntry, identifier: str) -> str:
     """Resolve a room ID to the mapped name that robot state reports."""
-    state = entry.runtime_data.coordinator.data
-    floor_plan = state.floor_plan if state is not None else None
+    floor_plan = entry.runtime_data.session.floor.value
     if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
         floor_plan
     ):
@@ -418,8 +417,7 @@ def _same_area(first: str | None, second: str | None) -> bool:
 
 def _resolve_patrol_rooms(entry: MaticConfigEntry, rooms: list[str]) -> set[str] | None:
     """Resolve requested rooms using the current coherent floor plan."""
-    state = entry.runtime_data.coordinator.data
-    floor_plan = state.floor_plan if state is not None else None
+    floor_plan = entry.runtime_data.session.floor.value
     if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
         floor_plan
     ):
@@ -437,8 +435,7 @@ def _resolve_patrol_rooms(entry: MaticConfigEntry, rooms: list[str]) -> set[str]
 
 def _current_room_ids(entry: MaticConfigEntry) -> set[str] | None:
     """Return IDs from the coherent active map, or None when it is stale."""
-    state = entry.runtime_data.coordinator.data
-    floor_plan = state.floor_plan if state is not None else None
+    floor_plan = entry.runtime_data.session.floor.value
     if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
         floor_plan
     ):
@@ -466,21 +463,13 @@ def _assert_patrol_allowed(entry: MaticConfigEntry, rooms: list[str]) -> None:
 
 async def _async_check_schedule(entry: MaticConfigEntry) -> None:
     """Refresh native schedules before each leg and refuse stale schedule data."""
-    coordinator = entry.runtime_data.coordinator
-    refresh = getattr(coordinator, "async_request_refresh", None)
-    if callable(refresh):
-        try:
-            async with asyncio.timeout(30):
-                await refresh()
-        except Exception as err:
-            raise _error("photo_patrol_schedule_conflict") from err
-    if getattr(coordinator, "last_update_success", True) is False:
-        raise _error("photo_patrol_schedule_conflict")
-    state = coordinator.data
-    if (
-        state is None
-        or getattr(getattr(state, "telemetry", None), "schedules", None) is None
-    ):
+    session = entry.runtime_data.session
+    try:
+        async with asyncio.timeout(30):
+            await session.heartbeat.async_request_refresh()
+    except Exception as err:
+        raise _error("photo_patrol_schedule_conflict") from err
+    if session.error.value is not None:
         raise _error("photo_patrol_schedule_conflict")
     if _schedule_conflict(entry, dt_util.now()):
         raise _error("photo_patrol_schedule_conflict")
@@ -488,12 +477,12 @@ async def _async_check_schedule(entry: MaticConfigEntry) -> None:
 
 def _schedule_conflict(entry: MaticConfigEntry, now: Any) -> bool:
     """Block a patrol whose bounded run overlaps an enabled native schedule."""
-    state = entry.runtime_data.coordinator.data
-    if state is None:
-        return True
+    session = entry.runtime_data.session
     begin = now - SCHEDULE_GUARD_BEFORE
     end = now + timedelta(seconds=MAX_PATROL_SECONDS) + SCHEDULE_GUARD_BEFORE
-    return bool(schedule_occurrences(state, begin, end))
+    return bool(
+        schedule_occurrences(session.telemetry.value, session.floor.value, begin, end)
+    )
 
 
 def ensure_current_room_allows_photo(entry: MaticConfigEntry) -> None:
@@ -501,8 +490,7 @@ def ensure_current_room_allows_photo(entry: MaticConfigEntry) -> None:
     forbidden = set(entry.options.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, ()))
     if not forbidden:
         return
-    state = entry.runtime_data.coordinator.data
-    floor_plan = state.floor_plan if state is not None else None
+    floor_plan = entry.runtime_data.session.floor.value
     if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
         floor_plan
     ):
@@ -510,7 +498,7 @@ def ensure_current_room_allows_photo(entry: MaticConfigEntry) -> None:
     room_names = {room.id: room.name for room in floor_plan.rooms}
     if not forbidden <= set(room_names):
         raise _error("photo_patrol_rooms_unavailable")
-    area = state.operational.current_area
+    area = entry.runtime_data.session.state.value.operational.current_area
     if not isinstance(area, str) or not area.strip():
         raise _error("photo_patrol_rooms_unavailable")
     try:

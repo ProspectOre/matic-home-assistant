@@ -83,7 +83,7 @@ class CleaningSessionTracker:
         room_names: tuple[str, ...],
         now: datetime,
     ) -> CleaningSession | None:
-        """Observe one coordinator update and return the newest finished run."""
+        """Observe one heartbeat's state and return the newest finished run."""
         room = _canonical_room(current_area, room_names)
         if cleaning and not paused and not returning and not charging:
             if self._started_at is None:

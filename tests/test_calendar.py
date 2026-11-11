@@ -11,13 +11,17 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot import calendar as calendar_platform
 from custom_components.matic_robot.calendar import MaticScheduleCalendar
-from custom_components.matic_robot.client.models import CleaningSchedule, RobotState
+from custom_components.matic_robot.client.models import (
+    CleaningSchedule,
+    FloorPlan,
+    RobotTelemetry,
+)
 from custom_components.matic_robot.native_schedules import (
     SCHEDULED_RUN_DURATION,
     schedule_occurrences,
     schedule_zone,
 )
-from tests.test_entities import _entry, _floor_plan, _state
+from tests.test_entities import _entry, _floor_plan
 
 LOS_ANGELES = ZoneInfo("America/Los_Angeles")
 
@@ -36,18 +40,20 @@ def _schedule(**changes: object) -> CleaningSchedule:
     return replace(schedule, **changes)  # type: ignore[arg-type]
 
 
-def _with(*schedules: CleaningSchedule, timezone: str | None = "Etc/UTC") -> RobotState:
-    state = _state(floor_plan=_floor_plan())
-    return replace(
-        state,
-        telemetry=replace(state.telemetry, schedules=schedules, timezone=timezone),
+def _with(
+    *schedules: CleaningSchedule, timezone: str | None = "Etc/UTC"
+) -> tuple[RobotTelemetry, FloorPlan]:
+    """Return the telemetry and floor plan a schedule expansion reads."""
+    return (
+        RobotTelemetry(schedules=schedules, timezone=timezone),
+        _floor_plan(),
     )
 
 
 def test_weekly_schedule_expands_in_its_own_zone_across_dst() -> None:
     # US daylight saving time ends on Sunday 2026-11-01.
     events = schedule_occurrences(
-        _with(_schedule()),
+        *_with(_schedule()),
         datetime(2026, 10, 26, tzinfo=UTC),
         datetime(2026, 11, 6, tzinfo=UTC),
     )
@@ -74,16 +80,16 @@ def test_window_includes_a_run_already_under_way_and_excludes_the_edges() -> Non
     assert [
         event.start
         for event in schedule_occurrences(
-            state, begins + timedelta(minutes=30), begins + timedelta(hours=2)
+            *state, begins + timedelta(minutes=30), begins + timedelta(hours=2)
         )
     ] == [begins]
     assert (
         schedule_occurrences(
-            state, begins + SCHEDULED_RUN_DURATION, begins + timedelta(hours=2)
+            *state, begins + SCHEDULED_RUN_DURATION, begins + timedelta(hours=2)
         )
         == []
     )
-    assert schedule_occurrences(state, begins - timedelta(hours=1), begins) == []
+    assert schedule_occurrences(*state, begins - timedelta(hours=1), begins) == []
 
 
 def test_disabled_and_timeless_schedules_are_skipped() -> None:
@@ -94,7 +100,7 @@ def test_disabled_and_timeless_schedules_are_skipped() -> None:
     )
 
     events = schedule_occurrences(
-        state,
+        *state,
         datetime(2026, 10, 26, tzinfo=LOS_ANGELES),
         datetime(2026, 10, 27, tzinfo=LOS_ANGELES),
     )
@@ -109,7 +115,7 @@ def test_events_from_several_schedules_are_sorted_by_start() -> None:
     )
 
     events = schedule_occurrences(
-        state,
+        *state,
         datetime(2026, 10, 26, tzinfo=LOS_ANGELES),
         datetime(2026, 10, 27, tzinfo=LOS_ANGELES),
     )
@@ -123,8 +129,8 @@ def test_description_names_the_mode_and_only_known_rooms() -> None:
         datetime(2026, 10, 27, tzinfo=LOS_ANGELES),
     )
 
-    def description(state: RobotState) -> str | None:
-        return schedule_occurrences(state, *window)[0].description
+    def description(state: tuple[RobotTelemetry, FloorPlan | None]) -> str | None:
+        return schedule_occurrences(*state, *window)[0].description
 
     monday = _schedule(weekdays=("monday",), cleaning_mode=None)
     unordered = replace(monday, ordered=False, room_ids=("protocol-1", "missing"))
@@ -140,7 +146,7 @@ def test_description_names_the_mode_and_only_known_rooms() -> None:
         == "Vacuum"
     )
     assert description(_with(replace(monday, room_ids=("missing",)))) is None
-    assert description(replace(_with(monday), floor_plan=None)) is None
+    assert description((_with(monday)[0], None)) is None
     assert description(_with(replace(monday, cleaning_mode="unknown"))) == (
         "Rooms in this order: Study, Kitchen"
     )
@@ -174,7 +180,9 @@ async def test_setup_adds_one_read_only_calendar(hass) -> None:
 
 async def test_entity_reports_the_next_run_and_window_events(hass) -> None:
     entry = _entry()
-    entry.runtime_data.coordinator.data = _with(_schedule(weekdays=("thursday",)))
+    entry.runtime_data.session.telemetry.set(
+        _with(_schedule(weekdays=("thursday",)))[0]
+    )
     entity = MaticScheduleCalendar(entry)
     now = datetime(2026, 10, 27, 12, tzinfo=LOS_ANGELES)
 
@@ -186,7 +194,7 @@ async def test_entity_reports_the_next_run_and_window_events(hass) -> None:
     events = await entity.async_get_events(hass, now, now + timedelta(days=14))
     assert len(events) == 2
 
-    entry.runtime_data.coordinator.data = _with()
+    entry.runtime_data.session.telemetry.set(_with()[0])
     with patch.object(dt_util, "now", return_value=now):
         assert entity.event is None
         assert entity.extra_state_attributes == {
@@ -197,9 +205,11 @@ async def test_entity_reports_the_next_run_and_window_events(hass) -> None:
 
 def test_next_run_skips_the_run_under_way() -> None:
     entry = _entry()
-    entry.runtime_data.coordinator.data = _with(
-        _schedule(name="Early", weekdays=("thursday",), room_ids=()),
-        _schedule(name="Late", weekdays=("thursday",), minute_of_day=555),
+    entry.runtime_data.session.telemetry.set(
+        _with(
+            _schedule(name="Early", weekdays=("thursday",), room_ids=()),
+            _schedule(name="Late", weekdays=("thursday",), minute_of_day=555),
+        )[0]
     )
     entity = MaticScheduleCalendar(entry)
     # 08:45, during Early's nominal hour and before Late at 09:15.
@@ -224,12 +234,12 @@ def test_next_run_skips_the_run_under_way() -> None:
 def test_runs_in_dst_transition_hours_last_one_elapsed_hour() -> None:
     utc = ZoneInfo("UTC")
     fall_back = schedule_occurrences(
-        _with(_schedule(minute_of_day=90, weekdays=("sunday",))),
+        *_with(_schedule(minute_of_day=90, weekdays=("sunday",))),
         datetime(2026, 11, 1, tzinfo=LOS_ANGELES),
         datetime(2026, 11, 2, tzinfo=LOS_ANGELES),
     )
     spring_forward = schedule_occurrences(
-        _with(_schedule(minute_of_day=150, weekdays=("sunday",))),
+        *_with(_schedule(minute_of_day=150, weekdays=("sunday",))),
         datetime(2026, 3, 8, tzinfo=LOS_ANGELES),
         datetime(2026, 3, 9, tzinfo=LOS_ANGELES),
     )
@@ -257,7 +267,7 @@ def test_a_run_in_the_repeated_hour_overlaps_a_window_starting_inside_it() -> No
     window_start = datetime(2026, 11, 1, 1, 45, tzinfo=LOS_ANGELES)
 
     events = schedule_occurrences(
-        state, window_start, datetime(2026, 11, 1, 3, tzinfo=LOS_ANGELES)
+        *state, window_start, datetime(2026, 11, 1, 3, tzinfo=LOS_ANGELES)
     )
 
     assert len(events) == 1

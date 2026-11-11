@@ -72,9 +72,9 @@ async function exhaustSnapshotRetries(page) {
   await page.clock.pauseAt(new Date());
   await page.evaluate(() => {
     const h = window.workspaceHarness;
-    h.setRecoverySnapshot(Promise.reject(new Error("coordinator unavailable")));
+    h.setRecoverySnapshot(Promise.reject(new Error("robot unavailable")));
     void h.transport.start();
-    h.rejectInitialSnapshot(new Error("coordinator unavailable"));
+    h.rejectInitialSnapshot(new Error("robot unavailable"));
   });
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.errors.length)).toBe(1);
   // Let the rejected read finish its catch/finally path before advancing fake time.
@@ -592,7 +592,7 @@ test("explicit resync keeps its immediate retry when the in-flight read fails", 
   await page.evaluate(() => {
     const h = window.workspaceHarness;
     h.transport.requestResync("restart");
-    h.rejectRecoverySnapshot(new Error("coordinator unavailable"));
+    h.rejectRecoverySnapshot(new Error("robot unavailable"));
   });
   await page.clock.fastForward(0);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(7);

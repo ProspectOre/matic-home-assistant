@@ -935,7 +935,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         result["description_placeholders"] = {"name": entry.title}
         # Core deletes a Repair only when its fix flow creates an entry, and
-        # the reloaded coordinator never raised this one: delete it here.
+        # the reloaded session never raised this one: delete it here.
         ir.async_delete_issue(
             self.hass, DOMAIN, f"robot_identity_changed_{entry.entry_id}"
         )

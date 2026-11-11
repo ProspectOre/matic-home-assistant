@@ -730,10 +730,12 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
     runtime = SimpleNamespace(
         client=client,
         cleaning_plans=manager,
-        coordinator=SimpleNamespace(
-            data=SimpleNamespace(floor_plan=floor),
-            async_request_refresh=AsyncMock(),
-            async_confirm_room_completed=MagicMock(),
+        session=SimpleNamespace(
+            floor=SimpleNamespace(value=floor),
+            heartbeat=SimpleNamespace(
+                async_request_refresh=AsyncMock(),
+                async_confirm_room_completed=MagicMock(),
+            ),
         ),
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
     )

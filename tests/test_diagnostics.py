@@ -72,14 +72,18 @@ def diagnostic_entry(hass) -> SimpleNamespace:
             firmware_tracker=SimpleNamespace(
                 summary=lambda entry_id: {"observed_version": "test-version"}
             ),
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(
-                    info=info,
-                    operational=operational,
-                    telemetry=RobotTelemetry(software_version="test-version"),
+            session=SimpleNamespace(
+                info=info,
+                state=SimpleNamespace(
+                    value=SimpleNamespace(operational=operational, session_active=None)
                 ),
-                robot_health=robot_health,
-                last_update_success=True,
+                telemetry=SimpleNamespace(
+                    value=RobotTelemetry(software_version="test-version")
+                ),
+                floor=SimpleNamespace(value=None),
+                error=SimpleNamespace(value=None),
+                health=robot_health,
+                pose_on=lambda _floor: None,
             ),
         ),
     )

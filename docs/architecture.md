@@ -13,7 +13,7 @@ out their own.
 | --- | --- | --- |
 | Protocol client | The pinned connection and the vetted commands | Hold Home Assistant workflows or policy |
 | Robot session | The client, the robot's live state and whether the robot is reachable | Let anything but the state watch write robot state |
-| Coordinator | The floor the robot reports and its matching floor plan | Treat a cached floor as current after a floor change |
+| Heartbeat | The floor the robot reports and its matching floor plan | Treat a cached floor as current after a floor change |
 | Map store | Which map data is admitted as live, and its size limits | Restore a floor's identity from old geometry |
 | Cleaning policy | Rotation, room schedules, effective settings and their explanations | Send commands or decide that a room is done |
 | Managed executor | Sending each leg, ownership, handoffs, stop settlement and restart recovery | Keep a second record of what completed |
@@ -52,12 +52,12 @@ a silent connection. A `latest_pose` watch feeds the map trail and Matic Map.
 The session raises the identity Repair, starts reauthentication when a dial or
 subscription is refused, and closes on unload and when Home Assistant stops.
 
-The [coordinator](../custom_components/matic_robot/coordinator.py) is what
-entities read. It joins the session's state and pose with what the robot does
-not push to it yet: the floor plan, telemetry and run progress, read on a
-heartbeat every 5 minutes while the robot is docked and every 30 seconds while
-it is out. It never reads robot state, and a heartbeat fails while the robot
-is unreachable. Cached geometry alone cannot establish the current floor.
+The session keeps one [store](../custom_components/matic_robot/stores.py) per
+kind of robot data, each with one writer; entities, Matic Map and listeners
+subscribe to the stores they read. Its [heartbeat](../custom_components/matic_robot/heartbeat.py)
+writes what the robot does not push: the floor plan, telemetry, run progress
+and cleaning history, every 5 minutes docked and every 30 seconds off the dock,
+never while the robot is unreachable. Cached geometry alone cannot set a floor.
 
 ## Plans and completion
 

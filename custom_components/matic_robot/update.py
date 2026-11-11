@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Final
+from collections.abc import Iterable
+from typing import Any, Final
 
 from homeassistant.components.update import (
     UpdateDeviceClass,
@@ -16,6 +17,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import MaticConfigEntry
 from .const import DOMAIN
 from .entity import MaticEntity
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -69,13 +71,18 @@ class MaticFirmwareUpdate(MaticEntity, UpdateEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_firmware"
+        self._attr_unique_id = f"{self.session.info.serial_number}_firmware"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return (self.session.state, self.session.telemetry)
 
     @property
     def installed_version(self) -> str | None:
         """Return the robot's current firmware version."""
-        state = self.coordinator.data
-        return state.telemetry.software_version or state.operational.software_version
+        return (
+            self.session.telemetry.value.software_version
+            or self.session.state.value.operational.software_version
+        )
 
     @property
     def latest_version(self) -> str | None:
@@ -102,7 +109,7 @@ class MaticFirmwareUpdate(MaticEntity, UpdateEntity):
 
     @property
     def _update_pending(self) -> bool:
-        return self.coordinator.data.telemetry.update_state == "available"
+        return self.session.telemetry.value.update_state == "available"
 
     def _common_translations(self) -> dict[str, str]:
         return translation.async_get_cached_translations(
@@ -112,11 +119,11 @@ class MaticFirmwareUpdate(MaticEntity, UpdateEntity):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose the robot's own updater state for automations."""
-        telemetry = self.coordinator.data.telemetry
+        telemetry = self.session.telemetry.value
         return {
             "update_state": telemetry.update_state,
             "update_channel": (
                 telemetry.update_channel
-                or self.coordinator.data.operational.release_channel
+                or self.session.state.value.operational.release_channel
             ),
         }

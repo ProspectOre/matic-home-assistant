@@ -36,23 +36,23 @@ SERIAL = "synthetic-serial"
 
 def _cleaning_entity(hass, *, cleaning: bool = True):
     entry = _entry()
-    coordinator = entry.runtime_data.coordinator
-    state = coordinator.data
-    coordinator.data = replace(
-        state, operational=replace(state.operational, cleaning=cleaning)
+    session = entry.runtime_data.session
+    state = session.state.value
+    session.state.set(
+        replace(state, operational=replace(state.operational, cleaning=cleaning))
     )
-    coordinator.client.async_change_queue = AsyncMock()
+    session.client.async_change_queue = AsyncMock()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     entity.hass = hass
     entity.entity_id = "vacuum.matic"
-    return entity, coordinator, manager
+    return entity, session, manager
 
 
 async def test_skip_during_a_plan_run_is_noted_for_the_run(hass) -> None:
-    entity, coordinator, manager = _cleaning_entity(hass)
+    entity, session, manager = _cleaning_entity(hass)
     await manager.ledger.async_begin_run(
         SERIAL, "plan", "run-1", 2, trigger="user", service="run_selected_plan"
     )
@@ -63,7 +63,7 @@ async def test_skip_during_a_plan_run_is_noted_for_the_run(hass) -> None:
     await entity.async_send_command("skip_room", {"room": "Study"})
     await hass.async_block_till_done()
 
-    call = coordinator.client.async_change_queue.await_args
+    call = session.client.async_change_queue.await_args
     assert call.args[1:] == (QueueAction.SKIP, entity._floor_plan().rooms[1])
     assert manager.ledger.skipped_room_ids(SERIAL, "run-1") == {"room-2"}
     assert manager.control.managed_motion_is_current(SERIAL, token)
@@ -76,11 +76,11 @@ async def test_skip_during_a_plan_run_is_noted_for_the_run(hass) -> None:
             "run_id": "run-1",
         }
     ]
-    coordinator.async_request_refresh.assert_awaited()
+    session.heartbeat.async_request_refresh.assert_awaited()
 
 
 async def test_queue_changes_outside_a_plan_run_carry_no_run(hass) -> None:
-    entity, coordinator, _manager = _cleaning_entity(hass)
+    entity, session, _manager = _cleaning_entity(hass)
     events = []
     hass.bus.async_listen("matic_robot_queue_changed", events.append)
 
@@ -93,7 +93,7 @@ async def test_queue_changes_outside_a_plan_run_carry_no_run(hass) -> None:
     await entity.async_send_command("clean_room_again", {"room": "Kitchen"})
     await hass.async_block_till_done()
 
-    calls = coordinator.client.async_change_queue.await_args_list
+    calls = session.client.async_change_queue.await_args_list
     assert [call.args[1] for call in calls] == [
         QueueAction.CLEAN_NEXT,
         QueueAction.SKIP,
@@ -118,34 +118,34 @@ async def test_queue_changes_outside_a_plan_run_carry_no_run(hass) -> None:
     ],
 )
 async def test_queue_commands_refuse_bad_parameters(hass, params, key) -> None:
-    entity, coordinator, _manager = _cleaning_entity(hass)
+    entity, session, _manager = _cleaning_entity(hass)
 
     with pytest.raises(ServiceValidationError) as raised:
         await entity.async_send_command("clean_room_again", params)
 
     assert raised.value.translation_key == key
-    coordinator.client.async_change_queue.assert_not_awaited()
+    session.client.async_change_queue.assert_not_awaited()
 
 
 async def test_queue_change_needs_a_clean(hass) -> None:
-    entity, coordinator, _manager = _cleaning_entity(hass, cleaning=False)
+    entity, session, _manager = _cleaning_entity(hass, cleaning=False)
 
     with pytest.raises(ServiceValidationError) as raised:
         await entity.async_change_queue(QueueAction.SKIP, "Kitchen")
 
     assert raised.value.translation_key == "queue_no_clean_running"
     assert raised.value.translation_placeholders == {"room": "Kitchen"}
-    coordinator.client.async_change_queue.assert_not_awaited()
+    session.client.async_change_queue.assert_not_awaited()
 
 
 async def test_queue_change_refused_when_the_clean_ends_while_waiting(hass) -> None:
-    entity, coordinator, manager = _cleaning_entity(hass)
-    state = coordinator.data
+    entity, session, manager = _cleaning_entity(hass)
+    state = session.state.value
 
     @asynccontextmanager
     async def clean_ends(_serial):
-        coordinator.data = replace(
-            state, operational=replace(state.operational, cleaning=False)
+        session.state.set(
+            replace(state, operational=replace(state.operational, cleaning=False))
         )
         yield
 
@@ -155,7 +155,7 @@ async def test_queue_change_refused_when_the_clean_ends_while_waiting(hass) -> N
         await entity.async_change_queue(QueueAction.SKIP, "Kitchen")
 
     assert raised.value.translation_key == "queue_no_clean_running"
-    coordinator.client.async_change_queue.assert_not_awaited()
+    session.client.async_change_queue.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -167,11 +167,11 @@ async def test_queue_change_refused_when_the_clean_ends_while_waiting(hass) -> N
     ],
 )
 async def test_queue_change_errors_are_translated(hass, error, kind, key) -> None:
-    entity, coordinator, manager = _cleaning_entity(hass)
+    entity, session, manager = _cleaning_entity(hass)
     await manager.ledger.async_begin_run(
         SERIAL, "plan", "run-1", 2, trigger="user", service="run_selected_plan"
     )
-    coordinator.client.async_change_queue.side_effect = error
+    session.client.async_change_queue.side_effect = error
 
     with pytest.raises(kind) as raised:
         await entity.async_change_queue(QueueAction.SKIP, "Study")

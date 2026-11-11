@@ -170,7 +170,7 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
         for entry, floor, robot_floors in zip(
             entries, floors, mapped_floors, strict=True
         ):
-            plan = entry.runtime_data.coordinator.data.floor_plan
+            plan = entry.runtime_data.session.floor.value
             assert plan is not None
             assert {room.name for room in plan.rooms} == {
                 room.name for room in floor.rooms
@@ -220,10 +220,10 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
             assert await response.read() == _webp(color)
             assert robot.current_area == floor.rooms[0].name
             assert (
-                entry.runtime_data.coordinator.data.operational.current_area
+                entry.runtime_data.session.state.value.operational.current_area
                 == floor.rooms[0].name
             )
-            active_plan = entry.runtime_data.coordinator.data.floor_plan
+            active_plan = entry.runtime_data.session.floor.value
             assert active_plan is not None
             assert [mapped.mission_id for mapped in active_plan.mapped_floors] == [
                 mapped.mission_id for mapped in robot_floors
@@ -240,21 +240,20 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
 
         floor_snapshots = {
             entry.entry_id: (
-                entry.runtime_data.coordinator.data.floor_plan.mission_id,
-                entry.runtime_data.coordinator.data.floor_plan.partition_id_wire,
+                entry.runtime_data.session.floor.value.mission_id,
+                entry.runtime_data.session.floor.value.partition_id_wire,
                 tuple(
-                    room.name
-                    for room in entry.runtime_data.coordinator.data.floor_plan.rooms
+                    room.name for room in entry.runtime_data.session.floor.value.rooms
                 ),
             )
             for entry in entries
         }
         robots[1].set_mapped_floors(mapped_floors[1], mapped_floors[1][1])
-        west_coordinator = entries[1].runtime_data.coordinator
+        west_session = entries[1].runtime_data.session
         async with asyncio.timeout(5):
             while True:
-                await west_coordinator.async_refresh()
-                west_plan = west_coordinator.data.floor_plan
+                await west_session.heartbeat.async_refresh()
+                west_plan = west_session.floor.value
                 if (
                     west_plan is not None
                     and west_plan.mission_id == mapped_floors[1][1].mission_id
@@ -269,7 +268,7 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
             mapped.mission_id for mapped in mapped_floors[1]
         ]
         for index in (0, 2):
-            plan = entries[index].runtime_data.coordinator.data.floor_plan
+            plan = entries[index].runtime_data.session.floor.value
             assert plan is not None
             assert (
                 plan.mission_id,

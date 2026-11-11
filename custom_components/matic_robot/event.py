@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 from homeassistant.components.event import EventEntity, EventEntityDescription
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .const import CUES_EVENT_TYPES
-from .coordinator import MaticCuesEvent
+from .cues import CuesTransitions, MaticCuesEvent
 from .entity import MaticEntity
+from .stores import Store
 
 PARALLEL_UPDATES = 0
 
@@ -37,13 +41,16 @@ class MaticCuesEventEntity(MaticEntity, EventEntity):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_cues"
+        self._attr_unique_id = f"{self.session.info.serial_number}_cues"
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
 
     async def async_added_to_hass(self) -> None:
         """Listen for live Cues transitions."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self.coordinator.async_add_cues_listener(self._async_cues_event)
+            CuesTransitions(self.session.state, self._async_cues_event).subscribe()
         )
 
     @callback

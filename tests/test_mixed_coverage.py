@@ -1878,7 +1878,7 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
             raise MaticError("update failed after recovery STOP")
         kwargs["require_current"]()
 
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=send)
     entity = MaticVacuum(entry)
     entity._schedule_dock_after_stop = Mock()
@@ -1975,7 +1975,7 @@ async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
     async def checkpoint(_floor, _rooms, _settings, _modes, **kwargs):
         await kwargs["checkpoint_initial_session"](session_hash)
 
-    client = entry.runtime_data.coordinator.client
+    client = entry.runtime_data.session.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=checkpoint)
     await MaticVacuum(entry).async_send_command(
         "clean_rooms",
