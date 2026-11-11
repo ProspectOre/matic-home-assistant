@@ -109,23 +109,14 @@ class RobotPhotoStore:
 
     async def async_watch(self) -> None:
         """Follow the robot's photo collection, including photos from the app."""
-        retry_delay = 1
-        while True:
-            try:
-                async for entry in self._client.async_subscribe_collection_entries(
-                    PHOTO_COLLECTION
-                ):
-                    retry_delay = 1
-                    if self._async_add_photos(_decode_photos((entry,))):
-                        self._async_notify()
-            except asyncio.CancelledError:
-                raise
-            except MaticError as err:
-                _LOGGER.debug("Matic photo subscription interrupted: %s", err)
-            if self._client.retired:
-                return
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+        await self._client.async_keep_subscribed(self._async_consume)
+
+    async def _async_consume(self) -> None:
+        async for entry in self._client.async_subscribe_collection_entries(
+            PHOTO_COLLECTION
+        ):
+            if self._async_add_photos(_decode_photos((entry,))):
+                self._async_notify()
 
     @callback
     def _async_add_photos(self, photos: Iterable[RobotPhoto]) -> bool:

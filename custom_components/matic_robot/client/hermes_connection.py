@@ -6,11 +6,12 @@ import asyncio
 import logging
 from collections.abc import (
     AsyncIterator,
+    Awaitable,
     Callable,
 )
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 
-from grpclib.client import Channel
+from google.protobuf.message import DecodeError
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError
 
@@ -21,10 +22,12 @@ from .commands import (
 )
 from .exceptions import (
     AuthenticationRequiredError,
-    CannotConnectError,
     EndpointUnsupportedError,
     MaticError,
     PairingModeRequiredError,
+    ProtocolError,
+    RequestTimeoutError,
+    TransportError,
 )
 from .observations import ActivityJournal, ObservationCallback
 from .proto.hermes_auth_grpc import HermesAuthStub
@@ -34,6 +37,7 @@ from .proto.hermes_pb2 import (
     ChannelRequest,
     Unit,
 )
+from .supervisor import ConnectionSupervisor
 from .tls import async_robot_client_context
 from .transport import (
     TRANSPORT_ERRORS,
@@ -70,30 +74,31 @@ class HermesConnection:
         self._credential = credential
         self._timezone_identifier = timezone_identifier
         self._seconds_from_gmt = seconds_from_gmt
-        self._channel: Channel | None = None
-        self._retired = False
-        self._connect_lock = asyncio.Lock()
+        self._supervisor = ConnectionSupervisor(self._async_open)
         self._command_health: dict[str, str] = {}
         self.activity_journal = ActivityJournal(observation_callback)
 
-    async def async_connect(self) -> None:
-        """Verify the pinned certificate, then open an HTTP/2 channel."""
-        async with self._connect_lock:
-            self._require_active()
-            if self._channel is not None:
-                return
-            await self._async_connect_locked()
+    async def async_channel(self) -> PinnedChannel:
+        """Return the supervised channel, or raise why there is none."""
+        return await self._supervisor.async_channel()
 
-    async def _async_connect_locked(self) -> None:
-        """Open and initialize one channel while holding the connection lock."""
-        self._require_active()
+    async def async_keep_subscribed(
+        self, consume: Callable[[], Awaitable[object]]
+    ) -> None:
+        """Run ``consume``, which reads one subscription, on every connection."""
+        await self._supervisor.async_keep_subscribed(consume)
+
+    async def async_shutdown(self) -> None:
+        """Close the connection for good and wait for the supervisor to end."""
+        await self._supervisor.async_close()
+
+    async def _async_open(self, keepalive_seconds: float) -> PinnedChannel:
+        """Dial the robot, pin its certificate and bind this app session."""
         context = await async_robot_client_context()
-        self._require_active()
-        last_error: CannotConnectError | None = None
+        error = TransportError("No reachable robot address")
         for host in await async_connection_candidates(
             self._host, self._hostname, self._port
         ):
-            self._require_active()
             channel = PinnedChannel(
                 host,
                 self._port,
@@ -101,95 +106,50 @@ class HermesConnection:
                 expected_hostname=self._hostname,
                 expected_serial=self._serial_number,
                 expected_fingerprint=self._certificate_fingerprint,
-                is_retired=lambda: self._retired,
+                keepalive_seconds=keepalive_seconds,
             )
-            # Force the TLS handshake now so the pinned identity is enforced and
-            # an unreachable candidate falls back to the next resolved address.
-            # A pinning failure is a hard security error and is not caught here.
-            try:
-                async with asyncio.timeout(_RPC_TIMEOUT):
-                    await channel.__connect__()
-                self._require_active()
+            # Whatever ends this attempt early closes the channel.
+            with ExitStack() as unopened:
+                unopened.callback(channel.close)
+                # The TLS handshake runs here, so the pin is enforced before
+                # any request and an unreachable address falls back to the
+                # next one. A pinning failure is a security error: it ends
+                # the dial.
+                try:
+                    async with asyncio.timeout(_RPC_TIMEOUT):
+                        await channel.__connect__()
+                except TimeoutError:
+                    error = TransportError("Hermes connection timed out")
+                    continue
+                except TRANSPORT_ERRORS as err:
+                    error = TransportError(str(err) or "connection failed")
+                    continue
+                await self._async_handshake(channel)
+                await self._async_send_user_data(channel)
+                unopened.pop_all()
                 self._host = host
-                self._channel = channel
-                break
-            except TimeoutError:
-                last_error = CannotConnectError("Hermes connection timed out")
-                continue
-            except TRANSPORT_ERRORS as err:
-                last_error = CannotConnectError(str(err) or "connection failed")
-                continue
-            finally:
-                # Ownership transfers only after a successful connect.
-                if self._channel is not channel:
-                    channel.close()
-        else:
-            raise last_error or CannotConnectError("No reachable robot address")
-        try:
-            await self._async_handshake()
-            await self._async_send_user_data()
-            self._require_active()
-        except BaseException:
-            # Never leave a half-initialized channel behind: closing it lets a
-            # later async_connect() re-dial instead of silently no-opping.
-            self.close()
-            raise
-
-    def _require_active(self) -> None:
-        if self._retired:
-            raise CannotConnectError("Hermes client has been retired")
-
-    @property
-    def retired(self) -> bool:
-        """Whether this runtime has permanently revoked transport access."""
-        return self._retired
-
-    def retire(self) -> None:
-        """Permanently revoke this runtime, including captured channel references."""
-        self._retired = True
-        self.close()
-
-    async def async_shutdown(self) -> None:
-        """Revoke this runtime and wait for any in-flight dial to settle."""
-        self.retire()
-        async with self._connect_lock:
-            self.close()
-
-    def close(self) -> None:
-        """Close the active channel while allowing a later reconnect."""
-        if self._channel is not None:
-            self._channel.close()
-            self._channel = None
-
-    async def _async_reconnect_after_read_failure(
-        self, failed_channel: Channel | None
-    ) -> None:
-        """Replace one failed read channel without racing concurrent readers."""
-        async with self._connect_lock:
-            self._require_active()
-            # Another concurrent read may already have replaced the failed
-            # channel. Reuse that fresh pinned session instead of closing it.
-            if self._channel is not failed_channel and self._channel is not None:
-                return
-            self.close()
-            await self._async_connect_locked()
+                return channel
+        raise error
 
     @asynccontextmanager
     async def _map_stream_errors(self, description: str) -> AsyncIterator[None]:
-        """Map every transport failure onto the Matic error hierarchy.
+        """Raise every failure of one RPC as the Matic error that names its kind.
 
-        Besides ``TimeoutError`` and ``GRPCError`` this also catches the plain
-        ``OSError``/``ConnectionResetError``, grpclib ``StreamTerminatedError``
-        /``ProtocolError``, and raw ``h2`` protocol errors (live robots reset
-        streams mid-conversation, observed as ``StreamClosedError``) so no raw
-        transport exception escapes an RPC. Messages stay non-sensitive.
+        Transport covers ``OSError``, grpclib ``StreamTerminatedError`` and
+        ``ProtocolError`` and raw ``h2`` errors: robots reset streams
+        mid-conversation, seen as ``StreamClosedError``. Messages stay
+        non-sensitive.
         """
         try:
             yield
         except TimeoutError as err:
-            raise CannotConnectError(f"Hermes {description} timed out") from err
+            raise RequestTimeoutError(f"Hermes {description} timed out") from err
         except TRANSPORT_ERRORS as err:
-            raise CannotConnectError(f"Hermes {description} connection failed") from err
+            raise TransportError(f"Hermes {description} connection failed") from err
+        except DecodeError as err:
+            raise ProtocolError(
+                f"Hermes {description} returned an undecodable message"
+            ) from err
         except GRPCError as err:
             if err.status is Status.UNAUTHENTICATED:
                 raise AuthenticationRequiredError(err.message) from err
@@ -197,15 +157,11 @@ class HermesConnection:
                 raise EndpointUnsupportedError(
                     f"Hermes {description} is not implemented by this firmware"
                 ) from err
-            raise CannotConnectError(err.message or err.status.name) from err
+            raise ProtocolError(err.message or err.status.name) from err
 
     async def async_request_credential(self, user_id: str) -> HermesCredential:
         """Request a scoped credential during the robot's pairing window."""
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
+        channel = await self.async_channel()
         try:
             async with asyncio.timeout(_RPC_TIMEOUT):
                 response = await HermesAuthStub(channel).AuthToken(
@@ -213,13 +169,11 @@ class HermesConnection:
                 )
             credential = HermesCredential.from_message(response)
         except ValueError as err:
-            raise CannotConnectError("Robot returned an incomplete credential") from err
+            raise ProtocolError("Robot returned an incomplete credential") from err
         except TimeoutError as err:
-            raise CannotConnectError("Hermes credential request timed out") from err
+            raise RequestTimeoutError("Hermes credential request timed out") from err
         except TRANSPORT_ERRORS as err:
-            raise CannotConnectError(
-                "Hermes credential request connection failed"
-            ) from err
+            raise TransportError("Hermes credential request connection failed") from err
         except GRPCError as err:
             if err.status in {
                 Status.UNAVAILABLE,
@@ -229,24 +183,21 @@ class HermesConnection:
                 raise PairingModeRequiredError(
                     "Enable pairing mode in the Matic app"
                 ) from err
-            raise CannotConnectError(err.message or err.status.name) from err
+            raise ProtocolError(err.message or err.status.name) from err
         self._credential = credential
-        await self._async_handshake()
-        await self._async_send_user_data()
+        await self._async_handshake(channel)
+        await self._async_send_user_data(channel)
         return credential
 
-    async def _async_handshake(self) -> None:
-        """Bind authenticated Hermes context to the active HTTP/2 channel."""
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
+    async def _async_handshake(self, channel: PinnedChannel) -> None:
+        """Bind authenticated Hermes context to ``channel``."""
         if self._credential is None:
             return
         async with self._map_stream_errors("handshake"), asyncio.timeout(_RPC_TIMEOUT):
             await HermesStub(channel).Handshake(Unit(), metadata=self._metadata)
 
-    async def _async_send_user_data(self) -> None:
-        """Identify this local app session."""
+    async def _async_send_user_data(self, channel: PinnedChannel) -> None:
+        """Identify this local app session on ``channel``."""
         if self._credential is None:
             return
         await self._async_send_channel_payload(
@@ -258,6 +209,7 @@ class HermesConnection:
                 seconds_from_gmt=self._seconds_from_gmt,
                 connection_kind=HermesConnectionKind.IP,
             ),
+            channel=channel,
         )
 
     async def _async_send_user_payload(
@@ -282,13 +234,22 @@ class HermesConnection:
         *,
         command_name: str | None = None,
         on_transmitted: Callable[[], None] | None = None,
+        channel: PinnedChannel | None = None,
     ) -> None:
-        """Observe every outgoing channel write, including internal cleanup."""
+        """Observe every outgoing channel write, including internal cleanup.
+
+        The dial and the credential request pass the ``channel`` they are
+        setting up; every other write goes out on the supervised one.
+        """
         fields = {"channel": channel_name, "command": command_name or channel_name}
         command_id = self.activity_journal.record("command_requested", **fields)
         try:
             outcome = await self._async_transmit_channel_payload(
-                channel_name, payload, command_id, on_transmitted=on_transmitted
+                channel or await self.async_channel(),
+                channel_name,
+                payload,
+                command_id,
+                on_transmitted=on_transmitted,
             )
         except asyncio.CancelledError:
             self.activity_journal.record(
@@ -310,6 +271,7 @@ class HermesConnection:
 
     async def _async_transmit_channel_payload(
         self,
+        channel: PinnedChannel,
         channel_name: str,
         payload: bytes,
         command_id: int,
@@ -317,12 +279,6 @@ class HermesConnection:
         on_transmitted: Callable[[], None] | None = None,
     ) -> str:
         """Send unchanged bytes; record when transport transmission begins."""
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-
         request = ChannelRequest(
             channel_name=channel_name,
             value=payload,

@@ -62,23 +62,22 @@ async def test_pairing_window_issues_a_credential_the_robot_accepts(
 
 async def test_unknown_credential_is_rejected(simulator: RunningSimulator) -> None:
     stranger = SimulatedRobot().add_credential(str(uuid4()))
-    client = hermes_client(simulator, stranger)
     with pytest.raises(AuthenticationRequiredError):
-        await client.async_connect()
-    client.close()
+        async with hermes_client(simulator, stranger):
+            pass
 
 
 async def test_pinned_identity_is_enforced_against_the_live_handshake(
     simulator: RunningSimulator, credential: HermesCredential
 ) -> None:
     with pytest.raises(CertificateMismatchError):
-        await hermes_client(
+        async with hermes_client(
             simulator, credential, certificate_fingerprint="0" * 64
-        ).async_connect()
+        ):
+            pass
     with pytest.raises(InvalidRobotCertificateError):
-        await hermes_client(
-            simulator, credential, serial_number="OTHER"
-        ).async_connect()
+        async with hermes_client(simulator, credential, serial_number="OTHER"):
+            pass
 
 
 async def test_commands_change_the_state_the_client_reads_back(

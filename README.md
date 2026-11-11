@@ -59,8 +59,10 @@ has no telemetry and no cloud service: maps and plans stay in Home Assistant
 5. Enter the six-digit code shown on the robot. It expires after about 20
    seconds; if it does, turn Pairing mode off and back on and try again.
 
-To install without HACS, copy `custom_components/matic_robot` into Home
-Assistant's `custom_components` directory and restart. The
+To install without HACS, download `matic_robot.zip` from a
+[release](https://github.com/ProspectOre/matic-home-assistant/releases),
+unpack it into `custom_components/matic_robot` in Home Assistant's
+configuration directory and restart. The
 [pairing guide](docs/hermes-pairing.md) covers Home Assistant Container and
 what to do when a code is rejected.
 

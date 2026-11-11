@@ -21,6 +21,7 @@ from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.client.snaps import decode_instamatic_snap
 from custom_components.matic_robot.photos import RobotPhotoStore
+from tests.hermes_fakes import keep_subscribed
 from tests.test_entities import _entry as _entities_entry
 from tests.wire_builders import _bfield, _session_identity, _vfield
 
@@ -126,11 +127,11 @@ def test_rejects_oversized_and_oversized_pixel_images() -> None:
         decode_instamatic_snap(entry)
 
 
-def _client(*, entries=(), stream=None, retired: bool = True) -> SimpleNamespace:
+def _client(*, entries=(), stream=None, subscriptions: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
         async_get_tracked_collection_entries=AsyncMock(return_value=tuple(entries)),
         async_subscribe_collection_entries=stream or MagicMock(),
-        retired=retired,
+        async_keep_subscribed=keep_subscribed(subscriptions),
     )
 
 
@@ -229,12 +230,12 @@ def _stream(*batches):
     return subscribe
 
 
-async def test_watch_follows_new_photos_and_retries_until_retired() -> None:
+async def test_watch_follows_new_photos_on_every_subscription() -> None:
     first = _snap(UUID(int=1), CAPTURED - 60)
     second = _snap(UUID(int=2), CAPTURED)
     client = _client(
         stream=_stream((first,), (first, second), CannotConnectError("drop")),
-        retired=False,
+        subscriptions=3,
     )
     store = RobotPhotoStore(client)
     seen: list[tuple[str | None, int]] = []
@@ -243,24 +244,16 @@ async def test_watch_follows_new_photos_and_retries_until_retired() -> None:
             (store.latest.photo_id if store.latest else None, store.photo_count)
         )
     )
-    sleeps: list[float] = []
 
-    async def sleep(delay: float) -> None:
-        sleeps.append(delay)
-        if len(sleeps) == 2:
-            client.retired = True
+    await store.async_watch()
 
-    with patch.object(photos.asyncio, "sleep", sleep):
-        await store.async_watch()
-
-    # A reconnect replays known photos, which change nothing.
+    # A new subscription replays known photos, which change nothing.
     assert seen == [(str(UUID(int=1)), 1), (str(UUID(int=2)), 2)]
-    assert sleeps == [1, 1]
     client.async_get_tracked_collection_entries.assert_not_awaited()
 
 
 async def test_watch_stops_on_cancel() -> None:
-    client = _client(stream=_stream(asyncio.CancelledError()), retired=False)
+    client = _client(stream=_stream(asyncio.CancelledError()))
     with pytest.raises(asyncio.CancelledError):
         await RobotPhotoStore(client).async_watch()
 

@@ -182,6 +182,9 @@ Entity IDs assume a robot named "Matic".
   survey keeps its older one-metre readings when it upgrades.
 - Restoring a backup on a real Home Assistant host has not been tried yet. The
   [upgrade and rollback drill](upgrade-drill.md) covers it on test data only.
+- HACS installs `matic_robot.zip` from the release. For a manual install,
+  unpack that zip into `custom_components/matic_robot`; the repository's source
+  no longer contains the built Matic Map.
 
 ## Checks still needed
 

@@ -1,19 +1,16 @@
 """Packaging and custom-integration release checks."""
 
 import json
-import os
 import re
-import shutil
-import subprocess
 import tomllib
 from pathlib import Path
 
-import pytest
 from homeassistant.components.automation.config import AUTOMATION_BLUEPRINT_SCHEMA
 from homeassistant.components.blueprint.models import Blueprint
 from homeassistant.util.yaml import load_yaml
 
 from custom_components.matic_robot.client.endpoints import HERMES_ENDPOINT_NAMES
+from scripts.release import ARCHIVE
 
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
@@ -35,6 +32,10 @@ def test_release_versions_and_links_are_consistent() -> None:
     assert manifest["version"] == "0.6.0b1"
     assert project["version"] == manifest["version"]
     assert hacs["homeassistant"] == "2026.10.0"
+    # HACS installs the zip a release carries; the default branch has no panel.
+    assert hacs["zip_release"] is True
+    assert hacs["filename"] == ARCHIVE.name
+    assert hacs["hide_default_branch"] is True
     assert manifest["documentation"].startswith("https://github.com/")
     assert manifest["issue_tracker"].endswith("/issues")
     assert manifest["codeowners"]
@@ -112,98 +113,6 @@ def test_browser_ci_image_matches_the_locked_playwright_runtime() -> None:
     assert browser_test["env"]["HOME"] == "/root"
 
 
-@pytest.mark.parametrize(
-    ("scenario", "expected_code", "expected_error"),
-    [
-        ("clean", 0, ""),
-        ("bundle", 1, "bundle is stale"),
-        ("icons", 1, "bundle is stale"),
-        ("wrong-workspace", 1, "outside the checked-out workspace"),
-        ("missing-repository", 128, "not a git repository"),
-        ("corrupt-index", 128, "Git could not verify"),
-    ],
-)
-def test_browser_bundle_check_preserves_git_and_parity_guards(
-    tmp_path: Path, scenario: str, expected_code: int, expected_error: str
-) -> None:
-    """Verify the actual CI shell under a synthetic container ownership boundary."""
-    workspace = tmp_path / "workspace"
-    bundle = workspace / "custom_components/matic_robot/map_studio_v4/index.js"
-    icons = workspace / "custom_components/matic_robot/matic_icons.js"
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text("bundle\n")
-    icons.write_text("icons\n")
-    global_config = tmp_path / "gitconfig"
-    global_config.write_text("")
-    env = {
-        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
-    }
-    env.update(
-        GIT_CONFIG_GLOBAL=str(global_config), GIT_CONFIG_NOSYSTEM="1", LC_ALL="C"
-    )
-    for arguments in (
-        ["init", "--quiet"],
-        ["add", "custom_components"],
-        [
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "Synthetic baseline",
-        ],
-    ):
-        subprocess.run(
-            ["git", *arguments], cwd=workspace, env=env, check=True, capture_output=True
-        )
-    env.update(GITHUB_WORKSPACE=str(workspace), GIT_TEST_ASSUME_DIFFERENT_OWNER="1")
-    untrusted = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=workspace,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert untrusted.returncode != 0
-    assert "detected dubious ownership" in untrusted.stderr
-    if scenario in {"bundle", "icons"}:
-        (bundle if scenario == "bundle" else icons).write_text("changed\n")
-    elif scenario == "wrong-workspace":
-        env.update(
-            GITHUB_WORKSPACE=str(tmp_path / "other"),
-            GIT_TEST_ASSUME_DIFFERENT_OWNER="0",
-        )
-    elif scenario == "missing-repository":
-        shutil.rmtree(workspace / ".git")
-    elif scenario == "corrupt-index":
-        (workspace / ".git" / "index").write_bytes(b"invalid")
-    workflow = load_yaml(ROOT / ".github" / "workflows" / "browser.yml")
-    command = next(
-        step["run"]
-        for step in workflow["jobs"]["browser"]["steps"]
-        if step.get("name") == "Committed bundle matches the frontend source"
-    )
-    assert re.findall(r"safe\.directory=(\S+)", command) == [
-        '"$GITHUB_WORKSPACE"',
-        '"$GITHUB_WORKSPACE"',
-    ]
-    result = subprocess.run(
-        ["bash", "-e", "-o", "pipefail", "-c", command],
-        cwd=workspace,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == expected_code, result.stderr
-    if expected_error:
-        assert expected_error in result.stderr
-    else:
-        assert not result.stderr
-    assert global_config.read_text() == ""
-
-
 def test_source_and_runtime_translations_stay_in_sync() -> None:
     """Ship runtime translations while retaining canonical Hassfest source."""
     strings = json.loads((INTEGRATION / "strings.json").read_text())
@@ -239,43 +148,24 @@ def test_source_and_runtime_translations_stay_in_sync() -> None:
     assert not (INTEGRATION / "map_studio_v4-review").exists()
 
 
-def test_python_package_includes_home_assistant_runtime_files() -> None:
-    """Keep non-Python integration files in wheel and sdist builds."""
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    package_data = set(
-        config["tool"]["setuptools"]["package-data"]["custom_components.matic_robot"]
-    )
+def test_ci_checks_and_keeps_the_zip_a_release_ships() -> None:
+    """Build the zip after the tests built Matic Map, load it, then keep it."""
+    steps = load_yaml(ROOT / ".github" / "workflows" / "test.yml")["jobs"]["test"][
+        "steps"
+    ]
+    commands = [step.get("run") for step in steps]
+    build = commands.index("python scripts/release.py zip")
+    upload = steps[build + 2]
 
-    assert "manifest.json" in package_data
-    assert "quality_scale.yaml" in package_data
-    assert "brand/*.png" in package_data
-    assert "translations/*.json" in package_data
-    assert "client/matic_intermediate_ca.pem" in package_data
-    assert "client/proto/*.proto" in package_data
-    assert "www/*.js" not in package_data
-    assert "*.js" in package_data
-    assert "map_studio_v4/*.js" in package_data
-    assert "map_studio_v4/**/*.js" in package_data
-    assert "map_studio_v4/*.js.LEGAL.txt" in package_data
-    assert "map_studio_v4/**/*.js.LEGAL.txt" in package_data
-    assert (INTEGRATION / "manifest.json").exists()
-    assert (INTEGRATION / "client" / "matic_intermediate_ca.pem").exists()
-
-
-def test_ci_inspects_finished_release_archives() -> None:
-    """Run artifact inspection only after the wheel and sdist are built."""
-    workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text()
-    # The default builds the wheel from the fresh sdist, not stale build/lib.
-    build = "- run: python -m build\n"
-    inspect = "python scripts/check_release_artifacts.py dist"
-    fresh_install = "python scripts/check_fresh_install.py dist"
-
-    assert build in workflow
-    assert inspect in workflow
-    assert fresh_install in workflow
-    assert (
-        workflow.index(build) < workflow.index(inspect) < workflow.index(fresh_install)
-    )
+    assert commands.index("python scripts/check.py --all") < build
+    assert commands[build + 1] == "python scripts/check_fresh_install.py"
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    # Unarchived, the download is the zip itself rather than a zip of it.
+    assert upload["with"] == {
+        "path": ARCHIVE.as_posix(),
+        "archive": False,
+        "if-no-files-found": "error",
+    }
 
 
 def test_integration_ships_local_brand_icons() -> None:

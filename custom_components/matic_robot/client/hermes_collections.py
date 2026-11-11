@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import (
     AsyncGenerator,
 )
 from time import monotonic
 from typing import cast
 
-from .exceptions import (
-    CannotConnectError,
-)
+from .exceptions import ProtocolError
 from .hermes_connection import HermesConnection
 from .models import (
     HermesCollectionEntry,
@@ -32,7 +29,6 @@ from .transport import (
 )
 from .wifi_status import WIFI_STATUS_MAX_BYTES
 
-_LOGGER = logging.getLogger(__name__)
 _RPC_TIMEOUT = 10.0
 _COLLECTION_TIMEOUT = 30.0
 _COLLECTION_MAX_BYTES = 64 * 1024 * 1024
@@ -54,11 +50,7 @@ class HermesCollections:
                 if collection_name == "wifi_status"
                 else TELEMETRY_NESTED_MAX_BYTES
             )
-        if self._connection._channel is None:
-            await self._connection.async_connect()
-        channel = self._connection._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
+        channel = await self._connection.async_channel()
         request = CollectionRequest(
             initial_request=InitialRequest(
                 collection_name=collection_name,
@@ -80,25 +72,19 @@ class HermesCollections:
                 response = await stream.recv_message()
 
         if response is None or not response.HasField("value"):
-            raise CannotConnectError(
-                f"Hermes {collection_name} stream returned no value"
-            )
+            raise ProtocolError(f"Hermes {collection_name} stream returned no value")
         payload = response_value_bytes(response)
         if max_bytes is not None and len(payload) > max_bytes:
-            raise CannotConnectError("Hermes property exceeds its value byte limit")
+            raise ProtocolError("Hermes property exceeds its value byte limit")
         if not payload:
-            raise CannotConnectError(
+            raise ProtocolError(
                 f"Hermes {collection_name} stream returned an empty value"
             )
         return payload
 
     async def async_get_collection_count(self, collection_name: str) -> int:
         """Count the current entries in a verified Hermes collection."""
-        if self._connection._channel is None:
-            await self._connection.async_connect()
-        channel = self._connection._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
+        channel = await self._connection.async_channel()
         request = CollectionRequest(
             initial_request=InitialRequest(
                 collection_name=collection_name,
@@ -144,11 +130,7 @@ class HermesCollections:
         """Return a bounded snapshot of one authenticated Hermes collection."""
         if not 1 <= limit <= 4096:
             raise ValueError("Hermes collection limit must be between 1 and 4096")
-        if self._connection._channel is None:
-            await self._connection.async_connect()
-        channel = self._connection._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
+        channel = await self._connection.async_channel()
         request = CollectionRequest(
             initial_request=InitialRequest(
                 collection_name=collection_name,
@@ -183,7 +165,7 @@ class HermesCollections:
                     entry_size = len(response.key_bytes) + len(payload)
                     if collected_bytes + entry_size > _COLLECTION_MAX_BYTES:
                         await async_cancel_stream(stream)
-                        raise CannotConnectError(
+                        raise ProtocolError(
                             f"Hermes {collection_name} collection exceeds "
                             "the byte limit"
                         )
@@ -218,77 +200,65 @@ class HermesCollections:
         open. Map collections publish new pages on that stream rather than
         returning their complete history to every fresh snapshot reader.
         """
-        if self._connection._channel is None:
-            await self._connection.async_connect()
-        channel = self._connection._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        failed_channel = channel
+        channel = await self._connection.async_channel()
         request = CollectionRequest(
             initial_request=InitialRequest(
                 collection_name=collection_name,
                 config=SubscriptionServiceConfig(),
             )
         )
-        try:
-            async with self._connection._map_stream_errors(
-                f"{collection_name} subscription"
-            ):
-                async with HermesStub(channel).FetchCollection.open(
-                    metadata=self._connection._metadata
-                ) as stream:
-                    # FetchCollection is a tracked bidirectional subscription.  The
-                    # server sends one update, then waits for its sequence id to be
-                    # acknowledged before advancing to the next cached or live item.
-                    cancel_stream = True
-                    try:
-                        await stream.send_message(request, end=False)
-                        while (response := await stream.recv_message()) is not None:
-                            entry = None
-                            if response.HasField("value"):
-                                sequence = (
-                                    response.sequence_id
-                                    if response.HasField("sequence_id")
-                                    else None
-                                )
-                                entry = HermesCollectionEntry(
-                                    bytes(response.key_bytes),
-                                    response_value_bytes(response),
-                                    int(sequence.start_ts_nanos)
-                                    if sequence is not None
-                                    else None,
-                                    int(sequence.sequence_no)
-                                    if sequence is not None
-                                    else None,
-                                )
-                            if response.HasField("sequence_id"):
-                                await stream.send_message(
-                                    CollectionRequest(sequence_id=response.sequence_id),
-                                    end=False,
-                                )
-                            if entry is not None:
-                                yield entry
-                    except asyncio.CancelledError:
-                        # grpclib's context manager handles exceptional exits with
-                        # an immediate local reset. Do not await its network reset
-                        # while HA is already cancelling this subscription: a
-                        # stalled transport would hold config-entry unload open.
-                        cancel_stream = False
-                        raise
-                    finally:
-                        # Long-lived bidirectional streams otherwise attempt a
-                        # graceful close during config-entry teardown. A robot that
-                        # is still holding the subscription open can leave Home
-                        # Assistant waiting for that handshake until its task-leak
-                        # timeout. Explicit cancellation is local, bounded cleanup.
-                        if cancel_stream:
-                            await async_cancel_stream(stream)
-        except CannotConnectError:
-            _LOGGER.debug(
-                "Replacing failed Hermes %s subscription channel", collection_name
-            )
-            await self._connection._async_reconnect_after_read_failure(failed_channel)
-            raise
+        async with self._connection._map_stream_errors(
+            f"{collection_name} subscription"
+        ):
+            async with HermesStub(channel).FetchCollection.open(
+                metadata=self._connection._metadata
+            ) as stream:
+                # FetchCollection is a tracked bidirectional subscription.  The
+                # server sends one update, then waits for its sequence id to be
+                # acknowledged before advancing to the next cached or live item.
+                cancel_stream = True
+                try:
+                    await stream.send_message(request, end=False)
+                    while (response := await stream.recv_message()) is not None:
+                        entry = None
+                        if response.HasField("value"):
+                            sequence = (
+                                response.sequence_id
+                                if response.HasField("sequence_id")
+                                else None
+                            )
+                            entry = HermesCollectionEntry(
+                                bytes(response.key_bytes),
+                                response_value_bytes(response),
+                                int(sequence.start_ts_nanos)
+                                if sequence is not None
+                                else None,
+                                int(sequence.sequence_no)
+                                if sequence is not None
+                                else None,
+                            )
+                        if response.HasField("sequence_id"):
+                            await stream.send_message(
+                                CollectionRequest(sequence_id=response.sequence_id),
+                                end=False,
+                            )
+                        if entry is not None:
+                            yield entry
+                except asyncio.CancelledError:
+                    # grpclib's context manager handles exceptional exits with
+                    # an immediate local reset. Do not await its network reset
+                    # while HA is already cancelling this subscription: a
+                    # stalled transport would hold config-entry unload open.
+                    cancel_stream = False
+                    raise
+                finally:
+                    # Long-lived bidirectional streams otherwise attempt a
+                    # graceful close during config-entry teardown. A robot that
+                    # is still holding the subscription open can leave Home
+                    # Assistant waiting for that handshake until its task-leak
+                    # timeout. Explicit cancellation is local, bounded cleanup.
+                    if cancel_stream:
+                        await async_cancel_stream(stream)
 
     async def async_get_tracked_collection_entries(
         self,
@@ -320,7 +290,7 @@ class HermesCollections:
                 received = True
                 collected_bytes += len(entry.key) + len(entry.value)
                 if collected_bytes > _COLLECTION_MAX_BYTES:
-                    raise CannotConnectError(
+                    raise ProtocolError(
                         f"Hermes {collection_name} collection exceeds the byte limit"
                     )
                 entries.append(entry)
