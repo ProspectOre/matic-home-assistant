@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.http import KEY_HASS
 
@@ -180,6 +181,30 @@ async def test_a_cancelled_reader_does_not_cancel_the_shared_decode(
     decoded = await store.async_decoded_map()
     assert decoded.revision == store.revision
     await store.async_shutdown()
+
+
+async def test_a_stale_or_failed_decode_is_not_reused() -> None:
+    jobs: list[asyncio.Future[decoded_map.DecodedMap]] = []
+
+    def submit(_target, *_args):
+        jobs.append(asyncio.get_running_loop().create_future())
+        return jobs[-1]
+
+    hass = SimpleNamespace(async_add_executor_job=submit)
+    shared = decoded_map.SharedDecode()
+    older = asyncio.ensure_future(shared.async_get(hass, 1, None, (), ()))
+    newer = asyncio.ensure_future(shared.async_get(hass, 2, None, (), ()))
+    await asyncio.sleep(0)
+    jobs[0].set_result(decoded_map.DecodedMap(1, None, (), ()))
+    assert (await older).revision == 1
+    jobs[1].set_exception(DecodeError("bad page"))
+    with pytest.raises(DecodeError):
+        await newer
+
+    retry = asyncio.ensure_future(shared.async_get(hass, 1, None, (), ()))
+    await asyncio.sleep(0)
+    assert len(jobs) == 3
+    retry.cancel()
 
 
 async def test_load_takes_digests_from_the_snapshot_decode(
