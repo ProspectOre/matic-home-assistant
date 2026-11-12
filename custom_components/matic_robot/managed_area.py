@@ -35,8 +35,8 @@ async def _async_wait_for_area_end(
     hass: HomeAssistant,
     entity_id: str,
     cancel_event: asyncio.Event,
-    active_session: Callable[[], Awaitable[bool | None]] | None,
-    reader: Callable[[], Awaitable[bytes | None]] | None,
+    active_session: Callable[[], Awaitable[bool | None]],
+    reader: Callable[[], Awaitable[bytes | None]],
     expected: bytes | None,
 ) -> None:
     """Wait until a plan custom area's own native mission ends.
@@ -48,7 +48,7 @@ async def _async_wait_for_area_end(
     inactive session when docked or idle also ends it. A low-charge return
     keeps the same session and is waited out.
     """
-    if reader is None or not expected:
+    if not expected:
         raise RoomTakenOverError(
             "The custom area's native task could not be identified"
         )
@@ -108,7 +108,7 @@ async def _async_wait_for_area_end(
 
 
 async def _async_wait_for_area_record(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     baseline: frozenset[bytes] | None,
     cancel_event: asyncio.Event,
 ) -> None:
@@ -119,7 +119,7 @@ async def _async_wait_for_area_record(
     run owned the robot throughout, so any new record is the area's own. A
     record that never arrives leaves that fence to fail closed.
     """
-    if reader is None or baseline is None:
+    if baseline is None:
         return
     for _attempt in range(observation.SESSION_HISTORY_ATTEMPTS):
         if cancel_event.is_set():
@@ -152,20 +152,20 @@ async def _async_run_area_leg(
     area: AreaLeg,
     cancel_event: asyncio.Event,
     motion_token: int,
-    active_session: Callable[[], Awaitable[bool | None]] | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    active_session: Callable[[], Awaitable[bool | None]],
+    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None,
     *,
     prepared_dispatch: _PreparedRoomDispatch | None,
     finish_room_event: asyncio.Event,
     floor_is_current: Callable[[], bool] | None,
-    floor_token: str | None,
-    session_identity: Callable[[], Awaitable[bytes | None]] | None,
+    floor_token: str,
+    session_identity: Callable[[], Awaitable[bytes | None]],
     expected_dispatch_identity: bytes | None,
     expected_dispatch_history: frozenset[str] | None,
     on_native_identity: Callable[[bytes | None], None],
     run_id: str,
-    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]] | None,
+    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]],
     provenance: str,
     settle_history: bool,
 ) -> bool:
@@ -222,8 +222,7 @@ async def _async_run_area_leg(
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
             )
-            if checkpoint_dispatch is not None:
-                await checkpoint_dispatch(dispatch)
+            await checkpoint_dispatch(dispatch)
         await manager.ledger.async_mark_area_started(
             serial_number, plan_id, area, run_id=run_id
         )

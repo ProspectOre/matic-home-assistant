@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
+
+from homeassistant.const import EVENT_CALL_SERVICE
+from homeassistant.core import Event, HomeAssistant, callback
 
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -17,8 +21,11 @@ from custom_components.matic_robot.client.models import (
     RobotTelemetry,
     RunProgress,
 )
+from custom_components.matic_robot.plan_model import PLAN_SESSION_ID
+from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.session import RobotSession
 from custom_components.matic_robot.stores import CleaningHistory, LiveState, Store
+from tests.wire_builders import _session_identity
 
 SYNTHETIC_INFO = RobotInfo(
     "synthetic",
@@ -150,6 +157,76 @@ def fake_session(
         session.poses.value.get(floor.mission_id) if floor is not None else None
     )
     return session
+
+
+def robot_client(**methods: Any) -> SimpleNamespace:
+    """Return a fake client with ``methods`` and the rest a run's port binds.
+
+    Its activity journal keeps only the run scope.
+    """
+    scope: dict[str, str | None] = {"run_id": None}
+    return SimpleNamespace(
+        **{
+            "activity_journal": SimpleNamespace(
+                set_run_id=lambda run_id: scope.update(run_id=run_id),
+                current_run_id=lambda: scope["run_id"],
+            ),
+            "async_confirm_coverage_receipt": AsyncMock(return_value=False),
+            **methods,
+        }
+    )
+
+
+def accepting_session(
+    hass: HomeAssistant, entity_id: str = "vacuum.matic"
+) -> Callable[[], Awaitable[bytes]]:
+    """Return a session reader for a robot that runs every plan command it gets.
+
+    It reports the session ID carried by the latest ``vacuum.send_command``,
+    and no session while the vacuum is returning, docked or idle, unless it
+    went home to recharge.
+    """
+    identity = b""
+
+    @callback
+    def accept(event: Event) -> None:
+        nonlocal identity
+        if (event.data["domain"], event.data["service"]) != ("vacuum", "send_command"):
+            return
+        params = event.data["service_data"].get("params") or {}
+        if PLAN_SESSION_ID in params:
+            identity = _session_identity(UUID(params[PLAN_SESSION_ID]))
+
+    hass.bus.async_listen(EVENT_CALL_SERVICE, accept)
+
+    async def read() -> bytes:
+        state = hass.states.get(entity_id)
+        if (
+            state is not None
+            and state.state in {"returning", "docked", "idle"}
+            and state.attributes.get("low_charge") is not True
+        ):
+            return b""
+        return identity
+
+    return read
+
+
+def robot_port(**readers: Any) -> RobotPort:
+    """Return a run's port to an idle robot with no history, or ``readers``."""
+    return RobotPort(
+        **{
+            "refresh": AsyncMock(),
+            "active_session": AsyncMock(return_value=False),
+            "session_history": AsyncMock(return_value=()),
+            "session_identity": AsyncMock(return_value=b""),
+            "coverage_verifier": AsyncMock(return_value=False),
+            "confirm_room_completed": MagicMock(),
+            "set_activity_run_id": MagicMock(),
+            "get_activity_run_id": MagicMock(return_value=None),
+            **readers,
+        }
+    )
 
 
 def set_operational(session: Any, **changes: Any) -> None:

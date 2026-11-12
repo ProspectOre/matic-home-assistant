@@ -21,7 +21,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
+from tests.session_fakes import robot_port
 from tests.wire_builders import _session_identity
 
 LAYOUTS = (
@@ -169,7 +169,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         "vacuum.matic",
         "serial",
         expected,
-        robot=RobotPort(
+        robot=robot_port(
             active_session=AsyncMock(return_value=False),
             session_history=history,
             confirm_room_completed=confirm,
@@ -377,7 +377,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=RobotPort(
+            robot=robot_port(
                 active_session=AsyncMock(return_value=False),
                 session_history=history,
                 confirm_room_completed=confirm,

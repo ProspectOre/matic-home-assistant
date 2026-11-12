@@ -33,12 +33,11 @@ from custom_components.matic_robot.native_completion import (
 )
 from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_history import run_ending, run_rooms
+from tests.session_fakes import robot_port
 from tests.wire_builders import _session_identity
 
 KITCHEN = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
-# A settings boundary keeps the second room in its own native mission.
 STUDY = CleaningRoom("room-study", "Study", "vacuum", "quick")
 REPLACEMENT = b"synthetic-oem-session"
 
@@ -210,6 +209,10 @@ class _Robot:
 async def _run_plan(hass, robot: _Robot):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    # Smart Stop keeps each room in its own native mission.
+    manager.repository.robot("serial")["plans"]["test-plan"] = {
+        "finish_current_room": True
+    }
     hass.states.async_set("vacuum.matic", "docked", {"current_area": None})
     hass.services.async_register("vacuum", "send_command", robot.send_command)
     events: list = []
@@ -241,7 +244,8 @@ async def _run_plan(hass, robot: _Robot):
                 "vacuum.matic",
                 "serial",
                 [KITCHEN, STUDY],
-                robot=RobotPort(
+                floor_token="floor",
+                robot=robot_port(
                     session_identity=robot.read_identity,
                     active_session=AsyncMock(return_value=False),
                     session_history=robot.history,

@@ -63,9 +63,7 @@ async def _async_run_leg(
     | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
-    room_name_is_unique: bool = True,
     prepared_dispatch: _PreparedRoomDispatch | None = None,
-    prefetch_next: Callable[[], Awaitable[_PreparedRoomDispatch | None]] | None = None,
     finish_room_event: asyncio.Event | None = None,
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
@@ -107,9 +105,7 @@ async def _async_run_leg(
             session_history,
             confirm_room_completed,
             managed_user_command,
-            room_name_is_unique=room_name_is_unique,
             prepared_dispatch=prepared_dispatch,
-            prefetch_next=prefetch_next,
             finish_room_event=finish_room_event,
             floor_is_current=floor_is_current,
             floor_token=floor_token,
@@ -123,12 +119,6 @@ async def _async_run_leg(
             expected_dispatch_identity=expected_dispatch_identity,
             expected_dispatch_history=expected_dispatch_history,
             coverage_verifier=coverage_verifier,
-        )
-    if not room_name_is_unique:
-        raise managed_run._validation_error(
-            "Managed completion cannot distinguish duplicate mapped room names",
-            "ambiguous_room_name",
-            {"room": ", ".join(room.name for room in leg)},
         )
 
     def event_data(room: CleaningRoom) -> dict[str, Any]:
@@ -789,11 +779,4 @@ async def _async_run_leg(
         )
     # A room the owner skipped is settled without credit, so the run goes on
     # to its next leg.
-    all_verified = all(
-        room.room_id in credited or room.room_id in skipped for room in leg
-    )
-    if all_verified and prefetch_next is not None and not stop_sent:
-        # Start the next settings leg only after evidence and persistence finish.
-        # Otherwise a short next mission can end before its observer attaches.
-        await prefetch_next()
-    return all_verified
+    return all(room.room_id in credited or room.room_id in skipped for room in leg)

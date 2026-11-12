@@ -45,7 +45,7 @@ from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
 )
-from custom_components.matic_robot.robot_port import RobotPort
+from tests.session_fakes import robot_client, robot_port
 from tests.wire_builders import _session_identity
 
 
@@ -110,19 +110,12 @@ async def recovery_state(hass):
         "started_room_ids": [room.room_id],
     }
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    journal_scope = {"run_id": None}
-    client = SimpleNamespace(
+    client = robot_client(
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_active_cleaning_session_state=AsyncMock(return_value=True),
         async_get_state=AsyncMock(return_value=_operational_state()),
         async_send_user_command=AsyncMock(),
-        activity_journal=SimpleNamespace(
-            set_run_id=MagicMock(
-                side_effect=lambda value: journal_scope.update(run_id=value)
-            ),
-            current_run_id=MagicMock(side_effect=lambda: journal_scope["run_id"]),
-        ),
     )
     heartbeat = SimpleNamespace(
         async_request_refresh=AsyncMock(), async_confirm_room_completed=MagicMock()
@@ -963,7 +956,8 @@ async def test_new_plan_cannot_replace_pending_recovery(hass, recovery_state):
             checkpoint["entity_id"],
             "serial",
             [room],
-            robot=RobotPort(),
+            floor_token="floor",
+            robot=robot_port(),
         )
 
 
@@ -1041,7 +1035,8 @@ async def test_cooperative_shutdown_does_not_finalize(hass, recovery_state):
             checkpoint["entity_id"],
             "serial",
             [room],
-            robot=RobotPort(),
+            floor_token="floor",
+            robot=robot_port(),
         )
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "running"
 

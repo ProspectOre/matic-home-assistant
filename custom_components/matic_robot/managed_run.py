@@ -33,7 +33,7 @@ type LegOutcomeWaiter = Callable[
 
 @dataclass(frozen=True, slots=True)
 class _PreparedRoomDispatch:
-    """Describe a next-leg command issued during the prior leg's return."""
+    """A dispatched leg mission and the baselines its completion is judged by."""
 
     rooms: tuple[CleaningRoom, ...]
     history_baseline: frozenset[bytes] | None

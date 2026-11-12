@@ -85,7 +85,6 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.room_sequence import (
     _resolve_room_id as _resolve_sequence_room_id,
 )
@@ -125,6 +124,7 @@ from custom_components.matic_robot.services import (
     async_register_services,
 )
 from custom_components.matic_robot.stores import LiveState, Store
+from tests.session_fakes import robot_client, robot_port
 
 
 def test_room_sequence_default_resolver_uses_canonical_reference_rules() -> None:
@@ -1739,7 +1739,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             session=session,
-            client=SimpleNamespace(
+            client=robot_client(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(
@@ -1895,7 +1895,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
                 refresh=AsyncMock(),
                 confirm_room_completed=MagicMock(),
             ),
-            client=SimpleNamespace(
+            client=robot_client(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
@@ -2275,7 +2275,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             session=session,
-            client=SimpleNamespace(
+            client=robot_client(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
@@ -2647,7 +2647,7 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
                 refresh=AsyncMock(),
                 confirm_room_completed=MagicMock(),
             ),
-            client=SimpleNamespace(
+            client=robot_client(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(
@@ -2833,7 +2833,7 @@ async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
             "vacuum.test",
             "serial",
             [room],
-            robot=RobotPort(session_identity=AsyncMock(return_value=b"native-session")),
+            robot=robot_port(),
             cadence_by_room=cadence_snapshot,
             floor_token="synthetic-floor-token",
         )
@@ -3027,7 +3027,7 @@ async def test_all_daily_limited_rooms_block_saved_and_manual_dispatch(hass) -> 
     )
     services = await _registered_services(hass, manager)
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
-    client = SimpleNamespace(
+    client = robot_client(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
@@ -3188,7 +3188,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
                 refresh=AsyncMock(),
                 confirm_room_completed=MagicMock(),
             ),
-            client=SimpleNamespace(
+            client=robot_client(
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(
@@ -3292,7 +3292,7 @@ async def test_run_without_preview_revalidates_after_stop_settlement(
     session = _session(
         floor_plan=floor_plan, refresh=AsyncMock(), confirm_room_completed=MagicMock()
     )
-    client = SimpleNamespace(
+    client = robot_client(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
@@ -3420,7 +3420,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         discard_current_room=MagicMock(),
         confirm_room_completed=MagicMock(),
     )
-    client = SimpleNamespace(
+    client = robot_client(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),

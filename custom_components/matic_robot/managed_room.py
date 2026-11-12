@@ -59,9 +59,7 @@ async def _async_run_room(
     | None = None,
     confirm_room_completed: Callable[[str], None] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
-    room_name_is_unique: bool = True,
     prepared_dispatch: _PreparedRoomDispatch | None = None,
-    prefetch_next: Callable[[], Awaitable[_PreparedRoomDispatch | None]] | None = None,
     finish_room_event: asyncio.Event | None = None,
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
@@ -80,12 +78,6 @@ async def _async_run_room(
     """Run one room and report whether native history verified completion."""
     resolve_session = observation._async_wait_for_active_session_resolution
     adjudicate_room_end = observation._async_adjudicate_room_end
-    if not room_name_is_unique:
-        raise managed_run._validation_error(
-            "Managed completion cannot distinguish duplicate mapped room names",
-            "ambiguous_room_name",
-            {"room": room.name},
-        )
     event_data = {
         ATTR_ENTITY_ID: entity_id,
         "plan_id": call.data["plan_id"],
@@ -684,6 +676,4 @@ async def _async_run_room(
             },
             context=call.context,
         )
-    if completion_verified and prefetch_next is not None:
-        await prefetch_next()
     return completion_verified
