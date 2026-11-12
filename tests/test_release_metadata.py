@@ -646,6 +646,7 @@ def test_action_metadata_matches_the_room_native_public_api() -> None:
         "plan",
         "run_behavior",
         "preview_token",
+        "wait",
     ]
 
 

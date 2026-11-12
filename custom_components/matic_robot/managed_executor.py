@@ -85,11 +85,13 @@ async def _async_execute_rooms_reserved(
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
+    on_started: Callable[[str], None] | None = None,
 ) -> None:
     """Execute every resolved room and custom area with safe cancellation.
 
     ``entries`` is the preview's run order when the plan has a custom area;
-    a recovered run reads it from its checkpoint instead.
+    a recovered run reads it from its checkpoint instead. ``on_started``
+    receives the run_id once the first command is recorded as sent.
     """
     lock = manager.control.lock(serial_number)
     async with lock:
@@ -142,6 +144,8 @@ async def _async_execute_rooms_reserved(
                     dispatch.history_baseline,
                 )
             )
+            if on_started is not None:
+                on_started(run_id)
 
         def bind_native_identity(identity: bytes | None) -> None:
             nonlocal native_identity
@@ -851,8 +855,9 @@ async def _async_execute_rooms(
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
-) -> None:
-    """Reserve queued cadence synchronously, then execute the prepared run."""
+    on_started: Callable[[str], None] | None = None,
+) -> str:
+    """Reserve queued cadence synchronously, execute the run, return its run_id."""
     manager.control.require_command_admission(serial_number)
     lock = manager.control.lock(serial_number)
     if recovery is None and manager.recovery.recovery_run(serial_number) is not None:
@@ -915,6 +920,8 @@ async def _async_execute_rooms(
             validate_prepared_run=validate_prepared_run,
             entries=entries,
             held_rooms=held_rooms,
+            on_started=on_started,
         )
     finally:
         manager.cadence.release_prepared_run(serial_number, run_id)
+    return run_id

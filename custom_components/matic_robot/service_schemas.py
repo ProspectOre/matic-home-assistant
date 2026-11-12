@@ -170,6 +170,7 @@ RUN_SELECTED_PLAN_SCHEMA = cv.make_entity_service_schema(
             probatio.Match(r"^[0-9a-f]{64}$"),
         ),
         probatio.Optional("run_behavior"): probatio.In(("intelligent", "ordered")),
+        probatio.Optional("wait"): cv.boolean,
     }
 )
 
@@ -190,6 +191,7 @@ CLEAN_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(
             cv.string,
             probatio.Match(r"^[0-9a-f]{64}$"),
         ),
+        probatio.Optional("wait"): cv.boolean,
     }
 )
 PREVIEW_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(_ROOM_SEQUENCE_FIELDS)

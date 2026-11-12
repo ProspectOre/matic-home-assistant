@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 from dataclasses import replace
 from datetime import datetime
@@ -73,7 +72,6 @@ from custom_components.matic_robot.llm_control import (
     MaticSendToSinkTool,
     MaticStopCleaningTool,
     _async_refusal,
-    _log_run_end,
 )
 from custom_components.matic_robot.llm_firmware import (
     MaticGetFirmwareTool,
@@ -2294,24 +2292,17 @@ async def test_write_tools_need_the_robot_vacuum_entity() -> None:
 
 async def test_run_plan_previews_then_runs_on_the_panel_action() -> None:
     hass, registry, patches = _control_hass()
-    started = asyncio.Event()
-    release = asyncio.Event()
 
     async def call(domain, service, data, **kwargs):
         if service == "preview_plan":
             return {"preview_token": "a" * 64}
-        started.set()
-        await release.wait()
+        return None
 
     hass.services.async_call.side_effect = call
     context = _context()
-    with patch(
-        "custom_components.matic_robot.llm_control.RUN_START_WAIT_SECONDS", 0.01
-    ):
-        result = await _run(hass, patches, MaticRunPlanTool(), {}, context)
+    result = await _run(hass, patches, MaticRunPlanTool(), {}, context)
     assert result.error is False
     assert result.data == {"started": True, "plan": "Home"}
-    assert started.is_set()
     registry.async_get_entity_id.assert_called_once_with(
         "vacuum", DOMAIN, "synthetic-serial_vacuum"
     )
@@ -2327,9 +2318,6 @@ async def test_run_plan_previews_then_runs_on_the_panel_action() -> None:
         assert awaited.kwargs["context"] is context.context
         assert awaited.kwargs["blocking"] is True
     assert hass.services.async_call.await_args_list[0].kwargs["return_response"]
-    release.set()
-    for _ in range(3):
-        await asyncio.sleep(0)
 
 
 async def test_run_plan_reports_quick_outcomes_and_refusals() -> None:
@@ -2341,7 +2329,7 @@ async def test_run_plan_reports_quick_outcomes_and_refusals() -> None:
     hass, _registry, patches = _control_hass()
     hass.services.async_call.side_effect = finished
     result = await _run(hass, patches, MaticRunPlanTool(), {"plan": "Home"})
-    assert result.data == {"started": True, "finished": True, "plan": "Home"}
+    assert result.data == {"started": True, "plan": "Home"}
 
     async def refused(domain, service, data, **kwargs):
         if service == "preview_plan":
@@ -2436,38 +2424,6 @@ async def test_action_errors_relay_their_translated_reason() -> None:
     )
 
 
-async def test_run_left_running_logs_its_later_end(caplog) -> None:
-    release = asyncio.Event()
-
-    async def call(domain, service, data, **kwargs):
-        if service == "preview_plan":
-            return {"preview_token": "c" * 64}
-        await release.wait()
-        raise HomeAssistantError("room interrupted")
-
-    hass, _registry, patches = _control_hass()
-    hass.services.async_call.side_effect = call
-    caplog.set_level(logging.DEBUG, logger="custom_components.matic_robot.llm_control")
-    with patch(
-        "custom_components.matic_robot.llm_control.RUN_START_WAIT_SECONDS", 0.01
-    ):
-        assert (await _run(hass, patches, MaticRunPlanTool(), {})).data["started"]
-    release.set()
-    for _ in range(3):
-        await asyncio.sleep(0)
-    assert "ended: room interrupted" in caplog.text
-
-
-def test_cancelled_run_is_not_logged() -> None:
-    task = MagicMock()
-    task.cancelled.return_value = True
-    _log_run_end(task)
-    task.exception.assert_not_called()
-    task.cancelled.return_value = False
-    task.exception.return_value = None
-    _log_run_end(task)
-
-
 async def test_clean_rooms_previews_the_sequence_then_runs_it() -> None:
     hass, _registry, patches = _control_hass()
 
@@ -2487,11 +2443,7 @@ async def test_clean_rooms_previews_the_sequence_then_runs_it() -> None:
         MaticCleanRoomsTool(),
         {"rooms": ["kitchen", "Study"], "cleaning_mode": "mop"},
     )
-    assert result.data == {
-        "started": True,
-        "finished": True,
-        "rooms": ["Kitchen", "Study"],
-    }
+    assert result.data == {"started": True, "rooms": ["Kitchen", "Study"]}
     sequence = {
         "entity_id": "vacuum.robot",
         "rooms": [

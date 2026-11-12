@@ -11,6 +11,7 @@ from homeassistant.core import (
     Event,
     EventStateChangedData,
     HomeAssistant,
+    SupportsResponse,
     callback,
 )
 from homeassistant.helpers.event import async_track_state_change_event
@@ -78,7 +79,7 @@ async def state_becomes(hass: HomeAssistant, entity_id: str, state: str) -> None
 class PlanRun:
     """A ``clean_room_sequence`` call running while the test drives the robot.
 
-    The run blocks until the plan ends, so it runs as a task and the test
+    The call waits for the plan to end, so it runs as a task and the test
     runs the heartbeat in its place; ``async_block_till_done`` would wait
     for the run itself.
     """
@@ -128,6 +129,12 @@ class PlanRun:
         self.hass.bus.async_listen(
             EVENT_PLAN_DOCKED, lambda event: self.docked.append(dict(event.data))
         )
+        # A release older than the background start, in the upgrade drill,
+        # has no response and always waits.
+        if self.hass.services.supports_response(DOMAIN, service) is not (
+            SupportsResponse.NONE
+        ):
+            data["wait"] = True
         self.task = self.hass.async_create_task(
             self.hass.services.async_call(
                 DOMAIN,

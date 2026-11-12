@@ -29,6 +29,28 @@ Matic 0.6 removed Run Smart Order (`intelligent_clean`) and Run saved order
 [Removed in 0.6](release-notes-0.6.0-beta1.md#removed-in-06) lists every removed
 action and entity with its replacement.
 
+Clean room sequence and Run plan return once the robot has the run's first
+command, with the run's `run_id` in the response. A refusal, such as a plan
+already running or a robot that can't take the command, fails the action. The
+run then goes on without the action; [Plan finished](automation-events.md)
+reports how it ended. Add `wait: true` to return only when the run ends and
+fail the action when the run fails, as both actions did before 0.6.
+
+```yaml
+actions:
+  - action: matic_robot.run_selected_plan
+    target:
+      entity_id: vacuum.matic
+    data:
+      plan: Downstairs
+    response_variable: run
+  - wait_for_trigger:
+      - trigger: event
+        event_type: matic_robot_plan_finished
+        event_data:
+          run_id: "{{ run.run_id }}"
+```
+
 Both sequence actions also take `use_room_schedule` (**Use room schedules** in
 Matic Map, default `false`), which adds the work shared room schedules say is
 due and counts those cleans, and `override_room_schedule` to keep your own

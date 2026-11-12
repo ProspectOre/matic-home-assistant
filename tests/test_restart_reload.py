@@ -61,7 +61,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
             await asyncio.wait_for(entered.wait(), timeout=2)
             assert not hass.is_stopping
             if explicit_reason:
-                manager.control.cancellation_reasons["serial"] = explicit_reason
+                manager.control.actor("serial").cancellation_reason = explicit_reason
             await async_unload_entry(hass, entry)
             await recovery_task
             if explicit_reason is None and attempt == 0:

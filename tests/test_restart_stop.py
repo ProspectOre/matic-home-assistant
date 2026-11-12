@@ -60,7 +60,7 @@ async def test_restored_stop_fence_keeps_run_and_native_guards(
     ):
         await async_recover_managed_run(hass, entry, "serial")
         await asyncio.gather(
-            *tuple(manager.control.reconciliation_tasks.get("serial", ()))
+            *tuple(manager.control.actor("serial").reconciliation_tasks)
         )
     if native_active is False:
         client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
@@ -97,7 +97,7 @@ async def test_stop_watcher_cannot_recover_without_owned_live_fence(
     manager = await reload_manager(hass, entry, manager)
     hass.states.async_set(checkpoint["entity_id"], "idle")
     await async_recover_managed_run(hass, entry, "serial")
-    assert not manager.control.reconciliation_tasks
+    assert not manager.control.actor("serial").reconciliation_tasks
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
@@ -137,7 +137,7 @@ async def test_second_shutdown_retains_settlement_owner(hass, recovery_state):
 
     entry.runtime_data.client.async_send_user_command.side_effect = dock
     await async_recover_managed_run(hass, entry, "serial")
-    await asyncio.gather(*tuple(manager.control.reconciliation_tasks.get("serial", ())))
+    await asyncio.gather(*tuple(manager.control.actor("serial").reconciliation_tasks))
     entry.runtime_data.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.DOCK
     )

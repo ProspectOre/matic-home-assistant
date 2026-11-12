@@ -78,8 +78,8 @@ export class RobotMotionController {
         return;
       }
       if (domain === "matic_robot" && (service === "clean_room_sequence" || service === "run_selected_plan")) {
-        // These services return when their managed run ends, not when its
-        // initial command is accepted. Do not show a new Starting interval.
+        // These services return once the robot has the run's first command,
+        // and the run's state comes from the robot. Do not show a Starting interval.
         this.#store.dispatch({ type: "result", command: "idle" });
         void this.#callbacks.refreshCatalog();
         return;

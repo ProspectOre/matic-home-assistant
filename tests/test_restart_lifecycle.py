@@ -148,7 +148,7 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
     """A task cancellation during shutdown cannot finalize or stop the robot."""
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    manager.control.cancellation_reasons["serial"] = (
+    manager.control.actor("serial").cancellation_reason = (
         "home_assistant_shutdown" if stopping else None
     )
     hass.set_state(CoreState.stopping if stopping else CoreState.running)
@@ -254,7 +254,7 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
     )
     saver = AsyncMock()
     sender = AsyncMock()
-    manager.control.cancellation_reasons["serial"] = "home_assistant_shutdown"
+    manager.control.actor("serial").cancellation_reason = "home_assistant_shutdown"
 
     async def started(*args, **_kwargs):
         args[4](b"synthetic-session")

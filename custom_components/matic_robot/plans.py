@@ -236,8 +236,7 @@ class CleaningPlanManager:
 
         def forget_runtime_state(_removed: bool) -> None:
             self.repository.listeners.pop(serial_number, None)
-            self.control.stop_fences.pop(serial_number, None)
-            self.control.stop_dispatch_reservations.pop(serial_number, None)
+            self.control.forget_stop_state(serial_number)
             self.repository.reconciliation_removal_pending.discard(serial_number)
             self.cadence.prepared_runs.pop(serial_number, None)
             self.cadence.pending_cadence_mutations.pop(serial_number, None)
