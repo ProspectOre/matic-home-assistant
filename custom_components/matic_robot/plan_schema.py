@@ -101,12 +101,6 @@ class CadenceProgress(CadencePolicy):
     next_coverage_in: int | None
 
 
-class CadenceState(TypedDict):
-    cadence: CadencePolicy | None
-    cadence_progress: NotRequired[CadenceProgress | None]
-    cadence_reasons: NotRequired[list[CadenceReason]]
-
-
 class PlanRoom(TypedDict):
     room_id: str
     cleaning_mode: str

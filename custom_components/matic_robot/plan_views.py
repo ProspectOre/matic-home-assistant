@@ -34,7 +34,9 @@ from .plan_model import (
     room_cadence_identity,
 )
 from .plan_schema import (
-    CadenceState,
+    CadencePolicy,
+    CadenceProgress,
+    CadenceReason,
     DailyLimit,
     DailyLimitHeldRoom,
     HeldRoom,
@@ -51,6 +53,14 @@ from .plan_schema import (
     SavedPlan,
 )
 from .room_sequence import saved_plan_preview_token
+
+
+class _CadenceState(TypedDict, total=False):
+    """A room's cadence as the cadence store projects it, merged into the room."""
+
+    cadence: CadencePolicy | None
+    cadence_progress: CadenceProgress | None
+    cadence_reasons: list[CadenceReason]
 
 
 class _HeldRooms(TypedDict, total=False):
@@ -301,7 +311,7 @@ class MaticPlansView(HomeAssistantView):
             coverage_setting: str,
             *,
             use_shared_schedule: bool = False,
-        ) -> CadenceState:
+        ) -> _CadenceState:
             project = getattr(
                 runtime.cleaning_plans.cadence, "cadence_editor_state", None
             )
@@ -316,7 +326,7 @@ class MaticPlansView(HomeAssistantView):
                     "cadence_reasons": ["room_not_on_current_map"],
                 }
             return cast(
-                CadenceState,
+                _CadenceState,
                 project(
                     serial_number,
                     plan_id,
@@ -387,13 +397,7 @@ class MaticPlansView(HomeAssistantView):
                     )
                     cadence_reasons = cadence.get("cadence_reasons", [])
                     if cadence["cadence"] is not None or cadence_reasons:
-                        plan_room_projection["cadence"] = cadence["cadence"]
-                        if "cadence_progress" in cadence:
-                            plan_room_projection["cadence_progress"] = cadence[
-                                "cadence_progress"
-                            ]
-                        if "cadence_reasons" in cadence:
-                            plan_room_projection["cadence_reasons"] = cadence_reasons
+                        plan_room_projection = {**plan_room_projection, **cadence}
                 rooms.append(plan_room_projection)
             try:
                 entries = plan_entries(plan)

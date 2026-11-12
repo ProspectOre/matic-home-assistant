@@ -427,14 +427,6 @@ export interface CadenceProgress extends CadencePolicy {
   readonly next_coverage_in: number | null;
 }
 
-export interface CadenceState {
-  readonly cadence: CadencePolicy | null;
-  readonly cadence_progress?: CadenceProgress | null;
-  readonly cadence_reasons?: readonly CadenceReason[];
-}
-
-export type CadenceReason = "coverage_requires_vacuum" | "mop_due" | "coverage_due" | "room_not_on_current_map" | "identity_changed" | "shared_schedule_unavailable" | "mop_progress_unverified" | "coverage_progress_unverified" | "cadence_progress_unverified" | "invalid_cadence_policy";
-
 export interface PlanRoom {
   readonly room_id: string;
   readonly cleaning_mode: string;
@@ -444,6 +436,8 @@ export interface PlanRoom {
   readonly cadence_progress?: CadenceProgress | null;
   readonly cadence_reasons?: readonly CadenceReason[];
 }
+
+export type CadenceReason = "coverage_requires_vacuum" | "mop_due" | "coverage_due" | "room_not_on_current_map" | "identity_changed" | "shared_schedule_unavailable" | "mop_progress_unverified" | "coverage_progress_unverified" | "cadence_progress_unverified" | "invalid_cadence_policy";
 
 export interface PlanRoomEntry {
   readonly kind: "room";
