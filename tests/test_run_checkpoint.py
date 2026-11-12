@@ -4,7 +4,7 @@ import hashlib
 from copy import deepcopy
 from dataclasses import asdict
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -12,16 +12,74 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import (
+    _async_execute_rooms,
+    async_finish_plan_run,
+)
 from custom_components.matic_robot.managed_run import (
     _async_completion_budget,
     _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom, leg_groups
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.run_machine import (
+    Restarted,
+    Run,
+    RunPhase,
+    transition,
+)
 from tests.session_fakes import FakeRobot, robot_port
 
 from .test_restart import recovery_state as recovery_fixture
+
+
+def _release_0_6_checkpoint(phase: str) -> dict:
+    """A checkpoint as release/0.6 at 8fd81dce saved it, mid two-leg run."""
+    handoff = phase == "handoff"
+    return {
+        "version": 1,
+        "mixed_settings": True,
+        "single_room_missions": True,
+        "entity_id": "vacuum.matic",
+        "floor_token": "a" * 64,
+        "rooms": [
+            asdict(CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")),
+            asdict(CleaningRoom("office", "Office", "mop", "standard")),
+        ],
+        "data": {
+            "plan_id": "plan",
+            "start_timeout": 120,
+            "completion_timeout": 21600,
+            "return_to_base": False,
+        },
+        "leg_index": 1 if handoff else 0,
+        "phase": phase,
+        "completed_room_ids": ["kitchen"] if handoff else [],
+        "finish_current_room": True,
+        "finish_current_room_threshold": 50,
+        "dispatched_at": "2026-11-12T06:01:54.865482+00:00",
+        "completion_deadline": "2026-11-12T06:03:34.866398+00:00",
+        "native_identity_hash": hashlib.sha256(b"session").hexdigest(),
+        "history_baseline": [hashlib.sha256(b"before").hexdigest()],
+        **({"handoff_history": []} if handoff else {}),
+    }
+
+
+@pytest.mark.parametrize(
+    ("phase", "resumed"),
+    [
+        ("accepted", Run(RunPhase.ACCEPTED)),
+        ("handoff", Run(RunPhase.HANDOFF, 1, frozenset({"kitchen"}))),
+    ],
+)
+def test_a_release_0_6_checkpoint_resumes(phase, resumed) -> None:
+    """Recovery reads what release/0.6 saved; the pinned run saves the same keys."""
+    record = {
+        "room_count": 2,
+        "completed_room_count": 0,
+        "recovery_checkpoint": _release_0_6_checkpoint(phase),
+    }
+    assert transition(Run(), Restarted(record))[0] == resumed
 
 
 @pytest.fixture
@@ -241,9 +299,45 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         ("accepted", 1, ["kitchen"]),
     ]
     assert "handoff_history" not in saves[3]
+    # The same fields release/0.6 saved and reads, so either version resumes.
+    assert set(saves[3]) == set(_release_0_6_checkpoint("accepted"))
+    assert set(saves[4]) == set(_release_0_6_checkpoint("handoff"))
     assert saves[4]["handoff_history"] == [hashlib.sha256(b"after").hexdigest()]
     assert saves[2]["native_identity_hash"] == hashlib.sha256(b"session").hexdigest()
     assert saves[2]["history_baseline"] == [hashlib.sha256(b"before").hexdigest()]
     assert saves[2]["completion_deadline"] is None
     assert saves[3]["completion_deadline"] is not None
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "completed"
+
+
+async def test_plan_finished_reports_its_own_end_once_another_run_is_stored(
+    hass, recovery_state
+):
+    """The finalizer still announces a run whose stored record moved on."""
+    manager, _, _, _ = recovery_state
+    events = []
+    hass.bus.async_listen("matic_robot_plan_finished", events.append)
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "plan", "run_id": "older"},
+        "failed",
+        "robot_command_failed",
+        "unknown",
+        0,
+    )
+    await hass.async_block_till_done()
+    assert events[0].data == {
+        "entity_id": "vacuum.matic",
+        "plan_id": "plan",
+        "run_id": "older",
+        "ended_at": ANY,
+        "outcome": "failed",
+        "reason_code": "robot_command_failed",
+        "cause": "unknown",
+        "terminal_activity": "unknown",
+        "completed_room_count": 0,
+    }
+    assert manager.recovery.recovery_run("serial")["run_id"] == "run"

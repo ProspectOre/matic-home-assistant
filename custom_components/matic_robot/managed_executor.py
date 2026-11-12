@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
@@ -726,88 +726,26 @@ async def _async_execute_rooms_reserved(
                 # Cancellation during HA shutdown is not a robot outcome.
                 # Explicit unload/stop and genuine failures still finalize.
                 if run_started and not shutdown_suspended:
-                    finished_at = dt_util.utcnow().isoformat()
-                    states = getattr(hass, "states", None)
-                    state_getter = getattr(states, "get", None)
-                    current_state = (
-                        state_getter(entity_id) if callable(state_getter) else None
+                    await async_finish_plan_run(
+                        hass,
+                        manager,
+                        serial_number,
+                        entity_id,
+                        {
+                            "plan_id": call.data["plan_id"],
+                            "run_id": run_id,
+                            "trigger": run_provenance,
+                            "provenance": run_provenance,
+                            "service": str(call.service),
+                            "started_at": run_started_at,
+                            "room_count": len(chosen),
+                        },
+                        run_outcome,
+                        run_reason_code,
+                        run_cause,
+                        len(run.completed_room_ids),
+                        context=call.context,
                     )
-                    terminal_activity = (
-                        str(getattr(current_state, "state", "unknown"))
-                        if current_state is not None
-                        else "unknown"
-                    )
-                    event_outcome = run_outcome
-                    event_reason_code = run_reason_code
-                    event_cause = run_cause
-                    event_terminal_activity = terminal_activity
-                    event_completed_room_count = len(run.completed_room_ids)
-                    try:
-                        finish_run = manager.ledger.async_finish_run
-                        await finish_run(
-                            serial_number,
-                            run_id,
-                            run_outcome,
-                            run_reason_code,
-                            len(run.completed_room_ids),
-                            terminal_activity=terminal_activity,
-                            cause=run_cause,
-                            entity_id=entity_id,
-                            context=call.context,
-                        )
-                        snapshot_reader = manager.history.snapshot
-                        final_snapshot = snapshot_reader(serial_number)
-                        final_last_run = (
-                            final_snapshot.get("last_run")
-                            if isinstance(final_snapshot, dict)
-                            else None
-                        )
-                        if isinstance(final_last_run, dict) and (
-                            final_last_run.get("run_id") == run_id
-                        ):
-                            event_outcome = str(
-                                final_last_run.get("outcome", event_outcome)
-                            )
-                            event_reason_code = str(
-                                final_last_run.get("reason_code", event_reason_code)
-                            )
-                            event_cause = str(final_last_run.get("cause", event_cause))
-                            event_terminal_activity = str(
-                                final_last_run.get(
-                                    "terminal_activity", event_terminal_activity
-                                )
-                            )
-                            completed = final_last_run.get("completed_room_count")
-                            if isinstance(completed, int):
-                                event_completed_room_count = completed
-                    finally:
-                        # Room terminal events are queued by the HA bus. Yield
-                        # once so the plan terminal event is observed after the
-                        # room boundary it summarizes.
-                        await asyncio.sleep(0)
-                        bus = getattr(hass, "bus", None)
-                        fire = getattr(bus, "async_fire", None)
-                        if callable(fire):
-                            fire(
-                                EVENT_PLAN_FINISHED,
-                                {
-                                    ATTR_ENTITY_ID: entity_id,
-                                    "plan_id": call.data["plan_id"],
-                                    "run_id": run_id,
-                                    "trigger": run_provenance,
-                                    "provenance": run_provenance,
-                                    "service": str(call.service),
-                                    "started_at": run_started_at,
-                                    "ended_at": finished_at,
-                                    "outcome": event_outcome,
-                                    "reason_code": event_reason_code,
-                                    "cause": event_cause,
-                                    "terminal_activity": event_terminal_activity,
-                                    "room_count": len(chosen),
-                                    "completed_room_count": event_completed_room_count,
-                                },
-                                context=call.context,
-                            )
             finally:
                 manager.control.end_managed_motion(serial_number, motion_token)
                 # The recovery wrapper still needs the lifecycle reason to
@@ -824,6 +762,73 @@ async def _async_execute_rooms_reserved(
                     )
                 ):
                     robot.set_activity_run_id(None)
+
+
+# The fields of a stored run's end that plan_finished reports as stored.
+_STORED_END = (
+    "ended_at",
+    "outcome",
+    "reason_code",
+    "cause",
+    "terminal_activity",
+    "completed_room_count",
+)
+
+
+async def async_finish_plan_run(
+    hass: HomeAssistant,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str | None,
+    started: Mapping[str, Any],
+    outcome: str,
+    reason_code: str,
+    cause: str,
+    completed_room_count: int,
+    *,
+    context: Context | None = None,
+) -> None:
+    """End a run, new or restarted, and announce it as ``plan_finished``.
+
+    ``started`` names the run as it began: plan_id, run_id, trigger,
+    provenance, service, started_at and room_count. The event reports the
+    stored end once the ledger has recorded it, and is fired even when that
+    record fails.
+    """
+    state = hass.states.get(entity_id) if entity_id else None
+    terminal_activity = state.state if state is not None else "unknown"
+    end: dict[str, Any] = {
+        "ended_at": dt_util.utcnow().isoformat(),
+        "outcome": outcome,
+        "reason_code": reason_code,
+        "cause": cause,
+        "terminal_activity": terminal_activity,
+        "completed_room_count": completed_room_count,
+    }
+    try:
+        await manager.ledger.async_finish_run(
+            serial_number,
+            started["run_id"],
+            outcome,
+            reason_code,
+            completed_room_count,
+            terminal_activity=terminal_activity,
+            cause=cause,
+            entity_id=entity_id,
+            context=context,
+        )
+        stored = manager.history.snapshot(serial_number)["last_run"]
+        if isinstance(stored, dict) and stored.get("run_id") == started["run_id"]:
+            end.update({key: stored[key] for key in _STORED_END if key in stored})
+    finally:
+        # Room events queue on the bus first; yield so plan_finished follows
+        # the room boundary it summarizes.
+        await asyncio.sleep(0)
+        hass.bus.async_fire(
+            EVENT_PLAN_FINISHED,
+            {ATTR_ENTITY_ID: entity_id, **started, **end},
+            context=context,
+        )
 
 
 async def _async_execute_rooms(
