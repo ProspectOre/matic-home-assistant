@@ -884,8 +884,8 @@ async def test_recovery_retries_then_honors_stop(hass, recovery_state):
         "offline"
     )
 
-    async def stop_after_retry(_):
-        assert manager.control.request_stop("serial").behavior == "immediate"
+    async def stop_after_retry(s):  # s is 0 for the finalizer's yield
+        assert not s or manager.control.request_stop("serial").behavior == "immediate"
 
     with patch(
         "custom_components.matic_robot.restart.asyncio.sleep",
