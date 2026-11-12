@@ -30,7 +30,7 @@ async function createPendingMutation(page, kind, { planId = "daily", planName = 
     const base = createGalleryState("ready");
     const store = new WorkspaceStore();
     const run = window.__pageMutation = {
-      entry: { ...base.resources.entry, deltaUrl: null },
+      entry: { ...base.resources.entry },
       kind,
       writes: [],
       store,

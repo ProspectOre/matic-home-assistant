@@ -47,7 +47,6 @@ from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.http import (
     AREAS_API_URL,
     CATALOG_API_URL,
-    DELTA_API_URL,
     HISTORY_API_URL,
     HISTORY_EXPORT_API_URL,
     HISTORY_IMPORT_API_URL,
@@ -57,7 +56,6 @@ from custom_components.matic_robot.http import (
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,
     areas_api_url,
-    delta_api_url,
     history_api_url,
     history_scene_api_url,
     plans_api_url,
@@ -79,7 +77,6 @@ from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.session import RobotSession, Store
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_decoded_map import DecodedMap
-from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_history import HistoryReadCapacityError
 from custom_components.matic_robot.slam_history_view import (
     MaticSlamHistoryExportView,
@@ -91,10 +88,7 @@ from custom_components.matic_robot.slam_history_view import (
     _history_record_metadata,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_scene import (
-    MaticSlamDeltaView,
-    MaticSlamSceneView,
-)
+from custom_components.matic_robot.slam_scene import MaticSlamSceneView
 from custom_components.matic_robot.slam_view_data import (
     _map_session_key,
     catalog_entry_projection,
@@ -322,9 +316,9 @@ def _json_request(
     return request
 
 
-def _scene_metadata(payload: bytes) -> dict[str, object]:
-    metadata_bytes = int.from_bytes(payload[12:16], "little")
-    return json.loads(payload[24 : 24 + metadata_bytes])
+def _scene_metadata(manifest: bytes) -> dict[str, object]:
+    metadata_bytes = int.from_bytes(manifest[12:16], "little")
+    return json.loads(manifest[20 : 20 + metadata_bytes])
 
 
 def _set_map_mission(runtime: SimpleNamespace, mission_id: int, revision: int) -> None:
@@ -367,8 +361,8 @@ async def test_scene_view_serves_and_etag_caches_compact_private_payload() -> No
     response = await view.get(_request(hass), "entry")
 
     assert response.status == HTTPStatus.OK
-    assert response.content_type == "application/vnd.matic.slam-scene"
-    assert response.body.startswith(b"MATIC3D\x00")
+    assert response.content_type == "application/vnd.matic.slam-manifest"
+    assert response.body.startswith(b"MATICMF\x00")
     assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
     assert response.headers["Pragma"] == "no-cache"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
@@ -561,21 +555,6 @@ async def test_scene_revision_advances_when_room_metadata_changes() -> None:
     assert runtime.slam_map.revision == 7
 
 
-async def test_scene_cache_retains_two_transport_revisions() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    view = MaticSlamSceneView()
-
-    for revision in (7, 8, 9):
-        runtime.slam_map.revision = revision
-        response = await view.get(_request(hass), "entry")
-        assert response.headers["X-Matic-Revision"] == str(revision)
-
-    assert view.scene_for_revision("entry", 7) is None
-    assert view.scene_for_revision("entry", 8) is not None
-    assert view.scene_for_revision("entry", 9) is not None
-
-
 async def test_scene_retries_a_decode_failure_from_an_obsolete_snapshot() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
@@ -649,7 +628,7 @@ async def test_scene_view_coalesces_concurrent_encodes_during_revision_churn() -
 
 
 async def test_scene_view_serves_safe_cache_while_new_revision_encodes() -> None:
-    """A reopened panel gets the last verified scene while its delta is built."""
+    """A reopened panel gets the last verified scene while the next one is built."""
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
@@ -957,7 +936,6 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "entry_id": loaded.entry_id,
                 "live_workspace_transport_enabled": True,
                 "scene_url": f"/api/matic_robot/slam_scene/{loaded.entry_id}",
-                "delta_url": f"/api/matic_robot/slam_delta/{loaded.entry_id}",
                 "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
                 "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
@@ -1095,7 +1073,7 @@ async def test_admin_catalog_enables_workspace_push_and_ignores_legacy_options(
 
     entry = json.loads(response.body)["entries"][0]
     assert entry["live_workspace_transport_enabled"] is True
-    assert entry["delta_url"] == delta_api_url("entry")
+    assert entry["scene_url"] == scene_api_url("entry")
 
 
 async def test_catalog_push_is_enabled_independent_of_saved_options() -> None:
@@ -2364,9 +2342,6 @@ def test_scene_endpoint_paths_are_scoped_to_config_entry() -> None:
     assert scene_api_url("synthetic") == SCENE_API_URL.replace(
         "{entry_id}", "synthetic"
     )
-    assert delta_api_url("synthetic") == DELTA_API_URL.replace(
-        "{entry_id}", "synthetic"
-    )
     assert history_api_url("synthetic") == HISTORY_API_URL.replace(
         "{entry_id}", "synthetic"
     )
@@ -2375,268 +2350,6 @@ def test_scene_endpoint_paths_are_scoped_to_config_entry() -> None:
     ) == HISTORY_SCENE_API_URL.replace("{entry_id}", "synthetic").replace(
         "{snapshot_id}", "snapshot"
     )
-
-
-async def test_delta_view_streams_revision_change_and_full_fallback() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    scene_view = MaticSlamSceneView()
-    await scene_view.get(_request(hass), "entry")
-    runtime.slam_map.revision = 8
-    runtime.slam_map.decoded_tiles.return_value = (
-        decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0, surface_height=8)),
-    )
-    view = MaticSlamDeltaView(scene_view)
-
-    delta = await view.get(_request(hass, path="/?since=7"), "entry")
-
-    assert delta.status == HTTPStatus.OK
-    assert delta.content_type == "application/vnd.matic.slam-delta"
-    assert delta.body.startswith(b"MATICDLT")
-    assert delta.headers["X-Matic-Base-Revision"] == "7"
-    assert delta.headers["X-Matic-Revision"] == "8"
-
-    fallback = await view.get(_request(hass, path="/?since=1"), "entry")
-    assert fallback.status == HTTPStatus.OK
-    assert fallback.content_type == "application/vnd.matic.slam-scene"
-    assert fallback.body.startswith(b"MATIC3D\x00")
-
-
-async def test_delta_view_discards_delta_after_live_session_invalidates() -> None:
-    """A transition during delta encoding cannot publish retained map bytes."""
-    runtime = _runtime()
-    runtime.slam_map.live_session_verified = True
-    hass = _hass(_entry(runtime))
-    scene_view = MaticSlamSceneView()
-    assert (await scene_view.get(_request(hass), "entry")).status == HTTPStatus.OK
-    runtime.slam_map.revision = 8
-    runtime.slam_map.decoded_tiles.return_value = (
-        decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0, surface_height=8)),
-    )
-
-    async def invalidate_after_delta(target):
-        result = target()
-        if getattr(target, "func", None) is encode_slam_scene_delta:
-            runtime.slam_map.live_session_verified = False
-        return result
-
-    hass.async_add_executor_job.side_effect = invalidate_after_delta
-
-    response = await MaticSlamDeltaView(scene_view).get(
-        _request(hass, path="/?since=7"), "entry"
-    )
-
-    assert response.status == HTTPStatus.NOT_FOUND
-
-
-async def test_delta_view_publishes_during_same_mission_revision_churn() -> None:
-    """Pixel refinements cannot starve an already coherent point-in-time delta."""
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    scene_view = MaticSlamSceneView()
-    assert (await scene_view.get(_request(hass), "entry")).status == HTTPStatus.OK
-    runtime.slam_map.revision = 8
-    runtime.slam_map.decoded_tiles.return_value = (
-        decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0, surface_height=8)),
-    )
-
-    async def refine_after_delta(target):
-        result = target()
-        if getattr(target, "func", None) is encode_slam_scene_delta:
-            runtime.slam_map.revision = 9
-        return result
-
-    hass.async_add_executor_job.side_effect = refine_after_delta
-
-    response = await MaticSlamDeltaView(scene_view).get(
-        _request(hass, path="/?since=7"), "entry"
-    )
-
-    assert response.status == HTTPStatus.OK
-    assert response.content_type == "application/vnd.matic.slam-delta"
-    assert response.headers["X-Matic-Revision"] == "8"
-    assert scene_view.current_revision("entry", runtime) == 9
-
-
-async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:
-    runtime = _runtime()
-    entry = _entry(runtime)
-    hass = _hass(entry)
-    view = MaticSlamDeltaView(MaticSlamSceneView())
-
-    assert (
-        await view.get(_request(hass, path="/?since=invalid"), "entry")
-    ).status == HTTPStatus.BAD_REQUEST
-    with pytest.raises(Unauthorized):
-        await view.get(_request(hass, admin=False, path="/?since=7"), "entry")
-
-    with patch("custom_components.matic_robot.slam_scene.DELTA_WAIT_SECONDS", 0):
-        timeout = await view.get(_request(hass, path="/?since=7"), "entry")
-    assert timeout.status == HTTPStatus.NO_CONTENT
-    remove = runtime.slam_map.async_add_listener.return_value
-    remove.assert_called_once()
-
-    entry.state = ConfigEntryState.NOT_LOADED
-    assert (
-        await view.get(_request(hass, path="/?since=7"), "entry")
-    ).status == HTTPStatus.NOT_FOUND
-
-
-async def test_delta_view_cancellation_removes_long_poll_listeners() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    scene_view = MaticSlamSceneView()
-    initial = await scene_view.get(_request(hass), "entry")
-    assert initial.headers["X-Matic-Revision"] == "7"
-
-    subscribed = asyncio.Event()
-    map_listeners = set()
-
-    def subscribe_map(listener):
-        map_listeners.add(listener)
-
-        def remove() -> None:
-            map_listeners.discard(listener)
-
-        return remove
-
-    floor = runtime.session.floor
-    subscribe_floor = floor.subscribe
-
-    def subscribe_and_tell(listener):
-        subscribed.set()
-        return subscribe_floor(listener)
-
-    floor.subscribe = subscribe_and_tell
-    runtime.slam_map.async_add_listener.side_effect = subscribe_map
-    waiting = asyncio.create_task(
-        MaticSlamDeltaView(scene_view).get(_request(hass, path="/?since=7"), "entry")
-    )
-    try:
-        await asyncio.wait_for(subscribed.wait(), timeout=1)
-        assert len(map_listeners) == 1
-        assert len(floor._listeners) == 1
-
-        waiting.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await waiting
-    finally:
-        if not waiting.done():
-            waiting.cancel()
-        try:
-            await waiting
-        except asyncio.CancelledError:
-            pass
-
-    assert map_listeners == set()
-    assert floor._listeners == []
-
-
-async def test_delta_view_wakes_when_only_the_floor_plan_changes() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    scene_view = MaticSlamSceneView()
-    initial = await scene_view.get(_request(hass), "entry")
-    assert initial.headers["X-Matic-Revision"] == "7"
-    subscribed = asyncio.Event()
-    floor = runtime.session.floor
-    subscribe_floor = floor.subscribe
-
-    def subscribe(listener):
-        subscribed.set()
-        return subscribe_floor(listener)
-
-    floor.subscribe = subscribe
-    waiting = asyncio.create_task(
-        MaticSlamDeltaView(scene_view).get(_request(hass, path="/?since=7"), "entry")
-    )
-    await asyncio.wait_for(subscribed.wait(), timeout=1)
-    floor.set(replace(floor.value, mission_id=2))
-
-    response = await asyncio.wait_for(waiting, timeout=1)
-
-    assert response.status == HTTPStatus.OK
-    assert response.headers["X-Matic-Revision"] == "8"
-    assert response.headers["X-Matic-Floor-Coherent"] == "0"
-    assert floor._listeners == []
-
-
-@pytest.mark.parametrize(
-    ("result", "status"),
-    [(DecodeError(), HTTPStatus.CONFLICT), (None, HTTPStatus.NOT_FOUND)],
-)
-async def test_delta_view_handles_initial_scene_failure(result, status) -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    scene_view = SimpleNamespace(async_scene=AsyncMock())
-    if isinstance(result, BaseException):
-        scene_view.async_scene.side_effect = result
-    else:
-        scene_view.async_scene.return_value = result
-
-    response = await MaticSlamDeltaView(scene_view).get(
-        _request(hass, path="/?since=7"), "entry"
-    )
-
-    assert response.status == status
-
-
-@pytest.mark.parametrize(
-    ("second", "status"),
-    [
-        (DecodeError(), HTTPStatus.CONFLICT),
-        (None, HTTPStatus.NOT_FOUND),
-        ("same", HTTPStatus.NO_CONTENT),
-    ],
-)
-async def test_delta_view_revalidates_scene_after_wakeup(second, status) -> None:
-    runtime = _runtime()
-    current = SimpleNamespace(revision=7, floor_plan_coherent=True)
-    scene_view = SimpleNamespace(
-        async_scene=AsyncMock(),
-        scene_for_revision=MagicMock(),
-    )
-    if isinstance(second, BaseException):
-        scene_view.async_scene.side_effect = [current, second]
-    else:
-        scene_view.async_scene.side_effect = [
-            current,
-            current if second == "same" else second,
-        ]
-
-    def wake(listener):
-        listener()
-        return MagicMock()
-
-    runtime.slam_map.async_add_listener.side_effect = wake
-    hass = _hass(_entry(runtime))
-
-    response = await MaticSlamDeltaView(scene_view).get(
-        _request(hass, path="/?since=7"), "entry"
-    )
-
-    assert response.status == status
-
-
-async def test_delta_view_rejects_entry_unload_after_wakeup() -> None:
-    runtime = _runtime()
-    entry = _entry(runtime)
-    current = SimpleNamespace(revision=7, floor_plan_coherent=True)
-    scene_view = SimpleNamespace(async_scene=AsyncMock(return_value=current))
-
-    def unload(listener):
-        entry.state = ConfigEntryState.NOT_LOADED
-        listener()
-        return MagicMock()
-
-    runtime.slam_map.async_add_listener.side_effect = unload
-    hass = _hass(entry)
-
-    response = await MaticSlamDeltaView(scene_view).get(
-        _request(hass, path="/?since=7"), "entry"
-    )
-
-    assert response.status == HTTPStatus.NOT_FOUND
 
 
 async def test_history_scene_cancellation_propagates_to_store_read() -> None:

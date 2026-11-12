@@ -17,11 +17,10 @@ async function routePageLifecycleModule(page) {
   }));
 }
 
-function liveEntry({ delta = false } = {}) {
+function liveEntry() {
   return {
     entry_id: "synthetic-entry",
     scene_url: "/api/matic_robot/slam_scene/synthetic",
-    delta_url: delta ? "/api/matic_robot/slam_delta/synthetic" : null,
     history_url: "/api/matic_robot/slam_history/synthetic",
     areas_url: "/api/matic_robot/areas/synthetic",
     plans_url: "/api/matic_robot/plans/synthetic",
@@ -163,26 +162,26 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
 
   const fixture = await installPanelFixture(page, {
     moduleSource: "typescript",
-    initialCatalogEntries: [liveEntry({ delta: true })],
+    followLiveScene: true,
+    initialCatalogEntries: [liveEntry()],
   });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
     const originalFetch = panel.hass.fetchWithAuth;
-    window.__pageLifecycleProbe = { hold: false, pending: [], deltaReads: 0 };
+    window.__pageLifecycleProbe = { hold: false, pending: [], followReads: 0 };
     panel.hass = {
       ...panel.hass,
       fetchWithAuth: async (path, init) => {
         const probe = window.__pageLifecycleProbe;
-        const isDelta = path.includes("slam_delta/");
-        if (probe.hold && isDelta) {
-          probe.deltaReads += 1;
+        const isFollow = path.includes("slam_scene/synthetic?since=");
+        if (probe.hold && isFollow) {
+          probe.followReads += 1;
           return new Promise((resolve) => {
             const pending = { path, resolve, aborted: false };
             probe.pending.push(pending);
             init?.signal?.addEventListener("abort", () => { pending.aborted = true; }, { once: true });
           });
         }
-        if (isDelta) return new Response(null, { status: 204 });
         return originalFetch(path, init);
       },
     };
@@ -214,7 +213,7 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
   await page.clock.fastForward(1_000);
   await expect.poll(() => page.evaluate(() => {
     const probe = window.__pageLifecycleProbe;
-    return probe.deltaReads > 0;
+    return probe.followReads > 0;
   })).toBe(true);
 
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
@@ -232,7 +231,7 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
     "document:visibilitychange": 1,
   });
 
-  // A late delta or a pose sent while suspended must not re-admit the map or the robot.
+  // A late revision wait or a pose sent while suspended must not re-admit the map or the robot.
   await page.evaluate(() => {
     for (const pending of window.__pageLifecycleProbe.pending) pending.resolve(new Response(null, { status: 204 }));
     window.__panelFixture.pushPose([1, 1]);
@@ -244,12 +243,12 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
 
   const readsWhileSuspended = await page.evaluate(() => ({
     catalog: window.__panelFixture.catalogReads,
-    delta: window.__pageLifecycleProbe.deltaReads,
+    follow: window.__pageLifecycleProbe.followReads,
   }));
   await page.clock.fastForward(5_000);
   expect(await page.evaluate(() => ({
     catalog: window.__panelFixture.catalogReads,
-    delta: window.__pageLifecycleProbe.deltaReads,
+    follow: window.__pageLifecycleProbe.followReads,
   }))).toEqual(readsWhileSuspended);
 
   await page.evaluate(() => { window.__pageLifecycleProbe.hold = false; });

@@ -12,17 +12,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from google.protobuf.message import DecodeError
 
-from custom_components.matic_robot import slam_delta
 from custom_components.matic_robot import slam_history_format as history_format
+from custom_components.matic_robot.client import slam_scene
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.slam_scene import (
+    MAX_SCENE_BYTES,
     encode_slam_scene,
 )
 from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
-from custom_components.matic_robot.slam_delta import MAX_SCENE_BYTES
 from custom_components.matic_robot.slam_history import (
     MAX_ACTIVE_HISTORY_READ_BYTES,
     MAX_ACTIVE_HISTORY_READS,
@@ -884,7 +884,7 @@ def test_history_decompression_is_bounded() -> None:
     scene = _scene()
     compressed = __import__("zlib").compress(scene)
     with patch.object(
-        slam_delta,
+        slam_scene,
         "MAX_SCENE_BYTES",
         len(scene) - 1,
     ):

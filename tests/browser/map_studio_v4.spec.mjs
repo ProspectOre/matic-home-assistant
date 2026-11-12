@@ -1,9 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
-import { deflateSync } from "node:zlib";
 import { build } from "esbuild";
 
 import { installPanelFixture, openPlanPicker } from "./map_studio_v4_panel_fixture.mjs";
+import { manifestBytes, pageBytes, pageId } from "./scene_manifest_fixture.mjs";
 import { pointer, touchDrag, twoFingerPinch } from "./touch.mjs";
 
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
@@ -37,21 +37,26 @@ function syntheticScene(roomName, pointX) {
   return scene;
 }
 
-function syntheticDelta(base, scene, baseRevision, revision) {
-  const difference = Buffer.alloc(Math.max(base.length, scene.length));
-  for (let index = 0; index < difference.length; index += 1) {
-    difference[index] = (base[index] || 0) ^ (scene[index] || 0);
-  }
-  const compressed = deflateSync(difference);
-  const header = Buffer.alloc(36);
-  header.write("MATICDLT", 0, "binary");
-  header.writeUInt16LE(1, 8);
-  header.writeUInt16LE(1, 10);
-  header.writeBigUInt64LE(BigInt(baseRevision), 12);
-  header.writeBigUInt64LE(BigInt(revision), 20);
-  header.writeUInt32LE(scene.length, 28);
-  header.writeUInt32LE(compressed.length, 32);
-  return Buffer.concat([header, compressed]);
+// syntheticScene as a live manifest: its point on its own page, beside a page
+// both scenes share.
+function syntheticManifest(roomName, pointX) {
+  const metadata = Buffer.from(JSON.stringify({
+    meters_per_cell: 0.015,
+    span_cells: [100, 80],
+    origin_cells: [10, 10],
+    sample_step: 1,
+    rooms: [{
+      name: roomName,
+      boundary: [[0, 0], [6, 0], [6, 5], [0, 5]],
+      center: [3, 2.5],
+    }],
+  }));
+  const [cellX, cellY] = [pointX + 10, 22];
+  const point = { x: Math.floor(cellX / 32), y: 0, id: pageId(cellX), floor: 1,
+    points: [[cellX % 32, cellY, 1, 30, 80, 120]] };
+  const shared = { x: 1, y: 1, id: pageId(1), floor: 1, points: [[5, 5, 0, 60, 60, 60]] };
+  const pages = [point, shared];
+  return { manifest: manifestBytes(metadata, pages), pages: new Map(pages.map((page) => [page.id, pageBytes(page)])) };
 }
 
 async function loadGallery(page, { scenario = "ready", narrow = false, beforeMount } = {}) {
@@ -2309,7 +2314,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const result = await page.evaluate(async ({ pruned }) => {
         const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
         const initial = createGalleryState("ready");
-        initial.resources.entry = { ...initial.resources.entry, deltaUrl: null };
+        initial.resources.entry = { ...initial.resources.entry };
         const store = new WorkspaceStore(initial);
         let history = initial.resources.history.value;
         const effects = new EffectController(store, {
@@ -2474,7 +2479,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "standard" }],
         } });
         if (!retained) store.replace({ ...store.value, resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
-        let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, mapSessionKey: null, deltaUrl: null };
+        let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, mapSessionKey: null };
         let commands = 0;
         const effects = new EffectController(store, {
           catalog: async () => [entry],
@@ -2508,7 +2513,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           for (const action of ["clean-rooms", "run-plan", "run-area"]) await effects.executeAction(action);
           window.__pausedMapState = store.value;
           const paused = { available: store.value.map.available, exactPose: store.value.map.exactPose, scene: !!store.value.resources.scene.value, notice: store.value.notice?.key ?? null, commands };
-          entry = { ...initial.resources.entry, deltaUrl: null };
+          entry = { ...initial.resources.entry };
           await effects.refreshCatalog();
           for (let i = 0; i < 20 && store.value.resources.scene.value?.marker !== "live"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
           for (let i = 0; i < 100 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2546,20 +2551,23 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
-  test("retains the map when delta revalidation cannot refresh the catalog", async ({ page }) => {
+  test("retains the map when revision-wait revalidation cannot refresh the catalog", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
       const initial = createGalleryState("ready");
       const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection,
         roomSettings: [{ roomId: "room-1", cleaningMode: "vacuum", coverageSetting: "standard" }] } });
-      const entry = { ...initial.resources.entry, deltaUrl: "/api/matic_robot/synthetic/delta" };
-      let rejectCatalog = false, releaseDelta, commands = 0;
+      const entry = initial.resources.entry;
+      // A manifest scene is followed; its revision wait reports the floor incoherent.
+      const liveScene = { ...initial.resources.scene.value, manifest: new ArrayBuffer(1) };
+      let rejectCatalog = false, releaseFollow, commands = 0;
       const effects = new EffectController(store, {
         catalog: async () => { if (rejectCatalog) throw new Error("Catalog offline"); return [entry]; },
         history: async () => initial.resources.history.value,
-        scene: async () => ({ revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value }),
-        sceneDelta: async () => new Promise(resolve => { releaseDelta = () => resolve({ revision: entry.mapRevision, floorCoherent: false, scene: null, notModified: true }); }),
+        scene: async (_url, _revision, _floorCoherent, _source, _signal, follow = {}) => follow.since === undefined
+          ? { revision: entry.mapRevision, floorCoherent: true, scene: liveScene }
+          : new Promise(resolve => { releaseFollow = () => resolve({ revision: entry.mapRevision, floorCoherent: false, scene: null, notModified: true }); }),
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },
         plans: async () => initial.resources.plans.value,
         areas: async () => initial.resources.areas.value,
@@ -2569,14 +2577,14 @@ test.describe("Map Studio v0.4 foundation", () => {
       try {
         effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
         await effects.refreshCatalog(true);
-        for (let i = 0; i < 20 && !releaseDelta; i++) await new Promise(resolve => setTimeout(resolve, 0));
-        if (!releaseDelta) throw new Error("Delta stream did not start");
+        for (let i = 0; i < 20 && !releaseFollow; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        if (!releaseFollow) throw new Error("Revision wait did not start");
         rejectCatalog = true;
-        releaseDelta();
+        releaseFollow();
         for (let i = 0; i < 20 && store.value.resources.catalog.status !== "error"; i++) await new Promise(resolve => setTimeout(resolve, 0));
         await effects.executeAction("clean-rooms");
-        window.__deltaRecheckState = store.value;
-        return { retained: store.value.resources.scene.value === initial.resources.scene.value,
+        window.__followRecheckState = store.value;
+        return { retained: store.value.resources.scene.value === liveScene,
           available: store.value.map.available, readOnly: store.value.floor.readOnly,
           exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status, commands,
           notice: store.value.notice };
@@ -2589,7 +2597,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const gallery = document.createElement(tag);
       gallery.controls = false; gallery.scenario = "ready";
       document.body.append(gallery); await gallery.updateComplete;
-      gallery.replaceWorkspaceState(window.__deltaRecheckState);
+      gallery.replaceWorkspaceState(window.__followRecheckState);
     }, GALLERY_TAG);
     await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
     // The catalog failure leaves coherence degraded, so the workspace, not a
@@ -2656,7 +2664,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
         const initial = createGalleryState("ready");
         const store = new WorkspaceStore({ ...initial, map: { ...initial.map, available: false }, resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
-        let entry = { ...initial.resources.entry, mapFloorCoherent: scenario === "live-unavailable", mapSessionVerified: scenario === "live-unavailable", deltaUrl: null };
+        let entry = { ...initial.resources.entry, mapFloorCoherent: scenario === "live-unavailable", mapSessionVerified: scenario === "live-unavailable" };
         let historyReads = 0;
         let liveOffline = scenario === "live-unavailable";
         let offline = scenario === "transient-all";
@@ -2699,7 +2707,7 @@ test.describe("Map Studio v0.4 foundation", () => {
             for (let i = 0; i < 20 && !store.value.map.available; i++) await new Promise(resolve => setTimeout(resolve, 0));
           }
           if (scenario === "late-history") {
-            entry = { ...initial.resources.entry, deltaUrl: null };
+            entry = { ...initial.resources.entry };
             await effects.refreshCatalog();
             for (const release of historyReleases) release();
             await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2721,7 +2729,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
           const initial = createGalleryState("ready");
           const store = new WorkspaceStore(initial);
-          const entry = { ...initial.resources.entry, deltaUrl: null };
+          const entry = { ...initial.resources.entry };
           let reads = 0;
           let finish;
           const problems = [];
@@ -2767,7 +2775,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(async () => {
       const m = await import("/plan-recovery-test.js");
       const initial = m.createGalleryState("ready");
-      const entry = { ...initial.resources.entry, deltaUrl: null };
+      const entry = { ...initial.resources.entry };
       const store = new m.WorkspaceStore(initial);
       const pending = [];
       const recovery = window.__robotReconnectProof = { store, reads: 0, pending: null, releaseStale: null, releaseFresh: null, module: m };
@@ -2848,7 +2856,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const result = await page.evaluate(async () => {
       const m = await import("/plan-recovery-test.js");
       const initial = m.createGalleryState("ready");
-      const entry = { ...initial.resources.entry, deltaUrl: null };
+      const entry = { ...initial.resources.entry };
       const store = new m.WorkspaceStore(initial);
       let reads = 0;
       const effects = new m.EffectController(store, {
@@ -2879,116 +2887,12 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.recovered.reads).toBeGreaterThanOrEqual(2);
   });
 
-  test("active delta loop owns pixel admission across 204 gaps and catalog revisions", async ({ page }) => {
-    await loadEffectHarness(page);
-    await page.evaluate(async () => {
-      const m = await import("/plan-recovery-test.js");
-      const initial = m.createGalleryState("ready");
-      const state = window.__deltaCatalogRace = {
-        entry: { ...initial.resources.entry, deltaUrl: "/delta" },
-        sceneCalls: 0,
-        deltaCalls: 0,
-        release204: null,
-        releaseDelta: null,
-      };
-      const store = state.store = new m.WorkspaceStore(initial);
-      const effects = state.effects = new m.EffectController(store, {
-        catalog: async () => [state.entry],
-        history: async () => initial.resources.history.value,
-        scene: async (_url, revision) => {
-          state.sceneCalls += 1;
-          return { scene: initial.resources.scene.value, revision, floorCoherent: true };
-        },
-        sceneDelta: async (_url, _scene, _floorCoherent, signal) => {
-          const call = ++state.deltaCalls;
-          if (call === 1) return new Promise((resolve) => {
-            state.release204 = () => resolve({ revision: state.entry.mapRevision, floorCoherent: true, scene: null, notModified: true });
-          });
-          if (call === 2) return new Promise((resolve) => {
-            state.releaseDelta = () => resolve({ revision: state.entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value });
-          });
-          return new Promise((_resolve, reject) => {
-            const abort = () => reject(new DOMException("Aborted", "AbortError"));
-            if (signal.aborted) abort();
-            else signal.addEventListener("abort", abort, { once: true });
-          });
-        },
-        pose: async () => initial.resources.pose.value,
-        plans: async () => initial.resources.plans.value,
-        dispose() {},
-      });
-      const projection = {
-        host: initial.host, activity: initial.activity, batteryPercent: 92,
-        robotLabel: "Synthetic", robots: initial.robots, language: "en",
-        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
-      };
-      effects.sync(projection);
-      await effects.refreshCatalog(true);
-    });
-    await expect.poll(() => page.evaluate(() => window.__deltaCatalogRace.deltaCalls)).toBe(1);
-    await page.evaluate(() => window.__deltaCatalogRace.release204());
-    await expect.poll(() => page.evaluate(() => window.__deltaCatalogRace.deltaCalls)).toBe(2);
-
-    const catalogDuringDelta = await page.evaluate(async () => {
-      const s = window.__deltaCatalogRace;
-      const revision = s.store.value.resources.entry.mapRevision;
-      const generation = s.store.value.generation;
-      s.entry = { ...s.entry, mapRevision: revision + 1 };
-      await s.effects.refreshCatalog();
-      return {
-        generationBefore: generation,
-        generationAfter: s.store.value.generation,
-        revisionBefore: revision,
-        revisionAfterCatalog: s.store.value.resources.entry.mapRevision,
-        sceneCalls: s.sceneCalls,
-      };
-    });
-    expect(catalogDuringDelta.generationAfter).toBe(catalogDuringDelta.generationBefore);
-    expect(catalogDuringDelta.revisionAfterCatalog).toBe(catalogDuringDelta.revisionBefore);
-    expect(catalogDuringDelta.sceneCalls).toBe(1);
-
-    const advanced = await page.evaluate(async () => {
-      const s = window.__deltaCatalogRace;
-      s.releaseDelta();
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-      const revision = s.store.value.resources.entry.mapRevision;
-      const generation = s.store.value.generation;
-      s.entry = { ...s.entry, mapRevision: revision + 1 };
-      await s.effects.refreshCatalog();
-      const ownerPreserved = {
-        generationBefore: generation,
-        generationAfter: s.store.value.generation,
-        revisionBefore: revision,
-        revisionAfterCatalog: s.store.value.resources.entry.mapRevision,
-        sceneCalls: s.sceneCalls,
-        deltaCalls: s.deltaCalls,
-      };
-      const boundaryGeneration = s.store.value.generation;
-      s.entry = { ...s.entry, selectedFloorOrdinal: 2, mapFloorOrdinal: 2 };
-      await s.effects.refreshCatalog(true);
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-      const proofBoundary = {
-        generationBefore: boundaryGeneration,
-        generationAfter: s.store.value.generation,
-        sceneCalls: s.sceneCalls,
-      };
-      s.effects.dispose();
-      return { ownerPreserved, proofBoundary };
-    });
-    expect(advanced.ownerPreserved.generationAfter).toBe(advanced.ownerPreserved.generationBefore);
-    expect(advanced.ownerPreserved.revisionAfterCatalog).toBe(advanced.ownerPreserved.revisionBefore);
-    expect(advanced.ownerPreserved.sceneCalls).toBe(1);
-    expect(advanced.ownerPreserved.deltaCalls).toBeGreaterThanOrEqual(3);
-    expect(advanced.proofBoundary.generationAfter).toBeGreaterThan(advanced.proofBoundary.generationBefore);
-    expect(advanced.proofBoundary.sceneCalls).toBe(2);
-  });
-
-  test("catalog pixel revision falls back to a new scene when no delta owner exists", async ({ page }) => {
+  test("catalog pixel revision falls back to a new scene when no revision wait owns it", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
       const m = await import("/plan-recovery-test.js");
       const initial = m.createGalleryState("ready");
-      const state = { entry: { ...initial.resources.entry, deltaUrl: null }, sceneCalls: 0 };
+      const state = { entry: { ...initial.resources.entry }, sceneCalls: 0 };
       const store = new m.WorkspaceStore(initial);
       const effects = new m.EffectController(store, {
         catalog: async () => [state.entry],
@@ -7017,28 +6921,27 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect.poll(() => page.evaluate(() => window.__adapterConnectionHarness.fetchCount())).toBe(2);
   });
 
-  test("streams a bounded live delta without refetching the full scene", async ({ page }) => {
-    const initial = syntheticScene("Initial room", 10);
-    const updated = syntheticScene("Updated room", 24);
-    const delta = syntheticDelta(initial, updated, 1, 2);
+  test("follows a live manifest by fetching only its changed pages", async ({ page }) => {
+    const initial = syntheticManifest("Initial room", 10);
+    const updated = syntheticManifest("Updated room", 24);
+    const pageRequests = [];
     let catalogRevision = 1;
     let catalogRequests = 0;
     let fullSceneRequests = 0;
     const fullScenePreferCached = [];
-    let deltaRequests = 0;
-    let failNextDelta = false;
-    let holdDeltaRecoveryScene = false;
-    let releaseDeltaRecoveryScene;
-    const deltaRecoverySceneGate = new Promise((resolve) => { releaseDeltaRecoveryScene = resolve; });
+    let followRequests = 0;
+    let failNextFollow = false;
+    let holdFollowRecoveryScene = false;
+    let releaseFollowRecoveryScene;
+    const followRecoverySceneGate = new Promise((resolve) => { releaseFollowRecoveryScene = resolve; });
     let holdNextFullScene = false;
     let releaseHeldFullScene;
     const heldFullSceneGate = new Promise((resolve) => { releaseHeldFullScene = resolve; });
-    let releaseFirstDelta;
-    const firstDeltaGate = new Promise((resolve) => { releaseFirstDelta = resolve; });
+    let releaseFirstFollow;
+    const firstFollowGate = new Promise((resolve) => { releaseFirstFollow = resolve; });
     const catalogEntry = () => ({
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-      delta_url: "/api/matic_robot/slam_delta/synthetic-entry",
       history_url: "/api/matic_robot/slam_history/synthetic-entry",
       areas_url: "/api/matic_robot/areas/synthetic-entry",
       plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -7075,34 +6978,40 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.route("**/api/matic_robot/slam_scene/synthetic-entry", async (route) => {
       fullSceneRequests += 1;
       fullScenePreferCached.push(route.request().headers()["x-matic-prefer-cached"]);
-      if (holdDeltaRecoveryScene && fullSceneRequests === 2) await deltaRecoverySceneGate;
+      if (holdFollowRecoveryScene && fullSceneRequests === 2) await followRecoverySceneGate;
       if (holdNextFullScene) await heldFullSceneGate;
       return route.fulfill({
         status: 200,
-        body: catalogRevision === 1 ? initial : updated,
+        body: (catalogRevision === 1 ? initial : updated).manifest,
         headers: {
-          "Content-Type": "application/vnd.matic.slam-scene",
+          "Content-Type": "application/vnd.matic.slam-manifest",
           "X-Matic-Revision": String(catalogRevision),
           "X-Matic-Floor-Coherent": "1",
           ETag: `"scene-${catalogRevision}"`,
         },
       });
     });
-    await page.route("**/api/matic_robot/slam_delta/synthetic-entry?since=*", async (route) => {
-      deltaRequests += 1;
-      if (failNextDelta) {
-        failNextDelta = false;
+    await page.route("**/api/matic_robot/slam_scene/synthetic-entry/pages?ids=*", (route) => {
+      const ids = new URL(route.request().url()).searchParams.get("ids").split(",");
+      pageRequests.push(ids);
+      const known = new Map([...initial.pages, ...updated.pages]);
+      return route.fulfill({ status: 200, body: Buffer.concat(ids.map((id) => known.get(id))),
+        headers: { "Content-Type": "application/octet-stream" } });
+    });
+    await page.route("**/api/matic_robot/slam_scene/synthetic-entry?since=*", async (route) => {
+      followRequests += 1;
+      if (failNextFollow) {
+        failNextFollow = false;
         return route.fulfill({ status: 503, body: "temporary" });
       }
-      if (deltaRequests === 1) {
-        await firstDeltaGate;
+      if (followRequests === 1) {
+        await firstFollowGate;
         catalogRevision = 2;
         return route.fulfill({
           status: 200,
-          body: delta,
+          body: updated.manifest,
           headers: {
-            "Content-Type": "application/vnd.matic.slam-delta",
-            "X-Matic-Base-Revision": "1",
+            "Content-Type": "application/vnd.matic.slam-manifest",
             "X-Matic-Revision": "2",
             "X-Matic-Floor-Coherent": "1",
             ETag: '"scene-2"',
@@ -7156,18 +7065,18 @@ test.describe("Map Studio v0.4 foundation", () => {
         connection: window.__robotPoses.connection,
       };
       document.body.append(panel);
-      window.__deltaPanel = panel;
+      window.__followPanel = panel;
       window.__robotPoses.stream(true);
     });
 
     await expect.poll(async () => page.evaluate(() =>
-      window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
+      window.__followPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
     await page.evaluate(() => {
       window.__poseStayedExact = new Promise((resolve) => {
         const deadline = performance.now() + 750;
         let stayedExact = true;
         const sample = () => {
-          const state = window.__deltaPanel.getWorkspaceSnapshot();
+          const state = window.__followPanel.getWorkspaceSnapshot();
           if ((state.resources.scene.value?.revision || 0) >= 2 && !state.map.exactPose) {
             stayedExact = false;
           }
@@ -7177,37 +7086,42 @@ test.describe("Map Studio v0.4 foundation", () => {
         sample();
       });
     });
-    releaseFirstDelta();
+    releaseFirstFollow();
     await expect.poll(async () => page.evaluate(() => {
-      const scene = window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value;
+      const scene = window.__followPanel.getWorkspaceSnapshot().resources.scene.value;
       return { revision: scene?.revision, room: scene?.metadata.rooms[0]?.name };
     })).toEqual({ revision: 2, room: "Updated room" });
     expect(await page.evaluate(() => window.__poseStayedExact)).toBe(true);
     expect(fullSceneRequests).toBe(1);
     expect(fullScenePreferCached).toEqual(["1"]);
-    expect(deltaRequests).toBeGreaterThanOrEqual(1);
+    expect(followRequests).toBeGreaterThanOrEqual(1);
+    // The first load fetched both pages; the update only the page that changed.
+    expect(pageRequests.map((ids) => ids.toSorted())).toEqual([
+      [...initial.pages.keys()].toSorted(),
+      [...updated.pages.keys()].filter((id) => !initial.pages.has(id)),
+    ]);
     await expect.poll(() => catalogRequests, { timeout: 7_000 }).toBeGreaterThanOrEqual(2);
     expect(await page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      const state = window.__followPanel.getWorkspaceSnapshot();
       return { revision: state.resources.scene.value?.revision, exactPose: state.map.exactPose };
     })).toEqual({ revision: 2, exactPose: true });
     expect(fullSceneRequests).toBe(1);
-    const contentGeneration = await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation);
-    holdDeltaRecoveryScene = true;
-    failNextDelta = true;
+    const contentGeneration = await page.evaluate(() => window.__followPanel.getWorkspaceSnapshot().generation);
+    holdFollowRecoveryScene = true;
+    failNextFollow = true;
     await expect.poll(() => fullSceneRequests).toBe(2);
     expect(await page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      const state = window.__followPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
     })).toEqual({ exactPose: true, position: [10, 12] });
-    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
-    releaseDeltaRecoveryScene();
+    expect(await page.evaluate(() => window.__followPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
+    releaseFollowRecoveryScene();
     expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
-      window.__deltaPanel.getWorkspaceSnapshot().notice)).toBe(null);
+      window.__followPanel.getWorkspaceSnapshot().notice)).toBe(null);
     const send = (changes) => page.evaluate((pose) => window.__robotPoses.send(pose), changes);
     const shown = () => page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      const state = window.__followPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, pose: state.resources.pose.value };
     });
     // A pose whose age is unknown places the robot's area, not its point.
@@ -7228,13 +7142,13 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     holdNextFullScene = true;
     catalogRevision = 3;
-    // End the live delta owner after publishing the new catalog revision.
-    // With no healthy delta stream, the catalog becomes the bounded full-scene
-    // fallback and this test can assert the retained-pose loading behavior.
-    failNextDelta = true;
+    // End the revision wait after publishing the new catalog revision. With no
+    // healthy follower, the catalog becomes the bounded full-scene fallback and
+    // this test can assert the retained-pose loading behavior.
+    failNextFollow = true;
     await expect.poll(() => fullSceneRequests, { timeout: 7_000 }).toBe(3);
     expect(await page.evaluate(() => {
-      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      const state = window.__followPanel.getWorkspaceSnapshot();
       return {
         exactPose: state.map.exactPose,
         pose: state.resources.pose.value?.position,
@@ -7247,10 +7161,10 @@ test.describe("Map Studio v0.4 foundation", () => {
       sceneRevision: 2,
       sceneStatus: "loading",
     });
-    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
+    expect(await page.evaluate(() => window.__followPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
     releaseHeldFullScene();
     await expect.poll(async () => page.evaluate(() =>
-      window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
+      window.__followPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
     await send({ map_session_key: "b".repeat(64) });
     await expect.poll(async () => (await shown()).exactPose).toBe(false);
     // The first recovery read can see the mismatched pose again; the next is five seconds later.
@@ -7269,7 +7183,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect.poll(async () => { const { exactPose, pose } = await shown(); return [exactPose, pose?.position, pose?.mapSessionKey]; }, { timeout: 2_500, intervals: [50, 100, 200] }).toEqual([false, null, "a".repeat(64)]);
     await send({ pose_age_seconds: 0 });
     await expect.poll(async () => (await shown()).exactPose).toBe(true);
-    await page.evaluate(() => window.__deltaPanel.remove());
+    await page.evaluate(() => window.__followPanel.remove());
   });
 
   test("retains a verified same-floor scene while a new revision is built @safety", async ({ page }) => {
@@ -7500,7 +7414,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         fetchWithAuth: async (path, init) => {
           // Match Home Assistant's live auth boundary: a native Headers object
           // cannot be merged into the authenticated request, while a plain record
-          // is accepted. This guards scene and delta requests against silent 401s.
+          // is accepted. This guards scene and page requests against silent 401s.
           if (init?.headers instanceof Headers) {
             return new Response("", { status: 401 });
           }
@@ -7690,7 +7604,6 @@ test.describe("Map Studio v0.4 foundation", () => {
             return new Response(JSON.stringify({ entries: [{
               entry_id: "synthetic-entry",
               scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
-              delta_url: "/api/matic_robot/slam_delta/synthetic-entry",
               history_url: "/api/matic_robot/slam_history/synthetic-entry",
               areas_url: "/api/matic_robot/areas/synthetic-entry",
               plans_url: "/api/matic_robot/plans/synthetic-entry",
@@ -8877,7 +8790,7 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
     const m = await import("/plan-recovery-test.js");
     const initial = m.createGalleryState("ready");
     const recovery = window.__slowScene = {
-      entry: { ...initial.resources.entry, deltaUrl: null },
+      entry: { ...initial.resources.entry },
       store: new m.WorkspaceStore(), requests: [],
     };
     const backend = {
@@ -8928,7 +8841,7 @@ test("live scene recovers from a transient failure on an unchanged catalog", asy
   await page.evaluate(async () => {
     const m = await import("/scene-recovery-test.js");
     const initial = m.createGalleryState("ready");
-    const entry = { ...initial.resources.entry, deltaUrl: null };
+    const entry = { ...initial.resources.entry };
     const store = new m.WorkspaceStore();
     const recovery = window.__sceneRecovery = { store, calls: 0, healthy: false };
     const backend = {
@@ -8964,7 +8877,7 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
   await page.evaluate(async (rejectedScene) => {
     const m = await import("/scene-recovery-test.js");
     const initial = m.createGalleryState("ready");
-    const entry = { ...initial.resources.entry, deltaUrl: null };
+    const entry = { ...initial.resources.entry };
     const store = new m.WorkspaceStore();
     const recovery = window.__sceneRecovery = { store, calls: 0, healthy: false };
     const backend = {
@@ -9012,7 +8925,7 @@ test("saved areas recover when Draw opens before the live scene is ready", async
   await page.evaluate(async () => {
     const m = await import("/area-loading-test.js");
     const initial = m.createGalleryState("ready");
-    const entry = { ...initial.resources.entry, deltaUrl: null };
+    const entry = { ...initial.resources.entry };
     const store = new m.WorkspaceStore();
     store.replace({ ...initial, resources: { ...initial.resources, scene: {status:"idle",value:null,problem:null}, areas: {status:"idle",value:null,problem:null} }, map: {...initial.map,available:false} });
     let releaseScene;

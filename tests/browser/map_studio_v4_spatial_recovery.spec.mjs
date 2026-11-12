@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
+import { liveScene, pageId, sceneMetadata } from "./scene_manifest_fixture.mjs";
 
 const sessionB = "b".repeat(64);
 
@@ -8,7 +9,6 @@ function entry(entryId, suffix, sessionKey) {
   return {
     entry_id: entryId,
     scene_url: `/api/matic_robot/slam_scene/${suffix}`,
-    delta_url: entryId.endsWith("-b") ? `/api/matic_robot/slam_delta/${suffix}` : null,
     history_url: `/api/matic_robot/slam_history/${suffix}`,
     areas_url: `/api/matic_robot/areas/${suffix}`,
     plans_url: `/api/matic_robot/plans/${suffix}`,
@@ -49,7 +49,7 @@ async function routeMotionSelector(page) {
   }));
 }
 
-test("@safety pose and delta failures share one bounded recovery retry", async ({ page }) => {
+test("@safety pose and revision wait failures share one bounded recovery retry", async ({ page }) => {
   const anchor = new Date("2026-09-30T12:00:00Z");
   await page.clock.install({ time: anchor });
   await page.clock.pauseAt(anchor);
@@ -63,17 +63,21 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
       "vacuum.synthetic_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b" } },
     },
   });
-  await page.evaluate(() => {
+  // Robot B's live scene is a manifest, so it is followed by revision waits.
+  const sceneB = liveScene(sceneMetadata({ origin: [10, 10], span: [100, 80] }),
+    [{ x: 0, y: 0, id: pageId(1), floor: 1, points: [[11, 11, 0, 90, 90, 90]] }]);
+  await page.evaluate((sceneB) => {
+    const decode = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
     const panel = window.__panelFixture.createPanel();
     const originalFetch = panel.hass.fetchWithAuth;
     const pendingSceneReleases = [];
     const probe = window.__spatialRecoveryProbe = {
-      deltaReads: 0,
-      deltaFailures: 0,
+      followReads: 0,
+      followFailures: 0,
       sceneReads: 0,
       sceneAborts: 0,
       sceneHolds: 0,
-      failDelta: false,
+      failFollow: false,
       pendingSceneCount: () => pendingSceneReleases.length,
       releaseNextScene: () => {
         const release = pendingSceneReleases.shift();
@@ -86,29 +90,34 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
       fetchWithAuth: async (path, init) => {
         const probe = window.__spatialRecoveryProbe;
         const requestPath = path.split("?", 1)[0];
+        if (requestPath.endsWith("slam_scene/synthetic-b/pages")) {
+          return new Response(decode(Object.values(sceneB.pages)[0]), { headers: { "Content-Type": "application/octet-stream" } });
+        }
+        if (requestPath.endsWith("slam_scene/synthetic-b") && path.includes("since=")) {
+          probe.followReads += 1;
+          const fail = probe.failFollow;
+          if (fail) probe.followFailures += 1;
+          return fail
+            ? new Response("unavailable", { status: 503 })
+            : new Response(null, { status: 204, headers: { "X-Matic-Revision": "7" } });
+        }
         if (requestPath.endsWith("slam_scene/synthetic-b")) {
           probe.sceneReads += 1;
           init?.signal?.addEventListener("abort", () => { probe.sceneAborts += 1; }, { once: true });
-          const response = await originalFetch(path, init);
+          const response = new Response(decode(sceneB.manifest), {
+            headers: { "Content-Type": "application/vnd.matic.slam-manifest", "X-Matic-Revision": "7" },
+          });
           if (probe.sceneHolds > 0) {
             probe.sceneHolds -= 1;
             return new Promise((resolve) => pendingSceneReleases.push(() => resolve(response)));
           }
           return response;
         }
-        if (requestPath.endsWith("slam_delta/synthetic-b")) {
-          probe.deltaReads += 1;
-          const fail = probe.failDelta;
-          if (fail) probe.deltaFailures += 1;
-          return fail
-            ? new Response("unavailable", { status: 503 })
-            : new Response(null, { status: 204 });
-        }
         return originalFetch(path, init);
       },
     };
     document.body.append(panel);
-  });
+  }, sceneB);
   const panel = page.locator(fixture.panelTag);
   await expect(panel.locator("select.robot-switcher")).toHaveValue("synthetic-entry");
   await panel.locator("select.robot-switcher").selectOption("synthetic-entry-b");
@@ -121,7 +130,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
     const state = element.getWorkspaceSnapshot();
     return state.map.available && state.map.exactPose && state.resources.entry?.entryId === "synthetic-entry-b";
   })).toBe(true);
-  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.deltaReads)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.followReads)).toBeGreaterThan(0);
   const beforeFault = await page.evaluate(() => window.__panelFixture.catalogReads);
   const baselineFrame = await panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
@@ -131,7 +140,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   // The robot keeps reporting, so the pose outlives fast-forwards past its freshness window.
   const robotReports = () => page.evaluate(() => window.__panelFixture.pushPose([1, 1]));
   await page.evaluate(() => {
-    window.__spatialRecoveryProbe.failDelta = false;
+    window.__spatialRecoveryProbe.failFollow = false;
     window.__spatialRecoveryProbe.sceneHolds = 1;
   });
   await mismatchedPose();
@@ -213,7 +222,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
       exactPose: state.map.exactPose,
       readOnly: state.floor.readOnly,
       sceneReads: window.__spatialRecoveryProbe.sceneReads,
-      deltaFailures: window.__spatialRecoveryProbe.deltaFailures,
+      followFailures: window.__spatialRecoveryProbe.followFailures,
     };
   });
   expect(verifiedReplacement).toMatchObject({
@@ -226,10 +235,10 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   })).toBe(true);
   await page.evaluate(() => {
     window.__spatialRecoveryProbe.sceneHolds = 1;
-    window.__spatialRecoveryProbe.failDelta = true;
+    window.__spatialRecoveryProbe.failFollow = true;
   });
   await page.clock.fastForward(200);
-  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.deltaFailures)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.followFailures)).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.pendingSceneCount())).toBe(1);
   const contentRecovery = await panel.evaluate(async (element) => {
     const { canStartMotion } = await import("/state-selectors-probe.js");
@@ -276,7 +285,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
   })).toEqual(contentRecovery);
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
   await page.evaluate(() => {
-    window.__spatialRecoveryProbe.failDelta = false;
+    window.__spatialRecoveryProbe.failFollow = false;
     window.__spatialRecoveryProbe.releaseNextScene();
   });
   await expect.poll(() => panel.evaluate((element) => {
@@ -294,7 +303,7 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
 
   const beforeHistoryRecovery = await page.evaluate(() => window.__panelFixture.catalogReads);
   await page.evaluate(() => window.__panelFixture.deferNextCatalog());
-  await page.evaluate(() => { window.__spatialRecoveryProbe.failDelta = false; });
+  await page.evaluate(() => { window.__spatialRecoveryProbe.failFollow = false; });
   await mismatchedPose();
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingCatalogCount())).toBe(1);
   await panel.evaluate((element) => {

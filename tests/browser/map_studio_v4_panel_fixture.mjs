@@ -1,4 +1,5 @@
 import { build } from "esbuild";
+import { liveScene, pageId } from "./scene_manifest_fixture.mjs";
 
 const PANEL_MODULE = "/panel-fixture-test.js";
 
@@ -28,6 +29,23 @@ function sceneBytes(scenePoint, rooms) {
   return [...bytes];
 }
 
+// The same one-point scene as a live manifest and its page.
+function sceneManifest(scenePoint, rooms) {
+  const metadata = Buffer.from(JSON.stringify({
+    meters_per_cell: 0.015,
+    span_cells: [100, 80],
+    origin_cells: [10, 10],
+    sample_step: 1,
+    rooms,
+  }));
+  const { x = 0, y = 0, color = [0, 0, 0] } = scenePoint ?? {};
+  const [cellX, cellY] = [x + 10, y + 10];
+  return liveScene(metadata, [{
+    x: Math.floor(cellX / 32), y: Math.floor(cellY / 32), id: pageId(1), floor: 1,
+    points: [[cellX % 32, cellY % 32, 0, ...color]],
+  }]);
+}
+
 const emptyPlans = { rooms: [], plans: [], selected_plan: null };
 
 // Opens the plan picker through the public intent. The home plan card opens
@@ -42,7 +60,12 @@ export async function installPanelFixture(page, {
   initialAreasCatalog = null,
   moduleSource = "typescript",
   onNavigationComplete = null,
-  sceneDeltaPayload = null,
+  // True serves the live scene as a manifest, which the panel follows with
+  // revision waits; false serves the saved-map form, which is not followed.
+  followLiveScene = false,
+  // A manifest body served once for the first revision wait (revision 8);
+  // setting it also follows the live scene.
+  sceneUpdate = null,
   posePosition = [1, 1],
   scenePoint = null,
   sceneRooms = [],
@@ -116,7 +139,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, workspacePush }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, workspacePush }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -124,7 +147,6 @@ export async function installPanelFixture(page, {
     const catalog = { entries: [{
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic",
-      delta_url: sceneDeltaPayload ? "/api/matic_robot/slam_delta/synthetic" : null,
       history_url: "/api/matic_robot/slam_history/synthetic",
       areas_url: "/api/matic_robot/areas/synthetic",
       plans_url: "/api/matic_robot/plans/synthetic",
@@ -189,9 +211,9 @@ export async function installPanelFixture(page, {
     let areaCatalog = structuredClone(areas);
     const areaRequests = [];
     let planReads = 0;
-    let deltaReads = 0;
-    let deltaPayloadResponses = 0;
-    let deltaNoChangeResponses = 0;
+    let followReads = 0;
+    let followUpdates = 0;
+    let followNoChange = 0;
     const planCatalog = structuredClone(plans || { rooms: [], plans: [], selected_plan: null });
     const applySavedPlan = (data) => {
       let plan = data.plan_id && planCatalog.plans.find((candidate) => candidate.id === data.plan_id);
@@ -308,20 +330,28 @@ export async function installPanelFixture(page, {
           headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "6" },
         }))));
       }
-      if (sceneDeltaPayload && path.includes("slam_delta/synthetic")) {
-        deltaReads += 1;
-        if (deltaReads > 1) {
-          deltaNoChangeResponses += 1;
-          return new Response(null, { status: 204 });
+      const decode = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+      if (followed && path.endsWith("slam_scene/synthetic?since=7")) {
+        followReads += 1;
+        if (!sceneUpdate || followReads > 1) {
+          followNoChange += 1;
+          return new Response(null, { status: 204, headers: { "X-Matic-Revision": "7" } });
         }
-        deltaPayloadResponses += 1;
-        return new Response(new Uint8Array(sceneDeltaPayload), {
+        followUpdates += 1;
+        return new Response(new Uint8Array(sceneUpdate), {
           headers: {
-            "Content-Type": "application/vnd.matic.slam-delta",
+            "Content-Type": "application/vnd.matic.slam-manifest",
             "X-Matic-Revision": "8",
-            "X-Matic-Base-Revision": "7",
             "X-Matic-Floor-Coherent": "1",
           },
+        });
+      }
+      if (followed && path.startsWith("/api/matic_robot/slam_scene/synthetic/pages?ids=")) {
+        return new Response(decode(Object.values(liveManifest.pages)[0]), { headers: { "Content-Type": "application/octet-stream" } });
+      }
+      if (followed && path.endsWith("slam_scene/synthetic")) {
+        return new Response(decode(liveManifest.manifest), {
+          headers: { "Content-Type": "application/vnd.matic.slam-manifest", "X-Matic-Revision": "7" },
         });
       }
       if (/slam_scene\/synthetic(?:-b)?$/.test(path)) {
@@ -546,16 +576,18 @@ export async function installPanelFixture(page, {
         activePopstateListeners: window.__panelFixturePopstateCount(),
         pendingHistoryScenes: pendingHistoryScenes.length,
         planReads,
-        ...(sceneDeltaPayload ? { deltaReads, deltaPayloadResponses, deltaNoChangeResponses } : {}),
+        ...(followed ? { followReads, followUpdates, followNoChange } : {}),
         serviceCalls: serviceCalls.length,
       }),
     };
   }, {
     module: modulePath,
     scenes: sceneBytes(scenePoint, sceneRooms),
+    liveManifest: sceneManifest(scenePoint, sceneRooms),
     plans: initialPlanCatalog,
     areas: initialAreasCatalog,
-    sceneDeltaPayload,
+    followed: followLiveScene || sceneUpdate !== null,
+    sceneUpdate,
     posePosition,
     initialCatalogEntries,
     initialRobotStates,

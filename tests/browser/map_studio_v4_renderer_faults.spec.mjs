@@ -1,19 +1,8 @@
-import { deflateSync } from "node:zlib";
 import { expect, test } from "@playwright/test";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
-function invalidCompressedDelta() {
-  const compressed = Buffer.from([0xff, 0x00, 0xff]);
-  const header = Buffer.alloc(36);
-  header.write("MATICDLT", 0, "binary");
-  header.writeUInt16LE(1, 8);
-  header.writeUInt16LE(1, 10);
-  header.writeBigUInt64LE(7n, 12);
-  header.writeBigUInt64LE(8n, 20);
-  header.writeUInt32LE(24, 28);
-  header.writeUInt32LE(compressed.byteLength, 32);
-  return [...Buffer.concat([header, compressed])];
-}
+// A live manifest whose header does not parse.
+const malformedManifest = () => [...Buffer.from("MATICMX\0\x01\x00\x1c\x00")];
 
 const ROOM_CATALOG = {
   rooms: [{ room_id: "kitchen", name: "Kitchen", boundary: [[0, 0], [6, 0], [6, 5], [0, 5]] }],
@@ -213,43 +202,32 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   });
 });
 
-test("packaged panel contains a malformed compressed delta and returns to a coherent admitted scene @safety", async ({ page, browserName }) => {
-  const fixture = await installPanelFixture(page, {
+test("packaged panel contains a malformed scene update and returns to a coherent admitted scene @safety", async ({ page }) => {
+  await installPanelFixture(page, {
     moduleSource: "packaged",
-    sceneDeltaPayload: invalidCompressedDelta(),
+    sceneUpdate: malformedManifest(),
   });
-  const decompression = await page.evaluate(async (compressed) => {
-    if (typeof DecompressionStream !== "function") return { supported: false, bytes: [] };
-    const stream = new Blob([Uint8Array.from(compressed)]).stream().pipeThrough(new DecompressionStream("deflate"));
-    return { supported: true, bytes: [...new Uint8Array(await new Response(stream).arrayBuffer())] };
-  }, [...deflateSync(Buffer.from([11, 23, 42]))]);
-  if (browserName === "chromium") {
-    expect(decompression).toEqual({ supported: true, bytes: [11, 23, 42] });
-  } else {
-    test.skip(!decompression.supported, `${browserName} does not expose DecompressionStream`);
-    expect(decompression.bytes).toEqual([11, 23, 42]);
-  }
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
-    window.__deltaFaultPanel = panel;
+    window.__updateFaultPanel = panel;
     document.body.append(panel);
   });
 
   await expect.poll(() => page.evaluate(() =>
-    window.__deltaFaultPanel.getWorkspaceSnapshot().resources.scene.status,
+    window.__updateFaultPanel.getWorkspaceSnapshot().resources.scene.status,
   )).toBe("ready");
-  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().deltaReads)).toBeGreaterThan(0);
-  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().deltaPayloadResponses)).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().deltaNoChangeResponses)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().followReads)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().followUpdates)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().followNoChange)).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => {
-    const state = window.__deltaFaultPanel.getWorkspaceSnapshot();
+    const state = window.__updateFaultPanel.getWorkspaceSnapshot();
     return state.resources.catalog.status === "ready"
       && state.resources.scene.status === "ready"
       && state.coherence === "current";
   })).toBe(true);
 
   const admitted = await page.evaluate(() => {
-    const state = window.__deltaFaultPanel.getWorkspaceSnapshot();
+    const state = window.__updateFaultPanel.getWorkspaceSnapshot();
     return {
       available: state.map.available,
       revision: state.resources.scene.value.revision,

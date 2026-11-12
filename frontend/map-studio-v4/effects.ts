@@ -236,7 +236,7 @@ export class EffectController {
       pageActive: () => this.#pageLifecycle.active,
       projection: () => this.#projection,
       recoveryPending: (entry) => this.#spatialResources.recoveryPending(entry),
-      ownsLiveDelta: (entry) => this.#spatialResources.ownsLiveDelta(entry),
+      ownsLiveScene: (entry) => this.#spatialResources.ownsLiveScene(entry),
       admitSpatial: (entry, previous, force, preserve, recovering) => {
         if (!this.#store.value.comparisonActive) this.#spatialResources.admitCatalog(entry, previous, force, preserve, recovering);
       },
@@ -531,7 +531,7 @@ export class EffectController {
         // Revoke admission before cancellation: an aborted transport may still
         // settle, but none of its resources belong to the offline workspace.
         this.#store.dispatch({ type: "result", generation: this.#coherence.invalidate() });
-        this.#spatialResources.stopDeltaStream();
+        this.#spatialResources.stopSceneFollow();
         this.#spatialResources.resetIdentity();
       }
       this.#stopPolling();
@@ -645,7 +645,7 @@ export class EffectController {
     this.#spatialResources.clearRecovery();
     this.#motion.invalidate();
     const generation = this.#coherence.invalidate();
-    this.#spatialResources.stopDeltaStream();
+    this.#spatialResources.stopSceneFollow();
     this.#spatialResources.resetIdentity();
     this.#abortResources();
     const state = this.#store.value;

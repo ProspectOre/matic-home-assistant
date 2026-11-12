@@ -15,7 +15,6 @@ from .http import (
     FLOOR_LAYERS_API_URL,
     WIFI_HEATMAP_API_URL,
     areas_api_url,
-    delta_api_url,
     history_api_url,
     plans_api_url,
     scene_api_url,
@@ -181,7 +180,6 @@ def catalog_entry_projection(
         # present. Keep legacy saved opt-in values from changing the projection.
         "live_workspace_transport_enabled": True,
         "scene_url": scene_api_url(entry_id),
-        "delta_url": delta_api_url(entry_id),
         "history_url": history_api_url(entry_id),
         "areas_url": areas_api_url(entry_id),
         "plans_url": plans_api_url(entry_id),

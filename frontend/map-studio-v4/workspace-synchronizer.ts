@@ -364,7 +364,7 @@ export class WorkspaceSynchronizer {
     }
     if (resources.has("scene")) {
       // A same-generation scene invalidation is a content hint, not a new
-      // floor/session proof. An active delta stream already owns incremental
+      // floor/session proof. An active scene follower already owns incremental
       // admission; without one, the ordinary five-second catalog poll is the
       // bounded fallback. Never turn each content hint into a forced catalog.
       resources.delete("scene");
@@ -383,8 +383,8 @@ export class WorkspaceSynchronizer {
     if (!currentEntry
       || entryCoherenceIdentity(currentEntry) !== entryCoherenceIdentity(projectedEntry)) return false;
     // Snapshot projection can carry a newer pixel revision than the scene
-    // currently admitted by the delta stream. Keep the visible entry aligned
-    // with its admitted scene until sceneDelta validates and advances it.
+    // currently admitted by the scene follower. Keep the visible entry aligned
+    // with its admitted scene until the follower validates and advances it.
     const admittedEntry = projectedEntry.mapRevision === currentEntry.mapRevision
       ? projectedEntry
       : { ...projectedEntry, mapRevision: currentEntry.mapRevision };

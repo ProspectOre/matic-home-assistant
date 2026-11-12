@@ -16,7 +16,7 @@ from typing import Any
 
 from google.protobuf.message import DecodeError
 
-from . import slam_delta
+from .client import slam_scene
 from .client.slam_scene import MAX_COVERAGE_MASK_BYTES, parse_slam_scene_header
 
 # Canonical record/archive limits. The state store imports these through this
@@ -446,9 +446,9 @@ def _valid_mission_token(value: object) -> bool:
 
 def _decompress_scene(compressed: bytes) -> bytes:
     decompressor = zlib.decompressobj()
-    scene = decompressor.decompress(compressed, slam_delta.MAX_SCENE_BYTES + 1)
+    scene = decompressor.decompress(compressed, slam_scene.MAX_SCENE_BYTES + 1)
     if (
-        len(scene) > slam_delta.MAX_SCENE_BYTES
+        len(scene) > slam_scene.MAX_SCENE_BYTES
         or decompressor.unconsumed_tail
         or decompressor.unused_data
         or not decompressor.eof

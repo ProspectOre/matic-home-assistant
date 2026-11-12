@@ -8,6 +8,7 @@ import json
 import math
 import struct
 import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,7 +34,34 @@ MAX_SCENE_SPAN = 65_536
 MAX_SCENE_RASTER_CELLS = 4 * 1024 * 1024
 MAX_SCENE_METADATA_BYTES = 1024 * 1024
 MAX_COVERAGE_MASK_BYTES = 384 * 1024
+MAX_SCENE_BYTES = 16 * 1024 * 1024
+MANIFEST_MAGIC = b"MATICMF\x00"
+MANIFEST_VERSION = 1
+SCENE_PAGE_ID_BYTES = 12
 _SCENE_HEADER = struct.Struct("<8sHHIII")
+_MANIFEST_HEADER = struct.Struct("<8sHHII")
+_MANIFEST_PAGE = struct.Struct(f"<iiII{SCENE_PAGE_ID_BYTES}s")
+_SURFACE_FLOOR_LEVEL = 7
+_SCENE_POINT = np.dtype(
+    [
+        ("x", "<u2"),
+        ("y", "<u2"),
+        ("z", "u1"),
+        ("red", "u1"),
+        ("green", "u1"),
+        ("blue", "u1"),
+    ]
+)
+_PAGE_POINT = np.dtype(
+    [
+        ("x", "u1"),
+        ("y", "u1"),
+        ("z", "u1"),
+        ("red", "u1"),
+        ("green", "u1"),
+        ("blue", "u1"),
+    ]
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,30 +125,42 @@ def _room_floor_geometry(
     )
 
 
-def encode_slam_scene(
-    tiles: tuple[SlamTile, ...],
-    *,
-    floor_plan: FloorPlan | None = None,
-    max_points: int = MAX_SCENE_POINTS,
-    structure_tiles: tuple[SlamStructureTile, ...] | None = None,
-) -> bytes:
-    """Encode the private color point cloud for the local WebGL studio.
+@dataclass(frozen=True, slots=True)
+class ScenePage:
+    """The sampled points of one map page, addressed by their content.
 
-    Positions use two unsigned 16-bit map-local coordinates, one unsigned
-    8-bit height, and RGB bytes. The compact fixed stride avoids transferring
-    JSON for more than a million points and is decoded without copies by
-    WebGL. Deterministic sampling keeps pathological maps bounded.
+    ``points`` holds the floor points, then the surface points, in page-local
+    cells: x, y, height, red, green and blue, one byte each.
     """
+
+    floor_points: int
+    surface_points: int
+    points: bytes
+    page_id: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class SceneFrame:
+    """The cell rectangle that bounds every page of a scene."""
+
+    origin_x: int
+    origin_y: int
+    span_x: int
+    span_y: int
+
+
+def scene_frame(
+    tiles: Sequence[SlamTile], max_points: int = MAX_SCENE_POINTS
+) -> SceneFrame:
+    """Return the bounds of a scene, rejecting one the renderer cannot hold."""
     if not tiles:
         raise DecodeError("no photorealistic SLAM tiles are cached")
     if len(tiles) > MAX_SLAM_TILES or max_points < 1:
         raise DecodeError("invalid photorealistic SLAM scene bounds")
     min_cell_x = min(tile.page_x * TILE_SIDE for tile in tiles)
     min_cell_y = min(tile.page_y * TILE_SIDE for tile in tiles)
-    max_cell_x = max(tile.page_x * TILE_SIDE + TILE_SIDE - 1 for tile in tiles)
-    max_cell_y = max(tile.page_y * TILE_SIDE + TILE_SIDE - 1 for tile in tiles)
-    span_x = max_cell_x - min_cell_x + 1
-    span_y = max_cell_y - min_cell_y + 1
+    span_x = max(tile.page_x * TILE_SIDE for tile in tiles) + TILE_SIDE - min_cell_x
+    span_y = max(tile.page_y * TILE_SIDE for tile in tiles) + TILE_SIDE - min_cell_y
     if (
         span_x > MAX_SCENE_SPAN
         or span_y > MAX_SCENE_SPAN
@@ -129,105 +169,116 @@ def encode_slam_scene(
         raise DecodeError(
             "photorealistic SLAM scene is too wide or raster is too large"
         )
+    return SceneFrame(min_cell_x, min_cell_y, span_x, span_y)
 
-    floor_counts: list[int] = []
-    surface_counts: list[int] = []
-    for tile in tiles:
-        floor = np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
-            TILE_SIDE, TILE_SIDE, 4
-        )
-        floor_counts.append(int(np.count_nonzero(floor[:, :, 3])))
-        surfaces = np.unpackbits(
-            np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
-        ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
-        surface_counts.append(int(np.count_nonzero(surfaces[:, :, 7:])))
-    total_points = sum(floor_counts) + sum(surface_counts)
-    if total_points == 0:
-        raise DecodeError("photorealistic SLAM scene has no visible content")
-    sample_step = max(1, math.ceil(total_points / max_points))
 
-    point_dtype = np.dtype(
-        [
-            ("x", "<u2"),
-            ("y", "<u2"),
-            ("z", "u1"),
-            ("red", "u1"),
-            ("green", "u1"),
-            ("blue", "u1"),
-        ]
+def _floor(tile: SlamTile) -> np.ndarray:
+    return np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
+        TILE_SIDE, TILE_SIDE, 4
     )
-    floor_chunks: list[bytes] = []
-    surface_chunks: list[bytes] = []
-    floor_occupancy = np.zeros((span_y, span_x), dtype=bool)
-    floor_point_count = 0
-    surface_point_count = 0
-    global_ordinal = 0
 
-    for tile, count in zip(tiles, floor_counts, strict=True):
-        floor = np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
-            TILE_SIDE, TILE_SIDE, 4
-        )
-        offset_x = tile.page_x * TILE_SIDE - min_cell_x
-        offset_y = tile.page_y * TILE_SIDE - min_cell_y
-        floor_occupancy[
-            offset_y : offset_y + TILE_SIDE,
-            offset_x : offset_x + TILE_SIDE,
-        ] |= floor[:, :, 3] != 0
-        local_y, local_x = np.nonzero(floor[:, :, 3])
-        keep = (global_ordinal + np.arange(count)) % sample_step == 0
-        global_ordinal += count
-        local_x = local_x[keep]
-        local_y = local_y[keep]
-        colors = floor[:, :, :3][floor[:, :, 3] != 0][keep]
-        points = np.empty(len(local_x), dtype=point_dtype)
-        points["x"] = tile.page_x * TILE_SIDE + local_x - min_cell_x
-        points["y"] = tile.page_y * TILE_SIDE + local_y - min_cell_y
-        points["z"] = 0
-        points["red"] = colors[:, 0]
-        points["green"] = colors[:, 1]
-        points["blue"] = colors[:, 2]
-        floor_chunks.append(points.tobytes())
-        floor_point_count += len(points)
 
-    for tile, count in zip(tiles, surface_counts, strict=True):
-        surfaces = np.unpackbits(
-            np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
-        ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
-        local_x, local_y, levels = np.nonzero(surfaces)
-        if tile.rgb_data:
-            colors = np.frombuffer(tile.rgb_data, dtype=np.uint8).reshape(-1, 3)
-        else:
-            colors = np.full((len(levels), 3), (96, 112, 128), dtype=np.uint8)
-        visible = levels >= 7
-        local_x = local_x[visible]
-        local_y = local_y[visible]
-        colors = colors[visible]
-        levels = levels[visible] - 7
-        keep = (global_ordinal + np.arange(count)) % sample_step == 0
-        global_ordinal += count
-        local_x = local_x[keep]
-        local_y = local_y[keep]
-        colors = colors[keep]
-        levels = levels[keep]
-        points = np.empty(len(local_x), dtype=point_dtype)
-        points["x"] = tile.page_x * TILE_SIDE + local_x - min_cell_x
-        points["y"] = tile.page_y * TILE_SIDE + local_y - min_cell_y
-        points["z"] = levels
-        points["red"] = colors[:, 0]
-        points["green"] = colors[:, 1]
-        points["blue"] = colors[:, 2]
-        surface_chunks.append(points.tobytes())
-        surface_point_count += len(points)
+def _surfaces(tile: SlamTile) -> np.ndarray:
+    return np.unpackbits(
+        np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
+    ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
 
+
+def scene_point_count(tile: SlamTile) -> int:
+    """Return how many points one page shows before sampling."""
+    return int(np.count_nonzero(_floor(tile)[:, :, 3])) + int(
+        np.count_nonzero(_surfaces(tile)[:, :, _SURFACE_FLOOR_LEVEL:])
+    )
+
+
+def scene_sample_step(counts: Sequence[int], max_points: int = MAX_SCENE_POINTS) -> int:
+    """Return the step that keeps every ``step``-th point of each page in budget.
+
+    The step is the one a single sampled sequence of every point would use,
+    raised only when rounding up on every page would pass ``max_points``.
+    """
+    total = sum(counts)
+    if total == 0:
+        raise DecodeError("photorealistic SLAM scene has no visible content")
+    step = max(1, math.ceil(total / max_points))
+    while sum(-(-count // step) for count in counts) > max_points:
+        step += 1
+    return step
+
+
+def encode_scene_page(tile: SlamTile, sample_step: int) -> ScenePage:
+    """Sample one page; its ordinal restarts here, so it depends on nothing else."""
+    floor = _floor(tile)
+    alpha = floor[:, :, 3] != 0
+    floor_y, floor_x = np.nonzero(alpha)
+    floor_colors = floor[:, :, :3][alpha]
+    surface_x, surface_y, levels = np.nonzero(_surfaces(tile))
+    if tile.rgb_data:
+        surface_colors = np.frombuffer(tile.rgb_data, dtype=np.uint8).reshape(-1, 3)
+    else:
+        surface_colors = np.full((len(levels), 3), (96, 112, 128), dtype=np.uint8)
+    visible = levels >= _SURFACE_FLOOR_LEVEL
+    keep = np.arange(len(floor_x) + np.count_nonzero(visible)) % sample_step == 0
+    floor_keep, surface_keep = keep[: len(floor_x)], keep[len(floor_x) :]
+    floor_points = _page_points(
+        floor_x[floor_keep], floor_y[floor_keep], 0, floor_colors[floor_keep]
+    )
+    surface_points = _page_points(
+        surface_x[visible][surface_keep],
+        surface_y[visible][surface_keep],
+        levels[visible][surface_keep] - _SURFACE_FLOOR_LEVEL,
+        surface_colors[visible][surface_keep],
+    )
+    points = floor_points.tobytes() + surface_points.tobytes()
+    digest = hashlib.sha256(len(floor_points).to_bytes(4, "little"))
+    digest.update(points)
+    return ScenePage(
+        len(floor_points),
+        len(surface_points),
+        points,
+        digest.digest()[:SCENE_PAGE_ID_BYTES],
+    )
+
+
+def _page_points(
+    x: np.ndarray, y: np.ndarray, z: np.ndarray | int, colors: np.ndarray
+) -> np.ndarray:
+    points = np.empty(len(x), dtype=_PAGE_POINT)
+    points["x"] = x
+    points["y"] = y
+    points["z"] = z
+    points["red"] = colors[:, 0]
+    points["green"] = colors[:, 1]
+    points["blue"] = colors[:, 2]
+    return points
+
+
+def scene_metadata(
+    tiles: Sequence[SlamTile],
+    frame: SceneFrame,
+    sample_step: int,
+    *,
+    floor_plan: FloorPlan | None = None,
+    structure_tiles: tuple[SlamStructureTile, ...] | None = None,
+) -> bytes:
+    """Encode the scene's frame, sampling, rooms and optional coverage."""
     rooms: list[dict[str, object]] = []
     if floor_plan is not None:
+        floor_occupancy = np.zeros((frame.span_y, frame.span_x), dtype=bool)
+        for tile in tiles:
+            offset_x = tile.page_x * TILE_SIDE - frame.origin_x
+            offset_y = tile.page_y * TILE_SIDE - frame.origin_y
+            floor_occupancy[
+                offset_y : offset_y + TILE_SIDE,
+                offset_x : offset_x + TILE_SIDE,
+            ] |= _floor(tile)[:, :, 3] != 0
         for room in floor_plan.rooms:
             if not room.boundary:
                 continue
             boundary = [
                 [
-                    x / VOXEL_SCALE_METERS - min_cell_x,
-                    y / VOXEL_SCALE_METERS - min_cell_y,
+                    x / VOXEL_SCALE_METERS - frame.origin_x,
+                    y / VOXEL_SCALE_METERS - frame.origin_y,
                 ]
                 for x, y in room.boundary
             ]
@@ -254,14 +305,14 @@ def encode_slam_scene(
             )
     metadata_value: dict[str, object] = {
         "meters_per_cell": VOXEL_SCALE_METERS,
-        "origin_cells": [min_cell_x, min_cell_y],
-        "span_cells": [span_x, span_y],
+        "origin_cells": [frame.origin_x, frame.origin_y],
+        "span_cells": [frame.span_x, frame.span_y],
         "sample_step": sample_step,
         "rooms": rooms,
     }
     if structure_tiles is not None:
         coverage = _coverage_metadata(
-            structure_tiles, min_cell_x, min_cell_y, span_x, span_y
+            structure_tiles, frame.origin_x, frame.origin_y, frame.span_x, frame.span_y
         )
         if coverage is not None:
             metadata_value["coverage"] = coverage
@@ -295,15 +346,85 @@ def encode_slam_scene(
             raise DecodeError(
                 "photorealistic SLAM scene metadata exceeds its byte limit"
             )
+    return metadata
+
+
+def encode_scene_manifest(
+    metadata: bytes, tiles: Sequence[SlamTile], pages: Sequence[ScenePage]
+) -> bytes:
+    """Encode the scene metadata and, in scene order, each page's address."""
+    return b"".join(
+        (
+            _MANIFEST_HEADER.pack(
+                MANIFEST_MAGIC,
+                MANIFEST_VERSION,
+                _MANIFEST_PAGE.size,
+                len(metadata),
+                len(pages),
+            ),
+            metadata,
+            *(
+                _MANIFEST_PAGE.pack(
+                    tile.page_x,
+                    tile.page_y,
+                    page.floor_points,
+                    page.surface_points,
+                    page.page_id,
+                )
+                for tile, page in zip(tiles, pages, strict=True)
+            ),
+        )
+    )
+
+
+def encode_slam_scene(
+    tiles: tuple[SlamTile, ...],
+    *,
+    floor_plan: FloorPlan | None = None,
+    max_points: int = MAX_SCENE_POINTS,
+    structure_tiles: tuple[SlamStructureTile, ...] | None = None,
+) -> bytes:
+    """Encode one self-contained point cloud, the form saved maps keep.
+
+    Positions use two unsigned 16-bit map-local coordinates, one unsigned
+    8-bit height, and RGB bytes: all floor points, then all surface points,
+    each in page order. It is the buffer Matic Map assembles from a live
+    manifest and its pages.
+    """
+    frame = scene_frame(tiles, max_points)
+    sample_step = scene_sample_step(tuple(map(scene_point_count, tiles)), max_points)
+    pages = [encode_scene_page(tile, sample_step) for tile in tiles]
+    metadata = scene_metadata(
+        tiles,
+        frame,
+        sample_step,
+        floor_plan=floor_plan,
+        structure_tiles=structure_tiles,
+    )
+    floors: list[bytes] = []
+    surfaces: list[bytes] = []
+    for tile, page in zip(tiles, pages, strict=True):
+        local = np.frombuffer(page.points, dtype=_PAGE_POINT)
+        points = np.empty(len(local), dtype=_SCENE_POINT)
+        points["x"] = local["x"].astype(np.uint16) + (
+            tile.page_x * TILE_SIDE - frame.origin_x
+        )
+        points["y"] = local["y"].astype(np.uint16) + (
+            tile.page_y * TILE_SIDE - frame.origin_y
+        )
+        for channel in ("z", "red", "green", "blue"):
+            points[channel] = local[channel]
+        floors.append(points[: page.floor_points].tobytes())
+        surfaces.append(points[page.floor_points :].tobytes())
     header = _SCENE_HEADER.pack(
         SCENE_MAGIC,
         SCENE_VERSION,
         SCENE_POINT_STRIDE,
         len(metadata),
-        floor_point_count,
-        surface_point_count,
+        sum(page.floor_points for page in pages),
+        sum(page.surface_points for page in pages),
     )
-    return b"".join((header, metadata, *floor_chunks, *surface_chunks))
+    return b"".join((header, metadata, *floors, *surfaces))
 
 
 def _coverage_metadata(

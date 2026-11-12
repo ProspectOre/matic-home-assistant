@@ -1,10 +1,10 @@
 import type { SceneModel } from "./backend-contracts";
-import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
+import { SCENE_DIRTY_BLOCK_BYTES } from "./backend-contracts";
 
 const GPU_UPLOAD_CHUNK_BYTES = 512 * 1024;
 const GPU_UPLOAD_FAIR_SHARE_BYTES = GPU_UPLOAD_CHUNK_BYTES / 2;
-const GPU_DELTA_BLOCK_BYTES = SCENE_DELTA_DIRTY_BLOCK_BYTES;
-const GPU_DELTA_MAX_BLOCKS = 256;
+const GPU_DIRTY_BLOCK_BYTES = SCENE_DIRTY_BLOCK_BYTES;
+const GPU_DIRTY_MAX_BLOCKS = 256;
 
 const sameSceneTransform = (left: SceneModel, right: SceneModel): boolean =>
   left.metadata.metersPerCell === right.metadata.metersPerCell
@@ -24,9 +24,9 @@ export const samePointLayout = (left: SceneModel, right: SceneModel): boolean =>
 export const validDeltaBlocks = (scene: SceneModel, baseRevision: number): readonly number[] | null => {
   const hint = scene.deltaHint;
   if (!hint || hint.baseRevision !== baseRevision || scene.revision <= baseRevision
-    || hint.blockBytes !== GPU_DELTA_BLOCK_BYTES
-    || hint.dirtyBlocks.length > GPU_DELTA_MAX_BLOCKS) return null;
-  const blockCount = Math.ceil(scene.total * 8 / GPU_DELTA_BLOCK_BYTES);
+    || hint.blockBytes !== GPU_DIRTY_BLOCK_BYTES
+    || hint.dirtyBlocks.length > GPU_DIRTY_MAX_BLOCKS) return null;
+  const blockCount = Math.ceil(scene.total * 8 / GPU_DIRTY_BLOCK_BYTES);
   let previous = -1;
   for (const block of hint.dirtyBlocks) {
     if (!Number.isSafeInteger(block) || block <= previous || block >= blockCount) return null;
@@ -56,7 +56,7 @@ const hasEligibleDirtyBlock = (
   const first = blocks[0];
   if (first === undefined) return false;
   // Blocks are kept ascending, so eligibility is determined by the first one.
-  return Math.min(totalBytes, (first + 1) * GPU_DELTA_BLOCK_BYTES) <= frontierBytes;
+  return Math.min(totalBytes, (first + 1) * GPU_DIRTY_BLOCK_BYTES) <= frontierBytes;
 };
 
 export interface GpuUpload {
@@ -84,7 +84,7 @@ export const advanceUpload = (
 ): boolean => {
   const combined = new Set(upload.transitionBlocks);
   for (const block of dirtyBlocks) combined.add(block);
-  if (combined.size > GPU_DELTA_MAX_BLOCKS) return false;
+  if (combined.size > GPU_DIRTY_MAX_BLOCKS) return false;
 
   upload.scene = scene;
   upload.revision = scene.revision;
@@ -96,7 +96,7 @@ export const advanceUpload = (
       insertSortedUniqueBlock(upload.dirtyBlocks, block);
     }
   } else {
-    const uploadedBlocks = Math.ceil(upload.frontierBytes / GPU_DELTA_BLOCK_BYTES);
+    const uploadedBlocks = Math.ceil(upload.frontierBytes / GPU_DIRTY_BLOCK_BYTES);
     for (const block of dirtyBlocks) {
       if (block < uploadedBlocks) insertSortedUniqueBlock(upload.dirtyBlocks, block);
     }
@@ -343,8 +343,8 @@ export class RendererGl {
     let uploaded = 0;
     for (let index = 0; index < upload.dirtyBlocks.length;) {
       const block = upload.dirtyBlocks[index]!;
-      const start = block * GPU_DELTA_BLOCK_BYTES;
-      const end = Math.min(totalBytes, start + GPU_DELTA_BLOCK_BYTES);
+      const start = block * GPU_DIRTY_BLOCK_BYTES;
+      const end = Math.min(totalBytes, start + GPU_DIRTY_BLOCK_BYTES);
       const length = end - start;
       if (end > upload.frontierBytes) break;
       if (uploaded + length > maximumBytes) {

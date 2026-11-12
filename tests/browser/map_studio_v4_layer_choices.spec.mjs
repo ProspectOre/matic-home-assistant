@@ -93,7 +93,7 @@ test("the layer toggles and key fit a phone", async ({ page }) => {
 });
 
 const entry = (id, key, extra = {}) => ({
-  entry_id: id, scene_url: "/api/matic_robot/slam_scene/synthetic", delta_url: null,
+  entry_id: id, scene_url: "/api/matic_robot/slam_scene/synthetic",
   history_url: `/api/matic_robot/slam_history/${id}`, areas_url: `/api/matic_robot/areas/${id}`,
   plans_url: `/api/matic_robot/plans/${id}`, map_revision: 7, map_floor_coherent: true, map_session_verified: true,
   map_session_key: key.repeat(64), map_complete: true, map_truncated: false, selected_floor_ordinal: 1, map_floor_ordinal: 1,

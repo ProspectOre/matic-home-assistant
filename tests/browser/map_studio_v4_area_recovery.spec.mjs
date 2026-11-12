@@ -22,7 +22,7 @@ async function load(page, { status = 409, conflict = "map-rechecking", failures 
   await page.evaluate(async ({ status, conflict, failures }) => {
     const m = await import("/area-recovery-test.js");
     const initial = m.createGalleryState("ready");
-    const entry = { ...initial.resources.entry, deltaUrl: null };
+    const entry = { ...initial.resources.entry };
     const store = new m.WorkspaceStore();
     store.replace({
       ...initial,

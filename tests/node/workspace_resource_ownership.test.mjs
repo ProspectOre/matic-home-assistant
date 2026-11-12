@@ -70,7 +70,7 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 const entryFor = (overrides = {}) => ({
-  entryId: "robot-a", sceneUrl: "/scene", deltaUrl: null, historyUrl: "/history",
+  entryId: "robot-a", sceneUrl: "/scene", historyUrl: "/history",
   areasUrl: "/areas", plansUrl: "/plans", wifiHeatmapUrl: null, floorTypesUrl: null,
   mapRevision: 10, mapSceneEpoch: "epoch-a", mapFloorCoherent: true,
   mapSessionVerified: true, mapSessionKey: "session-a", selectedFloorOrdinal: 1,
@@ -103,7 +103,7 @@ const catalogOwner = (f, read, overrides = {}) => {
   const owner = new CatalogResources(f.store, { catalog: read }, f.coherence, f.requests, {
     ...f.callbacks,
     recoveryPending: () => false,
-    ownsLiveDelta: () => false,
+    ownsLiveScene: () => false,
     admitSpatial: (...args) => admissions.push(args),
     syncWorkspace() {}, clearPrivate() {}, resumePins() {},
     ...overrides,
@@ -366,7 +366,7 @@ test("catalog area reads wait for an area workflow or an area pin", async () => 
   }, f.coherence, f.requests, {
     ...f.callbacks,
     recoveryPending: () => false,
-    ownsLiveDelta: () => false,
+    ownsLiveScene: () => false,
     admitSpatial() {},
     syncWorkspace() {},
     clearPrivate() {},

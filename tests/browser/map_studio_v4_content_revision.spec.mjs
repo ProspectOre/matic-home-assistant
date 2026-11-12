@@ -24,7 +24,7 @@ test("same-frame catalog revisions preserve drafts while stale scene stamps and 
     const m = await import("/content-revision-test.js");
     const initial = m.createGalleryState("ready");
     const state = window.__contentRevision = {
-      entry: { ...initial.resources.entry, deltaUrl: null },
+      entry: { ...initial.resources.entry },
       sceneCalls: 0,
       sceneSignals: [],
       releaseRevisionEight: null,

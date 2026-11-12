@@ -131,7 +131,7 @@ test("removed pin IDs are reconciled without disturbing surviving shortcut order
 });
 
 test("entry change hides the previous entry choices until the new owner's pins settle", async ({ page }) => {
-  const a = { entry_id: "synthetic-entry", scene_url: "/api/matic_robot/slam_scene/synthetic", delta_url: null,
+  const a = { entry_id: "synthetic-entry", scene_url: "/api/matic_robot/slam_scene/synthetic",
     history_url: "/api/matic_robot/slam_history/synthetic",
     areas_url: "/api/matic_robot/areas/synthetic", plans_url: "/api/matic_robot/plans/synthetic", map_revision: 7,
     map_floor_coherent: true, map_session_verified: true, map_session_key: "a".repeat(64), map_complete: true,
@@ -213,7 +213,7 @@ test("same entry recovery restores the saved home shortcuts without writing user
   // The same entry and catalog return without reloading the page.
   await page.evaluate(() => {
     const entry = {
-      entry_id: "synthetic-entry", scene_url: "/api/matic_robot/slam_scene/synthetic", delta_url: null,
+      entry_id: "synthetic-entry", scene_url: "/api/matic_robot/slam_scene/synthetic",
       history_url: "/api/matic_robot/slam_history/synthetic",
       areas_url: "/api/matic_robot/areas/synthetic", plans_url: "/api/matic_robot/plans/synthetic",
       map_revision: 7, map_floor_coherent: true, map_session_verified: true, map_session_key: "a".repeat(64),

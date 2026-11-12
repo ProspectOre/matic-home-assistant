@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
-import { deflateSync } from "node:zlib";
+import { manifestBytes, pageBytes, pageId, sceneMetadata } from "./scene_manifest_fixture.mjs";
 
 const modulePath = "scene-tile-index.js";
 
@@ -34,17 +34,6 @@ function scene(points, floorCount, surfaceCount, span = [128, 128]) {
     bytes[offset + index * 8 + 7] = b;
   });
   return bytes;
-}
-
-function delta(base, target, baseRevision = 10, revision = 11) {
-  const length = Math.max(base.length, target.length), xor = Buffer.alloc(length);
-  for (let i = 0; i < length; i += 1) xor[i] = (base[i] ?? 0) ^ (target[i] ?? 0);
-  const compressed = deflateSync(xor), payload = Buffer.alloc(36 + compressed.length);
-  payload.write("MATICDLT", 0, "binary"); payload.writeUInt16LE(1, 8); payload.writeUInt16LE(1, 10);
-  payload.writeBigUInt64LE(BigInt(baseRevision), 12); payload.writeBigUInt64LE(BigInt(revision), 20);
-  payload.writeUInt32LE(target.length, 28); payload.writeUInt32LE(compressed.length, 32);
-  compressed.copy(payload, 36);
-  return payload;
 }
 
 const b64 = value => value.toString("base64");
@@ -165,32 +154,38 @@ test("@safety maximum admitted point count still produces only a bounded tile in
     floorRuns: 1, indexBytes: 20, sceneBytes: expect.any(Number) });
 });
 
-test("@safety delta relocation rebuilds worker and fallback tile runs from the changed coordinates", async ({ page }) => {
-  const base = scene([[1, 1, 0], [2, 1, 0], [33, 1, 1]], 3, 0);
-  const target = scene([[1, 1, 0], [65, 1, 7], [33, 1, 1]], 3, 0);
-  const payload = delta(base, target);
-  const decode = async (targetPage, fallback) => {
+test("@safety page relocation rebuilds worker and fallback tile runs from the changed coordinates", async ({ page }) => {
+  const metadata = sceneMetadata({ span: [128, 128] });
+  const point = (x, z) => [x, 1, z, 100, 110, 120];
+  const kept = { x: 1, y: 0, id: pageId(2), floor: 1, points: [point(1, 1)] };
+  const base = [{ x: 0, y: 0, id: pageId(1), floor: 2, points: [point(1, 0), point(2, 0)] }, kept];
+  const target = [{ x: 0, y: 0, id: pageId(3), floor: 1, points: [point(1, 0)] },
+    { x: 2, y: 0, id: pageId(4), floor: 1, points: [point(1, 7)] }, kept];
+  const encoded = pages => ({ manifest: b64(manifestBytes(metadata, pages)),
+    ids: pages.map(value => value.id), body: b64(Buffer.concat(pages.map(pageBytes))) });
+  const assemble = async (targetPage, fallback) => {
     await loadParser(targetPage, fallback);
-    return targetPage.evaluate(async ({ path, base64, delta64 }) => {
+    return targetPage.evaluate(async ({ path, before, after }) => {
       const { SceneParser } = await import(path);
       const parser = new SceneParser();
       try {
         const from64 = value => Uint8Array.from(atob(value), char => char.charCodeAt(0)).buffer;
-        const parsed = await parser.parse(from64(base64));
-        const decoded = await parser.decodeDelta(from64(delta64), {
-          ...parsed, revision: 10, etag: "base", source: "live",
-        });
-        return { revision: decoded.revision, total: decoded.parsed.total,
-          floorRuns: decoded.parsed.tileIndex?.floorRuns ?? null,
-          runs: decoded.parsed.tileIndex ? Array.from(decoded.parsed.tileIndex.runs) : null };
+        const first = await parser.assemble(from64(before.manifest),
+          [{ ids: before.ids, body: from64(before.body) }], null);
+        const missing = after.ids.filter(id => !before.ids.includes(id));
+        const missingBody = new Uint8Array(from64(after.body)).slice(0, missing.length * 6).buffer;
+        const { parsed } = await parser.assemble(from64(after.manifest), [{ ids: missing, body: missingBody }],
+          { ...first.parsed, manifest: from64(before.manifest), revision: 10, etag: "base", source: "live" });
+        return { total: parsed.total, floorRuns: parsed.tileIndex?.floorRuns ?? null,
+          runs: parsed.tileIndex ? Array.from(parsed.tileIndex.runs) : null };
       } finally { parser.dispose(); }
-    }, { path: `/${modulePath}`, base64: b64(base), delta64: b64(payload) });
+    }, { path: `/${modulePath}`, before: encoded(base), after: encoded(target) });
   };
-  const worker = await decode(page, false);
+  const worker = await assemble(page, false);
   const fallbackPage = await page.context().newPage();
-  const fallback = await decode(fallbackPage, true);
+  const fallback = await assemble(fallbackPage, true);
   await fallbackPage.close();
-  const expected = { revision: 11, total: 3, floorRuns: 3, runs: [
+  const expected = { total: 3, floorRuns: 3, runs: [
     0, 1, 0, 0, 0, 1, 2, 2, 0, 7, 2, 3, 1, 0, 1,
   ] };
   expect(worker).toEqual(expected);

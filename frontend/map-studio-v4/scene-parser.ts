@@ -1,19 +1,20 @@
 import {
   ContractError,
-  DELTA_HEADER_BYTES,
-  DELTA_MAX_BYTES,
+  MANIFEST_HEADER_BYTES,
+  MANIFEST_MAX_BYTES,
+  MANIFEST_PAGE_BYTES,
+  PAGE_POINT_BYTES,
   SCENE_HEADER_BYTES,
+  SCENE_MAX_PAGES,
   SCENE_MAX_BYTES,
   SCENE_MAX_POINTS,
   SCENE_POINT_STRIDE,
-  SCENE_DELTA_DIRTY_BLOCK_BYTES,
+  SCENE_DIRTY_BLOCK_BYTES,
   type SceneDeltaHint,
   type SceneMetadata,
   type SceneModel,
   type SceneTileIndex,
 } from "./backend-contracts";
-
-const XOR_CHUNK_BYTES = 1024 * 1024;
 
 export interface ParsedScene {
   readonly buffer: ArrayBuffer;
@@ -25,39 +26,51 @@ export interface ParsedScene {
   readonly tileIndex?: SceneTileIndex;
 }
 
-export interface DecodedSceneDelta {
+export interface AssembledScene {
   readonly parsed: ParsedScene;
-  readonly revision: number;
   readonly deltaHint?: SceneDeltaHint;
+}
+
+/** One page of a manifest: its position in pages, its point counts and address. */
+export interface ManifestPage {
+  readonly x: number;
+  readonly y: number;
+  readonly floor: number;
+  readonly surface: number;
+  readonly id: string;
+}
+
+/** Fetched page points, back to back in the order of `ids`. */
+export interface PageBatch {
+  readonly ids: readonly string[];
+  readonly body: ArrayBuffer;
+}
+
+/** The scene a new manifest may take unchanged pages from. */
+interface AssemblyBase {
+  readonly buffer: ArrayBuffer;
+  readonly manifest: ArrayBuffer;
+  readonly revision: number;
 }
 
 interface WorkerResult {
   readonly id: number;
   readonly ok: boolean;
   readonly parsed?: ParsedScene;
-  readonly revision?: number;
   readonly deltaHint?: SceneDeltaHint;
   readonly problem?: string;
 }
 
-interface DeltaBase {
-  readonly buffer: ArrayBuffer;
-  readonly revision: number;
-  readonly pointOffset: number;
-  readonly floorCount: number;
-  readonly surfaceCount: number;
-}
-
 type CodecMessage =
   | { readonly kind: "parse"; readonly buffer: ArrayBuffer }
-  | { readonly kind: "delta"; readonly payload: ArrayBuffer };
+  | { readonly kind: "assemble"; readonly manifest: ArrayBuffer; readonly batches: readonly PageBatch[] };
 
 interface CodecRun {
   readonly id: number;
   readonly message: CodecMessage;
   readonly signal?: AbortSignal;
   readonly fallback: (signal: AbortSignal) => Promise<WorkerResult>;
-  readonly base?: DeltaBase;
+  readonly base?: AssemblyBase;
   readonly settle: (result?: WorkerResult, error?: unknown) => void;
   readonly abort: () => void;
   settled: boolean;
@@ -65,14 +78,16 @@ interface CodecRun {
 }
 
 const createSceneCodec = (limits: Readonly<{
-  deltaHeaderBytes: number;
-  deltaMaxBytes: number;
+  manifestHeaderBytes: number;
+  manifestMaxBytes: number;
+  manifestPageBytes: number;
+  pagePointBytes: number;
   sceneHeaderBytes: number;
   sceneMaxBytes: number;
+  sceneMaxPages: number;
   sceneMaxPoints: number;
   scenePointStride: number;
-  dirtyBlockBytes: typeof SCENE_DELTA_DIRTY_BLOCK_BYTES;
-  xorChunkBytes: number;
+  dirtyBlockBytes: typeof SCENE_DIRTY_BLOCK_BYTES;
 }>) => {
 // This factory is serialized into a Worker. Keep every runtime dependency of
 // its codecs inside the factory or in the explicit limits argument.
@@ -235,155 +250,182 @@ const buildTileIndex = (
     : undefined;
 };
 
-const decodeDeltaTransfer = async (
-  payload: ArrayBuffer,
-  base: DeltaBase,
-  signal?: AbortSignal,
-): Promise<DecodedSceneDelta> => {
-  const fail = (code = "invalid-scene-delta"): never => { throw new Error(code); };
-  const checkAbort = (): void => {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-  };
-  if (!(payload instanceof ArrayBuffer) || payload.byteLength < limits.deltaHeaderBytes
-    || payload.byteLength > limits.deltaHeaderBytes + limits.deltaMaxBytes
-    || !(base.buffer instanceof ArrayBuffer) || base.buffer.byteLength < limits.sceneHeaderBytes
-    || base.buffer.byteLength > limits.deltaMaxBytes
-    || !Number.isSafeInteger(base.revision) || base.revision < 0) fail("invalid-scene-delta-size");
-
-  const view = new DataView(payload);
-  const magic = String.fromCharCode(...new Uint8Array(payload, 0, 8));
-  const version = view.getUint16(8, true);
-  const flags = view.getUint16(10, true);
-  const baseRevisionBig = view.getBigUint64(12, true);
-  const revisionBig = view.getBigUint64(20, true);
-  const sceneLength = view.getUint32(28, true);
-  const compressedLength = view.getUint32(32, true);
-  const baseRevision = Number(baseRevisionBig);
-  const revision = Number(revisionBig);
-  if (magic !== "MATICDLT"
-    || version !== 1
-    || flags !== 1
-    || !Number.isSafeInteger(baseRevision)
-    || !Number.isSafeInteger(revision)
-    || baseRevision !== base.revision
-    || revision <= base.revision
-    || sceneLength < limits.sceneHeaderBytes
-    || sceneLength > limits.deltaMaxBytes
-    || compressedLength < 1
-    || compressedLength > limits.deltaMaxBytes
-    || compressedLength + limits.deltaHeaderBytes !== payload.byteLength) fail();
-  if (typeof DecompressionStream !== "function") fail("scene-delta-decompression-unavailable");
-  checkAbort();
-
-  const compressed = new Uint8Array(payload, limits.deltaHeaderBytes, compressedLength);
-  const expectedLength = Math.max(base.buffer.byteLength, sceneLength);
-  if (expectedLength > limits.deltaMaxBytes) fail("invalid-scene-delta-size");
-  const difference = new Uint8Array(expectedLength);
-  const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate"));
-  const reader = stream.getReader();
-  let inflatedBytes = 0;
-  let abort: (() => void) | null = null;
-  try {
-    abort = () => { void reader.cancel().catch(() => {}); };
-    signal?.addEventListener("abort", abort, { once: true });
-    while (true) {
-      checkAbort();
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!(value instanceof Uint8Array) || inflatedBytes + value.byteLength > expectedLength) fail();
-      difference.set(value, inflatedBytes);
-      inflatedBytes += value.byteLength;
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    if (signal?.aborted || error instanceof DOMException && error.name === "AbortError") {
-      throw new DOMException("Aborted", "AbortError");
-    }
-    if (error instanceof Error && error.message === "invalid-scene-delta") throw error;
-    fail();
-  } finally {
-    if (abort) signal?.removeEventListener("abort", abort);
-    reader.releaseLock();
+const readManifest = (buffer: ArrayBuffer): { metadata: Uint8Array; pages: ManifestPage[] } => {
+  const fail = (): never => { throw new Error("invalid-scene-manifest"); };
+  const HEADER = limits.manifestHeaderBytes;
+  const RECORD = limits.manifestPageBytes;
+  if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < HEADER || buffer.byteLength > limits.manifestMaxBytes) fail();
+  const view = new DataView(buffer);
+  const metadataBytes = view.getUint32(12, true);
+  const count = view.getUint32(16, true);
+  if (String.fromCharCode(...new Uint8Array(buffer, 0, 8)) !== "MATICMF\u0000"
+    || view.getUint16(8, true) !== 1
+    || view.getUint16(10, true) !== RECORD
+    || metadataBytes > 1024 * 1024
+    || count < 1 || count > limits.sceneMaxPages
+    || HEADER + metadataBytes + count * RECORD !== buffer.byteLength) fail();
+  const pages: ManifestPage[] = [];
+  for (let offset = HEADER + metadataBytes; offset < buffer.byteLength; offset += RECORD) {
+    let id = "";
+    for (const byte of new Uint8Array(buffer, offset + 16, 12)) id += byte.toString(16).padStart(2, "0");
+    pages.push({
+      x: view.getInt32(offset, true),
+      y: view.getInt32(offset + 4, true),
+      floor: view.getUint32(offset + 8, true),
+      surface: view.getUint32(offset + 12, true),
+      id,
+    });
   }
-  checkAbort();
-  if (inflatedBytes !== expectedLength) fail();
+  return { metadata: new Uint8Array(buffer, HEADER, metadataBytes), pages };
+};
 
-  const baseBytes = new Uint8Array(base.buffer);
-  const headerView = new DataView(difference.buffer, difference.byteOffset, difference.byteLength);
-  const headerBytes = Math.min(limits.sceneHeaderBytes, baseBytes.byteLength);
-  for (let index = 0; index < headerBytes; index += 1) {
-    difference[index] = (difference[index] ?? 0) ^ (baseBytes[index] ?? 0);
-  }
-  const newMetadataBytes = headerView.getUint32(12, true);
-  const newFloorCount = headerView.getUint32(16, true);
-  const newSurfaceCount = headerView.getUint32(20, true);
-  const newPointOffset = limits.sceneHeaderBytes + newMetadataBytes;
-  const newTotal = newFloorCount + newSurfaceCount;
-  const samePointLayout = newPointOffset === base.pointOffset
-    && newFloorCount === base.floorCount
-    && newSurfaceCount === base.surfaceCount;
-  const pointEnd = newPointOffset + newTotal * limits.scenePointStride;
-  const canHint = samePointLayout && pointEnd === sceneLength
-    && newTotal <= limits.sceneMaxPoints;
-  const dirtyBlocks: number[] = [];
-  let activeBlock = -1;
-  let blockChanged = false;
-  const finishBlock = (): void => {
-    if (blockChanged && activeBlock >= 0) dirtyBlocks.push(activeBlock);
-    blockChanged = false;
+// Builds the scene buffer a saved map carries: header, metadata, every page's
+// floor points, then every page's surface points, in manifest order.
+const assembleTransfer = (
+  manifest: ArrayBuffer,
+  batches: readonly PageBatch[],
+  base?: AssemblyBase,
+): AssembledScene => {
+  const fail = (): never => { throw new Error("invalid-scene-pages"); };
+  const STRIDE = limits.scenePointStride;
+  const LOCAL = limits.pagePointBytes;
+  const { metadata, pages } = readManifest(manifest);
+  const frame = (bytes: Uint8Array): [number, number, number, number] => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } catch {
+      fail();
+    }
+    const { origin_cells: origin, span_cells: span } = (raw ?? {}) as Record<string, unknown>;
+    const values = [Array.isArray(origin) ? origin : [], Array.isArray(span) ? span : []].flat();
+    if (values.length !== 4 || !values.every((value) => Number.isSafeInteger(value))) fail();
+    return values as [number, number, number, number];
   };
-
-  for (let start = headerBytes; start < baseBytes.byteLength; start += limits.xorChunkBytes) {
-    checkAbort();
-    const end = Math.min(baseBytes.byteLength, start + limits.xorChunkBytes);
-    for (let index = start; index < end; index += 1) {
-      const previous = baseBytes[index] ?? 0;
-      const next = (difference[index] ?? 0) ^ previous;
-      difference[index] = next;
-      if (!canHint || index < base.pointOffset || index >= pointEnd) continue;
-      const block = Math.floor((index - base.pointOffset) / limits.dirtyBlockBytes);
-      if (block !== activeBlock) {
-        finishBlock();
-        activeBlock = block;
+  const [originX, originY, spanX, spanY] = frame(metadata);
+  const fetched = new Map<string, Uint8Array>();
+  const lengths = new Map(pages.map((page) => [page.id, (page.floor + page.surface) * LOCAL]));
+  for (const batch of batches) {
+    let offset = 0;
+    for (const id of batch.ids) {
+      const length = lengths.get(id) ?? fail();
+      if (offset + length > batch.body.byteLength) fail();
+      fetched.set(id, new Uint8Array(batch.body, offset, length));
+      offset += length;
+    }
+    if (offset !== batch.body.byteLength) fail();
+  }
+  const reused = new Map<string, { floorStart: number; surfaceStart: number; shiftX: number; shiftY: number }>();
+  let baseView: DataView | null = null;
+  if (base) {
+    const parsedBase = readManifest(base.manifest);
+    const [baseX, baseY] = frame(parsedBase.metadata);
+    baseView = new DataView(base.buffer);
+    const basePoints = limits.sceneHeaderBytes + baseView.getUint32(12, true);
+    let floorStart = basePoints;
+    let surfaceStart = basePoints + baseView.getUint32(16, true) * STRIDE;
+    if (surfaceStart + baseView.getUint32(20, true) * STRIDE !== base.buffer.byteLength) fail();
+    for (const page of parsedBase.pages) {
+      reused.set(page.id, { floorStart, surfaceStart, shiftX: page.x * 32 - baseX, shiftY: page.y * 32 - baseY });
+      floorStart += page.floor * STRIDE;
+      surfaceStart += page.surface * STRIDE;
+    }
+  }
+  const floorCount = pages.reduce((sum, page) => sum + page.floor, 0);
+  const total = floorCount + pages.reduce((sum, page) => sum + page.surface, 0);
+  if (total < 1 || total > limits.sceneMaxPoints) fail();
+  const pointOffset = limits.sceneHeaderBytes + metadata.byteLength;
+  const buffer = new ArrayBuffer(pointOffset + total * STRIDE);
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  bytes.set([77, 65, 84, 73, 67, 51, 68, 0]);
+  view.setUint16(8, 1, true);
+  view.setUint16(10, STRIDE, true);
+  view.setUint32(12, metadata.byteLength, true);
+  view.setUint32(16, floorCount, true);
+  view.setUint32(20, total - floorCount, true);
+  bytes.set(metadata, limits.sceneHeaderBytes);
+  let floorOut = pointOffset;
+  let surfaceOut = pointOffset + floorCount * STRIDE;
+  const write = (out: number, x: number, y: number, source: Uint8Array, at: number): void => {
+    if (x < 0 || x >= spanX || y < 0 || y >= spanY) fail();
+    view.setUint16(out, x, true);
+    view.setUint16(out + 2, y, true);
+    bytes.set(source.subarray(at, at + 4), out + 4);
+  };
+  for (const page of pages) {
+    const shiftX = page.x * 32 - originX;
+    const shiftY = page.y * 32 - originY;
+    const local = fetched.get(page.id);
+    if (local) {
+      for (let index = 0; index < page.floor + page.surface; index += 1) {
+        const at = index * LOCAL;
+        if ((local[at] ?? 32) >= 32 || (local[at + 1] ?? 32) >= 32) fail();
+        const out = index < page.floor ? floorOut + index * STRIDE : surfaceOut + (index - page.floor) * STRIDE;
+        write(out, (local[at] ?? 0) + shiftX, (local[at + 1] ?? 0) + shiftY, local, at + 2);
       }
-      if (next !== previous) blockChanged = true;
+    } else if (page.floor + page.surface > 0) {
+      const source = reused.get(page.id) ?? fail();
+      const sourceBytes = new Uint8Array(base!.buffer);
+      for (const [from, to, count] of [
+        [source.floorStart, floorOut, page.floor],
+        [source.surfaceStart, surfaceOut, page.surface],
+      ] as const) {
+        if (shiftX === source.shiftX && shiftY === source.shiftY) {
+          bytes.set(sourceBytes.subarray(from, from + count * STRIDE), to);
+          continue;
+        }
+        for (let index = 0; index < count; index += 1) {
+          const at = from + index * STRIDE;
+          write(
+            to + index * STRIDE,
+            baseView!.getUint16(at, true) - source.shiftX + shiftX,
+            baseView!.getUint16(at + 2, true) - source.shiftY + shiftY,
+            sourceBytes,
+            at + 4,
+          );
+        }
+      }
     }
-    if (end < baseBytes.byteLength) {
-      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+    floorOut += page.floor * STRIDE;
+    surfaceOut += page.surface * STRIDE;
+  }
+  const parsed = parseTransfer(buffer);
+  if (!base || base.buffer.byteLength !== buffer.byteLength
+    || new DataView(base.buffer).getUint32(12, true) !== metadata.byteLength
+    || new DataView(base.buffer).getUint32(16, true) !== floorCount) return { parsed };
+  // The renderer re-uploads only the blocks a same-layout revision changed.
+  const previous = new Uint8Array(base.buffer);
+  const dirtyBlocks: number[] = [];
+  for (let start = pointOffset; start < buffer.byteLength; start += limits.dirtyBlockBytes) {
+    const end = Math.min(buffer.byteLength, start + limits.dirtyBlockBytes);
+    for (let index = start; index < end; index += 1) {
+      if (bytes[index] !== previous[index]) {
+        dirtyBlocks.push((start - pointOffset) / limits.dirtyBlockBytes);
+        break;
+      }
     }
   }
-  finishBlock();
-
-  checkAbort();
-  const sceneBuffer = sceneLength === difference.byteLength
-    ? difference.buffer
-    : difference.slice(0, sceneLength).buffer;
-  const parsed = parseTransfer(sceneBuffer);
   return {
     parsed,
-    revision,
-    ...(canHint ? {
-      deltaHint: {
-        baseRevision,
-        blockBytes: limits.dirtyBlockBytes,
-        dirtyBlocks,
-      },
-    } : {}),
+    deltaHint: { baseRevision: base.revision, blockBytes: limits.dirtyBlockBytes, dirtyBlocks },
   };
 };
 
-return { parseTransfer, decodeDeltaTransfer };
+return { parseTransfer, readManifest, assembleTransfer };
 };
 
 const CODEC_LIMITS = Object.freeze({
-  deltaHeaderBytes: DELTA_HEADER_BYTES,
-  deltaMaxBytes: DELTA_MAX_BYTES,
+  manifestHeaderBytes: MANIFEST_HEADER_BYTES,
+  manifestMaxBytes: MANIFEST_MAX_BYTES,
+  manifestPageBytes: MANIFEST_PAGE_BYTES,
+  pagePointBytes: PAGE_POINT_BYTES,
   sceneHeaderBytes: SCENE_HEADER_BYTES,
   sceneMaxBytes: SCENE_MAX_BYTES,
+  sceneMaxPages: SCENE_MAX_PAGES,
   sceneMaxPoints: SCENE_MAX_POINTS,
   scenePointStride: SCENE_POINT_STRIDE,
-  dirtyBlockBytes: SCENE_DELTA_DIRTY_BLOCK_BYTES,
-  xorChunkBytes: XOR_CHUNK_BYTES,
+  dirtyBlockBytes: SCENE_DIRTY_BLOCK_BYTES,
 });
 const sceneCodec = createSceneCodec(CODEC_LIMITS);
 
@@ -395,30 +437,29 @@ export const parseSceneBuffer = (buffer: ArrayBuffer): ParsedScene => {
   }
 };
 
+/** The pages a live manifest lists, read on the calling thread. */
+export const manifestPages = (buffer: ArrayBuffer): readonly ManifestPage[] => {
+  try {
+    return sceneCodec.readManifest(buffer).pages;
+  } catch {
+    throw new ContractError("invalid-scene-manifest");
+  }
+};
+
 const workerSource = (): string => `
-  const { parseTransfer, decodeDeltaTransfer } = (${createSceneCodec.toString()})(Object.freeze(${JSON.stringify(CODEC_LIMITS)}));
-  self.onmessage = async (event) => {
-    const { id, kind, buffer, payload, base } = event.data;
+  const { parseTransfer, assembleTransfer } = (${createSceneCodec.toString()})(Object.freeze(${JSON.stringify(CODEC_LIMITS)}));
+  self.onmessage = (event) => {
+    const { id, kind, buffer, manifest, batches, base } = event.data;
     try {
-      if (kind === "parse") {
-        const parsed = parseTransfer(buffer);
-        self.postMessage({ id, ok: true, parsed }, [
-          parsed.buffer,
-          ...(parsed.tileIndex ? [parsed.tileIndex.runs.buffer] : []),
-        ]);
-        return;
-      }
-      const decoded = await decodeDeltaTransfer(payload, base);
-      self.postMessage({ id, ok: true, ...decoded }, [
-        decoded.parsed.buffer,
-        ...(decoded.parsed.tileIndex ? [decoded.parsed.tileIndex.runs.buffer] : []),
+      const result = kind === "parse" ? { parsed: parseTransfer(buffer) } : assembleTransfer(manifest, batches, base);
+      self.postMessage({ id, ok: true, ...result }, [
+        result.parsed.buffer,
+        ...(result.parsed.tileIndex ? [result.parsed.tileIndex.runs.buffer] : []),
       ]);
     } catch (error) {
       const problem = error instanceof Error && error.message.startsWith("invalid-scene")
         ? error.message
-        : error instanceof Error && error.message === "scene-delta-decompression-unavailable"
-          ? error.message
-          : "invalid-scene-delta";
+        : "invalid-scene";
       self.postMessage({ id, ok: false, problem });
     }
   };
@@ -465,51 +506,37 @@ export class SceneParser {
     return result.parsed;
   }
 
-  async decodeDelta(
-    payload: ArrayBuffer,
-    base: SceneModel,
+  /** Builds a live scene from its manifest, fetched pages and the scene before it. */
+  async assemble(
+    manifest: ArrayBuffer,
+    batches: readonly PageBatch[],
+    base: SceneModel | null,
     signal?: AbortSignal,
-  ): Promise<DecodedSceneDelta> {
+  ): Promise<AssembledScene> {
     this.#ensureAvailable(signal);
-    if (payload.byteLength > DELTA_HEADER_BYTES + DELTA_MAX_BYTES
-      || base.buffer.byteLength > DELTA_MAX_BYTES) throw new ContractError("invalid-scene-delta-size");
-    const baseInfo: DeltaBase = {
-      buffer: base.buffer,
-      revision: base.revision,
-      pointOffset: base.pointOffset,
-      floorCount: base.floorCount,
-      surfaceCount: base.surfaceCount,
-    };
+    const assemblyBase = base?.manifest
+      ? { buffer: base.buffer, manifest: base.manifest, revision: base.revision }
+      : undefined;
     let result: WorkerResult;
     try {
       result = await this.#run(
-        { kind: "delta", payload },
+        { kind: "assemble", manifest, batches },
         signal,
         async (operationSignal) => {
           await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
           this.#ensureAvailable(operationSignal);
-          return sceneCodec.decodeDeltaTransfer(payload, baseInfo, operationSignal)
-            .then((decoded) => ({ id: 0, ok: true, ...decoded }));
+          return { id: 0, ok: true, ...sceneCodec.assembleTransfer(manifest, batches, assemblyBase) };
         },
-        baseInfo,
+        assemblyBase,
       );
     } catch (error) {
-      if (error instanceof ContractError) throw error;
-      if (signal?.aborted || error instanceof DOMException && error.name === "AbortError") {
-        throw new DOMException("Aborted", "AbortError");
-      }
-      if (error instanceof Error
-        && (error.message.startsWith("invalid-scene") || error.message === "scene-delta-decompression-unavailable")) {
-        throw new ContractError(error.message);
-      }
-      throw new ContractError("invalid-scene-delta");
+      if (error instanceof ContractError
+        || signal?.aborted || error instanceof DOMException && error.name === "AbortError") throw error;
+      throw new ContractError(error instanceof Error && error.message.startsWith("invalid-scene")
+        ? error.message : "invalid-scene-pages");
     }
-    if (!result.parsed || result.revision === undefined) throw new ContractError("invalid-scene-delta");
-    return {
-      parsed: result.parsed,
-      revision: result.revision,
-      ...(result.deltaHint ? { deltaHint: result.deltaHint } : {}),
-    };
+    if (!result.parsed) throw new ContractError("invalid-scene-pages");
+    return { parsed: result.parsed, ...(result.deltaHint ? { deltaHint: result.deltaHint } : {}) };
   }
 
   #ensureAvailable(signal?: AbortSignal): void {
@@ -540,7 +567,7 @@ export class SceneParser {
     message: CodecMessage,
     signal: AbortSignal | undefined,
     fallback: (signal: AbortSignal) => Promise<WorkerResult>,
-    base?: DeltaBase,
+    base?: AssemblyBase,
   ): Promise<WorkerResult> {
     this.#ensureAvailable(signal);
     return new Promise<WorkerResult>((resolve, reject) => {
@@ -602,10 +629,12 @@ export class SceneParser {
           data = { id: request.id, kind: request.message.kind, buffer: request.message.buffer };
           transfer = [request.message.buffer];
         } else {
-          if (!request.base) throw new ContractError("invalid-scene-delta");
-          const workerBase: DeltaBase = { ...request.base, buffer: request.base.buffer.slice(0) };
-          data = { id: request.id, kind: request.message.kind, payload: request.message.payload, base: workerBase };
-          transfer = [request.message.payload, workerBase.buffer];
+          // The displayed scene and its manifest stay usable here; the worker
+          // gets copies of them and takes the fetched pages.
+          const workerBase = request.base && { ...request.base, buffer: request.base.buffer.slice(0) };
+          const { manifest, batches } = request.message;
+          data = { id: request.id, kind: request.message.kind, manifest, batches, base: workerBase };
+          transfer = [...batches.map((batch) => batch.body), ...(workerBase ? [workerBase.buffer] : [])];
         }
         worker.postMessage(data, transfer);
       } catch {

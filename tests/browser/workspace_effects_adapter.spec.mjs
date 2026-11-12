@@ -21,7 +21,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
     const { EffectController, WorkspaceStore, canEditCoordinates, canStartMotion, BackendError, syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } = await import("/adapter.js");
     const callbacks = [];
     const wireCatalogEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
-      delta_url: entry.deltaUrl, history_url: entry.historyUrl,
+      history_url: entry.historyUrl,
       areas_url: entry.areasUrl, plans_url: entry.plansUrl, map_revision: entry.mapRevision,
       live_workspace_transport_enabled: entry.liveWorkspaceTransportEnabled,
       map_scene_epoch: entry.mapSceneEpoch,
@@ -63,9 +63,8 @@ const setup = async (page, deferInitialSnapshot = false) => {
       } };
     const counts = { catalog: 0, plans: 0, areas: 0, history: 0, scene: 0 };
     // This adapter contract test exercises invalidation routing, not the
-    // independent long-poll delta loop. Keep that loop out of the fixture so
-    // a missing sceneDelta mock cannot trigger an immediate retry cycle.
-    let catalogEntry = { ...syntheticEntry(), deltaUrl: null };
+    // revision follow loop: the scene below has no manifest, so it is not followed.
+    let catalogEntry = { ...syntheticEntry() };
     const backend = { catalog: async () => { counts.catalog += 1; return [catalogEntry]; },
       plans: async () => { counts.plans += 1; return syntheticPlans(); },
       areas: async () => { counts.areas += 1; return syntheticAreas(); },

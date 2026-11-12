@@ -4,7 +4,6 @@ import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 const secondEntry = () => ({
   entry_id: "synthetic-entry-b",
   scene_url: "/api/matic_robot/slam_scene/synthetic-b",
-  delta_url: null,
   history_url: "/api/matic_robot/slam_history/synthetic-b",
   areas_url: "/api/matic_robot/areas/synthetic-b",
   plans_url: "/api/matic_robot/plans/synthetic-b",

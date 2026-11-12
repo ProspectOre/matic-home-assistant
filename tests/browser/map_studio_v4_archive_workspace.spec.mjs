@@ -24,7 +24,7 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, syntheticEntry, syntheticScene, syntheticHistory, syntheticPose, syntheticPlans, MAP_CANVAS_TAG } = window.archiveHarness;
     const id = (n) => n.toString(16).padStart(32, "0");
-    const entry = { ...syntheticEntry(), deltaUrl: null };
+    const entry = { ...syntheticEntry() };
     const rows = [1, 2].map((n) => ({ id: id(n), content_id: "a".repeat(24), created_at: "2026-10-31T10:00:00Z",
       revision: 7, point_count: 5300, scene_url: `/saved/${id(n)}`, name: `Saved ${n}`, retention: "automatic",
       deleted_until: null, imported: false, comparison_group: null, frame: null, compressed_bytes: 50 }));

@@ -44,7 +44,7 @@ interface SpatialReadRecoveryAttempt {
 
 interface SpatialReadRecoveryState {
   key: string;
-  failedKinds: Set<"pose" | "delta">;
+  failedKinds: Set<"pose" | "scene">;
   retryTimer: number | null;
   attempt: SpatialReadRecoveryAttempt | null;
 }
@@ -91,8 +91,8 @@ export class SpatialResources {
       projection: callbacks.projection,
       admitted: (entry) => { this.#entryIdentity = entryIdentity(entry); },
       replacementFinished: (entry) => this.#finishSpatialReplacementRead(entry),
-      recovered: (entry) => this.#resolveSpatialReadFailure("delta", entry),
-      failed: (entry) => this.#recordSpatialReadFailure("delta", entry),
+      recovered: (entry) => this.#resolveSpatialReadFailure("scene", entry),
+      failed: (entry) => this.#recordSpatialReadFailure("scene", entry),
       admitPose: () => this.#pose.admit(),
       loadFallback: (entry, stamp) => this.loadHistory(entry, stamp),
       loadPlans: () => {
@@ -104,8 +104,8 @@ export class SpatialResources {
 
   clearPoseExpiry(): void { this.#pose.clearExpiry(); }
   receivePose(entryId: string, pose: PoseModel): void { this.#pose.receive(entryId, pose); }
-  stopDeltaStream(): void { this.#scene.stop(); }
-  ownsLiveDelta(entry: MapEntry): boolean { return this.#scene.owns(entry); }
+  stopSceneFollow(): void { this.#scene.stop(); }
+  ownsLiveScene(entry: MapEntry): boolean { return this.#scene.owns(entry); }
   async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
     if (!this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return;
     const history = await this.#spatialHistory();
@@ -225,7 +225,7 @@ export class SpatialResources {
       floor: { readOnly: state.floor.readOnly || state.resources.scene.value !== null },
       map: { exactPose: false } });
     // A pose/session mismatch can revoke the generation while a recovery
-    // attempt is waiting for its replacement delta long-poll. Release that
+    // attempt is waiting for its replacement revision wait. Release that
     // waiter after advancing the fence and before aborting its request.
     if (this.#spatialRecovery) this.#signalSpatialRecoveryRead(this.#spatialRecovery.key);
     // Invalidate the generation before aborting requests so no completion from
@@ -271,11 +271,11 @@ export class SpatialResources {
     if (recovery.attempt?.lease) this.#callbacks.cancelCatalogRecovery(recovery.attempt.lease);
   }
 
-  #resolveSpatialReadFailure(kind: "pose" | "delta", entry: MapEntry): void {
+  #resolveSpatialReadFailure(kind: "pose" | "scene", entry: MapEntry): void {
     const recovery = this.#spatialRecovery;
     if (recovery?.key !== entryCoherenceIdentity(entry)) return;
     recovery.failedKinds.delete(kind);
-    if (kind === "delta") this.#finishSpatialReplacementRead(entry);
+    if (kind === "scene") this.#finishSpatialReplacementRead(entry);
     if (recovery.failedKinds.size === 0) this.clearRecovery();
   }
 
@@ -290,7 +290,7 @@ export class SpatialResources {
     if (recovery.attempt) recovery.attempt.finishReplacementRead = null;
   }
 
-  #recordSpatialReadFailure(kind: "pose" | "delta", entry: MapEntry): void {
+  #recordSpatialReadFailure(kind: "pose" | "scene", entry: MapEntry): void {
     const key = entryCoherenceIdentity(entry);
     let recovery = this.#spatialRecovery;
     if (recovery?.key !== key) {
@@ -299,7 +299,7 @@ export class SpatialResources {
       this.#spatialRecovery = recovery;
     }
     recovery.failedKinds.add(kind);
-    if (kind === "delta") this.#finishSpatialReplacementRead(entry);
+    if (kind === "scene") this.#finishSpatialReplacementRead(entry);
     if (this.#spatialReadNeedsRevalidation(recovery) && this.#coherence.current()) {
       this.invalidateFence();
     }
@@ -356,9 +356,9 @@ export class SpatialResources {
       if (this.#coherence.current()) this.invalidateFence();
     } else {
       // A failed content download does not revoke a verified robot/floor/session.
-      // Replace its delta owner while retaining the admitted view and pose.
+      // Replace its scene follower while retaining the admitted view and pose.
       this.#scene.stop();
-      this.#requests.current("delta")?.abort();
+      this.#requests.current("scene-follow")?.abort();
     }
     let finishReplacementRead!: () => void;
     const replacementRead = new Promise<void>((resolve) => { finishReplacementRead = resolve; });
@@ -382,9 +382,9 @@ export class SpatialResources {
       await this.#callbacks.refreshCatalog(true, false, !revalidateFrame, lease);
       // A successful catalog only authorizes the replacement scene read. Keep
       // this recovery owner until that scene either starts its replacement
-      // delta long-poll and receives a result, or reaches a terminal outcome.
+      // revision wait and receives a result, or reaches a terminal outcome.
       // In particular, a normal 204 can take the full server poll interval.
-      if (recovery.failedKinds.has("delta")
+      if (recovery.failedKinds.has("scene")
         && this.#spatialRecovery === recovery
         && recovery.attempt === attempt) {
         await attempt.replacementRead;
