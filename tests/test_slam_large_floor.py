@@ -24,6 +24,7 @@ from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
+from custom_components.matic_robot.slam_decoded_map import page_digest
 from custom_components.matic_robot.slam_render import (
     render_slam_map,
 )
@@ -498,11 +499,15 @@ async def test_empty_or_one_sided_legacy_truncation_is_not_recoverable(hass):
 
 def stage(store, entries, *, structural=False):
     for photo, structure in entries:
-        store._stage_candidate(
-            structure if structural else photo,
+        tile = (
             decode_slam_structure_tile(structure)
             if structural
-            else decode_slam_tile(photo),
+            else decode_slam_tile(photo)
+        )
+        store._stage_candidate(
+            structure if structural else photo,
+            tile,
+            page_digest(tile),
             structural=structural,
         )
 

@@ -378,8 +378,8 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             )
             if key == self._cached_key and self._cached_image is not None:
                 return self._cached_image
-            tiles = self._store.decoded_tiles()
-            structure_tiles = self._store.decoded_structure_tiles()
+            decoded = await self._store.async_decoded_map()
+            tiles, structure_tiles = decoded.tiles, decoded.structure_tiles
             image = await self.hass.async_add_executor_job(
                 partial(
                     _render_photorealistic_tiles,

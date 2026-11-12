@@ -12,11 +12,17 @@ import pytest
 from custom_components.matic_robot import slam_history_collector as history_collector
 from custom_components.matic_robot.client.models import FloorPlan
 from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
+from custom_components.matic_robot.slam_decoded_map import DecodedMap
 from custom_components.matic_robot.slam_history_collector import (
     async_collect_slam_history,
 )
 from tests.test_slam_history import _floor_plan, _identity
 from tests.test_slam_map import synthetic_slam_entry
+
+
+def _decoded(*entries) -> AsyncMock:
+    tiles = tuple(map(decode_slam_tile, entries))
+    return AsyncMock(return_value=DecodedMap(1, None, tiles, ()))
 
 
 async def test_history_collector_captures_stable_complete_revision(hass) -> None:
@@ -26,10 +32,7 @@ async def test_history_collector_captures_stable_complete_revision(hass) -> None
         revision=4,
         map_complete=True,
         mission_identity=_identity(),
-        decoded_tiles=MagicMock(
-            return_value=(decode_slam_tile(synthetic_slam_entry()),)
-        ),
-        decoded_structure_tiles=MagicMock(return_value=()),
+        async_decoded_map=_decoded(synthetic_slam_entry()),
         async_add_listener=MagicMock(
             side_effect=lambda listener: listeners.append(listener) or remove_listener
         ),
@@ -66,10 +69,7 @@ async def test_history_collector_waits_for_matching_floor_identity(hass) -> None
         revision=4,
         map_complete=True,
         mission_identity=_identity(),
-        decoded_tiles=MagicMock(
-            return_value=(decode_slam_tile(synthetic_slam_entry()),)
-        ),
-        decoded_structure_tiles=MagicMock(return_value=()),
+        async_decoded_map=_decoded(synthetic_slam_entry()),
         async_add_listener=MagicMock(return_value=remove_map_listener),
     )
     current_floor = replace(_floor_plan(), mission_id=2)
@@ -91,7 +91,7 @@ async def test_history_collector_waits_for_matching_floor_identity(hass) -> None
             for _index in range(5):
                 await asyncio.sleep(0)
             history.async_add.assert_not_awaited()
-            entry_reads = slam_map.decoded_tiles.call_count
+            entry_reads = slam_map.async_decoded_map.await_count
             assert floor_listener is not None
             original_floor_plan_eq = FloorPlan.__eq__
             comparisons = 0
@@ -109,7 +109,7 @@ async def test_history_collector_waits_for_matching_floor_identity(hass) -> None
                 assert comparisons == 1
             for _index in range(5):
                 await asyncio.sleep(0)
-            assert slam_map.decoded_tiles.call_count == entry_reads
+            assert slam_map.async_decoded_map.await_count == entry_reads
             current_floor = _floor_plan()
             floor_listener()
             await asyncio.wait_for(history_added.wait(), timeout=1)
@@ -134,10 +134,7 @@ async def test_history_collector_retries_churn_and_skips_incomplete(hass) -> Non
         revision=1,
         map_complete=False,
         mission_identity=_identity(),
-        decoded_tiles=MagicMock(
-            return_value=(decode_slam_tile(synthetic_slam_entry()),)
-        ),
-        decoded_structure_tiles=MagicMock(return_value=()),
+        async_decoded_map=_decoded(synthetic_slam_entry()),
         async_add_listener=MagicMock(side_effect=subscribe),
     )
     history = SimpleNamespace(async_add=AsyncMock())
@@ -173,8 +170,7 @@ async def test_history_collector_skips_incomplete_or_undecodable_scene(
         revision=1,
         map_complete=complete,
         mission_identity=_identity(),
-        decoded_tiles=MagicMock(return_value=tuple(map(decode_slam_tile, entries))),
-        decoded_structure_tiles=MagicMock(return_value=()),
+        async_decoded_map=_decoded(*entries),
         async_add_listener=MagicMock(return_value=remove_listener),
     )
     history = SimpleNamespace(async_add=AsyncMock())
@@ -202,10 +198,7 @@ async def test_history_collector_discards_scene_after_revision_change() -> None:
         revision=1,
         map_complete=True,
         mission_identity=_identity(),
-        decoded_tiles=MagicMock(
-            return_value=(decode_slam_tile(synthetic_slam_entry()),)
-        ),
-        decoded_structure_tiles=MagicMock(return_value=()),
+        async_decoded_map=_decoded(synthetic_slam_entry()),
         async_add_listener=MagicMock(return_value=remove_listener),
     )
 

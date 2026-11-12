@@ -254,13 +254,14 @@ class MaticSlamSceneView(HomeAssistantView):
                 cached = self._cache.get(entry_id)
                 if cached is not None and cached.key == key:
                     return cached
-                tiles = runtime.slam_map.decoded_tiles()
                 floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
+                # Requested before any await, so this is the ``map_revision`` map.
+                decoded = await runtime.slam_map.async_decoded_map()
                 try:
                     encoded = await hass.async_add_executor_job(
                         partial(
                             _encode_scene,
-                            tiles,
+                            decoded.tiles,
                             floor_plan if floor_plan_coherent else None,
                         )
                     )

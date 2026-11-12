@@ -1,9 +1,11 @@
-"""Map pages decode once off the event loop; area and import work stay off it."""
+"""Map, area and import work stays off the event loop; readers share a decode."""
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
+import weakref
 from threading import get_ident
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -12,8 +14,8 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.http import KEY_HASS
 
+from custom_components.matic_robot import slam_decoded_map as decoded_map
 from custom_components.matic_robot import slam_map_store as storage
-from custom_components.matic_robot import slam_tile_cache
 from custom_components.matic_robot.area_views import MaticAreasView
 from custom_components.matic_robot.camera import _map_view, _render_photorealistic_tiles
 from custom_components.matic_robot.client.models import (
@@ -26,6 +28,7 @@ from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
+from custom_components.matic_robot.slam_decoded_map import decode_photo_page
 from custom_components.matic_robot.slam_history_collector import (
     _encode_history_scene,
 )
@@ -84,19 +87,22 @@ async def test_readers_match_the_full_decode_of_every_entry(
         store, photos, structures = await _filled_store(hass, side, seed)
         tiles = tuple(decode_slam_tile(entry) for entry in photos)
         structure_tiles = tuple(decode_slam_structure_tile(e) for e in structures)
+        decoded = await store.async_decoded_map()
 
-        assert store.decoded_tiles() == tiles
-        assert store.decoded_structure_tiles() == structure_tiles
-        assert _encode_scene(store.decoded_tiles(), plan).payload == encode_slam_scene(
+        assert decoded.revision == store.revision
+        assert decoded.identity == store.mission_identity
+        assert decoded.tiles == tiles
+        assert decoded.structure_tiles == structure_tiles
+        assert _encode_scene(decoded.tiles, plan).payload == encode_slam_scene(
             tiles, floor_plan=plan
         )
         assert _encode_history_scene(
-            store.decoded_tiles(), store.decoded_structure_tiles(), plan
+            decoded.tiles, decoded.structure_tiles, plan
         ) == encode_slam_scene(tiles, floor_plan=plan, structure_tiles=structure_tiles)
         state = _map_view(_state(floor_plan=None))
         assert _render_photorealistic_tiles(
-            store.decoded_tiles(),
-            store.decoded_structure_tiles(),
+            decoded.tiles,
+            decoded.structure_tiles,
             state,
             floor_plan_coherent=False,
             width=320,
@@ -112,49 +118,95 @@ async def test_readers_match_the_full_decode_of_every_entry(
         await store.async_shutdown()
 
 
-async def test_pages_decode_once_off_the_event_loop(hass: HomeAssistant) -> None:
+async def test_pages_are_validated_and_digested_off_the_event_loop(
+    hass: HomeAssistant,
+) -> None:
     loop_thread = get_ident()
-    decode_threads: list[int] = []
-    original = storage.decode_slam_tile
+    threads: list[int] = []
+    original = decoded_map.decode_photo_page
 
     def decode(entry):
-        decode_threads.append(get_ident())
+        threads.append(get_ident())
         return original(entry)
 
-    with patch.object(storage, "decode_slam_tile", decode):
+    with patch.object(storage, "decode_photo_page", decode):
         store, photos, _structures = await _filled_store(hass, 2, 5)
-        first = store.decoded_tiles()
-        assert store.decoded_tiles()[0] is first[0]
+        revision = store.revision
         await store.async_add(photos[0])
 
-    assert len(decode_threads) == len(photos) + 1
-    assert loop_thread not in decode_threads
+    assert len(threads) == len(photos) + 1
+    assert loop_thread not in threads
+    assert store.revision == revision
     await store.async_shutdown()
 
 
-async def test_load_reuses_the_snapshot_decode(hass: HomeAssistant) -> None:
-    store, photos, structures = await _filled_store(hass, 2, 3)
+async def test_readers_of_one_revision_share_one_decode(hass: HomeAssistant) -> None:
+    store, _photos, _structures = await _filled_store(hass, 2, 7)
+    jobs: list[str] = []
+    executor = hass.async_add_executor_job
+
+    def counting(target, *args):
+        jobs.append(target.__name__)
+        return executor(target, *args)
+
+    with patch.object(hass, "async_add_executor_job", counting):
+        readers = [asyncio.ensure_future(store.async_decoded_map()) for _ in range(3)]
+        await asyncio.wait(readers)
+        first = readers[0].result()
+        assert all(reader.result() is first for reader in readers)
+        assert await store.async_decoded_map() is first
+        assert jobs == ["decode_map"]
+
+        held = weakref.ref(first)
+        del first, readers
+        gc.collect()
+        assert held() is None
+        await store.async_decoded_map()
+        assert jobs == ["decode_map", "decode_map"]
+
+        await store.async_add(textured_photo_entry(9, 9, seed=1))
+        assert (await store.async_decoded_map()).revision == store.revision
+        assert jobs[-1] == "decode_map"
+    await store.async_shutdown()
+
+
+async def test_a_cancelled_reader_does_not_cancel_the_shared_decode(
+    hass: HomeAssistant,
+) -> None:
+    store, _photos, _structures = await _filled_store(hass, 2, 9)
+    reader = asyncio.create_task(store.async_decoded_map())
+    await asyncio.sleep(0)
+    reader.cancel()
+    decoded = await store.async_decoded_map()
+    assert decoded.revision == store.revision
+    await store.async_shutdown()
+
+
+async def test_load_takes_digests_from_the_snapshot_decode(
+    hass: HomeAssistant,
+) -> None:
+    store, photos, _structures = await _filled_store(hass, 2, 3)
     await store.async_shutdown()
 
     restored = storage.SlamMapStore(hass, "tile-cache-2-3")
-    await restored.async_load()
+    with patch.object(storage, "decode_photo_page", wraps=decode_photo_page) as page:
+        await restored.async_load()
+        revision = restored.revision
+        await restored.async_add(photos[0])
 
-    assert restored.decoded_tiles() == tuple(map(decode_slam_tile, photos))
-    assert restored.decoded_structure_tiles() == tuple(
-        map(decode_slam_structure_tile, structures)
-    )
+    page.assert_called_once()
+    assert restored.revision == revision
     await restored.async_remove()
-    assert restored.decoded_tiles() == ()
-    assert restored._photo_tiles._tiles == {}
+    assert restored._digests._digests == {}
 
 
-async def test_replaced_pages_are_pruned(hass: HomeAssistant) -> None:
+async def test_replaced_pages_drop_their_digests(hass: HomeAssistant) -> None:
     store = storage.SlamMapStore(hass, "tile-cache-prune")
     for seed in range(200):
         await store.async_add(textured_photo_entry(0, 0, seed=seed))
         await store.async_add(textured_photo_entry(1, 0, seed=seed))
 
-    assert len(store._photo_tiles._tiles) <= 2 + slam_tile_cache._STALE_SLACK + 1
+    assert len(store._digests._digests) <= 2 + decoded_map._STALE_SLACK + 1
     assert store.decoded_tiles() == (
         decode_slam_tile(textured_photo_entry(0, 0, seed=199)),
         decode_slam_tile(textured_photo_entry(1, 0, seed=199)),

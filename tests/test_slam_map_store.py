@@ -18,6 +18,7 @@ from custom_components.matic_robot import slam_map_store as slam_map_store_modul
 from custom_components.matic_robot import slam_snapshot as snapshot_codec
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
+from custom_components.matic_robot.slam_decoded_map import page_digest
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     MAX_HEALTH_COUNTER,
@@ -764,26 +765,21 @@ async def test_slam_map_store_fails_closed_on_inconsistent_mission_ids(hass) -> 
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id is None
 
+    digest = page_digest(opaque_tile)
     store._async_cache_entry(
-        opaque_entry,
-        replace(opaque_tile, mission_id=7),
-        structural=False,
+        opaque_entry, replace(opaque_tile, mission_id=7), digest, structural=False
     )
     assert store.mission_identity.mission_id == 7
     with pytest.raises(DecodeError, match="identity changed"):
         store._async_cache_entry(
-            opaque_entry,
-            replace(opaque_tile, mission_id=8),
-            structural=False,
+            opaque_entry, replace(opaque_tile, mission_id=8), digest, structural=False
         )
 
     candidate_entry = synthetic_slam_entry(mission_id=2)
-    candidate_tile = await store.async_add(candidate_entry)
+    candidate_tile = replace(await store.async_add(candidate_entry), mission_id=3)
     with pytest.raises(DecodeError, match=r"candidate.*inconsistent"):
         store._async_cache_entry(
-            candidate_entry,
-            replace(candidate_tile, mission_id=3),
-            structural=False,
+            candidate_entry, candidate_tile, digest, structural=False
         )
 
 
@@ -808,6 +804,16 @@ async def test_slam_map_store_ignores_corrupt_private_cache(hass) -> None:
     await store._store.async_save({"tiles": "invalid", "structure_tiles": [None]})
     await store.async_load()
     assert store.health.invalid_tiles == 2
+
+
+async def test_slam_map_store_skips_corruption_after_load(hass) -> None:
+    store = SlamMapStore(hass, "runtime-corruption")
+    await store.async_load()
+    store._entries["bad"] = HermesCollectionEntry(b"bad", b"bad")
+    store._structure_entries["bad"] = HermesCollectionEntry(b"bad", b"bad")
+
+    assert store.decoded_tiles() == ()
+    assert store.decoded_structure_tiles() == ()
 
 
 async def test_slam_map_store_resets_missions_and_enforces_load_bound(hass) -> None:
@@ -945,10 +951,7 @@ async def test_unchanged_raw_tile_replacement_cannot_exceed_cache_byte_limit(
         await store.async_add(entry)
         await store.async_add(replacement)
 
-    assert (
-        sum(len(item.key) + len(item.value) for item in tuple(store._entries.values()))
-        <= byte_limit
-    )
+    assert snapshot_codec.stored_bytes(store._entries, {}) <= byte_limit
     assert store.tile_count == 0
     assert store.health.truncated is True
 
@@ -1061,7 +1064,6 @@ async def test_slam_map_store_requires_spatial_layer_overlap(hass) -> None:
 async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> None:
     store = SlamMapStore(hass, "live-entry")
     await store.async_load()
-
     both_layers_read = asyncio.Barrier(2)
 
     async def live_entries(name):

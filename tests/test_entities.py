@@ -74,6 +74,7 @@ from custom_components.matic_robot.plan_model import (
     PlanStopDecision,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.slam_decoded_map import DecodedMap
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     SlamMapStore,
@@ -82,6 +83,9 @@ from custom_components.matic_robot.stores import CleaningHistory
 from tests.frontend_sources import common_strings
 from tests.session_fakes import fake_session, set_operational
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
+
+_TILES = (decode_slam_tile(synthetic_slam_entry()),)
+_STRUCTURES = (decode_slam_structure_tile(synthetic_structure_entry()),)
 
 INTEGRATION = Path(__file__).parents[1] / "custom_components" / DOMAIN
 
@@ -333,7 +337,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
     slam_map = SimpleNamespace(
         async_add=AsyncMock(),
         decoded_tiles=MagicMock(return_value=()),
-        decoded_structure_tiles=MagicMock(return_value=()),
+        async_decoded_map=AsyncMock(return_value=DecodedMap(0, None, (), ())),
         tile_count=0,
         structure_tile_count=0,
         map_complete=False,
@@ -1991,8 +1995,7 @@ async def test_camera_native_pose_expiry_invalidates_cached_marker(
 async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:
     entry = _entry()
     store = entry.runtime_data.slam_map
-    store.decoded_tiles.return_value = (decode_slam_tile(synthetic_slam_entry()),)
-    store.decoded_structure_tiles.return_value = ()
+    store.async_decoded_map.return_value = DecodedMap(1, None, _TILES, ())
     store.tile_count = 1
     store.structure_tile_count = 1
     store.map_complete = True
@@ -2054,10 +2057,7 @@ async def test_photorealistic_camera_withholds_a_restored_map_before_revalidatio
     entry = _entry()
     store = entry.runtime_data.slam_map
     store.floor_plan_is_current.return_value = False
-    store.decoded_tiles.return_value = (decode_slam_tile(synthetic_slam_entry()),)
-    store.decoded_structure_tiles.return_value = (
-        decode_slam_structure_tile(synthetic_structure_entry()),
-    )
+    store.async_decoded_map.return_value = DecodedMap(1, None, _TILES, _STRUCTURES)
     entity = camera.MaticPhotorealisticMapCamera(entry)
     entity.hass = hass
 
@@ -2090,7 +2090,7 @@ async def test_photorealistic_camera_discards_render_when_floor_changes(
 ) -> None:
     entry = _entry()
     store = entry.runtime_data.slam_map
-    store.decoded_tiles.return_value = (decode_slam_tile(synthetic_slam_entry()),)
+    store.async_decoded_map.return_value = DecodedMap(1, None, _TILES, ())
     entity = camera.MaticPhotorealisticMapCamera(entry)
     entity.hass = hass
 
@@ -2210,8 +2210,8 @@ def test_photorealistic_camera_passes_both_layers_to_renderer() -> None:
         return_value=b"rendered",
     ) as render:
         result = camera._render_photorealistic_tiles(
-            (decode_slam_tile(synthetic_slam_entry()),),
-            (decode_slam_structure_tile(synthetic_structure_entry()),),
+            _TILES,
+            _STRUCTURES,
             camera._map_view(_state(floor_plan=_floor_plan())),
             floor_plan_coherent=True,
             width=640,
@@ -2230,8 +2230,8 @@ def test_photorealistic_camera_withholds_mismatched_floor_overlays() -> None:
         return_value=b"rendered",
     ) as render:
         result = camera._render_photorealistic_tiles(
-            (decode_slam_tile(synthetic_slam_entry()),),
-            (decode_slam_structure_tile(synthetic_structure_entry()),),
+            _TILES,
+            _STRUCTURES,
             camera._map_view(_state(floor_plan=_floor_plan())),
             floor_plan_coherent=False,
             width=640,

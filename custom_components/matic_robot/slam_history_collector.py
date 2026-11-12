@@ -54,20 +54,19 @@ async def async_collect_slam_history(
             if not slam_map.map_complete:
                 continue
             identity = slam_map.mission_identity
-            tiles = slam_map.decoded_tiles()
-            structure_tiles = slam_map.decoded_structure_tiles()
             current_floor_plan = floor_plan()
             # ``map_complete`` is false until both live collections have
             # revalidated a persisted map for this process. Once complete,
             # retain only a mission-correlated snapshot.
             if not _mission_matches_floor_plan(identity, current_floor_plan):
                 continue
+            decoded = await slam_map.async_decoded_map()
             try:
                 scene = await hass.async_add_executor_job(
                     partial(
                         _encode_history_scene,
-                        tiles,
-                        structure_tiles,
+                        decoded.tiles,
+                        decoded.structure_tiles,
                         current_floor_plan,
                     )
                 )

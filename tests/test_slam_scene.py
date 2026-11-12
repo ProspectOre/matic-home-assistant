@@ -78,6 +78,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.session import RobotSession, Store
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
+from custom_components.matic_robot.slam_decoded_map import DecodedMap
 from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_history import HistoryReadCapacityError
 from custom_components.matic_robot.slam_history_view import (
@@ -190,6 +191,11 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
         side_effect=lambda candidate: (
             slam_map.mission_identity is not None
             and slam_map.mission_identity.matches_floor_plan(candidate)
+        )
+    )
+    slam_map.async_decoded_map = AsyncMock(
+        side_effect=lambda: DecodedMap(
+            slam_map.revision, slam_map.mission_identity, slam_map.decoded_tiles(), ()
         )
     )
     return SimpleNamespace(

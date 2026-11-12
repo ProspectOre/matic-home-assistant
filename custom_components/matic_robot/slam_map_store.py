@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
-from itertools import chain
 from time import monotonic
 from typing import Literal
 
@@ -29,6 +28,14 @@ from .client.slam_tiles import (
     decode_slam_tile,
 )
 from .const import DOMAIN
+from .slam_decoded_map import (
+    DecodedMap,
+    Page,
+    PageDigests,
+    SharedDecode,
+    decode_photo_page,
+    decode_structure_page,
+)
 from .slam_snapshot import (
     RecoveryBaseline,
     SnapshotLimits,
@@ -41,7 +48,6 @@ from .slam_snapshot import (
     stored_bytes,
     tile_key,
 )
-from .slam_tile_cache import DecodedTiles
 
 STORAGE_VERSION = 1
 MAX_TILES = MAX_SLAM_TILES
@@ -207,8 +213,8 @@ class SlamMapStore:
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
         self._active_raw_bytes = 0
-        self._photo_tiles = DecodedTiles[SlamTile]()
-        self._structure_tiles = DecodedTiles[SlamStructureTile]()
+        self._digests = PageDigests()
+        self._decode = SharedDecode()
         self._revision = 0
         self._last_change = 0.0
         self._last_topology_change = 0.0
@@ -260,8 +266,8 @@ class SlamMapStore:
         self._entries = loaded.entries
         self._structure_entries = loaded.structure_entries
         self._active_raw_bytes = stored_bytes(self._entries, self._structure_entries)
-        self._photo_tiles = DecodedTiles(loaded.photo_tiles)
-        self._structure_tiles = DecodedTiles(loaded.structure_tiles)
+        self._digests = PageDigests(loaded.digests)
+        self._decode = SharedDecode()
         self._truncated = loaded.truncated
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
         self._dropped_structure_tiles = loaded.dropped_structure_tiles
@@ -285,7 +291,7 @@ class SlamMapStore:
             else None
         )
         self._candidates.clear()
-        self._prune_tiles()
+        self._prune_digests()
         self._retired_missions.clear()
         self._candidate_generation = 0
         self._closed = False
@@ -305,24 +311,25 @@ class SlamMapStore:
 
     async def async_add(self, entry: HermesCollectionEntry) -> SlamTile:
         """Validate, cache, and privately persist one current tile."""
-        tile = await self._hass.async_add_executor_job(decode_slam_tile, entry)
-        self._async_cache_entry(entry, tile, structural=False)
+        tile, digest = await self._hass.async_add_executor_job(decode_photo_page, entry)
+        self._async_cache_entry(entry, tile, digest, structural=False)
         return tile
 
     async def async_add_structure(
         self, entry: HermesCollectionEntry
     ) -> SlamStructureTile:
         """Validate, cache, and privately persist one structural map page."""
-        tile = await self._hass.async_add_executor_job(
-            decode_slam_structure_tile, entry
+        tile, digest = await self._hass.async_add_executor_job(
+            decode_structure_page, entry
         )
-        self._async_cache_entry(entry, tile, structural=True)
+        self._async_cache_entry(entry, tile, digest, structural=True)
         return tile
 
     def _async_cache_entry(
         self,
         entry: HermesCollectionEntry,
         tile: SlamTile | SlamStructureTile,
+        digest: bytes,
         *,
         structural: bool,
     ) -> None:
@@ -343,6 +350,7 @@ class SlamMapStore:
             self._stage_candidate(
                 entry,
                 tile,
+                digest,
                 structural=structural,
                 allow_retired=True,
                 blocks_active=(
@@ -363,7 +371,7 @@ class SlamMapStore:
             self._mission_token = mission_token
             self._mission_id = tile.mission_id
         if mission_token != self._mission_token:
-            self._stage_candidate(entry, tile, structural=structural)
+            self._stage_candidate(entry, tile, digest, structural=structural)
             return
         if (
             self._mission_id is not None
@@ -382,13 +390,10 @@ class SlamMapStore:
             # inside the retained area that it lacked fills an eviction gap.
             self._legacy_recovery.observe(key, structural=structural)
         previous = target.get(key)
-        # Same page and mission: equal decoded tiles mean unchanged content.
-        changed = (
-            previous is None or self._decoded(previous, structural=structural) != tile
-        )
+        changed = previous is None or self._digests[structural, previous] != digest
         self._active_raw_bytes += _entry_bytes(entry) - _entry_bytes(previous)
         target[key] = entry
-        self._remember(entry, tile)
+        self._remember((structural, entry), digest)
         # Once a different mission has been observed, delayed pages from the
         # active token are evidence only for the cached map.  They cannot
         # re-establish that it still represents the robot while a replacement
@@ -414,6 +419,7 @@ class SlamMapStore:
         self,
         entry: HermesCollectionEntry,
         tile: SlamTile | SlamStructureTile,
+        digest: bytes,
         *,
         structural: bool,
         allow_retired: bool = False,
@@ -453,13 +459,13 @@ class SlamMapStore:
         previous = target.get(key)
         fresh_page = (
             previous is None
-            or self._decoded(previous, structural=structural) != tile
+            or self._digests[structural, previous] != digest
             or (previous.sequence_start_ns, previous.sequence_no)
             != (entry.sequence_start_ns, entry.sequence_no)
         )
         candidate.raw_bytes += _entry_bytes(entry) - _entry_bytes(previous)
         target[key] = entry
-        self._remember(entry, tile)
+        self._remember((structural, entry), digest)
         # Fresh candidate evidence starts a bounded classification window.
         # Even an unchanged replay remains contrary live-stream evidence and
         # must immediately fail closed; ``blocks_active`` only controls whether
@@ -977,54 +983,56 @@ class SlamMapStore:
         self._schedule_candidate_expiry()
 
     def decoded_tiles(self) -> tuple[SlamTile, ...]:
-        """Return the active photographic pages, decoded when they arrived."""
-        return self._photo_tiles.tiles(self._entries.values())
+        """Return all currently valid tiles for local rendering."""
+        tiles: list[SlamTile] = []
+        for entry in self._entries.values():
+            try:
+                tiles.append(decode_slam_tile(entry))
+            except DecodeError:
+                continue
+        return tuple(tiles)
 
     def decoded_structure_tiles(self) -> tuple[SlamStructureTile, ...]:
-        """Return the active integrated-map pages, decoded when they arrived."""
-        return self._structure_tiles.tiles(self._structure_entries.values())
+        """Return all currently valid integrated-map pages for rendering."""
+        tiles: list[SlamStructureTile] = []
+        for entry in self._structure_entries.values():
+            try:
+                tiles.append(decode_slam_structure_tile(entry))
+            except DecodeError:
+                continue
+        return tuple(tiles)
 
-    def _decoded(
-        self, entry: HermesCollectionEntry, *, structural: bool
-    ) -> SlamTile | SlamStructureTile:
-        """Return the decoded tile of one retained entry."""
-        if structural:
-            return self._structure_tiles[entry]
-        return self._photo_tiles[entry]
+    async def async_decoded_map(self) -> DecodedMap:
+        """Decode the active map once for every reader of the current revision."""
+        return await self._decode.async_get(
+            self._hass,
+            self._revision,
+            self.mission_identity,
+            self._entries.values(),
+            self._structure_entries.values(),
+        )
 
-    def _remember(
-        self, entry: HermesCollectionEntry, tile: SlamTile | SlamStructureTile
-    ) -> None:
-        """Keep one retained page decoded, pruning pages no longer held."""
-        if isinstance(tile, SlamStructureTile):
-            retained = sum(map(len, self._layers(structural=True)))
-            prune = self._structure_tiles.add(entry, tile, retained)
-        else:
-            retained = sum(map(len, self._layers(structural=False)))
-            prune = self._photo_tiles.add(entry, tile, retained)
-        if prune:
-            self._prune_tiles()
+    def _remember(self, page: Page, digest: bytes) -> None:
+        """Keep the digest of one retained page, pruning pages no longer held."""
+        retained = sum(len(layer) for _structural, layer in self._layers())
+        if self._digests.add(page, digest, retained):
+            self._prune_digests()
 
-    def _prune_tiles(self) -> None:
-        """Forget decoded pages that neither the map nor a candidate holds."""
-        for structural, tiles in (
-            (False, self._photo_tiles),
-            (True, self._structure_tiles),
-        ):
-            tiles.retain(
-                chain.from_iterable(
-                    layer.values() for layer in self._layers(structural=structural)
-                )
-            )
+    def _prune_digests(self) -> None:
+        """Forget digests of pages that neither the map nor a candidate holds."""
+        self._digests.retain(
+            (structural, entry)
+            for structural, layer in self._layers()
+            for entry in layer.values()
+        )
 
-    def _layers(self, *, structural: bool) -> list[dict[str, HermesCollectionEntry]]:
-        """Return one layer of the active map and of every candidate."""
-        if structural:
-            return [
-                self._structure_entries,
-                *(item.structure_entries for item in self._candidates.values()),
-            ]
-        return [self._entries, *(item.entries for item in self._candidates.values())]
+    def _layers(self) -> Iterator[tuple[bool, dict[str, HermesCollectionEntry]]]:
+        """Yield both layers of the active map and of every candidate."""
+        yield False, self._entries
+        yield True, self._structure_entries
+        for item in self._candidates.values():
+            yield False, item.entries
+            yield True, item.structure_entries
 
     @property
     def tile_count(self) -> int:
@@ -1186,7 +1194,7 @@ class SlamMapStore:
         self._structure_entries.clear()
         self._active_raw_bytes = 0
         self._candidates.clear()
-        self._prune_tiles()
+        self._prune_digests()
         self._retired_missions.clear()
         self._candidate_generation = 0
         self._live_photo_seen = False
