@@ -7,6 +7,7 @@ import struct
 import sys
 import tomllib
 from collections.abc import Callable, Iterator
+from importlib import metadata
 from pathlib import Path
 
 import homeassistant
@@ -231,10 +232,78 @@ def test_integration_declares_its_home_assistant_runtime_contract() -> None:
     assert "bluetooth_adapters" in manifest["dependencies"]
     assert "http" in manifest["dependencies"]
     assert "zeroconf" in manifest["dependencies"]
-    assert not any(
-        requirement.startswith("cryptography")
-        for requirement in manifest["requirements"]
-    )
+    assert manifest["iot_class"] == "local_push"
+
+
+def _imported_modules() -> Iterator[str]:
+    """Every absolute module the integration imports, at any depth."""
+    for path in INTEGRATION.rglob("*.py"):
+        if "proto" in path.parts:
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                yield from (alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                yield node.module
+                if node.module == "homeassistant.components":
+                    yield from (f"{node.module}.{a.name}" for a in node.names)
+
+
+def test_manifest_declares_every_integration_and_package_the_code_imports() -> None:
+    manifest = json.loads((INTEGRATION / "manifest.json").read_text())
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    from homeassistant.const import Platform
+
+    modules = set(_imported_modules())
+    used = {
+        module.split(".")[2]
+        for module in modules
+        if module.startswith("homeassistant.components.")
+    }
+    # Entity platforms and the always-loaded core need no declaration; the
+    # Bluetooth integration comes with bluetooth_adapters.
+    implicit = {platform.value for platform in Platform} | {
+        "homeassistant",
+        "bluetooth",
+    }
+    declared = set(manifest["dependencies"]) | set(manifest["after_dependencies"])
+    assert used - implicit <= declared
+    assert declared - {"bluetooth_adapters"} <= used
+    assert manifest["after_dependencies"] == sorted(manifest["after_dependencies"])
+
+    # Hassfest rejects a requirement Home Assistant itself installs, so those
+    # stay in pyproject.toml only.
+    core = {
+        re.split(r"[<>=!~; \[]", requirement)[0].lower()
+        for requirement in metadata.requires("homeassistant") or ()
+        if "extra ==" not in requirement
+    }
+    assert set(manifest["requirements"]) == {
+        requirement
+        for requirement in project["dependencies"]
+        if re.split(r"[<>=]", requirement)[0].lower() not in core
+    }
+    packages = {module.split(".")[0] for module in modules}
+    # Home Assistant itself, the Bluetooth integration's requirements and the
+    # standard library provide the rest.
+    provided = {"homeassistant", "aiohttp", "probatio", "zeroconf"} | {
+        "bleak",
+        "bleak_retry_connector",
+        "dbus_fast",
+    }
+    required = {
+        "PIL": "Pillow",
+        "cryptography": "cryptography",
+        "google": "protobuf",
+        "grpclib": "grpclib",
+        "h2": "h2",
+        "numpy": "numpy",
+    }
+    third_party = packages - set(sys.stdlib_module_names) - {"__future__"}
+    assert third_party - provided == set(required)
+    assert {
+        re.split(r"[<>=]", requirement)[0] for requirement in project["dependencies"]
+    } == set(required.values())
 
 
 def test_generated_proto_has_no_newer_runtime_guard() -> None:
@@ -363,10 +432,15 @@ def _blueprints() -> Copy:
 
 _LLM_COPY = {
     "LLM_API_NAME",
+    "READ_ONLY_LLM_API_NAME",
     "FIRMWARE_LLM_API_NAME",
     "PLAIN_WORDS_PROMPT",
     "NON_ADMIN_PROMPT",
     "ROBOT_STATUS_PROMPT",
+    "ROBOT_CONTROL_PROMPT",
+    "_TIMING_PROMPT",
+    "_CONTROL_PROMPT",
+    "_EVIDENCE_PROMPT",
     "FIRMWARE_RESEARCH_PROMPT",
     "_ERRORS",
     "description",
@@ -459,7 +533,7 @@ def _raised_keys() -> Iterator[tuple[str, int, str, frozenset[str] | None]]:
                 getattr(node.func, "id", None) or getattr(node.func, "attr", "")
             )
             if not isinstance(node, ast.Call) or not (
-                name.endswith("Error")
+                name.endswith(("Error", "NotReady", "AuthFailed"))
                 or name
                 in {"_validation_error", "validation_error", "_error", "_async_refusal"}
             ):

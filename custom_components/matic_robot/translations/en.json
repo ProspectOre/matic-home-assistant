@@ -1615,6 +1615,9 @@
     "llm_no_robot": {
       "message": "No robot is set up in Home Assistant. Set up the robot, then try again."
     },
+    "llm_robot_not_exposed": {
+      "message": "No robot is exposed to this assistant. Expose the robot's vacuum in Settings > Voice assistants, then try again."
+    },
     "llm_robot_required": {
       "message": "More than one robot is set up. Name the robot to use, then try again."
     },
@@ -1773,6 +1776,21 @@
     },
     "robot_command_failed": {
       "message": "The robot couldn't do that. Check the robot, then try again."
+    },
+    "run_changed": {
+      "message": "The cleaning run changed before Home Assistant could finish this step. Check the robot, then try again."
+    },
+    "plan_state_unsaved": {
+      "message": "Home Assistant couldn't save the cleaning plans. Check its storage and logs, then try again."
+    },
+    "integration_unloading": {
+      "message": "Matic is reloading or shutting down. Try again once it has started."
+    },
+    "robot_credential_rejected": {
+      "message": "The robot rejected Home Assistant's pairing. Pair the robot again to reconnect."
+    },
+    "robot_not_ready": {
+      "message": "Home Assistant can't reach the robot yet and will keep trying.\nDetails: {error}"
     },
     "room_interrupted": {
       "message": "Cleaning in {room} stopped before the robot confirmed it was done, so the room stays due for the next run. Check the robot, then start the plan again."

@@ -97,9 +97,9 @@ and [plan preparation](../custom_components/matic_robot/service_plans.py)
 validate and prepare requests. Local HTTP views use the shared
 [entry lookup](../custom_components/matic_robot/http.py) and expose bounded,
 authorized projections for [plans](../custom_components/matic_robot/plan_views.py)
-and [areas](../custom_components/matic_robot/area_views.py). Assistant API
-registration uses [shared authorization](../custom_components/matic_robot/llm_common.py)
-and separate modules for control, firmware, plan, history and status tools.
+and [areas](../custom_components/matic_robot/area_views.py). The [assistant APIs](../custom_components/matic_robot/llm.py)
+are read-only status, control (status plus control tools, under 0.5's id) and firmware research; Assist gets status and control.
+[Shared authorization](../custom_components/matic_robot/llm_common.py) admits current administrators and, on every path, only robots whose vacuum is exposed to the calling assistant.
 Interface adapters do not establish independent cleaning or map truth. Actions, assistant tools, buttons and Photo patrol send direct commands through [robot controls](../custom_components/matic_robot/robot_controls.py), not `vacuum.send_command`, and like a vacuum action send nothing while the robot is unreachable; `vacuum.send_command` keeps the [documented commands](robot-command-actions.md), `resume` for Matic Map, and until 0.7 the deprecated clean and motion commands.
 
 [Photo patrol](../custom_components/matic_robot/photo_patrol.py) checks privacy,

@@ -497,7 +497,11 @@ async def async_recover_managed_run(
                 or not completion_is_current()
                 or await runtime.client.async_get_cleaning_session_identity() != b""
             ):
-                raise HomeAssistantError("Completion recovery was superseded")
+                raise HomeAssistantError(
+                    "Completion recovery was superseded",
+                    translation_domain=DOMAIN,
+                    translation_key="run_changed",
+                )
             return records
 
         completion_sessions: list[str] = []

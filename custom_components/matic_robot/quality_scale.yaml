@@ -17,9 +17,7 @@ rules:
   docs-high-level-description: done
   docs-installation-instructions: done
   docs-removal-instructions: done
-  docs-triggers:
-    status: exempt
-    comment: This integration does not provide trigger platforms.
+  docs-triggers: done
   entity-unique-id: done
   has-entity-name: done
   runtime-data: done

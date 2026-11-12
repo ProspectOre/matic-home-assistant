@@ -2,8 +2,16 @@
   "domain": "matic_robot",
   "name": "Matic (Unofficial)",
   "after_dependencies": [
+    "ai_task",
+    "automation",
+    "device_automation",
     "frontend",
-    "recorder"
+    "llm",
+    "media_source",
+    "panel_custom",
+    "recorder",
+    "repairs",
+    "websocket_api"
   ],
   "categories": [
     "appliances_cleaning.cleaning"

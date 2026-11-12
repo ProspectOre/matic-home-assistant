@@ -23,6 +23,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from . import native_history, plan_storage, plan_timing
+from .const import DOMAIN
 from .plan_model import (
     PlanStopDecision,
     _has_frozen_stop_policy,
@@ -617,7 +618,11 @@ class RunControl:
             or admission == "closed"
             or (admission == "managed_only" and not managed_owner)
         ):
-            raise HomeAssistantError("Matic commands are unavailable during unload")
+            raise HomeAssistantError(
+                "Matic commands are unavailable during unload",
+                translation_domain=DOMAIN,
+                translation_key="integration_unloading",
+            )
 
     @asynccontextmanager
     async def external_command(self, serial_number: str) -> AsyncIterator[None]:

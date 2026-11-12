@@ -24,9 +24,7 @@ from .client.coverage_receipts import (
     coverage_region_hash,
 )
 from .client.models import FloorPlan
-from .const import (
-    MAX_ROOM_SEQUENCE_SIZE,
-)
+from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .coverage_accounting import (
     CoverageEvidence,
     coverage_evidence_from_storage,
@@ -302,7 +300,9 @@ class PlanRecovery:
                     or not _dispatching_room_leg(checkpoint)
                 ):
                     raise HomeAssistantError(
-                        "Mixed mission checkpoint is not dispatchable"
+                        "Mixed mission checkpoint is not dispatchable",
+                        translation_domain=DOMAIN,
+                        translation_key="run_changed",
                     )
                 checkpoint["mixed_initial_session_hash"] = session_identity_hash
                 await self.repository.store.async_save(self.repository.data)
@@ -328,7 +328,11 @@ class PlanRecovery:
             or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
             or checkpoint.get("stop_intent") not in {None, "after_room"}
         ):
-            raise HomeAssistantError("Mixed mission STOP no longer owns its checkpoint")
+            raise HomeAssistantError(
+                "Mixed mission STOP no longer owns its checkpoint",
+                translation_domain=DOMAIN,
+                translation_key="run_changed",
+            )
         checkpoint["stop_intent"] = "immediate"
         self.control.mark_stop_pending(serial_number, run_id=run_id)
         await self.repository.async_save_and_notify(serial_number)

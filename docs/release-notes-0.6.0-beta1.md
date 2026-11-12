@@ -131,6 +131,12 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
 - **Recent runs, schedules and zones.** New read-only tools list recent cleans
   and why each ended, the robot's schedules with the runs coming up, and the
   no-go zones with the rooms they cover.
+- **Read-only API.** **Matic: Robot status, read-only** gives an agent or MCP
+  client the read tools alone. The API 0.5 called **Matic: Robot status** is
+  now **Matic: Robot status and control**; agents and MCP servers set up with
+  it keep every tool. See [assistant tools](assistant-tools.md).
+- **Exposure applies everywhere.** MCP clients and conversation agents now see
+  only robots whose vacuum is exposed to Assist, as Assist already did.
 
 ## Removed in 0.6
 
@@ -192,6 +198,9 @@ and the first use of each logs a warning. Matic 0.7 removes them.
   its `run_id`, instead of when the run ends. An automation that waited for the
   clean to finish, or caught a failed run as a failed action, needs `wait: true`;
   see [actions](actions.md#cleaning).
+- An MCP client or conversation agent using the Matic assistant tools sees
+  only robots whose vacuum is exposed under **Settings > Voice assistants >
+  Expose**. Expose the vacuum if a tool says no robot is exposed.
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
 - Make a Home Assistant backup before installing. 0.6 stores saved maps and
