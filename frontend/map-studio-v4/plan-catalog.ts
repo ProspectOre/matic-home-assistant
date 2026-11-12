@@ -69,7 +69,8 @@ const parseCadenceReasons = (value: unknown): readonly CadenceReason[] => {
   if (value === undefined || value === null) return [];
   const validReasons: readonly CadenceReason[] = [
     "coverage_requires_vacuum", "mop_due", "coverage_due", "room_not_on_current_map", "identity_changed",
-    "shared_schedule_unavailable", "mop_progress_unverified", "coverage_progress_unverified", "invalid_cadence_policy",
+    "shared_schedule_unavailable", "mop_progress_unverified", "coverage_progress_unverified", "cadence_progress_unverified",
+    "invalid_cadence_policy",
   ];
   if (!Array.isArray(value) || value.length > validReasons.length
     || value.some((reason) => !validReasons.includes(reason as CadenceReason))) {

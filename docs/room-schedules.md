@@ -104,5 +104,10 @@ plan has no unsaved changes; cleaning history is kept separately. A shared reset
 participant in that room's shared schedule. Edits and resets wait while the
 affected room is queued, running, or its result is still being confirmed.
 
+When Home Assistant can't confirm a shared schedule's counts, plans that use it
+can't run until you choose **Reset schedule progress** under the room's reason.
+That resets mopping and the vacuum rotation together, since resetting one of
+them leaves the other's count unconfirmed.
+
 The current run keeps the settings accepted when it started. Review the next
 run separately; changing future preferences does not rewrite running work.

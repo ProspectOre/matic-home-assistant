@@ -330,10 +330,12 @@ export const resetRoomCadence = async (context: CatalogWriteContext, action: Res
   const reset = await serviceMutation(
     context,
     "reset_room_cadence",
-    { plan: action.planId, room_id: action.roomId, modes: [action.mode] },
-    action.mode === "mop"
-      ? notice("success", "v4_notice_reset_mop", "Mopping progress reset")
-      : notice("success", "v4_notice_reset_vacuum", "Vacuum rotation progress reset"),
+    { plan: action.planId, room_id: action.roomId, modes: action.mode === "both" ? ["mop", "coverage"] : [action.mode] },
+    action.mode === "both"
+      ? notice("success", "v4_notice_reset_schedule", "Schedule progress reset")
+      : action.mode === "mop"
+        ? notice("success", "v4_notice_reset_mop", "Mopping progress reset")
+        : notice("success", "v4_notice_reset_vacuum", "Vacuum rotation progress reset"),
   );
   if (!reset) return;
   const catalog = await refreshPlansAfterWrite(context);

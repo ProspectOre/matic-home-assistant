@@ -55,7 +55,7 @@ export const PLAN_BLOCKERS: Partial<Record<NextRunPreviewBlocker, Reason>> = {
 /** One room's blocking schedule reason, most specific first (plan.md R3), or null when it can run. */
 export const roomBlockReason = (reasons: readonly CadenceReason[], room: string) => {
   const has = (...blocking: CadenceReason[]): boolean => blocking.some((reason) => reasons.includes(reason));
-  return has("mop_progress_unverified", "coverage_progress_unverified")
+  return has("mop_progress_unverified", "coverage_progress_unverified", "cadence_progress_unverified")
     ? { reason: "Can't run this plan until you reset {room}'s schedule progress, which Home Assistant can't confirm.", reasonKey: "v4_reason_plan_room_progress", reasonPlaceholders: { room } }
     : has("identity_changed")
       ? { reason: "Can't run this plan until you review {room}'s schedule on this map.", reasonKey: "v4_reason_plan_room_map", reasonPlaceholders: { room } }

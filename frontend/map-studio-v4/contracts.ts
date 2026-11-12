@@ -90,11 +90,14 @@ export type DialogKind =
   | "confirmDeleteSchedule"
   | "confirmResetCadence";
 
+/** "both" resets a shared schedule whose counting Home Assistant can't confirm. */
+export type CadenceResetMode = "mop" | "coverage" | "both";
+
 export interface ResetCadenceAction {
   readonly id: "reset-room-cadence";
   readonly planId: string;
   readonly roomId: string;
-  readonly mode: "mop" | "coverage";
+  readonly mode: CadenceResetMode;
 }
 
 export interface DeleteSharedCadenceAction {
@@ -451,7 +454,7 @@ export interface ViewState {
   readonly fullMap: boolean;
   readonly precisionOpen: boolean;
   readonly dialog: DialogKind | null;
-  readonly cadenceResetRequest: { readonly planId: string; readonly roomId: string; readonly mode: "mop" | "coverage" } | null;
+  readonly cadenceResetRequest: { readonly planId: string; readonly roomId: string; readonly mode: CadenceResetMode } | null;
   readonly scheduleDeleteRequest: {
     readonly planId: string;
     readonly roomId: string;
@@ -553,7 +556,7 @@ export type WorkspaceIntent =
     readonly coverageSetting?: CoverageSetting;
   }
   | { readonly type: "retry-room-preview" }
-  | { readonly type: "request-room-cadence-reset"; readonly planId: string; readonly roomId: string; readonly mode: "mop" | "coverage" }
+  | { readonly type: "request-room-cadence-reset"; readonly planId: string; readonly roomId: string; readonly mode: CadenceResetMode }
   | {
       readonly type: "request-schedule-delete";
       readonly planId: string;

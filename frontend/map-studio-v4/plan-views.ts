@@ -28,8 +28,8 @@ const MAX_PLAN_AREAS = MAX_ROOM_SEQUENCE_SIZE;
 
 /** The saved schedule reasons that keep a room's run from starting (plan.md R3). */
 const BLOCKING: readonly CadenceReason[] = [
-  "mop_progress_unverified", "coverage_progress_unverified", "identity_changed", "room_not_on_current_map",
-  "shared_schedule_unavailable", "invalid_cadence_policy", "coverage_requires_vacuum",
+  "mop_progress_unverified", "coverage_progress_unverified", "cadence_progress_unverified", "identity_changed",
+  "room_not_on_current_map", "shared_schedule_unavailable", "invalid_cadence_policy", "coverage_requires_vacuum",
 ];
 
 /**

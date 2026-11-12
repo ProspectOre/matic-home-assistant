@@ -8,7 +8,7 @@ import type {
   RoomCadencePolicy,
   RoomCadenceProgress,
 } from "./backend-contracts";
-import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import type { CadenceResetMode, WorkspaceIntent, WorkspaceState } from "./contracts";
 import { formatNumber, type Translate } from "./plan-copy";
 import { roomBlockReason } from "./workflow-actions";
 import { icon, iconChevronRight, iconNoticeWarning, iconOverflow } from "./icons";
@@ -51,6 +51,9 @@ export const cadenceProblem = (t: Translate, reasons: readonly CadenceReason[]):
       unverified.push(t("v4_cadence_coverage_progress_unverified", "Can't run this schedule until you reset its vacuum rotation progress, which Home Assistant can't confirm."));
     }
     return unverified.join(" ");
+  }
+  if (reasons.includes("cadence_progress_unverified")) {
+    return t("v4_cadence_progress_unverified", "Can't run this schedule until you reset its progress, which Home Assistant can't confirm.");
   }
   if (reasons.includes("invalid_cadence_policy")) {
     return t("v4_cadence_policy_invalid", "The room schedule needs review before it can be applied.");
@@ -129,8 +132,11 @@ export interface ScheduleModel {
   readonly next: NextClean | null;
   readonly explanation: string | null;
   readonly scope: "shared" | "plan";
-  /** Which progress the room menu can reset: only saved progress. */
-  readonly resettable: { readonly mop: boolean; readonly coverage: boolean };
+  /**
+   * Which progress the room menu can reset: only saved progress. `both`: a
+   * shared schedule's unverified counting, reset under the room's reason.
+   */
+  readonly resettable: { readonly mop: boolean; readonly coverage: boolean; readonly both: boolean };
   /** Why "Across all plans" can't be chosen: a shared schedule this room's mode can't use. */
   readonly sharedReason: string | null;
 }
@@ -176,7 +182,9 @@ const rotationLabel = (t: Translate, locale: string, level: CoverageSetting, eve
   ROTATION[level](t, every === null ? null : formatNumber(locale, every), every === 1);
 
 /** The reasons that hold the whole block, shown under its heading (plan.md R3 text). */
-const ROOM_REASONS: readonly CadenceReason[] = ["identity_changed", "room_not_on_current_map", "shared_schedule_unavailable", "invalid_cadence_policy"];
+const ROOM_REASONS: readonly CadenceReason[] = [
+  "cadence_progress_unverified", "identity_changed", "room_not_on_current_map", "shared_schedule_unavailable", "invalid_cadence_policy",
+];
 
 interface Facts {
   readonly policy: RoomCadencePolicy;
@@ -388,6 +396,7 @@ export const scheduleModel = (t: Translate, locale: string, input: ScheduleInput
     resettable: {
       mop: savedHas(saved?.cadenceProgress?.mopProgress, saved?.cadence?.doMopNext, "mop_progress_unverified"),
       coverage: savedHas(saved?.cadenceProgress?.coverageProgress, saved?.cadence?.doCoverageNext, "coverage_progress_unverified"),
+      both: Boolean(saved?.cadenceReasons?.includes("cadence_progress_unverified")),
     },
     sharedReason: !unjoinable(f)
       ? null
@@ -554,14 +563,16 @@ export const scheduleBlock = (context: ScheduleContext, room: PlanRoom, index: n
     ? t("v4_reason_delete_schedule_unsaved", "Save or cancel your changes before deleting this schedule.")
     : t("v4_reason_delete_schedule_busy", "Wait until the robot is idle and the map is live before deleting this schedule.");
   const resetOff = Boolean(held || block);
-  const resetButton = (kind: ScheduleKind, className: string, reasonId: string, role: "menuitem" | null = null) => html`<button
+  const resetButton = (kind: CadenceResetMode, className: string, reasonId: string, role: "menuitem" | null = null) => html`<button
     class=${className}
     type="button"
     role=${role ?? nothing}
     tabindex=${role ? "-1" : nothing}
-    aria-label=${kind === "mop"
-      ? t("v4_reset_mop_cadence_button_named", "Reset mopping progress for {room}", { room: name })
-      : t("v4_reset_coverage_cadence_button_named", "Reset vacuum rotation progress for {room}", { room: name })}
+    aria-label=${kind === "both"
+      ? t("v4_reset_cadence_button_named", "Reset schedule progress for {room}", { room: name })
+      : kind === "mop"
+        ? t("v4_reset_mop_cadence_button_named", "Reset mopping progress for {room}", { room: name })
+        : t("v4_reset_coverage_cadence_button_named", "Reset vacuum rotation progress for {room}", { room: name })}
     aria-disabled=${resetOff ? "true" : nothing}
     aria-describedby=${(held ?? (block ? reasonId : null)) ?? nothing}
     @click=${() => {
@@ -569,7 +580,9 @@ export const scheduleBlock = (context: ScheduleContext, room: PlanRoom, index: n
       context.menu.close(false);
       context.intent({ type: "request-room-cadence-reset", planId: draft.id, roomId: room.roomId, mode: kind });
     }}
-  >${kind === "mop" ? t("v4_reset_mop_cadence_button", "Reset mopping") : t("v4_reset_coverage_cadence_button", "Reset vacuum rotation")}</button>`;
+  >${kind === "both"
+    ? t("v4_reset_cadence_button", "Reset schedule progress")
+    : kind === "mop" ? t("v4_reset_mop_cadence_button", "Reset mopping") : t("v4_reset_coverage_cadence_button", "Reset vacuum rotation")}</button>`;
   const more = t("v4_room_more_named", "More for {room}", { room: name });
   const { menu } = context;
   const overflow = draft.id && (model.resettable.mop || model.resettable.coverage || canDeleteShared) ? html`<div class="room-more" @keydown=${menu.keydown} @focusout=${menu.focusout}>
@@ -668,6 +681,8 @@ export const scheduleBlock = (context: ScheduleContext, room: PlanRoom, index: n
     <div class="schedule-head"><h3>${t("v4_room_schedule", "Smart cleaning")}</h3>${overflow}</div>
     <p class="schedule-note">${t("v4_cadence_smart_intro", "Add mopping or vary vacuum coverage automatically, based on completed cleans.")}</p>
     ${model.roomReason ? reasonLine(null, withRoom(model.roomReason, name), "p") : nothing}
+    ${model.resettable.both && draft.id ? html`${resetButton("both", "ms-btn ms-btn--secondary", "sched-reset-reason")}
+      ${block ? reasonLine("sched-reset-reason", block, "p") : nothing}` : nothing}
     ${model.sharedHint ? html`<p class="schedule-note">${withRoom(input.catalogRoom?.sharedCadence?.mopEveryN === 1
       ? t("v4_cadence_shared_every_clean_hint", "{room}'s shared setting mops every clean. New smart cleaning stays in this plan; use Advanced to join the existing setting.", { room: ROOM_MARK })
       : t("v4_cadence_shared_available", "{room} has a shared schedule, and turning on a row uses it.", { room: ROOM_MARK }), name)}</p>` : nothing}
