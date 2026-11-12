@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import partial
 from http import HTTPStatus
 from typing import Any
 
@@ -14,6 +15,7 @@ from homeassistant.util import slugify
 
 from .area_binding import (
     AreaBindingStatus,
+    MapBinding,
     area_binding_allows_review,
     area_binding_status,
     binding_for_area,
@@ -123,61 +125,30 @@ class MaticAreasView(HomeAssistantView):
                 },
             )
         serial_number = str(runtime.session.info.serial_number)
-        areas = []
-        room_geometry = None
-        for area_id, area in runtime.cleaning_plans.catalog.areas(
-            serial_number
-        ).items():
-            uses_indexed_binding = area_binding_needs_geometry_index(area)
-            if uses_indexed_binding and room_geometry is None:
-                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
-            status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
-            if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
-            can_rebind = area_binding_allows_review(
-                area,
+        catalog = runtime.cleaning_plans.catalog
+        payload = await hass.async_add_executor_job(
+            partial(
+                _project_areas,
+                entry_id,
                 floor_plan,
-                status=status,
-                room_geometry=room_geometry,
-                circles_already_validated=uses_indexed_binding,
+                catalog.areas(serial_number),
+                catalog.selected_area(serial_number),
+                runtime.session.telemetry.value.zones,
             )
-            areas.append(
-                {
-                    "id": area_id,
-                    "name": str(area.get("name", area_id)),
-                    "circles": area.get("circles", [])
-                    if status is AreaBindingStatus.CURRENT or can_rebind
-                    else [],
-                    **(
-                        {"outline": area["outline"]}
-                        if area.get("outline") is not None
-                        and (status is AreaBindingStatus.CURRENT or can_rebind)
-                        else {}
-                    ),
-                    "cleaning_mode": area.get(
-                        "cleaning_mode", CleaningMode.VACUUM.value
-                    ),
-                    "coverage_setting": area.get(
-                        "coverage_setting", CoverageSetting.OPTIMAL.value
-                    ),
-                    "status": status.value,
-                    "can_rebind": can_rebind,
-                }
-            )
-        return self.json(
-            {
-                "scene_url": scene_api_url(entry_id),
-                "rooms": self._rooms(floor_plan),
-                "areas": areas,
-                "selected_area": runtime.cleaning_plans.catalog.selected_area(
-                    serial_number
-                ),
-                "zones": self._zones(
-                    runtime.session.telemetry.value.zones, floor_plan, areas
-                ),
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
         )
+        if (
+            runtime_for_entry(hass, entry_id) is not runtime
+            or runtime.session.floor.value != floor_plan
+            or not runtime.slam_map.floor_plan_is_current(floor_plan)
+        ):
+            return web.Response(
+                status=HTTPStatus.CONFLICT,
+                headers={
+                    **PRIVATE_NO_STORE_HEADERS,
+                    "X-Matic-Areas-Conflict": "map-rechecking",
+                },
+            )
+        return self.json(payload, headers=PRIVATE_NO_STORE_HEADERS)
 
     @require_admin
     async def post(self, request: web.Request, entry_id: str) -> web.Response:
@@ -220,12 +191,11 @@ class MaticAreasView(HomeAssistantView):
             name = str(body["name"]).strip()
             if not 1 <= len(name) <= 128:
                 raise ValueError
-            rooms = self._rooms(floor_plan)
-            circles = AreaGeometry(rooms).validate(body["circles"])
-            outline = validate_outline(body.get("outline"), circles)
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
             coverage_setting = CoverageSetting(str(body["coverage_setting"]))
-            binding = binding_for_area(floor_plan, circles)
+            circles, outline, binding = await hass.async_add_executor_job(
+                partial(_bind_area, floor_plan, body["circles"], body.get("outline"))
+            )
         except KeyError, TypeError, ValueError, probatio.Invalid:
             return web.Response(
                 status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS
@@ -348,3 +318,67 @@ class MaticAreasView(HomeAssistantView):
         return web.Response(
             status=HTTPStatus.NO_CONTENT, headers=PRIVATE_NO_STORE_HEADERS
         )
+
+
+def _project_areas(
+    entry_id: str,
+    floor_plan: FloorPlan,
+    saved_areas: dict[str, dict[str, Any]],
+    selected_area: str | None,
+    zones: tuple[MapZone, ...],
+) -> dict[str, object]:
+    """Bind saved areas to one floor plan, off the event loop."""
+    areas = []
+    room_geometry = None
+    for area_id, area in saved_areas.items():
+        uses_indexed_binding = area_binding_needs_geometry_index(area)
+        if uses_indexed_binding and room_geometry is None:
+            room_geometry = RoomGeometryIndex(MaticAreasView._rooms(floor_plan))
+        status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
+        if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
+            room_geometry = RoomGeometryIndex(MaticAreasView._rooms(floor_plan))
+        can_rebind = area_binding_allows_review(
+            area,
+            floor_plan,
+            status=status,
+            room_geometry=room_geometry,
+            circles_already_validated=uses_indexed_binding,
+        )
+        bound = status is AreaBindingStatus.CURRENT or can_rebind
+        areas.append(
+            {
+                "id": area_id,
+                "name": str(area.get("name", area_id)),
+                "circles": area.get("circles", []) if bound else [],
+                **(
+                    {"outline": area["outline"]}
+                    if area.get("outline") is not None and bound
+                    else {}
+                ),
+                "cleaning_mode": area.get("cleaning_mode", CleaningMode.VACUUM.value),
+                "coverage_setting": area.get(
+                    "coverage_setting", CoverageSetting.OPTIMAL.value
+                ),
+                "status": status.value,
+                "can_rebind": can_rebind,
+            }
+        )
+    return {
+        "scene_url": scene_api_url(entry_id),
+        "rooms": MaticAreasView._rooms(floor_plan),
+        "areas": areas,
+        "selected_area": selected_area,
+        "zones": MaticAreasView._zones(zones, floor_plan, areas),
+    }
+
+
+def _bind_area(
+    floor_plan: FloorPlan, circles: Any, outline: Any
+) -> tuple[list[dict[str, float]], list[dict[str, float]] | None, MapBinding]:
+    """Validate one drawn area and bind it to the floor plan, off the event loop."""
+    valid_circles = AreaGeometry(MaticAreasView._rooms(floor_plan)).validate(circles)
+    return (
+        valid_circles,
+        validate_outline(outline, valid_circles),
+        binding_for_area(floor_plan, valid_circles),
+    )

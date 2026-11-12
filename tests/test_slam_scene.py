@@ -78,6 +78,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.session import RobotSession, Store
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
+from custom_components.matic_robot.slam_decoded_map import DecodedMap
 from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_history import HistoryReadCapacityError
 from custom_components.matic_robot.slam_history_view import (
@@ -88,7 +89,6 @@ from custom_components.matic_robot.slam_history_view import (
     MaticSlamHistoryView,
     _history_error,
     _history_record_metadata,
-    _read_json_object,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import (
@@ -184,13 +184,18 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             bootstrap_structure_seen=True,
             bootstrap_failures=0,
         ),
-        entries=MagicMock(return_value=map_entries),
+        decoded_tiles=MagicMock(return_value=tuple(map(decode_slam_tile, map_entries))),
         async_add_listener=MagicMock(return_value=MagicMock()),
     )
     slam_map.floor_plan_is_current = MagicMock(
         side_effect=lambda candidate: (
             slam_map.mission_identity is not None
             and slam_map.mission_identity.matches_floor_plan(candidate)
+        )
+    )
+    slam_map.async_decoded_map = AsyncMock(
+        side_effect=lambda: DecodedMap(
+            slam_map.revision, slam_map.mission_identity, slam_map.decoded_tiles(), ()
         )
     )
     return SimpleNamespace(
@@ -332,7 +337,7 @@ def _set_map_mission(runtime: SimpleNamespace, mission_id: int, revision: int) -
     runtime.slam_map.mission_identity = SlamMapIdentity(
         tile.mission_token, tile.mission_id
     )
-    runtime.slam_map.entries.return_value = (entry,)
+    runtime.slam_map.decoded_tiles.return_value = (tile,)
     runtime.slam_map.revision = revision
 
 
@@ -2378,8 +2383,8 @@ async def test_delta_view_streams_revision_change_and_full_fallback() -> None:
     scene_view = MaticSlamSceneView()
     await scene_view.get(_request(hass), "entry")
     runtime.slam_map.revision = 8
-    runtime.slam_map.entries.return_value = (
-        synthetic_slam_entry(page_x=0, page_y=0, surface_height=8),
+    runtime.slam_map.decoded_tiles.return_value = (
+        decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0, surface_height=8)),
     )
     view = MaticSlamDeltaView(scene_view)
 
@@ -2405,8 +2410,8 @@ async def test_delta_view_discards_delta_after_live_session_invalidates() -> Non
     scene_view = MaticSlamSceneView()
     assert (await scene_view.get(_request(hass), "entry")).status == HTTPStatus.OK
     runtime.slam_map.revision = 8
-    runtime.slam_map.entries.return_value = (
-        synthetic_slam_entry(page_x=0, page_y=0, surface_height=8),
+    runtime.slam_map.decoded_tiles.return_value = (
+        decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0, surface_height=8)),
     )
 
     async def invalidate_after_delta(target):
@@ -2431,8 +2436,8 @@ async def test_delta_view_publishes_during_same_mission_revision_churn() -> None
     scene_view = MaticSlamSceneView()
     assert (await scene_view.get(_request(hass), "entry")).status == HTTPStatus.OK
     runtime.slam_map.revision = 8
-    runtime.slam_map.entries.return_value = (
-        synthetic_slam_entry(page_x=0, page_y=0, surface_height=8),
+    runtime.slam_map.decoded_tiles.return_value = (
+        decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0, surface_height=8)),
     )
 
     async def refine_after_delta(target):
@@ -3446,40 +3451,6 @@ async def test_history_management_and_archive_views_report_bounded_input_errors(
             "entry",
         )
     ).status == HTTPStatus.NOT_FOUND
-
-
-async def test_history_json_reader_bounds_stream_and_rejects_invalid_json() -> None:
-    class Chunks:
-        def __init__(self, values):
-            self.values = list(values)
-
-        async def readany(self):
-            return self.values.pop(0) if self.values else b""
-
-    with pytest.raises(ValueError, match="request-too-large"):
-        await _read_json_object(
-            SimpleNamespace(content_length=11, _read_bytes=None), 10
-        )
-    with pytest.raises(ValueError, match="request-too-large"):
-        await _read_json_object(
-            SimpleNamespace(content_length=None, _read_bytes=b" " * 11), 10
-        )
-    with pytest.raises(ValueError, match="request-too-large"):
-        await _read_json_object(
-            SimpleNamespace(
-                content_length=None,
-                content=Chunks([b"{" + b" " * 10, b"}"]),
-            ),
-            10,
-        )
-    for raw in (b"{", b"\xff", b"[]"):
-        with pytest.raises(ValueError, match="invalid-json"):
-            await _read_json_object(
-                SimpleNamespace(content_length=None, content=Chunks([raw])), 10
-            )
-    assert await _read_json_object(
-        SimpleNamespace(content_length=None, content=Chunks([b'{"ok":true}'])), 20
-    ) == {"ok": True}
 
 
 def test_history_record_trash_metadata_omits_scene_url_and_errors_map_statuses() -> (

@@ -18,6 +18,7 @@ from custom_components.matic_robot import slam_map_store as slam_map_store_modul
 from custom_components.matic_robot import slam_snapshot as snapshot_codec
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
+from custom_components.matic_robot.slam_decoded_map import page_digest
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     MAX_HEALTH_COUNTER,
@@ -37,7 +38,7 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     await asyncio.sleep(0)
     await hass.async_block_till_done()
     assert store.tile_count == 1
-    assert store.entries() == (entry,)
+    assert tuple(store._entries.values()) == (entry,)
     assert store.revision == 1
     assert store.decoded_tiles() == (tile,)
     assert store.mission_identity is not None
@@ -180,8 +181,8 @@ async def test_slam_map_store_preserves_new_floor_pages_until_selection_updates(
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id == 2
     assert store.live_session_verified
-    assert store.entries() == (new_photo,)
-    assert store.structure_entries() == (new_structure,)
+    assert tuple(store._entries.values()) == (new_photo,)
+    assert tuple(store._structure_entries.values()) == (new_structure,)
 
 
 async def test_slam_map_store_stages_retired_floor_pages_before_return_selection(
@@ -215,8 +216,8 @@ async def test_slam_map_store_stages_retired_floor_pages_before_return_selection
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id == 1
     assert store.live_session_verified
-    assert store.entries() == (return_photo,)
-    assert store.structure_entries() == (return_structure,)
+    assert tuple(store._entries.values()) == (return_photo,)
+    assert tuple(store._structure_entries.values()) == (return_structure,)
 
 
 async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
@@ -764,26 +765,21 @@ async def test_slam_map_store_fails_closed_on_inconsistent_mission_ids(hass) -> 
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id is None
 
+    digest = page_digest(opaque_tile)
     store._async_cache_entry(
-        opaque_entry,
-        replace(opaque_tile, mission_id=7),
-        structural=False,
+        opaque_entry, replace(opaque_tile, mission_id=7), digest, structural=False
     )
     assert store.mission_identity.mission_id == 7
     with pytest.raises(DecodeError, match="identity changed"):
         store._async_cache_entry(
-            opaque_entry,
-            replace(opaque_tile, mission_id=8),
-            structural=False,
+            opaque_entry, replace(opaque_tile, mission_id=8), digest, structural=False
         )
 
     candidate_entry = synthetic_slam_entry(mission_id=2)
-    candidate_tile = await store.async_add(candidate_entry)
+    candidate_tile = replace(await store.async_add(candidate_entry), mission_id=3)
     with pytest.raises(DecodeError, match=r"candidate.*inconsistent"):
         store._async_cache_entry(
-            candidate_entry,
-            replace(candidate_tile, mission_id=3),
-            structural=False,
+            candidate_entry, candidate_tile, digest, structural=False
         )
 
 
@@ -887,7 +883,7 @@ async def test_slam_map_store_round_trips_integrated_pages(hass) -> None:
     await asyncio.sleep(0)
     await hass.async_block_till_done()
     assert store.structure_tile_count == 1
-    assert store.structure_entries() == (entry,)
+    assert tuple(store._structure_entries.values()) == (entry,)
     assert store.decoded_structure_tiles() == (tile,)
 
     await store.async_add_structure(entry)
@@ -925,7 +921,7 @@ async def test_slam_map_store_validates_integrated_cache_on_load(hass) -> None:
 
     assert store.tile_count == 1
     assert store.structure_tile_count == 0
-    assert store.entries() == (photo,)
+    assert tuple(store._entries.values()) == (photo,)
 
     bounded = SlamMapStore(hass, "structure-load-entry")
     with patch("custom_components.matic_robot.slam_map_store.MAX_STORED_BYTES", 1):
@@ -955,9 +951,7 @@ async def test_unchanged_raw_tile_replacement_cannot_exceed_cache_byte_limit(
         await store.async_add(entry)
         await store.async_add(replacement)
 
-    assert (
-        sum(len(item.key) + len(item.value) for item in store.entries()) <= byte_limit
-    )
+    assert snapshot_codec.stored_bytes(store._entries, {}) <= byte_limit
     assert store.tile_count == 0
     assert store.health.truncated is True
 
@@ -1070,6 +1064,7 @@ async def test_slam_map_store_requires_spatial_layer_overlap(hass) -> None:
 async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> None:
     store = SlamMapStore(hass, "live-entry")
     await store.async_load()
+    both_layers_read = asyncio.Barrier(2)
 
     async def live_entries(name):
         if name == "map_compressed_rgb":
@@ -1078,6 +1073,7 @@ async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> 
             assert name == "map_integrated"
             yield synthetic_structure_entry()
         yield HermesCollectionEntry(b"bad", b"bad")
+        await both_layers_read.wait()
         raise asyncio.CancelledError
 
     client = SimpleNamespace(async_watch=watch(live_entries))
@@ -1623,12 +1619,12 @@ async def test_truncated_cache_stays_incomplete_until_verified_floor_replacement
     restored = SlamMapStore(hass, "truncated-rebuild")
     await restored.async_load()
     restored.set_expected_mission_id(1)
-    retained = restored.structure_entries()
+    retained = tuple(restored._structure_entries.values())
     await restored.async_add(synthetic_slam_entry(page_x=0, mission_id=1))
     await restored.async_add_structure(
         synthetic_structure_entry(page_x=0, mission_id=1)
     )
-    assert restored.structure_entries() == retained
+    assert tuple(restored._structure_entries.values()) == retained
     assert restored.health.truncated
     assert not restored.map_complete
     for page_x in (0, 1):

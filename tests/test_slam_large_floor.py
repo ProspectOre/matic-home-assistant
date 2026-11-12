@@ -24,6 +24,7 @@ from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
+from custom_components.matic_robot.slam_decoded_map import page_digest
 from custom_components.matic_robot.slam_render import (
     render_slam_map,
 )
@@ -64,8 +65,10 @@ async def test_large_floor_survives_layer_order_and_reload(hass, structure_first
     await store.async_shutdown()
     restored = storage.SlamMapStore(hass, "large-floor")
     await restored.async_load()
-    assert restored.entries() == tuple(pair[0] for pair in entries)
-    assert restored.structure_entries() == tuple(pair[1] for pair in entries)
+    assert tuple(restored._entries.values()) == tuple(pair[0] for pair in entries)
+    assert tuple(restored._structure_entries.values()) == tuple(
+        pair[1] for pair in entries
+    )
     assert not restored.live_session_verified
     assert not restored.health.truncated
 
@@ -496,11 +499,15 @@ async def test_empty_or_one_sided_legacy_truncation_is_not_recoverable(hass):
 
 def stage(store, entries, *, structural=False):
     for photo, structure in entries:
-        store._stage_candidate(
-            structure if structural else photo,
+        tile = (
             decode_slam_structure_tile(structure)
             if structural
-            else decode_slam_tile(photo),
+            else decode_slam_tile(photo)
+        )
+        store._stage_candidate(
+            structure if structural else photo,
+            tile,
+            page_digest(tile),
             structural=structural,
         )
 

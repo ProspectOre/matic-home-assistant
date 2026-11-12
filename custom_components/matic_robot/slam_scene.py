@@ -16,9 +16,9 @@ from google.protobuf.message import DecodeError
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
-from .client.models import FloorPlan, HermesCollectionEntry
+from .client.models import FloorPlan
 from .client.slam_scene import encode_slam_scene
-from .client.slam_tiles import decode_slam_tile
+from .client.slam_tiles import SlamTile
 from .http import (
     DELTA_API_URL,
     PRIVATE_NO_STORE_HEADERS,
@@ -254,13 +254,14 @@ class MaticSlamSceneView(HomeAssistantView):
                 cached = self._cache.get(entry_id)
                 if cached is not None and cached.key == key:
                     return cached
-                entries = runtime.slam_map.entries()
                 floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
+                # Requested before any await, so this is the ``map_revision`` map.
+                decoded = await runtime.slam_map.async_decoded_map()
                 try:
                     encoded = await hass.async_add_executor_job(
                         partial(
-                            _encode_scene_entries,
-                            entries,
+                            _encode_scene,
+                            decoded.tiles,
                             floor_plan if floor_plan_coherent else None,
                         )
                     )
@@ -479,14 +480,11 @@ class MaticSlamDeltaView(HomeAssistantView):
         )
 
 
-def _encode_scene_entries(
-    entries: tuple[HermesCollectionEntry, ...], floor_plan: FloorPlan | None
+def _encode_scene(
+    tiles: tuple[SlamTile, ...], floor_plan: FloorPlan | None
 ) -> _EncodedScene:
-    """Decode a stable store snapshot and encode it off the event loop."""
-    payload = encode_slam_scene(
-        tuple(decode_slam_tile(entry) for entry in entries),
-        floor_plan=floor_plan,
-    )
+    """Encode a stable store snapshot off the event loop."""
+    payload = encode_slam_scene(tiles, floor_plan=floor_plan)
     return _EncodedScene(payload, f'"{sha256(payload).hexdigest()[:24]}"')
 
 

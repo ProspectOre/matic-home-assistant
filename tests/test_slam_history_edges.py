@@ -594,7 +594,7 @@ async def test_history_archive_import_json_quota_rollback_and_idempotent_race(
 
     async def delayed_decode(function, *args):
         nonlocal starts
-        if function.__name__ == "_decompress_scene":
+        if function.__name__ == "_import_records":
             starts += 1
             if starts == 2:
                 both_started.set()
@@ -754,7 +754,7 @@ async def test_history_import_second_commit_rechecks_generation_and_idempotency(
     executor = hass.async_add_executor_job
 
     async def delayed_decode(function, *args):
-        if function.__name__ == "_decompress_scene":
+        if function.__name__ == "_import_records":
             started.set()
             await release.wait()
         return await executor(function, *args)
@@ -783,7 +783,7 @@ async def test_history_import_second_commit_rechecks_generation_and_idempotency(
 
     async def wait_for_both(function, *args):
         nonlocal count
-        if function.__name__ == "_decompress_scene":
+        if function.__name__ == "_import_records":
             count += 1
             if count == 2:
                 both_started.set()
