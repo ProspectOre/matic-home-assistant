@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Any
 
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
 from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFeature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
@@ -21,6 +22,8 @@ from .robot_commands import validation_error
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .stores import Store
 from .vacuum_catalog import FloorSegmentCatalog
+
+_LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 1
 
@@ -51,6 +54,20 @@ _EMOTES = {
     "pirouette": UserCommand.EMOTE_PIROUETTE,
     "snap": UserCommand.EMOTE_SNAP,
 }
+
+# Commands 0.5.4 accepted without warning: they work until 0.7, and each
+# logs once per robot which action replaces it.
+_DEPRECATED_COMMANDS = {
+    "start": "matic_robot.clean",
+    "clean_all": "matic_robot.clean",
+    "clean_rooms": "matic_robot.clean with rooms",
+    "clean_segments": "matic_robot.clean with rooms",
+    "pause": "vacuum.pause",
+    "stop": "vacuum.stop",
+    "dock": "vacuum.return_to_base",
+    "return_home": "vacuum.return_to_base",
+}
+_deprecation_logged: set[tuple[str, str]] = set()
 
 
 async def async_setup_entry(
@@ -402,9 +419,64 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if normalized in simple_commands:
             await self._commands.async_send_user_command(simple_commands[normalized])
             return
+        if normalized in _DEPRECATED_COMMANDS:
+            await self._async_deprecated_command(normalized, params)
+            return
         raise validation_error(
             "Unsupported Matic command. Use resume, stay_put, sink_summon, "
             "go_to_room, redo_last_clean, skip_room, clean_room_next, "
             "clean_room_again or emote",
             "unsupported_command",
+        )
+
+    async def _async_deprecated_command(
+        self, command: str, params: dict[str, Any] | list[Any] | None
+    ) -> None:
+        """Run a command 0.7 removes as its replacement does."""
+        if (self._config_entry.entry_id, command) not in _deprecation_logged:
+            _deprecation_logged.add((self._config_entry.entry_id, command))
+            _LOGGER.warning(
+                "vacuum.send_command %s is deprecated and stops working in "
+                "Matic 0.7; use %s",
+                command,
+                _DEPRECATED_COMMANDS[command],
+            )
+        if command == "stop":
+            await self.async_stop()
+            return
+        if command in {"dock", "return_home"}:
+            await self.async_return_to_base()
+            return
+        if command == "pause":
+            await self._commands.async_send_user_command(UserCommand.PAUSE)
+            return
+        # Plan runs no longer send their private keys here.
+        if isinstance(params, dict) and any(
+            isinstance(key, str) and key.startswith("_matic_plan") for key in params
+        ):
+            raise validation_error(
+                "A plan's room command is not a send_command", "unsupported_command"
+            )
+        if command in {"clean_all", "start"}:
+            await self._commands.async_clean_rooms(
+                list(self._commands.floor_plan().rooms),
+                **self._commands.clean_options(params),
+            )
+            return
+        identifiers = (
+            params
+            if isinstance(params, list)
+            else (params or {}).get("rooms", (params or {}).get("segments", []))
+        )
+        if not isinstance(identifiers, list) or not all(
+            isinstance(value, str) for value in identifiers
+        ):
+            raise ServiceValidationError(
+                "clean_rooms requires params.rooms as a list of room names or IDs",
+                translation_domain=DOMAIN,
+                translation_key="rooms_must_be_list",
+            )
+        options = self._commands.clean_options(params)
+        await self._commands.async_clean_rooms(
+            self._commands.resolve_rooms(identifiers), **options
         )

@@ -151,11 +151,6 @@ dashboards and templates that still use one.
   order and reloads your automations.
 - **Runs in progress.** A plan run that was started with a removed action
   carries on after the update as a Run plan run.
-- **Vacuum commands.** `vacuum.send_command` now takes only the commands in
-  [robot command actions](robot-command-actions.md) and
-  [queue changes](queue-changes.md), plus `resume`. `start`, `clean_all`,
-  `clean_rooms`, `clean_segments`, `pause`, `stop`, `dock` and `return_home`
-  fail as unsupported. 0.5.4 did not warn about these.
 
 Entity IDs assume a robot named "Matic".
 
@@ -176,8 +171,19 @@ Entity IDs assume a robot named "Matic".
 | `sensor.matic_protocol_version`, `sensor.matic_dock_detections`, `sensor.matic_sink_summon_locations` | The device page's Download diagnostics file. Automations cannot read it |
 | Attributes `charging` and `problem` of `vacuum.matic` | `binary_sensor.matic_charging` and `binary_sensor.matic_problem` |
 | Attributes `current_area` and `low_charge` of `vacuum.matic` | `sensor.matic_current_area` (Current room) and `binary_sensor.matic_low_charge` |
-| `vacuum.send_command` with `start`, `clean_all`, `clean_rooms` or `clean_segments` | `matic_robot.clean`, with `rooms` for some rooms or without for the whole floor |
-| `vacuum.send_command` with `pause`, `stop`, `dock` or `return_home` | `vacuum.pause`, `vacuum.stop` and `vacuum.return_to_base` |
+
+## Deprecated, removed in 0.7
+
+`vacuum.send_command` with `start`, `clean_all`, `clean_rooms`,
+`clean_segments`, `pause`, `stop`, `dock` or `return_home` still works in 0.6,
+and the first use of each logs a warning. Matic 0.7 removes them.
+
+| Deprecated | Use instead |
+| --- | --- |
+| `start`, `clean_all` | `matic_robot.clean` without `rooms` |
+| `clean_rooms`, `clean_segments` | `matic_robot.clean` with `rooms` |
+| `pause`, `stop` | `vacuum.pause`, `vacuum.stop` |
+| `dock`, `return_home` | `vacuum.return_to_base` |
 
 ## Before you update
 

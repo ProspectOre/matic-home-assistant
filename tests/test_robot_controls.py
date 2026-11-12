@@ -1,16 +1,22 @@
-"""Robot commands sent without a vacuum action, and the snap's room check."""
+"""Robot commands sent without a vacuum action, deprecated vacuum commands and
+the snap's room check."""
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import ServiceCall
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot import button, photo_patrol, vacuum
-from custom_components.matic_robot.client.commands import UserCommand
+from custom_components.matic_robot.client.commands import (
+    CleaningMode,
+    CoverageSetting,
+    UserCommand,
+)
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.llm_control import MaticSendToSinkTool
 from custom_components.matic_robot.robot_controls import (
@@ -46,6 +52,20 @@ def test_reachable_follows_the_sessions_error() -> None:
     assert robot.reachable is True
     _unreachable(entry)
     assert robot.reachable is False
+
+
+async def test_clean_sends_the_chosen_mode_and_coverage() -> None:
+    entry = _entry()
+    await RobotControls(None, entry, None).async_clean(
+        ["Study"], cleaning_mode="mop", coverage="quick", ordered=True
+    )
+    call = entry.runtime_data.session.client.async_start_coverage.await_args
+    assert call.args[1] == ["protocol-2"]
+    assert (
+        call.kwargs["cleaning_mode"],
+        call.kwargs["coverage_setting"],
+        call.kwargs["ordered"],
+    ) == (CleaningMode.MOP, CoverageSetting.QUICK, True)
 
 
 async def test_vacuum_snap_is_refused_in_a_no_photo_room() -> None:
@@ -194,6 +214,61 @@ async def test_robot_actions_send_to_every_robot_and_raise_the_first_failure() -
         await _registered_handler(services, "go_to_room")(call)
 
     assert rooms == ["vacuum.one", "vacuum.two"]
+
+
+# Commands 0.5.4 accepted without warning, kept until 0.7.
+
+
+async def test_deprecated_start_cleans_the_whole_floor() -> None:
+    entry = _entry()
+    await vacuum.MaticVacuum(entry).async_send_command("start", {"ordered": True})
+    call = entry.runtime_data.session.client.async_start_coverage.await_args
+    assert call.args[1] == ["protocol-1", "protocol-2"]
+    assert call.kwargs["ordered"] is True
+
+
+@pytest.mark.parametrize("command", ["dock", "return_home", "Return Home"])
+async def test_deprecated_dock_returns_to_base(command: str) -> None:
+    entity = vacuum.MaticVacuum(_entry())
+    with patch.object(vacuum.MaticVacuum, "async_return_to_base") as dock:
+        await entity.async_send_command(command)
+    dock.assert_awaited_once_with()
+
+
+async def test_deprecated_commands_warn_once_per_command_and_robot(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vacuum, "_deprecation_logged", set())
+    first, second = _entry(), _entry()
+    second.entry_id = "second"
+    with caplog.at_level(logging.WARNING, logger=vacuum.__name__):
+        for entry, command in ((first, "pause"), (first, "pause"), (second, "pause")):
+            await vacuum.MaticVacuum(entry).async_send_command(command)
+        await vacuum.MaticVacuum(first).async_send_command("clean_all")
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "vacuum.send_command pause is deprecated and stops working in Matic 0.7;"
+        " use vacuum.pause",
+    ] * 2 + [
+        "vacuum.send_command clean_all is deprecated and stops working in Matic"
+        " 0.7; use matic_robot.clean",
+    ]
+    for entry in (first, second):
+        sent = entry.runtime_data.session.client.async_send_user_command
+        assert [call.args[0] for call in sent.await_args_list][:1] == [
+            UserCommand.PAUSE
+        ]
+
+
+@pytest.mark.parametrize("command", ["clean_rooms", "clean_segments", "clean_all"])
+async def test_deprecated_cleans_refuse_a_plans_private_keys(command: str) -> None:
+    entry = _entry()
+    with pytest.raises(ServiceValidationError) as refused:
+        await vacuum.MaticVacuum(entry).async_send_command(
+            command, {"rooms": ["Study"], "_matic_plan_run": 7}
+        )
+    assert refused.value.translation_key == "unsupported_command"
+    entry.runtime_data.session.client.async_start_coverage.assert_not_awaited()
 
 
 # The snap's room check, for the vacuum, the button and the patrol.

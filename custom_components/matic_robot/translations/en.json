@@ -1786,6 +1786,9 @@
     "single_robot_required": {
       "message": "Select exactly one robot."
     },
+    "rooms_must_be_list": {
+      "message": "Rooms must be a list of room names or IDs."
+    },
     "unknown_rooms": {
       "message": "These rooms aren't on the robot's map: {rooms}. Check the spelling, or choose rooms from the list."
     },

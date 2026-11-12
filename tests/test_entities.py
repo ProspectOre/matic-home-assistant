@@ -2163,8 +2163,9 @@ async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
     plans.control.request_stop.return_value = PlanStopDecision("after_room", 75, 50)
 
     await entity.async_stop()
+    await entity.async_send_command("stop")
 
-    plans.control.request_stop.assert_called_once()
+    assert plans.control.request_stop.call_count == 2
     entry.runtime_data.session.client.async_send_user_command.assert_not_awaited()
 
 
@@ -2249,10 +2250,16 @@ def test_problem_sensor_names_the_current_errors() -> None:
 
 async def test_clean_action_supports_the_complete_verified_option_matrix() -> None:
     entry = _entry()
-    commands = RobotControls(None, entry, None)
+    entity = vacuum.MaticVacuum(entry)
 
-    await commands.async_clean(
-        ["Study", "room-1"], cleaning_mode="mop", coverage="quick", ordered=True
+    await entity.async_send_command(
+        "clean_rooms",
+        {
+            "rooms": ["Study", "room-1"],
+            "cleaning_mode": "mop",
+            "coverage": "quick",
+            "ordered": True,
+        },
     )
 
     call = entry.runtime_data.session.client.async_start_coverage.await_args
@@ -2267,8 +2274,12 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
     )
     assert "require_settings_readback" not in call.kwargs
 
-    await commands.async_clean(
-        None, cleaning_mode="vacuum_and_mop", coverage="standard", ordered=False
+    await entity.async_send_command(
+        "clean_all",
+        {
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage": "standard",
+        },
     )
     call = entry.runtime_data.session.client.async_start_coverage.await_args
     _assert_current_coverage_call(
@@ -2325,7 +2336,7 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
     entry = _entry()
     entity = vacuum.MaticVacuum(entry)
 
-    await entity._commands.async_clean(None)
+    await entity.async_send_command("clean_all")
     coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-1", "protocol-2"]
     _assert_current_coverage_call(
@@ -2338,7 +2349,7 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
     )
     assert "require_settings_readback" not in coverage_call.kwargs
 
-    await entity.async_clean_segments(["Study"])
+    await entity.async_send_command("clean_segments", ["Study"])
     coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-2"]
     assert coverage_call.kwargs["ordered"] is False
@@ -2347,9 +2358,7 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
         ServiceValidationError,
         match=r"^Cleaning mode must be one of: vacuum, mop, vacuum_and_mop\.$",
     ) as raised:
-        await entity._commands.async_clean(
-            None, cleaning_mode=5, coverage=None, ordered=False
-        )
+        await entity.async_send_command("clean_all", {"cleaning_mode": 5})
     assert "CleaningMode" not in str(raised.value)
     assert "CleaningMode" not in raised.value.translation_placeholders["error"]
 
@@ -2358,20 +2367,24 @@ async def test_vacuum_named_commands_and_validation() -> None:
     entry = _entry()
     entity = vacuum.MaticVacuum(entry)
 
+    await entity.async_send_command("return home")
+    await entity.async_send_command("pause")
     await entity.async_send_command("resume")
     await entity.async_send_command("stay put")
     await entity.async_send_command("emote", {"kind": " Pirouette "})
     sent = entry.runtime_data.session.client.async_send_user_command.await_args_list
-    assert [call.args[0] for call in sent] == [
-        UserCommand.RESUME,
+    assert [call.args[0] for call in sent[-2:]] == [
         UserCommand.STAY_PUT,
         UserCommand.EMOTE_PIROUETTE,
     ]
-    await entity._commands.async_clean(
-        ["Study", "room-1", "Study"],
-        cleaning_mode="vacuum",
-        coverage="quick",
-        ordered=True,
+    await entity.async_send_command(
+        "clean_rooms",
+        {
+            "rooms": ["Study", "room-1", "Study"],
+            "cleaning_mode": "vacuum",
+            "coverage": "quick",
+            "ordered": True,
+        },
     )
     call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert call.args[1] == ["protocol-2", "protocol-1"]
@@ -2385,42 +2398,41 @@ async def test_vacuum_named_commands_and_validation() -> None:
     )
     assert "require_settings_readback" not in call.kwargs
 
-    def clean(rooms=None, cleaning_mode=None, coverage=None, ordered=False):
-        return entity._commands.async_clean(
-            rooms, cleaning_mode=cleaning_mode, coverage=coverage, ordered=ordered
-        )
-
-    def send(command, params=None):
-        return entity.async_send_command(command, params)
-
-    for operation, message, translation_key in (
-        (clean([]), "Select at least one", "no_rooms"),
-        (clean(["Garage"]), "Unknown Matic room", "unknown_rooms"),
-        (clean(ordered="yes"), "ordered must be", "ordered_must_be_boolean"),
-        (clean(ordered=None), "ordered must be", "ordered_must_be_boolean"),
+    for command, params, message, translation_key in (
+        ("clean_rooms", {"rooms": []}, "Select at least one", "no_rooms"),
+        ("clean_rooms", {"rooms": ["Garage"]}, "Unknown Matic room", "unknown_rooms"),
         (
-            clean(coverage="unknown"),
+            "clean_rooms",
+            {"rooms": "Kitchen"},
+            "requires params.rooms",
+            "rooms_must_be_list",
+        ),
+        (
+            "clean_rooms",
+            {"rooms": ["Kitchen", 7]},
+            "requires params.rooms",
+            "rooms_must_be_list",
+        ),
+        ("clean_all", {"ordered": "yes"}, "ordered must be", "ordered_must_be_boolean"),
+        ("clean_all", {"ordered": None}, "ordered must be", "ordered_must_be_boolean"),
+        (
+            "clean_all",
+            {"coverage": "unknown"},
             r"^Vacuum coverage must be one of: quick, standard, heavy_duty\.$",
             "invalid_cleaning_option",
         ),
         (
-            clean(coverage=7),
+            "clean_all",
+            {"coverage": 7},
             r"^Vacuum coverage must be one of: quick, standard, heavy_duty\.$",
             "invalid_cleaning_option",
         ),
-        (send("emote"), "emote requires", "emote_kind_required"),
-        (send("emote", {"kind": "wave"}), "emote requires", "emote_kind_required"),
-        (send("unknown"), "Unsupported Matic command", "unsupported_command"),
-        # 0.6 keeps only the documented commands.
-        (send("pause"), "Unsupported Matic command", "unsupported_command"),
-        (
-            send("clean_rooms", {"rooms": ["Study"]}),
-            "Unsupported Matic command",
-            "unsupported_command",
-        ),
+        ("emote", None, "emote requires", "emote_kind_required"),
+        ("emote", {"kind": "wave"}, "emote requires", "emote_kind_required"),
+        ("unknown", None, "Unsupported Matic command", "unsupported_command"),
     ):
         with pytest.raises(ServiceValidationError, match=message) as raised:
-            await operation
+            await entity.async_send_command(command, params)
         assert raised.value.translation_key == translation_key
 
     with pytest.raises(ServiceValidationError, match="room map is unavailable"):

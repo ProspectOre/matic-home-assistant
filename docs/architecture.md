@@ -100,7 +100,7 @@ authorized projections for [plans](../custom_components/matic_robot/plan_views.p
 and [areas](../custom_components/matic_robot/area_views.py). Assistant API
 registration uses [shared authorization](../custom_components/matic_robot/llm_common.py)
 and separate modules for control, firmware, plan, history and status tools.
-Interface adapters do not establish independent cleaning or map truth. Actions, assistant tools, buttons and Photo patrol send direct commands through [robot controls](../custom_components/matic_robot/robot_controls.py), not `vacuum.send_command`, and like a vacuum action send nothing while the robot is unreachable; `vacuum.send_command` keeps the [documented commands](robot-command-actions.md) and `resume` for Matic Map.
+Interface adapters do not establish independent cleaning or map truth. Actions, assistant tools, buttons and Photo patrol send direct commands through [robot controls](../custom_components/matic_robot/robot_controls.py), not `vacuum.send_command`, and like a vacuum action send nothing while the robot is unreachable; `vacuum.send_command` keeps the [documented commands](robot-command-actions.md), `resume` for Matic Map, and until 0.7 the deprecated clean and motion commands.
 
 [Photo patrol](../custom_components/matic_robot/photo_patrol.py) checks privacy,
 room, schedule and robot ownership before capture. The
