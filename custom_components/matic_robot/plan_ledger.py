@@ -21,8 +21,7 @@ from homeassistant.core import Context, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from . import daily_room_limit, native_history, plan_storage, plan_timing
-from .cadence_accounting import apply_verified_cadence as _apply_verified_cadence
+from . import native_history, plan_storage, plan_timing
 from .client.coverage_receipts import (
     CoverageReceipt,
     CoverageVerifier,
@@ -63,6 +62,11 @@ from .run_control import (
 )
 from .run_history import append_run_history, update_run_history
 from .run_machine import CheckpointWrite
+from .verified_completion import (
+    VerifiedCompletion,
+    global_room,
+    record_verified_completion,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1192,84 +1196,61 @@ class PlanLedger:
         snapshots = (
             checkpoint.get("cadence_by_room") if isinstance(checkpoint, dict) else None
         )
-        snapshot = (
+        cadence_state = (
             snapshots.get(room.room_id) if isinstance(snapshots, Mapping) else None
         )
-        identity = snapshot.get("identity") if isinstance(snapshot, Mapping) else None
-        daily_room_limit.record_completion(
-            robot,
-            room.room_id,
-            identity if isinstance(identity, str) else None,
-            now,
-            now=now_value,
-            run_id=run_id,
-            session_hash=completion_session_hash,
+        identity = (
+            cadence_state.get("identity")
+            if isinstance(cadence_state, Mapping)
+            else None
         )
-        record = self.room(serial_number, plan_id, room)
-        active = self.repository.robot(serial_number).get("active_plan")
-        duration: int | None
+        # The robot's own per-room time first, else the time this room ran.
+        active = robot.get("active_plan")
+        duration: int | None = None
         if (
             isinstance(duration_seconds, int)
             and not isinstance(duration_seconds, bool)
             and duration_seconds > 0
         ):
             duration = duration_seconds
-        else:
-            duration = (
-                plan_timing._active_elapsed_seconds(active, now_value)
-                if active is not None
-                and active.get("plan_id") == plan_id
-                and active.get("room_id") == room.room_id
-                else None
-            )
-        if duration is not None and duration > 0:
-            plan_timing._record_duration_sample(record, room, duration, now)
-        record["last_completed"] = now
-        record["last_result"] = "completed"
-        record["completed_runs"] = (
-            plan_timing._stored_count(record, "completed_runs") + 1
-        )
-        global_room = native_history._global_room(
-            self.repository.robot(serial_number), room
-        )
-        global_room["name"] = room.name
-        global_room["last_completed"] = now
-        if duration is not None and duration > 0:
-            global_room["last_duration_seconds"] = duration
-        global_room["completed_runs"] = (
-            plan_timing._stored_count(global_room, "completed_runs") + 1
+        elif (
+            active is not None
+            and active.get("plan_id") == plan_id
+            and active.get("room_id") == room.room_id
+        ):
+            duration = plan_timing._active_elapsed_seconds(active, now_value) or None
+        record_verified_completion(
+            robot,
+            VerifiedCompletion(
+                plan_id,
+                room.room_id,
+                room.name,
+                now,
+                room,
+                duration,
+                identity if isinstance(identity, str) else None,
+                run_id,
+                completion_session_hash,
+                run_id or now,
+                cadence_state,
+                verified_room_coverage(
+                    checkpoint.get("coverage_evidence")
+                    if isinstance(checkpoint, dict)
+                    else None,
+                    verified_coverage_receipt,
+                    room.room_id,
+                    room.cleaning_mode,
+                    room.coverage_setting,
+                    cadence_state,
+                )
+                if run_id is not None
+                else None,
+                native=False,
+            ),
+            self.room(serial_number, plan_id, room),
+            now=now_value,
         )
         last_run = robot.get("last_run")
-        cadence_by_room = (
-            checkpoint.get("cadence_by_room") if isinstance(checkpoint, dict) else None
-        )
-        cadence_state = (
-            cadence_by_room.get(room.room_id)
-            if isinstance(cadence_by_room, Mapping)
-            else None
-        )
-        _apply_verified_cadence(
-            robot,
-            plan_id,
-            room,
-            cadence_state,
-            completion_id=hashlib.sha256(
-                f"{run_id or now}:{room.room_id}".encode()
-            ).hexdigest(),
-            completed_at=cast(datetime, dt_util.parse_datetime(now)).timestamp(),
-            verified_coverage=verified_room_coverage(
-                checkpoint.get("coverage_evidence")
-                if isinstance(checkpoint, dict)
-                else None,
-                verified_coverage_receipt,
-                room.room_id,
-                room.cleaning_mode,
-                room.coverage_setting,
-                cadence_state,
-            )
-            if run_id is not None
-            else None,
-        )
         if (
             isinstance(last_run, dict)
             and last_run.get("outcome") == "running"
@@ -1468,34 +1449,20 @@ class PlanLedger:
             room_identity=room_identity,
             run_id=pending.get("run_id"),
             session_hash=pending.get("session_hash"),
+            cadence_state=pending.get("cadence_state"),
+            cadence_key=pending.get("run_id") or pending["dispatched_at"],
+            verified_coverage=verified_room_coverage(
+                pending.get("coverage_evidence"),
+                verified_coverage_receipt,
+                room.room_id,
+                room_settings.cleaning_mode,
+                room_settings.coverage_setting,
+                pending.get("cadence_state"),
+            )
+            if room_settings is not None
+            else None,
         )
         native_history._remember_native_reconciliation(robot, pending)
-        if room_settings is not None:
-            _apply_verified_cadence(
-                robot,
-                plan_id,
-                room_settings,
-                pending.get("cadence_state"),
-                completion_id=hashlib.sha256(
-                    (
-                        f"{pending.get('run_id') or pending['dispatched_at']}:"
-                        f"{room.room_id}"
-                    ).encode()
-                ).hexdigest(),
-                completed_at=cast(
-                    datetime, dt_util.parse_datetime(completed_value)
-                ).timestamp(),
-                current_identity=room_identity,
-                validate_current_identity=True,
-                verified_coverage=verified_room_coverage(
-                    pending.get("coverage_evidence"),
-                    verified_coverage_receipt,
-                    room.room_id,
-                    room_settings.cleaning_mode,
-                    room_settings.coverage_setting,
-                    pending.get("cadence_state"),
-                ),
-            )
         native_history._repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
         if changed is not None:
@@ -1616,9 +1583,9 @@ class PlanLedger:
                 active["status"] = "running"
                 if not isinstance(active.get("cleaning_started"), str):
                     active["cleaning_started"] = now
-                    global_room = native_history._global_room(robot, room)
+                    stats = global_room(robot, room.room_id, room.name)
                     # A room skipped later in this run gets these back.
-                    for target in (record, global_room):
+                    for target in (record, stats):
                         prior = target.get("opportunity_before_run")
                         run_id = active.get("run_id")
                         if (
@@ -1631,8 +1598,8 @@ class PlanLedger:
                                 "value": target.get("last_opportunity"),
                             }
                     record["last_opportunity"] = now
-                    global_room["name"] = room.name
-                    global_room["last_opportunity"] = now
+                    stats["name"] = room.name
+                    stats["last_opportunity"] = now
                 if active.get("active_segment_started") is None:
                     active["active_segment_started"] = now
                 active.pop("suspend_reason", None)
@@ -1713,7 +1680,7 @@ class PlanLedger:
             robot = self.repository.robot(serial_number)
             _skip_room_record(
                 self.room(serial_number, plan_id, room),
-                native_history._global_room(robot, room),
+                global_room(robot, room.room_id, room.name),
                 run_id=run_id,
                 skipped_at=dt_util.utcnow().isoformat(),
             )
@@ -1736,7 +1703,7 @@ class PlanLedger:
             robot = self.repository.robot(serial_number)
             _unreachable_room_record(
                 self.room(serial_number, plan_id, room),
-                native_history._global_room(robot, room),
+                global_room(robot, room.room_id, room.name),
                 run_id=run_id or "",
                 ended_at=dt_util.utcnow().isoformat(),
             )
