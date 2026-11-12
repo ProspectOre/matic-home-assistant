@@ -19,7 +19,7 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom, leg_groups
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
+from tests.session_fakes import robot_port
 
 from .test_restart import recovery_state as recovery_fixture
 
@@ -30,9 +30,7 @@ async def recovery_state(hass):
 
 
 @pytest.mark.parametrize("history_state", ["available", "missing", "error"])
-async def test_executor_checkpoints_dispatch_and_disables_prefetch(
-    hass, recovery_state, history_state
-):
+async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_state):
     manager, _, checkpoint, room = recovery_state
     await manager.ledger.async_finish_run("serial", "run", "unverified", "test", 0)
     room2 = CleaningRoom("office", "Office", "mop", "standard")
@@ -41,7 +39,6 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
     async def leg(*args, **kwargs):
         saved = manager.recovery.recovery_run("serial")
         assert saved["recovery_checkpoint"]["phase"] == "dispatching"
-        assert kwargs["prefetch_next"] is None
         if args[5] == [room2]:
             expected = hashlib.sha256(b"new").hexdigest()
             assert kwargs["expected_dispatch_history"] == frozenset({expected})
@@ -89,7 +86,7 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
             checkpoint["entity_id"],
             "serial",
             [room, room2],
-            robot=RobotPort(
+            robot=robot_port(
                 session_identity=AsyncMock(return_value=b""),
                 session_history=(
                     None
@@ -156,7 +153,8 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
             checkpoint["entity_id"],
             "serial",
             [first, room],
-            robot=RobotPort(),
+            floor_token="floor",
+            robot=robot_port(),
             recovery=run,
             recovered_dispatch=prepared,
         )
@@ -221,7 +219,7 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
             "vacuum.matic",
             "serial",
             [kitchen, office],
-            robot=RobotPort(
+            robot=robot_port(
                 session_identity=AsyncMock(return_value=b""),
                 session_history=AsyncMock(
                     return_value=(SimpleNamespace(key=b"after"),)

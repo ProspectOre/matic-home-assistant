@@ -15,7 +15,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_observation import _LegOutcomeObserver
 from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
+from tests.session_fakes import robot_port
 from tests.wire_builders import _session_identity
 
 from .test_plans import _call, _room
@@ -48,7 +48,8 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
             "vacuum.matic",
             "serial",
             [room],
-            robot=RobotPort(
+            floor_token="floor",
+            robot=robot_port(
                 confirm_room_completed=confirmed, set_activity_run_id=set_run_id
             ),
         )
@@ -112,7 +113,8 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
-            robot=RobotPort(
+            floor_token="floor",
+            robot=robot_port(
                 set_activity_run_id=set_run_id,
                 get_activity_run_id=lambda: scope["run_id"],
             ),
@@ -158,7 +160,8 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
-            robot=RobotPort(
+            floor_token="floor",
+            robot=robot_port(
                 set_activity_run_id=lambda run_id: scope.__setitem__("run_id", run_id),
                 get_activity_run_id=lambda: scope["run_id"],
             ),
@@ -198,7 +201,8 @@ async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
-            robot=RobotPort(
+            floor_token="floor",
+            robot=robot_port(
                 set_activity_run_id=set_run_id, get_activity_run_id=lambda: "newer-run"
             ),
         )
@@ -245,7 +249,14 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set(hass) -> 
         "custom_components.matic_robot.managed_room._async_run_room", AsyncMock()
     ) as run:
         await _async_execute_rooms(
-            hass, call, manager, "vacuum.test", "serial", [room], robot=RobotPort()
+            hass,
+            call,
+            manager,
+            "vacuum.test",
+            "serial",
+            [room],
+            floor_token="floor",
+            robot=robot_port(),
         )
     run.assert_not_awaited()
 
@@ -291,7 +302,8 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
                 "vacuum.test",
                 "serial",
                 [room],
-                robot=RobotPort(),
+                floor_token="floor",
+                robot=robot_port(),
                 managed_user_command=command,
             )
         )
@@ -310,7 +322,8 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
                     "vacuum.test",
                     "serial",
                     [room],
-                    robot=RobotPort(),
+                    floor_token="floor",
+                    robot=robot_port(),
                 )
         finally:
             release.set()
@@ -376,7 +389,8 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=RobotPort(session_identity=AsyncMock(side_effect=lambda: identity)),
+            floor_token="floor",
+            robot=robot_port(session_identity=AsyncMock(side_effect=lambda: identity)),
             managed_user_command=sender,
         )
     sender.assert_not_awaited()

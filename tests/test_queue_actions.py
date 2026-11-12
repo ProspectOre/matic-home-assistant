@@ -27,8 +27,8 @@ from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.native_history import _global_room
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
+from tests.session_fakes import accepting_session, robot_port
 from tests.test_entities import _entry
 from tests.test_plans import _call, _leg_manager, _leg_record, _room
 
@@ -287,7 +287,8 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
                 "vacuum.matic",
                 "serial",
                 rooms,
-                robot=RobotPort(session_history=AsyncMock(return_value=())),
+                floor_token="floor",
+                robot=robot_port(session_identity=accepting_session(hass)),
             ),
             timeout=8,
         )
@@ -339,7 +340,6 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
             return ()
         return (_leg_record(("Kitchen",), ("Kitchen",)),)
 
-    prefetch_next = AsyncMock()
     completed = await _async_run_leg(
         hass,
         _call(hass),
@@ -351,13 +351,11 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         managed_user_command=AsyncMock(),
         motion_token=7,
         run_id="run-1",
-        prefetch_next=prefetch_next,
     )
     await hass.async_block_till_done()
 
     # The skipped room is settled, so the run goes on to its next leg.
     assert completed is True
-    prefetch_next.assert_awaited_once()
     manager.ledger.async_mark_ended_unverified.assert_not_awaited()
     manager.ledger.async_mark_skipped.assert_awaited_once_with(
         "serial", "away", rooms[1], run_id="run-1"
@@ -387,7 +385,6 @@ async def test_one_room_leg_settles_a_skipped_room() -> None:
         )
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
-    prefetch_next = AsyncMock()
 
     with (
         patch(
@@ -409,11 +406,9 @@ async def test_one_room_leg_settles_a_skipped_room() -> None:
             motion_token=3,
             active_session=AsyncMock(return_value=False),
             run_id="run-1",
-            prefetch_next=prefetch_next,
         )
 
     assert settled is True
-    prefetch_next.assert_awaited_once()
     manager.ledger.async_mark_skipped.assert_awaited_once_with(
         "serial", "away", room, run_id="run-1"
     )

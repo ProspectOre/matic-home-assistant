@@ -24,7 +24,7 @@ from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import _failure_reason_code
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
+from tests.session_fakes import robot_port
 
 
 @asynccontextmanager
@@ -302,7 +302,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
             "vacuum.synthetic",
             "synthetic-serial",
             rooms,
-            robot=RobotPort(session_identity=session_identity),
+            robot=robot_port(session_identity=session_identity),
             managed_user_command=stop_sender,
             floor_token="synthetic-floor-token",
         )

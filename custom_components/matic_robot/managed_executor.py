@@ -72,11 +72,11 @@ async def _async_execute_rooms_reserved(
     rooms: list[CleaningRoom],
     *,
     robot: RobotPort,
+    floor_token: str,
     cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
     floor_is_current: Callable[[], bool] | None = None,
-    floor_token: str | None = None,
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
@@ -97,7 +97,6 @@ async def _async_execute_rooms_reserved(
         manager.control.register_run_task(serial_number)
         cancel_event = manager.control.prepare_run(serial_number)
         motion_token = manager.control.begin_managed_motion(serial_number)
-        cleanup_stop_sent = False
         dock_confirmation_scheduled = False
         native_identity: bytes | None = handoff_expected_identity
         expected_dispatch_identity = handoff_expected_identity
@@ -122,7 +121,6 @@ async def _async_execute_rooms_reserved(
         run = Run.from_checkpoint(checkpoint) if recovery else Run()
         area_leg_count = 0
         chosen: list[CleaningRoom] = []
-        durable = floor_token is not None and robot.session_identity is not None
 
         async def advance(event: RunEvent) -> None:
             """Move the run and apply its write to the durable checkpoint."""
@@ -158,8 +156,7 @@ async def _async_execute_rooms_reserved(
             lambda: native_identity,
             allow_ended_dock=True,
         )
-        if robot.set_activity_run_id is not None:
-            robot.set_activity_run_id(run_id)
+        robot.set_activity_run_id(run_id)
 
         def record_room_completion(room: CleaningRoom) -> None:
             # Its write is empty: the next leg's position saves the room.
@@ -197,9 +194,8 @@ async def _async_execute_rooms_reserved(
             finish_room_event = manager.control.finish_room_event(serial_number)
             if checkpoint.get("stop_intent") == "after_room":
                 finish_room_event.set()
-            single_room_missions = durable and (
-                finish_current_room
-                and (recovery is None or checkpoint.get("single_room_missions") is True)
+            single_room_missions = finish_current_room and (
+                recovery is None or checkpoint.get("single_room_missions") is True
             )
             chosen = rooms
             leg_entries = (
@@ -207,7 +203,7 @@ async def _async_execute_rooms_reserved(
                 if recovery is not None
                 else run_entries(entries)
             )
-            mixed_settings = durable and (
+            mixed_settings = (
                 recovery is None or checkpoint.get("mixed_settings") is True
             )
             preserve_legacy_settings = (
@@ -233,12 +229,6 @@ async def _async_execute_rooms_reserved(
                 )
             )
             area_leg_count = sum(isinstance(leg, AreaLeg) for leg in legs)
-            if area_leg_count and not durable:
-                # A custom area is recognised only by its owned session.
-                raise managed_run._validation_error(
-                    "A plan with custom areas needs a tracked run",
-                    "invalid_plan_command",
-                )
             if recovery is None:
                 run_started = True
                 await manager.ledger.async_begin_run(
@@ -277,14 +267,13 @@ async def _async_execute_rooms_reserved(
                 ]
                 if ambiguous:
                     # Admission and completion must use the same identity key.
-                    # Check all legs before a prior leg can prefetch a command.
                     raise managed_run._validation_error(
                         "Managed completion cannot distinguish duplicate "
                         "mapped room names",
                         "ambiguous_room_name",
                         {"room": ", ".join(ambiguous)},
                     )
-            if durable and recovery is None:
+            if recovery is None:
                 checkpoint = {
                     "version": 1,
                     "mixed_settings": True,
@@ -312,7 +301,6 @@ async def _async_execute_rooms_reserved(
                 )
             if recovery is None and validate_prepared_run is not None:
                 validate_prepared_run()
-            prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
                 if recovery is not None and index < run.leg_index:
                     continue
@@ -323,14 +311,9 @@ async def _async_execute_rooms_reserved(
                     )
                 ):
                     raise PlanCancelledError
-                prepared_dispatch = recovered_dispatch or (
-                    None
-                    if isinstance(leg, AreaLeg)
-                    else prepared_dispatches.pop(leg[0].room_id, None)
-                )
-                recovered_dispatch = None
+                prepared_dispatch, recovered_dispatch = recovered_dispatch, None
                 expected_dispatch_history = None
-                if durable and index > 0 and prepared_dispatch is None:
+                if index > 0 and prepared_dispatch is None:
                     handoff_history = checkpoint.get("handoff_history")
                     if isinstance(handoff_history, list):
                         expected_dispatch_history = frozenset(handoff_history)
@@ -373,54 +356,8 @@ async def _async_execute_rooms_reserved(
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
                         break
-                if durable and prepared_dispatch is None:
+                if prepared_dispatch is None:
                     await advance(LegDispatching(index))
-                following = legs[index + 1] if index + 1 < len(legs) else None
-                next_leg = following if isinstance(following, list) else None
-
-                async def prefetch_next(
-                    candidate: list[CleaningRoom] | None = next_leg,
-                ) -> _PreparedRoomDispatch | None:
-                    if (
-                        candidate is None
-                        or finish_room_event.is_set()
-                        or cancel_event.is_set()
-                        or not manager.control.managed_motion_is_current(
-                            serial_number, motion_token
-                        )
-                        or dispatch_control._stop_is_pending(manager, serial_number)
-                    ):
-                        return None
-                    if existing := prepared_dispatches.get(candidate[0].room_id):
-                        return existing
-                    try:
-                        dispatched = await dispatch_control._async_dispatch_leg_command(
-                            hass,
-                            call,
-                            entity_id,
-                            candidate,
-                            motion_token,
-                            robot.session_history,
-                            floor_is_current=floor_is_current,
-                            floor_token=floor_token,
-                            session_identity=robot.session_identity,
-                            on_claim=lambda session_id: (
-                                manager.ledger.async_claim_native_session(
-                                    serial_number, session_id, run_id=run_id
-                                )
-                            ),
-                            on_dispatch=lambda: bind_native_identity(None),
-                            on_identity=bind_native_identity,
-                        )
-                    except (HomeAssistantError, MaticError) as err:
-                        _LOGGER.debug(
-                            "Next Matic leg dispatch was unavailable (%s)",
-                            type(err).__name__,
-                        )
-                        return None
-                    prepared_dispatches[candidate[0].room_id] = dispatched
-                    return dispatched
-
                 if isinstance(leg, AreaLeg):
                     completion_verified = await area_execution._async_run_area_leg(
                         hass,
@@ -465,9 +402,6 @@ async def _async_execute_rooms_reserved(
                         robot.confirm_room_completed,
                         managed_user_command,
                         prepared_dispatch=prepared_dispatch,
-                        prefetch_next=prefetch_next
-                        if next_leg is not None and not durable
-                        else None,
                         finish_room_event=finish_room_event,
                         floor_is_current=floor_is_current,
                         floor_token=floor_token,
@@ -477,7 +411,7 @@ async def _async_execute_rooms_reserved(
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         record_room_completed=record_room_completion,
-                        checkpoint_dispatch=save_dispatch if durable else None,
+                        checkpoint_dispatch=save_dispatch,
                         provenance=run_provenance,
                         recovered_suspend_reason=(
                             (
@@ -513,17 +447,8 @@ async def _async_execute_rooms_reserved(
                 ):
                     raise PlanCancelledError
                 if finish_room_event.is_set():
-                    if prepared_dispatches:
-                        await dispatch_control._async_cleanup_managed_motion(
-                            outer_command,
-                            motion_token,
-                            dispatch_attempted=True,
-                        )
-                        cleanup_stop_sent = dispatch_control._stop_is_pending(
-                            manager, serial_number
-                        )
                     break
-                if durable and index + 1 < len(legs):
+                if index + 1 < len(legs):
                     # The verified leg is complete, but the native task may
                     # still be returning. Persist the next leg before the
                     # bounded handoff wait so restart recovery can resume the
@@ -565,7 +490,6 @@ async def _async_execute_rooms_reserved(
                 (call.data["return_to_base"] or finish_room_event.is_set())
                 and current is not None
                 and outer_command is not None
-                and not cleanup_stop_sent
                 and not dispatch_control._stop_is_pending(manager, serial_number)
                 and (
                     current.state not in {"docked", "returning"}
@@ -578,7 +502,7 @@ async def _async_execute_rooms_reserved(
                     if needs_dock_confirmation:
                         dock_confirmation_scheduled = schedule_dock_confirmation(
                             hass,
-                            refresh=robot.refresh or (lambda: asyncio.sleep(0)),
+                            refresh=robot.refresh,
                             manager=manager,
                             serial_number=serial_number,
                             entity_id=entity_id,
@@ -853,21 +777,13 @@ async def _async_execute_rooms_reserved(
                 # It unregisters the same task after observing suspension.
                 if recovery is None or not shutdown_suspended:
                     manager.control.unregister_run_task(serial_number)
-                defer_scope_cleanup = manager.control.defer_activity_scope_cleanup
-                stop_watcher_owns_scope = (
-                    robot.set_activity_run_id is not None
-                    and (not dock_confirmation_scheduled)
-                    and defer_scope_cleanup(
+                if not dock_confirmation_scheduled and not (
+                    manager.control.defer_activity_scope_cleanup(
                         serial_number,
                         run_id,
                         robot.set_activity_run_id,
                         robot.get_activity_run_id,
                     )
-                )
-                if (
-                    robot.set_activity_run_id is not None
-                    and not dock_confirmation_scheduled
-                    and not stop_watcher_owns_scope
                 ):
                     robot.set_activity_run_id(None)
 
@@ -881,11 +797,11 @@ async def _async_execute_rooms(
     rooms: list[CleaningRoom],
     *,
     robot: RobotPort,
+    floor_token: str,
     cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
     floor_is_current: Callable[[], bool] | None = None,
-    floor_token: str | None = None,
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
@@ -945,11 +861,11 @@ async def _async_execute_rooms(
             serial_number,
             rooms,
             robot=robot,
+            floor_token=floor_token,
             cadence_by_room=cadence_by_room,
             managed_user_command=managed_user_command,
             mapped_room_names=mapped_room_names,
             floor_is_current=floor_is_current,
-            floor_token=floor_token,
             recovery=recovery,
             recovered_dispatch=recovered_dispatch,
             handoff_expected_identity=handoff_expected_identity,

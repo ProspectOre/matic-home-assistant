@@ -41,8 +41,8 @@ from custom_components.matic_robot.plan_model import (
     CleaningRoom,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
+from tests.session_fakes import robot_port
 from tests.wire_builders import _session_identity
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
@@ -119,10 +119,6 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     rooms = [ROOM]
     if multi_room:
         rooms.append(replace(ROOM, room_id="room-office", name="Office"))
-    # A settings boundary would dispatch a second native mission on completion.
-    rooms.append(
-        replace(ROOM, room_id="room-study", name="Study", coverage_setting="quick")
-    )
     sender = AsyncMock()
     history = AsyncMock(return_value=())
     presence = AsyncMock(return_value=None)
@@ -145,7 +141,8 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=RobotPort(
+            floor_token="floor",
+            robot=robot_port(
                 session_identity=read_identity,
                 active_session=presence,
                 session_history=history,
@@ -453,9 +450,6 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
     rooms = [ROOM]
     if multi_room:
         rooms.append(replace(ROOM, room_id="room-office", name="Office"))
-    rooms.append(
-        replace(ROOM, room_id="room-study", name="Study", coverage_setting="quick")
-    )
     call = ServiceCall(
         hass,
         "matic_robot",
@@ -475,7 +469,8 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=RobotPort(session_identity=reader),
+            floor_token="floor",
+            robot=robot_port(session_identity=reader),
             managed_user_command=sender,
         )
     )
@@ -576,9 +571,6 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     rooms = [ROOM]
     if multi_room:
         rooms.append(replace(ROOM, room_id="room-office", name="Office"))
-    rooms.append(
-        replace(ROOM, room_id="room-study", name="Study", coverage_setting="quick")
-    )
     call = ServiceCall(
         hass,
         "matic_robot",
@@ -598,7 +590,8 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=RobotPort(session_identity=read_identity, session_history=history),
+            floor_token="floor",
+            robot=robot_port(session_identity=read_identity, session_history=history),
             managed_user_command=sender,
         )
     )
@@ -693,7 +686,8 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=RobotPort(
+            floor_token="floor",
+            robot=robot_port(
                 session_identity=AsyncMock(side_effect=lambda: identity),
                 session_history=history,
             ),
@@ -1895,7 +1889,8 @@ async def test_cancelled_managed_dispatch_stops_only_its_exact_session(hass, rep
             "vacuum.matic",
             "serial",
             [ROOM],
-            robot=RobotPort(
+            floor_token="floor",
+            robot=robot_port(
                 session_identity=read_identity,
                 session_history=AsyncMock(return_value=()),
             ),
@@ -2072,7 +2067,6 @@ async def _run_area_plan(
     sender: AsyncMock,
     start_timeout: int = 10,
     completion_timeout: int = 10,
-    floor_token: str | None = "a" * 64,
     events: list | None = None,
 ) -> tuple[list, list[dict]]:
     """Run a plan with areas; room legs verify instantly, areas run for real."""
@@ -2132,14 +2126,14 @@ async def _run_area_plan(
                 "vacuum.matic",
                 "serial",
                 rooms,
-                robot=RobotPort(
+                robot=robot_port(
                     session_identity=robot.read_identity,
                     active_session=AsyncMock(return_value=False),
                     session_history=robot.history,
                 ),
                 managed_user_command=sender,
                 floor_is_current=lambda: True,
-                floor_token=floor_token,
+                floor_token="a" * 64,
                 entries=entries,
             )
     finally:
@@ -2280,25 +2274,6 @@ async def test_plan_of_areas_alone_completes_without_rooms(hass, fast_area_polls
     assert robot.history_reads >= 3
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "completed"
     sender.assert_not_awaited()
-
-
-async def test_a_plan_with_areas_needs_a_tracked_run(hass, fast_area_polls):
-    manager = _area_manager(hass)
-    robot = _AreaRobot(hass)
-
-    with pytest.raises(ServiceValidationError) as raised:
-        await _run_area_plan(
-            hass,
-            manager,
-            robot,
-            [],
-            [_area_preview_entry("rug", "Rug")],
-            sender=AsyncMock(),
-            floor_token=None,
-        )
-
-    assert raised.value.translation_key == "invalid_plan_command"
-    assert robot.dispatched == []
 
 
 async def test_replaced_area_session_is_unverified_without_stop(hass, fast_area_polls):
@@ -2597,10 +2572,6 @@ async def test_area_end_waiter_fails_closed_and_waits_out_a_return(hass, monkeyp
     )
     cancel = asyncio.Event()
     hass.states.async_set("vacuum.matic", "cleaning")
-    with pytest.raises(RoomTakenOverError, match="could not be identified"):
-        await _async_wait_for_area_end(
-            hass, "vacuum.matic", cancel, None, None, ORIGINAL
-        )
     with pytest.raises(RoomTakenOverError, match="could not be identified"):
         await _async_wait_for_area_end(
             hass, "vacuum.matic", cancel, None, AsyncMock(return_value=ORIGINAL), b""

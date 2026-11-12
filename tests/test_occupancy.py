@@ -29,11 +29,11 @@ from custom_components.matic_robot.plan_views import (
     MaticPlansView,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_port import RobotPort
 from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
 )
+from tests.session_fakes import robot_client, robot_port
 from tests.test_services import (
     _area_floor_plan,
     _registered_handler,
@@ -374,7 +374,7 @@ async def _plan_services(hass, manager):
                     async_confirm_room_completed=MagicMock(),
                 ),
             ),
-            client=SimpleNamespace(
+            client=robot_client(
                 async_get_active_cleaning_session_state=AsyncMock(),
                 async_get_cleaning_session_records=AsyncMock(),
                 async_get_cleaning_session_identity=AsyncMock(),
@@ -529,7 +529,8 @@ async def test_executor_fires_room_held_with_the_run_id(hass) -> None:
             "vacuum.matic",
             "serial",
             [STUDY],
-            robot=RobotPort(),
+            floor_token="floor",
+            robot=robot_port(),
             held_rooms=held,
         )
     await hass.async_block_till_done()
