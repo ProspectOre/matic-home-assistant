@@ -21,7 +21,7 @@ from .client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
-from .slam_decoded_map import Page, page_digest
+from .slam_decoded_map import PageDigests, page_digest
 
 # Bounds applied before snapshots recorded their provenance.
 LEGACY_BOUNDS = (1024, 16 * 1024 * 1024)
@@ -114,9 +114,8 @@ class LoadedSnapshot:
     bounds: tuple[int, int]
     # The retained set recovery was armed with, when a snapshot persisted one.
     baseline: RecoveryBaseline | None = None
-    # Content digests of the loaded pages by (structural, entry); may include
-    # evicted pages, which the store prunes.
-    digests: dict[Page, bytes] = field(default_factory=dict)
+    # Content digests of the loaded pages.
+    digests: PageDigests = field(default_factory=PageDigests)
 
     def can_recover_under(self, current_bounds: tuple[int, int]) -> bool:
         """Return whether a complete live replay may clear the latch."""
@@ -198,7 +197,7 @@ def decode_snapshot(stored: object, limits: SnapshotLimits) -> LoadedSnapshot:
     )
     entries: dict[str, HermesCollectionEntry] = {}
     structure_entries: dict[str, HermesCollectionEntry] = {}
-    digests: dict[Page, bytes] = {}
+    digests = PageDigests()
     mission_ids: set[int] = set()
 
     for structural, name in ((False, "tiles"), (True, "structure_tiles")):
@@ -279,7 +278,7 @@ def decode_snapshot(stored: object, limits: SnapshotLimits) -> LoadedSnapshot:
             if key in target:
                 dirty = True
             target[key] = entry
-            digests[structural, entry] = page_digest(tile)
+            digests.layer(structural)[key] = page_digest(tile)
             evicted_photo, evicted_structure = enforce_collection_bounds(
                 entries,
                 structure_entries,

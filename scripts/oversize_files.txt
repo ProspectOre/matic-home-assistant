@@ -6,7 +6,7 @@ custom_components/matic_robot/native_history.py 1215
 custom_components/matic_robot/plan_cadence.py 1178
 custom_components/matic_robot/plan_ledger.py 1783
 custom_components/matic_robot/sensor.py 1229
-custom_components/matic_robot/slam_map_store.py 1356
+custom_components/matic_robot/slam_map_store.py 1336
 frontend/map-studio-v4/effects.ts 1190
 frontend/map-studio-v4/shell.ts 1738
 frontend/map-studio-v4/state.ts 1322

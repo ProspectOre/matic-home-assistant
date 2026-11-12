@@ -21,6 +21,7 @@ from custom_components.matic_robot.area_views import MaticAreasView
 from custom_components.matic_robot.camera import _map_view, _render_photorealistic_tiles
 from custom_components.matic_robot.client.models import (
     FloorPlan,
+    HermesCollectionEntry,
     MappedFloor,
     Room,
 )
@@ -222,19 +223,37 @@ async def test_load_takes_digests_from_the_snapshot_decode(
     page.assert_called_once()
     assert restored.revision == revision
     await restored.async_remove()
-    assert restored._digests._digests == {}
+    assert restored._digests.layer(False) == restored._digests.layer(True) == {}
 
 
-async def test_replaced_pages_drop_their_digests(hass: HomeAssistant) -> None:
-    store = storage.SlamMapStore(hass, "tile-cache-prune")
-    for seed in range(200):
+class _TrackedEntry(HermesCollectionEntry):
+    __slots__ = ("__weakref__",)
+
+
+def _tracked(entry: HermesCollectionEntry) -> _TrackedEntry:
+    return _TrackedEntry(entry.key, entry.value)
+
+
+async def test_pages_leaving_their_layer_are_freed(hass: HomeAssistant) -> None:
+    store = storage.SlamMapStore(hass, "tile-cache-free")
+    replaced = _tracked(textured_photo_entry(0, 0, seed=1))
+    discarded = _tracked(textured_photo_entry(0, 0, seed=2, mission_id=2))
+    await store.async_add(replaced)
+    for seed in range(3, 203):
         await store.async_add(textured_photo_entry(0, 0, seed=seed))
-        await store.async_add(textured_photo_entry(1, 0, seed=seed))
+    await store.async_add(discarded)
+    assert len(store._candidates) == 1
+    refs = (weakref.ref(replaced), weakref.ref(discarded))
+    del replaced, discarded
 
-    assert len(store._digests._digests) <= 2 + decoded_map._STALE_SLACK + 1
+    store.set_expected_mission_id(3)
+    gc.collect()
+
+    assert [ref() for ref in refs] == [None, None]
+    assert not store._candidates
+    assert store._digests.layer(False).keys() == store._entries.keys()
     assert store.decoded_tiles() == (
-        decode_slam_tile(textured_photo_entry(0, 0, seed=199)),
-        decode_slam_tile(textured_photo_entry(1, 0, seed=199)),
+        decode_slam_tile(textured_photo_entry(0, 0, seed=202)),
     )
     await store.async_shutdown()
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict, deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from time import monotonic
@@ -30,7 +30,6 @@ from .client.slam_tiles import (
 from .const import DOMAIN
 from .slam_decoded_map import (
     DecodedMap,
-    Page,
     PageDigests,
     SharedDecode,
     decode_photo_page,
@@ -146,6 +145,7 @@ class _MissionCandidate:
     dropped_photo_tiles: int = 0
     dropped_structure_tiles: int = 0
     raw_bytes: int = 0
+    digests: PageDigests = field(default_factory=PageDigests)
 
 
 @dataclass(slots=True)
@@ -266,7 +266,7 @@ class SlamMapStore:
         self._entries = loaded.entries
         self._structure_entries = loaded.structure_entries
         self._active_raw_bytes = stored_bytes(self._entries, self._structure_entries)
-        self._digests = PageDigests(loaded.digests)
+        self._digests = loaded.digests
         self._decode = SharedDecode()
         self._truncated = loaded.truncated
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
@@ -291,7 +291,6 @@ class SlamMapStore:
             else None
         )
         self._candidates.clear()
-        self._prune_digests()
         self._retired_missions.clear()
         self._candidate_generation = 0
         self._closed = False
@@ -390,10 +389,11 @@ class SlamMapStore:
             # inside the retained area that it lacked fills an eviction gap.
             self._legacy_recovery.observe(key, structural=structural)
         previous = target.get(key)
-        changed = previous is None or self._digests[structural, previous] != digest
+        digests = self._digests.layer(structural)
+        changed = previous is None or digests[key] != digest
         self._active_raw_bytes += _entry_bytes(entry) - _entry_bytes(previous)
         target[key] = entry
-        self._remember((structural, entry), digest)
+        digests[key] = digest
         # Once a different mission has been observed, delayed pages from the
         # active token are evidence only for the cached map.  They cannot
         # re-establish that it still represents the robot while a replacement
@@ -456,16 +456,17 @@ class SlamMapStore:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
         key = tile_key(tile)
+        digests = candidate.digests.layer(structural)
         previous = target.get(key)
         fresh_page = (
             previous is None
-            or self._digests[structural, previous] != digest
+            or digests[key] != digest
             or (previous.sequence_start_ns, previous.sequence_no)
             != (entry.sequence_start_ns, entry.sequence_no)
         )
         candidate.raw_bytes += _entry_bytes(entry) - _entry_bytes(previous)
         target[key] = entry
-        self._remember((structural, entry), digest)
+        digests[key] = digest
         # Fresh candidate evidence starts a bounded classification window.
         # Even an unchanged replay remains contrary live-stream evidence and
         # must immediately fail closed; ``blocks_active`` only controls whether
@@ -696,6 +697,7 @@ class SlamMapStore:
         self._mission_id = candidate.mission_id
         self._entries = candidate.entries
         self._structure_entries = candidate.structure_entries
+        self._digests = candidate.digests
         self._active_raw_bytes = candidate.raw_bytes
         self._truncated = candidate.truncated
         self._dropped_photo_tiles = candidate.dropped_photo_tiles
@@ -1012,28 +1014,6 @@ class SlamMapStore:
             self._structure_entries.values(),
         )
 
-    def _remember(self, page: Page, digest: bytes) -> None:
-        """Keep the digest of one retained page, pruning pages no longer held."""
-        retained = sum(len(layer) for _structural, layer in self._layers())
-        if self._digests.add(page, digest, retained):
-            self._prune_digests()
-
-    def _prune_digests(self) -> None:
-        """Forget digests of pages that neither the map nor a candidate holds."""
-        self._digests.retain(
-            (structural, entry)
-            for structural, layer in self._layers()
-            for entry in layer.values()
-        )
-
-    def _layers(self) -> Iterator[tuple[bool, dict[str, HermesCollectionEntry]]]:
-        """Yield both layers of the active map and of every candidate."""
-        yield False, self._entries
-        yield True, self._structure_entries
-        for item in self._candidates.values():
-            yield False, item.entries
-            yield True, item.structure_entries
-
     @property
     def tile_count(self) -> int:
         """Return the number of cached pages without exposing their content."""
@@ -1193,8 +1173,8 @@ class SlamMapStore:
         self._entries.clear()
         self._structure_entries.clear()
         self._active_raw_bytes = 0
+        self._digests = PageDigests()
         self._candidates.clear()
-        self._prune_digests()
         self._retired_missions.clear()
         self._candidate_generation = 0
         self._live_photo_seen = False

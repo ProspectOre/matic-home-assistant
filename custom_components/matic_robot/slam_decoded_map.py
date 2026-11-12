@@ -22,14 +22,6 @@ from .client.slam_tiles import (
 if TYPE_CHECKING:
     from .slam_map_store import SlamMapIdentity
 
-# One retained page: whether it is structural, and its raw entry.
-type Page = tuple[bool, HermesCollectionEntry]
-
-# Stale digests may outnumber retained ones by this fraction before a prune,
-# so pruning stays amortized constant time per added page.
-_STALE_FRACTION = 4
-_STALE_SLACK = 64
-
 
 def page_digest(tile: SlamTile | SlamStructureTile) -> bytes:
     """Identify decoded map content while ignoring opaque wire metadata."""
@@ -61,26 +53,21 @@ def decode_structure_page(
 
 
 class PageDigests:
-    """Content digests of the pages a store retains, keyed by page."""
+    """Content digests of one map's pages, by layer and tile key.
 
-    def __init__(self, digests: dict[Page, bytes] | None = None) -> None:
-        self._digests = {} if digests is None else digests
+    Keyed by tile key rather than by page, so a replaced or evicted page is
+    freed with its layer entry. Each page write also writes its digest, and a
+    digest is read only while its key holds a page, so a stale one is never read.
+    """
 
-    def __getitem__(self, page: Page) -> bytes:
-        return self._digests[page]
+    __slots__ = ("_layers",)
 
-    def add(self, page: Page, digest: bytes, retained: int) -> bool:
-        """Remember one admitted page and say whether to prune stale digests.
+    def __init__(self) -> None:
+        self._layers: tuple[dict[str, bytes], dict[str, bytes]] = ({}, {})
 
-        ``retained`` counts the pages the store still holds in every layer.
-        """
-        self._digests[page] = digest
-        stale_limit = retained + retained // _STALE_FRACTION + _STALE_SLACK
-        return len(self._digests) > stale_limit
-
-    def retain(self, pages: Iterable[Page]) -> None:
-        """Forget every digest that is not one of ``pages``."""
-        self._digests = {page: self._digests[page] for page in pages}
+    def layer(self, structural: bool) -> dict[str, bytes]:
+        """Return the digests of the photographic or structural layer."""
+        return self._layers[structural]
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
