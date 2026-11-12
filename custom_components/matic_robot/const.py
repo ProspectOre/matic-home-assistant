@@ -60,10 +60,33 @@ DATA_LLM_API: Final = "llm_api"
 EVENT_FIRMWARE_CHANGED: Final = f"{DOMAIN}_firmware_changed"
 EVENT_FIRMWARE_ANALYZED: Final = f"{DOMAIN}_firmware_analyzed"
 EVENT_CLEANING_FINISHED: Final = f"{DOMAIN}_cleaning_finished"
+EVENT_PLAN_STARTED: Final = f"{DOMAIN}_plan_started"
 EVENT_PLAN_FINISHED: Final = f"{DOMAIN}_plan_finished"
 EVENT_PLAN_DOCKED: Final = f"{DOMAIN}_plan_docked"
 EVENT_ACTIVITY_OBSERVED: Final = f"{DOMAIN}_activity_observed"
 EVENT_CUES: Final = f"{DOMAIN}_cues"
+
+# Run lifecycle bus events, as `matic_robot_<type>`. Every one but
+# cleaning_finished, the robot's own record, names the robot's vacuum entity.
+CLEANING_FINISHED: Final = "cleaning_finished"
+RUN_EVENT_TYPES: Final = (
+    "plan_started",
+    "room_held",
+    "room_started",
+    "room_completed",
+    "room_skipped",
+    "room_failed",
+    "room_cancelled",
+    "room_interrupted",
+    "room_ended_unverified",
+    "room_reconciled",
+    "area_started",
+    "area_finished",
+    "area_failed",
+    "plan_finished",
+    "plan_docked",
+    CLEANING_FINISHED,
+)
 
 CUES_EVENT_TYPES: Final = (
     "disabled",

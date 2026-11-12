@@ -23,7 +23,7 @@ are disabled by default; enable them from the device's entity list.
 | Map · 3D photo map | `camera.matic_map` · `camera.matic_photorealistic_map` | on · off |
 | Take photo · Latest photo | `button.matic_take_photo` · `image.matic_latest_photo` | on |
 | Robot schedules | `calendar.matic_native_schedules` | on |
-| Cues | `event.matic_cues` | on |
+| Cues · Cleaning run | `event.matic_cues` · `event.matic_cleaning_run` | on |
 | Firmware | `update.matic_firmware` | on |
 | Battery | `sensor.matic_battery` | on |
 | Current room | `sensor.matic_current_area` | on |

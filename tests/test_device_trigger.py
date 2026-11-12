@@ -1,4 +1,4 @@
-"""Device triggers for room, plan and cleaning events."""
+"""Device triggers for the run lifecycle events."""
 
 from collections.abc import AsyncIterator
 
@@ -13,7 +13,7 @@ from pytest_homeassistant_custom_component.common import (
     async_get_device_automations,
 )
 
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import DOMAIN, RUN_EVENT_TYPES
 
 VACUUM = "vacuum.matic_test"
 
@@ -101,15 +101,15 @@ async def automation_for(
     return calls
 
 
-async def test_robot_device_offers_three_triggers(
+async def test_robot_device_offers_a_trigger_for_every_run_event(
     hass: HomeAssistant, device: dr.DeviceEntry, vacuum: str
 ) -> None:
     triggers = await matic_triggers(hass, device.id)
-    assert sorted(trigger["type"] for trigger in triggers) == [
-        "cleaning_finished",
-        "plan_finished",
-        "room_completed",
-    ]
+    assert [trigger["type"] for trigger in triggers] == list(RUN_EVENT_TYPES)
+    # The types 0.5 offered keep their names.
+    assert {"room_completed", "plan_finished", "cleaning_finished"} <= set(
+        RUN_EVENT_TYPES
+    )
     assert all(trigger["device_id"] == device.id for trigger in triggers)
 
 
@@ -120,8 +120,10 @@ async def test_device_without_vacuum_offers_only_cleaning_finished(
     assert [trigger["type"] for trigger in triggers] == ["cleaning_finished"]
 
 
-@pytest.mark.parametrize("trigger_type", ["room_completed", "plan_finished"])
-async def test_room_and_plan_triggers_match_the_vacuum_entity(
+@pytest.mark.parametrize(
+    "trigger_type", [kind for kind in RUN_EVENT_TYPES if kind != "cleaning_finished"]
+)
+async def test_room_area_and_plan_triggers_match_the_vacuum_entity(
     hass: HomeAssistant, device: dr.DeviceEntry, vacuum: str, trigger_type: str
 ) -> None:
     calls = await automation_for(hass, device.id, trigger_type)

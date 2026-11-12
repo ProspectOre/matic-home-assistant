@@ -60,6 +60,7 @@
       "cues_gesture_status": { "default": "mdi:gesture-tap" }
     },
     "event": {
+      "cleaning_run": { "default": "mdi:robot-vacuum" },
       "cues": { "default": "mdi:account-voice" }
     },
     "switch": {
