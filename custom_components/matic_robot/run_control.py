@@ -7,17 +7,19 @@ import logging
 from collections.abc import (
     AsyncIterator,
     Callable,
+    Coroutine,
     Iterator,
     Mapping,
 )
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from time import monotonic
-from typing import Literal, cast
+from typing import Any, Literal
 
-from homeassistant.core import callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
@@ -53,48 +55,111 @@ class ManagedMotionReplacedError(HomeAssistantError):
     """A newer command superseded a managed plan command."""
 
 
+_ScopeCleanup = tuple[Callable[[str | None], None], Callable[[], str | None] | None]
+
+
+@dataclass(eq=False, slots=True)
+class RobotActor:
+    """One robot's run state: its run, motion ownership, fences and watchers.
+
+    ``RunControl``'s methods are its only writers. Each change is one
+    synchronous step on the event loop, so one robot's changes never
+    interleave, and the robot's lock admits one run at a time.
+    """
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    command_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    finish_room_event: asyncio.Event = field(default_factory=asyncio.Event)
+    motion_generation: int = 0
+    stop_request_generation: int = 0
+    managed_motion: int | None = None
+    stop_dispatch_reservation: tuple[int, int] | None = None
+    run_task: asyncio.Task[Any] | None = None
+    reconciliation_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    # Dock watchers, a subset of reconciliation_tasks, with each one's run.
+    dock_watchers: dict[asyncio.Task[None], str | None] = field(default_factory=dict)
+    dock_scope_cleanups: dict[str, _ScopeCleanup] = field(default_factory=dict)
+    command_admission: _CommandAdmission = _OPEN_COMMAND_ADMISSION
+    generation: int = 0
+    cancellation_reason: str | None = None
+    stop_fence: _StopFence | None = None
+
+
 class RunControl:
     """Fence robot commands and own managed task lifetimes."""
 
     def __init__(self, repository: PlanRepository) -> None:
         self.repository = repository
-        self.locks: dict[str, asyncio.Lock] = {}
-        self.cancel_events: dict[str, asyncio.Event] = {}
-        self.finish_room_events: dict[str, asyncio.Event] = {}
-        self.command_locks: dict[str, asyncio.Lock] = {}
-        self.motion_generations: dict[str, int] = {}
-        self.stop_request_generations: dict[str, int] = {}
-        self.managed_motion: dict[str, int] = {}
-        self.stop_dispatch_reservations: dict[str, tuple[int, int]] = {}
-        self.run_tasks: dict[str, asyncio.Task[None]] = {}
-        self.reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
-        self.dock_reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
-        self.dock_reconciliation_run_ids: dict[
-            str, dict[asyncio.Task[None], str | None]
-        ] = {}
-        self.dock_scope_cleanups: dict[
-            str,
-            dict[
-                str,
-                tuple[Callable[[str | None], None], Callable[[], str | None] | None],
-            ],
-        ] = {}
-        self.command_admission: dict[str, _CommandAdmission] = {}
-        self.robot_generations: dict[str, int] = {}
-        self.cancellation_reasons: dict[str, str] = {}
+        self.actors: dict[str, RobotActor] = {}
         self.managed_stop_dispatch_transaction: ContextVar[
             tuple[str, int | None, int | None] | None
         ] = ContextVar(f"matic_managed_stop_dispatch_{id(self)}", default=None)
-        self.stop_fences: dict[str, _StopFence] = {}
         self.stop_fence_sequence = 0
+
+    def actor(self, serial_number: str) -> RobotActor:
+        """Return the one actor that holds this robot's run state."""
+        actor = self.actors.get(serial_number)
+        if actor is None:
+            actor = self.actors[serial_number] = RobotActor()
+        return actor
 
     def lock(self, serial_number: str) -> asyncio.Lock:
         """Return the single-flight plan lock for one robot."""
-        return self.locks.setdefault(serial_number, asyncio.Lock())
+        return self.actor(serial_number).lock
 
     def command_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize commands that can change one robot's active task."""
-        return self.command_locks.setdefault(serial_number, asyncio.Lock())
+        return self.actor(serial_number).command_lock
+
+    def start_run[RunResult](
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry[Any],
+        run: Coroutine[Any, Any, RunResult],
+        name: str,
+    ) -> asyncio.Task[RunResult]:
+        """Start a plan run, new or restarted, as a task the entry cancels on unload.
+
+        Once admitted, the run registers itself with the robot's actor
+        (``register_run_task``), which makes it the task unload stops and awaits.
+        """
+        return entry.async_create_background_task(hass, run, name)
+
+    async def async_start_run(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry[Any],
+        run: Callable[[Callable[[str], None]], Coroutine[Any, Any, str]],
+        name: str,
+        *,
+        wait: bool,
+    ) -> str:
+        """Start a plan run in the background and return its run_id.
+
+        ``run`` receives the callback it calls once the robot has the run's
+        first command. This returns then, or when the run ends first, and
+        raises any error the run ended with before that. With ``wait`` it
+        returns when the run ends, as a plan action did before runs started
+        in the background. Cancelling the caller before then cancels the run.
+        """
+        started: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+        def mark_started(run_id: str) -> None:
+            if not started.done():
+                started.set_result(run_id)
+
+        task = self.start_run(hass, entry, run(mark_started), name)
+        task.add_done_callback(_retrieve_run_end)
+        try:
+            if not wait:
+                await asyncio.wait((started, task), return_when=asyncio.FIRST_COMPLETED)
+                if started.done():
+                    return started.result()
+            return await task
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
 
     @callback
     def mark_stop_pending(
@@ -130,11 +195,12 @@ class RunControl:
     @callback
     def stop_pending(self, serial_number: str) -> bool:
         """Return whether an OEM stop countdown is still in its settle window."""
-        fence = self.stop_fences.get(serial_number)
+        actor = self.actor(serial_number)
+        fence = actor.stop_fence
         if fence is None:
             return False
         if monotonic() >= fence.deadline:
-            self.stop_fences.pop(serial_number, None)
+            actor.stop_fence = None
             self.repository.robot(serial_number).pop(
                 plan_storage.STOP_FENCE_EXPIRES_AT, None
             )
@@ -147,7 +213,9 @@ class RunControl:
     @callback
     def clear_stop_pending(self, serial_number: str) -> bool:
         """Clear a completed OEM stop fence after the robot reaches a stable state."""
-        removed = self.stop_fences.pop(serial_number, None) is not None
+        actor = self.actor(serial_number)
+        removed = actor.stop_fence is not None
+        actor.stop_fence = None
         owner_removed = (
             self.repository.robot(serial_number).pop(
                 plan_storage.STOP_FENCE_RUN_ID, None
@@ -167,7 +235,7 @@ class RunControl:
         """Return the identity of the current live STOP fence, if any."""
         if not self.stop_pending(serial_number):
             return None
-        fence = self.stop_fences.get(serial_number)
+        fence = self.actor(serial_number).stop_fence
         return fence.token if fence is not None else None
 
     def pending_stop_run_id(self, serial_number: str) -> str | None:
@@ -222,43 +290,49 @@ class RunControl:
     ) -> None:
         """Restore one monotonic fence without changing its wall-clock expiry."""
         deadline = monotonic() + duration_seconds
-        current = self.stop_fences.get(serial_number)
+        actor = self.actor(serial_number)
+        current = actor.stop_fence
         if current is not None:
             deadline = max(deadline, current.deadline)
             if not renew:
                 if deadline != current.deadline:
-                    self.stop_fences[serial_number] = _StopFence(
+                    actor.stop_fence = _StopFence(
                         deadline=deadline, token=current.token
                     )
                 return
         self.stop_fence_sequence += 1
-        self.stop_fences[serial_number] = _StopFence(
-            deadline=deadline, token=self.stop_fence_sequence
-        )
+        actor.stop_fence = _StopFence(deadline=deadline, token=self.stop_fence_sequence)
+
+    @callback
+    def forget_stop_state(self, serial_number: str) -> None:
+        """Drop a removed robot's stop fence and Stop reservation."""
+        actor = self.actor(serial_number)
+        actor.stop_fence = None
+        actor.stop_dispatch_reservation = None
 
     @callback
     def motion_generation(self, serial_number: str) -> int:
         """Read the ordering fence for a command that has not dispatched yet."""
-        return self.motion_generations.get(serial_number, 0)
+        return self.actor(serial_number).motion_generation
 
     @callback
     def stop_request_generation(self, serial_number: str) -> int:
         """Read the fence for direct motion queued before a Stop request."""
-        return self.stop_request_generations.get(serial_number, 0)
+        return self.actor(serial_number).stop_request_generation
 
     @callback
     def begin_managed_motion(self, serial_number: str) -> int:
         """Claim a generation token for one managed plan run."""
         self.require_command_admission(serial_number)
-        generation = self.motion_generations.get(serial_number, 0) + 1
-        self.motion_generations[serial_number] = generation
-        self.managed_motion[serial_number] = generation
-        return generation
+        actor = self.actor(serial_number)
+        actor.motion_generation += 1
+        actor.managed_motion = actor.motion_generation
+        return actor.motion_generation
 
     @callback
     def managed_motion_is_current(self, serial_number: str, token: int) -> bool:
         """Return whether a plan still owns the robot's motion generation."""
-        return self.managed_motion.get(serial_number) == token
+        return self.actor(serial_number).managed_motion == token
 
     @callback
     def has_managed_task(self, serial_number: str) -> bool:
@@ -270,21 +344,23 @@ class RunControl:
     @callback
     def end_managed_motion(self, serial_number: str, token: int) -> None:
         """Release ownership without disturbing a newer replacement command."""
-        if self.managed_motion.get(serial_number) == token:
-            self.managed_motion.pop(serial_number, None)
+        actor = self.actor(serial_number)
+        if actor.managed_motion == token:
+            actor.managed_motion = None
 
     @callback
     def replace_managed_motion(self, serial_number: str) -> bool:
         """Transfer motion ownership to an admitted independent command."""
+        actor = self.actor(serial_number)
         replaced = False
         if (
             self.cancel(serial_number)
             or recovery_run_state(self.repository.robot(serial_number)) is not None
         ):
-            self.cancellation_event(serial_number).set()
+            actor.cancel_event.set()
             dispatch = self.managed_stop_dispatch_transaction.get()
             if dispatch is None or dispatch[0] != serial_number:
-                self.cancellation_reasons[serial_number] = "motion_replaced"
+                actor.cancellation_reason = "motion_replaced"
                 replaced = True
         self.cancel_reconciliation_tasks(serial_number)
         # Keep the settle countdown active, but revoke its persisted run owner:
@@ -305,10 +381,8 @@ class RunControl:
         reconciliation_removed = stop_owner_removed or reconciliation_removed
         if reconciliation_removed:
             self.repository.reconciliation_removal_pending.add(serial_number)
-        self.motion_generations[serial_number] = (
-            self.motion_generations.get(serial_number, 0) + 1
-        )
-        self.managed_motion.pop(serial_number, None)
+        actor.motion_generation += 1
+        actor.managed_motion = None
         active = self.repository.robot(serial_number).get("active_plan")
         if replaced and isinstance(active, Mapping) and active.get("room_id"):
             self.repository.notify_listeners(serial_number)
@@ -355,7 +429,7 @@ class RunControl:
         expected_stop_generation: int,
     ) -> None:
         """Block RESUME until this accepted Stop reaches its dispatch path."""
-        self.stop_dispatch_reservations[serial_number] = (
+        self.actor(serial_number).stop_dispatch_reservation = (
             expected_generation,
             expected_stop_generation,
         )
@@ -369,14 +443,17 @@ class RunControl:
         expected_stop_generation: int,
     ) -> None:
         """Release only the reservation owned by this Stop request."""
-        expected = (expected_generation, expected_stop_generation)
-        if self.stop_dispatch_reservations.get(serial_number) == expected:
-            self.stop_dispatch_reservations.pop(serial_number, None)
+        actor = self.actor(serial_number)
+        if actor.stop_dispatch_reservation == (
+            expected_generation,
+            expected_stop_generation,
+        ):
+            actor.stop_dispatch_reservation = None
 
     @callback
     def stop_dispatch_pending(self, serial_number: str) -> bool:
         """Return whether an accepted Stop is still crossing the HA service boundary."""
-        return serial_number in self.stop_dispatch_reservations
+        return self.actor(serial_number).stop_dispatch_reservation is not None
 
     async def async_replace_managed_motion(self, serial_number: str) -> int:
         """Persist replacement ownership before its independent command runs."""
@@ -393,14 +470,15 @@ class RunControl:
         task = asyncio.current_task()
         if task is None:
             raise RuntimeError("managed plan has no current task")
-        self.run_tasks[serial_number] = cast(asyncio.Task[None], task)
+        self.actor(serial_number).run_task = task
 
     @callback
     def unregister_run_task(self, serial_number: str) -> None:
         """Forget only the current run task, preserving a newer replacement."""
-        if self.run_tasks.get(serial_number) is asyncio.current_task():
-            self.run_tasks.pop(serial_number, None)
-        self.cancellation_reasons.pop(serial_number, None)
+        actor = self.actor(serial_number)
+        if actor.run_task is asyncio.current_task():
+            actor.run_task = None
+        actor.cancellation_reason = None
 
     @callback
     def register_reconciliation_task(
@@ -412,48 +490,32 @@ class RunControl:
         run_id: str | None = None,
     ) -> None:
         """Tie a late native-completion watcher to this robot's lifecycle."""
-        tasks = self.reconciliation_tasks.setdefault(serial_number, set())
-        tasks.add(task)
+        actor = self.actor(serial_number)
+        actor.reconciliation_tasks.add(task)
         if dock:
-            self.dock_reconciliation_tasks.setdefault(serial_number, set()).add(task)
-            self.dock_reconciliation_run_ids.setdefault(serial_number, {})[task] = (
-                run_id
-            )
+            actor.dock_watchers[task] = run_id
 
         def _discard(done: asyncio.Task[None]) -> None:
-            current = self.reconciliation_tasks.get(serial_number)
-            if current is None:
+            # Cancelling the watchers already forgot them.
+            if not actor.reconciliation_tasks:
                 return
-            current.discard(done)
-            if not current:
-                self.reconciliation_tasks.pop(serial_number, None)
+            actor.reconciliation_tasks.discard(done)
             if dock:
-                dock_current = self.dock_reconciliation_tasks.get(serial_number)
-                if dock_current is not None:
-                    dock_current.discard(done)
-                if not dock_current:
-                    self.dock_reconciliation_tasks.pop(serial_number, None)
-                    self.dock_reconciliation_run_ids.pop(serial_number, None)
-                    cleanup = (
-                        self.dock_scope_cleanups.pop(serial_number, {}).get(run_id)
-                        if run_id is not None
-                        else None
-                    )
+                actor.dock_watchers.pop(done, None)
+                if not actor.dock_watchers and run_id is not None:
+                    cleanups, actor.dock_scope_cleanups = actor.dock_scope_cleanups, {}
+                    cleanup = cleanups.get(run_id)
                     if cleanup is not None:
                         set_scope, get_scope = cleanup
                         if get_scope is None or get_scope() == run_id:
                             set_scope(None)
-                else:
-                    run_ids = self.dock_reconciliation_run_ids.get(serial_number)
-                    if run_ids is not None:
-                        run_ids.pop(done, None)
 
         task.add_done_callback(_discard)
 
     @callback
     def dock_reconciliation_active(self, serial_number: str) -> bool:
         """Return whether a dock watcher still owns this robot's scope."""
-        return bool(self.dock_reconciliation_tasks.get(serial_number))
+        return bool(self.actor(serial_number).dock_watchers)
 
     @callback
     def defer_activity_scope_cleanup(
@@ -464,11 +526,9 @@ class RunControl:
         get_run_id: Callable[[], str | None] | None,
     ) -> bool:
         """Release a run scope when its specific dock watcher terminates."""
-        run_ids = self.dock_reconciliation_run_ids.get(serial_number, {})
+        actor = self.actor(serial_number)
         tasks = tuple(
-            task
-            for task in self.dock_reconciliation_tasks.get(serial_number, ())
-            if run_ids.get(task) == run_id
+            task for task, owner in actor.dock_watchers.items() if owner == run_id
         )
         if not tasks or (get_run_id is not None and get_run_id() not in {None, run_id}):
             return False
@@ -484,52 +544,47 @@ class RunControl:
 
         for task in tasks:
             task.add_done_callback(_release)
-        self.dock_scope_cleanups.setdefault(serial_number, {})[run_id] = (
-            set_run_id,
-            get_run_id,
-        )
+        actor.dock_scope_cleanups[run_id] = (set_run_id, get_run_id)
         return True
 
     @callback
     def cancel_reconciliation_tasks(self, serial_number: str) -> None:
         """Cancel obsolete late-completion watchers without blocking."""
-        for task in tuple(self.reconciliation_tasks.pop(serial_number, set())):
+        actor = self.actor(serial_number)
+        tasks, actor.reconciliation_tasks = actor.reconciliation_tasks, set()
+        for task in tasks:
             task.cancel()
-        self.dock_reconciliation_tasks.pop(serial_number, None)
-        self.dock_reconciliation_run_ids.pop(serial_number, None)
-        self.dock_scope_cleanups.pop(serial_number, None)
+        actor.dock_watchers = {}
+        actor.dock_scope_cleanups = {}
 
     def cancellation_reason(self, serial_number: str) -> str | None:
         """Return the lifecycle reason attached to the current cancellation."""
-        return self.cancellation_reasons.get(serial_number)
+        return self.actor(serial_number).cancellation_reason
 
     @callback
     def mark_managed_stop(self, serial_number: str) -> None:
         """Authorize an in-flight dock upgrade for a graceful managed stop."""
-        self.cancellation_reasons[serial_number] = "managed_stop"
+        self.actor(serial_number).cancellation_reason = "managed_stop"
 
     async def async_cancel_and_wait(
         self, serial_number: str, *, preserve_run: bool = False
     ) -> None:
         """Interrupt a managed run and wait before its client can be closed."""
-        task = self.run_tasks.get(serial_number)
+        actor = self.actor(serial_number)
+        task = actor.run_task
         if task is not None and not task.done():
-            if self.cancellation_reasons.get(serial_number) not in {
-                "managed_stop",
-                "motion_replaced",
-            }:
-                self.cancellation_reasons[serial_number] = (
+            if actor.cancellation_reason not in {"managed_stop", "motion_replaced"}:
+                actor.cancellation_reason = (
                     "home_assistant_shutdown" if preserve_run else "config_entry_unload"
                 )
-            self.finish_room_event(serial_number).clear()
-            self.cancellation_event(serial_number).set()
+            actor.finish_room_event.clear()
+            actor.cancel_event.set()
             if task is not asyncio.current_task():
                 await asyncio.gather(task, return_exceptions=True)
 
-        reconciliation_tasks = tuple(
-            self.reconciliation_tasks.pop(serial_number, set())
-        )
-        self.dock_reconciliation_tasks.pop(serial_number, None)
+        reconciliation_tasks = tuple(actor.reconciliation_tasks)
+        actor.reconciliation_tasks = set()
+        actor.dock_watchers = {}
         for reconciliation_task in reconciliation_tasks:
             reconciliation_task.cancel()
         if reconciliation_tasks:
@@ -539,26 +594,23 @@ class RunControl:
 
     async def async_close_command_admission_and_wait(self, serial_number: str) -> None:
         """Reject new external commands and wait for the current owner to exit."""
-        _state, epoch = self.command_admission.get(
-            serial_number, _OPEN_COMMAND_ADMISSION
-        )
-        self.command_admission[serial_number] = ("closed", epoch + 1)
-        async with self.command_lock(serial_number):
+        actor = self.actor(serial_number)
+        actor.command_admission = ("closed", actor.command_admission[1] + 1)
+        async with actor.command_lock:
             pass
 
     @callback
     def begin_command_teardown(self, serial_number: str) -> None:
         """Fence external commands while current managed work settles."""
-        state, epoch = self.command_admission.get(
-            serial_number, _OPEN_COMMAND_ADMISSION
-        )
+        actor = self.actor(serial_number)
+        state, epoch = actor.command_admission
         if state == "open":
-            self.command_admission[serial_number] = ("managed_only", epoch + 1)
+            actor.command_admission = ("managed_only", epoch + 1)
 
     @callback
     def command_admission_epoch(self, serial_number: str) -> int:
         """Return the current epoch for binding an admitted dispatch."""
-        return self.command_admission.get(serial_number, _OPEN_COMMAND_ADMISSION)[1]
+        return self.actor(serial_number).command_admission[1]
 
     def require_command_admission(
         self,
@@ -568,9 +620,7 @@ class RunControl:
         expected_epoch: int | None = None,
     ) -> None:
         """Raise when a command reaches dispatch after its owner has closed."""
-        admission, epoch = self.command_admission.get(
-            serial_number, _OPEN_COMMAND_ADMISSION
-        )
+        admission, epoch = self.actor(serial_number).command_admission
         if (
             (expected_epoch is not None and expected_epoch != epoch)
             or serial_number in self.repository.removed_robots
@@ -582,9 +632,7 @@ class RunControl:
     @asynccontextmanager
     async def external_command(self, serial_number: str) -> AsyncIterator[None]:
         """Admit one external command while holding its dispatch lock."""
-        _admission, epoch = self.command_admission.get(
-            serial_number, _OPEN_COMMAND_ADMISSION
-        )
+        epoch = self.command_admission_epoch(serial_number)
         self.require_command_admission(serial_number, expected_epoch=epoch)
         async with self.command_lock(serial_number):
             self.require_command_admission(serial_number, expected_epoch=epoch)
@@ -594,27 +642,22 @@ class RunControl:
     def reopen_metadata_admission(self, serial_number: str) -> None:
         """Reopen command and metadata admission after a failed config-entry unload."""
         self.repository.metadata_admission_closed.discard(serial_number)
-        _state, epoch = self.command_admission.get(
-            serial_number, _OPEN_COMMAND_ADMISSION
-        )
-        self.command_admission[serial_number] = ("open", epoch + 1)
+        actor = self.actor(serial_number)
+        actor.command_admission = ("open", actor.command_admission[1] + 1)
 
     @callback
     def activate_robot(self, serial_number: str) -> int:
         """Clear removal state when a config entry activates this robot."""
         self.repository.removed_robots.discard(serial_number)
         self.repository.metadata_admission_closed.discard(serial_number)
-        _state, epoch = self.command_admission.get(
-            serial_number, _OPEN_COMMAND_ADMISSION
-        )
-        self.command_admission[serial_number] = ("open", epoch + 1)
-        generation = self.robot_generations.get(serial_number, 0) + 1
-        self.robot_generations[serial_number] = generation
-        return generation
+        actor = self.actor(serial_number)
+        actor.command_admission = ("open", actor.command_admission[1] + 1)
+        actor.generation += 1
+        return actor.generation
 
     def robot_generation(self, serial_number: str) -> int:
         """Return the current config-entry generation for a robot."""
-        return self.robot_generations.get(serial_number, 0)
+        return self.actor(serial_number).generation
 
     @asynccontextmanager
     async def external_motion(
@@ -625,9 +668,7 @@ class RunControl:
         expected_stop_generation: int | None = None,
     ) -> AsyncIterator[int | None]:
         """Replace managed ownership only for an admitted, current command."""
-        _admission, epoch = self.command_admission.get(
-            serial_number, _OPEN_COMMAND_ADMISSION
-        )
+        epoch = self.command_admission_epoch(serial_number)
         self.require_command_admission(serial_number, expected_epoch=epoch)
         async with self.command_lock(serial_number):
             self.require_command_admission(serial_number, expected_epoch=epoch)
@@ -689,20 +730,20 @@ class RunControl:
 
     def cancellation_event(self, serial_number: str) -> asyncio.Event:
         """Return the cancellation signal for the current managed run."""
-        return self.cancel_events.setdefault(serial_number, asyncio.Event())
+        return self.actor(serial_number).cancel_event
 
     def finish_room_event(self, serial_number: str) -> asyncio.Event:
         """Return the graceful-stop signal for the current managed run."""
-        return self.finish_room_events.setdefault(serial_number, asyncio.Event())
+        return self.actor(serial_number).finish_room_event
 
     @callback
     def prepare_run(self, serial_number: str) -> asyncio.Event:
         """Clear and return the cancellation signal for a new managed run."""
-        event = self.cancellation_event(serial_number)
-        event.clear()
-        self.cancellation_reasons.pop(serial_number, None)
-        self.finish_room_event(serial_number).clear()
-        return event
+        actor = self.actor(serial_number)
+        actor.cancel_event.clear()
+        actor.cancellation_reason = None
+        actor.finish_room_event.clear()
+        return actor.cancel_event
 
     @callback
     def cancel(self, serial_number: str) -> bool:
@@ -718,14 +759,11 @@ class RunControl:
         self, serial_number: str, *, stop_now: bool = False
     ) -> PlanStopDecision:
         """Apply the active plan's immediate-or-after-room stop policy."""
-        self.stop_request_generations[serial_number] = (
-            self.stop_request_generation(serial_number) + 1
-        )
+        actor = self.actor(serial_number)
+        actor.stop_request_generation += 1
 
         def fence_new_motion() -> None:
-            self.motion_generations[serial_number] = (
-                self.motion_generation(serial_number) + 1
-            )
+            actor.motion_generation += 1
 
         if stop_now:
             robot = self.repository.robot(serial_number)
@@ -761,11 +799,11 @@ class RunControl:
             if stop_now:
                 self.finish_room_event(serial_number).clear()
                 self.cancellation_event(serial_number).set()
-                self.cancellation_reasons[serial_number] = "managed_stop"
+                actor.cancellation_reason = "managed_stop"
                 return PlanStopDecision("immediate")
             if recovery_run_state(self.repository.robot(serial_number)) is not None:
                 self.cancellation_event(serial_number).set()
-                self.cancellation_reasons[serial_number] = "managed_stop"
+                actor.cancellation_reason = "managed_stop"
                 return PlanStopDecision("immediate")
             return PlanStopDecision("not_running")
 
@@ -774,9 +812,10 @@ class RunControl:
         if active is None:
             fence_new_motion()
             self.cancel(serial_number)
-            self.cancellation_reasons.setdefault(serial_number, "managed_stop")
+            if actor.cancellation_reason is None:
+                actor.cancellation_reason = "managed_stop"
             return PlanStopDecision("immediate")
-        if self.cancellation_reasons.get(serial_number) == "motion_replaced":
+        if actor.cancellation_reason == "motion_replaced":
             # An external command may already have replaced this persisted
             # plan's owner while its executor is still unwinding. In that
             # interval the active-plan snapshot is stale: honoring its
@@ -788,7 +827,7 @@ class RunControl:
             fence_new_motion()
             self.finish_room_event(serial_number).clear()
             self.cancellation_event(serial_number).set()
-            self.cancellation_reasons[serial_number] = "managed_stop"
+            actor.cancellation_reason = "managed_stop"
             return PlanStopDecision("immediate")
         if self.finish_room_event(serial_number).is_set():
             return PlanStopDecision("after_room")
@@ -808,7 +847,8 @@ class RunControl:
         if not finish_current_room:
             fence_new_motion()
             self.cancel(serial_number)
-            self.cancellation_reasons.setdefault(serial_number, "managed_stop")
+            if actor.cancellation_reason is None:
+                actor.cancellation_reason = "managed_stop"
             return PlanStopDecision("immediate")
         if "room_id" not in active:
             # A custom area has no duration history to estimate progress from,
@@ -822,7 +862,8 @@ class RunControl:
         if progress is not None and progress < threshold:
             fence_new_motion()
             self.cancel(serial_number)
-            self.cancellation_reasons.setdefault(serial_number, "managed_stop")
+            if actor.cancellation_reason is None:
+                actor.cancellation_reason = "managed_stop"
             return PlanStopDecision("immediate", progress, threshold)
 
         self.cancellation_event(serial_number).clear()
@@ -848,3 +889,10 @@ class RunControl:
             )
             await self.repository.async_save_and_notify(serial_number)
             self.repository.reconciliation_removal_pending.discard(serial_number)
+
+
+@callback
+def _retrieve_run_end(task: asyncio.Task[Any]) -> None:
+    """Retrieve the end of a run nobody awaits; plan_finished reports it."""
+    if not task.cancelled() and (err := task.exception()) is not None:
+        _LOGGER.debug("Managed cleaning run ended: %s", err)

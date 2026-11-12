@@ -561,7 +561,7 @@ async def test_motion_generation_change_while_waiting_for_store_retries_history(
     )
     await asyncio.sleep(0)
     assert not importing.done()
-    manager.control.motion_generations["robot"] = (
+    manager.control.actor("robot").motion_generation = (
         manager.control.motion_generation("robot") + 1
     )
     manager.repository.store_lock.release()

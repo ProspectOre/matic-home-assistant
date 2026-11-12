@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_ENTITY_ID,
 )
@@ -66,8 +68,8 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         *,
         intelligent: bool | None,
         preview_token: str | None = None,
-    ) -> None:
-        """Resolve and run every room in a saved plan."""
+    ) -> dict[str, Any]:
+        """Resolve and start a saved plan's run; return its run_id."""
         entity_id, entry, serial_number, room_map = context._saved_plan_context(
             hass, call, require_current_floor=True
         )
@@ -172,27 +174,46 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 command,
             )
 
-        await _async_execute_rooms(
-            hass,
-            execution_call,
-            manager,
-            entity_id,
-            serial_number,
-            rooms,
-            robot=RobotPort.for_entry(hass, entry, entity_id),
-            cadence_by_room=cadence_by_room,
-            managed_user_command=async_managed_command,
-            mapped_room_names=tuple(room_map.values()),
-            floor_is_current=floor_is_current,
-            floor_token=execution_floor_token,
-            validate_prepared_run=validate_prepared_run,
-            # The run order of rooms and custom areas, when there is an area.
-            entries=preview["entries"] if _preview_has_area(preview) else None,
-            held_rooms=preview.get("held_rooms", ()),
-        )
+        async def run(on_started: Callable[[str], None]) -> str:
+            return await _async_execute_rooms(
+                hass,
+                execution_call,
+                manager,
+                entity_id,
+                serial_number,
+                rooms,
+                robot=RobotPort.for_entry(hass, entry, entity_id),
+                cadence_by_room=cadence_by_room,
+                managed_user_command=async_managed_command,
+                mapped_room_names=tuple(room_map.values()),
+                floor_is_current=floor_is_current,
+                floor_token=execution_floor_token,
+                validate_prepared_run=validate_prepared_run,
+                # The run order of rooms and custom areas, when there is an area.
+                entries=preview["entries"] if _preview_has_area(preview) else None,
+                held_rooms=preview.get("held_rooms", ()),
+                on_started=on_started,
+            )
 
-    async def async_clean_room_sequence(call: ServiceCall) -> None:
-        """Run an unsaved ordered room sequence with per-room settings."""
+        return await _async_start(call, entry, run)
+
+    async def _async_start(
+        call: ServiceCall,
+        entry: ConfigEntry[Any],
+        run: Callable[[Callable[[str], None]], Coroutine[Any, Any, str]],
+    ) -> dict[str, Any]:
+        """Start the run in the background; with ``wait``, return when it ends."""
+        run_id = await manager.control.async_start_run(
+            hass,
+            entry,
+            run,
+            f"{DOMAIN} {call.service}",
+            wait=bool(call.data.get("wait", False)),
+        )
+        return {"run_id": run_id}
+
+    async def async_clean_room_sequence(call: ServiceCall) -> dict[str, Any]:
+        """Start an unsaved ordered room sequence with per-room settings."""
         entity_id, entry, serial_number, room_map = context._saved_plan_context(
             hass, call, require_current_floor=True
         )
@@ -242,86 +263,89 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         internal_plan_id = manager.catalog.reserve_manual_room_sequence_plan_id(
             serial_number
         )
-        try:
-            execution_call = ServiceCall(
+        execution_call = ServiceCall(
+            hass,
+            DOMAIN,
+            call.service,
+            {
+                "plan_id": internal_plan_id,
+                "start_timeout": 120,
+                "completion_timeout": 21600,
+                "return_to_base": bool(call.data["return_to_base"]),
+            },
+            context=call.context,
+        )
+
+        async def async_managed_command(token: int, command: UserCommand) -> None:
+            await _async_managed_user_command(
                 hass,
-                DOMAIN,
-                call.service,
-                {
-                    "plan_id": internal_plan_id,
-                    "start_timeout": 120,
-                    "completion_timeout": 21600,
-                    "return_to_base": bool(call.data["return_to_base"]),
-                },
-                context=call.context,
+                entry,
+                manager,
+                serial_number,
+                entity_id,
+                call.context,
+                token,
+                command,
             )
 
-            async def async_managed_command(token: int, command: UserCommand) -> None:
-                await _async_managed_user_command(
-                    hass,
-                    entry,
+        initial_sequence_token = resolved["preview_token"]
+
+        def validate_prepared_run() -> None:
+            """Reject map, policy, settings, or progress changes before dispatch."""
+            current_floor_plan = _current_floor_plan(entry)
+            current_room_map = {room.id: room.name for room in current_floor_plan.rooms}
+            try:
+                current = resolve_room_sequence(
                     manager,
                     serial_number,
-                    entity_id,
-                    call.context,
-                    token,
-                    command,
+                    current_floor_plan,
+                    current_room_map,
+                    call.data["rooms"],
+                    entry_id=str(getattr(entry, "entry_id", "")),
+                    return_to_base=bool(call.data["return_to_base"]),
+                    use_room_schedule=use_room_schedule,
+                    override_room_schedule=override_room_schedule,
+                    room_resolver=_resolve_room_id,
+                )
+            except ValueError as err:
+                raise _plan_request_error(err) from err
+            if current["preview_token"] != initial_sequence_token:
+                raise _validation_error(
+                    "The room-sequence resolution changed before starting",
+                    "room_sequence_preview_changed",
                 )
 
-            initial_sequence_token = resolved["preview_token"]
+        async def run(on_started: Callable[[str], None]) -> str:
+            try:
+                return await _async_execute_rooms(
+                    hass,
+                    execution_call,
+                    manager,
+                    entity_id,
+                    serial_number,
+                    rooms,
+                    robot=RobotPort.for_entry(hass, entry, entity_id),
+                    cadence_by_room=cadence_by_room,
+                    managed_user_command=async_managed_command,
+                    mapped_room_names=tuple(room_map.values()),
+                    floor_is_current=floor_is_current,
+                    floor_token=execution_floor_token,
+                    validate_prepared_run=validate_prepared_run,
+                    on_started=on_started,
+                )
+            finally:
+                manager.catalog.release_manual_room_sequence_plan_id(
+                    serial_number, internal_plan_id
+                )
 
-            def validate_prepared_run() -> None:
-                """Reject map, policy, settings, or progress changes before dispatch."""
-                current_floor_plan = _current_floor_plan(entry)
-                current_room_map = {
-                    room.id: room.name for room in current_floor_plan.rooms
-                }
-                try:
-                    current = resolve_room_sequence(
-                        manager,
-                        serial_number,
-                        current_floor_plan,
-                        current_room_map,
-                        call.data["rooms"],
-                        entry_id=str(getattr(entry, "entry_id", "")),
-                        return_to_base=bool(call.data["return_to_base"]),
-                        use_room_schedule=use_room_schedule,
-                        override_room_schedule=override_room_schedule,
-                        room_resolver=_resolve_room_id,
-                    )
-                except ValueError as err:
-                    raise _plan_request_error(err) from err
-                if current["preview_token"] != initial_sequence_token:
-                    raise _validation_error(
-                        "The room-sequence resolution changed before starting",
-                        "room_sequence_preview_changed",
-                    )
-
-            await _async_execute_rooms(
-                hass,
-                execution_call,
-                manager,
-                entity_id,
-                serial_number,
-                rooms,
-                robot=RobotPort.for_entry(hass, entry, entity_id),
-                cadence_by_room=cadence_by_room,
-                managed_user_command=async_managed_command,
-                mapped_room_names=tuple(room_map.values()),
-                floor_is_current=floor_is_current,
-                floor_token=execution_floor_token,
-                validate_prepared_run=validate_prepared_run,
-            )
-        finally:
-            manager.catalog.release_manual_room_sequence_plan_id(
-                serial_number, internal_plan_id
-            )
+        return await _async_start(call, entry, run)
 
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_ROOM_SEQUENCE,
         context._require_matic_control(hass, async_clean_room_sequence),
         schema=CLEAN_ROOM_SEQUENCE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     async def async_preview_room_sequence(call: ServiceCall) -> dict[str, Any]:
@@ -365,10 +389,10 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         supports_response=SupportsResponse.ONLY,
     )
 
-    async def async_run_selected_plan(call: ServiceCall) -> None:
+    async def async_run_selected_plan(call: ServiceCall) -> dict[str, Any]:
         """Run a saved plan in its saved cleaning order, or the one asked for."""
         run_behavior = call.data.get("run_behavior")
-        await async_run_saved_plan(
+        return await async_run_saved_plan(
             call,
             intelligent=None if run_behavior is None else run_behavior == "intelligent",
             preview_token=call.data.get("preview_token"),
@@ -379,6 +403,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         SERVICE_RUN_SELECTED_PLAN,
         context._require_matic_control(hass, async_run_selected_plan),
         schema=RUN_SELECTED_PLAN_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     async def async_preview_plan(call: ServiceCall) -> dict[str, Any]:

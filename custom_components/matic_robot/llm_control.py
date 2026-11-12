@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from collections.abc import Mapping
 from typing import Any, cast, override
 
@@ -11,7 +9,7 @@ import probatio
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
@@ -23,11 +21,6 @@ from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .llm_common import _ROBOT_FIELD, _error, _MaticTool, _resolve_plan_id
 from .plan_model import resolve_room_reference
 from .slam_view_data import catalog_entry_projection
-
-_LOGGER = logging.getLogger(__name__)
-
-# Wait for an early refusal while an action continues through the cleaning run.
-RUN_START_WAIT_SECONDS = 5.0
 
 
 class MaticRunPlanTool(_MaticTool):
@@ -484,29 +477,14 @@ async def _async_start_run(
     data: dict[str, Any],
     started: JsonObjectType,
 ) -> llm.ToolResult:
-    """Start a cleaning run on the panel's action and report early refusals."""
-    task = hass.async_create_background_task(
-        hass.services.async_call(
+    """Start a cleaning run on the panel's action and report its refusal."""
+    try:
+        await hass.services.async_call(
             DOMAIN, service, data, blocking=True, context=llm_context.context
-        ),
-        f"{DOMAIN} assistant {service}",
-    )
-    done, _pending = await asyncio.wait({task}, timeout=RUN_START_WAIT_SECONDS)
-    if not done:
-        task.add_done_callback(_log_run_end)
-        return llm.ToolResult(data={"started": True, **started})
-    if isinstance(err := task.exception(), HomeAssistantError):
+        )
+    except HomeAssistantError as err:
         return await _async_service_refusal(hass, llm_context, err)
-    if err is not None:
-        raise err
-    return llm.ToolResult(data={"started": True, "finished": True, **started})
-
-
-@callback
-def _log_run_end(task: asyncio.Task[Any]) -> None:
-    """Retrieve the outcome of a run the assistant no longer waits for."""
-    if not task.cancelled() and (err := task.exception()) is not None:
-        _LOGGER.debug("Cleaning run started by an assistant ended: %s", err)
+    return llm.ToolResult(data={"started": True, **started})
 
 
 async def _async_service_refusal(

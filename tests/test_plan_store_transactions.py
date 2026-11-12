@@ -205,7 +205,7 @@ async def test_failed_history_reset_is_not_persisted_by_later_peer_write(
         )
         assert target["pending_native_reconciliation"] == marker
         assert not watcher.done()
-        assert watcher in manager.control.reconciliation_tasks[TARGET]
+        assert watcher in manager.control.actor(TARGET).reconciliation_tasks
         await manager.catalog.async_save_plan(PEER, "peer-plan", {"name": "Peer"})
 
         reloaded = CleaningPlanManager(hass)

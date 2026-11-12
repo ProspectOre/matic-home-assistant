@@ -145,6 +145,10 @@ clean_room_sequence:
       default: false
       selector:
         boolean:
+    wait:
+      default: false
+      selector:
+        boolean:
 
 preview_room_sequence:
   target: *vacuum_target
@@ -205,6 +209,10 @@ run_selected_plan:
       advanced: true
       selector:
         text:
+    wait:
+      default: false
+      selector:
+        boolean:
 
 preview_plan:
   target: *vacuum_target

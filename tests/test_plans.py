@@ -599,7 +599,7 @@ def test_stop_fence_restore_extends_deadline_without_changing_identity(hass) -> 
         manager.control.arm_stop_pending("serial", 10)
         restored_token = manager.control.stop_fence_token("serial")
 
-    assert manager.control.stop_fences["serial"].deadline == 115.0
+    assert manager.control.actor("serial").stop_fence.deadline == 115.0
     assert restored_token == token
 
 
@@ -921,7 +921,7 @@ async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
     assert isinstance(result, OSError) if save_fails else result is None
     assert set_run_id.call_args.args == (None,)
     assert manager.control.lock("serial").locked() is False
-    assert "serial" not in manager.control.run_tasks
+    assert manager.control.actor("serial").run_task is None
     assert len(events) == 1
     assert events[0].data["run_id"] == set_run_id.call_args_list[0].args[0]
 
@@ -957,7 +957,7 @@ async def test_initial_save_failure_still_retires_the_run(
     assert events[0].data["run_id"] == last_run["run_id"]
     assert set_run_id.call_args.args == (None,)
     assert manager.control.lock("serial").locked() is False
-    assert "serial" not in manager.control.run_tasks
+    assert manager.control.actor("serial").run_task is None
 
 
 @pytest.mark.parametrize(
@@ -3702,7 +3702,7 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
     assert failure.value.translation_key == translation_key
     assert sent == [UserCommand.STOP]
     assert "pending_native_reconciliation" not in manager.repository.robot("serial")
-    assert "serial" not in manager.control.reconciliation_tasks
+    assert not manager.control.actor("serial").reconciliation_tasks
     record = manager.history.snapshot("serial")["plan_history"]["away"]["rooms"][
         room.room_id
     ]
@@ -4636,13 +4636,13 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
     ):
         await manager.async_load()
         assert manager.control.stop_pending("serial") is True
-        assert manager.control.stop_fences["serial"].deadline == 130.0
+        assert manager.control.actor("serial").stop_fence.deadline == 130.0
         assert (
             manager.repository.robot("serial")["stop_fence_expires_at"]
             == valid["expires_at"]
         )
         assert manager.control.stop_pending("generic") is True
-        assert manager.control.stop_fences["generic"].deadline == 145.0
+        assert manager.control.actor("generic").stop_fence.deadline == 145.0
         assert "stop_fence_expires_at" not in manager.repository.robot("bad-fence")
         assert "stop_fence_expires_at" not in manager.repository.robot("stale-fence")
         assert "pending_native_reconciliation" not in manager.repository.robot("other")
@@ -9770,19 +9770,19 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
 
     task = asyncio.create_task(reconcile())
     manager.control.register_reconciliation_task("serial", task)
-    assert "serial" in manager.control.reconciliation_tasks
+    assert manager.control.actor("serial").reconciliation_tasks
     await started.wait()
     await manager.control.async_cancel_and_wait("serial")
     assert task.cancelled()
     assert manager.control.dock_reconciliation_active("serial") is False
-    assert "serial" not in manager.control.reconciliation_tasks
+    assert not manager.control.actor("serial").reconciliation_tasks
 
     finished = asyncio.create_task(asyncio.sleep(0))
     manager.control.register_reconciliation_task("serial", finished)
     await finished
     await asyncio.sleep(0)
     assert manager.control.dock_reconciliation_active("serial") is False
-    assert "serial" not in manager.control.reconciliation_tasks
+    assert not manager.control.actor("serial").reconciliation_tasks
 
 
 async def test_dock_scope_cleanup_claims_unset_run_id(hass) -> None:

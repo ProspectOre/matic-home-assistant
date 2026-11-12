@@ -122,7 +122,7 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
         ),
     ):
         await async_recover_managed_run(hass, entry, "serial")
-        tasks = tuple(manager.control.reconciliation_tasks.get("serial", ()))
+        tasks = tuple(manager.control.actor("serial").reconciliation_tasks)
         await asyncio.wait_for(asyncio.gather(*tasks), 1)
         await hass.async_block_till_done()
     expected = (

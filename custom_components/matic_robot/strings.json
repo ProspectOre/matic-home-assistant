@@ -2101,6 +2101,10 @@
         "override_room_schedule": {
           "name": "Override shared room schedule",
           "description": "Use the settings you chose instead of the schedule's. Cleans that match a schedule still count toward it."
+        },
+        "wait": {
+          "name": "Wait for the run to end",
+          "description": "Return when the run ends instead of once the robot has started it. Either way the response holds the run ID."
         }
       }
     },
@@ -2181,6 +2185,10 @@
         "preview_token": {
           "name": "Preview ID",
           "description": "The ID returned by Preview next plan run. Use it to run exactly what you previewed."
+        },
+        "wait": {
+          "name": "Wait for the run to end",
+          "description": "Return when the run ends instead of once the robot has started it. Either way the response holds the run ID."
         }
       }
     },

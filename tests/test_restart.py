@@ -444,7 +444,7 @@ async def test_interrupted_mixed_dispatch_rolls_back_failed_stop_prepare(
     assert not manager.control.stop_pending("serial")
     assert "stop_fence_run_id" not in manager.repository.robot("serial")
     assert not manager.repository.robot("serial")["last_run"].get("recovery_checkpoint")
-    assert "serial" not in manager.control.managed_motion
+    assert manager.control.actor("serial").managed_motion is None
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "unverified"
 
 

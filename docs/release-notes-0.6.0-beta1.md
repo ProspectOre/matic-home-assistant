@@ -174,6 +174,11 @@ Entity IDs assume a robot named "Matic".
 
 ## Before you update
 
+- Run plan (`run_selected_plan`) and Clean room sequence
+  (`clean_room_sequence`) now return once the robot has started the run, with
+  its `run_id`, instead of when the run ends. An automation that waited for the
+  clean to finish, or caught a failed run as a failed action, needs `wait: true`;
+  see [actions](actions.md#cleaning).
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
 - Make a Home Assistant backup before installing. 0.6 stores saved maps and

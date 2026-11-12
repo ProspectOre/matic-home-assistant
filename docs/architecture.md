@@ -69,7 +69,7 @@ these owners around one repository:
 | [Repository](../custom_components/matic_robot/plan_repository.py) | Durable state and admitted metadata transactions. |
 | [Cadence](../custom_components/matic_robot/plan_cadence.py) | Room schedule policy, progress and reservations. |
 | [Catalog](../custom_components/matic_robot/plan_catalog.py) | Saved plans and areas, rotation and previews. |
-| [Run control](../custom_components/matic_robot/run_control.py) | Runtime ownership, cancellation and stop fences. |
+| [Run control](../custom_components/matic_robot/run_control.py) | One actor per robot for its run, motion ownership, cancellation and stop fences; starts runs. |
 | [Ledger](../custom_components/matic_robot/plan_ledger.py) | Run checkpoints, room accounting and native-history commits. |
 | [History](../custom_components/matic_robot/plan_history.py) | Managed history projections and duration estimates. |
 | [Recovery](../custom_components/matic_robot/plan_recovery.py) | Recovery checkpoints and dispatch evidence. |
@@ -81,7 +81,7 @@ these owners around one repository:
 The [managed executor](../custom_components/matic_robot/managed_executor.py)
 orchestrates runs through its dispatch, [leg](../custom_components/matic_robot/managed_leg.py), area, observation
 and reconciliation modules. One leg runner runs a mission of one or more rooms and announces each room event.
-The [run machine](../custom_components/matic_robot/run_machine.py) moves a run through its queue and says what to checkpoint, including the verifying write. After a restart, [recovery](../custom_components/matic_robot/restart.py) feeds the stored run to it as one `Restarted` event, which resumes the run at its checkpointed phase or ends it. An accepted or handoff run then continues in the executor's loop; a verifying leg only finishes its history read, since the loop would dock or start the next leg. One finalizer ends every run and announces `plan_finished`. The run starts legs and areas through a [robot port](../custom_components/matic_robot/robot_port.py)
+The [run machine](../custom_components/matic_robot/run_machine.py) moves a run through its queue and says what to checkpoint, including the verifying write. After a restart, [recovery](../custom_components/matic_robot/restart.py) feeds the stored run to it as one `Restarted` event, which resumes the run at its checkpointed phase or ends it. An accepted or handoff run then continues in the executor's loop; a verifying leg only finishes its history read, since the loop would dock or start the next leg. One finalizer ends every run and announces `plan_finished`. Plan actions and recovery start runs through run control as tasks the config entry owns; an action returns the `run_id` once the robot has the first command, or with `wait` when the run ends. The run starts legs and areas through a [robot port](../custom_components/matic_robot/robot_port.py)
 with the [robot commands](../custom_components/matic_robot/robot_commands.py) the vacuum's clean starts use,
 and observes the session's typed state through it, not Home Assistant entity state. Native history and [grouped reconciliation](../custom_components/matic_robot/grouped_native_reconciliation.py) match room evidence to an owned session. Completion and cadence credit require
 their own evidence; a UI update or an unnamed area summary is not room proof.
