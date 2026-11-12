@@ -202,8 +202,8 @@ class FakeRobot:
 
     def __init__(self) -> None:
         self.started: list[PlanStart] = []
-        # (floor token, mission identity) of each end-after-current-room.
-        self.ended_after_current: list[tuple[str, bytes]] = []
+        # (motion token, floor token, identity) of each end-after-current-room.
+        self.ended_after_current: list[tuple[int, str, bytes]] = []
         self.on_start: Callable[[PlanStart], Awaitable[None]] | None = None
         # The session the robot runs before any start, such as a prepared one.
         self.running = b""
@@ -272,9 +272,11 @@ class FakeRobot:
         if self.on_start is not None:
             await self.on_start(command)
 
-    async def end_after_current_room(self, floor_token: str, identity: bytes) -> None:
+    async def end_after_current_room(
+        self, motion_token: int, floor_token: str, identity: bytes
+    ) -> None:
         """Take a port's end-after-current-room."""
-        self.ended_after_current.append((floor_token, identity))
+        self.ended_after_current.append((motion_token, floor_token, identity))
 
     def taking_starts(self) -> Any:
         """Patch the command module so a port bound to an entry starts here."""

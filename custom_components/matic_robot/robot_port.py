@@ -27,8 +27,9 @@ class RobotPort:
     """
 
     start: Callable[[PlanStart], Awaitable[None]]
-    # Skips the rooms still waiting in the run's mission: (floor token, identity).
-    end_after_current_room: Callable[[str, bytes], Awaitable[None]]
+    # Skips the rooms still waiting in the run's mission:
+    # (motion token, floor token, mission identity).
+    end_after_current_room: Callable[[int, str, bytes], Awaitable[None]]
     state: Store[LiveState]
     error: Store[Exception | None]
     refresh: Callable[[], Awaitable[None]]

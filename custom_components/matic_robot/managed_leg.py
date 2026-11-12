@@ -456,9 +456,12 @@ async def _async_run_leg(
                 if finish_room_event is not None:
                     finish_task = asyncio.create_task(
                         async_end_after_current_room(
-                            robot,
                             finish_room_event,
-                            floor_token,
+                            partial(
+                                robot.end_after_current_room,
+                                motion_token,
+                                floor_token,
+                            ),
                             lambda: native_identity,
                             lambda: active_room,
                             end_after,

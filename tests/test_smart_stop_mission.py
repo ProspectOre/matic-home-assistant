@@ -1,6 +1,7 @@
 """A Smart Stop plan runs as one mission and ends it through the robot's queue."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import timedelta
 from types import SimpleNamespace
@@ -114,8 +115,19 @@ async def test_robot_commands_end_the_mission_on_the_run_floor(hass):
     entry.runtime_data.session.client.async_end_after_current_room = AsyncMock()
     commands = RobotCommands(hass, entry, "vacuum.test")
     commands.current_floor_plan = MagicMock(return_value=FLOOR)
+    control = entry.runtime_data.cleaning_plans.control
+    leases: list = []
 
-    await commands.async_end_after_current_room("floor", b"ours")
+    @asynccontextmanager
+    async def managed_command(serial_number, token):
+        leases.append((serial_number, token))
+        yield
+
+    control.managed_command = managed_command
+
+    await commands.async_end_after_current_room(7, "floor", b"ours")
+
+    assert leases == [(entry.runtime_data.session.info.serial_number, 7)]
 
     commands.current_floor_plan.assert_called_once_with("floor")
     entry.runtime_data.session.client.async_end_after_current_room.assert_awaited_once_with(
@@ -139,13 +151,12 @@ async def test_a_finish_request_ends_the_mission_only_when_the_robot_takes_it(
 ):
     event = asyncio.Event()
     event.set()
-    robot = SimpleNamespace(end_after_current_room=AsyncMock(side_effect=error))
+    end = AsyncMock(side_effect=error)
     finished: list = []
 
     await async_end_after_current_room(
-        robot,
         event,
-        "floor",
+        end,
         lambda: identity,
         lambda: KITCHEN,
         finished.append,
@@ -153,9 +164,9 @@ async def test_a_finish_request_ends_the_mission_only_when_the_robot_takes_it(
 
     assert finished == ([KITCHEN] if ended else [])
     if identity:
-        robot.end_after_current_room.assert_awaited_once_with("floor", identity)
+        end.assert_awaited_once_with(identity)
     else:
-        robot.end_after_current_room.assert_not_awaited()
+        end.assert_not_awaited()
 
 
 def _record(key: bytes, statuses: dict[str, str]) -> CleaningSessionRecord:
@@ -233,7 +244,9 @@ class _Robot:
         await asyncio.sleep(0.02)
         self.manager.control.request_stop("serial")
 
-    async def end_after_current_room(self, floor_token: str, identity: bytes) -> None:
+    async def end_after_current_room(
+        self, _motion_token: int, floor_token: str, identity: bytes
+    ) -> None:
         self.ended_after.append((floor_token, identity))
         if self.moves_on or (
             self.queue_error is not None
