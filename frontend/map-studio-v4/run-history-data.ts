@@ -3,12 +3,12 @@
 // an unknown value from a newer backend reads as unknown here.
 // Runtime helpers arrive from effects so this module adds no startup edge.
 import type { MaticBackend } from "./backend";
-import type { MapEntry, PoseModel } from "./backend-contracts";
+import type { MapEntry, PoseModel, Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 import type { RobotActivity, WorkspaceNotice } from "./contracts";
 import type { WorkspaceStore } from "./state";
 import type { LastSeenDuringRun } from "./contracts";
 
-export type RunOutcome = "running" | "finished" | "not_finished" | "unknown";
 export type RunEnding =
   | "running" | "finished" | "stopped" | "smart_stop" | "replaced" | "low_battery"
   | "robot_problem" | "taken_over" | "home_assistant" | "interrupted" | "unknown";
@@ -28,7 +28,7 @@ export interface RunRecord {
   readonly startedAt: string | null;
   readonly endedAt: string | null;
   readonly planName: string | null;
-  readonly outcome: RunOutcome;
+  readonly outcome: wire.RunOutcome;
   readonly ending: RunEnding;
   readonly rooms: readonly RunItem[];
   readonly areas: readonly RunItem[];
@@ -58,7 +58,7 @@ export interface RunTrail {
   readonly segments: readonly (readonly TrailPoint[])[];
 }
 
-const OUTCOMES: readonly RunOutcome[] = ["running", "finished", "not_finished", "unknown"];
+const OUTCOMES: readonly wire.RunOutcome[] = ["running", "finished", "not_finished", "unknown"];
 const ENDINGS: readonly RunEnding[] = [
   "running", "finished", "stopped", "smart_stop", "replaced", "low_battery",
   "robot_problem", "taken_over", "home_assistant", "interrupted", "unknown",
@@ -94,20 +94,20 @@ const member = <T extends string>(value: unknown, allowed: readonly T[], fallbac
 const items = (value: unknown): RunItem[] => {
   if (!Array.isArray(value) || value.length > MAX_ITEMS) return fail("invalid-run-items");
   return value.map((candidate) => {
-    const item = record(candidate, "invalid-run-item");
+    const item: Unchecked<wire.RunItem> = record(candidate, "invalid-run-item");
     return { name: text(item.name, 128, "invalid-run-item"), result: member(item.result, RESULTS, "unknown") };
   });
 };
 
 export const parseRunHistory = (value: unknown): RunHistory => {
-  const payload = record(value, "invalid-runs");
+  const payload: Unchecked<wire.RunHistory> = record(value, "invalid-runs");
   if (!Array.isArray(payload.runs) || payload.runs.length > MAX_RUNS) return fail("invalid-runs");
   return {
     entryId: text(payload.entry_id, 128, "invalid-runs"),
     mapSessionKey: optionalText(payload.map_session_key, 128, "invalid-runs"),
     robotHistory: payload.robot_history === true,
     runs: payload.runs.map((candidate) => {
-      const run = record(candidate, "invalid-run");
+      const run: Unchecked<wire.RunRecord> = record(candidate, "invalid-run");
       return {
         id: text(run.id, 128, "invalid-run"),
         source: run.source === "robot" ? "robot" : "home_assistant",
@@ -129,7 +129,7 @@ const coordinate = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 10_000 ? value : fail("invalid-trail");
 
 export const parseRunTrail = (value: unknown): RunTrail => {
-  const payload = record(value, "invalid-trail");
+  const payload: Unchecked<wire.RunTrail> = record(value, "invalid-trail");
   const segments = payload.segments;
   if (!Array.isArray(segments) || segments.length > MAX_SEGMENTS) return fail("invalid-trail");
   return {

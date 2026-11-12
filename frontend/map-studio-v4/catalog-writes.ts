@@ -1,7 +1,8 @@
 // Plan, area, robot-setting and queue writes. effects.ts loads this module
 // only when one of those controls is used, keeping it out of startup.
 import type { DeleteSharedCadenceAction, HassProjection, PlanDraft, PlanOrigin, ResetCadenceAction, WorkspaceNotice, WorkspaceState } from "./contracts";
-import type { AreasCatalog, PlansCatalog, NextRunPreview } from "./backend-contracts";
+import type { AreasCatalog, PlansCatalog, NextRunPreview, Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 import type { MaticBackend } from "./backend";
 import type { WorkspaceStore } from "./state";
 import { QueueActionController } from "./queue-action-controller";
@@ -211,7 +212,7 @@ export const saveArea = async (context: CatalogWriteContext): Promise<void> => {
 
 /** The plan names in an area-delete conflict, or null when the body is not one. */
 const conflictPlans = (body: unknown): string[] | null => {
-  const plans = (body as { plans?: unknown } | null)?.plans;
+  const plans = (body as Unchecked<wire.AreaInUse> | null)?.plans;
   return Array.isArray(plans) && plans.length > 0 && plans.length <= 256
     && plans.every((name) => typeof name === "string" && name.trim() && name.length <= 128)
     ? plans as string[]

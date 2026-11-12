@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 
 from . import plan_timing
 from .client.models import CleaningSessionRecord
+from .map_schema import RunEntry
 from .plan_catalog import PlanCatalog
 from .plan_model import (
     _is_manual_room_sequence_plan_id,
@@ -75,7 +76,7 @@ class PlanHistory:
         self,
         serial_number: str,
         native: Sequence[CleaningSessionRecord] = (),
-    ) -> list[dict[str, Any]]:
+    ) -> list[RunEntry]:
         """Return recent runs, newest first, with robot-started sessions merged in."""
         return history_entries(
             self.repository.robot(serial_number),

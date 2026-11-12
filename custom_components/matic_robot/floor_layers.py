@@ -33,6 +33,7 @@ from .http import (
     PRIVATE_NO_STORE_HEADERS,
     runtime_for_entry,
 )
+from .map_schema import FloorLayers
 from .slam_map_store import SlamMapIdentity
 
 if TYPE_CHECKING:
@@ -110,18 +111,17 @@ class MaticFloorLayersView(HomeAssistantView):
                     return _conflict()
                 cached = merged
                 self._cache[entry_id] = cached
-        return self.json(
-            {
-                "entry_id": entry_id,
-                "page_count": cached.layer.page_count,
-                "truncated": cached.layer.truncated,
-                "layers": {
-                    name: [[list(point) for point in outline] for outline in outlines]
-                    for name, outlines in cached.layer.layers.items()
-                },
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
+        outlines = {
+            name: [[list(point) for point in outline] for outline in layer]
+            for name, layer in cached.layer.layers.items()
+        }
+        layers: FloorLayers = {
+            "entry_id": entry_id,
+            "page_count": cached.layer.page_count,
+            "truncated": cached.layer.truncated,
+            "layers": {"carpet": outlines["carpet"], "vent": outlines["vent"]},
+        }
+        return self.json(layers, headers=PRIVATE_NO_STORE_HEADERS)
 
 
 def _still_current(

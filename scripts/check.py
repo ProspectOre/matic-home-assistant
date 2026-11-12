@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run format, lint, types, structure rules, the privacy scan and tests.
+"""Run format, lint, types, contract types, structure rules, privacy scan, tests.
 
 A test runs if its imports lead, through any number of modules, to a file
 changed since the nearest main or release branch. Imports do not show what
@@ -315,6 +315,7 @@ def main(arguments: list[str] | None = None) -> int:
         "format": [[python, "-m", "ruff", "format", "--check", "."]],
         "lint": [[python, "-m", "ruff", "check", "."]],
         "types": [[python, "-m", "mypy", "custom_components/matic_robot"]],
+        "contracts": [[python, "scripts/contract_types.py", "--check"]],
         "privacy": [[python, "scripts/check_public_tree.py"]],
     }
     structure = [*layer_violations(), *size_violations(_code_sizes(), _baseline())]

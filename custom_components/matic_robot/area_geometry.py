@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import probatio
@@ -183,7 +184,7 @@ class RoomGeometryIndex:
     _MAX_TOTAL_EDGE_REFERENCES = 262_144
     _MAX_CONTAINMENT_CACHE_ENTRIES = 4_096
 
-    def __init__(self, rooms: list[dict[str, Any]]) -> None:
+    def __init__(self, rooms: Sequence[Mapping[str, Any]]) -> None:
         polygons = []
         remaining_references = self._MAX_TOTAL_EDGE_REFERENCES
         for room in rooms:
@@ -300,7 +301,7 @@ class RoomGeometryIndex:
 class AreaGeometry:
     """Validate bounded cleaning areas against mapped rooms."""
 
-    def __init__(self, rooms: list[dict[str, Any]]) -> None:
+    def __init__(self, rooms: Sequence[Mapping[str, Any]]) -> None:
         """Validate the same room records the former HA selector accepted."""
         self.rooms = _ROOMS_SCHEMA({"rooms": rooms})["rooms"]
 

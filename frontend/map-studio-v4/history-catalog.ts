@@ -12,14 +12,16 @@ import {
   type HistoryComparisonFrame,
   type HistoryFloor,
   type HistorySnapshot,
+  type Unchecked,
 } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 
 export const parseHistoryComparisonFrame = (value: unknown): HistoryComparisonFrame | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const frame = value as Record<string, unknown>;
+  const frame: Unchecked<wire.HistoryFrame> = value;
   const coverage = frame.coverage;
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) return null;
-  const rawCoverage = coverage as Record<string, unknown>;
+  const rawCoverage: Unchecked<wire.HistoryFrameCoverage> = coverage;
   const origin = frame.origin_cells;
   const span = frame.span_cells;
   const digest = rawCoverage.mask_sha256;
@@ -55,7 +57,7 @@ export const parseHistoryComparisonFrame = (value: unknown): HistoryComparisonFr
 };
 
 const parseSnapshot = (value: unknown): HistorySnapshot => {
-  const snapshot = objectValue(value, "invalid-history-snapshot");
+  const snapshot: Unchecked<wire.HistorySnapshot> = objectValue(value, "invalid-history-snapshot");
   const createdAt = boundedString(snapshot.created_at, 64, "invalid-history-time");
   if (!Number.isFinite(Date.parse(createdAt))) throw new ContractError("invalid-history-time");
   return {
@@ -75,7 +77,7 @@ const parseSnapshot = (value: unknown): HistorySnapshot => {
 };
 
 export const parseHistoryCatalog = (value: unknown): HistoryCatalog => {
-  const payload = objectValue(value, "invalid-history");
+  const payload: Unchecked<wire.HistoryCatalog> = objectValue(value, "invalid-history");
   if (!Array.isArray(payload.floors) || payload.floors.length < 1 || payload.floors.length > 128) {
     throw new ContractError("invalid-history-floors");
   }
@@ -83,7 +85,7 @@ export const parseHistoryCatalog = (value: unknown): HistoryCatalog => {
     entryId: boundedString(payload.entry_id, 128, "invalid-history-entry"),
     liveAvailable: booleanValue(payload.live_available, "invalid-history-live"),
     floors: payload.floors.map((candidate) => {
-      const floor = objectValue(candidate, "invalid-history-floor");
+      const floor: Unchecked<wire.HistoryFloor> = objectValue(candidate, "invalid-history-floor");
       if (!Array.isArray(floor.snapshots) || floor.snapshots.length > 12) {
         throw new ContractError("invalid-history-snapshots");
       }

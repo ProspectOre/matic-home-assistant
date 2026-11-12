@@ -12,6 +12,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
 from .http import PRIVATE_NO_STORE_HEADERS, RUNS_API_URL, runtime_for_entry
+from .map_schema import RunHistory, RunRecord, RunTrail
 from .run_history import RUN_HISTORY_LIMIT, RunTrails
 from .slam_view_data import _map_session_key
 
@@ -41,16 +42,12 @@ class MaticRunHistoryView(HomeAssistantView):
                 return web.Response(
                     status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
                 )
-            return self.json(
-                {
-                    "trail": trail_id,
-                    "map_session_key": map_key,
-                    "segments": [
-                        [list(point) for point in segment] for segment in segments
-                    ],
-                },
-                headers=PRIVATE_NO_STORE_HEADERS,
-            )
+            trail: RunTrail = {
+                "trail": trail_id,
+                "map_session_key": map_key,
+                "segments": [list(segment) for segment in segments],
+            }
+            return self.json(trail, headers=PRIVATE_NO_STORE_HEADERS)
         native: tuple[CleaningSessionRecord, ...] = ()
         robot_history = True
         try:
@@ -59,24 +56,25 @@ class MaticRunHistoryView(HomeAssistantView):
         except MaticError, TimeoutError:
             robot_history = False
         serial_number = str(runtime.session.info.serial_number)
-        runs = runtime.cleaning_plans.history.run_history(serial_number, native)
-        for run in runs:
-            run["trail"] = (
-                trails.trail_id(map_key, run_id=run["id"])
+        runs: list[RunRecord] = [
+            {
+                **run,
+                "trail": trails.trail_id(map_key, run_id=run["id"])
                 if run["source"] == "home_assistant"
                 else trails.trail_id(
-                    map_key,
-                    window=(run["started_at"], run["ended_at"]),
+                    map_key, window=(run["started_at"], run["ended_at"])
                 )
                 if run["started_at"] is not None
-                else None
-            )
-        return self.json(
-            {
-                "entry_id": entry_id,
-                "map_session_key": map_key,
-                "robot_history": robot_history,
-                "runs": runs[: RUN_HISTORY_LIMIT * 2],
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
+                else None,
+            }
+            for run in runtime.cleaning_plans.history.run_history(
+                serial_number, native
+            )[: RUN_HISTORY_LIMIT * 2]
+        ]
+        history: RunHistory = {
+            "entry_id": entry_id,
+            "map_session_key": map_key,
+            "robot_history": robot_history,
+            "runs": runs,
+        }
+        return self.json(history, headers=PRIVATE_NO_STORE_HEADERS)

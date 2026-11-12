@@ -80,6 +80,10 @@ its own. On Linux, `npx playwright install --with-deps` also installs system
 packages and may need administrator rights. Give each worktree its own
 `node_modules`: a shared, symlinked one can change the generated chunks.
 
+`backend-schema.ts` is generated from `map_schema.py` and
+`client/scene_schema.py`. After changing either, run
+`uv run scripts/contract_types.py`; `scripts/check.py` fails until you do.
+
 ## Changes and pull requests
 
 A change keeps the rules in [AGENTS.md](AGENTS.md), which apply to people and

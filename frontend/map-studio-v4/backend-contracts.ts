@@ -1,4 +1,8 @@
 import type { AreaOutline } from "./area-outline";
+import type * as wire from "./backend-schema";
+import type { AreaCircle, CleaningMode, CoverageSetting } from "./backend-schema";
+
+export type { AreaCircle, CleaningMode, CoverageSetting };
 export const CATALOG_URL = "/api/matic_robot/slam_entries";
 export const SCENE_HEADER_BYTES = 24;
 export const SCENE_POINT_STRIDE = 8;
@@ -15,12 +19,16 @@ export const PAGES_PER_REQUEST = 256;
 
 export type LoadStatus = "idle" | "loading" | "ready" | "empty" | "error";
 export type MapHealth = "ready" | "building" | "limited" | "problem" | "unknown";
-export type MapBlockReason = "bootstrap_empty" | "map_session_unverified"
-  | "floor_plan_unavailable" | "floor_plan_mismatch" | null;
-export type MapBootstrapState = "not_started" | "running" | "complete" | "partial" | "failed";
-export type CleaningMode = "vacuum" | "mop" | "vacuum_and_mop";
-export type CoverageSetting = "quick" | "standard" | "heavy_duty";
+export type MapBlockReason = wire.MapBlockReason | null;
+export type MapBootstrapState = wire.MapBootstrapState;
+/** The browser's reading of the binding status the areas view sends. */
 export type AreaBindingStatus = "current" | "review" | "stale" | "unknown";
+
+/**
+ * A decoded JSON object read against a generated wire type: only the keys
+ * the backend sends can be read, and every value still has to be validated.
+ */
+export type Unchecked<T> = { readonly [K in keyof T]?: unknown };
 
 export interface MapEntry {
   readonly entryId: string;
@@ -227,12 +235,6 @@ export interface MapRoom {
   readonly roomId: string;
   readonly name: string;
   readonly boundary: readonly (readonly [number, number])[];
-}
-
-export interface AreaCircle {
-  readonly x: number;
-  readonly y: number;
-  readonly radius: number;
 }
 
 export interface SavedArea {
@@ -542,7 +544,7 @@ export const privatePath = (value: unknown, code: string): string => {
   return path;
 };
 
-const healthValue = (entry: Record<string, unknown>): MapHealth => {
+const healthValue = (entry: Unchecked<wire.CatalogRow>): MapHealth => {
   const state = typeof entry.map_health === "string" ? entry.map_health.toLowerCase() : "";
   const stream = typeof entry.stream_state === "string" ? entry.stream_state.toLowerCase() : "";
   const invalid = typeof entry.invalid_tiles === "number" ? entry.invalid_tiles : 0;
@@ -560,12 +562,12 @@ const healthValue = (entry: Record<string, unknown>): MapHealth => {
 };
 
 export const parseCatalog = (value: unknown): readonly MapEntry[] => {
-  const root = objectValue(value, "invalid-catalog");
+  const root: Unchecked<wire.Catalog> = objectValue(value, "invalid-catalog");
   if (!Array.isArray(root.entries) || root.entries.length > 64) {
     throw new ContractError("invalid-catalog-entries");
   }
   return root.entries.map((candidate) => {
-    const entry = objectValue(candidate, "invalid-catalog-entry");
+    const entry: Unchecked<wire.CatalogRow> = objectValue(candidate, "invalid-catalog-entry");
     const mapRevision = boundedInteger(entry.map_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-map-revision");
     return {
       entryId: boundedString(entry.entry_id, 128, "invalid-entry-id"),

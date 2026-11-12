@@ -18,7 +18,9 @@ import {
   type ManualRoomSequencePreview,
   type PlansCatalog,
   type SceneModel,
+  type Unchecked,
 } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 import { SceneParser as SceneParserImplementation, manifestPages, type PageBatch, type SceneParser } from "./scene-parser";
 import {
   BackendRequestDiagnosticsStore,
@@ -512,12 +514,11 @@ export class MaticBackend {
         ...(value.outline?.closed ? { outline: value.outline.points } : {}),
         cleaning_mode: value.cleaningMode,
         coverage_setting: value.coverageSetting,
-      }),
+      } satisfies wire.AreaSave),
     });
-    if (!payload || typeof payload !== "object" || typeof (payload as { id?: unknown }).id !== "string") {
-      throw new ContractError("invalid-area-save-response");
-    }
-    return (payload as { id: string }).id;
+    const id = payload && typeof payload === "object" ? (payload as Unchecked<wire.AreaSaved>).id : undefined;
+    if (typeof id !== "string") throw new ContractError("invalid-area-save-response");
+    return id;
   }
 
   /**
