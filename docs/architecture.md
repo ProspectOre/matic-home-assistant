@@ -132,11 +132,7 @@ validates persisted maps without proving a live session. Client modules decode
 [SLAM tiles](../custom_components/matic_robot/client/slam_tiles.py), encode
 [scenes](../custom_components/matic_robot/client/slam_scene.py), and trace
 [geometry](../custom_components/matic_robot/client/slam_geometry.py); HTTP views
-serve authorized projections. The [live scene view](../custom_components/matic_robot/slam_scene.py)
-serves a manifest of content-addressed pages, encoded in the executor; Matic Map
-fetches only the pages it lacks, assembles the scene in its
-[parser](../frontend/map-studio-v4/scene-parser.ts) and waits on `since` for the
-next revision. Saved-map scenes are served whole. Server-side [floor](../custom_components/matic_robot/floor_render.py)
+serve authorized projections. The [live scene view](../custom_components/matic_robot/slam_scene.py) serves a manifest of content-addressed pages, encoded in the executor; Matic Map fetches only the pages it lacks, assembles the scene in its [parser](../frontend/map-studio-v4/scene-parser.ts) and waits on `since` for the next revision. Saved-map scenes are served whole. Server-side [floor](../custom_components/matic_robot/floor_render.py)
 and [SLAM](../custom_components/matic_robot/slam_render.py) renderers produce local PNG projections; they do not authorize commands.
 
 [Area binding](../custom_components/matic_robot/area_binding.py) relates saved
