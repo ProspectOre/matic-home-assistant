@@ -9,9 +9,9 @@ from functools import partial
 from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
 
-from .client.models import FloorPlan, HermesCollectionEntry
+from .client.models import FloorPlan
 from .client.slam_scene import encode_slam_scene
-from .client.slam_tiles import decode_slam_structure_tile, decode_slam_tile
+from .client.slam_tiles import SlamStructureTile, SlamTile
 from .slam_history import SlamHistoryStore
 from .slam_map_store import MAP_SETTLE_SECONDS, SlamMapIdentity, SlamMapStore
 
@@ -54,9 +54,8 @@ async def async_collect_slam_history(
             if not slam_map.map_complete:
                 continue
             identity = slam_map.mission_identity
-            entries = slam_map.entries()
-            structure_reader = getattr(slam_map, "structure_entries", None)
-            structure_entries = structure_reader() if callable(structure_reader) else ()
+            tiles = slam_map.decoded_tiles()
+            structure_tiles = slam_map.decoded_structure_tiles()
             current_floor_plan = floor_plan()
             # ``map_complete`` is false until both live collections have
             # revalidated a persisted map for this process. Once complete,
@@ -67,8 +66,8 @@ async def async_collect_slam_history(
                 scene = await hass.async_add_executor_job(
                     partial(
                         _encode_history_scene,
-                        entries,
-                        structure_entries,
+                        tiles,
+                        structure_tiles,
                         current_floor_plan,
                     )
                 )
@@ -93,16 +92,12 @@ async def async_collect_slam_history(
 
 
 def _encode_history_scene(
-    entries: tuple[HermesCollectionEntry, ...],
-    structure_entries: tuple[HermesCollectionEntry, ...],
+    tiles: tuple[SlamTile, ...],
+    structure_tiles: tuple[SlamStructureTile, ...],
     floor_plan: FloorPlan | None,
 ) -> bytes:
     return encode_slam_scene(
-        tuple(decode_slam_tile(entry) for entry in entries),
-        floor_plan=floor_plan,
-        structure_tiles=tuple(
-            decode_slam_structure_tile(entry) for entry in structure_entries
-        ),
+        tiles, floor_plan=floor_plan, structure_tiles=structure_tiles
     )
 
 

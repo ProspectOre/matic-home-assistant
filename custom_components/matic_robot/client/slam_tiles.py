@@ -95,7 +95,7 @@ def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
         raise DecodeError("invalid SLAM surface bit length")
 
     rgb_data = first_bytes(first_bytes(entry.value, 6), 1)
-    surface_count = sum(byte.bit_count() for byte in surface_bits)
+    surface_count = int.from_bytes(surface_bits).bit_count()
     if len(rgb_data) not in (0, surface_count * 3):
         raise DecodeError("invalid SLAM RGB sample length")
 

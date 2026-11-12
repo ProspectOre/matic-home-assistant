@@ -53,7 +53,6 @@ from custom_components.matic_robot.client.models import (
     CuesIntent,
     CuesVoiceStatus,
     FloorPlan,
-    HermesCollectionEntry,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
@@ -61,6 +60,10 @@ from custom_components.matic_robot.client.models import (
     Room,
     RunProgress,
     WifiNetwork,
+)
+from custom_components.matic_robot.client.slam_tiles import (
+    decode_slam_structure_tile,
+    decode_slam_tile,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.entity import MaticEntity
@@ -330,8 +333,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
     slam_map = SimpleNamespace(
         async_add=AsyncMock(),
         decoded_tiles=MagicMock(return_value=()),
-        entries=MagicMock(return_value=()),
-        structure_entries=MagicMock(return_value=()),
+        decoded_structure_tiles=MagicMock(return_value=()),
         tile_count=0,
         structure_tile_count=0,
         map_complete=False,
@@ -1966,7 +1968,7 @@ async def test_camera_native_pose_expiry_invalidates_cached_marker(
         return b"with-marker" if pose is not None else b"without-marker"
 
     renderer_name = (
-        "_render_photorealistic_entries" if photorealistic else "render_floor_plan"
+        "_render_photorealistic_tiles" if photorealistic else "render_floor_plan"
     )
     with (
         patch(
@@ -1989,8 +1991,8 @@ async def test_camera_native_pose_expiry_invalidates_cached_marker(
 async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:
     entry = _entry()
     store = entry.runtime_data.slam_map
-    store.entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
-    store.structure_entries.return_value = ()
+    store.decoded_tiles.return_value = (decode_slam_tile(synthetic_slam_entry()),)
+    store.decoded_structure_tiles.return_value = ()
     store.tile_count = 1
     store.structure_tile_count = 1
     store.map_complete = True
@@ -1999,7 +2001,7 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     entity.hass = hass
     assert entity.entity_registry_enabled_default is False
     with patch(
-        "custom_components.matic_robot.camera._render_photorealistic_entries",
+        "custom_components.matic_robot.camera._render_photorealistic_tiles",
         return_value=b"photorealistic-png",
     ) as render:
         image = await entity.async_camera_image(width=5000, height=3000)
@@ -2052,14 +2054,16 @@ async def test_photorealistic_camera_withholds_a_restored_map_before_revalidatio
     entry = _entry()
     store = entry.runtime_data.slam_map
     store.floor_plan_is_current.return_value = False
-    store.entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
-    store.structure_entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
+    store.decoded_tiles.return_value = (decode_slam_tile(synthetic_slam_entry()),)
+    store.decoded_structure_tiles.return_value = (
+        decode_slam_structure_tile(synthetic_structure_entry()),
+    )
     entity = camera.MaticPhotorealisticMapCamera(entry)
     entity.hass = hass
 
     with (
         patch(
-            "custom_components.matic_robot.camera._render_photorealistic_entries"
+            "custom_components.matic_robot.camera._render_photorealistic_tiles"
         ) as render,
         patch(
             "custom_components.matic_robot.camera.render_floor_plan",
@@ -2086,7 +2090,7 @@ async def test_photorealistic_camera_discards_render_when_floor_changes(
 ) -> None:
     entry = _entry()
     store = entry.runtime_data.slam_map
-    store.entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
+    store.decoded_tiles.return_value = (decode_slam_tile(synthetic_slam_entry()),)
     entity = camera.MaticPhotorealisticMapCamera(entry)
     entity.hass = hass
 
@@ -2099,7 +2103,7 @@ async def test_photorealistic_camera_discards_render_when_floor_changes(
 
     with (
         patch(
-            "custom_components.matic_robot.camera._render_photorealistic_entries",
+            "custom_components.matic_robot.camera._render_photorealistic_tiles",
             side_effect=render,
         ) as renderer,
         patch(
@@ -2156,7 +2160,7 @@ async def test_photorealistic_camera_rechecks_coherence_after_render_lock(
 
     with (
         patch(
-            "custom_components.matic_robot.camera._render_photorealistic_entries"
+            "custom_components.matic_robot.camera._render_photorealistic_tiles"
         ) as render,
         patch(
             "custom_components.matic_robot.camera.render_floor_plan",
@@ -2200,16 +2204,14 @@ async def test_camera_publishes_session_changes_without_a_floor_change(hass) -> 
     assert entity._published_session_verified is True
 
 
-def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
-    from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
-
+def test_photorealistic_camera_passes_both_layers_to_renderer() -> None:
     with patch(
         "custom_components.matic_robot.camera.render_slam_map",
         return_value=b"rendered",
     ) as render:
-        result = camera._render_photorealistic_entries(
-            (synthetic_slam_entry(),),
-            (synthetic_structure_entry(),),
+        result = camera._render_photorealistic_tiles(
+            (decode_slam_tile(synthetic_slam_entry()),),
+            (decode_slam_structure_tile(synthetic_structure_entry()),),
             camera._map_view(_state(floor_plan=_floor_plan())),
             floor_plan_coherent=True,
             width=640,
@@ -2223,15 +2225,13 @@ def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
 
 
 def test_photorealistic_camera_withholds_mismatched_floor_overlays() -> None:
-    from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
-
     with patch(
         "custom_components.matic_robot.camera.render_slam_map",
         return_value=b"rendered",
     ) as render:
-        result = camera._render_photorealistic_entries(
-            (synthetic_slam_entry(),),
-            (synthetic_structure_entry(),),
+        result = camera._render_photorealistic_tiles(
+            (decode_slam_tile(synthetic_slam_entry()),),
+            (decode_slam_structure_tile(synthetic_structure_entry()),),
             camera._map_view(_state(floor_plan=_floor_plan())),
             floor_plan_coherent=False,
             width=640,

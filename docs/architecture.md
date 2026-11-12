@@ -126,14 +126,14 @@ The [gesture controller](../frontend/map-studio-v4/gesture-controller.ts)
 owns map interaction. Workflow, history and drawing assets load on demand.
 
 The [map store](../custom_components/matic_robot/slam_map_store.py) owns live
-admission and recovery. The [snapshot codec](../custom_components/matic_robot/slam_snapshot.py)
+admission and recovery, decoding each page once in the executor into
+[decoded tiles](../custom_components/matic_robot/slam_tile_cache.py) for the scene, history and camera. The [snapshot codec](../custom_components/matic_robot/slam_snapshot.py)
 validates persisted maps without proving a live session. Client modules decode
 [SLAM tiles](../custom_components/matic_robot/client/slam_tiles.py), encode
 [scenes](../custom_components/matic_robot/client/slam_scene.py), and trace
 [geometry](../custom_components/matic_robot/client/slam_geometry.py); HTTP views
 serve authorized projections. Server-side [floor](../custom_components/matic_robot/floor_render.py)
-and [SLAM](../custom_components/matic_robot/slam_render.py) renderers produce
-local PNG projections; they do not authorize commands.
+and [SLAM](../custom_components/matic_robot/slam_render.py) renderers produce local PNG projections; they do not authorize commands.
 
 [Area binding](../custom_components/matic_robot/area_binding.py) relates saved
 areas to a verified floor. Separate modules handle bounded

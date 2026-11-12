@@ -18,11 +18,8 @@ from .client.floor_plan import (
     resolve_robot_map_position,
     robot_location_source,
 )
-from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
-from .client.slam_tiles import (
-    decode_slam_structure_tile,
-    decode_slam_tile,
-)
+from .client.models import FloorPlan, RobotPose
+from .client.slam_tiles import SlamStructureTile, SlamTile
 from .entity import MaticEntity
 from .floor_render import render_floor_plan
 from .http import (
@@ -381,13 +378,13 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             )
             if key == self._cached_key and self._cached_image is not None:
                 return self._cached_image
-            entries = self._store.entries()
-            structure_entries = self._store.structure_entries()
+            tiles = self._store.decoded_tiles()
+            structure_tiles = self._store.decoded_structure_tiles()
             image = await self.hass.async_add_executor_job(
                 partial(
-                    _render_photorealistic_entries,
-                    entries,
-                    structure_entries,
+                    _render_photorealistic_tiles,
+                    tiles,
+                    structure_tiles,
                     replace(data, pose=render_pose),
                     floor_plan_coherent=floor_plan_coherent,
                     width=requested_width,
@@ -399,9 +396,9 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             ):
                 image = await self.hass.async_add_executor_job(
                     partial(
-                        _render_photorealistic_entries,
-                        entries,
-                        structure_entries,
+                        _render_photorealistic_tiles,
+                        tiles,
+                        structure_tiles,
                         replace(data, pose=None),
                         floor_plan_coherent=floor_plan_coherent,
                         width=requested_width,
@@ -458,18 +455,16 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         }
 
 
-def _render_photorealistic_entries(
-    entries: tuple[HermesCollectionEntry, ...],
-    structure_entries: tuple[HermesCollectionEntry, ...],
+def _render_photorealistic_tiles(
+    tiles: tuple[SlamTile, ...],
+    structures: tuple[SlamStructureTile, ...],
     state: _MapView,
     *,
     floor_plan_coherent: bool,
     width: int,
     height: int,
 ) -> bytes:
-    """Decode and render the full private map away from the event loop."""
-    tiles = tuple(decode_slam_tile(entry) for entry in entries)
-    structures = tuple(decode_slam_structure_tile(entry) for entry in structure_entries)
+    """Render the full private map away from the event loop."""
     floor_plan = state.floor_plan if floor_plan_coherent else None
     position = (
         resolve_robot_map_position(floor_plan, state.pose, state.current_area)

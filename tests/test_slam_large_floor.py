@@ -64,8 +64,10 @@ async def test_large_floor_survives_layer_order_and_reload(hass, structure_first
     await store.async_shutdown()
     restored = storage.SlamMapStore(hass, "large-floor")
     await restored.async_load()
-    assert restored.entries() == tuple(pair[0] for pair in entries)
-    assert restored.structure_entries() == tuple(pair[1] for pair in entries)
+    assert tuple(restored._entries.values()) == tuple(pair[0] for pair in entries)
+    assert tuple(restored._structure_entries.values()) == tuple(
+        pair[1] for pair in entries
+    )
     assert not restored.live_session_verified
     assert not restored.health.truncated
 

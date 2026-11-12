@@ -9,7 +9,7 @@ import json
 import secrets
 import zlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
@@ -487,3 +487,98 @@ def _oldest_disposable_snapshot_index(
     # More distinct floors than the global bound cannot all be retained. Drop
     # the oldest one deterministically and preserve the newest floor set.
     return 0
+
+
+def _archive_fingerprint(archive: Mapping[str, Any]) -> str:
+    """Check an import archive's envelope and return its request fingerprint."""
+    try:
+        raw = json.dumps(archive, separators=(",", ":")).encode()
+    except (TypeError, ValueError) as err:
+        raise ValueError("invalid-history-archive") from err
+    if (
+        len(raw) > MAX_ARCHIVE_BYTES
+        or archive.get("format") != "matic-map-archive"
+        or archive.get("version") != 1
+        or set(archive) != {"format", "version", "records"}
+    ):
+        raise ValueError("invalid-history-archive")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _import_records(records: object, group_salt: bytes) -> list[SlamHistorySnapshot]:
+    """Decode archive records as kept, read-only history snapshots."""
+    if not isinstance(records, list) or not records or len(records) > MAX_HISTORY_ITEMS:
+        raise ValueError("invalid-history-archive")
+    prepared: list[SlamHistorySnapshot] = []
+    archive_group = secrets.token_hex(16)
+    for item in records:
+        if not isinstance(item, Mapping):
+            raise ValueError("invalid-history-archive")
+        if set(item) != {
+            "source_id",
+            "created_at",
+            "name",
+            "sha256",
+            "scene_zlib_base64",
+            "frame",
+        }:
+            raise ValueError("invalid-history-archive-record")
+        encoded = item.get("scene_zlib_base64")
+        digest = item.get("sha256")
+        timestamp = item.get("created_at")
+        source_id = item.get("source_id")
+        try:
+            compressed = (
+                base64.b64decode(encoded, validate=True)
+                if isinstance(encoded, str)
+                else b""
+            )
+            created_at = (
+                datetime.fromisoformat(timestamp)
+                if isinstance(timestamp, str)
+                else None
+            )
+            if (
+                not compressed
+                or len(compressed) > MAX_HISTORY_COMPRESSED_BYTES
+                or hashlib.sha256(compressed).hexdigest() != digest
+                or created_at is None
+                or created_at.tzinfo is None
+                or (
+                    source_id is not None
+                    and (not isinstance(source_id, str) or len(source_id) > 128)
+                )
+            ):
+                raise ValueError
+            parsed = _build_snapshot(
+                _decompress_scene(compressed), 0, created_at, None, group_salt
+            )
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+            DecodeError,
+            zlib.error,
+        ) as err:
+            raise ValueError("invalid-history-archive-record") from err
+        prepared.append(
+            replace(
+                parsed,
+                record_id=secrets.token_hex(16),
+                retention="kept",
+                name=_valid_name(item.get("name"))
+                if item.get("name") is not None
+                else None,
+                imported=True,
+                source_id=source_id,
+                mission_token=None,
+                comparison_group=None,
+                frame={
+                    **(parsed.frame or {}),
+                    "diff_eligible": False,
+                    "coverage": "unknown",
+                },
+                archive_group=archive_group,
+            )
+        )
+    return prepared

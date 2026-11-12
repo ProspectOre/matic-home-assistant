@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NamedTuple, NotRequired, TypedDict
 
 from google.protobuf.message import DecodeError
@@ -113,6 +113,11 @@ class LoadedSnapshot:
     bounds: tuple[int, int]
     # The retained set recovery was armed with, when a snapshot persisted one.
     baseline: RecoveryBaseline | None = None
+    # Pages decoded during the load, keyed by entry; may include evicted ones.
+    photo_tiles: dict[HermesCollectionEntry, SlamTile] = field(default_factory=dict)
+    structure_tiles: dict[HermesCollectionEntry, SlamStructureTile] = field(
+        default_factory=dict
+    )
 
     def can_recover_under(self, current_bounds: tuple[int, int]) -> bool:
         """Return whether a complete live replay may clear the latch."""
@@ -194,6 +199,8 @@ def decode_snapshot(stored: object, limits: SnapshotLimits) -> LoadedSnapshot:
     )
     entries: dict[str, HermesCollectionEntry] = {}
     structure_entries: dict[str, HermesCollectionEntry] = {}
+    photo_tiles: dict[HermesCollectionEntry, SlamTile] = {}
+    structure_tiles: dict[HermesCollectionEntry, SlamStructureTile] = {}
     mission_ids: set[int] = set()
 
     for structural, name in ((False, "tiles"), (True, "structure_tiles")):
@@ -274,6 +281,10 @@ def decode_snapshot(stored: object, limits: SnapshotLimits) -> LoadedSnapshot:
             if key in target:
                 dirty = True
             target[key] = entry
+            if isinstance(tile, SlamTile):
+                photo_tiles[entry] = tile
+            else:
+                structure_tiles[entry] = tile
             evicted_photo, evicted_structure = enforce_collection_bounds(
                 entries,
                 structure_entries,
@@ -304,6 +315,8 @@ def decode_snapshot(stored: object, limits: SnapshotLimits) -> LoadedSnapshot:
         dirty,
         bounds,
         baseline,
+        photo_tiles,
+        structure_tiles,
     )
 
 

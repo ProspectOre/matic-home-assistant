@@ -37,7 +37,7 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     await asyncio.sleep(0)
     await hass.async_block_till_done()
     assert store.tile_count == 1
-    assert store.entries() == (entry,)
+    assert tuple(store._entries.values()) == (entry,)
     assert store.revision == 1
     assert store.decoded_tiles() == (tile,)
     assert store.mission_identity is not None
@@ -180,8 +180,8 @@ async def test_slam_map_store_preserves_new_floor_pages_until_selection_updates(
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id == 2
     assert store.live_session_verified
-    assert store.entries() == (new_photo,)
-    assert store.structure_entries() == (new_structure,)
+    assert tuple(store._entries.values()) == (new_photo,)
+    assert tuple(store._structure_entries.values()) == (new_structure,)
 
 
 async def test_slam_map_store_stages_retired_floor_pages_before_return_selection(
@@ -215,8 +215,8 @@ async def test_slam_map_store_stages_retired_floor_pages_before_return_selection
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id == 1
     assert store.live_session_verified
-    assert store.entries() == (return_photo,)
-    assert store.structure_entries() == (return_structure,)
+    assert tuple(store._entries.values()) == (return_photo,)
+    assert tuple(store._structure_entries.values()) == (return_structure,)
 
 
 async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
@@ -810,16 +810,6 @@ async def test_slam_map_store_ignores_corrupt_private_cache(hass) -> None:
     assert store.health.invalid_tiles == 2
 
 
-async def test_slam_map_store_skips_corruption_after_load(hass) -> None:
-    store = SlamMapStore(hass, "runtime-corruption")
-    await store.async_load()
-    store._entries["bad"] = HermesCollectionEntry(b"bad", b"bad")
-    store._structure_entries["bad"] = HermesCollectionEntry(b"bad", b"bad")
-
-    assert store.decoded_tiles() == ()
-    assert store.decoded_structure_tiles() == ()
-
-
 async def test_slam_map_store_resets_missions_and_enforces_load_bound(hass) -> None:
     store = SlamMapStore(hass, "mission-entry")
     first = synthetic_slam_entry(mission=b"first")
@@ -887,7 +877,7 @@ async def test_slam_map_store_round_trips_integrated_pages(hass) -> None:
     await asyncio.sleep(0)
     await hass.async_block_till_done()
     assert store.structure_tile_count == 1
-    assert store.structure_entries() == (entry,)
+    assert tuple(store._structure_entries.values()) == (entry,)
     assert store.decoded_structure_tiles() == (tile,)
 
     await store.async_add_structure(entry)
@@ -925,7 +915,7 @@ async def test_slam_map_store_validates_integrated_cache_on_load(hass) -> None:
 
     assert store.tile_count == 1
     assert store.structure_tile_count == 0
-    assert store.entries() == (photo,)
+    assert tuple(store._entries.values()) == (photo,)
 
     bounded = SlamMapStore(hass, "structure-load-entry")
     with patch("custom_components.matic_robot.slam_map_store.MAX_STORED_BYTES", 1):
@@ -956,7 +946,8 @@ async def test_unchanged_raw_tile_replacement_cannot_exceed_cache_byte_limit(
         await store.async_add(replacement)
 
     assert (
-        sum(len(item.key) + len(item.value) for item in store.entries()) <= byte_limit
+        sum(len(item.key) + len(item.value) for item in tuple(store._entries.values()))
+        <= byte_limit
     )
     assert store.tile_count == 0
     assert store.health.truncated is True
@@ -1071,6 +1062,8 @@ async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> 
     store = SlamMapStore(hass, "live-entry")
     await store.async_load()
 
+    both_layers_read = asyncio.Barrier(2)
+
     async def live_entries(name):
         if name == "map_compressed_rgb":
             yield synthetic_slam_entry()
@@ -1078,6 +1071,7 @@ async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> 
             assert name == "map_integrated"
             yield synthetic_structure_entry()
         yield HermesCollectionEntry(b"bad", b"bad")
+        await both_layers_read.wait()
         raise asyncio.CancelledError
 
     client = SimpleNamespace(async_watch=watch(live_entries))
@@ -1623,12 +1617,12 @@ async def test_truncated_cache_stays_incomplete_until_verified_floor_replacement
     restored = SlamMapStore(hass, "truncated-rebuild")
     await restored.async_load()
     restored.set_expected_mission_id(1)
-    retained = restored.structure_entries()
+    retained = tuple(restored._structure_entries.values())
     await restored.async_add(synthetic_slam_entry(page_x=0, mission_id=1))
     await restored.async_add_structure(
         synthetic_structure_entry(page_x=0, mission_id=1)
     )
-    assert restored.structure_entries() == retained
+    assert tuple(restored._structure_entries.values()) == retained
     assert restored.health.truncated
     assert not restored.map_complete
     for page_x in (0, 1):
