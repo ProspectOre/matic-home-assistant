@@ -7,6 +7,7 @@ import struct
 import sys
 import tomllib
 from collections.abc import Callable, Iterator
+from importlib import metadata
 from pathlib import Path
 
 import homeassistant
@@ -270,7 +271,18 @@ def test_manifest_declares_every_integration_and_package_the_code_imports() -> N
     assert declared - {"bluetooth_adapters"} <= used
     assert manifest["after_dependencies"] == sorted(manifest["after_dependencies"])
 
-    assert set(manifest["requirements"]) == set(project["dependencies"])
+    # Hassfest rejects a requirement Home Assistant itself installs, so those
+    # stay in pyproject.toml only.
+    core = {
+        re.split(r"[<>=!~; \[]", requirement)[0].lower()
+        for requirement in metadata.requires("homeassistant") or ()
+        if "extra ==" not in requirement
+    }
+    assert set(manifest["requirements"]) == {
+        requirement
+        for requirement in project["dependencies"]
+        if re.split(r"[<>=]", requirement)[0].lower() not in core
+    }
     packages = {module.split(".")[0] for module in modules}
     # Home Assistant itself, the Bluetooth integration's requirements and the
     # standard library provide the rest.
@@ -290,7 +302,7 @@ def test_manifest_declares_every_integration_and_package_the_code_imports() -> N
     third_party = packages - set(sys.stdlib_module_names) - {"__future__"}
     assert third_party - provided == set(required)
     assert {
-        re.split(r"[<>=]", requirement)[0] for requirement in manifest["requirements"]
+        re.split(r"[<>=]", requirement)[0] for requirement in project["dependencies"]
     } == set(required.values())
 
 
