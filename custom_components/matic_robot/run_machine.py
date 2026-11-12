@@ -95,6 +95,13 @@ class AreaFinished:
 
 
 @dataclass(frozen=True, slots=True)
+class LegVerifying:
+    """A leg's mission ended; its history is read until ``deadline``."""
+
+    deadline: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class LegVerified:
     """A leg's rooms are settled and the next leg waits for its handoff.
 
@@ -112,17 +119,29 @@ type RunEvent = (
     | DispatchRecorded
     | RoomVerified
     | AreaFinished
+    | LegVerifying
     | LegVerified
 )
 
 
 @dataclass(frozen=True, slots=True)
 class CheckpointWrite:
-    """Fields to set and drop on the checkpoint, saved when ``save`` is true."""
+    """Fields to set and drop on the checkpoint.
+
+    The executor saves the checkpoint when ``save`` is true; a write with
+    ``save`` false waits for a later save, or the ledger saves it with a room
+    record.
+    """
 
     fields: Mapping[str, Any]
     drop: tuple[str, ...] = ()
     save: bool = True
+
+    def apply(self, checkpoint: dict[str, Any]) -> None:
+        """Set and drop this write's fields on ``checkpoint``."""
+        checkpoint.update(self.fields)
+        for key in self.drop:
+            checkpoint.pop(key, None)
 
 
 def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
@@ -162,6 +181,15 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
             # restart before finalization then still completes the run.
             return replace(run, finished_area_legs=finished), CheckpointWrite(
                 {"finished_area_legs": sorted(finished)}, save=last_leg
+            )
+        case LegVerifying(deadline):
+            # The ledger saves it with the room's verifying record.
+            return replace(run, phase=RunPhase.VERIFYING), CheckpointWrite(
+                {
+                    "phase": RunPhase.VERIFYING.value,
+                    "verification_deadline": deadline.isoformat(),
+                },
+                save=False,
             )
     moved, write = _moved(run, RunPhase.HANDOFF, event.next_leg_index)
     return moved, CheckpointWrite(

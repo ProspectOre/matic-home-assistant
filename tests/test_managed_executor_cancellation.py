@@ -11,17 +11,17 @@ from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.managed_observation as managed_observation_module
 from custom_components.matic_robot.client.commands import UserCommand
-from custom_components.matic_robot.managed_room import _async_run_room
+from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_run import _PreparedRoomDispatch
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, run_step
 
 
 async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monkeypatch):
     """A pending native-identity wait must unwind as a handled room timeout."""
     robot = FakeRobot()
-    from custom_components.matic_robot import managed_room
+    from custom_components.matic_robot import managed_leg
 
     room = CleaningRoom("room-office", "Office", "vacuum", "standard")
     identity = b"owned-native-session"
@@ -75,7 +75,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
                 return capture_completion_timeout
             return getattr(asyncio, name)
 
-    monkeypatch.setattr(managed_room, "asyncio", AsyncioProxy())
+    monkeypatch.setattr(managed_leg, "asyncio", AsyncioProxy())
 
     async def read_identity():
         if (
@@ -128,13 +128,13 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
 
     with pytest.raises(ServiceValidationError) as raised:
         await asyncio.wait_for(
-            _async_run_room(
+            _async_run_leg(
                 hass,
                 call,
                 manager,
                 "vacuum.matic",
                 "serial",
-                room,
+                [room],
                 robot.port(
                     refresh=refresh,
                     session_history=AsyncMock(return_value=()),
@@ -151,6 +151,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
                 ),
                 floor_token="floor",
                 checkpoint_dispatch=AsyncMock(),
+                advance=run_step,
             ),
             timeout=10,
         )

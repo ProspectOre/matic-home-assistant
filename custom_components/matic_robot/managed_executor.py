@@ -47,6 +47,7 @@ from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
 from .run_machine import (
     AreaFinished,
+    CheckpointWrite,
     DispatchRecorded,
     HandoffEntered,
     LegDispatching,
@@ -121,17 +122,16 @@ async def _async_execute_rooms_reserved(
         area_leg_count = 0
         chosen: list[CleaningRoom] = []
 
-        async def advance(event: RunEvent) -> None:
+        async def advance(event: RunEvent) -> CheckpointWrite:
             """Move the run and apply its write to the durable checkpoint."""
             nonlocal run
             run, write = transition(run, event)
-            checkpoint.update(write.fields)
-            for key in write.drop:
-                checkpoint.pop(key, None)
+            write.apply(checkpoint)
             if write.save:
                 await manager.recovery.async_set_recovery_checkpoint(
                     serial_number, run_id, checkpoint
                 )
+            return write
 
         async def save_dispatch(dispatch: _PreparedRoomDispatch) -> None:
             await advance(
@@ -455,6 +455,7 @@ async def _async_execute_rooms_reserved(
                         run_id=run_id,
                         record_room_completed=record_room_completion,
                         checkpoint_dispatch=save_dispatch,
+                        advance=advance,
                         provenance=run_provenance,
                         recovered_suspend_reason=(
                             (
@@ -668,21 +669,17 @@ async def _async_execute_rooms_reserved(
                     await manager.ledger.async_mark_interrupted(
                         serial_number, call.data["plan_id"], room, reason
                     )
-                    hass.bus.async_fire(
-                        f"{DOMAIN}_room_interrupted",
-                        {
-                            "entity_id": entity_id,
-                            "plan_id": call.data["plan_id"],
-                            "room": room.name,
-                            "room_id": room.room_id,
-                            "cleaning_mode": room.cleaning_mode,
-                            "coverage_setting": room.coverage_setting,
-                            "run_id": run_id,
-                            "error": reason,
-                            "reason_code": "unexpected_exception",
-                            "cause": "internal",
-                        },
-                        context=call.context,
+                    leg_execution.fire_room_event(
+                        hass,
+                        call,
+                        entity_id,
+                        room,
+                        "interrupted",
+                        run_id=run_id,
+                        provenance=run_provenance,
+                        error=reason,
+                        reason_code="unexpected_exception",
+                        cause="internal",
                     )
                     session_ended = False
                     current = robot.observed()

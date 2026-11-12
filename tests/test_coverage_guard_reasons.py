@@ -20,11 +20,10 @@ from custom_components.matic_robot.client.models import FloorPlan
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
-from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import _failure_reason_code
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, run_step
 
 
 @asynccontextmanager
@@ -113,18 +112,19 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
     )
 
     with pytest.raises(ServiceValidationError) as caught:
-        await _async_run_room(
+        await _async_run_leg(
             hass,
             call,
             manager,
             "vacuum.synthetic",
             "synthetic-serial",
-            CleaningRoom("synthetic-room-id", "Synthetic room", "vacuum", "quick"),
+            [CleaningRoom("synthetic-room-id", "Synthetic room", "vacuum", "quick")],
             robot.port(session_identity=robot.accepting),
             17,
             managed_user_command=stop_sender,
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
 
     assert caught.value.translation_domain == "matic_robot"
@@ -194,6 +194,7 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
             managed_user_command=stop_sender,
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
 
     assert caught.value.translation_key == reason.value

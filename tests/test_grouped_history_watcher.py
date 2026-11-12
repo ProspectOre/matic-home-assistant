@@ -30,7 +30,7 @@ from custom_components.matic_robot.managed_run import (
     _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
-from tests.session_fakes import FakeRobot, robot_port
+from tests.session_fakes import FakeRobot, robot_port, run_step
 from tests.wire_builders import _field
 
 
@@ -138,6 +138,7 @@ async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
             run_id=run_id,
             floor_token="b" * 64,
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
     )
     return task, manager, scheduled
@@ -237,6 +238,7 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
         floor_is_current=lambda: False,
         floor_token="b" * 64,
         checkpoint_dispatch=AsyncMock(),
+        advance=run_step,
     )
 
     assert not finished

@@ -1,14 +1,21 @@
-"""Grouped room mission execution and per-room evidence accounting."""
+"""Run one plan leg: a native mission over one or more rooms.
+
+A leg is one native mission, so the robot moves room to room without docking.
+Credit comes only from the robot's own history record for that mission: each
+verified room is credited with the robot's own per-room duration, and every
+other room stays due. A one-room leg is judged by the single-room history
+rules, which can also prove the room unreachable, and keeps a late-history
+marker for that room when it ends without proof.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -18,17 +25,15 @@ from homeassistant.util import dt as dt_util
 from . import managed_dispatch as dispatch_control
 from . import managed_observation as observation
 from . import managed_reconciliation as history_reconciliation
-from . import managed_room as room_execution
 from . import managed_run
 from .client.commands import UserCommand
-from .client.exceptions import MaticError
+from .client.exceptions import CoverageGuardError, MaticError
 from .client.models import RobotActivity
 from .const import DOMAIN
-from .coverage_accounting import (
-    async_confirm_completed_coverage,
-)
+from .coverage_accounting import async_confirm_completed_coverage
 from .grouped_native_reconciliation import build_grouped_native_reconciliation
 from .managed_run import (
+    NativeTaskEndedError,
     PlanCancelledError,
     RoomInterruptedError,
     RoomRunOutcome,
@@ -37,14 +42,52 @@ from .managed_run import (
     RoomTakenOverError,
     _PreparedRoomDispatch,
 )
-from .plan_model import (
-    CleaningRoom,
-)
+from .plan_model import CleaningRoom
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
+from .run_machine import CheckpointWrite, LegVerifying, RunEvent
 
-_LOGGER = logging.getLogger(__name__)
+type RoomResult = Literal[
+    "started",
+    "completed",
+    "skipped",
+    "ended_unverified",
+    "cancelled",
+    "interrupted",
+    "failed",
+]
+
+_SUSPENDED = frozenset({"paused", "low_charge"})
+
+
+def fire_room_event(
+    hass: HomeAssistant,
+    call: ServiceCall,
+    entity_id: str,
+    room: CleaningRoom,
+    result: RoomResult,
+    *,
+    run_id: str | None,
+    provenance: str,
+    **fields: str,
+) -> None:
+    """Announce one room's outcome as the ``matic_robot_room_<result>`` event."""
+    hass.bus.async_fire(
+        f"{DOMAIN}_room_{result}",
+        {
+            ATTR_ENTITY_ID: entity_id,
+            "plan_id": call.data["plan_id"],
+            "room_id": room.room_id,
+            "room": room.name,
+            "cleaning_mode": room.cleaning_mode,
+            "coverage_setting": room.coverage_setting,
+            "run_id": run_id,
+            "provenance": provenance,
+            **fields,
+        },
+        context=call.context,
+    )
 
 
 async def _async_run_leg(
@@ -59,6 +102,7 @@ async def _async_run_leg(
     *,
     floor_token: str,
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]],
+    advance: Callable[[RunEvent], Awaitable[CheckpointWrite]],
     cancel_event: asyncio.Event | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     prepared_dispatch: _PreparedRoomDispatch | None = None,
@@ -73,71 +117,43 @@ async def _async_run_leg(
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
 ) -> bool:
-    """Run one mission leg and credit only natively verified rooms.
+    """Run one leg and report whether every room in it settled.
 
-    A leg is one native multi-room mission, so the robot glides room to room
-    without docking.  Rotation credit still comes only from the leg's single
-    native history record: each verified room is credited with the robot's
-    own per-room duration, and everything else stays due.
+    A room settles when the robot's history credits it, the owner skipped
+    it, or a one-room leg's history shows the robot could not reach it.
     """
     leg = list(rooms)
-    if len(leg) == 1:
-        return await room_execution._async_run_room(
-            hass,
-            call,
-            manager,
-            entity_id,
-            serial_number,
-            leg[0],
-            robot,
-            motion_token,
-            floor_token=floor_token,
-            checkpoint_dispatch=checkpoint_dispatch,
-            cancel_event=cancel_event,
-            managed_user_command=managed_user_command,
-            prepared_dispatch=prepared_dispatch,
-            finish_room_event=finish_room_event,
-            floor_is_current=floor_is_current,
-            on_native_identity=on_native_identity,
-            run_id=run_id,
-            record_room_completed=record_room_completed,
-            provenance=provenance,
-            recovered_suspend_reason=recovered_suspend_reason,
-            expected_dispatch_identity=expected_dispatch_identity,
-            expected_dispatch_history=expected_dispatch_history,
-        )
-
-    def event_data(room: CleaningRoom) -> dict[str, Any]:
-        return {
-            ATTR_ENTITY_ID: entity_id,
-            "plan_id": call.data["plan_id"],
-            "room_id": room.room_id,
-            "room": room.name,
-            "cleaning_mode": room.cleaning_mode,
-            "coverage_setting": room.coverage_setting,
-            "run_id": run_id,
-            "provenance": provenance
-            if provenance is not None
-            else dispatch_control._run_provenance(call),
-        }
-
+    single = len(leg) == 1
+    plan_id = call.data["plan_id"]
+    announce = partial(
+        fire_room_event,
+        hass,
+        call,
+        entity_id,
+        run_id=run_id,
+        provenance=provenance
+        if provenance is not None
+        else dispatch_control._run_provenance(call),
+    )
     active_room = next(
         (room for room in leg if room.room_id == recovered_room_id), leg[0]
     )
     observed_ids = {active_room.room_id}
     room_observer: observation._LegOutcomeObserver | None = None
-    first_start = await manager.ledger.async_mark_started(
-        serial_number, call.data["plan_id"], active_room, run_id=run_id
-    )
-    if first_start:
-        hass.bus.async_fire(
-            f"{DOMAIN}_room_started", event_data(active_room), context=call.context
-        )
+    if await manager.ledger.async_mark_started(
+        serial_number, plan_id, active_room, run_id=run_id
+    ):
+        announce(active_room, "started")
     dispatch_attempted = False
+    room_started = False
     stop_sent = False
-    evidence: dict[str, tuple[str, int]] | None = None
+    # Room id to the robot's (ended_at, duration_seconds) for its credit.
+    credited: dict[str, tuple[str | None, int | None]] = {}
+    unreachable = False
     completion_sessions: list[str] = []
-    dispatch: _PreparedRoomDispatch | None = prepared_dispatch
+    dispatch = prepared_dispatch
+    history_baseline: frozenset[bytes] | None = None
+    dispatched_at: datetime | None = None
     native_identity: bytes | None = None
     managed_user_command = dispatch_control._guard_native_commands(
         managed_user_command,
@@ -158,14 +174,20 @@ async def _async_run_leg(
         if on_native_identity is not None:
             on_native_identity(identity)
 
-    def build_reconciliation(
-        credited_ids: Sequence[str] = (),
-    ) -> dict[str, Any] | None:
-        skipped_ids = (
-            manager.ledger.skipped_room_ids(serial_number, run_id) if run_id else ()
-        )
+    def skipped_room_ids() -> Collection[str]:
+        if run_id is None:
+            return ()
+        return manager.ledger.skipped_room_ids(serial_number, run_id)
+
+    def late_marker(credited_ids: Collection[str] = ()) -> Any:
+        """Return what a late history record settles this leg's rooms by."""
+        if single:
+            return history_reconciliation._build_native_reconciliation(
+                plan_id, leg[0], dispatched_at, room_started, run_id=run_id
+            )
+        skipped = skipped_room_ids()
         return build_grouped_native_reconciliation(
-            call.data["plan_id"],
+            plan_id,
             [
                 {
                     "room_id": room.room_id,
@@ -176,17 +198,174 @@ async def _async_run_leg(
                 for room in leg
                 if room.room_id in observed_ids
                 and room.room_id not in credited_ids
-                and room.room_id not in skipped_ids
+                and room.room_id not in skipped
             ],
-            (
-                dispatch.dispatched_at
-                if dispatch is not None and room_observer is not None
-                else None
-            ),
+            dispatched_at if room_observer is not None else None,
             native_identity,
             floor_token,
             run_id,
         )
+
+    def stored_marker(marker: Any) -> dict[str, Any]:
+        """Return the ledger's keyword for ``marker``, none when there is none."""
+        if single:
+            marker = history_reconciliation._native_reconciliation_data(marker)
+        return {} if marker is None else {"native_reconciliation": marker}
+
+    def watch_late_history(marker: Any) -> None:
+        if single:
+            history_reconciliation._schedule_native_reconciliation(
+                hass,
+                manager,
+                serial_number,
+                entity_id,
+                leg[0],
+                marker,
+                history_baseline,
+                robot,
+                call.context,
+            )
+        elif marker is not None:
+            history_reconciliation._schedule_grouped_native_reconciliation(
+                hass, manager, serial_number, entity_id, marker, robot
+            )
+
+    async def async_record_ended(
+        mark: Callable[..., Awaitable[None]], reason: str, marker: Any
+    ) -> None:
+        """Record the active room's end with the marker while the run owns it."""
+        async with dispatch_control._managed_reconciliation_guard(
+            manager, serial_number, motion_token
+        ) as owned:
+            if not owned:
+                marker = None
+            await mark(
+                serial_number, plan_id, active_room, reason, **stored_marker(marker)
+            )
+            if not dispatch_control._managed_reconciliation_is_current(
+                manager, serial_number, motion_token
+            ):
+                marker = None
+            watch_late_history(marker)
+
+    async def async_verify_end(*, mission_ended: bool = False) -> bool:
+        """Read the ended mission's history; return whether it gave a verdict."""
+        nonlocal unreachable
+        assert dispatched_at is not None
+        write = await advance(
+            LegVerifying(
+                dt_util.utcnow()
+                + timedelta(seconds=observation.SESSION_HISTORY_TIMEOUT_SECONDS)
+            )
+        )
+        await manager.ledger.async_mark_verifying(
+            serial_number, plan_id, active_room, checkpoint=write
+        )
+        if not single:
+            credited.update(
+                await observation._async_verify_leg_completion(
+                    robot.session_history,
+                    history_baseline,
+                    leg,
+                    dispatched_at,
+                    robot=robot,
+                    cancel_event=cancel_event,
+                    on_verified_session=completion_sessions.append,
+                    skipped_room_ids=skipped_room_ids(),
+                )
+                or {}
+            )
+            return bool(credited)
+        evidence: list[tuple[str, int]] = []
+        verdict = await observation._async_adjudicate_room_end(
+            robot.session_history,
+            history_baseline,
+            leg[0],
+            dispatched_at,
+            robot=robot,
+            cancel_event=cancel_event,
+            allow_active_cleaning=mission_ended,
+            on_verified_session=completion_sessions.append,
+            on_verified_completion=lambda ended_at, duration: evidence.append(
+                (ended_at, duration)
+            ),
+        )
+        if verdict is observation.NativeRoomVerdict.COMPLETED:
+            credited[leg[0].room_id] = evidence[-1] if evidence else (None, None)
+        unreachable = verdict is observation.NativeRoomVerdict.UNREACHABLE
+        return verdict is not observation.NativeRoomVerdict.UNVERIFIED
+
+    async def async_next_outcome() -> tuple[RoomRunOutcome, CleaningRoom | None]:
+        """Wait for the leg's next outcome while the run still owns its task."""
+        if room_observer is not None:
+            return await observation._async_wait_with_native_identity(
+                partial(room_observer.next, cancel_event),
+                robot.session_identity,
+                native_identity,
+            )
+        outcome = await observation._async_wait_with_native_identity(
+            # Owned start already observed this room. Preserve that evidence
+            # across transient cleaning during dock travel.
+            lambda: observation._async_wait_for_room_outcome(
+                robot, leg[0], cancel_event, initial_observed=True
+            ),
+            robot.session_identity,
+            native_identity,
+        )
+        return outcome, None
+
+    async def async_wait_for_resume(seconds: float) -> None:
+        if room_observer is None:
+            await observation._async_wait_for_owned_resume(
+                robot, seconds, cancel_event, leg, native_identity
+            )
+            return
+        await observation._async_wait_for_owned_resume(
+            robot,
+            seconds,
+            cancel_event,
+            leg,
+            native_identity,
+            resume_event=room_observer.resume_event,
+        )
+        room_observer.resume_after_initial_pause()
+
+    async def resumed_after_return() -> bool:
+        return await observation._async_wait_for_active_session_resolution(
+            robot, cancel_event, expected_identity=native_identity
+        )
+
+    async def persist_room_start(changed_room: CleaningRoom) -> None:
+        nonlocal active_room, stop_sent
+
+        async def confirm_ownership() -> None:
+            return None
+
+        await observation._async_wait_with_native_identity(
+            confirm_ownership, robot.session_identity, native_identity
+        )
+        if (
+            finish_room_event is not None
+            and finish_room_event.is_set()
+            and not stop_sent
+        ):
+            # A finish-current-room stop cannot withhold the next room inside
+            # one native mission. Honor it at the first boundary.
+            await dispatch_control._async_cleanup_managed_motion(
+                managed_user_command, motion_token, dispatch_attempted=True
+            )
+            stop_sent = True
+        first_observation = changed_room.room_id not in observed_ids
+        observed_ids.add(changed_room.room_id)
+        # A robot can revisit a room within the same native mission. Keep the
+        # active room current even though its start event is deduped.
+        first_start = await manager.ledger.async_mark_started(
+            serial_number, plan_id, changed_room, run_id=run_id
+        )
+        if first_observation and first_start:
+            announce(changed_room, "started")
+        active_room = changed_room
+        await manager.ledger.async_mark_resumed(serial_number, plan_id, active_room)
 
     try:
         if dispatch is None:
@@ -225,189 +404,98 @@ async def _async_run_leg(
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
-        room_observer = observation._LegOutcomeObserver(
-            robot,
-            leg,
-            active_room,
-            initial_observed=True,
-            classify_current=True,
-            suppress_pause=(
-                start_state is RobotActivity.PAUSED
-                or recovered_suspend_reason in {"paused", "low_charge"}
-            ),
-            initial_suspended=recovered_suspend_reason in {"paused", "low_charge"},
-        )
-        dispatch = replace(dispatch, native_identity=native_identity)
-        await checkpoint_dispatch(dispatch)
-
-        async def persist_room_start(changed_room: CleaningRoom) -> None:
-            nonlocal active_room, stop_sent
-
-            async def confirm_ownership() -> None:
-                return None
-
-            await observation._async_wait_with_native_identity(
-                confirm_ownership, robot.session_identity, native_identity
+        except NativeTaskEndedError:
+            # The mission this run owns ended before its room was observed.
+            # Only native history can say why; robot state may still lag.
+            if not single or not await async_verify_end(mission_ended=True):
+                raise
+        else:
+            suspended = start_state is RobotActivity.PAUSED or (
+                recovered_suspend_reason in _SUSPENDED
             )
-            if (
-                finish_room_event is not None
-                and finish_room_event.is_set()
-                and not stop_sent
-            ):
-                # A finish-current-room stop cannot withhold the next room
-                # inside one native mission. Honor it at the first boundary.
-                await dispatch_control._async_cleanup_managed_motion(
-                    managed_user_command,
-                    motion_token,
-                    dispatch_attempted=True,
+            if not single:
+                room_observer = observation._LegOutcomeObserver(
+                    robot,
+                    leg,
+                    active_room,
+                    initial_observed=True,
+                    classify_current=True,
+                    suppress_pause=suspended,
+                    initial_suspended=recovered_suspend_reason in _SUSPENDED,
                 )
-                stop_sent = True
-            first_observation = changed_room.room_id not in observed_ids
-            observed_ids.add(changed_room.room_id)
-            # A robot can revisit a room within the same native mission. Keep
-            # the active room current even though its start event is deduped.
-            first_start = await manager.ledger.async_mark_started(
-                serial_number,
-                call.data["plan_id"],
-                changed_room,
-                run_id=run_id,
-            )
-            if first_observation and first_start:
-                hass.bus.async_fire(
-                    f"{DOMAIN}_room_started",
-                    event_data(changed_room),
-                    context=call.context,
+            dispatch = replace(dispatch, native_identity=native_identity)
+            await checkpoint_dispatch(dispatch)
+            if suspended:
+                await manager.ledger.async_mark_suspended(
+                    serial_number,
+                    plan_id,
+                    active_room,
+                    recovered_suspend_reason or "paused",
                 )
-            active_room = changed_room
-            await manager.ledger.async_mark_resumed(
-                serial_number, call.data["plan_id"], active_room
-            )
-
-        if start_state is RobotActivity.PAUSED or recovered_suspend_reason in {
-            "paused",
-            "low_charge",
-        }:
-            await manager.ledger.async_mark_suspended(
-                serial_number,
-                call.data["plan_id"],
-                active_room,
-                recovered_suspend_reason or "paused",
-            )
-            await observation._async_wait_for_owned_resume(
-                robot,
-                managed_run._remaining_completion_time(
-                    dispatch, call.data["completion_timeout"]
-                ),
-                cancel_event,
-                leg,
-                native_identity,
-                resume_event=room_observer.resume_event,
-            )
-            room_observer.resume_after_initial_pause()
-        await manager.ledger.async_mark_resumed(
-            serial_number, call.data["plan_id"], active_room
-        )
-        completion_budget = await managed_run._async_completion_budget(
-            dispatch, call.data["completion_timeout"], checkpoint_dispatch
-        )
-        refresh_task = asyncio.create_task(
-            observation._async_periodic_refresh(robot.refresh)
-        )
-        try:
-            async with asyncio.timeout(completion_budget) as mission_timeout:
-                while True:
-                    (
-                        outcome,
-                        changed_room,
-                    ) = await observation._async_wait_with_native_identity(
-                        partial(room_observer.next, cancel_event),
-                        robot.session_identity,
-                        native_identity,
+                await async_wait_for_resume(
+                    managed_run._remaining_completion_time(
+                        dispatch, call.data["completion_timeout"]
                     )
-                    if outcome is RoomRunOutcome.ROOM_CHANGED:
-                        assert changed_room is not None
-                        await persist_room_start(changed_room)
-                        continue
-                    if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        if await observation._async_wait_for_active_session_resolution(
-                            robot,
-                            cancel_event,
-                            expected_identity=native_identity,
-                        ):
-                            await manager.ledger.async_mark_resumed(
-                                serial_number, call.data["plan_id"], active_room
-                            )
+                )
+            await manager.ledger.async_mark_resumed(serial_number, plan_id, active_room)
+            room_started = True
+            completion_budget = await managed_run._async_completion_budget(
+                dispatch, call.data["completion_timeout"], checkpoint_dispatch
+            )
+            refresh_task = asyncio.create_task(
+                observation._async_periodic_refresh(robot.refresh)
+            )
+            try:
+                async with asyncio.timeout(completion_budget) as mission_timeout:
+                    while True:
+                        outcome, changed_room = await async_next_outcome()
+                        if outcome is RoomRunOutcome.ROOM_CHANGED:
+                            assert changed_room is not None
+                            await persist_room_start(changed_room)
                             continue
-                        mission_timeout.reschedule(None)
-                        await manager.ledger.async_mark_verifying(
+                        if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
+                            if await resumed_after_return():
+                                await manager.ledger.async_mark_resumed(
+                                    serial_number, plan_id, active_room
+                                )
+                                continue
+                            mission_timeout.reschedule(None)
+                            await async_verify_end()
+                            break
+                        if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
+                            raise RoomStoppedInPlaceError(
+                                f"{active_room.name} ended in place without "
+                                "returning; the stop cause is unconfirmed"
+                            )
+                        if outcome is RoomRunOutcome.INTERRUPTED:
+                            raise RoomInterruptedError(
+                                f"{active_room.name} stopped without verified "
+                                "completion"
+                            )
+                        await manager.ledger.async_mark_suspended(
                             serial_number,
-                            call.data["plan_id"],
+                            plan_id,
                             active_room,
-                            verification_deadline=dt_util.utcnow()
-                            + timedelta(
-                                seconds=observation.SESSION_HISTORY_TIMEOUT_SECONDS
-                            ),
+                            "paused"
+                            if outcome is RoomRunOutcome.PAUSED
+                            else "low_charge",
                         )
-                        evidence = await observation._async_verify_leg_completion(
-                            robot.session_history,
-                            history_baseline,
-                            leg,
-                            dispatched_at,
-                            robot=robot,
-                            cancel_event=cancel_event,
-                            on_verified_session=completion_sessions.append,
-                            skipped_room_ids=(
-                                manager.ledger.skipped_room_ids(serial_number, run_id)
-                                if run_id is not None
-                                else ()
-                            ),
+                        await async_wait_for_resume(call.data["completion_timeout"])
+                        await manager.ledger.async_mark_resumed(
+                            serial_number, plan_id, active_room
                         )
-                        break
-                    if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
-                        raise RoomStoppedInPlaceError(
-                            f"{active_room.name} ended in place without returning; "
-                            "the stop cause is unconfirmed"
-                        )
-                    # The observer starts with the owned room positively
-                    # observed, so terminal states cannot classify as unknown.
-                    suspend_reason = (
-                        "paused" if outcome is RoomRunOutcome.PAUSED else "low_charge"
-                    )
-                    await manager.ledger.async_mark_suspended(
-                        serial_number,
-                        call.data["plan_id"],
-                        active_room,
-                        suspend_reason,
-                    )
-                    await observation._async_wait_for_owned_resume(
-                        robot,
-                        call.data["completion_timeout"],
-                        cancel_event,
-                        leg,
-                        native_identity,
-                        resume_event=room_observer.resume_event,
-                    )
-                    room_observer.resume_after_initial_pause()
-                    await manager.ledger.async_mark_resumed(
-                        serial_number, call.data["plan_id"], active_room
-                    )
-        finally:
-            refresh_task.cancel()
-            await asyncio.gather(refresh_task, return_exceptions=True)
+            finally:
+                refresh_task.cancel()
+                await asyncio.gather(refresh_task, return_exceptions=True)
     except ManagedMotionReplacedError as err:
         if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
             raise
-        await manager.ledger.async_mark_cancelled(
-            serial_number, call.data["plan_id"], active_room
-        )
-        hass.bus.async_fire(
-            f"{DOMAIN}_room_cancelled",
-            {
-                **event_data(active_room),
-                "reason_code": "managed_cancelled",
-                "cause": "replacement",
-            },
-            context=call.context,
+        await manager.ledger.async_mark_cancelled(serial_number, plan_id, active_room)
+        announce(
+            active_room,
+            "cancelled",
+            reason_code="managed_cancelled",
+            cause="replacement",
         )
         raise PlanCancelledError from err
     except PlanCancelledError as err:
@@ -416,107 +504,47 @@ async def _async_run_leg(
         err.suspend_reason = dispatch_control._suspended_run_reason(
             manager, serial_number
         )
-        if manager.control.cancellation_reason(serial_number) == "config_entry_unload":
+        cancellation_reason = manager.control.cancellation_reason(serial_number)
+        if cancellation_reason == "config_entry_unload":
             await dispatch_control._async_cleanup_managed_motion(
-                managed_user_command,
-                motion_token,
-                dispatch_attempted,
+                managed_user_command, motion_token, dispatch_attempted
             )
-            await manager.ledger.async_mark_interrupted(
-                serial_number,
-                call.data["plan_id"],
+            reason = "Home Assistant unloaded while cleaning this room"
+            if single:
+                await async_record_ended(
+                    manager.ledger.async_mark_interrupted, reason, late_marker()
+                )
+            else:
+                await manager.ledger.async_mark_interrupted(
+                    serial_number, plan_id, active_room, reason
+                )
+            announce(
                 active_room,
-                "Home Assistant unloaded while cleaning this room",
-            )
-            hass.bus.async_fire(
-                f"{DOMAIN}_room_interrupted",
-                {
-                    **event_data(active_room),
-                    "reason_code": "config_entry_unload",
-                    "cause": "home_assistant",
-                },
-                context=call.context,
+                "interrupted",
+                reason_code="config_entry_unload",
+                cause="home_assistant",
             )
         else:
-            cancellation_reason = manager.control.cancellation_reason(serial_number)
-            cancellation_cause = (
-                "replacement"
-                if cancellation_reason == "motion_replaced"
-                else "managed_cancellation"
-                if cancellation_reason == "managed_stop"
-                else "unknown"
-            )
             await manager.ledger.async_mark_cancelled(
-                serial_number, call.data["plan_id"], active_room
+                serial_number, plan_id, active_room
             )
-            hass.bus.async_fire(
-                f"{DOMAIN}_room_cancelled",
-                {
-                    **event_data(active_room),
-                    "reason_code": (
-                        "managed_cancelled"
-                        if cancellation_reason in {"managed_stop", "motion_replaced"}
-                        else "cancellation_unattributed"
-                    ),
-                    "cause": cancellation_cause,
-                },
-                context=call.context,
-            )
-        raise
-    except RoomInterruptedError as err:
-        if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
-            raise
-        await dispatch_control._async_cleanup_managed_motion(
-            managed_user_command,
-            motion_token,
-            dispatch_attempted,
-        )
-        reconciliation = (
-            None if isinstance(err, RoomStoppedInPlaceError) else build_reconciliation()
-        )
-        async with dispatch_control._managed_reconciliation_guard(
-            manager, serial_number, motion_token
-        ) as owned:
-            if not owned:
-                reconciliation = None
-            await manager.ledger.async_mark_interrupted(
-                serial_number,
-                call.data["plan_id"],
+            announce(
                 active_room,
-                str(err),
-                **(
-                    {"native_reconciliation": reconciliation}
-                    if reconciliation is not None
-                    else {}
+                "cancelled",
+                reason_code=(
+                    "managed_cancelled"
+                    if cancellation_reason in {"managed_stop", "motion_replaced"}
+                    else "cancellation_unattributed"
+                ),
+                cause=(
+                    "replacement"
+                    if cancellation_reason == "motion_replaced"
+                    else "managed_cancellation"
+                    if cancellation_reason == "managed_stop"
+                    else "unknown"
                 ),
             )
-            if (
-                reconciliation is not None
-                and dispatch_control._managed_reconciliation_is_current(
-                    manager, serial_number, motion_token
-                )
-            ):
-                history_reconciliation._schedule_grouped_native_reconciliation(
-                    hass,
-                    manager,
-                    serial_number,
-                    entity_id,
-                    reconciliation,
-                    robot,
-                )
-        hass.bus.async_fire(
-            f"{DOMAIN}_room_interrupted",
-            {
-                **event_data(active_room),
-                "error": str(err),
-                "reason_code": managed_run._interruption_reason_code(err),
-                "cause": "unknown",
-            },
-            context=call.context,
-        )
-        raise managed_run._validation_error(
-            str(err), "room_interrupted", {"room": active_room.name}
-        ) from err
+        raise
     except RoomTakenOverError as err:
         if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
             raise
@@ -524,32 +552,52 @@ async def _async_run_leg(
             manager, serial_number
         )
         await manager.ledger.async_mark_interrupted(
-            serial_number, call.data["plan_id"], active_room, str(err)
+            serial_number, plan_id, active_room, str(err)
         )
-        hass.bus.async_fire(
-            f"{DOMAIN}_room_interrupted",
-            {
-                **event_data(active_room),
-                "error": str(err),
-                "reason_code": "native_task_taken_over",
-                "cause": "unknown",
-            },
-            context=call.context,
+        announce(
+            active_room,
+            "interrupted",
+            error=str(err),
+            reason_code="native_task_taken_over",
+            cause="unknown",
         )
         raise managed_run._validation_error(
             "The original native cleaning task could no longer be verified",
             "room_taken_over",
             {"room": active_room.name},
         ) from err
+    except RoomInterruptedError as err:
+        if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
+            raise
+        await dispatch_control._async_cleanup_managed_motion(
+            managed_user_command, motion_token, dispatch_attempted
+        )
+        await async_record_ended(
+            manager.ledger.async_mark_interrupted,
+            str(err),
+            None if isinstance(err, RoomStoppedInPlaceError) else late_marker(),
+        )
+        announce(
+            active_room,
+            "interrupted",
+            error=str(err),
+            reason_code=managed_run._interruption_reason_code(err),
+            cause="unknown",
+        )
+        raise managed_run._validation_error(
+            str(err), "room_interrupted", {"room": active_room.name}
+        ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
         if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
             raise
-        # A graceful finish request can race a room failure.  Clear that
-        # intent before sending the failure STOP so its dock watcher cannot
-        # upgrade the still-running record and mask the durable failure.
+        # A graceful finish request can race a room failure. Clear that intent
+        # before sending the failure STOP so its dock watcher cannot upgrade
+        # the still-running record and mask the durable failure.
         if finish_room_event is not None:
             finish_room_event.clear()
-        if not dispatch_control._managed_stop_fence_owned_by_run(
+        # A multi-room leg sends no cleanup STOP while this run's own STOP
+        # settles; a one-room leg sends it either way.
+        if single or not dispatch_control._managed_stop_fence_owned_by_run(
             manager, serial_number, run_id
         ):
             await dispatch_control._async_cleanup_managed_motion(
@@ -561,22 +609,26 @@ async def _async_run_leg(
             failure_reason = "The robot did not begin cleaning before the start timeout"
         elif isinstance(err, TimeoutError):
             failure_reason = "The managed room exceeded its completion timeout"
+        elif isinstance(err, CoverageGuardError):
+            failure_reason = err.safe_message
         elif isinstance(err, MaticError):
             failure_reason = "The robot could not complete the managed room"
         else:
             failure_reason = str(err).strip() or "The managed room failed"
-        await manager.ledger.async_mark_failed(
-            serial_number, call.data["plan_id"], active_room, failure_reason
-        )
-        hass.bus.async_fire(
-            f"{DOMAIN}_room_failed",
-            {
-                **event_data(active_room),
-                "error": failure_reason,
-                "reason_code": managed_run._failure_reason_code(err),
-                "cause": "unknown",
-            },
-            context=call.context,
+        if single:
+            await async_record_ended(
+                manager.ledger.async_mark_failed, failure_reason, late_marker()
+            )
+        else:
+            await manager.ledger.async_mark_failed(
+                serial_number, plan_id, active_room, failure_reason
+            )
+        announce(
+            active_room,
+            "failed",
+            error=failure_reason,
+            reason_code=managed_run._failure_reason_code(err),
+            cause="unknown",
         )
         if isinstance(err, ServiceValidationError):
             raise
@@ -586,6 +638,10 @@ async def _async_run_leg(
                 "start timeout",
                 "plan_start_timeout",
                 {"room": active_room.name},
+            ) from err
+        if isinstance(err, CoverageGuardError):
+            raise managed_run._validation_error(
+                err.safe_message, err.reason_code
             ) from err
         if isinstance(err, MaticError):
             raise managed_run._validation_error(
@@ -604,25 +660,25 @@ async def _async_run_leg(
         if room_observer is not None:
             room_observer.close()
 
-    credited = evidence or {}
-    verified_coverage = await async_confirm_completed_coverage(
-        manager.recovery.coverage_receipt(serial_number, run_id),
-        completion_sessions[-1] if completion_sessions else None,
-        robot.coverage_verifier,
+    verified_coverage = (
+        await async_confirm_completed_coverage(
+            manager.recovery.coverage_receipt(serial_number, run_id),
+            completion_sessions[-1] if completion_sessions else None,
+            robot.coverage_verifier,
+        )
+        if credited
+        else None
     )
-    skipped = (
-        manager.ledger.skipped_room_ids(serial_number, run_id)
-        if run_id is not None
-        else frozenset()
-    )
-    reconciliation = build_reconciliation(tuple(credited))
+    # A one-room leg reads the owner's skips only when history left it due.
+    skipped = skipped_room_ids() if len(credited) < len(leg) and not unreachable else ()
+    marker = None if single else late_marker(tuple(credited))
     marker_saved = False
     for room in leg:
         if room.room_id in credited:
             completed_at, duration_seconds = credited[room.room_id]
-            accepted = await manager.ledger.async_mark_completed(
+            if not await manager.ledger.async_mark_completed(
                 serial_number,
-                call.data["plan_id"],
+                plan_id,
                 room,
                 run_id=run_id,
                 completed_at=completed_at,
@@ -638,78 +694,62 @@ async def _async_run_leg(
                     )
                     and (floor_is_current is None or floor_is_current())
                 ),
-            )
-            if not accepted:
+            ):
                 raise PlanCancelledError(
                     "Run ownership changed before room completion could be credited"
                 )
             robot.confirm_room_completed(room.name)
             if record_room_completed is not None:
                 record_room_completed(room)
-            hass.bus.async_fire(
-                f"{DOMAIN}_room_completed",
-                {**event_data(room), "reason_code": "verified_completion"},
-                context=call.context,
+            announce(room, "completed", reason_code="verified_completion")
+        elif unreachable:
+            # The robot finished its mission without reaching the room. Settle
+            # it without credit so it stays due, and let the run go on.
+            await manager.ledger.async_mark_unreachable(
+                serial_number, plan_id, room, run_id=run_id
             )
+            announce(room, "skipped", reason_code="room_unreachable", cause="robot")
         elif run_id is not None and room.room_id in skipped:
+            # Skipped without credit, but settled, so the run goes on.
             await manager.ledger.async_mark_skipped(
-                serial_number, call.data["plan_id"], room, run_id=run_id
+                serial_number, plan_id, room, run_id=run_id
             )
-            hass.bus.async_fire(
-                f"{DOMAIN}_room_skipped",
-                {**event_data(room), "reason_code": "owner_skipped"},
-                context=call.context,
-            )
+            announce(room, "skipped", reason_code="owner_skipped")
         elif stop_sent and room.room_id not in observed_ids:
-            await manager.ledger.async_mark_cancelled(
-                serial_number, call.data["plan_id"], room
-            )
-            hass.bus.async_fire(
-                f"{DOMAIN}_room_cancelled",
-                {
-                    **event_data(room),
-                    "reason_code": "managed_cancelled",
-                    "cause": "finish_current_room_or_stop",
-                },
-                context=call.context,
+            await manager.ledger.async_mark_cancelled(serial_number, plan_id, room)
+            announce(
+                room,
+                "cancelled",
+                reason_code="managed_cancelled",
+                cause="finish_current_room_or_stop",
             )
         else:
-            async with dispatch_control._managed_reconciliation_guard(
-                manager, serial_number, motion_token
-            ) as owned:
-                if not owned or (
-                    floor_is_current is not None and not floor_is_current()
-                ):
-                    reconciliation = None
+            if single:
                 await manager.ledger.async_mark_ended_unverified(
-                    serial_number,
-                    call.data["plan_id"],
-                    room,
-                    **(
-                        {"native_reconciliation": reconciliation}
-                        if reconciliation is not None and not marker_saved
-                        else {}
-                    ),
+                    serial_number, plan_id, room
                 )
-            marker_saved = True
-            hass.bus.async_fire(
-                f"{DOMAIN}_room_ended_unverified",
-                {
-                    **event_data(room),
-                    "reason_code": "unverified_completion",
-                    "cause": "unknown",
-                },
-                context=call.context,
+            else:
+                async with dispatch_control._managed_reconciliation_guard(
+                    manager, serial_number, motion_token
+                ) as owned:
+                    if not owned or (
+                        floor_is_current is not None and not floor_is_current()
+                    ):
+                        marker = None
+                    await manager.ledger.async_mark_ended_unverified(
+                        serial_number,
+                        plan_id,
+                        room,
+                        **stored_marker(None if marker_saved else marker),
+                    )
+                marker_saved = True
+            announce(
+                room,
+                "ended_unverified",
+                reason_code="unverified_completion",
+                cause="unknown",
             )
-    if reconciliation is not None:
-        history_reconciliation._schedule_grouped_native_reconciliation(
-            hass,
-            manager,
-            serial_number,
-            entity_id,
-            reconciliation,
-            robot,
-        )
-    # A room the owner skipped is settled without credit, so the run goes on
-    # to its next leg.
-    return all(room.room_id in credited or room.room_id in skipped for room in leg)
+    watch_late_history(marker)
+    return unreachable or all(
+        room.room_id in credited or room.room_id in skipped for room in leg
+    )

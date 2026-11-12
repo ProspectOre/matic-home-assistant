@@ -12,6 +12,7 @@ from custom_components.matic_robot.run_machine import (
     HandoffEntered,
     LegDispatching,
     LegVerified,
+    LegVerifying,
     RoomVerified,
     Run,
     RunPhase,
@@ -102,6 +103,27 @@ def test_an_area_saves_only_when_it_is_the_last_leg() -> None:
     run, write = transition(run, AreaFinished(1, last_leg=True))
     assert run.finished_area_legs == {1, 3}
     assert write == CheckpointWrite({"finished_area_legs": [1, 3]})
+
+
+def test_a_verifying_leg_saves_with_its_room_record() -> None:
+    """The ledger saves the write in the same store save as the room's record."""
+    deadline = SENT + timedelta(minutes=5)
+    run, write = transition(
+        Run(RunPhase.ACCEPTED, 1, frozenset({"a"})), LegVerifying(deadline)
+    )
+    assert run == Run(RunPhase.VERIFYING, 1, frozenset({"a"}))
+    assert write == CheckpointWrite(
+        {"phase": "verifying", "verification_deadline": deadline.isoformat()},
+        save=False,
+    )
+
+
+def test_a_write_sets_and_drops_checkpoint_fields() -> None:
+    checkpoint = {"phase": "verifying", "verification_deadline": "x", "rooms": []}
+    CheckpointWrite({"phase": "handoff"}, drop=("verification_deadline",)).apply(
+        checkpoint
+    )
+    assert checkpoint == {"phase": "handoff", "rooms": []}
 
 
 @pytest.mark.parametrize(

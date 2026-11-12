@@ -62,6 +62,7 @@ from .run_control import (
     RunControl,
 )
 from .run_history import append_run_history, update_run_history
+from .run_machine import CheckpointWrite
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1576,7 +1577,7 @@ class PlanLedger:
         plan_id: str,
         room: CleaningRoom,
         *,
-        verification_deadline: datetime | None = None,
+        checkpoint: CheckpointWrite | None = None,
     ) -> None:
         def mutate() -> bool:
             now_value = dt_util.utcnow()
@@ -1591,13 +1592,9 @@ class PlanLedger:
                 active["status"] = "verifying"
                 active.pop("suspend_reason", None)
             run = self.repository.robot(serial_number).get("last_run")
-            if run is not None and verification_deadline is not None:
-                checkpoint = run.get("recovery_checkpoint")
-                if checkpoint is not None:
-                    checkpoint["phase"] = "verifying"
-                    checkpoint["verification_deadline"] = (
-                        verification_deadline.isoformat()
-                    )
+            stored = run.get("recovery_checkpoint") if run is not None else None
+            if stored is not None and checkpoint is not None:
+                checkpoint.apply(stored)
             return True
 
         await self.repository.async_mutate_and_save(serial_number, mutate)
