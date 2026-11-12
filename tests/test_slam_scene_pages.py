@@ -148,6 +148,9 @@ def test_sample_step_rises_only_when_rounding_up_per_page_passes_the_budget() ->
     assert scene_sample_step([5, 5], 5) == 3
     with pytest.raises(DecodeError, match="no visible content"):
         scene_sample_step([0, 0])
+    assert scene_sample_step([1, 0, 1], 2) == 1
+    with pytest.raises(DecodeError, match="more pages than points"):
+        scene_sample_step([1, 1], 1)
 
 
 def test_a_changed_page_is_the_only_page_encoded_again() -> None:

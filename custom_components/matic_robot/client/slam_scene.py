@@ -196,10 +196,14 @@ def scene_sample_step(counts: Sequence[int], max_points: int = MAX_SCENE_POINTS)
 
     The step is the one a single sampled sequence of every point would use,
     raised only when rounding up on every page would pass ``max_points``.
+    Each page with content keeps at least one point, so a budget below their
+    number is rejected.
     """
     total = sum(counts)
     if total == 0:
         raise DecodeError("photorealistic SLAM scene has no visible content")
+    if sum(map(bool, counts)) > max_points:
+        raise DecodeError("photorealistic SLAM scene has more pages than points")
     step = max(1, math.ceil(total / max_points))
     while sum(-(-count // step) for count in counts) > max_points:
         step += 1
