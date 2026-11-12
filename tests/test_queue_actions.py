@@ -65,7 +65,7 @@ async def test_skip_during_a_plan_run_is_noted_for_the_run(hass) -> None:
     await hass.async_block_till_done()
 
     call = session.client.async_change_queue.await_args
-    assert call.args[1:] == (QueueAction.SKIP, entity._floor_plan().rooms[1])
+    assert call.args[1:] == (QueueAction.SKIP, entity._commands.floor_plan().rooms[1])
     assert manager.ledger.skipped_room_ids(SERIAL, "run-1") == {"room-2"}
     assert manager.control.managed_motion_is_current(SERIAL, token)
     assert [event.data for event in events] == [

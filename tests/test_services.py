@@ -85,6 +85,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_commands import RobotCommands
 from custom_components.matic_robot.room_sequence import (
     _resolve_room_id as _resolve_sequence_room_id,
 )
@@ -1258,7 +1259,7 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
         patch.object(
             manager.control, "request_stop", wraps=manager.control.request_stop
         ) as request,
-        patch.object(entity, "_schedule_dock_after_stop"),
+        patch.object(RobotCommands, "schedule_dock_after_stop"),
         patch(
             "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, serial_number, {}),
@@ -1369,7 +1370,7 @@ async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
 
     try:
         with (
-            patch.object(entity, "_schedule_dock_after_stop"),
+            patch.object(RobotCommands, "schedule_dock_after_stop"),
             patch(
                 "custom_components.matic_robot.service_context._saved_plan_context",
                 return_value=("vacuum.test", entry, serial_number, {}),
@@ -1444,7 +1445,7 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
         await asyncio.create_task(entity.async_return_to_base())
 
     with (
-        patch.object(entity, "_schedule_dock_after_stop"),
+        patch.object(RobotCommands, "schedule_dock_after_stop"),
         patch(
             "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, serial_number, {}),
@@ -1528,7 +1529,7 @@ async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
 
     try:
         with (
-            patch.object(entity, "_schedule_dock_after_stop"),
+            patch.object(RobotCommands, "schedule_dock_after_stop"),
             patch(
                 "custom_components.matic_robot.service_context._saved_plan_context",
                 return_value=("vacuum.test", entry, serial_number, {}),
@@ -6554,7 +6555,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
         {"entity_id": ["vacuum.test"], "expected_run_id": "old-run"},
     )
     with (
-        patch.object(entity, "_schedule_dock_after_stop") as schedule_dock,
+        patch.object(RobotCommands, "schedule_dock_after_stop") as schedule_dock,
         patch(
             "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, serial, {}),

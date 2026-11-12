@@ -2486,7 +2486,7 @@ def test_vacuum_rejects_a_missing_or_empty_room_map() -> None:
             entry.runtime_data.session.floor.set(floor_plan)
         entity = vacuum.MaticVacuum(entry)
         with pytest.raises(ServiceValidationError) as raised:
-            entity._floor_plan()
+            entity._commands.floor_plan()
         assert raised.value.translation_key == "room_plan_unavailable"
 
 
