@@ -11,9 +11,6 @@ from homeassistant.core import (
 from homeassistant.util import slugify
 
 from . import service_context as context
-from .const import (
-    DOMAIN,
-)
 from .managed_run import (
     _validation_error,
 )
@@ -26,7 +23,7 @@ from .plan_model import (
     room_cadence_identity,
 )
 from .room_coherence import current_floor_plan as _current_floor_plan
-from .service_context import ServiceRuntime
+from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
     SERVICE_DELETE_PLAN,
     SERVICE_DELETE_ROOM_SCHEDULE,
@@ -57,10 +54,12 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
     hass = runtime.hass
     manager = runtime.manager
 
-    async def async_reset_plan_history(call: ServiceCall) -> None:
+    async def async_reset_plan_history(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> None:
         """Reset selected or explicitly named durable cleaning history."""
         _entity_id, _entry, serial_number, _room_map = context._saved_plan_context(
-            hass, call
+            hass, entity_ids
         )
         plan_id: str | None = None
         if not call.data["all_plans"]:
@@ -76,17 +75,19 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
                 ) from err
         await manager.ledger.async_reset_history(serial_number, plan_id)
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_RESET_PLAN_HISTORY,
-        context._require_matic_control(hass, async_reset_plan_history),
-        schema=RESET_PLAN_HISTORY_SCHEMA,
+        async_reset_plan_history,
+        RESET_PLAN_HISTORY_SCHEMA,
     )
 
-    async def async_reset_room_cadence(call: ServiceCall) -> dict[str, Any]:
+    async def async_reset_room_cadence(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Reset cadence counters without resetting completion history."""
         _entity_id, _entry, serial_number, _room_map = context._saved_plan_context(
-            hass, call, require_rooms=False
+            hass, entity_ids, require_rooms=False
         )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         room_ids = [call.data["room_id"]] if call.data.get("room_id") else None
@@ -110,18 +111,20 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
             **receipt,
         }
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_RESET_ROOM_CADENCE,
-        context._require_matic_control(hass, async_reset_room_cadence),
-        schema=RESET_ROOM_CADENCE_SCHEMA,
+        async_reset_room_cadence,
+        RESET_ROOM_CADENCE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
-    async def async_delete_room_schedule(call: ServiceCall) -> dict[str, Any]:
+    async def async_delete_room_schedule(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Remove one shared room schedule and detach its saved consumers."""
         _entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_rooms=False, require_current_floor=True
+            hass, entity_ids, require_rooms=False, require_current_floor=True
         )
         room_id = call.data["room_id"]
         floor_plan = _current_floor_plan(entry)
@@ -162,18 +165,20 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
             ) from err
         return receipt
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_DELETE_ROOM_SCHEDULE,
-        context._require_matic_control(hass, async_delete_room_schedule),
-        schema=DELETE_ROOM_SCHEDULE_SCHEMA,
+        async_delete_room_schedule,
+        DELETE_ROOM_SCHEDULE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
-    async def async_list_plans(call: ServiceCall) -> dict[str, Any]:
+    async def async_list_plans(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Return every canonical plan definition and current selection."""
         entity_id, _entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_rooms=False
+            hass, entity_ids, require_rooms=False
         )
         snapshot = manager.history.snapshot(serial_number)
         return {
@@ -186,18 +191,20 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
             ],
         }
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_LIST_PLANS,
-        context._require_matic_control(hass, async_list_plans),
-        schema=LIST_PLANS_SCHEMA,
+        async_list_plans,
+        LIST_PLANS_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
-    async def async_save_plan(call: ServiceCall) -> dict[str, Any]:
+    async def async_save_plan(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Create or atomically replace a complete saved plan."""
         _entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
+            hass, entity_ids, require_current_floor=True
         )
         plan_id = call.data.get("plan_id") or slugify(call.data["name"])
         if not plan_id or plan_id == "unknown":
@@ -250,18 +257,20 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
             raise _plan_request_error(err) from err
         return {"plan": manager.catalog.plan(serial_number, plan_id)}
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_SAVE_PLAN,
-        context._require_matic_control(hass, async_save_plan),
-        schema=SAVE_PLAN_SCHEMA,
+        async_save_plan,
+        SAVE_PLAN_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
-    async def async_delete_plan(call: ServiceCall) -> dict[str, Any]:
+    async def async_delete_plan(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Delete one plan by ID or human-readable name."""
         _entity_id, _entry, serial_number, _room_map = context._saved_plan_context(
-            hass, call, require_rooms=False
+            hass, entity_ids, require_rooms=False
         )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         try:
@@ -272,10 +281,10 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
             ) from err
         return {"deleted_plan_id": plan["id"]}
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_DELETE_PLAN,
-        context._require_matic_control(hass, async_delete_plan),
-        schema=PLAN_REFERENCE_SCHEMA,
+        async_delete_plan,
+        PLAN_REFERENCE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )

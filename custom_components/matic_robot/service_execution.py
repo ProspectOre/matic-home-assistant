@@ -32,7 +32,7 @@ from .robot_port import RobotPort
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_coherence import room_completion_names_are_current
 from .room_sequence import resolve_room_sequence
-from .service_context import ServiceRuntime
+from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
     SERVICE_CLEAN_ROOM_SEQUENCE,
     SERVICE_PREVIEW_PLAN,
@@ -64,13 +64,14 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
 
     async def async_run_saved_plan(
         call: ServiceCall,
+        entity_ids: list[str],
         *,
         intelligent: bool | None,
         preview_token: str | None = None,
     ) -> dict[str, Any]:
         """Resolve and start a saved plan's run; return its run_id."""
         entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
+            hass, entity_ids, require_current_floor=True
         )
         execution_floor_plan = _current_floor_plan(entry)
         execution_floor_token = plan_floor_token(execution_floor_plan)
@@ -209,10 +210,12 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         )
         return {"run_id": run_id}
 
-    async def async_clean_room_sequence(call: ServiceCall) -> dict[str, Any]:
+    async def async_clean_room_sequence(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Start an unsaved ordered room sequence with per-room settings."""
         entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
+            hass, entity_ids, require_current_floor=True
         )
         execution_floor_plan = _current_floor_plan(entry)
         execution_floor_token = plan_floor_token(execution_floor_plan)
@@ -337,18 +340,20 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
 
         return await _async_start(call, run)
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_CLEAN_ROOM_SEQUENCE,
-        context._require_matic_control(hass, async_clean_room_sequence),
-        schema=CLEAN_ROOM_SEQUENCE_SCHEMA,
+        async_clean_room_sequence,
+        CLEAN_ROOM_SEQUENCE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
-    async def async_preview_room_sequence(call: ServiceCall) -> dict[str, Any]:
+    async def async_preview_room_sequence(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Return the current authoritative resolution of a room sequence."""
         _entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
+            hass, entity_ids, require_current_floor=True
         )
         floor_plan = _current_floor_plan(entry)
         try:
@@ -378,35 +383,41 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             "daily_limit_held_rooms": resolved.get("daily_limit_held_rooms", []),
         }
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_PREVIEW_ROOM_SEQUENCE,
-        context._require_matic_admin(hass, async_preview_room_sequence),
-        schema=PREVIEW_ROOM_SEQUENCE_SCHEMA,
+        async_preview_room_sequence,
+        PREVIEW_ROOM_SEQUENCE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
+        admin_only=True,
     )
 
-    async def async_run_selected_plan(call: ServiceCall) -> dict[str, Any]:
+    async def async_run_selected_plan(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Run a saved plan in its saved cleaning order, or the one asked for."""
         run_behavior = call.data.get("run_behavior")
         return await async_run_saved_plan(
             call,
+            entity_ids,
             intelligent=None if run_behavior is None else run_behavior == "intelligent",
             preview_token=call.data.get("preview_token"),
         )
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_RUN_SELECTED_PLAN,
-        context._require_matic_control(hass, async_run_selected_plan),
-        schema=RUN_SELECTED_PLAN_SCHEMA,
+        async_run_selected_plan,
+        RUN_SELECTED_PLAN_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
-    async def async_preview_plan(call: ServiceCall) -> dict[str, Any]:
+    async def async_preview_plan(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Validate and return the exact next saved-plan execution."""
         entity_id, entry, serial_number, room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
+            hass, entity_ids, require_current_floor=True
         )
         try:
             _floor_plan, preview, preview_token = _saved_plan_preview(
@@ -441,18 +452,20 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             result["blocker"] = "daily_limit_reached"
         return result
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_PREVIEW_PLAN,
-        context._require_matic_control(hass, async_preview_plan),
-        schema=SAVED_PLAN_SERVICE_SCHEMA,
+        async_preview_plan,
+        SAVED_PLAN_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
-    async def async_stop_intelligent_cleaning(call: ServiceCall) -> None:
+    async def async_stop_intelligent_cleaning(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> None:
         """Apply the active plan's stop policy and send the robot home."""
         entity_id, entry, serial_number, _room_map = context._saved_plan_context(
-            hass, call, require_rooms=False
+            hass, entity_ids, require_rooms=False
         )
         will_dispatch = False
         async with manager.control.external_command(serial_number):
@@ -539,9 +552,9 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 expected_stop_generation=expected_stop_generation,
             )
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_STOP_INTELLIGENT_CLEANING,
-        context._require_matic_control(hass, async_stop_intelligent_cleaning),
-        schema=PLAN_TARGET_SCHEMA,
+        async_stop_intelligent_cleaning,
+        PLAN_TARGET_SCHEMA,
     )

@@ -39,7 +39,7 @@ the connection itself replaces it. Bounded telemetry decoders handle robot
 state and native cleaning summaries.
 [Discovery](../custom_components/matic_robot/config_flow_discovery.py) selects
 a certificate-bound address; [vacuum catalogs](../custom_components/matic_robot/vacuum_catalog.py)
-map Home Assistant areas to floor-scoped rooms.
+keep each floor's Area mapping in the integration's store and give core only the active floor's.
 
 Each config entry has one [robot session](../custom_components/matic_robot/session.py).
 It reads identity and state once at setup; after that a `kabuki_state` watch,
@@ -90,9 +90,9 @@ See the [plan run contract](e2e-contract.md) and [cleaning results](native-clean
 ## Home Assistant interfaces
 
 [Services](../custom_components/matic_robot/services.py) compose action
-registrations for execution, editing, controls and firmware. Their shared
-[context](../custom_components/matic_robot/service_context.py) resolves targets
-and authorization; [schemas](../custom_components/matic_robot/service_schemas.py)
+registrations for execution, editing, controls and firmware. Every action but the two firmware research ones, which work offline, is a
+platform entity service of the vacuum: core resolves the target and checks control permission, and the shared
+[context](../custom_components/matic_robot/service_context.py) first refuses a target with an unavailable or no loaded robot, then checks administrators; [schemas](../custom_components/matic_robot/service_schemas.py)
 and [plan preparation](../custom_components/matic_robot/service_plans.py)
 validate and prepare requests. Local HTTP views use the shared
 [entry lookup](../custom_components/matic_robot/http.py) and expose bounded,

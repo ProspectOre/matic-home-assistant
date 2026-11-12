@@ -37,6 +37,8 @@ HARNESS = ("tests/__init__.py", "tests/conftest.py", "tests/e2e")
 PLAN = "evening"
 AREA_PLAN = "entry-area"
 ENTRY_ID = "matic-upgrade-drill"
+SCOPE = "matic_floor_scope"
+CATALOG_KEYS = (SCOPE, "matic_floor_catalogs", "matic_unscoped_catalog")
 PHASE_OUTPUT_LIMIT = 4000
 
 
@@ -148,6 +150,7 @@ def plan_state(config: Path) -> dict[str, Any]:
         ],
     }
     return {
+        "floor_catalogs": floor_catalogs(config),
         "minor_version": store["minor_version"],
         "plan": robot["plans"][PLAN],
         "area_plan": robot["plans"][AREA_PLAN],
@@ -180,6 +183,43 @@ def plan_state(config: Path) -> dict[str, Any]:
         },
         "slam_history": history,
     }
+
+
+def floor_catalogs(config: Path) -> dict[str, Any]:
+    """Return the vacuum's entity options and the floor catalog store."""
+    storage = config / ".storage"
+    registry = json.loads((storage / "core.entity_registry").read_text())
+    (vacuum,) = (
+        entity
+        for entity in registry["data"]["entities"]
+        if entity["platform"] == "matic_robot"
+        and entity["entity_id"].startswith("vacuum.")
+    )
+    store = storage / f"matic_robot.floor_catalogs.{ENTRY_ID}"
+    return {
+        "options": vacuum["options"].get("vacuum", {}),
+        "store": json.loads(store.read_text())["data"]["catalog"]
+        if store.exists()
+        else None,
+    }
+
+
+def compare_floor_catalogs(states: dict[str, dict[str, Any]]) -> None:
+    """Raise unless the floor catalogs move to the store and stay for 0.5."""
+    seed = states["seed"]["floor_catalogs"]["options"]
+    if not seed.get("area_mapping") or SCOPE not in seed:
+        raise DrillFailed("seed did not map an Area in a floor catalog")
+    catalog = {key: value for key, value in seed.items() if key in CATALOG_KEYS}
+    left = {key: value for key, value in seed.items() if key != SCOPE}
+    upgraded = states["upgrade"]["floor_catalogs"]
+    if upgraded["store"] != catalog:
+        raise DrillFailed("upgrade did not move the floor catalogs to its store")
+    if upgraded["options"] != left:
+        raise DrillFailed("upgrade changed the floor catalogs left for 0.5")
+    if states["downgrade"]["floor_catalogs"]["options"] != left:
+        raise DrillFailed("downgrade changed the vacuum's entity options")
+    if states["restore"]["floor_catalogs"]["options"] != seed:
+        raise DrillFailed("restored backup lost the floor catalogs")
 
 
 def compare(states: dict[str, dict[str, Any]]) -> None:
@@ -314,6 +354,7 @@ def drill(tag: str, work: Path) -> dict[str, dict[str, Any]]:
         )
     require_area_evidence(states)
     compare(states)
+    compare_floor_catalogs(states)
     return states
 
 

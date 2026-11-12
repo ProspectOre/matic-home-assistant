@@ -26,7 +26,7 @@ from .firmware_reports import valid_investigator
 from .managed_run import (
     _validation_error,
 )
-from .service_context import ServiceRuntime
+from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
     SERVICE_FIRMWARE_SNAPSHOT,
     SERVICE_INSPECT_HERMES_ENDPOINT,
@@ -77,7 +77,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
 
     def firmware_entry(call: ServiceCall) -> ConfigEntry[Any]:
         entity_ids = context._resolve_loaded_matic_vacuums(
-            hass, call, require_available=False
+            hass, call.data, require_available=False
         )
         if len(entity_ids) != 1:
             raise _validation_error(
@@ -86,6 +86,9 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
             )
         return context._entry_for_entity(hass, entity_ids[0])
 
+    # These two change stored research state, not the robot, and must work
+    # while it is unreachable. Core skips an unavailable entity, so they stay
+    # domain actions.
     hass.services.async_register(
         DOMAIN,
         "firmware_investigator",
@@ -119,9 +122,10 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
         ),
     )
 
-    async def async_inspect_endpoint(call: ServiceCall) -> dict[str, Any]:
+    async def async_inspect_endpoint(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Return payload-free fingerprints from the Hermes allowlist."""
-        entity_ids = context._resolve_loaded_matic_vacuums(hass, call)
         if len(entity_ids) != 1:
             raise _validation_error(
                 "Hermes endpoint inspection requires exactly one Matic robot",
@@ -152,17 +156,18 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
             ]
         return response
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_INSPECT_HERMES_ENDPOINT,
-        context._require_matic_control(hass, async_inspect_endpoint),
-        schema=INSPECT_ENDPOINT_SERVICE_SCHEMA,
+        async_inspect_endpoint,
+        INSPECT_ENDPOINT_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
-    async def async_firmware_snapshot(call: ServiceCall) -> dict[str, Any]:
+    async def async_firmware_snapshot(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> dict[str, Any]:
         """Capture and persist one payload-free compatibility snapshot."""
-        entity_ids = context._resolve_loaded_matic_vacuums(hass, call)
         if len(entity_ids) != 1:
             raise _validation_error(
                 "Firmware snapshots require exactly one Matic robot",
@@ -178,10 +183,10 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
         )
         return {**snapshot, "comparison": comparison}
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_FIRMWARE_SNAPSHOT,
-        context._require_matic_control(hass, async_firmware_snapshot),
-        schema=FIRMWARE_SNAPSHOT_SCHEMA,
+        async_firmware_snapshot,
+        FIRMWARE_SNAPSHOT_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
