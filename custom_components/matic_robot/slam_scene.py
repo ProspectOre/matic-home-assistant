@@ -45,7 +45,6 @@ if TYPE_CHECKING:
 
 SCENE_ENCODE_ATTEMPTS = 2
 SCENE_CACHE_REVISIONS = 2
-REVISION_WAIT_SECONDS = 5
 MAX_PAGES_PER_REQUEST = 256
 MANIFEST_CONTENT_TYPE = "application/vnd.matic.slam-manifest"
 
@@ -92,8 +91,8 @@ class _SceneGeneration:
 class MaticSlamSceneView(HomeAssistantView):
     """Serve the scene manifest to an authenticated administrator.
 
-    With ``since``, wait up to five seconds for a newer revision and answer
-    204 if none arrives.
+    Panels learn of a newer revision from the workspace socket's ``scene``
+    invalidation, then read the manifest here.
     """
 
     url = SCENE_API_URL
@@ -163,8 +162,8 @@ class MaticSlamSceneView(HomeAssistantView):
         ):
             # Advertise the scene that a newly opened panel can receive now.
             # A live map revision may advance much faster than its encoder.
-            # The panel's revision wait joins the background build and moves
-            # on from this safe scene without blanking the workspace.
+            # The socket's scene revision then leads the panel to read the
+            # manifest again, which joins the background build.
             return cached.revision
         return self._revision_for_key(entry_id, key)
 
@@ -333,14 +332,6 @@ class MaticSlamSceneView(HomeAssistantView):
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return the current manifest, using an ETag for live refreshes."""
-        since: int | None = None
-        if "since" in request.query:
-            try:
-                since = int(request.query["since"])
-            except ValueError:
-                since = -1
-            if not 0 <= since < 2**64:
-                return _response(HTTPStatus.BAD_REQUEST)
         hass = request.app[KEY_HASS]
         runtime = runtime_for_entry(hass, entry_id)
         if runtime is None:
@@ -350,17 +341,8 @@ class MaticSlamSceneView(HomeAssistantView):
                 hass,
                 entry_id,
                 runtime,
-                allow_stale=since is None
-                and request.headers.get("X-Matic-Prefer-Cached") == "1",
+                allow_stale=request.headers.get("X-Matic-Prefer-Cached") == "1",
             )
-            if (
-                cached is not None
-                and cached.revision == since
-                and await _async_wait_for_change(runtime)
-            ):
-                if runtime_for_entry(hass, entry_id) is not runtime:
-                    return _response(HTTPStatus.NOT_FOUND)
-                cached = await self.async_scene(hass, entry_id, runtime)
         except DecodeError:
             return _response(HTTPStatus.CONFLICT)
         if cached is None:
@@ -370,8 +352,6 @@ class MaticSlamSceneView(HomeAssistantView):
             "X-Matic-Revision": str(cached.revision),
             "X-Matic-Floor-Coherent": "1" if cached.floor_plan_coherent else "0",
         }
-        if cached.revision == since:
-            return _response(HTTPStatus.NO_CONTENT, headers)
         if request.headers.get("If-None-Match") == cached.encoded.etag:
             return _response(HTTPStatus.NOT_MODIFIED, headers)
         return web.Response(
@@ -421,24 +401,6 @@ class MaticSlamScenePagesView(HomeAssistantView):
             content_type="application/octet-stream",
             headers=PRIVATE_NO_STORE_HEADERS,
         )
-
-
-async def _async_wait_for_change(runtime: MaticRuntimeData) -> bool:
-    """Wait for a map or floor-plan change; return False after the wait."""
-    changed = asyncio.Event()
-    remove_listeners = [
-        runtime.slam_map.async_add_listener(changed.set),
-        runtime.session.floor.subscribe(changed.set),
-    ]
-    try:
-        async with asyncio.timeout(REVISION_WAIT_SECONDS):
-            await changed.wait()
-    except TimeoutError:
-        return False
-    finally:
-        for remove_listener in remove_listeners:
-            remove_listener()
-    return True
 
 
 def _response(

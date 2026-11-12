@@ -49,7 +49,7 @@ async function routeMotionSelector(page) {
   }));
 }
 
-test("@safety pose and revision wait failures share one bounded recovery retry", async ({ page }) => {
+test("@safety pose and scene update failures share one bounded recovery retry", async ({ page }) => {
   const anchor = new Date("2026-09-30T12:00:00Z");
   await page.clock.install({ time: anchor });
   await page.clock.pauseAt(anchor);
@@ -63,7 +63,7 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
       "vacuum.synthetic_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b" } },
     },
   });
-  // Robot B's live scene is a manifest, so it is followed by revision waits.
+  // Robot B's live scene is a manifest, so an announced revision updates it.
   const sceneB = liveScene(sceneMetadata({ origin: [10, 10], span: [100, 80] }),
     [{ x: 0, y: 0, id: pageId(1), floor: 1, points: [[11, 11, 0, 90, 90, 90]] }]);
   await page.evaluate((sceneB) => {
@@ -72,12 +72,12 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
     const originalFetch = panel.hass.fetchWithAuth;
     const pendingSceneReleases = [];
     const probe = window.__spatialRecoveryProbe = {
-      followReads: 0,
-      followFailures: 0,
+      updateReads: 0,
+      updateFailures: 0,
       sceneReads: 0,
       sceneAborts: 0,
       sceneHolds: 0,
-      failFollow: false,
+      failUpdate: false,
       pendingSceneCount: () => pendingSceneReleases.length,
       releaseNextScene: () => {
         const release = pendingSceneReleases.shift();
@@ -93,13 +93,16 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
         if (requestPath.endsWith("slam_scene/synthetic-b/pages")) {
           return new Response(decode(Object.values(sceneB.pages)[0]), { headers: { "Content-Type": "application/octet-stream" } });
         }
-        if (requestPath.endsWith("slam_scene/synthetic-b") && path.includes("since=")) {
-          probe.followReads += 1;
-          const fail = probe.failFollow;
-          if (fail) probe.followFailures += 1;
-          return fail
-            ? new Response("unavailable", { status: 503 })
-            : new Response(null, { status: 204, headers: { "X-Matic-Revision": "7" } });
+        if (requestPath.endsWith("slam_scene/synthetic-b") && !new Headers(init?.headers).has("X-Matic-Prefer-Cached")) {
+          probe.updateReads += 1;
+          if (probe.failUpdate) {
+            probe.updateFailures += 1;
+            return new Response("unavailable", { status: 503 });
+          }
+          // Revision 8 is still being encoded.
+          return new Response(decode(sceneB.manifest), {
+            headers: { "Content-Type": "application/vnd.matic.slam-manifest", "X-Matic-Revision": "7" },
+          });
         }
         if (requestPath.endsWith("slam_scene/synthetic-b")) {
           probe.sceneReads += 1;
@@ -130,7 +133,6 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
     const state = element.getWorkspaceSnapshot();
     return state.map.available && state.map.exactPose && state.resources.entry?.entryId === "synthetic-entry-b";
   })).toBe(true);
-  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.followReads)).toBeGreaterThan(0);
   const beforeFault = await page.evaluate(() => window.__panelFixture.catalogReads);
   const baselineFrame = await panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
@@ -139,10 +141,7 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
   const mismatchedPose = () => page.evaluate(() => window.__panelFixture.pushPose([1, 1], { map_session_key: "c".repeat(64) }));
   // The robot keeps reporting, so the pose outlives fast-forwards past its freshness window.
   const robotReports = () => page.evaluate(() => window.__panelFixture.pushPose([1, 1]));
-  await page.evaluate(() => {
-    window.__spatialRecoveryProbe.failFollow = false;
-    window.__spatialRecoveryProbe.sceneHolds = 1;
-  });
+  await page.evaluate(() => { window.__spatialRecoveryProbe.sceneHolds = 1; });
   await mismatchedPose();
   await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.pendingSceneCount())).toBe(1);
   const oneRecoveryCatalog = await page.evaluate(() => window.__panelFixture.catalogReads);
@@ -222,7 +221,7 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
       exactPose: state.map.exactPose,
       readOnly: state.floor.readOnly,
       sceneReads: window.__spatialRecoveryProbe.sceneReads,
-      followFailures: window.__spatialRecoveryProbe.followFailures,
+      updateFailures: window.__spatialRecoveryProbe.updateFailures,
     };
   });
   expect(verifiedReplacement).toMatchObject({
@@ -235,10 +234,10 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
   })).toBe(true);
   await page.evaluate(() => {
     window.__spatialRecoveryProbe.sceneHolds = 1;
-    window.__spatialRecoveryProbe.failFollow = true;
+    window.__spatialRecoveryProbe.failUpdate = true;
+    window.__panelFixture.announceScene(8);
   });
-  await page.clock.fastForward(200);
-  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.followFailures)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.updateFailures)).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__spatialRecoveryProbe.pendingSceneCount())).toBe(1);
   const contentRecovery = await panel.evaluate(async (element) => {
     const { canStartMotion } = await import("/state-selectors-probe.js");
@@ -285,7 +284,7 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
   })).toEqual(contentRecovery);
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
   await page.evaluate(() => {
-    window.__spatialRecoveryProbe.failFollow = false;
+    window.__spatialRecoveryProbe.failUpdate = false;
     window.__spatialRecoveryProbe.releaseNextScene();
   });
   await expect.poll(() => panel.evaluate((element) => {
@@ -303,7 +302,6 @@ test("@safety pose and revision wait failures share one bounded recovery retry",
 
   const beforeHistoryRecovery = await page.evaluate(() => window.__panelFixture.catalogReads);
   await page.evaluate(() => window.__panelFixture.deferNextCatalog());
-  await page.evaluate(() => { window.__spatialRecoveryProbe.failFollow = false; });
   await mismatchedPose();
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingCatalogCount())).toBe(1);
   await panel.evaluate((element) => {

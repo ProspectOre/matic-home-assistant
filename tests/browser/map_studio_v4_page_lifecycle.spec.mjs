@@ -162,22 +162,23 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
 
   const fixture = await installPanelFixture(page, {
     moduleSource: "typescript",
-    followLiveScene: true,
+    liveManifest: true,
     initialCatalogEntries: [liveEntry()],
   });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
     const originalFetch = panel.hass.fetchWithAuth;
-    window.__pageLifecycleProbe = { hold: false, pending: [], followReads: 0 };
+    window.__pageLifecycleProbe = { hold: false, pending: [], updateReads: 0 };
     panel.hass = {
       ...panel.hass,
       fetchWithAuth: async (path, init) => {
         const probe = window.__pageLifecycleProbe;
-        const isFollow = path.includes("slam_scene/synthetic?since=");
-        if (probe.hold && isFollow) {
-          probe.followReads += 1;
+        const isUpdate = path.endsWith("slam_scene/synthetic")
+          && !new Headers(init?.headers).has("X-Matic-Prefer-Cached");
+        if (probe.hold && isUpdate) {
+          probe.updateReads += 1;
           return new Promise((resolve) => {
-            const pending = { path, resolve, aborted: false };
+            const pending = { path, resolve, aborted: false, answer: () => originalFetch(path, init) };
             probe.pending.push(pending);
             init?.signal?.addEventListener("abort", () => { pending.aborted = true; }, { once: true });
           });
@@ -209,12 +210,11 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
     return element.getWorkspaceSnapshot().cameras.top;
   });
   expect(retainedCamera).toBeTruthy();
-  await page.evaluate(() => { window.__pageLifecycleProbe.hold = true; });
-  await page.clock.fastForward(1_000);
-  await expect.poll(() => page.evaluate(() => {
-    const probe = window.__pageLifecycleProbe;
-    return probe.followReads > 0;
-  })).toBe(true);
+  await page.evaluate(() => {
+    window.__pageLifecycleProbe.hold = true;
+    window.__panelFixture.announceScene(8);
+  });
+  await expect.poll(() => page.evaluate(() => window.__pageLifecycleProbe.updateReads)).toBe(1);
 
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().generation)).toBeGreaterThan(generation);
@@ -231,9 +231,9 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
     "document:visibilitychange": 1,
   });
 
-  // A late revision wait or a pose sent while suspended must not re-admit the map or the robot.
+  // A late scene read or a pose sent while suspended must not re-admit the map or the robot.
   await page.evaluate(() => {
-    for (const pending of window.__pageLifecycleProbe.pending) pending.resolve(new Response(null, { status: 204 }));
+    for (const pending of window.__pageLifecycleProbe.pending) pending.resolve(pending.answer());
     window.__panelFixture.pushPose([1, 1]);
   });
   await page.clock.fastForward(0);
@@ -243,12 +243,12 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
 
   const readsWhileSuspended = await page.evaluate(() => ({
     catalog: window.__panelFixture.catalogReads,
-    follow: window.__pageLifecycleProbe.followReads,
+    update: window.__pageLifecycleProbe.updateReads,
   }));
   await page.clock.fastForward(5_000);
   expect(await page.evaluate(() => ({
     catalog: window.__panelFixture.catalogReads,
-    follow: window.__pageLifecycleProbe.followReads,
+    update: window.__pageLifecycleProbe.updateReads,
   }))).toEqual(readsWhileSuspended);
 
   await page.evaluate(() => { window.__pageLifecycleProbe.hold = false; });

@@ -234,7 +234,7 @@ test("@safety a one-page change to a large scene dirties only its blocks", async
   expect(result.hint.dirtyBlocks.length).toBeLessThanOrEqual(4);
 });
 
-test("@safety backend fetches only the pages its scene lacks, 256 to a request, and follows revisions", async ({ page }) => {
+test("@safety backend fetches only the pages its scene lacks, 256 to a request, and reads the newest revision on request", async ({ page }) => {
   await loadModule(page, { backend: true });
   const pages = syntheticPages(300, { floor: 1, surface: 1 });
   const first = liveScene(sceneMetadata({ span: [9_600, 64] }), pages);
@@ -245,16 +245,16 @@ test("@safety backend fetches only the pages its scene lacks, 256 to a request, 
     const serve = eval(`(${fetchSource})`);
     window.__sceneRequests = [];
     window.__liveScene = first;
-    const backend = new MaticBackend(() => ({ fetchWithAuth: (path) => serve(path) }));
+    const backend = new MaticBackend(() => ({ fetchWithAuth: (path, init) => serve(path, init) }));
     const sceneUrl = "/api/matic_robot/slam_scene/synthetic";
     const initial = await backend.scene(sceneUrl, 7, true, "live");
     const initialRequests = [...window.__sceneRequests];
     window.__sceneRequests = [];
-    const unchanged = await backend.scene(sceneUrl, 7, true, "live", undefined, { since: 7, base: initial.scene });
+    const unchanged = await backend.scene(sceneUrl, 7, true, "live", undefined, { latest: true, base: initial.scene });
     window.__liveScene = second;
     window.__liveSceneRevision = 8;
-    const next = await backend.scene(sceneUrl, 7, true, "live", undefined, { since: 7, base: initial.scene });
-    const followRequests = [...window.__sceneRequests];
+    const next = await backend.scene(sceneUrl, 7, true, "live", undefined, { latest: true, base: initial.scene });
+    const updateRequests = [...window.__sceneRequests];
     window.__liveScene = { ...second, pages: {} };
     let gone = null;
     try {
@@ -265,8 +265,8 @@ test("@safety backend fetches only the pages its scene lacks, 256 to a request, 
     backend.dispose();
     return {
       initialRequests: initialRequests.map((path) => path.replace(/ids=([0-9a-f]+,?)+/u, (ids) => `ids:${ids.split(",").length}`)),
-      unchanged: unchanged.notModified,
-      followRequests: followRequests.map((path) => path.replace(/ids=.*/u, (ids) => `ids:${ids.split(",").length}`)),
+      unchanged: unchanged.scene.revision,
+      updateRequests: updateRequests.map((path) => path.replace(/ids=.*/u, (ids) => `ids:${ids.split(",").length}`)),
       revision: next.scene.revision,
       hint: next.scene.deltaHint,
       total: next.scene.total,
@@ -275,14 +275,15 @@ test("@safety backend fetches only the pages its scene lacks, 256 to a request, 
   }, { module: `/${parserModule}`, first, second, fetchSource: LIVE_SCENE_FETCH });
   expect(result).toEqual({
     initialRequests: [
-      "/api/matic_robot/slam_scene/synthetic",
+      "/api/matic_robot/slam_scene/synthetic (cached)",
       "/api/matic_robot/slam_scene/synthetic/pages?ids:256",
       "/api/matic_robot/slam_scene/synthetic/pages?ids:44",
     ],
-    unchanged: true,
-    followRequests: [
-      "/api/matic_robot/slam_scene/synthetic?since=7",
-      "/api/matic_robot/slam_scene/synthetic?since=7",
+    // An unchanged manifest costs its own bytes and no page.
+    unchanged: 7,
+    updateRequests: [
+      "/api/matic_robot/slam_scene/synthetic",
+      "/api/matic_robot/slam_scene/synthetic",
       "/api/matic_robot/slam_scene/synthetic/pages?ids:1",
     ],
     revision: 8,

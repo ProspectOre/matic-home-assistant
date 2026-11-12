@@ -41,19 +41,16 @@ test(`${scenario.name} pushed pose is ordered against the admitted map revision`
     const store = new WorkspaceStore(initial);
     const connection = workspacePoseConnection();
     let admitUpdate;
-    let followRead = 0;
-    // A manifest scene is followed; the first follow read admits the next revision.
+    // A manifest scene is updated when the socket announces its next revision.
     const effects = new EffectController(store, {
       catalog: async () => [entry],
-      scene: async (_url, _revision, _floorCoherent, _source, _signal, follow = {}) => {
-        if (follow.since === undefined) return { revision: startRevision, floorCoherent: true,
+      scene: async (_url, _revision, _floorCoherent, _source, _signal, options = {}) => {
+        if (!options.latest) return { revision: startRevision, floorCoherent: true,
           scene: { ...initial.resources.scene.value, manifest: new ArrayBuffer(1) } };
-        followRead += 1;
-        if (followRead === 1) return new Promise(resolve => {
+        return new Promise(resolve => {
           admitUpdate = () => resolve({ revision: startRevision + 1, floorCoherent: true,
             scene: { ...initial.resources.scene.value, manifest: new ArrayBuffer(1), advanced: true } });
         });
-        return new Promise(() => {});
       },
       history: async () => initial.resources.history.value,
       plans: async () => initial.resources.plans.value,
@@ -66,8 +63,10 @@ test(`${scenario.name} pushed pose is ordered against the admitted map revision`
     try {
       await effects.refreshCatalog(true);
       // The pose subscription opens once the map is drawn.
-      for (let i = 0; i < 200 && (!connection.subscribed() || !admitUpdate); i++) await new Promise(resolve => setTimeout(resolve, 10));
-      if (!connection.subscribed() || !admitUpdate) throw new Error("pose subscription or follow request did not start");
+      for (let i = 0; i < 200 && !connection.subscribed(); i++) await new Promise(resolve => setTimeout(resolve, 10));
+      connection.invalidate({ scene: startRevision + 1 });
+      for (let i = 0; i < 100 && !admitUpdate; i++) await new Promise(resolve => setTimeout(resolve, 0));
+      if (!connection.subscribed() || !admitUpdate) throw new Error("pose subscription or scene update did not start");
       admitUpdate();
       for (let i = 0; i < 100 && store.value.resources.entry.mapRevision !== startRevision + 1; i++) await new Promise(resolve => setTimeout(resolve, 0));
       const admittedGeneration = store.value.generation;

@@ -84,10 +84,11 @@ export const liveScene = (metadata, pages) => ({
  * path in `window.__sceneRequests`, and answers 204 to `since` while
  * `window.__liveSceneRevision` has not passed it.
  */
-export const LIVE_SCENE_FETCH = `async (path) => {
+export const LIVE_SCENE_FETCH = `async (path, init) => {
   const scene = window.__liveScene;
   const decode = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
-  window.__sceneRequests.push(path);
+  const cached = new Headers(init?.headers).has("X-Matic-Prefer-Cached");
+  window.__sceneRequests.push(cached ? path + " (cached)" : path);
   const url = new URL(path, location.origin);
   const revision = window.__liveSceneRevision ?? 7;
   if (url.pathname.endsWith("/pages")) {
@@ -99,10 +100,6 @@ export const LIVE_SCENE_FETCH = `async (path) => {
     return new Response(body, { headers: { "Content-Type": "application/octet-stream" } });
   }
   const headers = { "X-Matic-Revision": String(revision), "X-Matic-Floor-Coherent": "1" };
-  if (url.searchParams.get("since") === String(revision)) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    return new Response(null, { status: 204, headers });
-  }
   return new Response(decode(scene.manifest), {
     headers: { ...headers, "Content-Type": "application/vnd.matic.slam-manifest" },
   });

@@ -1,9 +1,16 @@
 import { entryFloorKey, entryMissionKey, entryCoherenceIdentity, type MapEntry } from "./backend-contracts";
-import type { HassProjection, ResourceStamp, WorkspaceState } from "./contracts";
+import type { HassProjection, ResourceStamp } from "./contracts";
 import { BackendError, type MaticBackend } from "./backend";
 import type { CoherenceMachine, WorkspaceStore } from "./state";
 import type { ResourceRequests } from "./resource-requests";
 import { resource, isAbort, problemCode } from "./shared-primitives";
+
+interface LiveScene {
+  stamp: ResourceStamp;
+  readonly entryId: string;
+  readonly coherenceIdentity: string;
+  readonly sceneUrl: string;
+}
 
 interface SpatialSceneCallbacks {
   readonly disposed: () => boolean;
@@ -27,8 +34,11 @@ export class SpatialScene {
   readonly #requests: ResourceRequests;
   readonly #callbacks: SpatialSceneCallbacks;
   #retryTimer: number | null = null;
-  #followGeneration = 0;
-  #follower: { generation: number; stamp: ResourceStamp; entryId: string; coherenceIdentity: string; sceneUrl: string } | null = null;
+  /** The admitted live manifest that pushed revisions update. */
+  #live: LiveScene | null = null;
+  /** The newest revision the server announced in the current generation. */
+  #target: { readonly generation: number; revision: number } | null = null;
+  #updating: LiveScene | null = null;
 
   constructor(store: WorkspaceStore, backend: Pick<MaticBackend, "scene">, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialSceneCallbacks) {
     this.#store = store;
@@ -40,15 +50,14 @@ export class SpatialScene {
 
   stop(): void {
     this.#clearRetry();
-    this.#followGeneration += 1;
-    this.#follower = null;
+    this.#live = null;
+    this.#requests.cancel("scene-update");
   }
 
   owns(entry: MapEntry): boolean {
-    const owner = this.#follower;
+    const owner = this.#live;
     const stamp = this.#coherence.current();
     return Boolean(owner && stamp
-      && owner.generation === this.#followGeneration
       && owner.stamp.generation === stamp.generation
       && owner.entryId === entry.entryId
       && owner.coherenceIdentity === entryCoherenceIdentity(entry)
@@ -131,14 +140,15 @@ export class SpatialScene {
         void this.#callbacks.loadPlans();
       }
       this.#callbacks.resumeAreaCatalog();
-      // A live manifest is followed revision by revision; a saved-map scene
-      // served in its place (a stale server) is not.
-      if (response.scene.manifest) {
-        const generation = ++this.#followGeneration;
-        void this.#follow(settledEntry, settledStamp, response.scene, generation);
-      } else {
-        this.#callbacks.recovered(settledEntry);
-      }
+      // Pushed revisions update a live manifest; a saved-map scene served in
+      // its place (a stale server) is replaced by the catalog poll instead.
+      this.#live = response.scene.manifest ? {
+        stamp: settledStamp,
+        entryId: settledEntry.entryId,
+        coherenceIdentity: entryCoherenceIdentity(settledEntry),
+        sceneUrl: settledEntry.sceneUrl,
+      } : null;
+      void this.#update(settledEntry, true);
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed() || !this.#coherence.accepts(stamp)) return;
       if (error instanceof BackendError && error.code === "request-timeout") {
@@ -188,104 +198,94 @@ export class SpatialScene {
     }
   }
 
-  /** Waits for each new revision and admits it, fetching only its new pages. */
-  async #follow(
-    initialEntry: MapEntry,
-    initialStamp: ResourceStamp,
-    initialScene: NonNullable<WorkspaceState["resources"]["scene"]["value"]>,
-    generation: number,
-  ): Promise<void> {
-    const sceneUrl = initialEntry.sceneUrl;
-    const owner = {
-      generation,
-      stamp: initialStamp,
-      entryId: initialEntry.entryId,
-      coherenceIdentity: entryCoherenceIdentity(initialEntry),
-      sceneUrl,
-    };
-    if (generation !== this.#followGeneration || !this.#coherence.accepts(initialStamp)) return;
-    this.#follower = owner;
+  /**
+   * Records that the server has `revision` of this entry's scene, from the
+   * workspace socket or the catalog poll, and admits it when it is newer.
+   */
+  update(entry: MapEntry, revision: number): void {
+    const stamp = this.#coherence.current();
+    if (!stamp || stamp.entryKey !== entry.entryId) return;
+    const target = this.#target?.generation === stamp.generation ? this.#target.revision : -1;
+    this.#target = { generation: stamp.generation, revision: Math.max(target, revision) };
+    void this.#update(entry);
+  }
+
+  /**
+   * Reads the newest manifest and the pages the shown scene lacks, one read at
+   * a time. After a load (`settle`), a revision announced meanwhile is read
+   * before the load counts as recovered, so a failing read keeps its backoff.
+   */
+  async #update(initialEntry: MapEntry, settle = false): Promise<void> {
+    const owner = this.#live;
+    if (!owner || this.#updating === owner) {
+      if (settle) this.#callbacks.recovered(initialEntry);
+      return;
+    }
+    this.#updating = owner;
     let entry = initialEntry;
-    let stamp = initialStamp;
-    let scene = initialScene;
+    let settled = !settle;
+    const wanted = (): boolean => this.#live === owner && this.owns(entry)
+      && !this.#callbacks.disposed() && this.#callbacks.pageActive()
+      && this.#target?.generation === owner.stamp.generation && this.#target.revision > owner.stamp.revision;
     try {
-      while (!this.#callbacks.disposed()
-        && this.#callbacks.pageActive()
-        && generation === this.#followGeneration
-        && this.#coherence.accepts(stamp)
-        && this.#store.value.selection.floorId === "current") {
-        const controller = this.#requests.begin("scene-follow");
+      while (wanted()) {
+        const controller = this.#requests.begin("scene-update");
         try {
+          const shown = this.#store.value.resources.scene.value;
           const response = await this.#backend.scene(
-            sceneUrl,
-            scene.revision,
+            owner.sceneUrl,
+            owner.stamp.revision,
             entry.mapFloorCoherent,
             "live",
             controller.signal,
-            { since: scene.revision, base: scene },
+            { latest: true, base: shown?.source === "live" ? shown : null },
           );
-          if (controller.signal.aborted
-            || this.#callbacks.disposed()
-            || generation !== this.#followGeneration
-            || !this.#coherence.accepts(stamp)) return;
+          if (controller.signal.aborted || this.#callbacks.disposed()
+            || this.#live !== owner || !this.#coherence.accepts(owner.stamp)) return;
           if (!response.floorCoherent) {
             const state = this.#store.value;
             this.#store.dispatch({
               type: "result",
               coherence: "verifying",
-              map: {
-                available: state.resources.scene.value !== null,
-                floorCoherent: false,
-                exactPose: false,
-              },
+              map: { available: state.resources.scene.value !== null, floorCoherent: false, exactPose: false },
               floor: { readOnly: state.resources.scene.value !== null },
               resources: {
                 scene: resource("error", state.resources.scene.value, "map-rechecking"),
                 pose: resource("idle", null),
               },
             });
+            settled = true;
             this.#callbacks.failed(entry);
             return;
           }
-          if (response.notModified || !response.scene) {
-            if (response.revision !== scene.revision) throw new BackendError("scene-unavailable");
-            this.#callbacks.recovered(entry);
-            await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
-            continue;
-          }
-          if (response.revision <= scene.revision) throw new BackendError("scene-unavailable");
-          const advanced = this.#coherence.advance(stamp, response.revision);
+          // An older answer means the newer revision is still being encoded;
+          // the next push or catalog poll asks again.
+          if (!response.scene || response.revision <= owner.stamp.revision) return;
+          const advanced = this.#coherence.advance(owner.stamp, response.revision);
           if (!advanced) return;
-          stamp = advanced;
           owner.stamp = advanced;
-          scene = response.scene;
           entry = { ...entry, mapRevision: response.revision };
+          settled = true;
           this.#callbacks.recovered(entry);
           this.#callbacks.admitted(entry);
           this.#store.dispatch({
             type: "result",
-            resources: {
-              entry,
-              scene: resource("ready", scene),
-            },
-            map: {
-              available: true,
-              floorCoherent: true,
-            },
+            resources: { entry, scene: resource("ready", response.scene) },
+            map: { available: true, floorCoherent: true },
           });
           this.#callbacks.admitPose();
         } finally {
-          this.#requests.release("scene-follow", controller);
+          this.#requests.release("scene-update", controller);
         }
       }
     } catch (error) {
-      if (isAbort(error)
-        || this.#callbacks.disposed()
-        || generation !== this.#followGeneration
-        || !this.#coherence.accepts(stamp)) return;
+      if (isAbort(error) || this.#callbacks.disposed()
+        || this.#live !== owner || !this.#coherence.accepts(owner.stamp)) return;
+      settled = true;
       this.#callbacks.failed(entry);
     } finally {
-      if (this.#follower === owner) this.#follower = null;
+      if (this.#updating === owner) this.#updating = null;
+      if (!settled && this.#live === owner) this.#callbacks.recovered(entry);
     }
   }
 }

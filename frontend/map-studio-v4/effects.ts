@@ -201,6 +201,7 @@ export class EffectController {
           this.#loadWorkspaceResources(entry, stamp, resources, refreshCatalogProjection),
         spatialRecoveryBlocks: (entry) => this.#spatialResources.recoveryPending(entry, true),
         receivePose: (entryId, pose) => this.#spatialResources.receivePose(entryId, pose),
+        sceneRevision: (entryId, revision) => this.#spatialResources.sceneRevision(entryId, revision),
       },
     );
     this.#spatialResources = new SpatialResources(store, backend, this.#coherence, this.#requests, {
@@ -237,6 +238,7 @@ export class EffectController {
       projection: () => this.#projection,
       recoveryPending: (entry) => this.#spatialResources.recoveryPending(entry),
       ownsLiveScene: (entry) => this.#spatialResources.ownsLiveScene(entry),
+      sceneRevision: (entryId, revision) => this.#spatialResources.sceneRevision(entryId, revision),
       admitSpatial: (entry, previous, force, preserve, recovering) => {
         if (!this.#store.value.comparisonActive) this.#spatialResources.admitCatalog(entry, previous, force, preserve, recovering);
       },
@@ -531,7 +533,7 @@ export class EffectController {
         // Revoke admission before cancellation: an aborted transport may still
         // settle, but none of its resources belong to the offline workspace.
         this.#store.dispatch({ type: "result", generation: this.#coherence.invalidate() });
-        this.#spatialResources.stopSceneFollow();
+        this.#spatialResources.stopSceneUpdates();
         this.#spatialResources.resetIdentity();
       }
       this.#stopPolling();
@@ -645,7 +647,7 @@ export class EffectController {
     this.#spatialResources.clearRecovery();
     this.#motion.invalidate();
     const generation = this.#coherence.invalidate();
-    this.#spatialResources.stopSceneFollow();
+    this.#spatialResources.stopSceneUpdates();
     this.#spatialResources.resetIdentity();
     this.#abortResources();
     const state = this.#store.value;

@@ -10,7 +10,7 @@ custom_components/matic_robot/slam_map_store.py 1336
 frontend/map-studio-v4/effects.ts 1190
 frontend/map-studio-v4/shell.ts 1738
 frontend/map-studio-v4/state.ts 1322
-tests/browser/map_studio_v4.spec.mjs 10995
+tests/browser/map_studio_v4.spec.mjs 10982
 tests/browser/map_studio_v4_deferred_assets.spec.mjs 1098
 tests/browser/map_studio_v4_gpu_upload.spec.mjs 1701
 tests/browser/map_studio_v4_home_rooms.spec.mjs 2002

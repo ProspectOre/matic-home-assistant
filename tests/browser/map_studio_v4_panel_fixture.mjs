@@ -60,11 +60,11 @@ export async function installPanelFixture(page, {
   initialAreasCatalog = null,
   moduleSource = "typescript",
   onNavigationComplete = null,
-  // True serves the live scene as a manifest, which the panel follows with
-  // revision waits; false serves the saved-map form, which is not followed.
-  followLiveScene = false,
-  // A manifest body served once for the first revision wait (revision 8);
-  // setting it also follows the live scene.
+  // True serves the live scene as a manifest, which the panel updates when the
+  // workspace socket announces a revision; false serves the saved-map form.
+  liveManifest = false,
+  // A manifest body served once as revision 8, which the socket announces
+  // when it opens; setting it also serves the live scene as a manifest.
   sceneUpdate = null,
   posePosition = [1, 1],
   scenePoint = null,
@@ -211,9 +211,9 @@ export async function installPanelFixture(page, {
     let areaCatalog = structuredClone(areas);
     const areaRequests = [];
     let planReads = 0;
-    let followReads = 0;
-    let followUpdates = 0;
-    let followNoChange = 0;
+    let latestReads = 0;
+    let sceneUpdates = 0;
+    let latestUnchanged = 0;
     const planCatalog = structuredClone(plans || { rooms: [], plans: [], selected_plan: null });
     const applySavedPlan = (data) => {
       let plan = data.plan_id && planCatalog.plans.find((candidate) => candidate.id === data.plan_id);
@@ -331,20 +331,22 @@ export async function installPanelFixture(page, {
         }))));
       }
       const decode = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
-      if (followed && path.endsWith("slam_scene/synthetic?since=7")) {
-        followReads += 1;
-        if (!sceneUpdate || followReads > 1) {
-          followNoChange += 1;
-          return new Response(null, { status: 204, headers: { "X-Matic-Revision": "7" } });
+      // A read for the newest scene (no X-Matic-Prefer-Cached) gets the update
+      // once; after that the server is still encoding it and answers revision 7.
+      const latest = !new Headers(options.headers).has("X-Matic-Prefer-Cached");
+      if (followed && latest && path.endsWith("slam_scene/synthetic")) {
+        latestReads += 1;
+        if (sceneUpdate && sceneUpdates === 0) {
+          sceneUpdates += 1;
+          return new Response(new Uint8Array(sceneUpdate), {
+            headers: {
+              "Content-Type": "application/vnd.matic.slam-manifest",
+              "X-Matic-Revision": "8",
+              "X-Matic-Floor-Coherent": "1",
+            },
+          });
         }
-        followUpdates += 1;
-        return new Response(new Uint8Array(sceneUpdate), {
-          headers: {
-            "Content-Type": "application/vnd.matic.slam-manifest",
-            "X-Matic-Revision": "8",
-            "X-Matic-Floor-Coherent": "1",
-          },
-        });
+        latestUnchanged += 1;
       }
       if (followed && path.startsWith("/api/matic_robot/slam_scene/synthetic/pages?ids=")) {
         return new Response(decode(Object.values(liveManifest.pages)[0]), { headers: { "Content-Type": "application/octet-stream" } });
@@ -370,6 +372,17 @@ export async function installPanelFixture(page, {
     const userStore = userData && structuredClone(userData);
     const userDataCalls = [];
     const poseSubscribers = new Set();
+    const invalidationSubscribers = new Set();
+    let workspaceSequence = 0;
+    let announcedScene = null;
+    // The scene invalidation the server sends when the map changes.
+    const announceScene = (revision) => {
+      workspaceSequence += 1;
+      announcedScene = revision;
+      const invalidation = { epoch: "synthetic-workspace-epoch", sequence: workspaceSequence,
+        coherence_generation: 1, revisions: { workspace: workspaceSequence, scene: revision }, resources: ["scene"] };
+      for (const send of invalidationSubscribers) send({ type: "invalidate", invalidation });
+    };
     const wirePose = (entryId, position) => ({
       position, heading: null, source: position ? "exact_pose" : "current_area",
       scene_revision: 7, scene_epoch: null, map_floor_coherent: true,
@@ -413,9 +426,9 @@ export async function installPanelFixture(page, {
             schema: 1,
             capabilities: { snapshot: 1 },
             epoch: "synthetic-workspace-epoch",
-            sequence: 0,
+            sequence: workspaceSequence,
             coherence_generation: 1,
-            revisions: {},
+            revisions: announcedScene === null ? {} : { workspace: workspaceSequence, scene: announcedScene },
             entry_id: message.entry_id,
             identity: { entry_id: message.entry_id, floor_mission_id: 1, floor_verified: true },
             status: { state: "ready", reason: null, retryable: false },
@@ -437,8 +450,15 @@ export async function installPanelFixture(page, {
         const subscriber = (position, fields = {}) =>
           callback({ type: "pose", pose: { ...wirePose(message.entry_id, position), ...fields } });
         poseSubscribers.add(subscriber);
-        queueMicrotask(() => subscriber(posePosition));
-        return () => poseSubscribers.delete(subscriber);
+        invalidationSubscribers.add(callback);
+        queueMicrotask(() => {
+          subscriber(posePosition);
+          if (sceneUpdate && announcedScene === null) announceScene(8);
+        });
+        return () => {
+          poseSubscribers.delete(subscriber);
+          invalidationSubscribers.delete(callback);
+        };
       },
     } : null;
     const makePanel = () => {
@@ -565,6 +585,7 @@ export async function installPanelFixture(page, {
       workspaceCalls,
       // Push the robot's position, and any other wire fields, to every open workspace subscription.
       pushPose: (position, fields = {}) => { for (const subscriber of poseSubscribers) subscriber(position, fields); },
+      announceScene,
       userDataCalls,
       // Reject the next frontend user data message of `type` once.
       failNextUserData: (type) => { userDataFailures.push(type); },
@@ -576,7 +597,7 @@ export async function installPanelFixture(page, {
         activePopstateListeners: window.__panelFixturePopstateCount(),
         pendingHistoryScenes: pendingHistoryScenes.length,
         planReads,
-        ...(followed ? { followReads, followUpdates, followNoChange } : {}),
+        ...(followed ? { latestReads, sceneUpdates, latestUnchanged } : {}),
         serviceCalls: serviceCalls.length,
       }),
     };
@@ -586,7 +607,7 @@ export async function installPanelFixture(page, {
     liveManifest: sceneManifest(scenePoint, sceneRooms),
     plans: initialPlanCatalog,
     areas: initialAreasCatalog,
-    followed: followLiveScene || sceneUpdate !== null,
+    followed: liveManifest || sceneUpdate !== null,
     sceneUpdate,
     posePosition,
     initialCatalogEntries,

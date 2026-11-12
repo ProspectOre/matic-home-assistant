@@ -216,9 +216,9 @@ test("packaged panel contains a malformed scene update and returns to a coherent
   await expect.poll(() => page.evaluate(() =>
     window.__updateFaultPanel.getWorkspaceSnapshot().resources.scene.status,
   )).toBe("ready");
-  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().followReads)).toBeGreaterThan(0);
-  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().followUpdates)).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().followNoChange)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().latestReads)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().sceneUpdates)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.stats().latestUnchanged)).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => {
     const state = window.__updateFaultPanel.getWorkspaceSnapshot();
     return state.resources.catalog.status === "ready"

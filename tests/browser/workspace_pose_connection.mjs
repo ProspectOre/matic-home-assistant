@@ -1,9 +1,11 @@
-// Home Assistant's websocket as the workspace transport uses it: a ready
-// snapshot, and the robot's pose pushed to each subscription that asks for it.
-// Harnesses bundle this module into the page.
+// Home Assistant's websocket as the workspace transport uses it: a snapshot
+// with `revisions`, invalidations, and the robot's pose pushed to each
+// subscription that asks for it. Harnesses bundle this module into the page.
 export function workspacePoseConnection() {
   const subscribers = new Set();
-  return {
+  let sequence = 0;
+  const connection = {
+    revisions: {},
     subscribed: () => subscribers.size > 0,
     push(pose) {
       const wire = {
@@ -12,17 +14,26 @@ export function workspacePoseConnection() {
       };
       for (const callback of subscribers) callback({ type: "pose", pose: wire });
     },
+    /** Sends the invalidation the server sends when `revisions` move on. */
+    invalidate(revisions) {
+      sequence += 1;
+      connection.revisions = { ...connection.revisions, ...revisions };
+      const invalidation = { epoch: "epoch", sequence, coherence_generation: 1,
+        revisions: { workspace: sequence, ...connection.revisions }, resources: Object.keys(revisions) };
+      for (const callback of subscribers) callback({ type: "invalidate", invalidation });
+    },
     subscribeMessage: async (callback, message) => {
       if (!message.poses) return () => {};
       subscribers.add(callback);
       return () => subscribers.delete(callback);
     },
     sendMessagePromise: async (message) => ({
-      schema: 1, capabilities: { snapshot: 1 }, epoch: "epoch", sequence: 0, coherence_generation: 1,
-      revisions: {}, entry_id: message.entry_id,
+      schema: 1, capabilities: { snapshot: 1 }, epoch: "epoch", sequence, coherence_generation: 1,
+      revisions: { workspace: sequence, ...connection.revisions }, entry_id: message.entry_id,
       identity: { entry_id: message.entry_id, floor_mission_id: 1, floor_verified: true },
       status: { state: "ready", reason: null, retryable: false },
       payload: { available: true, entry: null },
     }),
   };
+  return connection;
 }

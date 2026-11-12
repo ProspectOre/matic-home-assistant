@@ -296,9 +296,8 @@ export class MaticBackend {
   }
 
   /**
-   * Reads a saved scene, or a live manifest and the pages `base` lacks. With
-   * `since`, the server holds the request until the revision moves on and
-   * answers 204 when it does not.
+   * Reads a saved scene, or a live manifest and the pages `base` lacks. A live
+   * read takes the last encoded scene unless `latest` asks for the newest.
    */
   async scene(
     path: string,
@@ -306,17 +305,16 @@ export class MaticBackend {
     expectedFloorCoherent: boolean,
     source: "live" | "history",
     signal?: AbortSignal,
-    follow: { readonly since?: number; readonly base?: SceneModel | null } = {},
+    options: { readonly latest?: boolean; readonly base?: SceneModel | null } = {},
   ): Promise<SceneResponse> {
     const parser = this.#sceneParser();
     void parser.catch(() => {});
     const headers = new Headers({ Accept: "application/vnd.matic.slam-manifest, application/vnd.matic.slam-scene" });
-    if (source === "live" && follow.since === undefined) headers.set("X-Matic-Prefer-Cached", "1");
-    const query = follow.since === undefined ? "" : `?since=${encodeURIComponent(follow.since)}`;
-    return this.#request("scene", `${path}${query}`, { headers }, REQUEST_TIMEOUTS.scene, signal, async (response, operationSignal) => {
+    if (source === "live" && !options.latest) headers.set("X-Matic-Prefer-Cached", "1");
+    return this.#request("scene", path, { headers }, REQUEST_TIMEOUTS.scene, signal, async (response, operationSignal) => {
       const revision = responseRevision(response, expectedRevision);
       const floorCoherent = floorHeader(response, expectedFloorCoherent);
-      if (response.status === 204 || response.status === 304) {
+      if (response.status === 304) {
         return { scene: null, floorCoherent, revision, notModified: true };
       }
       if (!response.ok) throw new BackendError("scene-request-failed", response.status);
@@ -324,7 +322,7 @@ export class MaticBackend {
       const etag = response.headers.get("ETag");
       if (contentType === "application/vnd.matic.slam-manifest") {
         const manifest = await this.#readBody(response, operationSignal, MANIFEST_MAX_BYTES, "invalid-scene-manifest");
-        const base = follow.base?.manifest ? follow.base : null;
+        const base = options.base?.manifest ? options.base : null;
         const batches = await this.#scenePages(path, manifest, base, operationSignal);
         const { parsed, deltaHint } = await (await parser).assemble(manifest, batches, base, operationSignal);
         return {
