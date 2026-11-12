@@ -1555,6 +1555,31 @@
       }
     },
     "event": {
+      "cleaning_run": {
+        "name": "Cleaning run",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "plan_started": "Plan started",
+              "room_held": "Room held",
+              "room_started": "Room started",
+              "room_completed": "Room finished",
+              "room_skipped": "Room skipped",
+              "room_failed": "Room failed",
+              "room_cancelled": "Room cancelled",
+              "room_interrupted": "Room stopped early",
+              "room_ended_unverified": "Room ended unconfirmed",
+              "room_reconciled": "Room confirmed late",
+              "area_started": "Plan area started",
+              "area_finished": "Plan area finished",
+              "area_failed": "Plan area failed",
+              "plan_finished": "Plan finished",
+              "plan_docked": "Plan docked",
+              "cleaning_finished": "Cleaning finished"
+            }
+          }
+        }
+      },
       "cues": {
         "name": "Cues",
         "state_attributes": {
@@ -2391,8 +2416,21 @@
   },
   "device_automation": {
     "trigger_type": {
+      "plan_started": "Plan started",
+      "room_held": "Room held",
+      "room_started": "Room started",
       "room_completed": "Room finished",
+      "room_skipped": "Room skipped",
+      "room_failed": "Room failed",
+      "room_cancelled": "Room cancelled",
+      "room_interrupted": "Room stopped early",
+      "room_ended_unverified": "Room ended unconfirmed",
+      "room_reconciled": "Room confirmed late",
+      "area_started": "Plan area started",
+      "area_finished": "Plan area finished",
+      "area_failed": "Plan area failed",
       "plan_finished": "Plan finished",
+      "plan_docked": "Plan docked",
       "cleaning_finished": "Cleaning finished"
     }
   }

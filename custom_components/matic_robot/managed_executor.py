@@ -24,7 +24,7 @@ from . import managed_observation as observation
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
 from .client.models import RobotActivity
-from .const import DOMAIN, EVENT_PLAN_FINISHED
+from .const import DOMAIN, EVENT_PLAN_FINISHED, EVENT_PLAN_STARTED
 from .managed_run import (
     PlanCancelledError,
     RoomInterruptedError,
@@ -161,6 +161,18 @@ async def _async_execute_rooms_reserved(
         )
         robot.set_activity_run_id(run_id)
 
+        def started() -> dict[str, Any]:
+            """Name the run as it began, for plan_started and plan_finished."""
+            return {
+                "plan_id": call.data["plan_id"],
+                "run_id": run_id,
+                "trigger": run_provenance,
+                "provenance": run_provenance,
+                "service": str(call.service),
+                "started_at": run_started_at,
+                "room_count": len(chosen),
+            }
+
         def record_room_completion(room: CleaningRoom) -> None:
             # Its write is empty: the next leg's position saves the room.
             nonlocal run
@@ -249,6 +261,11 @@ async def _async_execute_rooms_reserved(
                     finish_current_room=finish_current_room,
                     finish_current_room_threshold=finish_current_room_threshold,
                     held_rooms=held_rooms,
+                )
+                hass.bus.async_fire(
+                    EVENT_PLAN_STARTED,
+                    {ATTR_ENTITY_ID: entity_id, **started()},
+                    context=call.context,
                 )
                 for held in held_rooms:
                     hass.bus.async_fire(
@@ -735,15 +752,7 @@ async def _async_execute_rooms_reserved(
                         manager,
                         serial_number,
                         entity_id,
-                        {
-                            "plan_id": call.data["plan_id"],
-                            "run_id": run_id,
-                            "trigger": run_provenance,
-                            "provenance": run_provenance,
-                            "service": str(call.service),
-                            "started_at": run_started_at,
-                            "room_count": len(chosen),
-                        },
+                        started(),
                         run_outcome,
                         run_reason_code,
                         run_cause,

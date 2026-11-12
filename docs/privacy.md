@@ -23,7 +23,9 @@ analytics, or maintainer cloud service.
 Room lists, Wi-Fi SSID, schedules, detailed session results, and plan history are
 live template attributes but are excluded from Recorder. Opt-in room statistics
 record room names and durations. The cleaning-finished event includes room
-results, so automations or event recording can retain them.
+results, so automations or event recording can retain them. The Cleaning run
+event entity records each run event's fields, including room and area names,
+but not Cleaning finished's room lists and durations.
 
 Bluetooth passkeys are used for one pairing attempt and are never stored.
 Custom-area coordinates are omitted from entity state, action data, events,
