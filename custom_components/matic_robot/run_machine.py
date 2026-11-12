@@ -226,9 +226,11 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
                 run, completed_room_ids=run.completed_room_ids | {room_id}
             ), CheckpointWrite({}, save=False)
         case RoomSettled(room_id):
-            return replace(
-                run, settled_room_ids=run.settled_room_ids | {room_id}
-            ), CheckpointWrite({}, save=False)
+            # Saved at once: the last leg has no next position to carry it.
+            settled = replace(run, settled_room_ids=run.settled_room_ids | {room_id})
+            return settled, CheckpointWrite(
+                {"settled_room_ids": sorted(settled.settled_room_ids)}
+            )
         case AreaFinished(leg_index, last_leg):
             finished = run.finished_area_legs | {leg_index}
             # No handoff save follows the last leg, so it saves now; a

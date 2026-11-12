@@ -275,7 +275,8 @@ def test_a_settled_room_is_saved_with_the_next_position() -> None:
     """A room without credit counts toward the run's end, not its credit."""
     run, write = transition(Run(), RoomSettled("kitchen"))
     assert run == Run(settled_room_ids=frozenset({"kitchen"}))
-    assert write == CheckpointWrite({}, save=False)
+    # Saved at once, so a restart before the next leg still knows it.
+    assert write == CheckpointWrite({"settled_room_ids": ["kitchen"]})
     assert run.position()["settled_room_ids"] == ["kitchen"]
     assert "settled_room_ids" not in Run().position()
     assert not run.all_settled({"kitchen", "office"}, ())

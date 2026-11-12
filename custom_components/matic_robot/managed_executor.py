@@ -52,7 +52,6 @@ from .run_machine import (
     HandoffEntered,
     LegDispatching,
     LegVerified,
-    RoomSettled,
     RoomVerified,
     Run,
     RunEvent,
@@ -166,10 +165,6 @@ async def _async_execute_rooms_reserved(
             # Its write is empty: the next leg's position saves the room.
             nonlocal run
             run, _ = transition(run, RoomVerified(room.room_id))
-
-        def record_room_settled(room: CleaningRoom) -> None:
-            nonlocal run
-            run, _ = transition(run, RoomSettled(room.room_id))
 
         try:
             # Publish ownership before the first suspending check. Otherwise
@@ -465,7 +460,6 @@ async def _async_execute_rooms_reserved(
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         record_room_completed=record_room_completion,
-                        record_room_settled=record_room_settled,
                         checkpoint_dispatch=save_dispatch,
                         advance=advance,
                         provenance=run_provenance,
