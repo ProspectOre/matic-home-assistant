@@ -38,6 +38,15 @@ area chosen in **Custom cleaning area**, so enable both. **Next room to clean**
 names the first room or custom area of the default plan's next run; its
 `preview` attribute holds the whole preview.
 
+## Cleaning run
+
+**Cleaning run** is an event entity that records each run event: a plan
+starting, each room and custom area starting and ending, the plan ending, and
+the robot's own Cleaning finished. Its event type names the event and its
+attributes hold the event's fields. See
+[run events](automation-events.md#run-events-in-automations-the-logbook-and-the-dashboard)
+to trigger on it.
+
 ## Maps
 
 `camera.matic_map` provides a labeled room map for dashboards. The photographic

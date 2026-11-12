@@ -1,4 +1,4 @@
-"""Device triggers for Matic robot room, plan and cleaning events."""
+"""Device triggers for the Matic robot run lifecycle events."""
 
 from __future__ import annotations
 
@@ -25,18 +25,11 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
+from .const import CLEANING_FINISHED, DOMAIN, RUN_EVENT_TYPES
 
-ROOM_COMPLETED = "room_completed"
-PLAN_FINISHED = "plan_finished"
-CLEANING_FINISHED = "cleaning_finished"
-# Room and plan events name the robot's vacuum entity; the robot's own
-# cleaning-run event names its device.
-ENTITY_TRIGGER_TYPES = (ROOM_COMPLETED, PLAN_FINISHED)
-TRIGGER_TYPES = (*ENTITY_TRIGGER_TYPES, CLEANING_FINISHED)
-
+# Each run event is a trigger of the same type.
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
-    {probatio.Required(CONF_TYPE): probatio.In(TRIGGER_TYPES)}
+    {probatio.Required(CONF_TYPE): probatio.In(RUN_EVENT_TYPES)}
 )
 
 
@@ -57,7 +50,7 @@ async def async_get_triggers(
 ) -> list[dict[str, Any]]:
     """List the triggers a Matic robot device offers."""
     types = (
-        TRIGGER_TYPES
+        RUN_EVENT_TYPES
         if _vacuum_entity_id(hass, device_id) is not None
         else (CLEANING_FINISHED,)
     )
@@ -81,7 +74,7 @@ async def async_attach_trigger(
     """Listen for the robot event that matches one device trigger."""
     trigger_type = config[CONF_TYPE]
     device_id = config[CONF_DEVICE_ID]
-    if trigger_type in ENTITY_TRIGGER_TYPES:
+    if trigger_type != CLEANING_FINISHED:
         entity_id = _vacuum_entity_id(hass, device_id)
         if entity_id is None:
             raise InvalidDeviceAutomationConfig(

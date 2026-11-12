@@ -114,6 +114,21 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
   **Matic: Photograph room on alert** blueprint uses the same privacy, battery,
   schedule and cooldown checks. See [Photo patrol](photo-patrol.md).
 
+## Automations
+
+- **Cleaning run.** The new event entity `event.matic_cleaning_run` records
+  each run event, from a plan starting to the robot's own Cleaning finished,
+  with the event's fields as attributes. Trigger on it with Home Assistant's
+  event entity trigger. See [run events](automation-events.md#run-events-in-automations-the-logbook-and-the-dashboard).
+- **Plan started.** A run now fires `matic_robot_plan_started` when it begins,
+  with the fields that name the run in Plan finished.
+- **Device triggers for every run event.** Plan started, each room and custom
+  area event, Plan docked and the rest join Room finished, Plan finished and
+  Cleaning finished, which keep their names.
+- **Logbook.** Run events show in the logbook against the robot, for example
+  "Matic finished cleaning Kitchen".
+- Every existing event keeps its name and fields.
+
 ## Working with the Matic app
 
 - **Room statistics.** Completed room results reported by the robot can update sensors
