@@ -22,6 +22,9 @@ git fetch origin tag v0.5.0
 The drill also saves and executes a separate custom-area plan. It checks area identity,
 geometry and binding, saved plans and completion history across phases, plus the map-history
 migration, refusal and restored backup. No run starts during the refused downgrade phase.
+The seed maps a Home Assistant Area to a room, and the drill checks that the upgrade moves
+the floor catalogs into `matic_robot.floor_catalogs.<entry>` while leaving 0.5's copy, less
+its floor scope, in the vacuum's entity options, and that the restored backup still has them.
 
 ## What 0.5.0 to 0.6 does
 

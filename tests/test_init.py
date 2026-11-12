@@ -1094,9 +1094,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())
     plans = SimpleNamespace(async_remove_robot=AsyncMock())
     scene_view = SimpleNamespace(clear_entry=MagicMock())
-    from custom_components.matic_robot.frontend import (
-        DATA_SLAM_SCENE_VIEW,
-    )
+    from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 
     hass = SimpleNamespace(
         data={
@@ -1121,8 +1119,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True) as run_trails,
         patch(
-            "custom_components.matic_robot.SlamHistoryStore",
-            return_value=slam_history,
+            "custom_components.matic_robot.SlamHistoryStore", return_value=slam_history
         ),
         patch(
             "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
@@ -1133,6 +1130,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_robot_alert_issues"
         ) as delete_alert_issues,
+        patch("custom_components.matic_robot.async_remove_floor_catalogs") as catalogs,
     ):
         await async_remove_entry(hass, entry)
 
@@ -1148,6 +1146,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     run_trails.return_value.async_remove.assert_awaited_once_with()
     delete_area_issue.assert_called_once_with(hass, "entry")
     delete_alert_issues.assert_called_once_with(hass, "entry")
+    catalogs.assert_awaited_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
     bare_plans = SimpleNamespace(async_remove_robot=AsyncMock())
@@ -1159,8 +1158,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True) as run_trails,
         patch(
-            "custom_components.matic_robot.SlamHistoryStore",
-            return_value=slam_history,
+            "custom_components.matic_robot.SlamHistoryStore", return_value=slam_history
         ),
         patch(
             "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
@@ -1169,6 +1167,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_bare_area_issue,
         patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
+        patch("custom_components.matic_robot.async_remove_floor_catalogs"),
     ):
         await async_remove_entry(bare, entry)
 

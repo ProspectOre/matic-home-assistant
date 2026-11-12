@@ -5,8 +5,11 @@
 Run saved plans, preview room order, clean custom areas and manage room
 settings from Home Assistant automations or Developer tools > Actions.
 
-All actions use the `matic_robot` domain and target the robot's vacuum entity.
-Room and plan fields accept a name or an ID. Names match regardless of case, an
+All actions use the `matic_robot` domain and target the robot's vacuum entity:
+name the vacuum, its device, or an area, floor or label that holds it. If a
+Matic robot in the target is unavailable, the action fails and sends nothing to
+any robot. A user who isn't an administrator needs control of every entity the
+target names. Room and plan fields accept a name or an ID. Names match regardless of case, an
 ID wins over a name, and a name that matches more than one room is refused.
 ID fields (`preview_token`, `expected_run_id`, `plan_id`, `revision`), timeouts
 and `stop_now` are hidden until you turn on **Advanced mode** in your Home

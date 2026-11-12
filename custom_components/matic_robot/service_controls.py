@@ -17,9 +17,6 @@ from homeassistant.util.json import JsonValueType
 from . import service_context as context
 from .client.commands import QueueAction
 from .client.exceptions import MaticError
-from .const import (
-    DOMAIN,
-)
 from .managed_dispatch import _ensure_stop_settled
 from .managed_run import (
     _validation_error,
@@ -27,7 +24,7 @@ from .managed_run import (
 from .photo_patrol import async_photo_patrol
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .room_coherence import current_floor_plan as _current_floor_plan
-from .service_context import ServiceRuntime
+from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
     SERVICE_CLEAN,
     SERVICE_CLEAN_AREA,
@@ -54,9 +51,8 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
     hass = runtime.hass
     manager = runtime.manager
 
-    async def async_clean(call: ServiceCall) -> None:
+    async def async_clean(call: ServiceCall, entity_ids: list[str]) -> None:
         """Route the complete verified cleaning matrix to selected vacuums."""
-        entity_ids = context._resolve_loaded_matic_vacuums(hass, call)
         if callable(getattr(manager.control, "stop_pending", None)):
             for entity_id in entity_ids:
                 entry = context._entry_for_entity(hass, entity_id)
@@ -78,32 +74,26 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
             ),
         )
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEAN,
-        context._require_matic_control(hass, async_clean),
-        schema=CLEAN_SERVICE_SCHEMA,
-    )
+    register_robot_action(hass, SERVICE_CLEAN, async_clean, CLEAN_SERVICE_SCHEMA)
 
-    async def async_go_to_room(call: ServiceCall) -> None:
+    async def async_go_to_room(call: ServiceCall, entity_ids: list[str]) -> None:
         """Send selected vacuums to one room without cleaning it."""
         await _async_each_robot(
             hass,
-            context._resolve_loaded_matic_vacuums(hass, call),
+            entity_ids,
             lambda robot: robot.async_go_to_room(call.data["room"]),
         )
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GO_TO_ROOM,
-        context._require_matic_control(hass, async_go_to_room),
-        schema=GO_TO_ROOM_SERVICE_SCHEMA,
+    register_robot_action(
+        hass, SERVICE_GO_TO_ROOM, async_go_to_room, GO_TO_ROOM_SERVICE_SCHEMA
     )
 
-    async def async_photo_patrol_call(call: ServiceCall) -> ServiceResponse:
+    async def async_photo_patrol_call(
+        call: ServiceCall, entity_ids: list[str]
+    ) -> ServiceResponse:
         """Photograph each room in turn with every selected robot."""
         robots: list[JsonValueType] = []
-        for entity_id in context._resolve_loaded_matic_vacuums(hass, call):
+        for entity_id in entity_ids:
             photos = await async_photo_patrol(
                 hass,
                 context._entry_for_entity(hass, entity_id),
@@ -119,18 +109,18 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
             )
         return {"robots": robots}
 
-    hass.services.async_register(
-        DOMAIN,
+    register_robot_action(
+        hass,
         SERVICE_PHOTO_PATROL,
-        context._require_matic_control(hass, async_photo_patrol_call),
-        schema=PHOTO_PATROL_SERVICE_SCHEMA,
+        async_photo_patrol_call,
+        PHOTO_PATROL_SERVICE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
     def queue_handler(
         command: str,
-    ) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
-        async def async_change_queue(call: ServiceCall) -> None:
+    ) -> Callable[[ServiceCall, list[str]], Coroutine[Any, Any, None]]:
+        async def async_change_queue(call: ServiceCall, entity_ids: list[str]) -> None:
             """Change one room's place in the clean that is running."""
             action = QUEUE_COMMANDS[command]
             params = {"room": call.data["room"]}
@@ -141,7 +131,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
             options = queue_options(params) if action is QueueAction.CLEAN_AGAIN else {}
             await _async_each_robot(
                 hass,
-                context._resolve_loaded_matic_vacuums(hass, call),
+                entity_ids,
                 lambda robot: robot.async_change_queue(
                     action, call.data["room"], **options
                 ),
@@ -154,17 +144,12 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
         (SERVICE_CLEAN_ROOM_NEXT, GO_TO_ROOM_SERVICE_SCHEMA),
         (SERVICE_CLEAN_ROOM_AGAIN, CLEAN_ROOM_AGAIN_SERVICE_SCHEMA),
     ):
-        hass.services.async_register(
-            DOMAIN,
-            service,
-            context._require_matic_control(hass, queue_handler(service)),
-            schema=schema,
-        )
+        register_robot_action(hass, service, queue_handler(service), schema)
 
-    async def async_clean_area(call: ServiceCall) -> None:
+    async def async_clean_area(call: ServiceCall, entity_ids: list[str]) -> None:
         """Clean one private saved area without putting coordinates in the call."""
         entity_id, entry, serial_number, _room_map = context._saved_plan_context(
-            hass, call, require_current_floor=True
+            hass, entity_ids, require_current_floor=True
         )
         request_generation = manager.control.motion_generation(serial_number)
         request_stop_generation = manager.control.stop_request_generation(serial_number)
@@ -268,11 +253,8 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                 ) from err
         await entry.runtime_data.session.heartbeat.async_request_refresh()
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEAN_AREA,
-        context._require_matic_control(hass, async_clean_area),
-        schema=CLEAN_AREA_SERVICE_SCHEMA,
+    register_robot_action(
+        hass, SERVICE_CLEAN_AREA, async_clean_area, CLEAN_AREA_SERVICE_SCHEMA
     )
 
 
