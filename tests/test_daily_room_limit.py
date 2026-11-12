@@ -1220,9 +1220,7 @@ async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
     client.async_redo_clean.assert_not_awaited()
 
 
-async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_write(
-    hass, monkeypatch
-):
+async def test_daily_policy_set_during_stop_wait_blocks_the_write(hass, monkeypatch):
     entry = _entry()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -1230,7 +1228,6 @@ async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_writ
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     identity = room_cadence_identity(floor, room.id)
-    vacuum = MaticVacuum(entry)
     applied = False
     writes = []
 
@@ -1255,7 +1252,7 @@ async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_writ
         side_effect=start_coverage
     )
     with pytest.raises(ServiceValidationError) as raised:
-        await vacuum.async_send_command("clean_rooms", {"rooms": [room.id]})
+        await MaticVacuum(entry).async_send_command("clean_rooms", {"rooms": [room.id]})
     assert raised.value.translation_key == "daily_room_limit_requires_managed"
     assert writes == []
 

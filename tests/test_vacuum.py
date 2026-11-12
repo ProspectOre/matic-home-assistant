@@ -709,7 +709,6 @@ async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None
         await stop
         await close
         assert manager.control.stop_pending("synthetic-serial")
-        assert manager.control.command_admission_open("synthetic-serial") is False
         with pytest.raises(HomeAssistantError, match="unavailable during unload"):
             await entity._async_command(UserCommand.PAUSE)
         assert [
@@ -945,16 +944,14 @@ async def test_stop_cancels_undispatched_direct_motion(
     release = asyncio.Event()
     checks = 0
 
-    async def delayed_check(_serial: str) -> None:
+    async def delayed(_serial: str) -> None:
         nonlocal checks
         checks += 1
         if checks == waiting_check:
             entered.set()
             await release.wait()
 
-    with patch.object(
-        RobotCommands, "async_ensure_stop_settled", side_effect=delayed_check
-    ):
+    with patch.object(RobotCommands, "async_ensure_stop_settled", side_effect=delayed):
         task = asyncio.create_task(
             entity.async_send_command(command, {"room": "Kitchen"})
         )

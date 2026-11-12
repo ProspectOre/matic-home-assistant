@@ -15,10 +15,12 @@ from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import _PreparedRoomDispatch
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.session_fakes import FakeRobot
 
 
 async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monkeypatch):
     """A pending native-identity wait must unwind as a handled room timeout."""
+    robot = FakeRobot()
     from custom_components.matic_robot import managed_room
 
     room = CleaningRoom("room-office", "Office", "vacuum", "standard")
@@ -38,7 +40,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     }
     motion_token = manager.control.begin_managed_motion("serial")
 
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": room.name})
+    robot.show("cleaning", current_area=room.name)
     await hass.async_block_till_done()
 
     room_waiter_started = asyncio.Event()
@@ -133,10 +135,12 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
                 "vacuum.matic",
                 "serial",
                 room,
-                refresh=refresh,
-                motion_token=motion_token,
-                session_history=AsyncMock(return_value=()),
-                session_identity=read_identity,
+                robot.port(
+                    refresh=refresh,
+                    session_history=AsyncMock(return_value=()),
+                    session_identity=read_identity,
+                ),
+                motion_token,
                 managed_user_command=send_managed_command,
                 prepared_dispatch=_PreparedRoomDispatch(
                     (room,),
@@ -145,6 +149,8 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
                     native_identity_baseline=b"previous-session",
                     native_identity=identity,
                 ),
+                floor_token="floor",
+                checkpoint_dispatch=AsyncMock(),
             ),
             timeout=10,
         )

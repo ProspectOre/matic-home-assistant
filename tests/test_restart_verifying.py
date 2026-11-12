@@ -31,7 +31,7 @@ async def recovery_state(hass):
     )
     checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
-    hass.states.async_set(checkpoint["entity_id"], "docked")
+    entry.robot.show("docked")
     return manager, entry, checkpoint, room
 
 

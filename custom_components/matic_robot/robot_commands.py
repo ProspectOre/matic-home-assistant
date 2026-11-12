@@ -1,8 +1,10 @@
-"""Start cleans on the robot under the plan run's locks and fences."""
+"""Start cleans on the robot: the vacuum's starts and a plan run's legs."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -26,7 +28,44 @@ from .stop_return import (
 )
 
 if TYPE_CHECKING:
-    from . import MaticConfigEntry
+    from . import MaticConfigEntry, MaticRuntimeData
+    from .plans import CleaningPlanManager
+    from .session import RobotSession
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CleanRooms:
+    """Start a plan leg's rooms as one native mission the run owns.
+
+    ``rooms`` holds room IDs. ``room_coverage`` and ``room_modes`` are set
+    only when the rooms' settings differ.
+    """
+
+    rooms: tuple[str, ...]
+    cleaning_mode: str
+    coverage: str
+    ordered: bool
+    room_coverage: tuple[str, ...] | None = None
+    room_modes: tuple[str, ...] | None = None
+    motion_token: int
+    session_id: UUID
+    floor_token: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CleanPlanArea:
+    """Start a plan's custom area as its own native mission the run owns."""
+
+    area_id: str
+    fingerprint: str
+    cleaning_mode: str
+    coverage: str
+    motion_token: int
+    session_id: UUID
+    floor_token: str
+
+
+type PlanStart = CleanRooms | CleanPlanArea
 
 
 class RobotCommands:
@@ -40,10 +79,58 @@ class RobotCommands:
         self, hass: HomeAssistant, entry: MaticConfigEntry, entity_id: str | None
     ) -> None:
         self._hass = hass
-        self._runtime = entry.runtime_data
-        self._session = entry.runtime_data.session
-        self._plans = entry.runtime_data.cleaning_plans
+        self._entry = entry
         self._entity_id = entity_id
+
+    @property
+    def _runtime(self) -> MaticRuntimeData:
+        return self._entry.runtime_data
+
+    @property
+    def _session(self) -> RobotSession:
+        return self._entry.runtime_data.session
+
+    @property
+    def _plans(self) -> CleaningPlanManager:
+        return self._entry.runtime_data.cleaning_plans
+
+    async def async_start_plan_leg(self, command: PlanStart) -> None:
+        """Start one leg of a plan run, read as the vacuum reads its command.
+
+        Like a vacuum action, it sends nothing while the robot cannot be
+        reached; the run's readback then finds no new task.
+        """
+        if self._session.error.value is not None:
+            return
+        params: dict[str, Any] = {
+            "cleaning_mode": command.cleaning_mode,
+            "coverage": command.coverage,
+        }
+        if isinstance(command, CleanPlanArea):
+            options = self.clean_options(params)
+            await self.async_clean_plan_area(
+                command.area_id,
+                command.fingerprint,
+                cleaning_mode=options["cleaning_mode"],
+                coverage_setting=options["coverage_setting"],
+                motion_token=command.motion_token,
+                expected_floor_token=command.floor_token,
+                managed_session_id=command.session_id,
+            )
+            return
+        params["ordered"] = command.ordered
+        if command.room_coverage is not None:
+            params["room_coverage"] = list(command.room_coverage)
+        if command.room_modes is not None:
+            params["room_modes"] = list(command.room_modes)
+        options = self.clean_options(params)
+        await self.async_clean_rooms(
+            self.resolve_rooms(list(command.rooms)),
+            **options,
+            motion_token=command.motion_token,
+            expected_floor_token=command.floor_token,
+            managed_session_id=command.session_id,
+        )
 
     def require_motion_generation(
         self, serial_number: str, generation: int | None
@@ -265,13 +352,6 @@ class RobotCommands:
                     )
 
                 run_id = self._plans.ledger.active_run_id(serial_number)
-
-                async def checkpoint_initial_session(identity_hash: str) -> None:
-                    if run_id is not None:
-                        await self._plans.recovery.async_checkpoint_mixed_session(
-                            serial_number, run_id, identity_hash
-                        )
-
                 try:
                     receipt = await self._session.client.async_start_mixed_coverage(
                         floor_plan,
@@ -286,7 +366,13 @@ class RobotCommands:
                         rollback_stop=rollback_stop,
                         on_recovery_stop_transmitted=recovery_stop_transmitted,
                         checkpoint_initial_session=(
-                            checkpoint_initial_session if run_id is not None else None
+                            partial(
+                                self._plans.recovery.async_checkpoint_mixed_session,
+                                serial_number,
+                                run_id,
+                            )
+                            if run_id is not None
+                            else None
                         ),
                     )
                 except CoverageGuardError as err:

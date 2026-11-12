@@ -19,7 +19,10 @@ from custom_components.matic_robot.client.commands import (
     QueueChangeError,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
-from custom_components.matic_robot.client.models import CleaningSessionRecord
+from custom_components.matic_robot.client.models import (
+    CleaningSessionRecord,
+    RobotActivity,
+)
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_room import _async_run_room
@@ -28,7 +31,7 @@ from custom_components.matic_robot.native_history import _global_room
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
-from tests.session_fakes import accepting_session, robot_port
+from tests.session_fakes import FakeRobot
 from tests.test_entities import _entry
 from tests.test_plans import _call, _leg_manager, _leg_record, _room
 
@@ -238,9 +241,10 @@ async def test_a_skip_from_another_run_is_not_kept(hass) -> None:
 
 async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
     """A room skipped mid-run closes as skipped with the run's ID, not unverified."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    robot.on_start = AsyncMock()
     rooms = [_room("Kitchen", "room-kitchen"), _room("Study", "room-study")]
     events = []
     for event in ("room_skipped", "room_ended_unverified"):
@@ -261,15 +265,13 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
         manager.control.cancel(serial_number)
 
     async def begin_observing_next_room(*_args, **_kwargs) -> float:
-        hass.states.async_set(
-            "vacuum.matic", "cleaning", {"current_area": rooms[1].name}
-        )
+        robot.show("cleaning", current_area=rooms[1].name)
         return 30
 
     with (
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_run._async_completion_budget",
@@ -288,7 +290,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
                 "serial",
                 rooms,
                 floor_token="floor",
-                robot=robot_port(session_identity=accepting_session(hass)),
+                robot=robot.port(session_identity=robot.accepting),
             ),
             timeout=8,
         )
@@ -306,6 +308,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
 
 async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> None:
     """The leg closes a skipped room as skipped and lets the run continue."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -318,19 +321,15 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
     hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def end_leg() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": False},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=False)
 
         hass.async_create_task(end_leg(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
@@ -347,10 +346,12 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
+        robot.port(session_history=history, session_identity=robot.accepting),
+        7,
         managed_user_command=AsyncMock(),
-        motion_token=7,
         run_id="run-1",
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
     await hass.async_block_till_done()
 
@@ -363,14 +364,15 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
     assert [event.data["run_id"] for event in skipped] == ["run-1"]
 
 
-async def test_one_room_leg_settles_a_skipped_room() -> None:
+async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
     """A one-room mission skipped after Clean room again added a room settles."""
-    bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        services=SimpleNamespace(async_call=AsyncMock()),
-        bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
+    robot = FakeRobot()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
+    bus = SimpleNamespace(async_fire=MagicMock())
+    hass = SimpleNamespace(bus=bus)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_claim_native_session=AsyncMock(),
@@ -386,14 +388,18 @@ async def test_one_room_leg_settles_a_skipped_room() -> None:
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
 
+    async def mission_ends(*_args, **_kwargs):
+        robot.show("returning")
+        return RoomRunOutcome.HANDOFF_CANDIDATE
+
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            mission_ends,
         ),
     ):
         settled = await _async_run_room(
@@ -403,9 +409,14 @@ async def test_one_room_leg_settles_a_skipped_room() -> None:
             "vacuum.matic",
             "serial",
             room,
-            motion_token=3,
-            active_session=AsyncMock(return_value=False),
+            robot.port(
+                active_session=AsyncMock(return_value=False),
+                session_identity=robot.accepting,
+            ),
+            3,
             run_id="run-1",
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     assert settled is True

@@ -23,9 +23,9 @@ from . import managed_leg as leg_execution
 from . import managed_observation as observation
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
+from .client.models import RobotActivity
 from .const import DOMAIN, EVENT_PLAN_FINISHED
 from .managed_run import (
-    LegOutcomeWaiter,
     PlanCancelledError,
     RoomInterruptedError,
     RoomStoppedInPlaceError,
@@ -80,7 +80,6 @@ async def _async_execute_rooms_reserved(
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
-    wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     _prepared_run_id: str,
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
@@ -335,21 +334,17 @@ async def _async_execute_rooms_reserved(
                         ) -> _PreparedRoomDispatch:
                             await advance(LegDispatching(index))
                             return await dispatch_control._async_dispatch_leg_command(
-                                hass,
-                                call,
-                                entity_id,
+                                robot,
                                 leg,
                                 motion_token,
-                                robot.session_history,
-                                floor_is_current=floor_is_current,
                                 floor_token=floor_token,
+                                floor_is_current=floor_is_current,
                                 on_dispatch=lambda: bind_native_identity(None),
                                 on_claim=lambda session_id: (
                                     manager.ledger.async_claim_native_session(
                                         serial_number, session_id, run_id=run_id
                                     )
                                 ),
-                                session_identity=robot.session_identity,
                                 on_identity=on_identity,
                                 expected_dispatch_identity=b"",
                                 expected_dispatch_history=history,
@@ -361,9 +356,7 @@ async def _async_execute_rooms_reserved(
                             await advance(HandoffEntered(index))
 
                         prepared_dispatch = await leg_handoff.async_dispatch_on_return(
-                            hass,
-                            entity_id,
-                            robot.session_identity,
+                            robot,
                             dispatch_on_return,
                             bind_native_identity,
                             back_to_handoff,
@@ -382,12 +375,8 @@ async def _async_execute_rooms_reserved(
                         )
                 if index > 0 and prepared_dispatch is None:
                     if not await observation._async_wait_for_settled_leg_handoff(
-                        hass,
-                        entity_id,
+                        robot,
                         cancel_event,
-                        refresh=robot.refresh,
-                        active_session=robot.active_session,
-                        identity_reader=robot.session_identity,
                         expected_identity=native_identity,
                         # A refused command whose session shows up late is
                         # the robot taking it after all: never send it twice.
@@ -426,16 +415,14 @@ async def _async_execute_rooms_reserved(
                         entity_id,
                         serial_number,
                         leg,
+                        robot,
                         cancel_event,
                         motion_token,
-                        robot.active_session,
-                        robot.session_history,
                         managed_user_command,
                         prepared_dispatch=prepared_dispatch,
                         finish_room_event=finish_room_event,
                         floor_is_current=floor_is_current,
                         floor_token=floor_token,
-                        session_identity=robot.session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
                         on_native_identity=bind_native_identity,
@@ -454,18 +441,14 @@ async def _async_execute_rooms_reserved(
                         entity_id,
                         serial_number,
                         leg,
-                        cancel_event,
-                        robot.refresh,
+                        robot,
                         motion_token,
-                        robot.active_session,
-                        robot.session_history,
-                        robot.confirm_room_completed,
-                        managed_user_command,
+                        cancel_event=cancel_event,
+                        managed_user_command=managed_user_command,
                         prepared_dispatch=prepared_dispatch,
                         finish_room_event=finish_room_event,
                         floor_is_current=floor_is_current,
                         floor_token=floor_token,
-                        session_identity=robot.session_identity,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
                         on_native_identity=bind_native_identity,
@@ -493,8 +476,6 @@ async def _async_execute_rooms_reserved(
                             if recovery is not None and index == run.leg_index
                             else None
                         ),
-                        wait_for_leg_outcome=wait_for_leg_outcome,
-                        coverage_verifier=robot.coverage_verifier,
                     )
                 expected_dispatch_identity = None
                 if not completion_verified:
@@ -542,7 +523,8 @@ async def _async_execute_rooms_reserved(
                 serial_number, motion_token
             ):
                 raise PlanCancelledError
-            current = hass.states.get(entity_id)
+            current = robot.observed()
+            home_or_returning = observation.HOME | {RobotActivity.RETURNING}
             needs_dock_confirmation = (
                 finish_room_event.is_set() and not all_entries_done
             )
@@ -552,12 +534,11 @@ async def _async_execute_rooms_reserved(
                 and outer_command is not None
                 and not dispatch_control._stop_is_pending(manager, serial_number)
                 and (
-                    current.state not in {"docked", "returning"}
-                    or needs_dock_confirmation
+                    current.activity not in home_or_returning or needs_dock_confirmation
                 )
             ):
                 try:
-                    if current.state not in {"docked", "returning"}:
+                    if current.activity not in home_or_returning:
                         await outer_command(motion_token, UserCommand.DOCK)
                     if needs_dock_confirmation:
                         dock_confirmation_scheduled = schedule_dock_confirmation(
@@ -704,12 +685,10 @@ async def _async_execute_rooms_reserved(
                         context=call.context,
                     )
                     session_ended = False
-                    current = hass.states.get(entity_id)
-                    if current is not None and current.state in {
-                        "docked",
-                        "charging",
-                        "idle",
-                        "returning",
+                    current = robot.observed()
+                    if current is not None and current.activity in observation.HOME | {
+                        RobotActivity.READY,
+                        RobotActivity.RETURNING,
                     }:
                         try:
                             session_ended = (
@@ -731,8 +710,8 @@ async def _async_execute_rooms_reserved(
                         not session_ended
                         and (
                             current is None
-                            or current.state != "returning"
-                            or current.attributes.get("low_charge") is True
+                            or current.activity is not RobotActivity.RETURNING
+                            or current.low_charge
                         )
                         and managed_run._coverage_guard_cause(err) is None
                     ):
@@ -865,7 +844,6 @@ async def _async_execute_rooms(
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
-    wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
@@ -929,7 +907,6 @@ async def _async_execute_rooms(
             recovery=recovery,
             recovered_dispatch=recovered_dispatch,
             handoff_expected_identity=handoff_expected_identity,
-            wait_for_leg_outcome=wait_for_leg_outcome,
             _prepared_run_id=run_id,
             validate_prepared_run=validate_prepared_run,
             entries=entries,

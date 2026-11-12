@@ -25,6 +25,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     room_cadence_identity,
 )
+from tests.session_fakes import FakeRobot
 from tests.test_cadence_manager import _floor
 from tests.test_coverage_receipts import history_key
 
@@ -314,28 +315,28 @@ async def test_dispatch_never_sends_before_claim_or_after_floor_changes():
     )
     from custom_components.matic_robot.plans import CleaningRoom
 
-    hass = SimpleNamespace(services=SimpleNamespace(async_call=AsyncMock()))
+    robot = FakeRobot()
     claim = AsyncMock(side_effect=OSError("disk"))
     args = (
-        hass,
-        SimpleNamespace(),
-        "vacuum.synthetic",
+        robot.port(),
         [CleaningRoom("room-a", "Kitchen", "vacuum", "standard")],
         7,
-        None,
     )
     with pytest.raises(OSError):
-        await _async_dispatch_leg_command(*args, on_claim=claim)
+        await _async_dispatch_leg_command(*args, floor_token="floor", on_claim=claim)
     claim.assert_awaited_once()
-    hass.services.async_call.assert_not_awaited()
+    assert not robot.started
     states = iter((True, True, False))
     claim = AsyncMock()
     with pytest.raises(ServiceValidationError):
         await _async_dispatch_leg_command(
-            *args, on_claim=claim, floor_is_current=lambda: next(states)
+            *args,
+            floor_token="floor",
+            on_claim=claim,
+            floor_is_current=lambda: next(states),
         )
     claim.assert_awaited_once()
-    hass.services.async_call.assert_not_awaited()
+    assert not robot.started
 
 
 def test_shared_managed_ledger_deduplicates_completion():

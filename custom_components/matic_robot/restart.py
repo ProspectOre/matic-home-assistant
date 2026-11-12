@@ -456,12 +456,8 @@ async def async_recover_managed_run(
                 serial_number, "running", reason="handoff_checkpoint_verified"
             )
             settled = await _async_wait_for_settled_leg_handoff(
-                hass,
-                entity_id,
+                RobotPort.for_entry(hass, entry, entity_id),
                 cancel,
-                refresh=runtime.session.heartbeat.async_request_refresh,
-                active_session=runtime.client.async_get_active_cleaning_session_state,
-                identity_reader=runtime.client.async_get_cleaning_session_identity,
                 expected_identity=identity if identity else None,
                 reject_new_identity=not identity,
                 timeout_seconds=LEG_HANDOFF_TIMEOUT_SECONDS,
@@ -487,7 +483,7 @@ async def async_recover_managed_run(
                 entity_id,
                 serial_number,
                 rooms,
-                robot=RobotPort.for_entry(entry),
+                robot=RobotPort.for_entry(hass, entry, entity_id),
                 managed_user_command=command,
                 mapped_room_names=tuple(
                     room.name for room in current_floor_plan(entry).rooms
@@ -567,8 +563,7 @@ async def async_recover_managed_run(
                 baseline,
                 leg,
                 dispatched_at,
-                hass=hass,
-                entity_id=entity_id,
+                robot=RobotPort.for_entry(hass, entry, entity_id),
                 cancel_event=cancel,
                 timeout_seconds=remaining,
                 on_verified_session=completion_sessions.append,
@@ -642,7 +637,7 @@ async def async_recover_managed_run(
             entity_id,
             serial_number,
             rooms,
-            robot=RobotPort.for_entry(entry),
+            robot=RobotPort.for_entry(hass, entry, entity_id),
             managed_user_command=command,
             mapped_room_names=tuple(
                 room.name for room in current_floor_plan(entry).rooms

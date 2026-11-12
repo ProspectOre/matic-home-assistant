@@ -556,15 +556,6 @@ class RunControl:
             self.command_admission[serial_number] = ("managed_only", epoch + 1)
 
     @callback
-    def command_admission_open(self, serial_number: str) -> bool:
-        """Return whether an external command may dispatch for this entry."""
-        return (
-            self.command_admission.get(serial_number, _OPEN_COMMAND_ADMISSION)[0]
-            == "open"
-            and serial_number not in self.repository.removed_robots
-        )
-
-    @callback
     def command_admission_epoch(self, serial_number: str) -> int:
         """Return the current epoch for binding an admitted dispatch."""
         return self.command_admission.get(serial_number, _OPEN_COMMAND_ADMISSION)[1]

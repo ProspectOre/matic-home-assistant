@@ -7,7 +7,6 @@ from dataclasses import asdict, replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID
 
 import pytest
 from homeassistant.core import CoreState, ServiceCall, callback
@@ -20,7 +19,7 @@ from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
 )
-from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.client.models import FloorPlan, RobotActivity, Room
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_area import _async_wait_for_area_end
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
@@ -35,7 +34,6 @@ from custom_components.matic_robot.managed_run import (
     _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import (
-    PLAN_SESSION_ID,
     AreaLeg,
     CleaningRoom,
     plan_floor_token,
@@ -45,7 +43,8 @@ from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
 )
-from tests.session_fakes import robot_client, robot_port
+from custom_components.matic_robot.robot_commands import CleanPlanArea
+from tests.session_fakes import FakeRobot, robot_client, robot_port
 from tests.wire_builders import _session_identity
 
 
@@ -81,7 +80,8 @@ async def recovery_state(hass):
     )
     identity = b"synthetic-session"
     entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
-    hass.states.async_set(entity.entity_id, "cleaning")
+    robot = FakeRobot()
+    robot.show("cleaning")
     await manager.ledger.async_begin_run(
         "serial", "plan", "run", 1, trigger="automation", service="run_selected_plan"
     )
@@ -121,13 +121,14 @@ async def recovery_state(hass):
         async_request_refresh=AsyncMock(), async_confirm_room_completed=MagicMock()
     )
     session = SimpleNamespace(floor=SimpleNamespace(value=floor), heartbeat=heartbeat)
+    session.state, session.error = robot.state, robot.error
     runtime = SimpleNamespace(
         client=client,
         cleaning_plans=manager,
         session=session,
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
     )
-    return manager, SimpleNamespace(runtime_data=runtime), checkpoint, room
+    return manager, SimpleNamespace(runtime_data=runtime, robot=robot), checkpoint, room
 
 
 async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery_state):
@@ -633,7 +634,7 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
         b"replacement" if case == "replacement" else b""
     )
-    hass.states.async_set(checkpoint["entity_id"], "idle")
+    entry.robot.show("idle")
 
     async def execute(*_args, **kwargs):
         assert kwargs["recovery"]["recovery_checkpoint"]["phase"] == "handoff"
@@ -718,7 +719,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
         )
     if phase != "accepted":
         runtime.client.async_get_cleaning_session_identity.return_value = b""
-        hass.states.async_set(checkpoint["entity_id"], "idle")
+        entry.robot.show("idle")
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     before_count = manager.history.snapshot("serial")["last_run"][
         "completed_room_count"
@@ -965,6 +966,7 @@ async def test_new_plan_cannot_replace_pending_recovery(hass, recovery_state):
 async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
     hass, recovery_state, multi
 ):
+    robot = FakeRobot()
     manager, _, checkpoint, room = recovery_state
     rooms = (
         [room, CleaningRoom("office", "Office", "vacuum", "standard")]
@@ -982,8 +984,8 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
     manager.control.cancellation_reasons["serial"] = "home_assistant_shutdown"
 
     async def started(*args, **_kwargs):
-        args[6](b"synthetic-session")
-        return "cleaning"
+        args[4](b"synthetic-session")
+        return RobotActivity.CLEANING
 
     with (
         patch(
@@ -1007,9 +1009,12 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
             checkpoint["entity_id"],
             "serial",
             rooms,
+            robot.port(session_identity=robot.accepting),
+            7,
             prepared_dispatch=prepared,
             checkpoint_dispatch=saver,
             managed_user_command=sender,
+            floor_token="floor",
         )
     dispatch.assert_not_awaited()
     sender.assert_not_awaited()
@@ -1184,7 +1189,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
         ) as dispatch,
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
@@ -1267,7 +1272,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
         nonlocal reads
         reads += 1
         if reads == handoff_read:
-            hass.states.async_set(checkpoint["entity_id"], state)
+            entry.robot.show(state)
         if reads < handoff_read:
             return b"synthetic-session"
         return identity
@@ -1371,15 +1376,14 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
 
 
 async def test_recovered_paused_start_enters_resume_monitor(hass):
-    hass.states.async_set("vacuum.matic", "paused")
+    robot = FakeRobot()
+    robot.show("paused")
     assert (
         await _async_wait_for_owned_start(
-            hass,
-            "vacuum.matic",
+            robot.port(session_identity=AsyncMock()),
             120,
             None,
             [],
-            AsyncMock(),
             MagicMock(),
             None,
             b"synthetic",
@@ -1451,13 +1455,11 @@ async def test_restart_rejoins_an_accepted_area_until_its_session_ends(
         client.async_get_cleaning_session_identity.return_value = b""
 
     manager.ledger.async_mark_area_started = rejoined
-    commands = AsyncMock()
-    hass.services.async_register("vacuum", "send_command", commands)
-
-    await async_recover_managed_run(hass, entry, "serial")
+    with entry.robot.taking_starts():
+        await async_recover_managed_run(hass, entry, "serial")
     await hass.async_block_till_done()
 
-    commands.assert_not_awaited()
+    assert not entry.robot.started
     client.async_send_user_command.assert_not_awaited()
     # A rejoined area keeps its start and announces only its finish.
     assert [event.event_type for event in events] == [f"{DOMAIN}_area_finished"]
@@ -1575,26 +1577,22 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     client = entry.runtime_data.client
     identity = client.async_get_cleaning_session_identity
-    entity_id = checkpoint["entity_id"]
-    hass.states.async_set(entity_id, "docked")
-    dispatched = []
+    entry.robot.show("docked")
 
-    async def send_command(call):
-        dispatched.append(call.data)
-        identity.return_value = _session_identity(
-            UUID(call.data["params"][PLAN_SESSION_ID])
-        )
-        hass.states.async_set(entity_id, "cleaning")
+    async def send_command(command):
+        identity.return_value = _session_identity(command.session_id)
+        entry.robot.show("cleaning")
 
     async def area_ends(*args):
         # The area's own session ends once its start was confirmed.
         identity.return_value = b""
-        hass.states.async_set(entity_id, "docked")
+        entry.robot.show("docked")
         await _async_wait_for_area_end(*args)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    entry.robot.on_start = send_command
 
     with (
+        entry.robot.taking_starts(),
         patch(
             "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
@@ -1610,8 +1608,8 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
     ):
         await async_recover_managed_run(hass, entry, "serial")
 
-    assert [call["command"] for call in dispatched] == ["clean_plan_area"]
-    assert dispatched[0]["params"]["area"] == "rug"
-    assert dispatched[0]["params"]["fingerprint"] == "f" * 64
+    [command] = entry.robot.started
+    assert isinstance(command, CleanPlanArea)
+    assert (command.area_id, command.fingerprint) == ("rug", "f" * 64)
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "completed"
     client.async_send_user_command.assert_not_awaited()

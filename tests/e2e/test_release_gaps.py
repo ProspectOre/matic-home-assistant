@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -497,15 +498,22 @@ def _observe_idle_history_reads(monkeypatch: pytest.MonkeyPatch) -> asyncio.Even
     observed = asyncio.Event()
     original = managed_reconciliation._async_reconcile_grouped_history
 
-    async def watch(hass, manager, serial, entity, pending, history, verifier):
+    async def watch(hass, manager, serial, entity, pending, robot):
         async def read_history():
             was_idle = hass.states.is_state(entity, "idle")
-            records = await history()
+            records = await robot.session_history()
             if was_idle:
                 observed.set()
             return records
 
-        await original(hass, manager, serial, entity, pending, read_history, verifier)
+        await original(
+            hass,
+            manager,
+            serial,
+            entity,
+            pending,
+            replace(robot, session_history=read_history),
+        )
 
     monkeypatch.setattr(
         managed_reconciliation, "_async_reconcile_grouped_history", watch

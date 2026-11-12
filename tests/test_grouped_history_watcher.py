@@ -18,6 +18,7 @@ import custom_components.matic_robot.managed_observation as managed_observation_
 import custom_components.matic_robot.managed_reconciliation as reconciliation_module
 from custom_components.matic_robot.client.commands import _wrapped_uuid
 from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.models import RobotActivity
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_reconciliation import (
@@ -29,6 +30,7 @@ from custom_components.matic_robot.managed_run import (
     _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
+from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _field
 
 
@@ -61,6 +63,7 @@ def _marker() -> dict[str, object]:
 
 
 async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
+    robot = FakeRobot()
     rooms = (
         CleaningRoom("kitchen", "Kitchen", "vacuum", "quick"),
         CleaningRoom("study", "Study", "vacuum", "quick"),
@@ -103,7 +106,10 @@ async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
     monkeypatch.setattr(
         managed_observation_module,
         "_async_wait_for_owned_start",
-        AsyncMock(return_value="cleaning"),
+        AsyncMock(return_value=RobotActivity.CLEANING),
+    )
+    monkeypatch.setattr(
+        managed_observation_module._LegOutcomeObserver, "next", wait_for_outcome
     )
     scheduled = MagicMock()
     monkeypatch.setattr(
@@ -126,12 +132,12 @@ async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
             "vacuum.test",
             "serial",
             rooms,
-            motion_token=9,
+            robot.port(session_identity=AsyncMock(return_value=identity)),
+            9,
             prepared_dispatch=_dispatch(rooms),
-            session_identity=AsyncMock(return_value=identity),
             run_id=run_id,
-            wait_for_leg_outcome=wait_for_outcome,
             floor_token="b" * 64,
+            checkpoint_dispatch=AsyncMock(),
         )
     )
     return task, manager, scheduled
@@ -163,6 +169,7 @@ async def test_interrupted_group_only_schedules_while_ownership_is_current(
 async def test_unverified_group_does_not_save_marker_after_floor_changes(
     hass, monkeypatch
 ) -> None:
+    robot = FakeRobot()
     rooms = (
         CleaningRoom("kitchen", "Kitchen", "vacuum", "quick"),
         CleaningRoom("study", "Study", "vacuum", "quick"),
@@ -187,7 +194,7 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
     monkeypatch.setattr(
         managed_observation_module,
         "_async_wait_for_owned_start",
-        AsyncMock(return_value="cleaning"),
+        AsyncMock(return_value=RobotActivity.CLEANING),
     )
     monkeypatch.setattr(
         managed_observation_module,
@@ -205,6 +212,10 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
     async def next_outcome(*_args, **_kwargs):
         return next(outcomes)
 
+    monkeypatch.setattr(
+        managed_observation_module._LegOutcomeObserver, "next", next_outcome
+    )
+
     call = ServiceCall(
         hass,
         DOMAIN,
@@ -219,12 +230,13 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
         "vacuum.test",
         "serial",
         rooms,
-        motion_token=9,
+        robot.port(session_identity=robot.accepting),
+        9,
         prepared_dispatch=_dispatch(rooms),
         run_id="run-1",
-        wait_for_leg_outcome=next_outcome,
         floor_is_current=lambda: False,
         floor_token="b" * 64,
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert not finished
@@ -271,7 +283,12 @@ async def test_grouped_watcher_tolerates_history_and_map_failures(
     monkeypatch.setattr(reconciliation_module, "monotonic", lambda: next(clocks))
 
     await _async_reconcile_grouped_history(
-        hass, manager, "serial", "vacuum.test", marker, reads, None
+        hass,
+        manager,
+        "serial",
+        "vacuum.test",
+        marker,
+        robot_port(session_history=reads),
     )
 
     if failure == "floor":
@@ -299,7 +316,7 @@ async def test_grouped_watcher_stops_when_marker_is_replaced(hass, monkeypatch) 
     monkeypatch.setattr(reconciliation_module, "monotonic", lambda: 0.0)
 
     await _async_reconcile_grouped_history(
-        hass, manager, "serial", "vacuum.test", marker, None, None
+        hass, manager, "serial", "vacuum.test", marker, robot_port()
     )
 
     manager.ledger.async_import_native_history.assert_not_awaited()
@@ -339,7 +356,12 @@ async def test_idle_grouped_watcher_polls_until_settlement_or_deadline(
 
     reads = AsyncMock(side_effect=read_history)
     await _async_reconcile_grouped_history(
-        hass, manager, "serial", "vacuum.test", marker, reads, None
+        hass,
+        manager,
+        "serial",
+        "vacuum.test",
+        marker,
+        robot_port(session_history=reads),
     )
 
     assert reads.await_count == 2

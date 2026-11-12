@@ -29,6 +29,7 @@ from custom_components.matic_robot.room_coherence import (
     current_floor_plan,
     current_room_cadence_identity,
 )
+from tests.session_fakes import FakeRobot
 
 
 def _floor_plan() -> FloorPlan:
@@ -118,6 +119,7 @@ async def test_current_room_cadence_identity_rejects_removed_config_entry(hass):
 async def test_late_reconciliation_credits_identity_from_registered_current_floor(
     hass,
 ):
+    robot = FakeRobot()
     _entry, entity_id, floor_plan = await _registered_robot(hass)
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
     now = dt_util.utcnow()
@@ -156,9 +158,7 @@ async def test_late_reconciliation_credits_identity_from_registered_current_floo
             room,
             reconciliation,
             frozenset(),
-            None,
-            AsyncMock(return_value=(record,)),
-            None,
+            robot.port(session_history=AsyncMock(return_value=(record,))),
             None,
         )
 

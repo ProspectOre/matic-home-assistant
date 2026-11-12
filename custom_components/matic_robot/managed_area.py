@@ -15,7 +15,7 @@ from . import managed_observation as observation
 from . import managed_run
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord
+from .client.models import CleaningSessionRecord, RobotActivity
 from .const import DOMAIN
 from .managed_run import (
     PlanCancelledError,
@@ -27,16 +27,16 @@ from .plan_model import (
     AreaLeg,
 )
 from .plans import CleaningPlanManager
+from .robot_port import RobotPort
 
 _LOGGER = logging.getLogger(__name__)
 
+_HOME_OR_IDLE = observation.HOME | {RobotActivity.READY}
+
 
 async def _async_wait_for_area_end(
-    hass: HomeAssistant,
-    entity_id: str,
+    robot: RobotPort,
     cancel_event: asyncio.Event,
-    active_session: Callable[[], Awaitable[bool | None]],
-    reader: Callable[[], Awaitable[bytes | None]],
     expected: bytes | None,
 ) -> None:
     """Wait until a plan custom area's own native mission ends.
@@ -56,17 +56,19 @@ async def _async_wait_for_area_end(
     while True:
         if cancel_event.is_set():
             raise PlanCancelledError
-        state = hass.states.get(entity_id)
-        if state is not None and state.state == "error":
+        state = robot.observed()
+        if state is not None and state.activity is RobotActivity.ERROR:
             raise managed_run._validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
-        identity = await observation._async_read_session_identity(reader)
+        identity = await observation._async_read_session_identity(
+            robot.session_identity
+        )
         # A Stop or error can arrive while the identity request is in flight.
         if cancel_event.is_set():
             raise PlanCancelledError
-        current = hass.states.get(entity_id)
-        if current is not None and current.state == "error":
+        current = robot.observed()
+        if current is not None and current.activity is RobotActivity.ERROR:
             raise managed_run._validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
@@ -86,20 +88,22 @@ async def _async_wait_for_area_end(
             raise RoomTakenOverError("The native cleaning task was replaced")
         else:
             unknown_reads = 0
-            if current is not None and current.state in {"docked", "idle"}:
-                active = await observation._async_active_session_state(active_session)
+            if current is not None and current.activity in _HOME_OR_IDLE:
+                active = await observation._async_active_session_state(
+                    robot.active_session
+                )
                 # The robot can stop, fail or resume during this second read.
                 if cancel_event.is_set():
                     raise PlanCancelledError
-                current = hass.states.get(entity_id)
-                if current is not None and current.state == "error":
+                current = robot.observed()
+                if current is not None and current.activity is RobotActivity.ERROR:
                     raise managed_run._validation_error(
                         "The selected Matic robot reported an error", "robot_error"
                     )
                 if (
                     active is False
                     and current is not None
-                    and current.state in {"docked", "idle"}
+                    and current.activity in _HOME_OR_IDLE
                 ):
                     return
         with suppress(TimeoutError):
@@ -133,7 +137,7 @@ async def _async_wait_for_area_record(
 
 
 def _area_refused_before_start(error: BaseException) -> bool:
-    """Whether the vacuum refused an area leg before sending its start."""
+    """Whether the robot commands refused an area leg before sending its start."""
     return isinstance(error, ServiceValidationError) and error.translation_key in {
         "area_map_changed",
         "invalid_area",
@@ -150,17 +154,15 @@ async def _async_run_area_leg(
     entity_id: str,
     serial_number: str,
     area: AreaLeg,
+    robot: RobotPort,
     cancel_event: asyncio.Event,
     motion_token: int,
-    active_session: Callable[[], Awaitable[bool | None]],
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None,
     *,
     prepared_dispatch: _PreparedRoomDispatch | None,
     finish_room_event: asyncio.Event,
     floor_is_current: Callable[[], bool] | None,
     floor_token: str,
-    session_identity: Callable[[], Awaitable[bytes | None]],
     expected_dispatch_identity: bytes | None,
     expected_dispatch_history: frozenset[str] | None,
     on_native_identity: Callable[[bytes | None], None],
@@ -205,19 +207,15 @@ async def _async_run_area_leg(
     try:
         if dispatch is None:
             dispatch = await dispatch_control._async_dispatch_leg_command(
-                hass,
-                call,
-                entity_id,
+                robot,
                 area,
                 motion_token,
-                session_history,
-                floor_is_current=floor_is_current,
                 floor_token=floor_token,
+                floor_is_current=floor_is_current,
                 on_dispatch=mark_dispatch_attempted,
                 on_claim=lambda session_id: manager.ledger.async_claim_native_session(
                     serial_number, session_id, run_id=run_id
                 ),
-                session_identity=session_identity,
                 on_identity=on_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
@@ -232,12 +230,10 @@ async def _async_run_area_leg(
             )
         try:
             await observation._async_wait_for_owned_start(
-                hass,
-                entity_id,
+                robot,
                 int(call.data["start_timeout"]),
                 cancel_event,
                 None,
-                session_identity,
                 on_native_identity,
                 dispatch.native_identity_baseline,
                 dispatch.native_identity,
@@ -258,16 +254,11 @@ async def _async_run_area_leg(
         )
         async with asyncio.timeout(budget):
             await _async_wait_for_area_end(
-                hass,
-                entity_id,
-                cancel_event,
-                active_session,
-                session_identity,
-                dispatch.native_identity,
+                robot, cancel_event, dispatch.native_identity
             )
         if settle_history:
             await _async_wait_for_area_record(
-                session_history, dispatch.history_baseline, cancel_event
+                robot.session_history, dispatch.history_baseline, cancel_event
             )
     except PlanCancelledError, asyncio.CancelledError:
         # Stop owns its own STOP.

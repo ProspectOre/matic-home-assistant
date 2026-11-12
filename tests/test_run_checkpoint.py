@@ -19,7 +19,7 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom, leg_groups
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import robot_port
+from tests.session_fakes import FakeRobot, robot_port
 
 from .test_restart import recovery_state as recovery_fixture
 
@@ -29,9 +29,9 @@ async def recovery_state(hass):
     return await recovery_fixture.__wrapped__(hass)
 
 
-@pytest.mark.parametrize("history_state", ["available", "missing", "error"])
+@pytest.mark.parametrize("history_state", ["available", "error"])
 async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_state):
-    manager, _, checkpoint, room = recovery_state
+    manager, entry, checkpoint, room = recovery_state
     await manager.ledger.async_finish_run("serial", "run", "unverified", "test", 0)
     room2 = CleaningRoom("office", "Office", "mop", "standard")
     seen = []
@@ -46,7 +46,7 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
         if args[5] == [room]:
             # Model the native leg ending before the next settings boundary;
             # the durable runner must wait for this settled handoff.
-            hass.states.async_set(checkpoint["entity_id"], "idle")
+            entry.robot.show("idle")
             kwargs["on_native_identity"](b"new")
         dispatch = _PreparedRoomDispatch(
             tuple(args[5]),
@@ -86,12 +86,10 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
             checkpoint["entity_id"],
             "serial",
             [room, room2],
-            robot=robot_port(
+            robot=entry.robot.port(
                 session_identity=AsyncMock(return_value=b""),
                 session_history=(
-                    None
-                    if history_state == "missing"
-                    else AsyncMock(side_effect=CannotConnectError("unavailable"))
+                    AsyncMock(side_effect=CannotConnectError("unavailable"))
                     if history_state == "error"
                     else AsyncMock(return_value=(SimpleNamespace(key=b"new"),))
                 ),
@@ -164,9 +162,10 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
 
 async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
     """Pin every save a fresh durable run makes, as restart recovery reads them."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    hass.states.async_set("vacuum.matic", "idle")
+    robot.show("idle")
     kitchen = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
     office = CleaningRoom("office", "Office", "mop", "standard")
     saves: list[dict] = []
@@ -219,7 +218,7 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
             "vacuum.matic",
             "serial",
             [kitchen, office],
-            robot=robot_port(
+            robot=robot.port(
                 session_identity=AsyncMock(return_value=b""),
                 session_history=AsyncMock(
                     return_value=(SimpleNamespace(key=b"after"),)

@@ -13,7 +13,6 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, ServiceCall
 from homeassistant.exceptions import (
-    HomeAssistantError,
     ServiceValidationError,
     Unauthorized,
     UnknownUser,
@@ -41,6 +40,7 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
     FloorPlan,
     HermesCollectionEntry,
+    RobotActivity,
     Room,
 )
 from custom_components.matic_robot.const import (
@@ -50,12 +50,11 @@ from custom_components.matic_robot.const import (
 )
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
 from custom_components.matic_robot.managed_dispatch import (
-    _async_dispatch_leg_command,
     _async_mark_run_docked,
     _run_provenance,
 )
 from custom_components.matic_robot.managed_observation import (
-    _async_wait_for_vacuum_state,
+    _async_wait_for_robot_activity,
 )
 from custom_components.matic_robot.managed_reconciliation import (
     _async_expire_native_reconciliation,
@@ -63,9 +62,7 @@ from custom_components.matic_robot.managed_reconciliation import (
     _native_completion_match,
     _schedule_native_reconciliation,
 )
-from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import (
-    PlanCancelledError,
     _NativeReconciliation,
 )
 from custom_components.matic_robot.plan_catalog import (
@@ -125,7 +122,7 @@ from custom_components.matic_robot.services import (
     async_register_services,
 )
 from custom_components.matic_robot.stores import LiveState, Store
-from tests.session_fakes import robot_client, robot_port
+from tests.session_fakes import FakeRobot, robot_client, robot_port
 
 
 def test_room_sequence_default_resolver_uses_canonical_reference_rules() -> None:
@@ -302,11 +299,18 @@ def _session(
     refresh: object = None,
     confirm_room_completed: object = None,
     discard_current_room: object = None,
+    robot: FakeRobot | None = None,
 ) -> SimpleNamespace:
-    """Return the session parts the services read and ask."""
+    """Return the session parts the services read and ask.
+
+    Its state is ``robot``'s, by default one that reports nothing.
+    """
+    robot = robot or FakeRobot()
     return SimpleNamespace(
         info=info,
         floor=Store(floor_plan),
+        state=robot.state,
+        error=robot.error,
         heartbeat=SimpleNamespace(
             async_request_refresh=refresh,
             async_confirm_room_completed=confirm_room_completed,
@@ -2734,6 +2738,7 @@ async def test_plan_cadence_bindings_uses_verified_current_map() -> None:
 
 
 async def test_late_native_completion_uses_current_room_cadence_identity(hass) -> None:
+    robot = FakeRobot()
     room = CleaningRoom("room-office", "Office", "vacuum", "quick")
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
@@ -2763,7 +2768,7 @@ async def test_late_native_completion_uses_current_room_cadence_identity(hass) -
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.ledger.async_mark_native_completed = AsyncMock(return_value=True)
-    hass.states.async_set("vacuum.test", "docked")
+    robot.show("docked")
     with (
         patch(
             "custom_components.matic_robot.managed_reconciliation.OEM_STOP_RECONCILIATION_POLL_SECONDS",
@@ -2782,9 +2787,7 @@ async def test_late_native_completion_uses_current_room_cadence_identity(hass) -
             room,
             reconciliation,
             frozenset(),
-            None,
-            AsyncMock(return_value=(record,)),
-            None,
+            robot.port(session_history=AsyncMock(return_value=(record,))),
             None,
         )
     assert (
@@ -5425,292 +5428,12 @@ async def test_save_plan_rejects_names_that_produce_no_plan_id(hass) -> None:
     assert manager.catalog.plans("serial") == {}
 
 
-async def test_room_cancellation_records_history_and_reraises() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
-    bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
-    manager = SimpleNamespace(
-        ledger=SimpleNamespace(
-            async_mark_started=AsyncMock(),
-            async_mark_completed=AsyncMock(),
-            async_mark_ended_unverified=AsyncMock(),
-            async_mark_verifying=AsyncMock(),
-            async_mark_cancelled=AsyncMock(),
-        ),
-        control=SimpleNamespace(cancellation_reason=MagicMock(return_value=None)),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
-    )
-    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
-    with (
-        patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(side_effect=PlanCancelledError),
-        ),
-        pytest.raises(PlanCancelledError),
-    ):
-        await _async_run_room(
-            hass, _execution_call(hass), manager, "vacuum.test", "serial", room
-        )
-    manager.ledger.async_mark_cancelled.assert_awaited_once()
-    manager.ledger.async_mark_completed.assert_not_awaited()
-    assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_cancelled"
-
-
-async def test_room_cancellation_preserves_low_charge_reason() -> None:
-    """Room cleanup carries suspension evidence to the plan finalizer."""
-    services = SimpleNamespace(async_call=AsyncMock())
-    bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
-    manager = SimpleNamespace(
-        ledger=SimpleNamespace(
-            async_mark_started=AsyncMock(),
-            async_mark_completed=AsyncMock(),
-            async_mark_ended_unverified=AsyncMock(),
-            async_mark_verifying=AsyncMock(),
-            async_mark_cancelled=AsyncMock(),
-        ),
-        control=SimpleNamespace(cancellation_reason=MagicMock(return_value=None)),
-        history=SimpleNamespace(
-            snapshot=MagicMock(
-                return_value={
-                    "active_plan": {
-                        "status": "suspended",
-                        "suspend_reason": "low_charge",
-                    }
-                }
-            )
-        ),
-    )
-    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
-    with (
-        patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(side_effect=PlanCancelledError),
-        ),
-        pytest.raises(PlanCancelledError) as excinfo,
-    ):
-        await _async_run_room(
-            hass, _execution_call(hass), manager, "vacuum.test", "serial", room
-        )
-    assert excinfo.value.suspend_reason == "low_charge"
-
-
-@pytest.mark.parametrize("changes_during_history", [False, True])
-async def test_room_dispatch_rechecks_exact_floor_before_robot_command(
-    changes_during_history: bool,
-) -> None:
-    """No room IDs are sent after either floor-coherence guard fails."""
-    services = SimpleNamespace(async_call=AsyncMock())
-    hass = SimpleNamespace(services=services)
-    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
-    session_history = AsyncMock(return_value=())
-    floor_is_current = MagicMock(
-        side_effect=[True, False] if changes_during_history else [False]
-    )
-    on_dispatch = MagicMock()
-
-    with pytest.raises(ServiceValidationError) as excinfo:
-        await _async_dispatch_leg_command(
-            hass,
-            _execution_call(hass),
-            "vacuum.test",
-            [room],
-            17,
-            session_history,
-            floor_is_current=floor_is_current,
-            on_dispatch=on_dispatch,
-        )
-
-    assert excinfo.value.translation_key == "room_plan_unavailable"
-    if changes_during_history:
-        session_history.assert_awaited_once()
-    else:
-        session_history.assert_not_awaited()
-    on_dispatch.assert_not_called()
-    services.async_call.assert_not_awaited()
-
-
-async def test_room_handoff_after_returning_does_not_credit_completion(hass) -> None:
-    """A targeted return permits handoff without claiming room completion."""
-
-    async def send_command(*_args, **_kwargs) -> None:
-        hass.states.async_set("vacuum.test", "cleaning", {"current_area": "Study"})
-
-        async def finish_room() -> None:
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.test",
-                "returning",
-                {"current_area": "Study", "low_charge": False},
-            )
-
-        hass.async_create_task(finish_room(), eager_start=True)
-
-    hass.services.async_register("vacuum", "send_command", send_command)
-    manager = SimpleNamespace(
-        ledger=SimpleNamespace(
-            async_mark_started=AsyncMock(),
-            async_mark_completed=AsyncMock(),
-            async_mark_ended_unverified=AsyncMock(),
-            async_mark_verifying=AsyncMock(),
-            async_mark_failed=AsyncMock(),
-            async_mark_interrupted=AsyncMock(),
-            async_mark_resumed=AsyncMock(),
-        )
-    )
-    refresh = AsyncMock()
-
-    with patch(
-        "custom_components.matic_robot.managed_observation.ROOM_STATUS_REFRESH_SECONDS",
-        0,
-    ):
-        await _async_run_room(
-            hass,
-            _execution_call(hass),
-            manager,
-            "vacuum.test",
-            "serial",
-            CleaningRoom("room-study", "Study", "vacuum", "quick"),
-            refresh=refresh,
-            active_session=AsyncMock(return_value=False),
-        )
-
-    assert hass.states.get("vacuum.test").state == "returning"
-    refresh.assert_awaited()
-    manager.ledger.async_mark_ended_unverified.assert_awaited_once()
-    manager.ledger.async_mark_completed.assert_not_awaited()
-    manager.ledger.async_mark_failed.assert_not_awaited()
-
-
-async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> None:
-    """A direct idle transition is an interruption and receives no credit."""
-
-    async def send_command(*_args, **_kwargs) -> None:
-        hass.states.async_set("vacuum.test", "cleaning", {"current_area": "Study"})
-
-        async def stop_room() -> None:
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
-            hass.states.async_set("vacuum.test", "idle", {"current_area": "Study"})
-
-        hass.async_create_task(stop_room(), eager_start=True)
-
-    hass.services.async_register("vacuum", "send_command", send_command)
-
-    @asynccontextmanager
-    async def current_reconciliation(_serial, _token):
-        yield True
-
-    manager = SimpleNamespace(
-        control=SimpleNamespace(
-            cancellation_reason=MagicMock(return_value=None),
-            managed_reconciliation=current_reconciliation,
-            managed_motion_is_current=MagicMock(return_value=True),
-        ),
-        ledger=SimpleNamespace(
-            async_claim_native_session=AsyncMock(),
-            async_mark_started=AsyncMock(),
-            async_mark_completed=AsyncMock(),
-            async_mark_ended_unverified=AsyncMock(),
-            async_mark_verifying=AsyncMock(),
-            async_mark_failed=AsyncMock(),
-            async_mark_interrupted=AsyncMock(),
-            async_mark_resumed=AsyncMock(),
-        ),
-    )
-    session_reader = AsyncMock(return_value=False)
-    sender = AsyncMock()
-
-    with pytest.raises(ServiceValidationError):
-        await _async_run_room(
-            hass,
-            _execution_call(hass),
-            manager,
-            "vacuum.test",
-            "serial",
-            CleaningRoom("room-study", "Study", "vacuum", "quick"),
-            motion_token=17,
-            active_session=session_reader,
-            managed_user_command=sender,
-        )
-
-    session_reader.assert_not_awaited()
-    manager.ledger.async_mark_interrupted.assert_awaited_once()
-    manager.ledger.async_mark_ended_unverified.assert_not_awaited()
-    manager.ledger.async_mark_completed.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    ("error", "expected_type", "expected_reason_code"),
-    [
-        (
-            MaticError("robot rejected the command"),
-            ServiceValidationError,
-            "robot_error",
-        ),
-        (
-            ServiceValidationError("translated failure"),
-            ServiceValidationError,
-            "managed_failure",
-        ),
-        (HomeAssistantError("call failed"), HomeAssistantError, "managed_failure"),
-    ],
-)
-async def test_room_failures_translate_client_errors_at_boundary(
-    error, expected_type, expected_reason_code
-) -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
-    bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
-    manager = SimpleNamespace(
-        control=SimpleNamespace(cancellation_reason=MagicMock(return_value=None)),
-        ledger=SimpleNamespace(
-            async_mark_started=AsyncMock(),
-            async_mark_completed=AsyncMock(),
-            async_mark_ended_unverified=AsyncMock(),
-            async_mark_verifying=AsyncMock(),
-            async_mark_failed=AsyncMock(),
-        ),
-    )
-    finish_room_event = asyncio.Event()
-    finish_room_event.set()
-    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
-    with (
-        patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(side_effect=error),
-        ),
-        pytest.raises(expected_type) as excinfo,
-    ):
-        await _async_run_room(
-            hass,
-            _execution_call(hass),
-            manager,
-            "vacuum.test",
-            "serial",
-            room,
-            finish_room_event=finish_room_event,
-        )
-    if isinstance(error, MaticError):
-        assert excinfo.value.translation_key == "robot_command_failed"
-        assert "robot rejected" not in str(excinfo.value)
-    else:
-        assert excinfo.value is error
-    manager.ledger.async_mark_failed.assert_awaited_once()
-    assert not finish_room_event.is_set()
-    manager.ledger.async_mark_completed.assert_not_awaited()
-    assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_failed"
-    event_data = bus.async_fire.call_args_list[-1].args[1]
-    assert event_data["reason_code"] == expected_reason_code
-    assert event_data["cause"] == "unknown"
-
-
 @pytest.mark.parametrize("run_id", [None, "synthetic-run"])
 async def test_oem_stop_reconciliation_credits_late_native_session(
     hass, run_id
 ) -> None:
     """The ten-minute OEM stop can finish a room after the runner saw an error."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
@@ -5744,7 +5467,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
         (room.name,),
     )
     reads = AsyncMock(side_effect=[(), (CleaningSessionRecord(b"new", session),)])
-    hass.states.async_set("vacuum.test", "docked")
+    robot.show("docked")
     confirmed = MagicMock()
     reconciliation = _NativeReconciliation(
         "away", room.room_id, room.name, now - timedelta(seconds=5), run_id=run_id
@@ -5761,9 +5484,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
             room,
             reconciliation,
             frozenset(),
-            None,
-            reads,
-            confirmed,
+            robot.port(session_history=reads, confirm_room_completed=confirmed),
             None,
         )
 
@@ -5780,6 +5501,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
 
 async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None:
     """Watching the robot stop disproves the completion its record claims."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
@@ -5804,7 +5526,7 @@ async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None
             completed_rooms=("Study",),
         ),
     )
-    hass.states.async_set("vacuum.matic", "idle", {"current_area": "Study"})
+    robot.show("idle", current_area="Study")
     confirmed: list[str] = []
 
     with (
@@ -5826,9 +5548,10 @@ async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None
             room,
             _NativeReconciliation("away", room.room_id, room.name, dispatched_at),
             frozenset(),
-            None,
-            AsyncMock(return_value=(record,)),
-            confirmed.append,
+            robot.port(
+                session_history=AsyncMock(return_value=(record,)),
+                confirm_room_completed=confirmed.append,
+            ),
             None,
         )
 
@@ -5838,6 +5561,7 @@ async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None
 
 
 async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) -> None:
+    robot = FakeRobot()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()
     manager = CleaningPlanManager(hass)
@@ -5857,7 +5581,7 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
         },
     )
     save.reset_mock()
-    hass.states.async_set("vacuum.test", "cleaning")
+    robot.show("cleaning")
     history = AsyncMock(side_effect=MaticError("synthetic offline"))
     reconciliation = _NativeReconciliation(
         "away", room.room_id, room.name, now - timedelta(seconds=5)
@@ -5884,9 +5608,7 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
             room,
             reconciliation,
             frozenset(),
-            None,
-            history,
-            None,
+            robot.port(session_history=history),
             None,
         )
     history.assert_awaited_once()
@@ -5995,6 +5717,7 @@ async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> No
 
 
 async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> None:
+    robot = FakeRobot()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()
     reconciliation = _NativeReconciliation(
@@ -6010,9 +5733,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         room,
         reconciliation,
         frozenset(),
-        None,
-        AsyncMock(),
-        None,
+        robot.port(session_history=AsyncMock()),
         None,
     )
     created: list[str] = []
@@ -6029,9 +5750,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         room,
         reconciliation,
         frozenset(),
-        None,
-        AsyncMock(),
-        None,
+        robot.port(session_history=AsyncMock()),
         None,
     )
     _schedule_native_reconciliation(
@@ -6042,9 +5761,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         room,
         reconciliation,
         None,
-        None,
-        AsyncMock(),
-        None,
+        robot.port(session_history=AsyncMock()),
         None,
     )
     assert len(created) == 2
@@ -6098,6 +5815,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
 
 
 async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None:
+    robot = FakeRobot()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     reconciliation = _NativeReconciliation(
         "away", room.room_id, room.name, dt_util.utcnow() - timedelta(seconds=5)
@@ -6123,9 +5841,7 @@ async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None
             room,
             reconciliation,
             frozenset(),
-            None,
-            AsyncMock(),
-            None,
+            robot.port(session_history=AsyncMock()),
             None,
         )
         task = registered.call_args.args[1]
@@ -6178,37 +5894,40 @@ def test_native_completion_match_rejects_old_or_invalid_records() -> None:
 
 
 async def test_wait_returns_immediately_when_state_is_already_desired(hass) -> None:
-    hass.states.async_set("vacuum.test", "cleaning")
-    state = await _async_wait_for_vacuum_state(hass, "vacuum.test", {"cleaning"}, 10)
-    assert state == "cleaning"
+    robot = FakeRobot()
+    robot.show("cleaning")
+    state = await _async_wait_for_robot_activity(
+        robot.port(), {RobotActivity.CLEANING}, 10
+    )
+    assert state is RobotActivity.CLEANING
 
 
-async def test_wait_ignores_removed_entities_and_fails_on_error_transition(
-    hass,
-) -> None:
-    hass.states.async_set("vacuum.test", "idle")
+async def test_wait_ignores_an_unreachable_robot_and_fails_on_error(hass) -> None:
+    robot = FakeRobot()
+    robot.show("idle")
     waiting = asyncio.create_task(
-        _async_wait_for_vacuum_state(hass, "vacuum.test", {"cleaning"}, 10)
+        _async_wait_for_robot_activity(robot.port(), {RobotActivity.CLEANING}, 10)
     )
     await asyncio.sleep(0)
-    hass.states.async_remove("vacuum.test")
+    robot.show("unavailable")
     await asyncio.sleep(0)
     assert not waiting.done()
-    hass.states.async_set("vacuum.test", "error")
+    robot.show("error")
     with pytest.raises(ServiceValidationError, match="reported an error") as excinfo:
         await waiting
     assert excinfo.value.translation_key == "robot_error"
 
 
 async def test_wait_returns_reached_state_while_cancel_stays_pending(hass) -> None:
-    hass.states.async_set("vacuum.test", "cleaning")
+    robot = FakeRobot()
+    robot.show("cleaning")
     cancel = asyncio.Event()
     waiting = asyncio.create_task(
-        _async_wait_for_vacuum_state(hass, "vacuum.test", {"docked"}, 10, cancel)
+        _async_wait_for_robot_activity(robot.port(), {RobotActivity.DOCKED}, 10, cancel)
     )
     await asyncio.sleep(0)
-    hass.states.async_set("vacuum.test", "docked")
-    assert await waiting == "docked"
+    robot.show("docked")
+    assert await waiting is RobotActivity.DOCKED
     assert not cancel.is_set()
 
 

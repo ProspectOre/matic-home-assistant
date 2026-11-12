@@ -104,7 +104,7 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
         nonlocal reads
         reads += 1
         if reads == 2:
-            hass.states.async_set(checkpoint["entity_id"], "returning")
+            entry.robot.show("returning")
         return b"synthetic-session" if reads <= 2 else b""
 
     entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = identity

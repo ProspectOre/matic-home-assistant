@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from datetime import datetime
 from time import monotonic
 from typing import Any
@@ -14,9 +13,9 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from .client.coverage_receipts import CoverageVerifier, native_session_hash
+from .client.coverage_receipts import native_session_hash
 from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord
+from .client.models import CleaningSessionRecord, RobotActivity
 from .const import DOMAIN
 from .coverage_accounting import (
     async_confirm_completed_coverage,
@@ -31,6 +30,7 @@ from .plan_model import (
     CleaningRoom,
 )
 from .plans import CleaningPlanManager
+from .robot_port import RobotPort
 from .room_coherence import current_entity_floor_plan, current_room_cadence_identity
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,8 +44,7 @@ def _schedule_grouped_native_reconciliation(
     serial_number: str,
     entity_id: str,
     pending: dict[str, Any],
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
-    coverage_verifier: CoverageVerifier | None,
+    robot: RobotPort,
 ) -> None:
     """Poll the retained dispatch without sending robot commands."""
     task = hass.async_create_background_task(
@@ -55,8 +54,7 @@ def _schedule_grouped_native_reconciliation(
             serial_number,
             entity_id,
             pending,
-            session_history,
-            coverage_verifier,
+            robot,
         ),
         f"{DOMAIN} grouped native history reconciliation",
     )
@@ -69,8 +67,7 @@ async def _async_reconcile_grouped_history(
     serial_number: str,
     entity_id: str,
     pending: dict[str, Any],
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
-    coverage_verifier: CoverageVerifier | None,
+    robot: RobotPort,
 ) -> None:
     """Import exact session evidence until this dispatch settles or expires."""
     deadline = monotonic() + OEM_STOP_RECONCILIATION_SECONDS
@@ -81,23 +78,18 @@ async def _async_reconcile_grouped_history(
             for key in ("plan_id", "run_id", "dispatched_at", "session_hash")
         ):
             return
-        if session_history is not None:
-            try:
-                records = await session_history()
-                floor_plan = current_entity_floor_plan(hass, entity_id)
-                await manager.ledger.async_import_native_history(
-                    serial_number,
-                    floor_plan,
-                    records,
-                    coverage_verifier=coverage_verifier,
-                    current_floor_plan=lambda: current_entity_floor_plan(
-                        hass, entity_id
-                    ),
-                )
-            except (MaticError, HomeAssistantError) as err:
-                _LOGGER.debug(
-                    "Grouped native history unavailable (%s)", type(err).__name__
-                )
+        try:
+            records = await robot.session_history()
+            floor_plan = current_entity_floor_plan(hass, entity_id)
+            await manager.ledger.async_import_native_history(
+                serial_number,
+                floor_plan,
+                records,
+                coverage_verifier=robot.coverage_verifier,
+                current_floor_plan=lambda: current_entity_floor_plan(hass, entity_id),
+            )
+        except (MaticError, HomeAssistantError) as err:
+            _LOGGER.debug("Grouped native history unavailable (%s)", type(err).__name__)
         await asyncio.sleep(
             min(OEM_STOP_RECONCILIATION_POLL_SECONDS, max(0, deadline - monotonic()))
         )
@@ -159,11 +151,8 @@ def _schedule_native_reconciliation(
     room: CleaningRoom,
     reconciliation: _NativeReconciliation | None,
     history_baseline: frozenset[bytes] | None,
-    active_session: Callable[[], Awaitable[bool | None]] | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
-    confirm_room_completed: Callable[[str], None] | None,
+    robot: RobotPort,
     context: Context | None,
-    coverage_verifier: CoverageVerifier | None = None,
 ) -> None:
     """Start a lifecycle-bound watcher for a native session finishing after STOP."""
     if reconciliation is None:
@@ -171,7 +160,7 @@ def _schedule_native_reconciliation(
     create_background_task = getattr(hass, "async_create_background_task", None)
     if not callable(create_background_task):
         return
-    if history_baseline is not None and session_history is not None:
+    if history_baseline is not None:
         watcher = _async_reconcile_native_stop(
             hass,
             manager,
@@ -180,11 +169,8 @@ def _schedule_native_reconciliation(
             room,
             reconciliation,
             history_baseline,
-            active_session,
-            session_history,
-            confirm_room_completed,
+            robot,
             context,
-            coverage_verifier=coverage_verifier,
         )
     else:
         watcher = _async_expire_native_reconciliation(
@@ -212,11 +198,8 @@ async def _async_reconcile_native_stop(
     room: CleaningRoom,
     reconciliation: _NativeReconciliation,
     history_baseline: frozenset[bytes],
-    active_session: Callable[[], Awaitable[bool | None]] | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
-    confirm_room_completed: Callable[[str], None] | None,
+    robot: RobotPort,
     context: Context | None,
-    coverage_verifier: CoverageVerifier | None = None,
 ) -> None:
     """Reconcile one late native completion without issuing another motion command.
 
@@ -228,14 +211,14 @@ async def _async_reconcile_native_stop(
     """
     deadline = monotonic() + OEM_STOP_RECONCILIATION_SECONDS
     while monotonic() < deadline:
-        state = hass.states.get(entity_id)
-        if state is not None and state.state == "idle":
+        state = robot.observed()
+        if state is not None and state.activity is RobotActivity.READY:
             _LOGGER.debug(
                 "Native Matic reconciliation abandoned: the task ended in place"
             )
             break
         try:
-            records = await session_history()
+            records = await robot.session_history()
         except MaticError as err:
             _LOGGER.debug(
                 "Native Matic stop reconciliation read unavailable (%s)",
@@ -257,7 +240,7 @@ async def _async_reconcile_native_stop(
             verified_coverage = await async_confirm_completed_coverage(
                 coverage_evidence.receipt if coverage_evidence is not None else None,
                 native_session_hash(record.key),
-                coverage_verifier,
+                robot.coverage_verifier,
             )
             try:
                 current_room_identity = current_room_cadence_identity(
@@ -276,8 +259,7 @@ async def _async_reconcile_native_stop(
                 verified_coverage_receipt=verified_coverage,
             )
             if completed:
-                if confirm_room_completed is not None:
-                    confirm_room_completed(room.name)
+                robot.confirm_room_completed(room.name)
                 hass.bus.async_fire(
                     f"{DOMAIN}_room_reconciled",
                     {

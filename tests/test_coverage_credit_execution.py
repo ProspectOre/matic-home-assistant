@@ -28,6 +28,7 @@ from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
     FloorPlan,
+    RobotActivity,
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
@@ -45,6 +46,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.session_fakes import FakeRobot
 from tests.test_coverage_receipts import history_key
 
 SESSION = UUID(int=772)
@@ -240,6 +242,7 @@ async def _dispatch_callback(manager, floor, rooms, receipt, run_id):
 async def test_single_room_executor_uses_matching_native_history_for_credit(
     hass, monkeypatch, history_key_kind
 ):
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_ATTEMPTS", 1
     )
@@ -268,7 +271,7 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
     }[history_key_kind]
     record = _record((room,), key=key)
     entity_id = "vacuum.matic"
-    hass.states.async_set(entity_id, "returning")
+    robot.show("returning")
     verifier = AsyncMock(return_value=True)
     dispatched_at = dt_util.utcnow() - timedelta(seconds=60)
     dispatch = _PreparedRoomDispatch((room,), frozenset(), dispatched_at)
@@ -279,7 +282,7 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
     with (
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -293,14 +296,18 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
             entity_id,
             "serial",
             room,
-            active_session=AsyncMock(return_value=False),
-            session_history=AsyncMock(return_value=(record,)),
+            robot.port(
+                active_session=AsyncMock(return_value=False),
+                session_history=AsyncMock(return_value=(record,)),
+                coverage_verifier=verifier,
+                session_identity=robot.accepting,
+            ),
+            manager.control.begin_managed_motion("serial"),
             prepared_dispatch=dispatch,
             floor_is_current=lambda: True,
             floor_token=plan_floor_token(floor),
             run_id="executor-run",
             checkpoint_dispatch=checkpoint_dispatch,
-            coverage_verifier=verifier,
         )
 
     assert completed
@@ -348,12 +355,13 @@ async def test_single_room_partial_mode_history_never_credits_coverage(hass):
 
 
 async def _run_partial_room(hass, room, floor, manager, receipt, partial):
-    hass.states.async_set("vacuum.matic", "returning")
+    robot = FakeRobot()
+    robot.show("returning")
     verifier = AsyncMock(return_value=True)
     with (
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -367,8 +375,13 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
             "vacuum.matic",
             "serial",
             room,
-            active_session=AsyncMock(return_value=False),
-            session_history=AsyncMock(return_value=(partial,)),
+            robot.port(
+                active_session=AsyncMock(return_value=False),
+                session_history=AsyncMock(return_value=(partial,)),
+                coverage_verifier=verifier,
+                session_identity=robot.accepting,
+            ),
+            manager.control.begin_managed_motion("serial"),
             prepared_dispatch=_PreparedRoomDispatch(
                 (room,), frozenset(), dt_util.utcnow() - timedelta(seconds=60)
             ),
@@ -378,7 +391,6 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
             checkpoint_dispatch=await _dispatch_callback(
                 manager, floor, (room,), receipt, "partial-run"
             ),
-            coverage_verifier=verifier,
         )
     assert not completed
     assert (
@@ -392,6 +404,7 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
 async def test_multiroom_leg_credits_only_room_completed_in_partial_native_record(
     hass, monkeypatch
 ):
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_ATTEMPTS", 1
     )
@@ -404,7 +417,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
     receipt = _receipt(FLOOR, ROOMS)
     await _checkpoint_receipt(manager, FLOOR, ROOMS, receipt, run_id="leg-run")
     partial = _record(ROOMS, partial_room_ids=frozenset({second.room_id}))
-    hass.states.async_set("vacuum.matic", "returning")
+    robot.show("returning")
     verifier = AsyncMock(return_value=True)
 
     async def return_from_leg(*_args, **_kwargs):
@@ -420,7 +433,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
     with (
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch.object(
             managed_observation_module,
@@ -435,8 +448,13 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
             "vacuum.matic",
             "serial",
             ROOMS,
-            active_session=AsyncMock(return_value=False),
-            session_history=AsyncMock(return_value=(partial,)),
+            robot.port(
+                active_session=AsyncMock(return_value=False),
+                session_history=AsyncMock(return_value=(partial,)),
+                coverage_verifier=verifier,
+                session_identity=robot.accepting,
+            ),
+            manager.control.begin_managed_motion("serial"),
             prepared_dispatch=_PreparedRoomDispatch(
                 ROOMS, frozenset(), dt_util.utcnow() - timedelta(seconds=60)
             ),
@@ -446,8 +464,6 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
             checkpoint_dispatch=await _dispatch_callback(
                 manager, FLOOR, ROOMS, receipt, "leg-run"
             ),
-            wait_for_leg_outcome=return_from_leg,
-            coverage_verifier=verifier,
         )
 
     assert not completed
@@ -468,6 +484,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
 async def test_executor_discards_coverage_verification_after_ownership_changes(
     hass, monkeypatch, path, supersede
 ):
+    robot = FakeRobot()
     rooms = (ROOMS[0],) if path == "room" else ROOMS
     floor = (
         FloorPlan(
@@ -507,7 +524,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
     checkpoint_dispatch = await _dispatch_callback(
         manager, floor, rooms, receipt, run_id
     )
-    hass.states.async_set("vacuum.matic", "returning")
+    robot.show("returning")
     room_verifier = managed_observation_module._async_verify_leg_completion
 
     async def verify_leg_once(reader, baseline, verify_rooms, when, **kwargs):
@@ -518,7 +535,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
     overrides = [
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         )
     ]
     if path == "room":
@@ -546,18 +563,21 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
                     "vacuum.matic",
                     "serial",
                     rooms[0],
+                    robot.port(
+                        active_session=AsyncMock(return_value=False),
+                        session_history=AsyncMock(return_value=(completion,)),
+                        coverage_verifier=verifier,
+                        session_identity=robot.accepting,
+                    ),
+                    motion_token,
                     cancel_event=cancel_event,
-                    active_session=AsyncMock(return_value=False),
-                    session_history=AsyncMock(return_value=(completion,)),
                     prepared_dispatch=_PreparedRoomDispatch(
                         rooms, frozenset(), dispatched_at
                     ),
                     floor_is_current=lambda: current_floor,
                     floor_token=plan_floor_token(floor),
                     run_id=run_id,
-                    motion_token=motion_token,
                     checkpoint_dispatch=checkpoint_dispatch,
-                    coverage_verifier=verifier,
                 )
             else:
                 await _async_run_leg(
@@ -567,19 +587,21 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
                     "vacuum.matic",
                     "serial",
                     rooms,
+                    robot.port(
+                        active_session=AsyncMock(return_value=False),
+                        session_history=AsyncMock(return_value=(completion,)),
+                        coverage_verifier=verifier,
+                        session_identity=robot.accepting,
+                    ),
+                    motion_token,
                     cancel_event=cancel_event,
-                    active_session=AsyncMock(return_value=False),
-                    session_history=AsyncMock(return_value=(completion,)),
                     prepared_dispatch=_PreparedRoomDispatch(
                         rooms, frozenset(), dispatched_at
                     ),
                     floor_is_current=lambda: current_floor,
                     floor_token=plan_floor_token(floor),
                     run_id=run_id,
-                    motion_token=motion_token,
                     checkpoint_dispatch=checkpoint_dispatch,
-                    wait_for_leg_outcome=current_leg_outcome,
-                    coverage_verifier=verifier,
                 )
     except PlanCancelledError:
         pass
@@ -594,6 +616,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
 
 
 async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(hass):
+    robot = FakeRobot()
     room = ROOMS[0]
     floor = FloorPlan(
         FLOOR.mission_id,
@@ -614,7 +637,7 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
         await allow_verifier_to_return.wait()
         return True
 
-    hass.states.async_set("vacuum.matic", "returning")
+    robot.show("returning")
     dispatch_time = dt_util.utcnow() - timedelta(seconds=60)
     dispatch_callback = await _dispatch_callback(
         manager, floor, (room,), receipt, run_id
@@ -624,7 +647,7 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
         with (
             patch(
                 "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-                AsyncMock(return_value="cleaning"),
+                AsyncMock(return_value=RobotActivity.CLEANING),
             ),
             patch(
                 "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -638,8 +661,13 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
                 "vacuum.matic",
                 "serial",
                 room,
-                active_session=AsyncMock(return_value=False),
-                session_history=AsyncMock(return_value=(_record((room,)),)),
+                robot.port(
+                    active_session=AsyncMock(return_value=False),
+                    session_history=AsyncMock(return_value=(_record((room,)),)),
+                    coverage_verifier=verifier,
+                    session_identity=robot.accepting,
+                ),
+                7,
                 prepared_dispatch=_PreparedRoomDispatch(
                     (room,), frozenset(), dispatch_time
                 ),
@@ -647,7 +675,6 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
                 floor_token=plan_floor_token(floor),
                 run_id=run_id,
                 checkpoint_dispatch=dispatch_callback,
-                coverage_verifier=verifier,
             )
 
     run_task = asyncio.create_task(execute_room())
@@ -691,7 +718,8 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
     started = dt_util.utcnow() - timedelta(seconds=45)
     identity = b"synthetic-current-native-session"
     entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
-    hass.states.async_set(entity.entity_id, "docked")
+    robot = FakeRobot()
+    robot.show("docked")
     checkpoint = {
         **manager.recovery.recovery_run("serial")["recovery_checkpoint"],
         "version": 1,
@@ -721,6 +749,7 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=b""),
         async_get_cleaning_session_records=AsyncMock(return_value=(_record((room,)),)),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_confirm_coverage_receipt=AsyncMock(return_value=True),
         async_send_user_command=AsyncMock(),
         activity_journal=SimpleNamespace(
@@ -736,6 +765,8 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
                 async_request_refresh=AsyncMock(),
                 async_confirm_room_completed=MagicMock(),
             ),
+            state=robot.state,
+            error=robot.error,
         ),
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
     )

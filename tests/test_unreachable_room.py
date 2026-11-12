@@ -11,7 +11,6 @@ from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -31,10 +30,11 @@ from custom_components.matic_robot.managed_observation import (
 from custom_components.matic_robot.native_completion import (
     match_single_room_unreachable,
 )
-from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
+from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_commands import PlanStart
 from custom_components.matic_robot.run_history import run_ending, run_rooms
-from tests.session_fakes import robot_port
+from tests.session_fakes import FakeRobot
 from tests.wire_builders import _session_identity
 
 KITCHEN = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
@@ -153,9 +153,11 @@ class _Robot:
 
     def __init__(self, hass, first_end: Callable[[], CleaningSession] | bytes) -> None:
         self.hass = hass
+        self.fake = FakeRobot()
+        self.fake.on_start = self.send_command
         self.identity: bytes = b""
         self.records: list[CleaningSessionRecord] = []
-        self.dispatches: list[dict] = []
+        self.dispatches: list[PlanStart] = []
         self.first_end = first_end
 
     async def read_identity(self) -> bytes | None:
@@ -164,46 +166,37 @@ class _Robot:
     async def history(self) -> tuple[CleaningSessionRecord, ...]:
         return tuple(self.records)
 
-    async def send_command(self, call) -> None:
-        self.dispatches.append(call.data)
-        session_id = UUID(call.data["params"][PLAN_SESSION_ID])
-        self.identity = _session_identity(session_id)
+    async def send_command(self, command: PlanStart) -> None:
+        self.dispatches.append(command)
+        self.identity = _session_identity(command.session_id)
         index = len(self.dispatches)
         if index == 1:
             # The robot accepts the mission and drives, but never enters the room.
-            self.hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": None}
-            )
+            self.fake.show("cleaning", current_area=None)
             self.hass.async_create_task(self._give_up(), eager_start=False)
         else:
-            self.hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": STUDY.name}
-            )
+            self.fake.show("cleaning", current_area=STUDY.name)
             self.hass.async_create_task(self._finish_study(), eager_start=False)
 
     async def _give_up(self) -> None:
         await asyncio.sleep(0.01)
         if isinstance(self.first_end, bytes):
             self.identity = self.first_end
-            self.hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": KITCHEN.name}
-            )
+            self.fake.show("cleaning", current_area=KITCHEN.name)
             return
-        self.hass.states.async_set("vacuum.matic", "returning", {"current_area": None})
+        self.fake.show("returning", current_area=None)
         self.records.append(CleaningSessionRecord(b"kitchen-mission", self.first_end()))
         self.identity = b""
-        self.hass.states.async_set("vacuum.matic", "docked", {"current_area": None})
+        self.fake.show("docked", current_area=None)
 
     async def _finish_study(self) -> None:
         await asyncio.sleep(0.01)
-        self.hass.states.async_set(
-            "vacuum.matic", "returning", {"current_area": STUDY.name}
-        )
+        self.fake.show("returning", current_area=STUDY.name)
         self.records.append(
             CleaningSessionRecord(b"study-mission", _session("Study", "completed"))
         )
         self.identity = b""
-        self.hass.states.async_set("vacuum.matic", "docked", {"current_area": None})
+        self.fake.show("docked", current_area=None)
 
 
 async def _run_plan(hass, robot: _Robot):
@@ -213,8 +206,7 @@ async def _run_plan(hass, robot: _Robot):
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "finish_current_room": True
     }
-    hass.states.async_set("vacuum.matic", "docked", {"current_area": None})
-    hass.services.async_register("vacuum", "send_command", robot.send_command)
+    robot.fake.show("docked")
     events: list = []
     for name in (
         "room_skipped",
@@ -245,7 +237,7 @@ async def _run_plan(hass, robot: _Robot):
                 "serial",
                 [KITCHEN, STUDY],
                 floor_token="floor",
-                robot=robot_port(
+                robot=robot.fake.port(
                     session_identity=robot.read_identity,
                     active_session=AsyncMock(return_value=False),
                     session_history=robot.history,

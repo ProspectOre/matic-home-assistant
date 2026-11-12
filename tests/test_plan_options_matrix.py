@@ -4,7 +4,6 @@ import asyncio
 from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -19,9 +18,9 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
-from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
+from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import robot_port
+from tests.session_fakes import FakeRobot
 from tests.wire_builders import _session_identity
 
 LAYOUTS = (
@@ -40,8 +39,9 @@ LAYOUTS = (
 @pytest.mark.parametrize("layout", LAYOUTS)
 @pytest.mark.parametrize("return_to_base", (False, True))
 async def test_executor_preserves_room_settings_and_verified_completion(
-    hass, layout, return_to_base
+    hass, monkeypatch, layout, return_to_base
 ):
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
@@ -76,14 +76,13 @@ async def test_executor_preserves_room_settings_and_verified_completion(
     ended = False
     started_at = None
 
-    async def send(service_call):
+    async def send(command):
         nonlocal identity, started_at
-        params = service_call.data["params"]
-        commands.append(params)
-        assert params["rooms"] == [r.room_id for r in expected]
-        assert params["ordered"] is True
-        assert params["cleaning_mode"] == expected[0].cleaning_mode
-        assert params["coverage"] == expected[0].coverage_setting
+        commands.append(command)
+        assert command.rooms == tuple(r.room_id for r in expected)
+        assert command.ordered is True
+        assert command.cleaning_mode == expected[0].cleaning_mode
+        assert command.coverage == expected[0].coverage_setting
         effective_settings = {
             (
                 r.cleaning_mode,
@@ -92,26 +91,19 @@ async def test_executor_preserves_room_settings_and_verified_completion(
             for r in expected
         }
         if len(effective_settings) > 1:
-            assert params["room_modes"] == [r.cleaning_mode for r in expected]
-            assert params["room_coverage"] == [r.coverage_setting for r in expected]
+            assert command.room_modes == tuple(r.cleaning_mode for r in expected)
+            assert command.room_coverage == tuple(r.coverage_setting for r in expected)
         else:
-            assert "room_modes" not in params
-            assert "room_coverage" not in params
-        session_id = params.get(PLAN_SESSION_ID)
-        identity = (
-            _session_identity(UUID(session_id))
-            if isinstance(session_id, str)
-            else b"synthetic-task"
-        )
+            assert command.room_modes is None
+            assert command.room_coverage is None
+        identity = _session_identity(command.session_id)
         started_at = dt_util.utcnow().isoformat()
-        hass.states.async_set(
-            "vacuum.matic", "cleaning", {"current_area": expected[0].name}
-        )
+        robot.show("cleaning", current_area=expected[0].name)
 
     async def observe_terminal(*args, **kwargs):
         nonlocal ended, identity
         ended, identity = True, b""
-        hass.states.async_set("vacuum.matic", "returning")
+        robot.show("returning")
         return RoomRunOutcome.HANDOFF_CANDIDATE, None
 
     async def history():
@@ -158,9 +150,13 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         if len(confirmed) == len(rooms):
             # Native history has proven completion. Make the final dock policy
             # observable independently of a robot already returning itself.
-            hass.states.async_set("vacuum.matic", "idle")
+            robot.show("idle")
 
-    hass.services.async_register("vacuum", "send_command", send)
+    robot.on_start = send
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation._LegOutcomeObserver.next",
+        observe_terminal,
+    )
     dock = AsyncMock()
     await _async_execute_rooms(
         hass,
@@ -169,7 +165,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         "vacuum.matic",
         "serial",
         expected,
-        robot=robot_port(
+        robot=robot.port(
             active_session=AsyncMock(return_value=False),
             session_history=history,
             confirm_room_completed=confirm,
@@ -179,7 +175,6 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         mapped_room_names=tuple(r.name for r in rooms),
         floor_is_current=lambda: True,
         floor_token="a" * 64,
-        wait_for_leg_outcome=observe_terminal,
     )
     assert len(commands) == 1
     assert confirmed == [r.name for r in expected]
@@ -270,6 +265,7 @@ async def test_stop_threshold_does_not_estimate_from_unscoped_duration_history(
 async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     hass, monkeypatch
 ):
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_TIMEOUT_SECONDS",
         0.01,
@@ -308,26 +304,19 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     confirmed = []
     ended = False
 
-    async def send(service_call):
+    async def send(command):
         nonlocal identity, started_at
-        assert service_call.data["params"]["rooms"] == [rooms[0].room_id]
-        session_id = service_call.data["params"].get(PLAN_SESSION_ID)
-        identity = (
-            _session_identity(UUID(session_id))
-            if isinstance(session_id, str)
-            else b"synthetic-task"
-        )
+        assert command.rooms == (rooms[0].room_id,)
+        identity = _session_identity(command.session_id)
         started_at = dt_util.utcnow().isoformat()
-        hass.states.async_set(
-            "vacuum.matic", "cleaning", {"current_area": rooms[0].name}
-        )
+        robot.show("cleaning", current_area=rooms[0].name)
 
     async def observe_boundary(*_args, **_kwargs):
         nonlocal ended, identity
         decisions.append(manager.control.request_stop("serial"))
         ended = True
         identity = b""
-        hass.states.async_set("vacuum.matic", "idle")
+        robot.show("idle")
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
     async def history():
@@ -364,7 +353,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     def confirm(room_name: str) -> None:
         confirmed.append(room_name)
 
-    hass.services.async_register("vacuum", "send_command", send)
+    robot.on_start = send
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
         observe_boundary,
@@ -377,7 +366,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=robot_port(
+            robot=robot.port(
                 active_session=AsyncMock(return_value=False),
                 session_history=history,
                 confirm_room_completed=confirm,

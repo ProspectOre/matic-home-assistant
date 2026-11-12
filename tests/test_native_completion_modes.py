@@ -22,6 +22,7 @@ from custom_components.matic_robot.native_completion import (
     match_single_room_completions,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
+from tests.session_fakes import FakeRobot
 from tests.wire_builders import _bfield, _vfield
 
 
@@ -49,6 +50,8 @@ def _session_payload(
 async def test_native_mode_proof_matches_only_the_dispatched_mode(
     vacuum_status, mop_status, mode
 ):
+    robot = FakeRobot()
+
     def status(value):
         return None if value is None else _vfield(5, value) + _vfield(6, 1)
 
@@ -74,12 +77,13 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
         frozenset(),
         room,
         dispatched,
+        robot=robot.port(),
         attempts=1,
         on_verified_completion=lambda ended, seconds: evidence.append((ended, seconds)),
     ) is (NativeRoomVerdict.COMPLETED if expected else NativeRoomVerdict.UNVERIFIED)
     assert evidence == ([(session.ended_at, duration)] if expected else [])
     leg = await _async_verify_leg_completion(
-        reader, frozenset(), [room], dispatched, attempts=1
+        reader, frozenset(), [room], dispatched, robot=robot.port(), attempts=1
     )
     assert leg == (
         {"study": (session.ended_at, duration)}
@@ -378,6 +382,7 @@ async def test_restart_reconciliation_preserves_mode_admission(
 
 
 async def test_seven_room_partial_session_credits_only_completed_requested_modes(hass):
+    robot = FakeRobot()
     from custom_components.matic_robot.client.wire import first_bytes
     from custom_components.matic_robot.llm_history import (
         _bounded_native_room_evidence,
@@ -424,7 +429,12 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
         for row in rows
     ]
     evidence = await _async_verify_leg_completion(
-        reader, frozenset(), rooms, dt_util.utcnow() - timedelta(seconds=90), attempts=1
+        reader,
+        frozenset(),
+        rooms,
+        dt_util.utcnow() - timedelta(seconds=90),
+        robot=robot.port(),
+        attempts=1,
     )
     assert evidence == {
         "gallery": (session.ended_at, 170),
@@ -496,6 +506,7 @@ def test_duplicate_room_results_cannot_credit_or_double_duration(group):
     [None, b"", _bfield(1, b"bad"), _vfield(1, 5) + _vfield(1, 6), b"\x0a\xff"],
 )
 async def test_combined_completion_requires_usable_duration_for_both_modes(duration):
+    robot = FakeRobot()
     from custom_components.matic_robot.client.wire import first_bytes
 
     summary = first_bytes(_session_payload(_vfield(5, 2)), 5)
@@ -515,6 +526,7 @@ async def test_combined_completion_requires_usable_duration_for_both_modes(durat
             frozenset(),
             [room],
             dt_util.utcnow() - timedelta(seconds=90),
+            robot=robot.port(),
             attempts=1,
         )
         == {}
