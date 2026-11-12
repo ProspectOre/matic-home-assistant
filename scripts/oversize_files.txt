@@ -34,7 +34,7 @@ tests/test_entities.py 2892
 tests/test_firmware.py 1246
 tests/test_firmware_reports.py 1387
 tests/test_init.py 1218
-tests/test_llm.py 3212
+tests/test_llm.py 3062
 tests/test_mixed_coverage.py 2115
 tests/test_photo_patrol.py 1622
 tests/test_plan_entries.py 1122

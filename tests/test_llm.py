@@ -15,13 +15,12 @@ from zoneinfo import ZoneInfo
 
 import probatio
 import pytest
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.components.homeassistant.const import DATA_EXPOSED_ENTITIES
 from homeassistant.core import Context, Event, State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
@@ -47,15 +46,14 @@ from custom_components.matic_robot.client.observations import (
     MAX_OBSERVATIONS,
     ActivityJournal,
 )
-from custom_components.matic_robot.const import DATA_LLM_API, DOMAIN
+from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.llm import (
     LLM_API_ID,
     MAX_RECENT_EVENTS,
-    ROBOT_STATUS_PROMPT,
     MaticFirmwareResearchAPI,
     MaticGetRecentEventsTool,
+    MaticRobotControlAPI,
     MaticRobotStatusAPI,
-    async_get_tools,
     async_register_matic_llm_api,
 )
 from custom_components.matic_robot.llm_common import (
@@ -192,13 +190,25 @@ class _HassStub(SimpleNamespace):
     __hash__ = object.__hash__
 
 
+def _vacuums(entry_id: str) -> list[SimpleNamespace]:
+    """One registered vacuum per robot, exposed through `_EXPOSE_ALL`."""
+    return [
+        SimpleNamespace(domain="vacuum", entity_id=f"vacuum.{entry_id}", device_id=None)
+    ]
+
+
+_EXPOSE_ALL = SimpleNamespace(async_should_expose=lambda _assistant, _entity: True)
+
+
 def _hass(*entries, user=None):
     user = user or SimpleNamespace(is_admin=True)
     return _HassStub(
         data={
             er.DATA_REGISTRY: SimpleNamespace(
-                async_get_entity_id=MagicMock(return_value=None)
-            )
+                async_get_entity_id=MagicMock(return_value=None),
+                entities=SimpleNamespace(get_entries_for_config_entry_id=_vacuums),
+            ),
+            DATA_EXPOSED_ENTITIES: _EXPOSE_ALL,
         },
         states=SimpleNamespace(get=MagicMock(return_value=None)),
         auth=SimpleNamespace(
@@ -399,7 +409,11 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         _context("deleted-user"),
         _context("member"),
     ):
-        for refused_api in (api, MaticFirmwareResearchAPI(hass)):
+        for refused_api in (
+            api,
+            MaticRobotControlAPI(api),
+            MaticFirmwareResearchAPI(hass),
+        ):
             refused = await refused_api.async_get_api_instance(context)
             assert refused.tools == []
             assert refused.api_prompt == NON_ADMIN_PROMPT
@@ -409,9 +423,9 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
 
     hass.auth.async_get_user.side_effect = None
     hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
-    instance = await api.async_get_api_instance(_context())
+    instance = await MaticRobotControlAPI(api).async_get_api_instance(_context())
     assert instance.api.id == LLM_API_ID == "matic_robot_operations"
-    assert instance.api.name == "Matic: Robot status (administrators only)"
+    assert instance.api.name == "Matic: Robot status and control (administrators only)"
     assert instance.api_prompt.startswith(
         "Answer in plain words (robot, room, plan, cleaning run) and do not "
         "repeat internal terms."
@@ -459,6 +473,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         registered = async_register_matic_llm_api(hass)
     assert [call.args[1].id for call in register.call_args_list] == [
         "matic_robot_operations",
+        "matic_robot_status",
         "matic_robot_firmware_research",
     ]
     assert register.call_args_list[0].args == (hass, registered)
@@ -1831,7 +1846,7 @@ async def test_recent_events_returns_newest_first_and_honors_limit() -> None:
         api._async_capture_event(
             Event(
                 "matic_robot_room_started",
-                {"room": f"Room {index}"},
+                {"entry_id": "entry-one", "room": f"Room {index}"},
                 time_fired_timestamp=index,
             )
         )
@@ -1854,7 +1869,7 @@ async def test_recent_events_keep_operational_evidence_out_of_activity_churn() -
     api._async_capture_event(
         Event(
             "matic_robot_room_started",
-            {"room": "Hallway"},
+            {"entry_id": "entry-one", "room": "Hallway"},
             time_fired_timestamp=0,
         )
     )
@@ -1862,7 +1877,7 @@ async def test_recent_events_keep_operational_evidence_out_of_activity_churn() -
         api._async_capture_event(
             Event(
                 "matic_robot_activity_observed",
-                {"sequence": index, "kind": "state"},
+                {"entry_id": "entry-one", "sequence": index, "kind": "state"},
                 time_fired_timestamp=index + 1,
             )
         )
@@ -2162,7 +2177,8 @@ def _control_hass(
         target
     )
     registry = SimpleNamespace(
-        async_get_entity_id=MagicMock(return_value="vacuum.robot")
+        async_get_entity_id=MagicMock(return_value="vacuum.robot"),
+        entities=SimpleNamespace(get_entries_for_config_entry_id=_vacuums),
     )
     patches = (
         patch(
@@ -2789,172 +2805,6 @@ async def test_refusal_text_comes_from_the_integration_translations(hass) -> Non
         hass, _context(), "exceptions", "unknown_plan", {"plan": "Attic"}
     )
     assert result.data["reason"] == _text("exceptions", "unknown_plan", plan="Attic")
-
-
-async def test_assist_gets_the_robot_status_tools_for_administrators(hass) -> None:
-    entry = MockConfigEntry(domain=DOMAIN, entry_id="entry-one")
-    entry.add_to_hass(hass)
-    entry.mock_state(hass, ConfigEntryState.LOADED)
-    registry = er.async_get(hass)
-    vacuum = registry.async_get_or_create(
-        "vacuum", DOMAIN, "synthetic-serial_vacuum", config_entry=entry
-    )
-    registry.async_get_or_create(
-        "sensor", DOMAIN, "synthetic-serial_battery", config_entry=entry
-    )
-    api = MaticRobotStatusAPI(hass)
-    admin = await hass.auth.async_create_user("Admin", group_ids=["system-admin"])
-    member = await hass.auth.async_create_user("Member", group_ids=["system-users"])
-    api.async_start()
-    await hass.async_block_till_done()
-    assert admin.id in api.administrators
-    assert member.id not in api.administrators
-
-    def context(user_id: str | None, assistant: str = "conversation"):
-        return llm.LLMContext(
-            platform="conversation",
-            context=Context(user_id=user_id),
-            language="en",
-            assistant=assistant,
-            device_id=None,
-        )
-
-    exposed = MagicMock(return_value=True)
-    with patch("custom_components.matic_robot.llm_common.async_should_expose", exposed):
-        assert async_get_tools(hass, context(admin.id), "assist") is None
-        hass.data.setdefault(DOMAIN, {})[DATA_LLM_API] = api
-        assert async_get_tools(hass, context(admin.id), "other") is None
-        assert async_get_tools(hass, context(admin.id, ""), "assist") is None
-        assert async_get_tools(hass, context(member.id), "assist") is None
-        assert async_get_tools(hass, context(None), "assist") is None
-        no_context = context(admin.id)
-        no_context.context = None
-        assert async_get_tools(hass, no_context, "assist") is None
-        tools = async_get_tools(hass, context(admin.id), "assist")
-        exposed.return_value = False
-        assert async_get_tools(hass, context(admin.id), "assist") is None
-    exposed.assert_called_with(hass, "conversation", vacuum.entity_id)
-    assert tools is not None
-    assert tools.prompt == ROBOT_STATUS_PROMPT
-    assert [tool.name for tool in tools.tools] == [
-        f"{DOMAIN}__{tool.name}" for tool in api.tools()
-    ]
-    assert all(tool.tool.exposed_only for tool in tools.tools)
-    assert not any(tool.exposed_only for tool in api.tools())
-    assert "matic_robot__MaticClaimFirmwareInvestigation" not in {
-        tool.name for tool in tools.tools
-    }
-    assert all(tool.integration == DOMAIN for tool in tools.tools)
-
-    await hass.auth.async_update_user(member, group_ids=["system-admin"])
-    await hass.async_block_till_done()
-    assert member.id in api.administrators
-    await hass.auth.async_remove_user(member)
-    await hass.async_block_till_done()
-    assert member.id not in api.administrators
-
-
-async def test_assist_tools_only_see_robots_exposed_to_the_assistant() -> None:
-    hass, _registry, patches = _control_hass(state="cleaning")
-    entries = hass.config_entries.async_loaded_entries.return_value
-    hidden = _entry(name="Hidden Robot", title="Hidden", entry_id="entry-hidden")
-    entries.append(hidden)
-    for entry in entries:
-        entry.runtime_data.firmware_tracker = SimpleNamespace(
-            report=MagicMock(return_value={}), report_history=MagicMock()
-        )
-    registered = {
-        "entry-one": [
-            SimpleNamespace(domain="vacuum", entity_id="vacuum.robot", device_id="d1"),
-            SimpleNamespace(domain="sensor", entity_id="sensor.one", device_id=None),
-        ],
-        # An exposed sensor never exposes the robot; only its vacuum does.
-        "entry-hidden": [
-            SimpleNamespace(domain="vacuum", entity_id="vacuum.hidden", device_id="d2"),
-            SimpleNamespace(domain="sensor", entity_id="sensor.hidden", device_id="d2"),
-        ],
-    }
-    should_expose = MagicMock(
-        side_effect=lambda _hass, _assistant, entity_id: (
-            entity_id in {"vacuum.robot", "sensor.hidden"}
-        )
-    )
-    api = MaticRobotStatusAPI(hass)
-    for data in (
-        {"entry_id": "entry-one", "room": "visible entry"},
-        {"device_id": "d1", "room": "visible device"},
-        {"entity_id": "vacuum.robot", "room": "visible entity"},
-        {"entry_id": "entry-hidden", "room": "hidden entry"},
-        {"device_id": "d2", "room": "hidden device"},
-        {"entity_id": "vacuum.hidden", "room": "hidden entity"},
-        {"entity_id": None, "room": "unattributed"},
-    ):
-        api._async_capture_event(
-            Event("matic_robot_room_started", data, time_fired_timestamp=0)
-        )
-    assist = {tool.name: tool for tool in api.tools(exposed_only=True)}
-    admin = {tool.name: tool for tool in api.tools()}
-
-    async def call(tool, args):
-        return await _run(hass, patches, tool, args, _context())
-
-    with (
-        patch(
-            "custom_components.matic_robot.llm_common.er.async_entries_for_config_entry",
-            side_effect=lambda _registry, entry_id: registered[entry_id],
-        ),
-        patch(
-            "custom_components.matic_robot.llm_common.async_should_expose",
-            should_expose,
-        ),
-    ):
-        operations = (await call(assist["MaticGetOperations"], {})).data
-        assert operations["robot_count"] == 1
-        assert [robot["entry_id"] for robot in operations["robots"]] == ["entry-one"]
-        assert (await call(admin["MaticGetOperations"], {})).data["robot_count"] == 2
-        firmware = (await call(assist["MaticGetFirmware"], {})).data
-        assert [robot["entry_id"] for robot in firmware["robots"]] == ["entry-one"]
-        events = (await call(assist["MaticGetRecentEvents"], {})).data["events"]
-        assert [event["data"]["room"] for event in events] == [
-            "visible entity",
-            "visible device",
-            "visible entry",
-        ]
-        everything = (await call(admin["MaticGetRecentEvents"], {})).data["events"]
-        assert len(everything) == 7
-
-        for name, args in (
-            ("MaticGetFirmware", {}),
-            ("MaticGetPlan", {}),
-            ("MaticGetNativeHistory", {}),
-            ("MaticGetActivity", {}),
-            ("MaticRunPlan", {}),
-            ("MaticCleanRooms", {"rooms": ["Kitchen"]}),
-            ("MaticStopCleaning", {}),
-            ("MaticResetSchedule", {"schedule": "mop", "scope": "plan"}),
-            ("MaticGoToRoom", {"room": "Kitchen"}),
-            ("MaticSendToSink", {}),
-        ):
-            for robot in ("entry-hidden", "ENTRY-HIDDEN", "Hidden Robot", "hidden"):
-                with pytest.raises(HomeAssistantError) as err:
-                    await call(assist[name], {**args, "robot": robot})
-                assert err.value.translation_key == "llm_robot_unknown"
-                assert str(err.value).startswith(f"No robot is named {robot}.")
-        hass.services.async_call.assert_not_awaited()
-
-        # The one exposed robot needs no name, as if it were the only robot.
-        stopped = await call(assist["MaticStopCleaning"], {})
-        assert stopped.data == {"stop_sent": True}
-        assert hass.services.async_call.await_args.args[2]["entity_id"] == (
-            "vacuum.robot"
-        )
-
-        should_expose.side_effect = None
-        should_expose.return_value = False
-        for name in ("MaticGetOperations", "MaticGetRecentEvents"):
-            with pytest.raises(HomeAssistantError, match="No robot is set up"):
-                await call(assist[name], {})
-    should_expose.assert_called_with(hass, "conversation", "vacuum.hidden")
 
 
 async def test_run_history_explains_endings_and_survives_robot_history_failures() -> (

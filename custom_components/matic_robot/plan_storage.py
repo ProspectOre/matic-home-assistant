@@ -295,7 +295,11 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
             # Store otherwise logs these errors and returns a successful await.
             # Keep its atomic writer and locks, but do not acknowledge a failed
             # commit or expose serialization payloads in a service error.
-            raise HomeAssistantError("Cleaning plan state could not be saved") from None
+            raise HomeAssistantError(
+                "Cleaning plan state could not be saved",
+                translation_domain=DOMAIN,
+                translation_key="plan_state_unsaved",
+            ) from None
 
     @override
     async def _async_migrate_func(

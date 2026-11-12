@@ -169,11 +169,18 @@ class RobotSession:
             self._raw = await self.client.async_get_state()
         except AuthenticationRequiredError as err:
             raise ConfigEntryAuthFailed(
-                "The robot rejected its local Home Assistant credential"
+                "The robot rejected its local Home Assistant credential",
+                translation_domain=DOMAIN,
+                translation_key="robot_credential_rejected",
             ) from err
         except MaticError as err:
             self._async_track_identity(err)
-            raise ConfigEntryNotReady(str(err)) from err
+            raise ConfigEntryNotReady(
+                str(err),
+                translation_domain=DOMAIN,
+                translation_key="robot_not_ready",
+                translation_placeholders={"error": str(err)},
+            ) from err
         self.state = Store(self._live(self.health.observe(self._raw)))
         self._stop = [
             self.client.add_connection_listener(self._async_connection_changed),

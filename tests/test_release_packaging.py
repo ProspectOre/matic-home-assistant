@@ -40,7 +40,18 @@ def test_release_versions_and_links_are_consistent() -> None:
     assert manifest["issue_tracker"].endswith("/issues")
     assert manifest["codeowners"]
     assert manifest["dependencies"] == ["bluetooth_adapters", "http", "zeroconf"]
-    assert manifest["after_dependencies"] == ["frontend", "recorder"]
+    assert manifest["after_dependencies"] == [
+        "ai_task",
+        "automation",
+        "device_automation",
+        "frontend",
+        "llm",
+        "media_source",
+        "panel_custom",
+        "recorder",
+        "repairs",
+        "websocket_api",
+    ]
 
 
 def test_github_validation_runs_hacs_and_hassfest() -> None:

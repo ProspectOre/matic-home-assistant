@@ -31,6 +31,10 @@ _ERRORS = {
     "llm_no_robot": (
         "No robot is set up in Home Assistant. Set up the robot, then try again."
     ),
+    "llm_robot_not_exposed": (
+        "No robot is exposed to this assistant. Expose the robot's vacuum in "
+        "Settings > Voice assistants, then try again."
+    ),
     "llm_robot_required": (
         "More than one robot is set up. Name the robot to use, then try again."
     ),
@@ -126,28 +130,25 @@ class _AdministratorAPI(llm.API):
 class _MaticTool(llm.Tool):
     """A Matic tool that only a current administrator can call.
 
-    Tools handed to Assist see only robots whose vacuum is exposed to the
-    calling assistant; an unexposed robot is treated as absent.
+    On every path, Assist or an LLM API, a tool sees only robots whose vacuum
+    is exposed to the calling assistant; an unexposed robot is treated as
+    absent.
     """
 
     integration = DOMAIN
-
-    def __init__(self, *, exposed_only: bool = False) -> None:
-        self.exposed_only = exposed_only
 
     def entries(
         self, hass: HomeAssistant, llm_context: llm.LLMContext
     ) -> list[ConfigEntry[Any]]:
         """Return the loaded robots this caller may see, or a plain error."""
-        entries = hass.config_entries.async_loaded_entries(DOMAIN)
-        if self.exposed_only:
-            entries = [
-                entry
-                for entry in entries
-                if _exposed_to(hass, llm_context.assistant, entry)
-            ]
-        if not entries:
+        loaded = hass.config_entries.async_loaded_entries(DOMAIN)
+        if not loaded:
             raise _error("llm_no_robot")
+        entries = [
+            entry for entry in loaded if _exposed_to(hass, llm_context.assistant, entry)
+        ]
+        if not entries:
+            raise _error("llm_robot_not_exposed")
         return entries
 
     def resolve_entry(

@@ -11,6 +11,15 @@ Each robot has fixed entities and two opt-in statistics sensors per mapped room.
 
 See the [entity reference](entity-reference.md) for names, IDs, defaults and sensor behavior.
 
+## How entities update
+
+The robot pushes its state, such as the vacuum's activity, battery and errors,
+and entities follow within a second. Home Assistant reads the floor plan,
+telemetry, run progress and cleaning history itself: every 5 minutes while the
+robot is docked and every 30 seconds while it is out. The current-room sensors
+refresh every five seconds. If Home Assistant loses the robot for 10 seconds,
+every entity becomes unavailable until the robot answers again.
+
 ## Controls
 
 Use Matic Map for plans, room selection, and custom areas, or the standard vacuum
