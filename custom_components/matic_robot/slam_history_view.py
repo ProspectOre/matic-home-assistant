@@ -23,6 +23,7 @@ from .http import (
     history_scene_api_url,
     runtime_for_entry,
 )
+from .map_schema import HistoryCatalog, HistoryFloor, HistorySnapshot
 from .slam_history import HistoryReadCapacityError
 from .slam_history_format import MAX_ARCHIVE_BYTES, SlamHistorySnapshot
 
@@ -65,7 +66,7 @@ class MaticSlamHistoryView(HomeAssistantView):
             if floor_plan is not None
             else {}
         )
-        floors = [
+        floors: list[HistoryFloor] = [
             {
                 "id": current_floor_id,
                 "active": True,
@@ -123,15 +124,13 @@ class MaticSlamHistoryView(HomeAssistantView):
                     "snapshots": _history_metadata(entry_id, imported_snapshots),
                 }
             )
-        return self.json(
-            {
-                "entry_id": entry_id,
-                "live_available": floor_plan_coherent,
-                "snapshots": _history_metadata(entry_id, current_snapshots),
-                "floors": floors,
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
+        catalog: HistoryCatalog = {
+            "entry_id": entry_id,
+            "live_available": floor_plan_coherent,
+            "snapshots": _history_metadata(entry_id, current_snapshots),
+            "floors": floors,
+        }
+        return self.json(catalog, headers=PRIVATE_NO_STORE_HEADERS)
 
 
 class MaticSlamHistorySceneView(HomeAssistantView):
@@ -393,7 +392,7 @@ def _history_error(err: ValueError) -> web.Response:
 
 def _history_metadata(
     entry_id: str, snapshots: tuple[SlamHistorySnapshot, ...]
-) -> list[dict[str, object]]:
+) -> list[HistorySnapshot]:
     """Return bounded, content-free history metadata for the admin UI."""
     return [
         {

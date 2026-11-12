@@ -1,4 +1,5 @@
-import { ContractError } from "./backend-contracts";
+import { ContractError, type Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 import type { FloorTypeOutline, FloorTypesLayer } from "./contracts";
 
 // The integration caps all outlines together at 40,000 points.
@@ -10,7 +11,7 @@ const MAX_POINTS = 40_000;
  */
 export const parseFloorTypes = (value: unknown): FloorTypesLayer => {
   if (!value || typeof value !== "object") throw new ContractError("invalid-floor-types");
-  const layers = (value as Record<string, unknown>).layers;
+  const layers = (value as Unchecked<wire.FloorLayers>).layers;
   if (!layers || typeof layers !== "object") throw new ContractError("invalid-floor-types");
   let points = 0;
   const outlines = (candidate: unknown): FloorTypeOutline[] => {
@@ -28,6 +29,6 @@ export const parseFloorTypes = (value: unknown): FloorTypesLayer => {
       });
     });
   };
-  const root = layers as Record<string, unknown>;
+  const root = layers as Unchecked<wire.FloorLayerOutlines>;
   return { status: "ready", carpet: outlines(root.carpet), vent: outlines(root.vent) };
 };

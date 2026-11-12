@@ -76,7 +76,11 @@ npm run test:browser
 ```
 
 Git ignores the build output, so commit the source alone; every CI job builds
-its own. On Linux, `npx playwright install --with-deps` also installs system
+its own.
+
+`backend-schema.ts` is generated from `map_schema.py` and
+`client/scene_schema.py`. After changing either, run
+`uv run scripts/contract_types.py`; `scripts/check.py` fails until you do. On Linux, `npx playwright install --with-deps` also installs system
 packages and may need administrator rights. Give each worktree its own
 `node_modules`: a shared, symlinked one can change the generated chunks.
 

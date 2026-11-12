@@ -14,7 +14,9 @@ import {
   type SceneMetadata,
   type SceneModel,
   type SceneTileIndex,
+  type Unchecked,
 } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 
 export interface ParsedScene {
   readonly buffer: ArrayBuffer;
@@ -126,7 +128,7 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
     fail();
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail();
-  const payload = raw as Record<string, unknown>;
+  const payload = raw as Unchecked<wire.SceneMetadata>;
   const meters = payload.meters_per_cell;
   const origin = payload.origin_cells;
   const span = payload.span_cells;
@@ -146,7 +148,7 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
   const roomIds = new Set<string>();
   const rooms = rawRooms.flatMap((candidate, index) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
-    const room = candidate as Record<string, unknown>;
+    const room = candidate as Unchecked<wire.SceneRoom>;
     const name = typeof room.name === "string" ? room.name.trim() : "";
     if (!name || new TextEncoder().encode(name).length > 256 || /[\u0000-\u001f\u007f]/u.test(name)) return [];
     if (!Array.isArray(room.boundary) || room.boundary.length < 3 || room.boundary.length > 8192) return [];

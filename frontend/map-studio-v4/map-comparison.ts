@@ -1,4 +1,5 @@
-import { SCENE_HEADER_BYTES, SCENE_MAX_BYTES, type HistoryComparisonFrame, type HistorySnapshot, type SceneComparisonCoverage, type SceneModel } from "./backend-contracts";
+import { SCENE_HEADER_BYTES, SCENE_MAX_BYTES, type HistoryComparisonFrame, type HistorySnapshot, type SceneComparisonCoverage, type SceneModel, type Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 
 const MAX_COVERAGE_CELLS = 4 * 1024 * 1024;
 const MAX_COVERAGE_MASK_BYTES = 384 * 1024;
@@ -10,7 +11,7 @@ const comparisonCoverage = (
   span: readonly [number, number],
 ): SceneComparisonCoverage | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
+  const raw = value as Unchecked<wire.SceneCoverage>;
   const rawOrigin = raw.origin_cells;
   const rawSpan = raw.span_cells;
   const cells = span[0] * span[1];
@@ -56,7 +57,7 @@ export const enrichComparisonScene = (scene: SceneModel): SceneModel => {
           new Uint8Array(buffer, SCENE_HEADER_BYTES, metadataBytes),
         ));
         if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-          coverage = comparisonCoverage((payload as Record<string, unknown>).coverage,
+          coverage = comparisonCoverage((payload as Unchecked<wire.SceneMetadata>).coverage,
             metadata.origin, metadata.metersPerCell, metadata.span);
         }
       }

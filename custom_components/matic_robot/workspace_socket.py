@@ -706,7 +706,7 @@ class WorkspaceSocket:
             )
             floor_plan = session.floor.value
             mission_id = getattr(floor_plan, "mission_id", None)
-            map_revision = entry_projection["map_revision"]
+            map_revision: object = entry_projection["map_revision"]
             if (
                 floor_verified
                 and isinstance(mission_id, int)

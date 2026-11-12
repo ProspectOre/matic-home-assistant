@@ -19,6 +19,7 @@ from .http import (
     plans_api_url,
     scene_api_url,
 )
+from .map_schema import CatalogEntry, MapBlockReason
 from .run_history import RunTrails
 
 if TYPE_CHECKING:
@@ -131,7 +132,7 @@ def catalog_entry_projection(
     entry_id: str,
     runtime: MaticRuntimeData,
     scene_view: MaticSlamSceneView | None = None,
-) -> dict[str, object]:
+) -> CatalogEntry:
     """Project the bounded catalog row shared by REST and workspace snapshots."""
     health = runtime.slam_map.health
     floor_plan = runtime.session.floor.value
@@ -157,6 +158,7 @@ def catalog_entry_projection(
     session_verified = getattr(
         runtime.slam_map, "live_session_verified", floor_plan_coherent
     )
+    map_block_reason: MapBlockReason | None
     if floor_plan_coherent and session_verified:
         map_block_reason = None
     elif floor_plan is None:

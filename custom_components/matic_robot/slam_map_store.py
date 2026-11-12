@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from time import monotonic
-from typing import Literal
 
 from google.protobuf.message import DecodeError
 from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
@@ -28,6 +27,7 @@ from .client.slam_tiles import (
     decode_slam_tile,
 )
 from .const import DOMAIN
+from .map_schema import MapBootstrapState, MapHealthState, MapStreamState
 from .slam_decoded_map import (
     DecodedMap,
     PageDigests,
@@ -84,13 +84,6 @@ MAX_RETIRED_MISSIONS = 8
 # to resubscribe, classify a one-sided candidate so it cannot block the map.
 CANDIDATE_CLASSIFICATION_SECONDS = 15
 CANDIDATE_REFRESH_RETRY_SECONDS = 5
-
-
-MapHealthState = Literal[
-    "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
-]
-MapStreamState = Literal["idle", "connecting", "connected", "retrying"]
-MapBootstrapState = Literal["not_started", "running", "complete", "partial", "failed"]
 
 
 @dataclass(frozen=True, slots=True)

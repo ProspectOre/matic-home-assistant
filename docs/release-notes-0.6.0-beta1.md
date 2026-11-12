@@ -47,7 +47,8 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
   Map that the map changed, and it downloads only the parts that changed. No
   request waits open in the meantime. If the connection to Home Assistant
   drops, the last map stays on screen while the status says **Reconnecting**,
-  and it reloads when the connection returns.
+  and it reloads when the connection returns. The map data's shape is defined
+  once in the integration, and Matic Map's types are generated from it.
 - **Cleaning phase and time left.** While the robot cleans, the status says
   whether it is cleaning the interior, edges or toekicks, and shows the robot's
   own estimate of the time left for the whole clean. The same values are

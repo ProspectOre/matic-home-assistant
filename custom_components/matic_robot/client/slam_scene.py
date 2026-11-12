@@ -16,6 +16,7 @@ from google.protobuf.message import DecodeError
 from PIL import Image, ImageDraw
 
 from .models import FloorPlan
+from .scene_schema import SceneCoverage, SceneMetadata, SceneRoom
 from .slam_geometry import mask_contours
 from .slam_tiles import (
     MAX_SLAM_TILES,
@@ -266,7 +267,7 @@ def scene_metadata(
     structure_tiles: tuple[SlamStructureTile, ...] | None = None,
 ) -> bytes:
     """Encode the scene's frame, sampling, rooms and optional coverage."""
-    rooms: list[dict[str, object]] = []
+    rooms: list[SceneRoom] = []
     if floor_plan is not None:
         floor_occupancy = np.zeros((frame.span_y, frame.span_x), dtype=bool)
         for tile in tiles:
@@ -307,7 +308,7 @@ def scene_metadata(
                     "center": center,
                 }
             )
-    metadata_value: dict[str, object] = {
+    metadata_value: SceneMetadata = {
         "meters_per_cell": VOXEL_SCALE_METERS,
         "origin_cells": [frame.origin_x, frame.origin_y],
         "span_cells": [frame.span_x, frame.span_y],
@@ -437,7 +438,7 @@ def _coverage_metadata(
     origin_y: int,
     span_x: int,
     span_y: int,
-) -> dict[str, object] | None:
+) -> SceneCoverage | None:
     """Encode exact structurally observed cells, or explicitly mark unknown."""
     if not tiles:
         return {"version": 1, "status": "unavailable", "diff_eligible": False}

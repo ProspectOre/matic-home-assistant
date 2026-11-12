@@ -1,7 +1,8 @@
 // Custom-area decoding is loaded only when a workflow or pinned area needs it.
 // Runtime helpers arrive from the backend so this module adds no startup edge.
 import type { AreaOutline } from "./area-outline";
-import type { AreaCircle, AreaBindingStatus, AreasCatalog, MapZoneOverlay, SavedArea } from "./backend-contracts";
+import type { AreaCircle, AreaBindingStatus, AreasCatalog, MapZoneOverlay, SavedArea, Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 type AreaCatalogHelpers = typeof import("./plan-catalog").areaCatalogHelpers;
 type AreaCatalogGeometry = Pick<typeof import("./area-outline"), "validOutline">;
 
@@ -13,7 +14,7 @@ export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, g
     if (value === undefined || value === null) return null;
     if (!Array.isArray(value) || value.length < 3 || value.length > 64) throw new ContractError("invalid-area-outline");
     const outline: AreaOutline = { closed: true, points: value.map((p) => {
-      const point = objectValue(p, "invalid-area-outline");
+      const point: Unchecked<wire.AreaPoint> = objectValue(p, "invalid-area-outline");
       if (typeof point.x !== "number" || typeof point.y !== "number") throw new ContractError("invalid-area-outline");
       return { x: point.x, y: point.y };
     }) };
@@ -22,7 +23,7 @@ export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, g
   };
 
   const parseCircle = (value: unknown): AreaCircle => {
-    const circle = objectValue(value, "invalid-area-circle");
+    const circle: Unchecked<AreaCircle> = objectValue(value, "invalid-area-circle");
     return {
       x: boundedNumber(circle.x, -1_000_000, 1_000_000, "invalid-area-circle"),
       y: boundedNumber(circle.y, -1_000_000, 1_000_000, "invalid-area-circle"),
@@ -50,7 +51,7 @@ export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, g
     return value.map((id) => boundedString(id, 128, "invalid-zone"));
   };
   const parseZone = (value: unknown): MapZoneOverlay => {
-    const zone = objectValue(value, "invalid-zone");
+    const zone: Unchecked<wire.MapZoneOverlay> = objectValue(value, "invalid-zone");
     if (!Array.isArray(zone.holes) || zone.holes.length > 64) throw new ContractError("invalid-zone");
     return {
       kind: zone.kind === "no_go" ? "no_go" : "unknown",
@@ -61,7 +62,7 @@ export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, g
     };
   };
 
-  const payload = objectValue(value, "invalid-areas");
+  const payload: Unchecked<wire.AreasCatalog> = objectValue(value, "invalid-areas");
   if (!Array.isArray(payload.areas) || payload.areas.length > 256) {
     throw new ContractError("invalid-area-list");
   }
@@ -69,7 +70,7 @@ export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, g
     sceneUrl: privatePath(payload.scene_url, "invalid-area-scene-url"),
     rooms: parseRooms(payload.rooms, true),
     areas: payload.areas.map((candidate) => {
-      const area = objectValue(candidate, "invalid-area");
+      const area: Unchecked<wire.SavedArea> = objectValue(candidate, "invalid-area");
       if (!Array.isArray(area.circles) || area.circles.length > 512) {
         throw new ContractError("invalid-area-circles");
       }

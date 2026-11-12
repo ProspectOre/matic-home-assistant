@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from functools import partial
 from http import HTTPStatus
-from typing import Any
+from typing import Any, TypedDict
 
 import probatio
 from aiohttp import web
@@ -36,6 +36,16 @@ from .http import (
     runtime_for_entry,
     scene_api_url,
 )
+from .map_schema import (
+    AreaInUse,
+    AreaPoint,
+    AreaSave,
+    AreaSaved,
+    AreasCatalog,
+    MapRoom,
+    MapZoneOverlay,
+    SavedArea,
+)
 from .plan_model import (
     AreaFramePointLimitError,
     AreaInUseError,
@@ -51,7 +61,7 @@ class MaticAreasView(HomeAssistantView):
     name = "api:matic_robot:areas"
 
     @staticmethod
-    def _rooms(floor_plan: FloorPlan | None) -> list[dict[str, object]]:
+    def _rooms(floor_plan: FloorPlan | None) -> list[MapRoom]:
         """Project rooms from one explicit floor-plan snapshot."""
         if floor_plan is None:
             return []
@@ -68,8 +78,8 @@ class MaticAreasView(HomeAssistantView):
     def _zones(
         zones: tuple[MapZone, ...],
         floor_plan: FloorPlan,
-        areas: list[dict[str, Any]],
-    ) -> list[dict[str, object]]:
+        areas: list[SavedArea],
+    ) -> list[MapZoneOverlay]:
         """Project the robot's zones on this map and what each one overlaps."""
         return [
             {
@@ -176,7 +186,8 @@ class MaticAreasView(HomeAssistantView):
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
             )
         try:
-            body = await request.json(loads=json.loads)
+            # Untrusted: the type names the fields; each is validated below.
+            body: AreaSave = await request.json(loads=json.loads)
             if (
                 runtime_for_entry(hass, entry_id) is not runtime
                 or runtime.session.floor.value != floor_plan
@@ -276,10 +287,8 @@ class MaticAreasView(HomeAssistantView):
                 status_code=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 headers=PRIVATE_NO_STORE_HEADERS,
             )
-        return self.json(
-            {"id": area_id},
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
+        saved_area: AreaSaved = {"id": area_id}
+        return self.json(saved_area, headers=PRIVATE_NO_STORE_HEADERS)
 
     @require_admin
     async def delete(self, request: web.Request, entry_id: str) -> web.Response:
@@ -306,9 +315,9 @@ class MaticAreasView(HomeAssistantView):
                 headers=PRIVATE_NO_STORE_HEADERS,
             )
         except AreaInUseError as err:
-            # Removing the area would leave these plans with nothing to clean.
+            in_use: AreaInUse = {"plans": list(err.plan_names)}
             return self.json(
-                {"plans": list(err.plan_names)},
+                in_use,
                 status_code=HTTPStatus.CONFLICT,
                 headers={
                     **PRIVATE_NO_STORE_HEADERS,
@@ -320,15 +329,19 @@ class MaticAreasView(HomeAssistantView):
         )
 
 
+class _Outline(TypedDict, total=False):
+    outline: list[AreaPoint]
+
+
 def _project_areas(
     entry_id: str,
     floor_plan: FloorPlan,
     saved_areas: dict[str, dict[str, Any]],
     selected_area: str | None,
     zones: tuple[MapZone, ...],
-) -> dict[str, object]:
+) -> AreasCatalog:
     """Bind saved areas to one floor plan, off the event loop."""
-    areas = []
+    areas: list[SavedArea] = []
     room_geometry = None
     for area_id, area in saved_areas.items():
         uses_indexed_binding = area_binding_needs_geometry_index(area)
@@ -345,21 +358,22 @@ def _project_areas(
             circles_already_validated=uses_indexed_binding,
         )
         bound = status is AreaBindingStatus.CURRENT or can_rebind
+        outline: _Outline = (
+            {"outline": area["outline"]}
+            if area.get("outline") is not None and bound
+            else {}
+        )
         areas.append(
             {
                 "id": area_id,
                 "name": str(area.get("name", area_id)),
                 "circles": area.get("circles", []) if bound else [],
-                **(
-                    {"outline": area["outline"]}
-                    if area.get("outline") is not None and bound
-                    else {}
-                ),
+                **outline,
                 "cleaning_mode": area.get("cleaning_mode", CleaningMode.VACUUM.value),
                 "coverage_setting": area.get(
                     "coverage_setting", CoverageSetting.OPTIMAL.value
                 ),
-                "status": status.value,
+                "status": status,
                 "can_rebind": can_rebind,
             }
         )

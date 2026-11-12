@@ -21,6 +21,7 @@ from homeassistant.util import dt as dt_util
 
 from .client.models import CleaningSession, CleaningSessionRecord
 from .const import DOMAIN
+from .map_schema import RunEntry, RunItem, RunOutcome, TrailPoint
 
 RUN_HISTORY_LIMIT = 50
 MAX_HISTORY_ROOMS = 64
@@ -60,10 +61,6 @@ _AREA_RESULTS = {
     "ended_unverified": "unconfirmed",
     "running": "running",
 }
-
-# Map metres, then the robot's own observation time of that pose in epoch
-# seconds (latest_pose field 5). Points saved before times were kept have none.
-type TrailPoint = tuple[float, float] | tuple[float, float, int]
 
 
 def run_history(robot: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -139,7 +136,7 @@ def repair_run_history(
                 room["result"] = "completed"
 
 
-def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str, str]]:
+def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[RunItem]:
     """Return the run's planned rooms in order with each room's own result."""
     run_id = run.get("run_id")
     rotation = _mapping(_mapping(robot.get("rotations")).get(str(run.get("plan_id"))))
@@ -158,7 +155,7 @@ def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str
             and room_id not in {item[0] for item in planned}
         ):
             planned.append((room_id, _name(record.get("name"), room_id)))
-    rooms = []
+    rooms: list[RunItem] = []
     for room_id, name in planned[:MAX_HISTORY_ROOMS]:
         record = _mapping(records.get(room_id))
         result = (
@@ -170,7 +167,7 @@ def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str
     return rooms
 
 
-def run_areas(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str, str]]:
+def run_areas(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[RunItem]:
     """Return the custom areas this run planned or attempted, with each result."""
     run_id = run.get("run_id")
     rotation = _mapping(_mapping(robot.get("rotations")).get(str(run.get("plan_id"))))
@@ -186,7 +183,7 @@ def run_areas(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str
         for area_id, record in records.items():
             if isinstance(record, Mapping) and record.get("run_id") == run_id:
                 planned.setdefault(area_id, record.get("name"))
-    areas = []
+    areas: list[RunItem] = []
     for area_id, name in list(planned.items())[:MAX_HISTORY_ROOMS]:
         record = next(
             (
@@ -243,7 +240,7 @@ def managed_entry(
     *,
     manual: bool,
     live: bool = False,
-) -> dict[str, Any]:
+) -> RunEntry:
     """Project one managed run; a room clean without a saved plan has no plan name."""
     rooms = run_rooms(robot, run) if live else _stored_items(run.get("rooms"))
     areas = run_areas(robot, run) if live else _stored_items(run.get("areas"))
@@ -267,10 +264,10 @@ def native_run_id(key: bytes) -> str:
     return "robot-" + sha256(key).hexdigest()[:20]
 
 
-def native_entry(record: CleaningSessionRecord) -> dict[str, Any]:
+def native_entry(record: CleaningSessionRecord) -> RunEntry:
     """Project one robot history record for a run started outside Home Assistant."""
     session = record.session
-    rooms = [
+    rooms: list[RunItem] = [
         {"name": _name(name, "Room"), "result": _native_room_result(session, name)}
         for name in session.rooms[:MAX_HISTORY_ROOMS]
     ]
@@ -303,7 +300,7 @@ def history_entries(
     native: Iterable[CleaningSessionRecord],
     *,
     manual: Callable[[object], bool],
-) -> list[dict[str, Any]]:
+) -> list[RunEntry]:
     """Merge managed runs and robot-started sessions, newest first.
 
     A robot session that overlaps a managed run is that run's own mission, so
@@ -364,8 +361,8 @@ def history_entries(
 
 
 def _outcome(
-    ending: str, rooms: Sequence[Mapping[str, str]], areas: Sequence[Mapping[str, str]]
-) -> str:
+    ending: str, rooms: Sequence[RunItem], areas: Sequence[RunItem]
+) -> RunOutcome:
     if ending == "running":
         return "running"
     if ending == "finished":
@@ -403,7 +400,7 @@ def _native_room_result(session: CleaningSession, name: str) -> str:
     return "partial"
 
 
-def _stored_items(value: object) -> list[dict[str, str]]:
+def _stored_items(value: object) -> list[RunItem]:
     if not isinstance(value, list):
         return []
     return [
