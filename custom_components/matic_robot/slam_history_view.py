@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from functools import partial
 from hashlib import sha256
 from http import HTTPStatus
 from typing import Any
@@ -356,7 +357,9 @@ async def _read_json_object(request: web.Request, maximum_bytes: int) -> dict[st
             chunks.append(chunk)
         raw = b"".join(chunks)
     try:
-        body = json.loads(raw)
+        body = await request.app[KEY_HASS].async_add_executor_job(
+            partial(json.loads, raw)
+        )
     except (json.JSONDecodeError, UnicodeDecodeError) as err:
         raise ValueError("invalid-json") from err
     if not isinstance(body, dict):

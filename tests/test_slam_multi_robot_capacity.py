@@ -185,7 +185,9 @@ async def test_three_large_maps_switch_floor_and_restore_independently(hass):
         assert store.mission_identity.mission_id == 2
         assert store.tile_count == store.structure_tile_count == page_count
         assert not store.live_session_verified and not store.health.truncated
-        assert decode_slam_tile(store.entries()[0]).page_x == robot * 100
+        assert (
+            decode_slam_tile(next(iter(store._entries.values()))).page_x == robot * 100
+        )
         await store.async_shutdown()
 
     print(
