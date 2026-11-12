@@ -80,7 +80,9 @@ of the queue for Smart Stop, or the owner skipped, is not unreachable.
 
 The room closes as **Couldn't reach** without credit and stays due, and the
 plan moves on to the next room. `matic_robot_room_skipped` fires with
-`reason_code: room_unreachable` and `cause: robot`.
+`reason_code: room_unreachable` and `cause: robot`. A run whose other rooms
+all completed ends `completed` with `reason_code: all_rooms_settled`, the same
+as a run with an owner-skipped room.
 
 Any other ending still ends the plan with `reason_code: native_task_ended`: a
 clean the user or the robot cancelled, one with no stop reason, or one where

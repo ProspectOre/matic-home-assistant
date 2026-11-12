@@ -318,6 +318,7 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
     manager.ledger.async_mark_skipped = AsyncMock()
     skipped = []
     hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
+    settled = []
 
     async def send_command(_call) -> None:
         robot.show("cleaning", current_area="Kitchen")
@@ -352,11 +353,13 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         floor_token="floor",
         checkpoint_dispatch=AsyncMock(),
         advance=run_step,
+        record_room_settled=settled.append,
     )
     await hass.async_block_till_done()
 
     # The skipped room is settled, so the run goes on to its next leg.
     assert completed is True
+    assert settled == [rooms[1]]
     manager.ledger.async_mark_ended_unverified.assert_not_awaited()
     manager.ledger.async_mark_skipped.assert_awaited_once_with(
         "serial", "away", rooms[1], run_id="run-1"

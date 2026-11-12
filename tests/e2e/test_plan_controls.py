@@ -45,7 +45,8 @@ async def test_skip_the_next_room(
     robot.arrive_at_dock()
 
     finished = await plan.outcome()
-    expect_finished(finished, "unverified", "partial_native_result", 1, "docked")
+    # Kitchen completed and Study was skipped, so every room has a result.
+    expect_finished(finished, "completed", "all_rooms_settled", 1, "docked")
 
 
 async def test_clean_a_finished_room_again(

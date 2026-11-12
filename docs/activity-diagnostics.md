@@ -58,7 +58,8 @@ completion scope and nullable completion flags.
 `matic_robot_plan_finished` describes the managed run. Its `outcome`
 (`completed`, `stopped_docked`, `recharge_suspended`, `cancelled`, `failed`, or
 `unverified`), verified room count, and `reason_code` explain what the runner
-observed. Common reasons include `all_rooms_verified`, `partial_native_result`,
+observed. Common reasons include `all_rooms_verified`, `all_rooms_settled`
+(every room completed, skipped by the owner, or unreachable), `partial_native_result`,
 `stopped_in_place`, `native_task_ended`, `native_task_taken_over`, `managed_stop`, `low_charge`,
 `start_timeout`, `completion_timeout`, and `robot_error`; reasons starting with
 `restart_` say why [restart recovery](restart-recovery.md) could not continue.

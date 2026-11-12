@@ -430,3 +430,8 @@ async def test_an_unreachable_room_in_a_shared_mission_settles(hass, study) -> N
     assert [e["room_id"] for e in _events(events, "room_completed")] == (
         [STUDY.room_id] if study else []
     )
+    (finished,) = _events(events, "plan_finished")
+    assert (finished["outcome"], finished["reason_code"]) == (
+        "completed",
+        "all_rooms_settled",
+    )
