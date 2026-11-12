@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +18,7 @@ from homeassistant.exceptions import (
     Unauthorized,
     UnknownUser,
 )
+from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.plan_model as plan_model_module
@@ -321,11 +323,26 @@ def _session(
     )
 
 
-def _registered_handler(services, service: str):
+def _registration(services, service: str) -> tuple:
     return next(
-        item.args[2]
+        item.args
         for item in services.async_register.call_args_list
         if item.args[1] == service
+    )
+
+
+def _registered_handler(services, service: str):
+    """Return an action's handler; a robot action takes its vacuums from the call."""
+    handler = _registration(services, service)[2]
+    if not isinstance(handler, partial):
+        return handler
+    action = handler.args[2]
+    return lambda call: action(
+        [
+            SimpleNamespace(entity_id=entity_id)
+            for entity_id in cv.ensure_list(call.data.get("entity_id", []))
+        ],
+        call,
     )
 
 
@@ -3881,7 +3898,7 @@ async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
         return_value=("vacuum.test", entry, "serial", {}),
     ) as resolve:
         await _registered_handler(services, "stop_intelligent_cleaning")(stop)
-    resolve.assert_called_once_with(hass, stop, require_rooms=False)
+    resolve.assert_called_once_with(hass, ["vacuum.test"], require_rooms=False)
     if include_unmanaged:
         session.heartbeat.async_discard_current_room.assert_called_once_with()
         services.async_call.assert_awaited_once_with(
@@ -4570,8 +4587,8 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
     0.2.0 removed the vacuum's ``rooms`` state attribute, so this seam
     deliberately builds the context from the real session floor plan.
     """
-    call = MagicMock()
     hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock(return_value=None)))
+    robot = ["vacuum.test"]
     floor_plan = SimpleNamespace(
         rooms=(
             SimpleNamespace(id="one", name="Kitchen"),
@@ -4590,40 +4607,28 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
             ),
         )
     )
-    with (
-        patch(
-            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-            return_value=["vacuum.test"],
-        ),
-        patch(
-            "custom_components.matic_robot.service_context._entry_for_entity",
-            return_value=entry,
-        ),
+    with patch(
+        "custom_components.matic_robot.service_context._entry_for_entity",
+        return_value=entry,
     ):
-        assert _saved_plan_context(hass, call)[2:] == (
+        assert _saved_plan_context(hass, robot)[2:] == (
             "synthetic-serial",
             {"one": "Kitchen", "two": "Study"},
         )
-        assert _saved_plan_context(hass, call, require_current_floor=True)[3] == {
+        assert _saved_plan_context(hass, robot, require_current_floor=True)[3] == {
             "one": "Kitchen",
             "two": "Study",
         }
         entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
         with pytest.raises(ServiceValidationError, match="room map"):
-            _saved_plan_context(hass, call, require_current_floor=True)
+            _saved_plan_context(hass, robot, require_current_floor=True)
         entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
         session.floor.value = None
         with pytest.raises(ServiceValidationError, match="room map"):
-            _saved_plan_context(hass, call)
-        assert _saved_plan_context(hass, call, require_rooms=False)[3] == {}
-    with (
-        patch(
-            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-            return_value=["vacuum.one", "vacuum.two"],
-        ),
-        pytest.raises(ServiceValidationError, match="exactly one"),
-    ):
-        _saved_plan_context(hass, call)
+            _saved_plan_context(hass, robot)
+        assert _saved_plan_context(hass, robot, require_rooms=False)[3] == {}
+    with pytest.raises(ServiceValidationError, match="exactly one"):
+        _saved_plan_context(hass, ["vacuum.one", "vacuum.two"])
 
 
 async def test_saved_plan_context_reads_rooms_the_vacuum_actually_exposes() -> None:
@@ -4637,20 +4642,13 @@ async def test_saved_plan_context_reads_rooms_the_vacuum_actually_exposes() -> N
 
     entry = entity_entry()
     entity = vacuum_platform.MaticVacuum(entry)
-    call = MagicMock()
     hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock(return_value=None)))
 
-    with (
-        patch(
-            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-            return_value=["vacuum.test"],
-        ),
-        patch(
-            "custom_components.matic_robot.service_context._entry_for_entity",
-            return_value=entry,
-        ),
+    with patch(
+        "custom_components.matic_robot.service_context._entry_for_entity",
+        return_value=entry,
     ):
-        room_map = _saved_plan_context(hass, call)[3]
+        room_map = _saved_plan_context(hass, ["vacuum.test"])[3]
 
     assert room_map == entity.extra_state_attributes["rooms"]
     assert room_map == {"room-1": "Kitchen", "room-2": "Study"}
@@ -4688,7 +4686,7 @@ def test_action_target_resolution_accepts_loaded_matic_vacuum() -> None:
             return_value=registry,
         ),
     ):
-        assert _resolve_loaded_matic_vacuums(hass, call) == ["vacuum.test"]
+        assert _resolve_loaded_matic_vacuums(hass, call.data) == ["vacuum.test"]
 
 
 async def test_firmware_metadata_services_accept_offline_loaded_robot() -> None:
@@ -4778,7 +4776,7 @@ async def test_physical_domain_service_still_rejects_offline_loaded_robot() -> N
         ),
         pytest.raises(ServiceValidationError, match="unavailable"),
     ):
-        await _registered_handler(services, "clean")(call)
+        _registration(services, "clean")[3](dict(call.data))
     hass.services.async_call.assert_not_awaited()
 
 
@@ -4889,7 +4887,7 @@ def test_action_target_resolution_rejects_unavailable_robot(loaded, available) -
         ),
         pytest.raises(ServiceValidationError, match="unavailable"),
     ):
-        _resolve_loaded_matic_vacuums(hass, call)
+        _resolve_loaded_matic_vacuums(hass, call.data)
 
 
 def test_action_target_resolution_rejects_non_matic_target() -> None:
@@ -4908,7 +4906,7 @@ def test_action_target_resolution_rejects_non_matic_target() -> None:
         ),
         pytest.raises(ServiceValidationError, match="Select at least one"),
     ):
-        _resolve_loaded_matic_vacuums(hass, call)
+        _resolve_loaded_matic_vacuums(hass, call.data)
 
 
 async def test_inspect_hermes_endpoint_returns_bounded_safe_snapshot() -> None:
