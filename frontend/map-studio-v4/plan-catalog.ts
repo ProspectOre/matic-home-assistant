@@ -20,7 +20,9 @@ import {
   type RoomCadencePolicy,
   type RoomCadenceProgress,
   type SavedPlan,
+  type Unchecked,
 } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 
 const selectedId = (value: unknown, code: string): string | null =>
   value === null || value === undefined ? null : boundedString(value, 128, code);
@@ -38,7 +40,7 @@ const boundary = (value: unknown, code: string): readonly (readonly [number, num
 const parseRooms = (value: unknown, includeBoundary: boolean): readonly MapRoom[] => {
   if (!Array.isArray(value) || value.length > 256) throw new ContractError("invalid-rooms");
   return value.map((candidate) => {
-    const room = objectValue(candidate, "invalid-room");
+    const room: Unchecked<wire.MapRoom> = objectValue(candidate, "invalid-room");
     return {
       roomId: boundedString(room.room_id, 128, "invalid-room-id"),
       name: boundedString(room.name, 256, "invalid-room-name", true),
@@ -78,7 +80,7 @@ const parseCadenceReasons = (value: unknown): readonly CadenceReason[] => {
 
 const parseCadencePolicy = (value: unknown): RoomCadencePolicy | undefined => {
   if (value === undefined || value === null) return undefined;
-  const policy = objectValue(value, "invalid-room-cadence");
+  const policy: Unchecked<wire.CadencePolicy> = objectValue(value, "invalid-room-cadence");
   const scope = policy.scope === undefined ? "plan" : policy.scope;
   if (scope !== "plan" && scope !== "shared") throw new ContractError("invalid-room-cadence-scope");
   const rawPeriodicCoverage = policy.periodic_coverage_setting;
@@ -92,12 +94,13 @@ const parseCadencePolicy = (value: unknown): RoomCadencePolicy | undefined => {
   };
 };
 
-const parseCadenceProgress = (value: unknown, reasonsValue?: unknown): RoomCadenceProgress | undefined => {
+/** The reasons travel next to the progress, as `cadence_reasons` or `shared_cadence_reasons`. */
+const parseCadenceProgress = (value: unknown, reasonsValue: unknown): RoomCadenceProgress | undefined => {
   if (value === undefined || value === null) return undefined;
-  const progress = objectValue(value, "invalid-room-cadence-progress");
+  const progress: Unchecked<wire.CadenceProgress> = objectValue(value, "invalid-room-cadence-progress");
   const effectiveMode = progress.effective_cleaning_mode;
   const effectiveCoverage = progress.effective_coverage_setting;
-  const reasons = parseCadenceReasons(reasonsValue ?? progress.cadence_reasons);
+  const reasons = parseCadenceReasons(reasonsValue);
   return {
     mopProgress: boundedInteger(progress.mop_progress ?? 0, 0, 100, "invalid-mop-progress"),
     coverageProgress: boundedInteger(progress.coverage_progress ?? 0, 0, 100, "invalid-coverage-progress"),
@@ -113,7 +116,7 @@ const parseCadenceProgress = (value: unknown, reasonsValue?: unknown): RoomCaden
 
 const parseDailyLimit = (value: unknown): DailyRoomLimit | undefined => {
   if (value === undefined) return undefined;
-  const raw = objectValue(value, "invalid-daily-limit");
+  const raw: Unchecked<wire.DailyLimit> = objectValue(value, "invalid-daily-limit");
   return {
     limit: raw.limit === null ? null : boundedInteger(raw.limit, 1, 100, "invalid-daily-limit"),
     completedToday: boundedInteger(raw.completed_today, 0, 1024, "invalid-daily-completions"),
@@ -124,7 +127,7 @@ const parseDailyLimit = (value: unknown): DailyRoomLimit | undefined => {
 
 const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
   if (value === undefined || value === null) return undefined;
-  const preview = objectValue(value, "invalid-plan-preview");
+  const preview: Unchecked<wire.NextRunPreview> = objectValue(value, "invalid-plan-preview");
   const steps = preview.entries ?? preview.rooms;
   if (!Array.isArray(preview.rooms) || preview.rooms.length > MAX_ROOM_SEQUENCE_SIZE
     || !Array.isArray(steps) || steps.length > 2 * MAX_ROOM_SEQUENCE_SIZE
@@ -133,7 +136,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
   }
   const stepCount = steps.length;
   const parsedSteps: NextRunPreviewStep[] = steps.map((candidate) => {
-    const step = objectValue(candidate, "invalid-plan-preview-room");
+    const step: Unchecked<wire.PreviewRoomStep> & Unchecked<wire.PreviewAreaStep> = objectValue(candidate, "invalid-plan-preview-room");
     return {
       ...(step.kind === "area"
         ? { areaId: boundedString(step.area_id, 128, "invalid-plan-preview-room-id") }
@@ -167,7 +170,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     throw new ContractError("invalid-plan-preview-held");
   }
   const heldRooms = rawHeld?.map((candidate): NextRunHeldRoom => {
-    const held = objectValue(candidate, "invalid-plan-preview-held");
+    const held: Unchecked<wire.HeldRoom> = objectValue(candidate, "invalid-plan-preview-held");
     return {
       roomId: boundedString(held.room_id, 128, "invalid-plan-preview-held"),
       name: boundedString(held.name, 256, "invalid-plan-preview-held", true),
@@ -180,7 +183,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     throw new ContractError("invalid-daily-limit-held");
   }
   const dailyLimitHeldRooms = dailyHeld?.map((candidate) => {
-    const raw = objectValue(candidate, "invalid-daily-limit-held");
+    const raw: Unchecked<wire.DailyLimitHeldRoom> = objectValue(candidate, "invalid-daily-limit-held");
     return {
       ...parseDailyLimit(raw)!,
       roomId: boundedString(raw.room_id, 128, "invalid-daily-limit-room"),
@@ -208,7 +211,7 @@ export const areaCatalogHelpers = {
 };
 
 const parsePlanRoom = (value: unknown): PlanRoom => {
-  const room = objectValue(value, "invalid-plan-room");
+  const room: Unchecked<wire.PlanRoom> = objectValue(value, "invalid-plan-room");
   const cadence = parseCadencePolicy(room.cadence);
   const cadenceProgress = parseCadenceProgress(room.cadence_progress, room.cadence_reasons);
   const cadenceReasons = parseCadenceReasons(room.cadence_reasons);
@@ -239,12 +242,12 @@ const estimateSeconds = (value: unknown): number | null =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 
 export const parsePlansCatalog = (value: unknown): PlansCatalog => {
-  const payload = objectValue(value, "invalid-plans");
+  const payload: Unchecked<wire.PlansCatalog> = objectValue(value, "invalid-plans");
   if (!Array.isArray(payload.plans) || payload.plans.length > 256) throw new ContractError("invalid-plan-list");
   const rawRooms = payload.rooms;
   const rooms = parseRooms(rawRooms, false).map((room, index): PlansCatalog["rooms"][number] => {
     const raw = Array.isArray(rawRooms) ? rawRooms[index] : undefined;
-    const row = objectValue(raw, "invalid-room");
+    const row: Unchecked<wire.PlanCatalogRoom> = objectValue(raw, "invalid-room");
     const sharedCadence = parseCadencePolicy(row.shared_cadence);
     const sharedCadenceProgress = parseCadenceProgress(row.shared_cadence_progress, row.shared_cadence_reasons);
     const sharedCadenceReasons = parseCadenceReasons(row.shared_cadence_reasons);
@@ -268,7 +271,7 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
     ...(payload.floor_token === undefined ? {} : { floorToken: boundedString(payload.floor_token, 128, "invalid-floor-token") }),
     selectedPlan: selectedId(payload.selected_plan, "invalid-selected-plan"),
     plans: payload.plans.map((candidate) => {
-      const plan = objectValue(candidate, "invalid-plan");
+      const plan: Unchecked<wire.SavedPlan> = objectValue(candidate, "invalid-plan");
       if (!Array.isArray(plan.rooms) || plan.rooms.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE || !Array.isArray(plan.room_order)) {
         throw new ContractError("invalid-plan-rooms");
       }

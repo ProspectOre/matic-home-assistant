@@ -21,7 +21,7 @@ from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from . import daily_room_limit, native_history, plan_timing
+from . import daily_room_limit, native_history, plan_schema, plan_timing
 from .cadence import (
     CoverageCadenceRequiresVacuumError,
     cadence_snapshot,
@@ -105,7 +105,7 @@ class PlanCadence:
         room_identity: str | None,
         *,
         now: datetime | None = None,
-    ) -> dict[str, Any]:
+    ) -> plan_schema.DailyLimit:
         """Read a room's verified local-day allowance without writing state."""
         config = getattr(self.repository.hass, "config", None)
         zone_name = getattr(config, "time_zone", None)
@@ -142,7 +142,7 @@ class PlanCadence:
         room_identity: str,
         limit: int | None,
         require_current: Callable[[], bool],
-    ) -> dict[str, Any]:
+    ) -> plan_schema.DailyLimit:
         """Save a current-map room's shared daily allowance atomically."""
         if (
             not isinstance(room_id, str)
@@ -159,7 +159,7 @@ class PlanCadence:
         ):
             raise ValueError("daily room limit must be between 1 and 100")
 
-        async def commit(_lease: _MetadataLockLease) -> dict[str, Any]:
+        async def commit(_lease: _MetadataLockLease) -> plan_schema.DailyLimit:
             async with self.repository.user_metadata_store_transaction(serial_number):
                 if not require_current():
                     raise ValueError("room map changed")
@@ -187,7 +187,7 @@ class PlanCadence:
             notify=True,
             reject_on_admission_close=True,
         )
-        return cast(dict[str, Any], result)
+        return cast(plan_schema.DailyLimit, result)
 
     @callback
     def reserve_prepared_run(

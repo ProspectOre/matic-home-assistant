@@ -45,5 +45,9 @@ def test_shapes_the_schema_uses_have_one_form_and_others_are_refused() -> None:
         "readonly (readonly number[] | null)[]"
     )
     assert emitter.reference(tuple[float, int]) == "readonly [number, number]"
+    assert emitter.reference(dict[str, int]) == "Readonly<Record<string, number>>"
+    assert emitter.reference(object) == "unknown"
     with pytest.raises(TypeError, match="no TypeScript form"):
         emitter.reference(dict[str, Any])
+    with pytest.raises(TypeError, match="no TypeScript form"):
+        emitter.reference(dict[int, str])

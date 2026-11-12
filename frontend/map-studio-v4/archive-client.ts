@@ -1,6 +1,7 @@
 import type { MaticBackend } from "./backend";
 import type { Localize } from "./contracts";
 import { translate } from "./localize";
+import type * as wire from "./backend-schema";
 import {
   ARCHIVE_MAX_FILE_BYTES, archiveMutationBody, archiveRecordIds, parseArchiveAcknowledgement,
   parseArchiveCatalog, parseArchiveEnvelope, type ArchiveAcknowledgement, type ArchiveCatalog,
@@ -28,7 +29,7 @@ export class ArchiveClient {
     this.#generation(generation);
     return parseArchiveEnvelope(await this.backend.archiveRequest(entryId, "export", {
       record_ids: archiveRecordIds(ids), expected_generation: generation,
-    }, signal));
+    } satisfies wire.HistoryExport, signal));
   }
 
   async importArchive(entryId: string, input: File | string, generation: number, requestId: string, signal?: AbortSignal): Promise<ArchiveAcknowledgement> {
@@ -44,7 +45,7 @@ export class ArchiveClient {
     const archive = parseArchiveEnvelope(value);
     return parseArchiveAcknowledgement(await this.backend.archiveRequest(entryId, "import", {
       archive, expected_generation: generation, request_id: requestId,
-    }, signal), requestId);
+    } satisfies wire.HistoryImport, signal), requestId);
   }
 
   #generation(value: number): void {

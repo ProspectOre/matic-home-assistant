@@ -21,6 +21,7 @@ from .http import (
 )
 from .map_schema import CatalogEntry, MapBlockReason
 from .run_history import RunTrails
+from .workspace_schema import PoseUpdate
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
@@ -76,7 +77,7 @@ def pose_projection(
     entry_id: str,
     runtime: MaticRuntimeData,
     scene_view: MaticSlamSceneView | None = None,
-) -> dict[str, object]:
+) -> PoseUpdate:
     """Project the robot's position on the current map, as the workspace pushes it.
 
     The scene revision and epoch let the browser tell a pose that predates the

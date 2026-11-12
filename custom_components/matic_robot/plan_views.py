@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from http import HTTPStatus
-from typing import cast
+from typing import TypedDict, cast
 
 from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
@@ -33,7 +33,41 @@ from .plan_model import (
     plan_floor_token,
     room_cadence_identity,
 )
+from .plan_schema import (
+    CadencePolicy,
+    CadenceProgress,
+    CadenceReason,
+    DailyLimit,
+    DailyLimitHeldRoom,
+    HeldRoom,
+    NextRunPreview,
+    PlanAreaEntry,
+    PlanBlocker,
+    PlanCatalogRoom,
+    PlanRoom,
+    PlanRoomEntry,
+    PlansCatalog,
+    PreviewAreaStep,
+    PreviewRoom,
+    PreviewRoomStep,
+    SavedPlan,
+)
 from .room_sequence import saved_plan_preview_token
+
+
+class _CadenceState(TypedDict, total=False):
+    """A room's cadence as the cadence store projects it, merged into the room."""
+
+    cadence: CadencePolicy | None
+    cadence_progress: CadenceProgress | None
+    cadence_reasons: list[CadenceReason]
+
+
+class _HeldRooms(TypedDict, total=False):
+    """The rooms a preview holds out, passed on when it names any."""
+
+    daily_limit_held_rooms: list[DailyLimitHeldRoom]
+    held_rooms: list[HeldRoom]
 
 
 class MaticPlansView(HomeAssistantView):
@@ -78,7 +112,7 @@ class MaticPlansView(HomeAssistantView):
 
         def next_run_preview(
             plan_id: str, plan: Mapping[str, object]
-        ) -> dict[str, object]:
+        ) -> NextRunPreview:
             """Project the authoritative next run without changing plan state."""
             if identity_error:
                 return {
@@ -128,44 +162,38 @@ class MaticPlansView(HomeAssistantView):
                     }
                 if not preview_entries:
                     raise ValueError("plan has no rooms")
-                projected_entries = [
-                    {
-                        "kind": "area",
-                        "area_id": str(entry["area_id"]),
-                        "name": str(entry["name"]),
-                        "cleaning_mode": str(entry["cleaning_mode"]),
-                        "coverage_setting": str(entry["coverage_setting"]),
-                        # Areas earn no cadence: they run every time.
-                        "cadence_reasons": [],
-                    }
-                    if entry.get("kind") == "area"
-                    else {
-                        "kind": "room",
+                projected_entries: list[PreviewRoomStep | PreviewAreaStep] = []
+                projected_rooms: list[PreviewRoom] = []
+                for entry in preview_entries:
+                    if entry.get("kind") == "area":
+                        projected_entries.append(
+                            {
+                                "kind": "area",
+                                "area_id": str(entry["area_id"]),
+                                "name": str(entry["name"]),
+                                "cleaning_mode": str(entry["cleaning_mode"]),
+                                "coverage_setting": str(entry["coverage_setting"]),
+                                # Areas earn no cadence: they run every time.
+                                "cadence_reasons": [],
+                            }
+                        )
+                        continue
+                    due = entry.get("cadence", {})
+                    room: PreviewRoom = {
                         "room_id": str(entry["room_id"]),
                         "name": str(entry["name"]),
                         "cleaning_mode": str(entry["cleaning_mode"]),
                         "coverage_setting": str(entry["coverage_setting"]),
                         "cadence_reasons": [
                             reason
-                            for reason, due_key in (
-                                ("mop_due", "mop_due"),
-                                ("coverage_due", "coverage_due"),
-                            )
-                            if entry.get("cadence", {}).get(due_key) is True
+                            for reason in ("mop_due", "coverage_due")
+                            if due.get(reason) is True
                         ],
-                        **(
-                            {"daily_limit": entry["daily_limit"]}
-                            if "daily_limit" in entry
-                            else {}
-                        ),
                     }
-                    for entry in preview_entries
-                ]
-                projected_rooms = [
-                    {key: value for key, value in entry.items() if key != "kind"}
-                    for entry in projected_entries
-                    if entry["kind"] == "room"
-                ]
+                    if "daily_limit" in entry:
+                        room["daily_limit"] = entry["daily_limit"]
+                    projected_rooms.append(room)
+                    projected_entries.append({"kind": "room", **room})
                 # Smart Stop runs each room in its own native mission so a
                 # room-boundary STOP cannot allow the next room to start.
                 # Custom areas remain separate missions either way.
@@ -197,13 +225,18 @@ class MaticPlansView(HomeAssistantView):
                     "mission_boundaries": [],
                     "blocker": "plan_rooms_held",
                     "held_rooms": [
-                        {"room_id": room_id, "name": room_map[room_id], **hold}
+                        {
+                            "room_id": room_id,
+                            "name": room_map[room_id],
+                            "reason": hold["reason"],
+                            "sensor": hold["sensor"],
+                        }
                         for room_id, hold in held_rooms.items()
                     ],
                 }
             except (KeyError, TypeError, ValueError) as err:
                 message = str(err).casefold()
-                blocker = (
+                blocker: PlanBlocker = (
                     "coverage_requires_vacuum"
                     if isinstance(err, CoverageCadenceRequiresVacuumError)
                     else "plan_disabled"
@@ -225,20 +258,16 @@ class MaticPlansView(HomeAssistantView):
                     "mission_boundaries": [],
                     "blocker": blocker,
                 }
+            held: _HeldRooms = {}
+            if "daily_limit_held_rooms" in preview:
+                held["daily_limit_held_rooms"] = preview["daily_limit_held_rooms"]
+            if "held_rooms" in preview:
+                held["held_rooms"] = preview["held_rooms"]
             return {
                 "rooms": projected_rooms,
                 "entries": projected_entries,
                 "mission_boundaries": boundaries,
-                **(
-                    {"daily_limit_held_rooms": preview["daily_limit_held_rooms"]}
-                    if "daily_limit_held_rooms" in preview
-                    else {}
-                ),
-                **(
-                    {"held_rooms": preview["held_rooms"]}
-                    if "held_rooms" in preview
-                    else {}
-                ),
+                **held,
                 "preview_token": saved_plan_preview_token(
                     preview,
                     entry_id=entry_id,
@@ -248,18 +277,17 @@ class MaticPlansView(HomeAssistantView):
                 "blocker": None,
             }
 
-        def next_run_estimate(preview: dict[str, object]) -> int | None:
+        def next_run_estimate(preview: NextRunPreview) -> int | None:
             """Estimate the previewed run from the stored per-room durations."""
             estimator = getattr(
                 runtime.cleaning_plans.history, "next_run_estimate_seconds", None
             )
             if preview["blocker"] is not None or not callable(estimator):
                 return None
-            entries = cast(list[dict[str, str]], preview["entries"])
-            if any(entry["kind"] == "area" for entry in entries):
+            if any(entry["kind"] == "area" for entry in preview["entries"]):
                 # The robot keeps no duration history for a custom area.
                 return None
-            rooms = cast(list[dict[str, str]], preview["rooms"])
+            rooms = preview["rooms"]
             return cast(
                 int | None,
                 estimator(
@@ -283,7 +311,7 @@ class MaticPlansView(HomeAssistantView):
             coverage_setting: str,
             *,
             use_shared_schedule: bool = False,
-        ) -> dict[str, object]:
+        ) -> _CadenceState:
             project = getattr(
                 runtime.cleaning_plans.cadence, "cadence_editor_state", None
             )
@@ -298,7 +326,7 @@ class MaticPlansView(HomeAssistantView):
                     "cadence_reasons": ["room_not_on_current_map"],
                 }
             return cast(
-                dict[str, object],
+                _CadenceState,
                 project(
                     serial_number,
                     plan_id,
@@ -309,7 +337,7 @@ class MaticPlansView(HomeAssistantView):
                 ),
             )
 
-        def daily_limit_state(room_id: str) -> dict[str, object] | None:
+        def daily_limit_state(room_id: str) -> DailyLimit | None:
             """Project a room's global daily cap against the current map."""
             project = getattr(runtime.cleaning_plans.cadence, "daily_limit_state", None)
             if not callable(project):
@@ -318,7 +346,7 @@ class MaticPlansView(HomeAssistantView):
                 identity = room_cadence_identity(floor_plan, room_id)
             except ValueError:
                 identity = None
-            return cast(dict[str, object], project(serial_number, room_id, identity))
+            return cast(DailyLimit, project(serial_number, room_id, identity))
 
         saved_areas: Mapping[str, object] | None = None
 
@@ -331,12 +359,12 @@ class MaticPlansView(HomeAssistantView):
             name = area.get("name") if isinstance(area, Mapping) else None
             return name if isinstance(name, str) else area_id
 
-        plans = []
+        plans: list[SavedPlan] = []
         for plan_id, plan in runtime.cleaning_plans.catalog.plans(
             serial_number
         ).items():
             raw_rooms = plan.get("rooms", [])
-            rooms = []
+            rooms: list[PlanRoom] = []
             for room in raw_rooms:
                 if not isinstance(room, dict) or not room.get("room_id"):
                     continue
@@ -347,7 +375,7 @@ class MaticPlansView(HomeAssistantView):
                 coverage_setting = str(
                     room.get("coverage_setting", CoverageSetting.OPTIMAL.value)
                 )
-                plan_room_projection: dict[str, object] = {
+                plan_room_projection: PlanRoom = {
                     "room_id": str(room.get("room_id", "")),
                     "cleaning_mode": cleaning_mode,
                     "coverage_setting": coverage_setting,
@@ -369,7 +397,7 @@ class MaticPlansView(HomeAssistantView):
                     )
                     cadence_reasons = cadence.get("cadence_reasons", [])
                     if cadence["cadence"] is not None or cadence_reasons:
-                        plan_room_projection.update(cadence)
+                        plan_room_projection = {**plan_room_projection, **cadence}
                 rooms.append(plan_room_projection)
             try:
                 entries = plan_entries(plan)
@@ -377,10 +405,16 @@ class MaticPlansView(HomeAssistantView):
                 # The preview names the problem; list the rooms that remain.
                 entries = plan_entries({"rooms": raw_rooms})
             # Stored area entries carry only an ID; name them for the editor.
-            entries = [
-                {**entry, "name": area_entry_name(entry["area_id"])}
+            named_entries: list[PlanRoomEntry | PlanAreaEntry] = [
+                {
+                    "kind": "area",
+                    "area_id": entry["area_id"],
+                    "cleaning_mode": entry["cleaning_mode"],
+                    "coverage_setting": entry["coverage_setting"],
+                    "name": area_entry_name(entry["area_id"]),
+                }
                 if entry["kind"] == "area"
-                else entry
+                else {"kind": "room", "room_id": entry["room_id"]}
                 for entry in entries
             ]
             preview = next_run_preview(plan_id, plan)
@@ -394,7 +428,7 @@ class MaticPlansView(HomeAssistantView):
                     "room_order": [
                         str(room_id) for room_id in plan.get("room_order", [])
                     ],
-                    "entries": entries,
+                    "entries": named_entries,
                     "return_to_base": bool(plan.get("return_to_base", True)),
                     "finish_current_room": bool(plan.get("finish_current_room", False)),
                     "finish_current_room_threshold": int(
@@ -409,9 +443,9 @@ class MaticPlansView(HomeAssistantView):
         selected_plan = runtime.cleaning_plans.history.snapshot(serial_number).get(
             "selected_plan"
         )
-        room_projections: list[dict[str, object]] = []
+        room_projections: list[PlanCatalogRoom] = []
         for room in floor_plan.rooms:
-            workspace_room_projection: dict[str, object] = {
+            workspace_room_projection: PlanCatalogRoom = {
                 "room_id": room.id,
                 "name": room.name,
             }
@@ -453,13 +487,11 @@ class MaticPlansView(HomeAssistantView):
                     "cadence_reasons"
                 ]
             room_projections.append(workspace_room_projection)
-        return self.json(
-            {
-                "entry_id": entry_id,
-                "floor_token": floor_token,
-                "rooms": room_projections,
-                "plans": plans[:256],
-                "selected_plan": selected_plan,
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
+        catalog: PlansCatalog = {
+            "entry_id": entry_id,
+            "floor_token": floor_token,
+            "rooms": room_projections,
+            "plans": plans[:256],
+            "selected_plan": selected_plan,
+        }
+        return self.json(catalog, headers=PRIVATE_NO_STORE_HEADERS)

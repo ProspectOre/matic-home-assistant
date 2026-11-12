@@ -1,11 +1,12 @@
 import { parseHistoryComparisonFrame } from "./history-catalog";
-import { ContractError, isPrivatePath, type HistoryComparisonFrame } from "./backend-contracts";
+import { ContractError, isPrivatePath, type HistoryComparisonFrame, type Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 
 export const ARCHIVE_MAX_RECORDS = 12;
 export const ARCHIVE_MAX_COMPRESSED_BYTES = 48 * 1024 * 1024;
 export const ARCHIVE_MAX_FILE_BYTES = 68 * 1024 * 1024;
 export type ArchiveRetention = "automatic" | "kept" | "trash";
-export type ArchiveAction = "keep" | "unkeep" | "rename" | "delete" | "restore" | "permanent_delete" | "pause_capture" | "resume_capture";
+export type ArchiveAction = wire.HistoryAction;
 
 export interface ArchiveRecord {
   readonly id: string;
@@ -58,22 +59,12 @@ export interface ArchiveAcknowledgement {
   readonly recordIds?: readonly string[];
 }
 
-export interface ArchiveEnvelope {
-  readonly format: "matic-map-archive";
-  readonly version: 1;
-  readonly records: readonly {
-    readonly source_id: string;
-    readonly created_at: string;
-    readonly name: string | null;
-    readonly sha256: string;
-    readonly scene_zlib_base64: string;
-    readonly frame: unknown;
-  }[];
-}
+/** An export, or an import file, kept in its wire form for the import body. */
+export type ArchiveEnvelope = wire.HistoryArchive;
 
 const fail = (): never => { throw new ContractError("invalid-map-archive"); };
-const object = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : fail();
+const object = <T>(value: unknown): Unchecked<T> =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Unchecked<T> : fail();
 const integer = (value: unknown, maximum = Number.MAX_SAFE_INTEGER): number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : fail();
 const flag = (value: unknown): boolean => typeof value === "boolean" ? value : fail();
@@ -91,11 +82,11 @@ export const archiveRecordIds = (value: readonly string[], allowEmpty = false): 
 };
 
 export const parseArchiveCatalog = (value: unknown): ArchiveCatalog => {
-  const raw = object(value);
-  const usage = object(raw.usage);
+  const raw = object<wire.HistoryManagement>(value);
+  const usage = object<wire.HistoryUsage>(raw.usage);
   if (!Array.isArray(raw.records) || raw.records.length > ARCHIVE_MAX_RECORDS) return fail();
   const records = raw.records.map((value): ArchiveRecord => {
-    const row = object(value);
+    const row = object<wire.HistoryRecord>(value);
     const retention = row.retention;
     if (retention !== "automatic" && retention !== "kept" && retention !== "trash") return fail();
     const sceneUrl = row.scene_url === null ? null : typeof row.scene_url === "string" && isPrivatePath(row.scene_url) ? row.scene_url : fail();
@@ -125,7 +116,7 @@ export const parseArchiveCatalog = (value: unknown): ArchiveCatalog => {
   };
 };
 
-export const archiveMutationBody = (request: ArchiveMutation): Record<string, unknown> => {
+export const archiveMutationBody = (request: ArchiveMutation): wire.HistoryMutation => {
   const actions: readonly ArchiveAction[] = ["keep", "unkeep", "rename", "delete", "restore", "permanent_delete", "pause_capture", "resume_capture"];
   if (!actions.includes(request.action)) return fail();
   const policy = request.action === "pause_capture" || request.action === "resume_capture";
@@ -138,11 +129,11 @@ export const archiveMutationBody = (request: ArchiveMutation): Record<string, un
     action: request.action, record_ids: ids, expected_generation: integer(request.expectedGeneration), request_id: request.requestId,
     ...(request.name === undefined ? {} : { name: request.name }),
     ...(request.allowKept === undefined ? {} : { allow_kept: flag(request.allowKept) }),
-  };
+  } satisfies wire.HistoryMutation;
 };
 
 export const parseArchiveAcknowledgement = (value: unknown, requestId: string): ArchiveAcknowledgement => {
-  const raw = object(value);
+  const raw = object<wire.HistoryAcknowledgement>(value);
   if (raw.request_id !== requestId) return fail();
   if (raw.record_ids !== undefined && (!Array.isArray(raw.record_ids) || raw.record_ids.some((id) => typeof id !== "string"))) return fail();
   return { generation: integer(raw.generation), requestId,
@@ -152,11 +143,11 @@ export const parseArchiveAcknowledgement = (value: unknown, requestId: string): 
 
 /** Bounds and structure are checked here; the server validates compressed scenes and checksums. */
 export const parseArchiveEnvelope = (value: unknown): ArchiveEnvelope => {
-  const raw = object(value);
+  const raw = object<wire.HistoryArchive>(value);
   if (raw.format !== "matic-map-archive" || raw.version !== 1 || !Array.isArray(raw.records) || raw.records.length === 0 || raw.records.length > ARCHIVE_MAX_RECORDS) return fail();
   let encodedBytes = 0;
-  const records = raw.records.map((value) => {
-    const row = object(value);
+  const records = raw.records.map((value): wire.HistoryArchiveRecord => {
+    const row = object<wire.HistoryArchiveRecord>(value);
     if (typeof row.scene_zlib_base64 !== "string" || row.scene_zlib_base64.length === 0 || row.scene_zlib_base64.length % 4 !== 0) return fail();
     encodedBytes += row.scene_zlib_base64.length;
     if (encodedBytes > Math.ceil(ARCHIVE_MAX_COMPRESSED_BYTES / 3) * 4 || /[^A-Za-z0-9+/=]/.test(row.scene_zlib_base64)) return fail();

@@ -29,6 +29,7 @@ from .http import (
     WIFI_HEATMAP_API_URL,
     runtime_for_entry,
 )
+from .map_schema import WifiCell, WifiHeatmap, WifiRoom
 
 if TYPE_CHECKING:
     from .session import RobotSession
@@ -213,7 +214,7 @@ class WifiSurveyStore:
         self._schedule_save()
         return True
 
-    def cells(self, mission_id: int, frame: str) -> list[dict[str, float | int]]:
+    def cells(self, mission_id: int, frame: str) -> list[WifiCell]:
         """Return one floor's cells as cell-centre coordinates in metres."""
         if self._frames.get(mission_id) != frame:
             return []
@@ -465,8 +466,8 @@ class MaticWifiHeatmapView(HomeAssistantView):
         survey = runtime.wifi_survey
         floor_plan = runtime.session.floor.value
         if floor_plan is None:
-            cells: list[dict[str, float | int]] = []
-            rooms: list[dict[str, str | float | int]] = []
+            cells: list[WifiCell] = []
+            rooms: list[WifiRoom] = []
         else:
             cells = survey.cells(
                 floor_plan.mission_id, survey_frame(floor_plan.partition_id_wire)
@@ -482,12 +483,10 @@ class MaticWifiHeatmapView(HomeAssistantView):
                 for room in floor_plan.rooms
                 if (signal := signals.get(room.id)) is not None
             ]
-        return self.json(
-            {
-                "enabled": survey.enabled,
-                "cell_size": CELL_SIZE_METERS,
-                "cells": cells,
-                "rooms": rooms,
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
+        heatmap: WifiHeatmap = {
+            "enabled": survey.enabled,
+            "cell_size": CELL_SIZE_METERS,
+            "cells": cells,
+            "rooms": rooms,
+        }
+        return self.json(heatmap, headers=PRIVATE_NO_STORE_HEADERS)

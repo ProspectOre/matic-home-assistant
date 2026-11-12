@@ -1,3 +1,5 @@
+import type { DailyLimitSet } from "./backend-schema";
+
 export function dailyLimitRequest(
   entryId: string,
   floorToken: string,
@@ -16,7 +18,7 @@ export function dailyLimitRequest(
     init: {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ room_id: roomId, floor_token: floorToken, limit }),
+      body: JSON.stringify({ room_id: roomId, floor_token: floorToken, limit } satisfies DailyLimitSet),
     },
   };
 }

@@ -90,7 +90,7 @@ def _serialize_history(
     group_salt: bytes = b"",
     generation: int = 0,
     capture_paused: bool = False,
-    requests: Mapping[str, tuple[str, dict[str, Any]]] | None = None,
+    requests: Mapping[str, tuple[str, Mapping[str, object]]] | None = None,
 ) -> dict[str, Any]:
     return {
         "group_salt": base64.b64encode(group_salt).decode("ascii"),

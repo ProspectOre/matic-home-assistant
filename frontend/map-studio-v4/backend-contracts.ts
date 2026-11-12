@@ -292,16 +292,11 @@ export interface DailyLimitHeldRoom extends DailyRoomLimit {
   readonly name: string;
 }
 
-export type CadenceReason =
-  | "coverage_requires_vacuum"
-  | "mop_due"
-  | "coverage_due"
-  | "room_not_on_current_map"
-  | "identity_changed"
-  | "shared_schedule_unavailable"
-  | "mop_progress_unverified"
-  | "coverage_progress_unverified"
-  | "invalid_cadence_policy";
+/**
+ * The cadence reasons Matic Map reads. The server can also send
+ * `cadence_progress_unverified` for a shared schedule; the parser refuses it.
+ */
+export type CadenceReason = Exclude<wire.CadenceReason, "cadence_progress_unverified">;
 
 export interface NextRunPreviewRoom {
   readonly roomId: string;
@@ -312,22 +307,7 @@ export interface NextRunPreviewRoom {
   readonly dailyLimit?: DailyRoomLimit;
 }
 
-export type NextRunPreviewBlocker =
-  | "area_map_changed"
-  | "area_missing"
-  | "coverage_requires_vacuum"
-  | "cadence_identity_unavailable"
-  | "preview_unavailable"
-  | "plan_disabled"
-  | "plan_has_no_rooms"
-  | "plan_room_limit"
-  | "cadence_identity_changed"
-  | "shared_schedule_unavailable"
-  | "cadence_progress_unverified"
-  | "invalid_cadence_policy"
-  | "invalid_plan"
-  | "plan_rooms_held"
-  | "daily_limit_reached";
+export type NextRunPreviewBlocker = wire.PlanBlocker;
 
 /** A saved custom area in a preview; areas run every time, so it has no cadence reasons. */
 export interface NextRunPreviewArea extends Omit<NextRunPreviewRoom, "roomId"> {
@@ -642,7 +622,7 @@ export const parseSavedPlanId = (value: unknown): string => {
 };
 
 export const parsePose = (value: unknown): PoseModel => {
-  const payload = objectValue(value, "invalid-pose");
+  const payload: Unchecked<wire.PoseUpdate> = objectValue(value, "invalid-pose");
   const rawPosition = payload.position;
   const position = rawPosition === null
     ? null

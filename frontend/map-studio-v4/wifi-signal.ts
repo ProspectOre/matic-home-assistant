@@ -1,4 +1,5 @@
-import { ContractError, boundedString } from "./backend-contracts";
+import { ContractError, boundedString, type Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 import type { WifiRoomSignal, WifiSignalCell, WifiSignalLayer } from "./contracts";
 
 const MAX_CELLS = 4096;
@@ -11,9 +12,9 @@ const finite = (value: unknown, min = -1e6, max = 1e6): number => {
   return value;
 };
 
-const record = (value: unknown): Record<string, unknown> => {
+const record = <T>(value: unknown): Unchecked<T> => {
   if (!value || typeof value !== "object") throw new ContractError("invalid-wifi-signal");
-  return value as Record<string, unknown>;
+  return value as Unchecked<T>;
 };
 
 const count = (value: unknown): number => {
@@ -27,19 +28,19 @@ const count = (value: unknown): number => {
  * with the layer, off the startup path. The response carries no network names.
  */
 export const parseWifiSignal = (value: unknown): WifiSignalLayer => {
-  const root = record(value);
+  const root = record<wire.WifiHeatmap>(value);
   const rooms = root.rooms ?? [];
   if (typeof root.enabled !== "boolean" || !Array.isArray(root.cells) || root.cells.length > MAX_CELLS
     || !Array.isArray(rooms) || rooms.length > MAX_ROOMS) {
     throw new ContractError("invalid-wifi-signal");
   }
   const cells = root.cells.map((candidate): WifiSignalCell => {
-    const cell = record(candidate);
+    const cell = record<wire.WifiCell>(candidate);
     return { x: finite(cell.x), y: finite(cell.y), dbm: finite(cell.dbm, -120, 0),
       samples: count(cell.samples), updatedAt: finite(cell.updated_at, 0, 1e11) };
   });
   const summaries = rooms.map((candidate): WifiRoomSignal => {
-    const room = record(candidate);
+    const room = record<wire.WifiRoom>(candidate);
     // Room names follow the floor plan's limit of 256 UTF-8 bytes.
     return { name: boundedString(room.name, 256, "invalid-wifi-signal", true), dbm: finite(room.dbm, -120, 0), weakest: finite(room.weakest, -120, 0), samples: count(room.samples) };
   }).sort((left, right) => left.dbm - right.dbm);

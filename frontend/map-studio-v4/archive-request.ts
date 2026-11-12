@@ -1,3 +1,6 @@
+import type { Unchecked } from "./backend-contracts";
+import type { HistoryError } from "./backend-schema";
+
 export type ArchiveBodyReader = (
   response: Response,
   signal: AbortSignal,
@@ -18,8 +21,8 @@ export async function decodeArchiveResponse(
     let code = "archive-request-failed";
     try {
       const value: unknown = JSON.parse(new TextDecoder().decode(await readBody(response, signal, 4096)));
-      if (value && typeof value === "object" && "error" in value && typeof value.error === "string"
-        && /^[a-z0-9-]{1,80}$/u.test(value.error)) code = value.error;
+      const error = value && typeof value === "object" ? (value as Unchecked<HistoryError>).error : undefined;
+      if (typeof error === "string" && /^[a-z0-9-]{1,80}$/u.test(error)) code = error;
     } catch { /* Keep bounded generic failure when the error body is unavailable. */ }
     throw makeError(code, response.status);
   }
