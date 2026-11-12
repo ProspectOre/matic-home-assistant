@@ -41,12 +41,15 @@ def fast_polls(monkeypatch):
 class _Robot:
     """Synthetic robot that cannot reach the kitchen and heads home slowly."""
 
-    def __init__(self, hass, *, refuse_while_returning: bool) -> None:
+    def __init__(
+        self, hass, *, refuse_while_returning: bool, start_late: bool = False
+    ) -> None:
         self.hass = hass
         self.identity = b""
         self.records: list[CleaningSessionRecord] = []
         self.dispatch_states: list[str] = []
         self.refuse_while_returning = refuse_while_returning
+        self.start_late = start_late
 
     async def read_identity(self) -> bytes:
         return self.identity
@@ -58,8 +61,14 @@ class _Robot:
         state = self.hass.states.get("vacuum.matic").state
         self.dispatch_states.append(state)
         if state == "returning" and self.refuse_while_returning:
-            # The refusal lands as the robot reaches its dock.
-            self.hass.states.async_set("vacuum.matic", "docked")
+            if self.start_late:
+                # The robot answers late, then starts the mission after all.
+                self.hass.loop.call_later(
+                    0.05, setattr, self, "identity", b"late-mission"
+                )
+            else:
+                # The refusal lands as the robot reaches its dock.
+                self.hass.states.async_set("vacuum.matic", "docked")
             raise MaticError("refused")
         self.identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
         first = len(self.dispatch_states) == 1
@@ -207,3 +216,11 @@ async def test_a_taken_or_cancelled_dispatch_is_not_retried(error) -> None:
         )
     assert bound == [b"ours"]
     on_refused.assert_not_awaited()
+
+
+async def test_a_refused_room_that_starts_late_is_never_sent_twice(hass) -> None:
+    robot = _Robot(hass, refuse_while_returning=True, start_late=True)
+    with pytest.raises(HomeAssistantError):
+        await _run(hass, robot)
+
+    assert robot.dispatch_states == ["docked", "returning"]

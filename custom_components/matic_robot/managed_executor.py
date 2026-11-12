@@ -313,6 +313,7 @@ async def _async_execute_rooms_reserved(
                     raise PlanCancelledError
                 prepared_dispatch, recovered_dispatch = recovered_dispatch, None
                 expected_dispatch_history = None
+                refused_on_return = False
                 if index > 0 and prepared_dispatch is None:
                     handoff_history = checkpoint.get("handoff_history")
                     if isinstance(handoff_history, list):
@@ -354,13 +355,18 @@ async def _async_execute_rooms_reserved(
                                 expected_dispatch_history=history,
                             )
 
+                        async def back_to_handoff(index: int = index) -> None:
+                            nonlocal refused_on_return
+                            refused_on_return = True
+                            await advance(HandoffEntered(index))
+
                         prepared_dispatch = await leg_handoff.async_dispatch_on_return(
                             hass,
                             entity_id,
                             robot.session_identity,
                             dispatch_on_return,
                             bind_native_identity,
-                            partial(advance, HandoffEntered(index)),
+                            back_to_handoff,
                         )
                 if index > 0 and prepared_dispatch is None:
                     if not await observation._async_wait_for_settled_leg_handoff(
@@ -371,6 +377,9 @@ async def _async_execute_rooms_reserved(
                         active_session=robot.active_session,
                         identity_reader=robot.session_identity,
                         expected_identity=native_identity,
+                        # A refused command whose session shows up late is
+                        # the robot taking it after all: never send it twice.
+                        reject_new_identity=refused_on_return,
                         finish_room_event=finish_room_event,
                     ):
                         # The previous native leg is complete, but the robot
