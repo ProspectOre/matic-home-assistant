@@ -10,13 +10,9 @@ from datetime import timedelta
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.vacuum.const import (
-    ATTR_PARAMS,
-    SERVICE_RETURN_TO_BASE,
-    SERVICE_SEND_COMMAND,
-)
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
-from homeassistant.const import ATTR_COMMAND, ATTR_ENTITY_ID
+from homeassistant.components.vacuum.const import SERVICE_RETURN_TO_BASE
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -34,6 +30,7 @@ from .const import (
 from .media_source import PhotoAttachmentUnavailable, photo_attachment_source
 from .native_schedules import schedule_occurrences
 from .plan_model import resolve_room_reference
+from .robot_controls import RobotControls
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -167,7 +164,7 @@ async def async_photo_patrol(
                     ):
                         await _async_check_schedule(entry)
                         photo = await _async_photograph(
-                            hass, entry, entity_id, room, context, arrivals
+                            hass, entry, entity_id, room, arrivals
                         )
                         analysis = (
                             await async_answer_about_photo(
@@ -249,10 +246,10 @@ async def _async_photograph(
     entry: MaticConfigEntry,
     entity_id: str,
     room: str,
-    context: Context | None,
     arrivals: list[str],
 ) -> RobotPhoto:
     client = entry.runtime_data.client
+    robot = RobotControls(hass, entry, entity_id)
     photos = entry.runtime_data.photos
     state = await _async_state(client)
     _assert_patrol_allowed(entry, [room])
@@ -266,7 +263,8 @@ async def _async_photograph(
     if _busy(state) if not arrivals else not _left_parked(state, arrivals[-1]):
         raise _error("photo_patrol_robot_busy")
     was_parked = _parked(state)
-    await _async_command(hass, entity_id, "go_to_room", {"room": room}, context)
+    if robot.reachable:
+        await robot.async_go_to_room(room)
     room_area = _room_area_name(entry, room)
     if was_parked:
         await _async_wait_for(client, lambda state: not _parked(state), None)
@@ -301,7 +299,8 @@ async def _async_photograph(
         raise _error("photo_patrol_robot_busy")
     previous = photos.latest
     earliest = dt_util.utcnow() - CLOCK_TOLERANCE
-    await _async_command(hass, entity_id, "emote", {"kind": "snap"}, context)
+    if robot.reachable:
+        await robot.async_take_photo()
     deadline = monotonic() + PHOTO_TIMEOUT_SECONDS
     while monotonic() < deadline:
         await asyncio.sleep(POLL_SECONDS)
@@ -485,30 +484,6 @@ def _schedule_conflict(entry: MaticConfigEntry, now: Any) -> bool:
     )
 
 
-def ensure_current_room_allows_photo(entry: MaticConfigEntry) -> None:
-    """Refuse manual snaps when the reported room is blocked or unverifiable."""
-    forbidden = set(entry.options.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, ()))
-    if not forbidden:
-        return
-    floor_plan = entry.runtime_data.session.floor.value
-    if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
-        floor_plan
-    ):
-        raise _error("photo_patrol_rooms_unavailable")
-    room_names = {room.id: room.name for room in floor_plan.rooms}
-    if not forbidden <= set(room_names):
-        raise _error("photo_patrol_rooms_unavailable")
-    area = entry.runtime_data.session.state.value.operational.current_area
-    if not isinstance(area, str) or not area.strip():
-        raise _error("photo_patrol_rooms_unavailable")
-    try:
-        room_id, _name = resolve_room_reference(area, room_names)
-    except ValueError as err:
-        raise _error("photo_patrol_rooms_unavailable") from err
-    if room_id in forbidden:
-        raise _error("photo_patrol_room_blocked")
-
-
 async def _async_still_parked(entry: MaticConfigEntry, area: str) -> bool:
     """Return whether the robot is still where the patrol left it.
 
@@ -521,22 +496,6 @@ async def _async_still_parked(entry: MaticConfigEntry, area: str) -> bool:
     except MaticError:
         return False
     return _left_parked(state, area)
-
-
-async def _async_command(
-    hass: HomeAssistant,
-    entity_id: str,
-    command: str,
-    params: dict[str, str],
-    context: Context | None,
-) -> None:
-    await hass.services.async_call(
-        VACUUM_DOMAIN,
-        SERVICE_SEND_COMMAND,
-        {ATTR_ENTITY_ID: entity_id, ATTR_COMMAND: command, ATTR_PARAMS: params},
-        blocking=True,
-        context=context,
-    )
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:

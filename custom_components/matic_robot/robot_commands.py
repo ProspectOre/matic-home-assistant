@@ -94,13 +94,22 @@ class RobotCommands:
     def _plans(self) -> CleaningPlanManager:
         return self._entry.runtime_data.cleaning_plans
 
+    @property
+    def reachable(self) -> bool:
+        """Whether the robot can be reached, which its vacuum shows as available.
+
+        A Home Assistant action skips an unavailable vacuum, so callers that
+        replaced one send nothing while this is false.
+        """
+        return self._session.error.value is None
+
     async def async_start_plan_leg(self, command: PlanStart) -> None:
         """Start one leg of a plan run, read as the vacuum reads its command.
 
         Like a vacuum action, it sends nothing while the robot cannot be
         reached; the run's readback then finds no new task.
         """
-        if self._session.error.value is not None:
+        if not self.reachable:
             return
         params: dict[str, Any] = {
             "cleaning_mode": command.cleaning_mode,
@@ -131,6 +140,31 @@ class RobotCommands:
             expected_floor_token=command.floor_token,
             managed_session_id=command.session_id,
         )
+
+    async def async_clean(
+        self,
+        rooms: list[str] | None = None,
+        *,
+        cleaning_mode: str | None = None,
+        coverage: str | None = None,
+        ordered: bool = False,
+    ) -> None:
+        """Clean ``rooms`` by name or ID, or the whole floor, as one direct clean.
+
+        A missing mode or coverage takes the robot's default setting.
+        """
+        params: dict[str, Any] = {"ordered": ordered}
+        if cleaning_mode:
+            params["cleaning_mode"] = cleaning_mode
+        if coverage:
+            params["coverage"] = coverage
+        options = self.clean_options(params)
+        targets = (
+            list(self.floor_plan().rooms)
+            if rooms is None
+            else self.resolve_rooms(rooms)
+        )
+        await self.async_clean_rooms(targets, **options)
 
     async def async_end_after_current_room(
         self, motion_token: int, floor_token: str, identity: bytes

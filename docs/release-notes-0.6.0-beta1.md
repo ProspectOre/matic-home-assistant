@@ -47,7 +47,9 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
   whether it is cleaning the interior, edges or toekicks, and shows the robot's
   own estimate of the time left for the whole clean. The same values are
   available as the **Cleaning phase**, **Run progress** and **Time remaining**
-  sensors, for cleans started anywhere.
+  sensors, for cleans started anywhere. Matic Map reads the status from these
+  sensors and the room from **Current room**; with one disabled, the status
+  leaves that value out.
 
 ## Plans
 
@@ -132,7 +134,7 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
 
 ## Removed in 0.6
 
-Matic 0.6 removes 14 entities, 6 actions and 2 attributes that repeated
+Matic 0.6 removes 14 entities, 6 actions and 4 attributes that repeated
 something else. Matic 0.5.4 warned about them in Settings > Repairs. On its
 first start, 0.6 deletes the 14 entities from Home Assistant, enabled or not,
 and a call to a removed action fails. Update the automations, scripts,
@@ -149,9 +151,11 @@ dashboards and templates that still use one.
   order and reloads your automations.
 - **Runs in progress.** A plan run that was started with a removed action
   carries on after the update as a Run plan run.
-- **Two more attributes later.** The `current_area` and `low_charge` attributes
-  of `vacuum.matic` go in a later 0.6 change. Switch to
-  `sensor.matic_current_area` and `binary_sensor.matic_low_charge` now.
+- **Vacuum commands.** `vacuum.send_command` now takes only the commands in
+  [robot command actions](robot-command-actions.md) and
+  [queue changes](queue-changes.md), plus `resume`. `start`, `clean_all`,
+  `clean_rooms`, `clean_segments`, `pause`, `stop`, `dock` and `return_home`
+  fail as unsupported. 0.5.4 did not warn about these.
 
 Entity IDs assume a robot named "Matic".
 
@@ -171,6 +175,9 @@ Entity IDs assume a robot named "Matic".
 | `sensor.matic_scheduled_cleanings` | `calendar.matic_native_schedules` (Robot schedules) |
 | `sensor.matic_protocol_version`, `sensor.matic_dock_detections`, `sensor.matic_sink_summon_locations` | The device page's Download diagnostics file. Automations cannot read it |
 | Attributes `charging` and `problem` of `vacuum.matic` | `binary_sensor.matic_charging` and `binary_sensor.matic_problem` |
+| Attributes `current_area` and `low_charge` of `vacuum.matic` | `sensor.matic_current_area` (Current room) and `binary_sensor.matic_low_charge` |
+| `vacuum.send_command` with `start`, `clean_all`, `clean_rooms` or `clean_segments` | `matic_robot.clean`, with `rooms` for some rooms or without for the whole floor |
+| `vacuum.send_command` with `pause`, `stop`, `dock` or `return_home` | `vacuum.pause`, `vacuum.stop` and `vacuum.return_to_base` |
 
 ## Before you update
 

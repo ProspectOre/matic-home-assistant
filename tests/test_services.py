@@ -28,6 +28,7 @@ from custom_components.matic_robot.area_binding import (
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
+    QueueAction,
     UserCommand,
 )
 from custom_components.matic_robot.client.endpoints import HERMES_ENDPOINTS
@@ -83,6 +84,7 @@ from custom_components.matic_robot.plan_model import (
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import RobotCommands
+from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.room_sequence import (
     _resolve_room_id as _resolve_sequence_room_id,
 )
@@ -426,119 +428,109 @@ def test_room_management_reference_is_stable_and_fail_closed() -> None:
         _resolve_room_id("Missing", {"room-bedroom": "Bedroom"})
 
 
+def _reachable_entry() -> SimpleNamespace:
+    robot = FakeRobot()
+    robot.show("docked")
+    return SimpleNamespace(runtime_data=SimpleNamespace(session=_session(robot=robot)))
+
+
+async def _route(hass, services, service: str, data: dict, method: str):
+    """Run ``service`` on one reachable robot; return the call and its method."""
+    call = ServiceCall(hass, DOMAIN, service, {"entity_id": ["vacuum.test"], **data})
+    entry = _reachable_entry()
+    sent = AsyncMock()
+    with (
+        patch(
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.test"],
+        ),
+        patch(
+            "custom_components.matic_robot.service_context._entry_for_entity",
+            return_value=entry,
+        ),
+        patch.object(RobotControls, method, sent),
+    ):
+        await _registered_handler(services, service)(call)
+    return call, sent
+
+
 async def test_clean_action_routes_every_verified_preference() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
-    call = ServiceCall(
+    _call, sent = await _route(
         hass,
-        DOMAIN,
+        services,
         "clean",
         {
-            "entity_id": ["vacuum.test"],
             "rooms": ["Study", "Kitchen"],
             "cleaning_mode": "mop",
             "coverage_setting": "heavy_duty",
             "ordered": True,
         },
-    )
-    with patch(
-        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-        return_value=["vacuum.test"],
-    ):
-        await _registered_handler(services, "clean")(call)
-
-    services.async_call.assert_awaited_once_with(
-        "vacuum",
-        "send_command",
-        {
-            "entity_id": ["vacuum.test"],
-            "command": "clean_rooms",
-            "params": {
-                "rooms": ["Study", "Kitchen"],
-                "cleaning_mode": "mop",
-                "coverage": "heavy_duty",
-                "ordered": True,
-            },
-        },
-        blocking=True,
-        context=call.context,
+        "async_clean",
     )
 
+    sent.assert_awaited_once_with(
+        ["Study", "Kitchen"], cleaning_mode="mop", coverage="heavy_duty", ordered=True
+    )
+    services.async_call.assert_not_awaited()
 
-async def test_go_to_room_action_routes_the_room_to_send_command() -> None:
+
+async def test_go_to_room_action_sends_the_room() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
-    call = ServiceCall(
-        hass, DOMAIN, "go_to_room", {"entity_id": ["vacuum.test"], "room": "Study"}
+    _call, sent = await _route(
+        hass, services, "go_to_room", {"room": "Study"}, "async_go_to_room"
     )
-    with patch(
-        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-        return_value=["vacuum.test"],
-    ):
-        await _registered_handler(services, "go_to_room")(call)
 
-    services.async_call.assert_awaited_once_with(
-        "vacuum",
-        "send_command",
-        {
-            "entity_id": ["vacuum.test"],
-            "command": "go_to_room",
-            "params": {"room": "Study"},
-        },
-        blocking=True,
-        context=call.context,
-    )
+    sent.assert_awaited_once_with("Study")
+    services.async_call.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
-    ("service", "data", "params"),
+    ("service", "data", "args", "options"),
     [
-        ("skip_room", {}, {"room": "Study"}),
-        ("clean_room_next", {}, {"room": "Study"}),
-        ("clean_room_again", {}, {"room": "Study"}),
+        ("skip_room", {}, (QueueAction.SKIP, "Study"), {}),
+        ("clean_room_next", {}, (QueueAction.CLEAN_NEXT, "Study"), {}),
+        (
+            "clean_room_again",
+            {},
+            (QueueAction.CLEAN_AGAIN, "Study"),
+            {"cleaning_mode": None, "coverage_setting": None},
+        ),
         (
             "clean_room_again",
             {"cleaning_mode": "mop", "coverage_setting": "quick"},
-            {"room": "Study", "cleaning_mode": "mop", "coverage": "quick"},
+            (QueueAction.CLEAN_AGAIN, "Study"),
+            {
+                "cleaning_mode": CleaningMode.MOP,
+                "coverage_setting": CoverageSetting.QUICK,
+            },
         ),
     ],
 )
-async def test_queue_actions_route_to_send_command(service, data, params) -> None:
+async def test_queue_actions_send_the_queue_change(
+    service, data, args, options
+) -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
-    call = ServiceCall(
-        hass,
-        DOMAIN,
-        service,
-        {"entity_id": ["vacuum.test"], "room": "Study", **data},
+    _call, sent = await _route(
+        hass, services, service, {"room": "Study", **data}, "async_change_queue"
     )
-    with patch(
-        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-        return_value=["vacuum.test"],
-    ):
-        await _registered_handler(services, service)(call)
 
-    services.async_call.assert_awaited_once_with(
-        "vacuum",
-        "send_command",
-        {"entity_id": ["vacuum.test"], "command": service, "params": params},
-        blocking=True,
-        context=call.context,
-    )
+    sent.assert_awaited_once_with(*args, **options)
+    services.async_call.assert_not_awaited()
 
 
 async def test_clean_action_without_rooms_targets_entire_floor() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
-    call = ServiceCall(
-        hass, DOMAIN, "clean", {"entity_id": ["vacuum.test"], "ordered": False}
+    _call, sent = await _route(
+        hass, services, "clean", {"ordered": False}, "async_clean"
     )
-    with patch(
-        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-        return_value=["vacuum.test"],
-    ):
-        await _registered_handler(services, "clean")(call)
-    assert services.async_call.await_args.args[2]["command"] == "clean_all"
+    sent.assert_awaited_once_with(
+        None, cleaning_mode=None, coverage=None, ordered=False
+    )
 
 
 async def test_clean_action_checks_oem_stop_fence() -> None:
@@ -1461,7 +1453,7 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
         )
         try:
             await asyncio.wait_for(nested_service_started.wait(), timeout=1)
-            await entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+            await entity._commands.async_clean(["Study"])
             replacement_generation = manager.control.motion_generation(serial_number)
             release_nested_service.set()
             await stop_task
@@ -1644,7 +1636,7 @@ async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> No
         )
         try:
             await asyncio.wait_for(stop_lock_released.wait(), timeout=1)
-            await entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+            await entity._commands.async_clean(["Study"])
             tracker.update(
                 cleaning=True,
                 current_area="Study",

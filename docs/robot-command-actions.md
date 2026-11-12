@@ -2,6 +2,12 @@
 
 [Action reference](actions.md) · [Cleaning guide](cleaning.md)
 
+`vacuum.send_command` on a Matic vacuum takes the commands on this page, the
+[queue changes](queue-changes.md) and `resume`, which continues a paused clean
+as Matic Map's Resume does. For anything else use the vacuum's own actions or
+the [Matic actions](actions.md); Clean (`matic_robot.clean`) cleans rooms or
+the whole floor.
+
 ## Sink refill
 
 `vacuum.send_command` with `command: sink_summon` sends the robot to the sink

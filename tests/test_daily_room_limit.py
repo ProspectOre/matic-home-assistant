@@ -1127,7 +1127,7 @@ async def test_untracked_vacuum_room_clean_is_refused_when_policy_enabled(hass):
     )
     vacuum = MaticVacuum(entry)
     with pytest.raises(ServiceValidationError) as raised:
-        await vacuum.async_send_command("clean_rooms", {"rooms": [room.id]})
+        await vacuum._commands.async_clean([room.id])
     assert raised.value.translation_key == "daily_room_limit_requires_managed"
     entry.runtime_data.session.client.async_start_coverage.assert_not_awaited()
 
@@ -1153,7 +1153,7 @@ async def test_direct_redo_and_reached_room_refuse_bypassing_daily_limit(hass):
         await vacuum.async_redo_last_clean()
     assert redo.value.translation_key == "daily_room_limit_requires_managed"
     with pytest.raises(ServiceValidationError) as clean:
-        await vacuum.async_send_command("clean_rooms", {"rooms": [room.id]})
+        await vacuum._commands.async_clean([room.id])
     assert clean.value.translation_key == "daily_room_limit_reached"
     entry.runtime_data.session.client.async_start_coverage.assert_not_awaited()
 
@@ -1179,12 +1179,13 @@ async def test_direct_clean_refuses_when_room_identity_cannot_be_resolved(
         MagicMock(side_effect=ValueError("map identity unavailable")),
     )
     with pytest.raises(ServiceValidationError) as clean:
-        await MaticVacuum(entry).async_send_command("clean_rooms", {"rooms": [room.id]})
+        await MaticVacuum(entry)._commands.async_clean([room.id])
     assert clean.value.translation_key == "daily_room_limit_reached"
 
 
 async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
-    entry = _entry()
+    # Idle: clean again starts only while the robot holds no task.
+    entry = _entry(idle=True)
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
@@ -1212,10 +1213,8 @@ async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
 
     client = entry.runtime_data.session.client
     client.async_get_cleaning_session_records = AsyncMock(side_effect=history)
-    vacuum = MaticVacuum(entry)
-    vacuum._holds_task = lambda: False
     with pytest.raises(ServiceValidationError) as redo:
-        await vacuum.async_redo_last_clean()
+        await MaticVacuum(entry).async_redo_last_clean()
     assert redo.value.translation_key == "daily_room_limit_requires_managed"
     client.async_redo_clean.assert_not_awaited()
 
@@ -1252,7 +1251,7 @@ async def test_daily_policy_set_during_stop_wait_blocks_the_write(hass, monkeypa
         side_effect=start_coverage
     )
     with pytest.raises(ServiceValidationError) as raised:
-        await MaticVacuum(entry).async_send_command("clean_rooms", {"rooms": [room.id]})
+        await MaticVacuum(entry)._commands.async_clean([room.id])
     assert raised.value.translation_key == "daily_room_limit_requires_managed"
     assert writes == []
 

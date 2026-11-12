@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import (
-    Callable,
-    Coroutine,
-)
+import asyncio
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, cast
 
-from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
-from homeassistant.const import (
-    ATTR_ENTITY_ID,
-)
 from homeassistant.core import (
+    HomeAssistant,
     ServiceCall,
     ServiceResponse,
     SupportsResponse,
@@ -20,6 +15,7 @@ from homeassistant.core import (
 from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
+from .client.commands import QueueAction
 from .client.exceptions import MaticError
 from .const import (
     DOMAIN,
@@ -29,6 +25,7 @@ from .managed_run import (
     _validation_error,
 )
 from .photo_patrol import async_photo_patrol
+from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .service_context import ServiceRuntime
 from .service_names import (
@@ -70,28 +67,15 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                     entity_id,
                     entry.runtime_data.client.async_get_active_cleaning_session_state,
                 )
-        rooms = call.data.get("rooms")
-        params: dict[str, Any] = {"ordered": call.data["ordered"]}
-        if cleaning_mode := call.data.get("cleaning_mode"):
-            params["cleaning_mode"] = cleaning_mode
-        if coverage_setting := call.data.get("coverage_setting"):
-            params["coverage"] = coverage_setting
-        if rooms is None:
-            command = "clean_all"
-        else:
-            command = "clean_rooms"
-            params["rooms"] = rooms
-
-        await hass.services.async_call(
-            VACUUM_DOMAIN,
-            "send_command",
-            {
-                ATTR_ENTITY_ID: entity_ids,
-                "command": command,
-                "params": params,
-            },
-            blocking=True,
-            context=call.context,
+        await _async_each_robot(
+            hass,
+            entity_ids,
+            lambda robot: robot.async_clean(
+                call.data.get("rooms"),
+                cleaning_mode=call.data.get("cleaning_mode"),
+                coverage=call.data.get("coverage_setting"),
+                ordered=call.data["ordered"],
+            ),
         )
 
     hass.services.async_register(
@@ -103,16 +87,10 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
 
     async def async_go_to_room(call: ServiceCall) -> None:
         """Send selected vacuums to one room without cleaning it."""
-        await hass.services.async_call(
-            VACUUM_DOMAIN,
-            "send_command",
-            {
-                ATTR_ENTITY_ID: context._resolve_loaded_matic_vacuums(hass, call),
-                "command": "go_to_room",
-                "params": {"room": call.data["room"]},
-            },
-            blocking=True,
-            context=call.context,
+        await _async_each_robot(
+            hass,
+            context._resolve_loaded_matic_vacuums(hass, call),
+            lambda robot: robot.async_go_to_room(call.data["room"]),
         )
 
     hass.services.async_register(
@@ -154,21 +132,19 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
     ) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
         async def async_change_queue(call: ServiceCall) -> None:
             """Change one room's place in the clean that is running."""
+            action = QUEUE_COMMANDS[command]
             params = {"room": call.data["room"]}
             if "cleaning_mode" in call.data:
                 params["cleaning_mode"] = call.data["cleaning_mode"]
             if "coverage_setting" in call.data:
                 params["coverage"] = call.data["coverage_setting"]
-            await hass.services.async_call(
-                VACUUM_DOMAIN,
-                "send_command",
-                {
-                    ATTR_ENTITY_ID: context._resolve_loaded_matic_vacuums(hass, call),
-                    "command": command,
-                    "params": params,
-                },
-                blocking=True,
-                context=call.context,
+            options = queue_options(params) if action is QueueAction.CLEAN_AGAIN else {}
+            await _async_each_robot(
+                hass,
+                context._resolve_loaded_matic_vacuums(hass, call),
+                lambda robot: robot.async_change_queue(
+                    action, call.data["room"], **options
+                ),
             )
 
         return async_change_queue
@@ -298,3 +274,26 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
         context._require_matic_control(hass, async_clean_area),
         schema=CLEAN_AREA_SERVICE_SCHEMA,
     )
+
+
+async def _async_each_robot(
+    hass: HomeAssistant,
+    entity_ids: list[str],
+    send: Callable[[RobotControls], Awaitable[None]],
+) -> None:
+    """Send to each reachable robot at once and raise the first failure.
+
+    This is what the vacuum action these calls replaced did: it skipped an
+    unavailable vacuum and ran the others concurrently.
+    """
+    robots = [
+        RobotControls(hass, context._entry_for_entity(hass, entity_id), entity_id)
+        for entity_id in entity_ids
+    ]
+    results = await asyncio.gather(
+        *(send(robot) for robot in robots if robot.reachable),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result

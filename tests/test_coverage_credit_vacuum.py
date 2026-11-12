@@ -16,13 +16,11 @@ from custom_components.matic_robot.client.coverage_receipts import (
     coverage_region_hash,
 )
 from custom_components.matic_robot.plan_model import (
-    PLAN_MOTION_TOKEN,
-    PLAN_SESSION_ID,
     CleaningRoom,
     plan_floor_token,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.vacuum import MaticVacuum
+from tests.session_fakes import managed_clean_rooms
 
 from .test_entities import _entry
 
@@ -85,19 +83,22 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
     else:
         client.async_start_coverage = sender
     params = {
-        "rooms": [room.id for room in selected],
         "ordered": True,
         "cleaning_mode": "vacuum",
         "coverage_setting": "quick",
-        PLAN_MOTION_TOKEN: token,
-        PLAN_SESSION_ID: str(session),
     }
     if mixed:
         params.update(
             room_modes=[room.cleaning_mode for room in rooms],
             room_coverage=[room.coverage_setting for room in rooms],
         )
-    await MaticVacuum(entry).async_send_command("clean_rooms", params)
+    await managed_clean_rooms(
+        entry,
+        [room.id for room in selected],
+        params,
+        token=token,
+        session_id=str(session),
+    )
 
     sender.assert_awaited_once()
     assert manager.recovery.coverage_receipt("synthetic-serial", "run") == (

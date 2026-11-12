@@ -80,6 +80,7 @@ for (const narrow of [false, true]) {
       { id: "kitchen", name: "Kitchen", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] },
     ], initialRobotStates: {
       "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
+      "sensor.synthetic_current_room": { state: "unknown", attributes: { matic_entry_id: "synthetic-entry", matic_metric: "current_area" } },
       "sensor.synthetic_cleaning_history": { state: "ready", attributes: ACTIVE_HISTORY_PAYLOAD },
     } });
     await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
@@ -101,7 +102,7 @@ for (const narrow of [false, true]) {
       Object.assign(states["sensor.synthetic_cleaning_history"].attributes.last_run, fields.lastRun ?? {});
       if (Object.hasOwn(fields, "activeRunId")) states["sensor.synthetic_cleaning_history"].attributes.active_plan.run_id = fields.activeRunId;
       if (fields.activity) states["vacuum.synthetic"].state = fields.activity;
-      if (Object.hasOwn(fields, "currentArea")) states["vacuum.synthetic"].attributes.current_area = fields.currentArea;
+      if (Object.hasOwn(fields, "currentArea")) states["sensor.synthetic_current_room"].state = fields.currentArea ?? "unknown";
       panel.hass = { ...panel.hass, states };
     }, fields);
     await update({ lastRun: { completed_room_count: 1 } });

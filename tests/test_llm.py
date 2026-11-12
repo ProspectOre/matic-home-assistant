@@ -97,6 +97,7 @@ from custom_components.matic_robot.plan_model import (
     room_cadence_identity,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_controls import RobotControls
 from tests.session_fakes import fake_session
 
 _INTERNAL_TERMS = re.compile(
@@ -2586,13 +2587,11 @@ async def test_navigation_tools_send_the_robot_actions(state) -> None:
     )
 
     hass, _registry, patches = _control_hass(state=state)
-    result = await _run(hass, patches, MaticSendToSinkTool(), {})
+    with patch.object(RobotControls, "async_sink_summon") as sink_summon:
+        result = await _run(hass, patches, MaticSendToSinkTool(), {})
     assert result.data == {"sent": True}
-    assert hass.services.async_call.await_args.args == (
-        "vacuum",
-        "send_command",
-        {"entity_id": "vacuum.robot", "command": "sink_summon"},
-    )
+    sink_summon.assert_awaited_once_with()
+    hass.services.async_call.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -2621,16 +2620,14 @@ async def test_go_to_room_relays_the_action_refusal(key, placeholders) -> None:
 
 async def test_send_to_sink_relays_the_action_refusal() -> None:
     hass, _registry, patches = _control_hass()
-    hass.services.async_call.side_effect = ServiceValidationError(
+    refusal = ServiceValidationError(
         "refused",
         translation_domain=DOMAIN,
         translation_key="sink_location_unavailable",
     )
-    _refused(
-        await _run(hass, patches, MaticSendToSinkTool(), {}),
-        "exceptions",
-        "sink_location_unavailable",
-    )
+    with patch.object(RobotControls, "async_sink_summon", side_effect=refusal):
+        result = await _run(hass, patches, MaticSendToSinkTool(), {})
+    _refused(result, "exceptions", "sink_location_unavailable")
 
 
 async def test_reset_schedule_uses_the_panel_reset() -> None:
