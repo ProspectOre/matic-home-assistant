@@ -4,7 +4,7 @@ import hashlib
 from copy import deepcopy
 from dataclasses import asdict
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -12,7 +12,10 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import (
+    _async_execute_rooms,
+    async_finish_plan_run,
+)
 from custom_components.matic_robot.managed_run import (
     _async_completion_budget,
     _PreparedRoomDispatch,
@@ -305,3 +308,36 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
     assert saves[2]["completion_deadline"] is None
     assert saves[3]["completion_deadline"] is not None
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "completed"
+
+
+async def test_plan_finished_reports_its_own_end_once_another_run_is_stored(
+    hass, recovery_state
+):
+    """The finalizer still announces a run whose stored record moved on."""
+    manager, _, _, _ = recovery_state
+    events = []
+    hass.bus.async_listen("matic_robot_plan_finished", events.append)
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "plan", "run_id": "older"},
+        "failed",
+        "robot_command_failed",
+        "unknown",
+        0,
+    )
+    await hass.async_block_till_done()
+    assert events[0].data == {
+        "entity_id": "vacuum.matic",
+        "plan_id": "plan",
+        "run_id": "older",
+        "ended_at": ANY,
+        "outcome": "failed",
+        "reason_code": "robot_command_failed",
+        "cause": "unknown",
+        "terminal_activity": "unknown",
+        "completed_room_count": 0,
+    }
+    assert manager.recovery.recovery_run("serial")["run_id"] == "run"
