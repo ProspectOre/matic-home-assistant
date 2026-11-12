@@ -9524,8 +9524,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             floor_token="floor",
         )
         assert dispatch.native_identity == sessions[-1]
-        for room in args[5]:
-            kwargs["record_room_completed"](room)
+        list(map(kwargs["record_room_completed"], args[5]))
         return True
 
     expected_exception = (
@@ -9898,8 +9897,7 @@ async def test_new_smart_stop_run_shares_one_native_mission(hass) -> None:
         checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
         assert checkpoint["single_room_missions"] is False
         observed.append(args[5])
-        for room in args[5]:
-            kwargs["record_room_completed"](room)
+        list(map(kwargs["record_room_completed"], args[5]))
         return True
 
     with (

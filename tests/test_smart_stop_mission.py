@@ -152,7 +152,9 @@ def _record(key: bytes, statuses: dict[str, str]) -> CleaningSessionRecord:
         CleaningModeResult(room, "vacuum", status, 300 if status == "completed" else 0)
         for room, status in statuses.items()
     )
-    completed = tuple(room for room, status in statuses.items() if status == "completed")
+    completed = tuple(
+        room for room, status in statuses.items() if status == "completed"
+    )
     return CleaningSessionRecord(
         key,
         CleaningSession(
