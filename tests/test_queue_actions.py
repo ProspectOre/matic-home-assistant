@@ -135,7 +135,7 @@ async def test_queue_change_needs_a_clean(hass) -> None:
     entity, session, _manager = _cleaning_entity(hass, cleaning=False)
 
     with pytest.raises(ServiceValidationError) as raised:
-        await entity.async_change_queue(QueueAction.SKIP, "Kitchen")
+        await entity._commands.async_change_queue(QueueAction.SKIP, "Kitchen")
 
     assert raised.value.translation_key == "queue_no_clean_running"
     assert raised.value.translation_placeholders == {"room": "Kitchen"}
@@ -156,7 +156,7 @@ async def test_queue_change_refused_when_the_clean_ends_while_waiting(hass) -> N
     manager.control.external_command = clean_ends
 
     with pytest.raises(ServiceValidationError) as raised:
-        await entity.async_change_queue(QueueAction.SKIP, "Kitchen")
+        await entity._commands.async_change_queue(QueueAction.SKIP, "Kitchen")
 
     assert raised.value.translation_key == "queue_no_clean_running"
     session.client.async_change_queue.assert_not_awaited()
@@ -178,7 +178,7 @@ async def test_queue_change_errors_are_translated(hass, error, kind, key) -> Non
     session.client.async_change_queue.side_effect = error
 
     with pytest.raises(kind) as raised:
-        await entity.async_change_queue(QueueAction.SKIP, "Study")
+        await entity._commands.async_change_queue(QueueAction.SKIP, "Study")
 
     assert raised.value.translation_key == key
     assert manager.ledger.skipped_room_ids(SERIAL, "run-1") == frozenset()

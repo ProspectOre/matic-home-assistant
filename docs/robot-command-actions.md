@@ -2,6 +2,18 @@
 
 [Action reference](actions.md) · [Cleaning guide](cleaning.md)
 
+`vacuum.send_command` on a Matic vacuum takes the commands on this page, the
+[queue changes](queue-changes.md) and `resume`, which continues a paused clean
+as Matic Map's Resume does. For anything else use the vacuum's own actions or
+the [Matic actions](actions.md); Clean (`matic_robot.clean`) cleans rooms or
+the whole floor.
+
+`start`, `clean_all`, `clean_rooms`, `clean_segments`, `pause`, `stop`, `dock`
+and `return_home` still work but are deprecated and stop working in Matic 0.7.
+The first use of each logs a warning naming its replacement: Clean
+(`matic_robot.clean`), with `rooms` for some rooms, or `vacuum.pause`,
+`vacuum.stop` and `vacuum.return_to_base`.
+
 ## Sink refill
 
 `vacuum.send_command` with `command: sink_summon` sends the robot to the sink

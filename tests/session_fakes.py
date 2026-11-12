@@ -8,6 +8,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -355,3 +356,23 @@ def one_room_missions(monkeypatch: Any) -> None:
         return grouped(rooms, **{**options, "single_room_missions": True})
 
     monkeypatch.setattr(managed_executor, "leg_groups", split)
+
+
+async def managed_clean_rooms(
+    entry: Any,
+    rooms: list[str],
+    params: dict[str, Any] | None = None,
+    *,
+    token: int | None,
+    session_id: str | None,
+    floor_token: str | None = None,
+) -> None:
+    """Start rooms with a plan run's token and ``params`` as clean options."""
+    commands = RobotCommands(None, entry, None)
+    await commands.async_clean_rooms(
+        commands.resolve_rooms(rooms),
+        **commands.clean_options(params or {}),
+        motion_token=token,
+        expected_floor_token=floor_token,
+        managed_session_id=None if session_id is None else UUID(session_id),
+    )

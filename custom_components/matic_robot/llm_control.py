@@ -20,6 +20,7 @@ from .client.commands import CleaningMode
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .llm_common import _ROBOT_FIELD, _error, _MaticTool, _resolve_plan_id
 from .plan_model import resolve_room_reference
+from .robot_controls import RobotControls
 from .slam_view_data import catalog_entry_projection
 
 
@@ -369,13 +370,9 @@ class MaticSendToSinkTool(_MaticTool):
         if refusal := await _async_navigation_refusal(hass, llm_context, robot):
             return refusal
         try:
-            await hass.services.async_call(
-                VACUUM_DOMAIN,
-                "send_command",
-                {ATTR_ENTITY_ID: robot.entity_id, "command": "sink_summon"},
-                blocking=True,
-                context=llm_context.context,
-            )
+            commands = RobotControls(hass, robot.entry, robot.entity_id)
+            if commands.reachable:
+                await commands.async_sink_summon()
         except HomeAssistantError as err:
             return await _async_service_refusal(hass, llm_context, err)
         return llm.ToolResult(data={"sent": True})

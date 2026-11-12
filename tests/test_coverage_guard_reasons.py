@@ -213,12 +213,8 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
 
 async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     """Mixed coverage keeps a typed preflight error at the HA service edge."""
-    from custom_components.matic_robot.plan_model import (
-        PLAN_MOTION_TOKEN,
-        PLAN_SESSION_ID,
-    )
     from custom_components.matic_robot.plans import CleaningPlanManager
-    from custom_components.matic_robot.vacuum import MaticVacuum
+    from tests.session_fakes import managed_clean_rooms
     from tests.test_entities import _entry
 
     reason = CoverageGuardReason.NATIVE_SESSION_ACTIVE
@@ -231,19 +227,18 @@ async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     client = entry.runtime_data.session.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=error)
     client.async_start_coverage = AsyncMock()
-    entity = MaticVacuum(entry)
 
     with pytest.raises(ServiceValidationError) as caught:
-        await entity.async_send_command(
-            "clean_rooms",
+        await managed_clean_rooms(
+            entry,
+            ["Kitchen", "Study"],
             {
-                "rooms": ["Kitchen", "Study"],
                 "ordered": True,
-                PLAN_MOTION_TOKEN: token,
-                PLAN_SESSION_ID: "33333333-3333-4333-8333-333333333333",
                 "room_coverage": ["quick", "standard"],
                 "room_modes": ["vacuum", "mop"],
             },
+            token=token,
+            session_id="33333333-3333-4333-8333-333333333333",
         )
 
     assert caught.value.translation_key == reason.value

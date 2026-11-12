@@ -1524,18 +1524,6 @@
       "wifi_signal": {
         "name": "Wi-Fi signal"
       },
-      "bag_full_count": {
-        "name": "Dust bag full events"
-      },
-      "bag_last_full": {
-        "name": "Dust bag last reported full"
-      },
-      "bag_replacement_count": {
-        "name": "Dust bag replacements"
-      },
-      "bag_last_replaced": {
-        "name": "Dust bag last replaced"
-      },
       "current_room_active_time": {
         "name": "Current room active cleaning time"
       },
@@ -1814,7 +1802,7 @@
       "message": "No custom area matches {area}. Check the name, or choose from your custom areas."
     },
     "unsupported_command": {
-      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, stay_put, dock, return_home, sink_summon, go_to_room, redo_last_clean, skip_room, clean_room_next, clean_room_again or emote."
+      "message": "That Matic command is not supported. Use resume, stay_put, sink_summon, go_to_room, redo_last_clean, skip_room, clean_room_next, clean_room_again or emote."
     },
     "managed_run_changed": {
       "message": "The cleaning plan changed before Stop could be sent, so Stop was not sent. Check the robot and press Stop again if it is still cleaning."
@@ -1872,9 +1860,6 @@
     },
     "plan_rooms_held": {
       "message": "Every room in this plan is occupied right now. Try again when a room clears, or turn off occupancy holds for the plan."
-    },
-    "invalid_plan_command": {
-      "message": "Home Assistant rejected an internal plan command. Start the plan again."
     },
     "command_superseded": {
       "message": "A newer command replaced this one before it ran. Send it again if you still want it."

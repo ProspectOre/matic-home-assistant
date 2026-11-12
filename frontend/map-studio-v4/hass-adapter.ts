@@ -53,13 +53,38 @@ const boundedPercent = (value: unknown): number | null => {
   return Math.round(Math.max(0, Math.min(100, value)));
 };
 
-const robotRunStatus = (attributes: Readonly<Record<string, unknown>> | undefined): RobotRunStatus | null => {
-  const value = attributes?.cleaning_phase;
+// Seconds in each unit Home Assistant may show a duration sensor in.
+const DURATION_SECONDS: Readonly<Record<string, number>> = { ms: 0.001, s: 1, min: 60, h: 3600, d: 86400 };
+
+const durationSeconds = (sensor: HassEntityLike | undefined): number | null => {
+  const value = Number(sensor?.state);
+  const unit = sensor?.attributes?.unit_of_measurement;
+  const scale = typeof unit === "string" ? DURATION_SECONDS[unit] : undefined;
+  return Number.isFinite(value) && value >= 0 && scale !== undefined ? Math.round(value * scale) : null;
+};
+
+// The Cleaning phase, Run progress and Time remaining sensors.
+const robotRunStatus = (metrics: ReadonlyMap<string, HassEntityLike>): RobotRunStatus | null => {
+  const value = metrics.get("cleaning_phase")?.state;
   const phase = value === "interior" || value === "edges" || value === "toekicks" ? value : null;
-  const percent = boundedPercent(attributes?.run_progress);
-  const remaining = attributes?.time_remaining;
-  const remainingSeconds = typeof remaining === "number" && remaining >= 0 ? Math.round(remaining) : null;
+  const percent = boundedPercent(Number(metrics.get("run_progress")?.state));
+  const remainingSeconds = durationSeconds(metrics.get("time_remaining"));
   return phase || percent !== null || remainingSeconds !== null ? { phase, percent, remainingSeconds } : null;
+};
+
+// One sensor per `matic_metric` for the entry; a key two sensors share is dropped.
+const entryMetrics = (
+  entities: readonly (readonly [string, HassEntityLike])[],
+  entryKey: string | null,
+): ReadonlyMap<string, HassEntityLike> => {
+  const found = new Map<string, HassEntityLike | null>();
+  if (entryKey === null) return new Map();
+  for (const [id, entity] of entities) {
+    const key = entity.attributes?.matic_metric;
+    if (!id.startsWith("sensor.") || typeof key !== "string" || maticEntryKey(entity) !== entryKey) continue;
+    found.set(key, found.has(key) ? null : entity);
+  }
+  return new Map([...found].filter((item): item is [string, HassEntityLike] => item[1] !== null));
 };
 
 const maticEntryKey = (entity: HassEntityLike): string | null => {
@@ -186,9 +211,10 @@ export class HassAdapter {
       ? activityForVacuum(selectedVacuum.state, selectedVacuum.attributes)
       : "unknown";
     const batteryPercent = boundedPercent(selectedVacuum?.attributes?.battery_level);
-    const area = selectedVacuum?.attributes?.current_area;
-    const currentArea = typeof area === "string" && area.trim() ? area : null;
-    const robotRun = robotRunStatus(selectedVacuum?.attributes);
+    const metrics = entryMetrics(entities, selectedEntryKey);
+    const area = selectedVacuum ? metrics.get("current_area")?.state : undefined;
+    const currentArea = area && area.trim() && area !== "unknown" && area !== "unavailable" ? area : null;
+    const robotRun = selectedVacuum ? robotRunStatus(metrics) : null;
     const language = hass?.selectedLanguage || hass?.language || "en";
     const dateLanguage = hass?.locale?.language || language;
     const timeZone = hass?.locale?.time_zone === "server" ? hass.config?.time_zone : undefined;
@@ -202,9 +228,7 @@ export class HassAdapter {
     const robotChoices = [...robots.values()].sort((left, right) =>
       left.label.localeCompare(right.label, language, { sensitivity: "base" }));
     const history = histories.get(selectedEntryKey ?? "");
-    const timing = entities.filter(([id, entity]) => id.startsWith("sensor.")
-      && maticEntryKey(entity) === selectedEntryKey && entity.attributes?.matic_metric === "current_room_estimated_progress");
-    const lastRun = managedRunSummary(history?.last_run, history?.active_plan, timing.length === 1 ? timing[0]?.[1] : undefined);
+    const lastRun = managedRunSummary(history?.last_run, history?.active_plan, metrics.get("current_room_estimated_progress"));
     const projection: HassProjection = {
       deepMop,
       host,

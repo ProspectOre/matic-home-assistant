@@ -425,7 +425,7 @@ export interface ReportedState {
   readonly historyCameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   readonly managedLock: boolean;
   readonly batteryPercent: number | null;
-  /** The vacuum's `current_area`: the room phrase the robot reports, if any. */
+  /** The Current room sensor: the room phrase the robot reports, if any. */
   readonly currentArea: string | null;
   readonly robotRun: RobotRunStatus | null;
   readonly floor: FloorPresentation;
@@ -699,7 +699,7 @@ export interface HassProjection {
   readonly host: HostState;
   readonly activity: RobotActivity;
   readonly batteryPercent: number | null;
-  /** The vacuum's `current_area`: the room phrase the robot reports, if any. */
+  /** The Current room sensor: the room phrase the robot reports, if any. */
   readonly currentArea: string | null;
   readonly robotRun: RobotRunStatus | null;
   readonly language: string;

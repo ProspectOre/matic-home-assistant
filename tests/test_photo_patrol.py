@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from homeassistant.core import Context, ServiceCall
@@ -22,6 +22,9 @@ from custom_components.matic_robot.photos import (
     MaticRobotPhotoPreviewView,
     MaticRobotPhotoView,
     RobotPhotoStore,
+)
+from custom_components.matic_robot.robot_controls import (
+    RobotControls,
 )
 from tests.test_services import _registered_handler, _registered_services
 
@@ -149,12 +152,32 @@ def _entry(
     return entry
 
 
+# What the patrol sent, in order: robot commands and Home Assistant actions.
+_sent = Mock()
+
+
 def _hass():
-    return SimpleNamespace(
+    hass = SimpleNamespace(
         data={},
         services=SimpleNamespace(async_call=AsyncMock()),
         bus=SimpleNamespace(async_fire=MagicMock(), async_listen_once=MagicMock()),
     )
+    _sent.attach_mock(hass.services.async_call, "service")
+    return hass
+
+
+@pytest.fixture(autouse=True)
+def robot_commands():
+    """Record the robot's go to room and snap commands instead of sending them."""
+    global _sent
+    _sent = Mock()
+    _sent.attach_mock(AsyncMock(), "go_to_room")
+    _sent.attach_mock(AsyncMock(), "take_photo")
+    with (
+        patch.object(RobotControls, "async_go_to_room", _sent.go_to_room),
+        patch.object(RobotControls, "async_take_photo", _sent.take_photo),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -179,11 +202,18 @@ def clock():
         photo_patrol._last_patrol_started.clear()
 
 
-def _commands(hass) -> list[tuple[str, str, dict]]:
-    return [
-        (call.args[1], call.args[2].get("command", ""), call.args[2].get("params"))
-        for call in hass.services.async_call.await_args_list
-    ]
+def _commands(hass) -> list[tuple[str, str, dict | None]]:
+    """List robot commands as ("robot", command, params) and actions by name."""
+    commands: list[tuple[str, str, dict | None]] = []
+    for name, args, _kwargs in _sent.mock_calls:
+        if name == "go_to_room":
+            commands.append(("robot", "go_to_room", {"room": args[0]}))
+        elif name == "take_photo":
+            commands.append(("robot", "emote", {"kind": "snap"}))
+        elif name == "service":
+            data = args[2]
+            commands.append((args[1], data.get("command", ""), data.get("params")))
+    return commands
 
 
 async def test_patrol_photographs_each_room_and_docks() -> None:
@@ -234,10 +264,10 @@ async def test_patrol_photographs_each_room_and_docks() -> None:
         },
     ]
     assert _commands(hass) == [
-        ("send_command", "go_to_room", {"room": "Kitchen"}),
-        ("send_command", "emote", {"kind": "snap"}),
-        ("send_command", "go_to_room", {"room": "Dining"}),
-        ("send_command", "emote", {"kind": "snap"}),
+        ("robot", "go_to_room", {"room": "Kitchen"}),
+        ("robot", "emote", {"kind": "snap"}),
+        ("robot", "go_to_room", {"room": "Dining"}),
+        ("robot", "emote", {"kind": "snap"}),
         ("return_to_base", "", None),
     ]
     assert all(
@@ -414,7 +444,7 @@ async def test_patrol_rejects_released_entry_before_robot_io(
             ai_task_entity_id="ai_task.selected",
         )
 
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
     assert source._staged == {}
     await source.async_close()
 
@@ -486,8 +516,8 @@ async def test_patrol_resolves_room_id_to_reported_name() -> None:
     assert result[0]["room"] == "room-kitchen"
     assert _commands(hass)[0][2] == {"room": "room-kitchen"}
     assert [service for service, _, _ in _commands(hass)] == [
-        "send_command",
-        "send_command",
+        "robot",
+        "robot",
         "return_to_base",
     ]
 
@@ -585,7 +615,7 @@ async def test_patrol_refuses_a_busy_or_flat_robot(
 
     assert raised.value.translation_key == key
     assert raised.value.translation_placeholders == placeholders
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_patrol_requires_opt_in_before_any_command() -> None:
@@ -597,7 +627,7 @@ async def test_patrol_requires_opt_in_before_any_command() -> None:
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
 
     assert raised.value.translation_key == "photo_patrol_not_opted_in"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_patrol_refuses_a_configured_no_photo_room_before_moving() -> None:
@@ -609,7 +639,7 @@ async def test_patrol_refuses_a_configured_no_photo_room_before_moving() -> None
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
 
     assert raised.value.translation_key == "photo_patrol_room_blocked"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_patrol_fails_closed_when_saved_no_photo_room_is_stale() -> None:
@@ -621,18 +651,7 @@ async def test_patrol_fails_closed_when_saved_no_photo_room_is_stale() -> None:
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
 
     assert raised.value.translation_key == "photo_patrol_rooms_unavailable"
-    hass.services.async_call.assert_not_awaited()
-
-
-async def test_manual_snap_obeys_no_photo_room_policy() -> None:
-    entry = _entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
-    entry.runtime_data.session.state.value.operational.current_area = "Kitchen"
-
-    with pytest.raises(HomeAssistantError) as raised:
-        photo_patrol.ensure_current_room_allows_photo(entry)
-
-    assert raised.value.translation_key == "photo_patrol_room_blocked"
+    assert _commands(hass) == []
 
 
 async def test_patrol_stops_if_native_schedule_overlaps() -> None:
@@ -659,7 +678,7 @@ async def test_patrol_stops_if_native_schedule_overlaps() -> None:
             )
 
     assert raised.value.translation_key == "photo_patrol_schedule_conflict"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_patrol_stops_after_battery_drops_below_floor_between_rooms() -> None:
@@ -722,7 +741,7 @@ async def test_patrol_stops_when_it_cannot_read_photos_before_the_snap() -> None
 
     assert raised.value.translation_key == "photo_patrol_unreachable"
     assert [service for service, _, _ in _commands(hass)] == [
-        "send_command",
+        "robot",
         "return_to_base",
     ]
 
@@ -818,9 +837,7 @@ async def test_patrol_rechecks_robot_after_schedule_refresh(
         patch.object(photo_patrol, "_async_check_schedule", refresh_schedule),
         pytest.raises(HomeAssistantError) as raised,
     ):
-        await photo_patrol._async_photograph(
-            hass, entry, "vacuum.matic", "Kitchen", None, []
-        )
+        await photo_patrol._async_photograph(hass, entry, "vacuum.matic", "Kitchen", [])
 
     assert raised.value.translation_key == expected
     assert [command for _, command, _ in _commands(hass)] == ["go_to_room"]
@@ -922,7 +939,7 @@ async def test_patrol_refuses_when_fresh_state_is_busy() -> None:
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
 
     assert raised.value.translation_key == "photo_patrol_robot_busy"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_only_one_patrol_runs_per_robot() -> None:
@@ -937,7 +954,7 @@ async def test_only_one_patrol_runs_per_robot() -> None:
         lock.release()
 
     assert raised.value.translation_key == "photo_patrol_running"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 def test_store_keeps_only_the_newest_photos_by_id() -> None:
@@ -1160,7 +1177,7 @@ async def test_patrol_rejects_inconsistent_room_resolution(
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
 
     assert raised.value.translation_key == expected
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_patrol_enforces_cooldown_and_schedule_timeouts(monkeypatch) -> None:
@@ -1198,7 +1215,7 @@ async def test_patrol_maps_per_leg_timeout(monkeypatch) -> None:
     with pytest.raises(HomeAssistantError) as timeout:
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
     assert timeout.value.translation_key == "photo_patrol_timeout"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 @pytest.mark.parametrize(
@@ -1273,25 +1290,6 @@ async def test_patrol_rechecks_permission_before_the_next_room() -> None:
     assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote", ""]
 
 
-def test_manual_snap_requires_current_known_room_when_blocklist_is_configured() -> None:
-    entry = _entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
-    with pytest.raises(HomeAssistantError) as unknown_area:
-        photo_patrol.ensure_current_room_allows_photo(entry)
-    assert unknown_area.value.translation_key == "photo_patrol_rooms_unavailable"
-
-    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
-    with pytest.raises(HomeAssistantError) as stale_map:
-        photo_patrol.ensure_current_room_allows_photo(entry)
-    assert stale_map.value.translation_key == "photo_patrol_rooms_unavailable"
-
-    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
-    entry.runtime_data.session.state.value.operational.current_area = "unknown"
-    with pytest.raises(HomeAssistantError) as unknown_room:
-        photo_patrol.ensure_current_room_allows_photo(entry)
-    assert unknown_room.value.translation_key == "photo_patrol_rooms_unavailable"
-
-
 @pytest.mark.parametrize("failure", ["raises", "timeout", "unreachable"])
 async def test_schedule_refresh_must_be_fresh_and_complete(failure) -> None:
     entry = _entry([], _Photos())
@@ -1314,7 +1312,7 @@ async def test_dock_cleanup_errors_do_not_mask_patrol_failures(monkeypatch) -> N
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1331,7 +1329,7 @@ async def test_dock_cleanup_errors_do_not_mask_patrol_failures(monkeypatch) -> N
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def failed_photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def failed_photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         raise HomeAssistantError("original-photo-error")
 
@@ -1363,7 +1361,7 @@ async def test_dock_cleanup_verification_failure_is_bounded_and_safe(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1380,7 +1378,7 @@ async def test_dock_cleanup_verification_failure_is_bounded_and_safe(
     )
 
     assert result[0]["photo_id"] == "photo-1"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_dock_failure_is_suppressed_when_an_error_is_already_active(
@@ -1389,7 +1387,7 @@ async def test_dock_failure_is_suppressed_when_an_error_is_already_active(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1429,7 +1427,7 @@ async def test_full_resolution_patrol_uses_authenticated_photo_url(monkeypatch) 
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1445,20 +1443,6 @@ async def test_full_resolution_patrol_uses_authenticated_photo_url(monkeypatch) 
 
     assert result[0]["url"] == photo_patrol.photo_url("e", "photo-1")
     assert result[0]["preview_url"] == photo_patrol.photo_preview_url("e", "photo-1")
-
-
-def test_manual_snap_allows_any_room_when_no_blocklist_is_configured() -> None:
-    entry = _entry([], _Photos())
-    photo_patrol.ensure_current_room_allows_photo(entry)
-
-
-def test_manual_snap_rejects_stale_blocklist_ids() -> None:
-    entry = _entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["removed-room"]
-    entry.runtime_data.session.state.value.operational.current_area = "Kitchen"
-    with pytest.raises(HomeAssistantError) as raised:
-        photo_patrol.ensure_current_room_allows_photo(entry)
-    assert raised.value.translation_key == "photo_patrol_rooms_unavailable"
 
 
 async def test_patrol_rechecks_updated_blocklist_before_snap() -> None:
@@ -1486,7 +1470,7 @@ async def test_patrol_error_before_arrival_preserves_error_without_dock(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def fail_before_arrival(_hass, _entry, _entity, _room, _context, arrivals):
+    async def fail_before_arrival(_hass, _entry, _entity, _room, arrivals):
         assert not arrivals
         raise HomeAssistantError("before-arrival-error")
 
@@ -1494,7 +1478,7 @@ async def test_patrol_error_before_arrival_preserves_error_without_dock(
     monkeypatch.setattr(photo_patrol, "_async_check_schedule", AsyncMock())
     with pytest.raises(HomeAssistantError, match="before-arrival-error"):
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_patrol_with_no_rooms_exits_without_cleanup(monkeypatch) -> None:
@@ -1503,7 +1487,7 @@ async def test_patrol_with_no_rooms_exits_without_cleanup(monkeypatch) -> None:
     monkeypatch.setattr(photo_patrol, "_async_check_schedule", AsyncMock())
 
     assert await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", []) == []
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 @pytest.mark.parametrize("question", ["   ", "x" * 501])
@@ -1552,7 +1536,7 @@ async def test_cleanup_deadline_expiry_skips_overdue_dock(monkeypatch, clock) ->
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         clock[0] = photo_patrol.MAX_PATROL_SECONDS
         return _photo(1)
@@ -1565,7 +1549,7 @@ async def test_cleanup_deadline_expiry_skips_overdue_dock(monkeypatch, clock) ->
     )
 
     assert result[0]["photo_id"] == "photo-1"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_dock_deadline_expiry_after_ownership_check_is_reported(
@@ -1574,7 +1558,7 @@ async def test_dock_deadline_expiry_after_ownership_check_is_reported(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1590,7 +1574,7 @@ async def test_dock_deadline_expiry_after_ownership_check_is_reported(
         await photo_patrol.async_photo_patrol(hass, entry, "vacuum.matic", ["Kitchen"])
 
     assert raised.value.translation_key == "photo_patrol_dock_timeout"
-    hass.services.async_call.assert_not_awaited()
+    assert _commands(hass) == []
 
 
 async def test_cleanup_uses_remaining_absolute_patrol_deadline(
@@ -1599,7 +1583,7 @@ async def test_cleanup_uses_remaining_absolute_patrol_deadline(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, _context, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1636,10 +1620,3 @@ def test_patrol_permission_allows_empty_room_check(monkeypatch) -> None:
     entry = _entry([], _Photos())
     monkeypatch.setattr(photo_patrol, "_resolve_patrol_rooms", lambda *_: None)
     photo_patrol._assert_patrol_allowed(entry, [])
-
-
-def test_manual_snap_allows_a_room_outside_the_blocklist() -> None:
-    entry = _entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
-    entry.runtime_data.session.state.value.operational.current_area = "Dining"
-    photo_patrol.ensure_current_room_allows_photo(entry)

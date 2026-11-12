@@ -141,7 +141,6 @@ def _area_refused_before_start(error: BaseException) -> bool:
     return isinstance(error, ServiceValidationError) and error.translation_key in {
         "area_map_changed",
         "invalid_area",
-        "invalid_plan_command",
         "plan_area_missing",
         "room_plan_unavailable",
     }
