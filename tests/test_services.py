@@ -122,7 +122,7 @@ from custom_components.matic_robot.services import (
     async_register_services,
 )
 from custom_components.matic_robot.stores import LiveState, Store
-from tests.session_fakes import FakeRobot, robot_client, robot_port
+from tests.session_fakes import FakeRobot, robot_client, robot_port, verifying_write
 
 
 def test_room_sequence_default_resolver_uses_canonical_reference_rules() -> None:
@@ -3761,7 +3761,7 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
     )
     try:
         await manager.ledger.async_mark_verifying(
-            "serial", "upstairs", room, verification_deadline=dt_util.utcnow()
+            "serial", "upstairs", room, checkpoint=verifying_write(dt_util.utcnow())
         )
         verifying = manager.history.snapshot("serial")["active_plan"]
         assert verifying["smart_stop_phase"] == "verifying_completion"

@@ -46,7 +46,7 @@ from custom_components.matic_robot.robot_commands import (
     RobotCommands,
 )
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, run_step
 from tests.wire_builders import _session_identity
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
@@ -314,7 +314,6 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
     hass, multi_room
 ):
     robot = FakeRobot()
-    from custom_components.matic_robot.managed_leg import _async_run_leg
 
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -354,6 +353,7 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
             managed_user_command=sender,
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
     sender.assert_not_awaited()
     assert manager.history.snapshot("serial")["active_plan"] is None
@@ -720,7 +720,6 @@ async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
     hass, multi_room
 ):
     robot = FakeRobot()
-    from custom_components.matic_robot.managed_leg import _async_run_leg
 
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -752,6 +751,7 @@ async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
             managed_user_command=sender,
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
     assert error.value.translation_key == "room_taken_over"
     command.assert_not_awaited()
@@ -1297,6 +1297,7 @@ async def test_leg_preserves_two_pause_resume_episodes_during_first_store_wait(
             recovered_suspend_reason="low_charge" if scenario == "low_charge" else None,
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         ),
         2,
     )
@@ -1429,7 +1430,6 @@ async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
     hass, monkeypatch
 ):
     robot = FakeRobot()
-    from custom_components.matic_robot.managed_leg import _async_run_leg
     from tests.test_entities import _entry
 
     manager = CleaningPlanManager(hass)
@@ -1498,6 +1498,7 @@ async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
             on_native_identity=bound.append,
             floor_token=plan_floor_token(entry.runtime_data.session.floor.value),
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
 
     assert error.value.translation_key == "room_taken_over"
@@ -1587,7 +1588,6 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
     from homeassistant.exceptions import HomeAssistantError
 
     from custom_components.matic_robot.client.commands import UserCommand
-    from custom_components.matic_robot.managed_room import _async_run_room
 
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
@@ -1653,13 +1653,13 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
         else "synthetic readback failure"
     )
     with pytest.raises(HomeAssistantError, match=expected_failure):
-        await _async_run_room(
+        await _async_run_leg(
             hass,
             call,
             manager,
             "vacuum.matic",
             "synthetic-serial",
-            ROOM,
+            [ROOM],
             robot.port(
                 session_history=AsyncMock(return_value=()),
                 session_identity=read_identity,
@@ -1668,6 +1668,7 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
             managed_user_command=sender,
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
 
     if reported in {"command", "transient_command"}:
@@ -1680,7 +1681,6 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
 async def test_unavailable_native_history_baseline_fails_before_start(hass):
     """A failed configured reader cannot authorize an unverifiable mission."""
     robot = FakeRobot()
-    from custom_components.matic_robot.managed_room import _async_run_room
 
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
@@ -1706,7 +1706,7 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
     hass.bus.async_listen("matic_robot_room_failed", events.append)
     sender = AsyncMock()
     with pytest.raises(HomeAssistantError):
-        await _async_run_room(
+        await _async_run_leg(
             hass,
             ServiceCall(
                 hass,
@@ -1722,7 +1722,7 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
             manager,
             "vacuum.matic",
             "synthetic-serial",
-            ROOM,
+            [ROOM],
             robot.port(
                 session_history=AsyncMock(side_effect=MaticError("offline")),
                 session_identity=robot.accepting,
@@ -1731,6 +1731,7 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
             managed_user_command=sender,
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
 
     assert sent == []

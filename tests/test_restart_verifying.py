@@ -16,6 +16,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.session_fakes import verifying_write
 
 from .test_restart import recovery_state as recovery_fixture
 
@@ -27,7 +28,7 @@ async def recovery_state(hass):
         "serial",
         "plan",
         room,
-        verification_deadline=dt_util.utcnow() + timedelta(seconds=300),
+        checkpoint=verifying_write(dt_util.utcnow() + timedelta(seconds=300)),
     )
     checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""

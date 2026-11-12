@@ -33,7 +33,6 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_leg import _async_run_leg
-from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
     RoomRunOutcome,
@@ -46,7 +45,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, run_step, verifying_write
 from tests.test_coverage_receipts import history_key
 
 SESSION = UUID(int=772)
@@ -289,13 +288,13 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
-        completed = await _async_run_room(
+        completed = await _async_run_leg(
             hass,
             _call(hass),
             manager,
             entity_id,
             "serial",
-            room,
+            [room],
             robot.port(
                 active_session=AsyncMock(return_value=False),
                 session_history=AsyncMock(return_value=(record,)),
@@ -308,6 +307,7 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
             floor_token=plan_floor_token(floor),
             run_id="executor-run",
             checkpoint_dispatch=checkpoint_dispatch,
+            advance=run_step,
         )
 
     assert completed
@@ -368,13 +368,13 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
-        completed = await _async_run_room(
+        completed = await _async_run_leg(
             hass,
             _call(hass),
             manager,
             "vacuum.matic",
             "serial",
-            room,
+            [room],
             robot.port(
                 active_session=AsyncMock(return_value=False),
                 session_history=AsyncMock(return_value=(partial,)),
@@ -391,6 +391,7 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
             checkpoint_dispatch=await _dispatch_callback(
                 manager, floor, (room,), receipt, "partial-run"
             ),
+            advance=run_step,
         )
     assert not completed
     assert (
@@ -464,6 +465,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
             checkpoint_dispatch=await _dispatch_callback(
                 manager, FLOOR, ROOMS, receipt, "leg-run"
             ),
+            advance=run_step,
         )
 
     assert not completed
@@ -556,13 +558,13 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
     try:
         with overrides[0], overrides[1]:
             if path == "room":
-                await _async_run_room(
+                await _async_run_leg(
                     hass,
                     _call(hass),
                     manager,
                     "vacuum.matic",
                     "serial",
-                    rooms[0],
+                    [rooms[0]],
                     robot.port(
                         active_session=AsyncMock(return_value=False),
                         session_history=AsyncMock(return_value=(completion,)),
@@ -578,6 +580,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
                     floor_token=plan_floor_token(floor),
                     run_id=run_id,
                     checkpoint_dispatch=checkpoint_dispatch,
+                    advance=run_step,
                 )
             else:
                 await _async_run_leg(
@@ -602,6 +605,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
                     floor_token=plan_floor_token(floor),
                     run_id=run_id,
                     checkpoint_dispatch=checkpoint_dispatch,
+                    advance=run_step,
                 )
     except PlanCancelledError:
         pass
@@ -654,13 +658,13 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
                 AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
             ),
         ):
-            return await _async_run_room(
+            return await _async_run_leg(
                 hass,
                 _call(hass),
                 manager,
                 "vacuum.matic",
                 "serial",
-                room,
+                [room],
                 robot.port(
                     active_session=AsyncMock(return_value=False),
                     session_history=AsyncMock(return_value=(_record((room,)),)),
@@ -675,6 +679,7 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
                 floor_token=plan_floor_token(floor),
                 run_id=run_id,
                 checkpoint_dispatch=dispatch_callback,
+                advance=run_step,
             )
 
     run_task = asyncio.create_task(execute_room())
@@ -743,7 +748,7 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         "serial",
         "home",
         room,
-        verification_deadline=dt_util.utcnow() + timedelta(minutes=4),
+        checkpoint=verifying_write(dt_util.utcnow() + timedelta(minutes=4)),
     )
     checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
     client = SimpleNamespace(

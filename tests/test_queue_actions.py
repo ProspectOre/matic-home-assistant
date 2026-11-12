@@ -25,13 +25,12 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
-from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.native_history import _global_room
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, run_step
 from tests.test_entities import _entry
 from tests.test_plans import _call, _leg_manager, _leg_record, _room
 
@@ -352,6 +351,7 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         run_id="run-1",
         floor_token="floor",
         checkpoint_dispatch=AsyncMock(),
+        advance=run_step,
     )
     await hass.async_block_till_done()
 
@@ -402,13 +402,13 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
             mission_ends,
         ),
     ):
-        settled = await _async_run_room(
+        settled = await _async_run_leg(
             hass,
             _call(hass),
             manager,
             "vacuum.matic",
             "serial",
-            room,
+            [room],
             robot.port(
                 active_session=AsyncMock(return_value=False),
                 session_identity=robot.accepting,
@@ -417,6 +417,7 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
             run_id="run-1",
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
         )
 
     assert settled is True

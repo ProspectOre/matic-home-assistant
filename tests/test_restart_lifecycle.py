@@ -6,21 +6,27 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import CoreState
+from homeassistant.core import CoreState, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.models import RobotActivity
+from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_dispatch import _shutdown_suspends_run
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_run import (
+    PlanCancelledError,
     RoomInterruptedError,
     RoomTakenOverError,
+    _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
-from tests.session_fakes import robot_port
+from tests.session_fakes import FakeRobot, robot_port, run_step
 
 from .test_restart import recovery_state as recovery_fixture
 
@@ -227,3 +233,67 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
     assert not stop.await_args_list
     assert not events
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "running"
+
+
+@pytest.mark.parametrize("multi", [False, True])
+async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
+    hass, recovery_state, multi
+):
+    robot = FakeRobot()
+    manager, _, checkpoint, room = recovery_state
+    rooms = (
+        [room, CleaningRoom("office", "Office", "vacuum", "standard")]
+        if multi
+        else [room]
+    )
+    prepared = _PreparedRoomDispatch(
+        tuple(rooms),
+        frozenset(),
+        dt_util.utcnow(),
+        native_identity=None,
+    )
+    saver = AsyncMock()
+    sender = AsyncMock()
+    manager.control.cancellation_reasons["serial"] = "home_assistant_shutdown"
+
+    async def started(*args, **_kwargs):
+        args[4](b"synthetic-session")
+        return RobotActivity.CLEANING
+
+    with (
+        patch(
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            AsyncMock(side_effect=started),
+        ),
+        patch(
+            "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
+            AsyncMock(side_effect=PlanCancelledError),
+        ),
+        patch(
+            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
+            new_callable=AsyncMock,
+        ) as dispatch,
+        pytest.raises(PlanCancelledError),
+    ):
+        await _async_run_leg(
+            hass,
+            ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
+            manager,
+            checkpoint["entity_id"],
+            "serial",
+            rooms,
+            robot.port(session_identity=robot.accepting),
+            7,
+            prepared_dispatch=prepared,
+            checkpoint_dispatch=saver,
+            advance=run_step,
+            managed_user_command=sender,
+            floor_token="floor",
+        )
+    dispatch.assert_not_awaited()
+    sender.assert_not_awaited()
+    assert saver.await_count == 3
+    assert saver.await_args.args[0].completion_deadline is not None
+    assert saver.await_args.args[0].native_identity == b"synthetic-session"
+    assert manager.history.snapshot("serial")["cancelled_runs"] == 0
+    assert manager.history.snapshot("serial")["interrupted_runs"] == 0

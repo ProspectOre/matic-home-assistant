@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +21,13 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.robot_commands import PlanStart, RobotCommands
 from custom_components.matic_robot.robot_port import RobotPort
+from custom_components.matic_robot.run_machine import (
+    CheckpointWrite,
+    LegVerifying,
+    Run,
+    RunEvent,
+    transition,
+)
 from custom_components.matic_robot.session import RobotSession
 from custom_components.matic_robot.stores import CleaningHistory, LiveState, Store
 from tests.wire_builders import _session_identity
@@ -316,3 +324,13 @@ def set_operational(session: Any, **changes: Any) -> None:
     """Replace fields of the state a fake session shows."""
     live = session.state.value
     session.state.set(replace(live, operational=replace(live.operational, **changes)))
+
+
+async def run_step(event: RunEvent) -> CheckpointWrite:
+    """Return the checkpoint write ``event`` makes, for a leg run on its own."""
+    return transition(Run(), event)[1]
+
+
+def verifying_write(deadline: datetime) -> CheckpointWrite:
+    """Return the write that marks a leg verifying until ``deadline``."""
+    return transition(Run(), LegVerifying(deadline))[1]

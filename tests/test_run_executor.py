@@ -245,7 +245,7 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set(hass) -> 
     )
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick")
     with patch(
-        "custom_components.matic_robot.managed_room._async_run_room", AsyncMock()
+        "custom_components.matic_robot.managed_leg._async_run_leg", AsyncMock()
     ) as run:
         await _async_execute_rooms(
             hass,
