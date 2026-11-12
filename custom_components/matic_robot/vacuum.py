@@ -99,6 +99,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_added_to_hass(self) -> None:
         """Auto-link unconfigured robot rooms to matching Home Assistant Areas."""
+        await self._segment_catalog.async_load(
+            self.hass, self._config_entry.entry_id, self.entity_id
+        )
         await super().async_added_to_hass()
         self._sync_segments()
 

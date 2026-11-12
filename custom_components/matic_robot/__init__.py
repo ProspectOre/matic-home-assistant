@@ -55,6 +55,7 @@ from .slam_history import SlamHistoryStore
 from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapStore
 from .slam_view_data import observe_trail
+from .vacuum_catalog import async_remove_floor_catalogs
 from .wifi_survey import WifiSurveyStore
 
 __all__ = ["async_migrate_entry"]
@@ -372,3 +373,4 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await slam_history.async_remove()
     await RunTrails(hass, entry.entry_id).async_remove()
     await WifiSurveyStore(hass, entry.entry_id).async_remove()
+    await async_remove_floor_catalogs(hass, entry.entry_id)

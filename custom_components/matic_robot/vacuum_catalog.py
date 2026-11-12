@@ -2,36 +2,164 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import asdict
 from hashlib import sha256
+from typing import Any
 
 from homeassistant.components.vacuum import Segment
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 
 from .client.models import FloorPlan, Room
+from .const import DOMAIN
 
 SegmentSignature = tuple[tuple[str, str, str | None], ...]
 
+# Core reads the active floor's mapping from these vacuum entity options.
+_CORE_OPTIONS = ("area_mapping", "last_seen_segments")
+# The catalogs are the integration's own. 0.5 kept them in the same options,
+# and a downgrade still reads the copy left there.
 _FLOOR_SCOPE_OPTION = "matic_floor_scope"
 _FLOOR_CATALOGS_OPTION = "matic_floor_catalogs"
 _UNSCOPED_CATALOG_OPTION = "matic_unscoped_catalog"
+_CATALOG_OPTIONS = (
+    _FLOOR_SCOPE_OPTION,
+    _FLOOR_CATALOGS_OPTION,
+    _UNSCOPED_CATALOG_OPTION,
+)
 _FLOOR_SCOPE_DOMAIN = b"matic-vacuum-floor-segments-v1\0"
 _MAX_FLOOR_CATALOGS = 12
+STORAGE_VERSION = 1
+SAVE_DELAY_SECONDS = 10
 
 
 def _segments_for_floor(floor_plan: FloorPlan) -> list[Segment]:
     return [Segment(room.id, room.name, "Current floor") for room in floor_plan.rooms]
 
 
+def _store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
+    return Store(
+        hass, STORAGE_VERSION, f"{DOMAIN}.floor_catalogs.{entry_id}", private=True
+    )
+
+
+async def async_remove_floor_catalogs(hass: HomeAssistant, entry_id: str) -> None:
+    """Delete a removed robot's floor catalogs."""
+    await _store(hass, entry_id).async_remove()
+
+
 class FloorSegmentCatalog:
-    """Own persisted room signatures, floor swaps and exact Area mapping."""
+    """Own persisted room signatures, floor swaps and exact Area mapping.
+
+    Each floor's catalog lives in the integration's store; only the active
+    floor's mapping goes to the vacuum entity options core reads.
+    """
+
+    _store: Store[dict[str, Any]]
 
     def __init__(self) -> None:
         self._reported_segment_change: SegmentSignature | None = None
+        self._catalog: dict[str, Any] = {}
+        # The catalogs as last read from entity options, to tell which floors
+        # a downgraded release changed there.
+        self._options_copy: dict[str, Any] = {}
+
+    async def async_load(
+        self, hass: HomeAssistant, entry_id: str, entity_id: str
+    ) -> None:
+        """Load the catalogs, taking any 0.5 wrote to the entity options.
+
+        0.5 sets the floor scope option on every catalog write, and the
+        first load removes it, so its presence means 0.5 ran since. Floors it
+        changed take its version; the rest keep ours. The catalogs stay in
+        the options for a downgrade, without the scope, so 0.5 binds the live
+        mapping to the current floor instead of to the floor of the upgrade.
+        """
+        self._store = _store(hass, entry_id)
+        stored = await self._store.async_load()
+        if stored is not None:
+            self._catalog = stored["catalog"]
+            self._options_copy = stored["options_copy"]
+        registry = er.async_get(hass)
+        entity_entry = registry.async_get(entity_id)
+        options: Mapping[str, Any] = (
+            entity_entry.options.get("vacuum", {}) if entity_entry else {}
+        )
+        if stored is not None and _FLOOR_SCOPE_OPTION not in options:
+            return
+        catalog = self._catalog
+        copy = {
+            key: deepcopy(options[key])
+            for key in (_FLOOR_CATALOGS_OPTION, _UNSCOPED_CATALOG_OPTION)
+            if key in options
+        }
+        if _FLOOR_SCOPE_OPTION in options:
+            catalog[_FLOOR_SCOPE_OPTION] = options[_FLOOR_SCOPE_OPTION]
+        catalogs = _floor_catalogs(catalog)
+        left = _floor_catalogs(self._options_copy)
+        for scope, floor in _floor_catalogs(copy).items():
+            if left.get(scope) != floor:
+                catalogs[scope] = floor
+        current = catalog.get(_FLOOR_SCOPE_OPTION)
+        catalog[_FLOOR_CATALOGS_OPTION] = (
+            _bounded_floor_catalogs(catalogs, current)
+            if current in catalogs
+            else catalogs
+        )
+        unscoped = copy.get(_UNSCOPED_CATALOG_OPTION)
+        if unscoped != self._options_copy.get(_UNSCOPED_CATALOG_OPTION):
+            if unscoped is None:
+                catalog.pop(_UNSCOPED_CATALOG_OPTION, None)
+            else:
+                catalog[_UNSCOPED_CATALOG_OPTION] = unscoped
+        self._options_copy = copy
+        await self._store.async_save(self._stored())
+        if _FLOOR_SCOPE_OPTION in options:
+            registry.async_update_entity_options(
+                entity_id,
+                "vacuum",
+                {
+                    key: value
+                    for key, value in options.items()
+                    if key != _FLOOR_SCOPE_OPTION
+                },
+            )
+
+    def _stored(self) -> dict[str, Any]:
+        return {"catalog": self._catalog, "options_copy": self._options_copy}
+
+    def _options(self, entity_entry: er.RegistryEntry) -> dict[str, object]:
+        """Return core's vacuum options with this robot's catalogs."""
+        options = {
+            key: value
+            for key, value in entity_entry.options.get("vacuum", {}).items()
+            if key not in _CATALOG_OPTIONS
+        }
+        options.update(deepcopy(self._catalog))
+        return options
+
+    def _write(
+        self,
+        registry: er.EntityRegistry,
+        entity_entry: er.RegistryEntry,
+        options: dict[str, object],
+    ) -> None:
+        """Save the catalogs and give core the active floor's mapping."""
+        catalog = {key: options[key] for key in _CATALOG_OPTIONS if key in options}
+        if catalog != self._catalog:
+            self._catalog = deepcopy(catalog)
+            self._store.async_delay_save(self._stored, SAVE_DELAY_SECONDS)
+        current: Mapping[str, Any] = entity_entry.options.get("vacuum", {})
+        core = {
+            key: value for key, value in current.items() if key not in _CORE_OPTIONS
+        }
+        core.update({key: options[key] for key in _CORE_OPTIONS if key in options})
+        if core != current:
+            registry.async_update_entity_options(entity_entry.entity_id, "vacuum", core)
 
     @callback
     def auto_map(
@@ -43,7 +171,7 @@ class FloorSegmentCatalog:
         entity_registry = er.async_get(hass)
         if (entity_entry := entity_registry.async_get(entity_id)) is None:
             return
-        options = dict(entity_entry.options.get("vacuum", {}))
+        options = self._options(entity_entry)
         scope = _floor_scope(floor_plan)
         stored_scope = options.get(_FLOOR_SCOPE_OPTION)
         if isinstance(stored_scope, str) and stored_scope != scope:
@@ -67,7 +195,7 @@ class FloorSegmentCatalog:
         catalogs = _floor_catalogs(options)
         catalogs[scope] = _catalog_from_options(options)
         options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(catalogs, scope)
-        entity_registry.async_update_entity_options(entity_id, "vacuum", options)
+        self._write(entity_registry, entity_entry, options)
 
     @callback
     def reconcile(
@@ -83,7 +211,7 @@ class FloorSegmentCatalog:
         entity_registry = er.async_get(hass)
         if (entity_entry := entity_registry.async_get(entity_id)) is None:
             return
-        options = dict(entity_entry.options.get("vacuum", {}))
+        options = self._options(entity_entry)
         current = _segments_for_floor(floor_plan)
         signature = _segment_signature(current)
         current_payload = [asdict(segment) for segment in current]
@@ -103,9 +231,7 @@ class FloorSegmentCatalog:
                 if self._reported_segment_change != signature:
                     report_segment_change()
                     self._reported_segment_change = signature
-                entity_registry.async_update_entity_options(
-                    entity_id, "vacuum", options
-                )
+                self._write(entity_registry, entity_entry, options)
                 return
             options["last_seen_segments"] = current_payload
             options[_FLOOR_SCOPE_OPTION] = current_scope
@@ -113,7 +239,7 @@ class FloorSegmentCatalog:
             options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
                 catalogs, current_scope
             )
-            entity_registry.async_update_entity_options(entity_id, "vacuum", options)
+            self._write(entity_registry, entity_entry, options)
             self._reported_segment_change = None
             return
 
@@ -153,7 +279,7 @@ class FloorSegmentCatalog:
             options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
                 catalogs, current_scope
             )
-            entity_registry.async_update_entity_options(entity_id, "vacuum", options)
+            self._write(entity_registry, entity_entry, options)
             target_segments = _segments_from_payload(target.get("last_seen_segments"))
             target_signature = (
                 _segment_signature(target_segments)
@@ -174,7 +300,7 @@ class FloorSegmentCatalog:
             options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
                 catalogs, current_scope
             )
-            entity_registry.async_update_entity_options(entity_id, "vacuum", options)
+            self._write(entity_registry, entity_entry, options)
             self._reported_segment_change = None
             return
 
@@ -185,9 +311,7 @@ class FloorSegmentCatalog:
                 options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
                     catalogs, current_scope
                 )
-                entity_registry.async_update_entity_options(
-                    entity_id, "vacuum", options
-                )
+                self._write(entity_registry, entity_entry, options)
             self._reported_segment_change = None
             return
         if self._reported_segment_change != signature:
