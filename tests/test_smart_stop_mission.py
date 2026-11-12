@@ -97,6 +97,18 @@ async def test_the_client_leaves_another_mission_alone(monkeypatch):
     client._connection._async_send_user_payload.assert_not_awaited()
 
 
+async def test_a_mission_replaced_before_sending_keeps_its_rooms(monkeypatch):
+    client = _client(monkeypatch, _readback(LIVE))
+    reads = client._reads.async_get_cleaning_session_identity
+    ours = await reads()
+    reads.side_effect = [ours, b"another mission"]
+
+    with pytest.raises(MaticError, match="changed before"):
+        await client.async_end_after_current_room(FLOOR, ours)
+
+    client._connection._async_send_user_payload.assert_not_awaited()
+
+
 async def test_robot_commands_end_the_mission_on_the_run_floor(hass):
     entry = _entry()
     entry.runtime_data.session.client.async_end_after_current_room = AsyncMock()
