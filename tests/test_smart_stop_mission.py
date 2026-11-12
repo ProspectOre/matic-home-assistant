@@ -200,7 +200,9 @@ def test_a_leg_record_credits_finished_rooms_and_names_unreached_ones():
 class _Robot:
     """Synthetic robot that cleans the kitchen and then the study in one mission."""
 
-    def __init__(self, hass, manager, *, queue_error=None, moves_on=False) -> None:
+    def __init__(
+        self, hass, manager, *, queue_error=None, moves_on=False, ends=False
+    ) -> None:
         self.hass = hass
         self.manager = manager
         self.fake = FakeRobot()
@@ -212,6 +214,8 @@ class _Robot:
         self.ended_after: list[tuple[str, bytes]] = []
         self.queue_error = queue_error
         self.moves_on = moves_on
+        # The mission ends on its own even though the queue change failed.
+        self.ends = ends
 
     async def read_identity(self) -> bytes:
         return self.identity
@@ -232,7 +236,9 @@ class _Robot:
     async def end_after_current_room(self, floor_token: str, identity: bytes) -> None:
         self.ended_after.append((floor_token, identity))
         if self.moves_on or (
-            self.queue_error is not None and self.queue_error.reason != "last_room"
+            self.queue_error is not None
+            and not self.ends
+            and getattr(self.queue_error, "reason", None) != "last_room"
         ):
             self.hass.async_create_task(self._next_room(), eager_start=False)
         else:
@@ -320,12 +326,21 @@ async def _run(hass, make_robot, *, smart_stop: bool = True):
     return robot, events, error
 
 
-@pytest.mark.parametrize("queue_error", [None, QueueChangeError("last_room")])
+@pytest.mark.parametrize(
+    "queue_error",
+    [
+        None,
+        QueueChangeError("last_room"),
+        # The mission ended during the readback, so the change went unconfirmed.
+        MaticError("Native mission changed during the queue change"),
+    ],
+)
 async def test_smart_stop_ends_the_shared_mission_after_the_current_room(
     hass, queue_error
 ) -> None:
     robot, events, error = await _run(
-        hass, lambda manager: _Robot(hass, manager, queue_error=queue_error)
+        hass,
+        lambda manager: _Robot(hass, manager, queue_error=queue_error, ends=True),
     )
 
     assert error is None

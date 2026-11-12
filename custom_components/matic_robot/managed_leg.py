@@ -257,10 +257,21 @@ async def _async_run_leg(
                 marker = None
             watch_late_history(marker)
 
+    def ending_early() -> bool:
+        """Return whether a STOP or a finish request ends this mission early.
+
+        A finish request counts even when its queue change went unconfirmed:
+        the mission can end during the readback, and the robot then left
+        the rooms it had not entered.
+        """
+        return stop_sent or (
+            finish_room_event is not None and finish_room_event.is_set()
+        )
+
     def withheld_room_ids() -> set[str]:
         """Return the rooms the run kept the robot from, with the owner's skips."""
         withheld = set(skipped_room_ids())
-        if stop_sent or last_room is not None:
+        if ending_early():
             withheld |= {room.room_id for room in leg} - observed_ids
         return withheld
 
@@ -745,7 +756,7 @@ async def _async_run_leg(
                 serial_number, plan_id, room, run_id=run_id
             )
             announce(room, "skipped", reason_code="owner_skipped")
-        elif (stop_sent or last_room is not None) and room.room_id not in observed_ids:
+        elif ending_early() and room.room_id not in observed_ids:
             await manager.ledger.async_mark_cancelled(serial_number, plan_id, room)
             announce(
                 room,
