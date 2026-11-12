@@ -16,11 +16,11 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
+from . import leg_handoff, managed_run
 from . import managed_area as area_execution
 from . import managed_dispatch as dispatch_control
 from . import managed_leg as leg_execution
 from . import managed_observation as observation
-from . import managed_run
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
 from .const import DOMAIN, EVENT_PLAN_FINISHED
@@ -313,6 +313,7 @@ async def _async_execute_rooms_reserved(
                     raise PlanCancelledError
                 prepared_dispatch, recovered_dispatch = recovered_dispatch, None
                 expected_dispatch_history = None
+                refused_on_return = False
                 if index > 0 and prepared_dispatch is None:
                     handoff_history = checkpoint.get("handoff_history")
                     if isinstance(handoff_history, list):
@@ -324,6 +325,62 @@ async def _async_execute_rooms_reserved(
                     await advance(HandoffEntered(index))
                     if finish_room_event.is_set():
                         break
+                    if isinstance(leg, list):
+
+                        async def dispatch_on_return(
+                            on_identity: Callable[[bytes | None], None],
+                            leg: list[CleaningRoom] = leg,
+                            index: int = index,
+                            history: frozenset[str] | None = expected_dispatch_history,
+                        ) -> _PreparedRoomDispatch:
+                            await advance(LegDispatching(index))
+                            return await dispatch_control._async_dispatch_leg_command(
+                                hass,
+                                call,
+                                entity_id,
+                                leg,
+                                motion_token,
+                                robot.session_history,
+                                floor_is_current=floor_is_current,
+                                floor_token=floor_token,
+                                on_dispatch=lambda: bind_native_identity(None),
+                                on_claim=lambda session_id: (
+                                    manager.ledger.async_claim_native_session(
+                                        serial_number, session_id, run_id=run_id
+                                    )
+                                ),
+                                session_identity=robot.session_identity,
+                                on_identity=on_identity,
+                                expected_dispatch_identity=b"",
+                                expected_dispatch_history=history,
+                            )
+
+                        async def back_to_handoff(index: int = index) -> None:
+                            nonlocal refused_on_return
+                            refused_on_return = True
+                            await advance(HandoffEntered(index))
+
+                        prepared_dispatch = await leg_handoff.async_dispatch_on_return(
+                            hass,
+                            entity_id,
+                            robot.session_identity,
+                            dispatch_on_return,
+                            bind_native_identity,
+                            back_to_handoff,
+                            partial(
+                                dispatch_control._async_cleanup_managed_motion,
+                                outer_command,
+                                motion_token,
+                                dispatch_attempted=True,
+                            ),
+                            partial(
+                                dispatch_control._shutdown_suspends_run,
+                                hass,
+                                manager,
+                                serial_number,
+                            ),
+                        )
+                if index > 0 and prepared_dispatch is None:
                     if not await observation._async_wait_for_settled_leg_handoff(
                         hass,
                         entity_id,
@@ -332,6 +389,9 @@ async def _async_execute_rooms_reserved(
                         active_session=robot.active_session,
                         identity_reader=robot.session_identity,
                         expected_identity=native_identity,
+                        # A refused command whose session shows up late is
+                        # the robot taking it after all: never send it twice.
+                        reject_new_identity=refused_on_return,
                         finish_room_event=finish_room_event,
                     ):
                         # The previous native leg is complete, but the robot
