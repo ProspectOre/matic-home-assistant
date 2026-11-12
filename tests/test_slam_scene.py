@@ -928,8 +928,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     )
     payload = json.loads(response.body)
     scene_epoch = payload["entries"][0].pop("map_scene_epoch")
-    assert isinstance(scene_epoch, str) and len(scene_epoch) == 32
-    assert all(character in "0123456789abcdef" for character in scene_epoch)
+    assert len(scene_epoch) == 32 and set(scene_epoch) <= set("0123456789abcdef")
     assert payload == {
         "entries": [
             {
@@ -944,6 +943,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "history_count": 0,
                 "history_floor_count": 0,
                 "map_revision": 7,
+                "scene_revision": 7,
                 "map_floor_coherent": True,
                 "selected_floor_ordinal": 1,
                 "map_floor_ordinal": 1,

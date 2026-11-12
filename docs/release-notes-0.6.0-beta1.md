@@ -43,6 +43,11 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
   blue. Floor type changes made in the Matic app show up here too.
 - **Follow the robot.** Turn on **Follow the robot** in **Map options** to keep
   the live robot centred. Moving the map yourself turns it off.
+- **Live map updates.** As the robot maps, Home Assistant tells an open Matic
+  Map that the map changed, and it downloads only the parts that changed. No
+  request waits open in the meantime. If the connection to Home Assistant
+  drops, the last map stays on screen while the status says **Reconnecting**,
+  and it reloads when the connection returns.
 - **Cleaning phase and time left.** While the robot cleans, the status says
   whether it is cleaning the interior, edges or toekicks, and shows the robot's
   own estimate of the time left for the whole clean. The same values are

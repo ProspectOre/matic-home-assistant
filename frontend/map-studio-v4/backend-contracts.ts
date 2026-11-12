@@ -34,6 +34,8 @@ export interface MapEntry {
   /** Absent on integrations without the carpet and vent layer. */
   readonly floorTypesUrl: string | null;
   readonly mapRevision: number;
+  /** The newest scene revision, ahead of `mapRevision` while it builds; absent before 0.6. */
+  readonly sceneRevision: number | null;
   readonly mapSceneEpoch: string | null;
   readonly mapFloorCoherent: boolean;
   readonly mapSessionVerified: boolean;
@@ -582,6 +584,8 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
         ? null
         : privatePath(entry.floor_layers_url, "invalid-floor-layers-url"),
       mapRevision,
+      sceneRevision: entry.scene_revision == null ? null
+        : boundedInteger(entry.scene_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-scene-revision"),
       mapSceneEpoch: selectedId(entry.map_scene_epoch, "invalid-scene-epoch"),
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),
       mapSessionVerified: booleanValue(entry.map_session_verified, "invalid-session-state"),

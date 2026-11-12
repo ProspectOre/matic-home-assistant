@@ -12,6 +12,7 @@ interface CatalogResourceCallbacks {
   readonly projection: () => HassProjection | null;
   readonly recoveryPending: (entry: MapEntry) => boolean;
   readonly ownsLiveScene: (entry: MapEntry) => boolean;
+  readonly sceneRevision: (entryId: string, revision: number) => void;
   readonly admitSpatial: (entry: MapEntry, previous: MapEntry | null, force: boolean, preserve: boolean, recovering: boolean) => void;
   readonly syncWorkspace: () => void;
   readonly clearPrivate: (problem: string, entryId: string | null) => void;
@@ -142,15 +143,16 @@ export class CatalogResources {
       }
       const sameIdentity = Boolean(selected && currentEntry
         && entryCoherenceIdentity(selected) === entryCoherenceIdentity(currentEntry));
-      const followerOwnsContent = Boolean(sameIdentity && currentEntry && this.#callbacks.ownsLiveScene(currentEntry));
+      const liveSceneOwnsContent = Boolean(sameIdentity && currentEntry && this.#callbacks.ownsLiveScene(currentEntry));
+      const catalogRevision = selected?.sceneRevision ?? selected?.mapRevision ?? -1;
       if (selected
         && currentEntry
         && sameIdentity
-        && (followerOwnsContent
+        && (liveSceneOwnsContent
           || selected.mapRevision < currentEntry.mapRevision
           || (!force && this.#requests.has("scene")))) {
-        // The catalog can lead an active scene follower: its pixel revision is a
-        // content hint, while the follower admits pixels into this scene.
+        // The catalog can lead the live scene: its pixel revision is a content
+        // hint, handed to the scene below, which admits pixels into this scene.
         // Also preserve the admitted revision if an older catalog races a
         // completed revision, or while the initial full scene is downloading.
         selected = { ...selected, mapRevision: currentEntry.mapRevision };
@@ -174,6 +176,8 @@ export class CatalogResources {
         return;
       }
       this.#callbacks.admitSpatial(selected, currentEntry, force, preserveGeneration, spatialRecoveryOwner !== null);
+      // The backstop for a missing or silent workspace socket.
+      if (liveSceneOwnsContent) this.#callbacks.sceneRevision(selected.entryId, catalogRevision);
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed()) return;
       if (spatialRecoveryOwner) spatialRecoveryOwner.finish();

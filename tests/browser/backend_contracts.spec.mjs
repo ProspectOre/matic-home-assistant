@@ -135,7 +135,7 @@ test("the area catalog keeps outline geometry validation in the deferred parser"
   expect(result).toEqual([true, "invalid-area-outline"]);
 });
 
-test("catalog live workspace capability defaults off and validates explicit booleans", async ({ page }) => {
+test("catalog live workspace capability defaults off and validates explicit booleans; scene revision is optional", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async () => {
     const { parseCatalog } = await import("/backend-contracts.js");
@@ -172,12 +172,14 @@ test("catalog live workspace capability defaults off and validates explicit bool
     const malformed = { ...entry, live_workspace_transport_enabled: "yes" };
     let malformedCode = null;
     try { parse(malformed); } catch (error) { malformedCode = error.code ?? null; }
+    const sceneRevision = value => parseCatalog({ entries: [value] })[0].sceneRevision;
     return { omitted: parse(entry), enabled: parse({ ...entry, live_workspace_transport_enabled: true }),
-      disabled: parse({ ...entry, live_workspace_transport_enabled: false }), malformedCode };
+      disabled: parse({ ...entry, live_workspace_transport_enabled: false }), malformedCode,
+      sceneRevisions: [sceneRevision(entry), sceneRevision({ ...entry, scene_revision: 8 })] };
   });
 
   expect(result).toEqual({ omitted: false, enabled: true, disabled: false,
-    malformedCode: "invalid-live-workspace-transport" });
+    malformedCode: "invalid-live-workspace-transport", sceneRevisions: [null, 8] });
 });
 
 async function load(page) {

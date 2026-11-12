@@ -220,11 +220,11 @@ test("a delayed obsolete enabled catalog cannot start after entry and authorizat
 });
 
 /*
-Paired receipt, same 10s/20Hz long-poll fixture: before routing, legacy was
-3 catalog/2 full-scene/201 revision waits, while workspace-enabled was
-203/202/1; without a followed scene it was 203/202/0. After routing,
-workspace-enabled was 3/2/201, and the unfollowed path was 3/4/0 via normal
-polling.
+Paired receipt, 10 s of 20 Hz scene revisions. With the earlier `?since=`
+revision wait the panel held one scene request open at all times, with or
+without the socket. With socket push it holds none: the run with the socket
+reads at most one manifest per announced revision, one at a time (100 here),
+and the run without reads one per catalog poll that shows a newer revision.
 Reproduce with this test's fixed clock anchor, startup owner wait, and 200
 50ms revisions; it asserts request parity, bounded single-owner work, and
 final admitted revision rather than pinning timer-sensitive absolute totals.
@@ -247,11 +247,11 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
     const makeRun = (enabled, holdCatalog = false, forceFallback = false) => {
       const entry = { ...base.resources.entry };
       const run = { catalogCalls: 0, activeCatalog: 0, maxActiveCatalog: 0,
-        sceneCalls: 0, followCalls: 0, activeFollow: 0, maxActiveFollow: 0,
-        revisions: 7, pendingCatalog: [], pendingFollow: [], deliveredEvents: 0, effects: null,
+        sceneCalls: 0, updateCalls: 0, activeUpdate: 0, maxActiveUpdate: 0,
+        revisions: 7, pendingCatalog: [], pendingUpdate: [], deliveredEvents: 0, effects: null,
         store: null, holdCatalog, enabled, forceFallback };
-      // A manifest scene is followed by revision waits; the fallback run serves
-      // whole scenes, which are not followed and advance by polling instead.
+      // A manifest scene is updated when a newer revision is announced; the
+      // fallback run serves whole scenes, which the catalog poll replaces.
       const manifest = forceFallback ? {} : { manifest: new ArrayBuffer(1) };
       const backend = {
         dispose() {},
@@ -259,7 +259,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
           run.catalogCalls += 1;
           run.activeCatalog += 1;
           run.maxActiveCatalog = Math.max(run.maxActiveCatalog, run.activeCatalog);
-          const rows = [{ ...entry, mapRevision: run.revisions }];
+          const rows = [{ ...entry, mapRevision: run.revisions, sceneRevision: run.revisions }];
           if (!holdCatalog) {
             run.activeCatalog -= 1;
             return rows;
@@ -269,28 +269,28 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
             resolve(rows);
           }));
         },
-        scene: async (_url, revision, _floorCoherent, _source, signal, follow = {}) => {
-          if (follow.since === undefined) {
+        scene: async (_url, revision, _floorCoherent, _source, signal, options = {}) => {
+          if (!options.latest) {
             run.sceneCalls += 1;
             return { scene: { ...base.resources.scene.value, ...manifest, revision }, revision, floorCoherent: true };
           }
-          const scene = follow.base;
-          run.followCalls += 1;
-          run.activeFollow += 1;
-          run.maxActiveFollow = Math.max(run.maxActiveFollow, run.activeFollow);
+          const scene = options.base;
+          run.updateCalls += 1;
+          run.activeUpdate += 1;
+          run.maxActiveUpdate = Math.max(run.maxActiveUpdate, run.activeUpdate);
           return new Promise((resolve, reject) => {
             let settled = false;
             const cleanup = () => {
               if (settled) return false;
               settled = true;
-              run.activeFollow -= 1;
+              run.activeUpdate -= 1;
               signal?.removeEventListener("abort", abort);
               return true;
             };
             const abort = () => {
               if (!cleanup()) return;
-              const index = run.pendingFollow.indexOf(complete);
-              if (index >= 0) run.pendingFollow.splice(index, 1);
+              const index = run.pendingUpdate.indexOf(complete);
+              if (index >= 0) run.pendingUpdate.splice(index, 1);
               reject(new DOMException("Aborted", "AbortError"));
             };
             const complete = () => {
@@ -305,7 +305,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
             if (signal?.aborted) abort();
             else {
               signal?.addEventListener("abort", abort, { once: true });
-              run.pendingFollow.push(complete);
+              run.pendingUpdate.push(complete);
             }
           });
         },
@@ -356,7 +356,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
             revisions: { scene: revision }, resources: ["scene"] });
           run.deliveredEvents += 1;
         }
-        for (const run of Object.values(runs)) run.pendingFollow.shift()?.();
+        for (const run of Object.values(runs)) run.pendingUpdate.shift()?.();
       },
       release(runName) { runs[runName].pendingCatalog.shift()?.(); },
       disposeRun(runName) { finishRun(runs[runName]); },
@@ -365,11 +365,11 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
         return Object.fromEntries(Object.entries(runs).map(([name, run]) => [name, {
           catalogReads: run.catalogCalls,
           sceneReads: run.sceneCalls,
-          followReads: run.followCalls,
+          updateReads: run.updateCalls,
           activeCatalogReads: run.activeCatalog,
           maxActiveCatalogReads: run.maxActiveCatalog,
-          activeFollowReads: run.activeFollow,
-          maxActiveFollowReads: run.maxActiveFollow,
+          activeUpdateReads: run.activeUpdate,
+          maxActiveUpdateReads: run.maxActiveUpdate,
           admittedSceneRevision: run.store.value.resources.scene.value?.revision ?? null,
           admittedEntryRevision: run.store.value.resources.entry?.mapRevision ?? null,
           workspaceEventsReceived: run.deliveredEvents,
@@ -389,7 +389,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       && window.workspaceMeasurement.runs.fallbackEnabled.callbacks.length === 1
       && window.workspaceMeasurement.runs.immediateLegacy.callbacks.length === 0
       && window.workspaceMeasurement.runs.heldLegacy.callbacks.length === 0
-      && runs.immediateEnabled.activeFollowReads === 1;
+      && runs.immediateEnabled.activeUpdateReads === 0;
   })).toBe(true);
   for (let index = 1; index <= 200; index += 1) {
     await page.evaluate(index => window.workspaceMeasurement.emit(index), index);
@@ -413,7 +413,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
     conditions: { syntheticRevisions: 200, cadenceHz: 20, durationMs: 10_000, tickMs: 50,
       automaticFallbackPollWaitMs: 5_000,
       catalogResponse: "immediate in first pair; explicitly held until after stimulus in second pair",
-      sceneFollow: "one pending synthetic revision wait resolves for each newer 50ms revision" },
+      sceneUpdate: "one pending synthetic manifest read resolves at each 50ms revision" },
     prePollFallback: {
       catalogReads: beforeRelease.fallbackEnabled.catalogReads,
       admittedSceneRevision: beforeRelease.fallbackEnabled.admittedSceneRevision,
@@ -427,19 +427,20 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       workspaceEnabledCatalogReads: immediateResult.immediateEnabled.catalogReads,
       legacySceneReads: immediateResult.immediateLegacy.sceneReads,
       workspaceEnabledSceneReads: immediateResult.immediateEnabled.sceneReads,
-      legacyFollowReads: immediateResult.immediateLegacy.followReads,
-      workspaceEnabledFollowReads: immediateResult.immediateEnabled.followReads,
-      workspaceEnabledMaxConcurrentFollowReads: immediateResult.immediateEnabled.maxActiveFollowReads,
+      legacyUpdateReads: immediateResult.immediateLegacy.updateReads,
+      legacyMaxConcurrentUpdateReads: immediateResult.immediateLegacy.maxActiveUpdateReads,
+      workspaceEnabledUpdateReads: immediateResult.immediateEnabled.updateReads,
+      workspaceEnabledMaxConcurrentUpdateReads: immediateResult.immediateEnabled.maxActiveUpdateReads,
       workspaceEnabledAdmittedSceneRevision: immediateResult.immediateEnabled.admittedSceneRevision,
       workspaceEnabledAdmittedEntryRevision: immediateResult.immediateEnabled.admittedEntryRevision,
       workspaceEventsReceived: immediateResult.immediateEnabled.workspaceEventsReceived,
       maxConcurrentCatalogReads: Math.max(immediateResult.immediateLegacy.maxActiveCatalogReads,
         immediateResult.immediateEnabled.maxActiveCatalogReads),
     },
-    unfollowedFallback: {
+    wholeSceneFallback: {
       catalogReads: immediateResult.fallbackEnabled.catalogReads,
       sceneReads: immediateResult.fallbackEnabled.sceneReads,
-      followReads: immediateResult.fallbackEnabled.followReads,
+      updateReads: immediateResult.fallbackEnabled.updateReads,
       maxConcurrentCatalogReads: immediateResult.fallbackEnabled.maxActiveCatalogReads,
       workspaceEventsReceived: immediateResult.fallbackEnabled.workspaceEventsReceived,
       admittedSceneRevision: immediateResult.fallbackEnabled.admittedSceneRevision,
@@ -478,18 +479,25 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
   expect(result.immediate).toMatchObject({
     workspaceEventsReceived: 200,
     maxConcurrentCatalogReads: 1,
-    workspaceEnabledMaxConcurrentFollowReads: 1,
+    legacyMaxConcurrentUpdateReads: 1,
+    workspaceEnabledMaxConcurrentUpdateReads: 1,
     workspaceEnabledAdmittedSceneRevision: 207,
     workspaceEnabledAdmittedEntryRevision: 207,
   });
-  expect(result.unfollowedFallback).toMatchObject({
-    followReads: 0,
+  // Push reads at most one manifest per announced revision; without the
+  // socket, at most one per catalog poll.
+  expect(result.immediate.workspaceEnabledUpdateReads).toBeGreaterThan(result.immediate.legacyUpdateReads);
+  expect(result.immediate.workspaceEnabledUpdateReads).toBeLessThanOrEqual(200);
+  expect(result.immediate.legacyUpdateReads).toBeGreaterThan(0);
+  expect(result.immediate.legacyUpdateReads).toBeLessThanOrEqual(result.immediate.legacyCatalogReads);
+  expect(result.wholeSceneFallback).toMatchObject({
+    updateReads: 0,
     workspaceEventsReceived: 200,
     maxConcurrentCatalogReads: 1,
     admittedSceneRevision: 207,
     admittedEntryRevision: 207,
   });
-  expect(result.unfollowedFallback.catalogReads).toBeLessThanOrEqual(result.immediate.legacyCatalogReads + 1);
+  expect(result.wholeSceneFallback.catalogReads).toBeLessThanOrEqual(result.immediate.legacyCatalogReads + 1);
   expect(result.held.beforeRelease).toMatchObject({
     legacyCatalogReads: 1,
     workspaceEnabledCatalogReads: 1,
@@ -506,7 +514,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
   expect(result.held.finalCatalogReads).toBe(1);
 });
 
-test("same-generation snapshot map revisions wait for follow admission; new identity revalidates", async ({ page }) => {
+test("same-generation snapshot scene revisions read the new manifest; new identity revalidates", async ({ page }) => {
   await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -514,8 +522,8 @@ test("same-generation snapshot map revisions wait for follow admission; new iden
     const base = createGalleryState("ready");
     let catalogEntry = { ...syntheticEntry() };
     const callbacks = [];
-    const pendingFollows = [];
-    const counts = { catalog: 0, scene: 0, follow: 0 };
+    const pendingUpdates = [];
+    const counts = { catalog: 0, scene: 0, update: 0 };
     const wireEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
       history_url: entry.historyUrl,
       areas_url: entry.areasUrl, plans_url: entry.plansUrl, map_revision: entry.mapRevision,
@@ -552,13 +560,17 @@ test("same-generation snapshot map revisions wait for follow admission; new iden
     const backend = {
       dispose() {},
       catalog: async () => { counts.catalog += 1; return [{ ...catalogEntry }]; },
-      scene: async (_url, revision, _coherent, _source, signal, follow = {}) => {
-        if (follow.since === undefined) {
+      scene: async (_url, revision, _coherent, _source, signal, options = {}) => {
+        if (!options.latest) {
           counts.scene += 1;
           return { scene: sceneFor(revision), revision, floorCoherent: true };
         }
-        counts.follow += 1;
-        return new Promise(resolve => pendingFollows.push({ scene: follow.base, signal, resolve }));
+        counts.update += 1;
+        return new Promise(resolve => {
+          const update = { scene: options.base, signal, settled: false };
+          update.resolve = value => { update.settled = true; resolve(value); };
+          pendingUpdates.push(update);
+        });
       },
       history: async () => base.resources.history.value,
       pose: async () => null,
@@ -571,61 +583,67 @@ test("same-generation snapshot map revisions wait for follow admission; new iden
     const store = new WorkspaceStore();
     const controller = new EffectController(store, backend, connection, true);
     controller.sync(projection);
-    window.snapshotHarness = { callbacks, pendingFollows, counts, store, controller, catalogEntry, snapshotFor,
+    window.snapshotHarness = { callbacks, pendingUpdates, counts, store, controller, catalogEntry, snapshotFor,
       setCatalogEntry: value => { catalogEntry = value; },
       measure: () => ({ ...counts, entryRevision: store.value.resources.entry?.mapRevision,
         sceneRevision: store.value.resources.scene.value?.revision, generation: store.value.generation,
-        pending: pendingFollows.length,
-        activeFollowCount: pendingFollows.filter(follow => !follow.signal?.aborted).length }),
+        pending: pendingUpdates.length,
+        activeUpdateCount: pendingUpdates.filter(update => !update.signal?.aborted && !update.settled).length }),
       dispose: () => controller.dispose() };
   });
   await expect.poll(() => page.evaluate(() => window.snapshotHarness.callbacks.length)).toBe(1);
   await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure().sceneRevision)).toBe(7);
-  await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure().activeFollowCount)).toBe(1);
+  expect(await page.evaluate(() => window.snapshotHarness.measure().activeUpdateCount)).toBe(0);
   await page.evaluate(() => {
     const h = window.snapshotHarness;
     h.beforeContentSnapshot = h.measure();
     h.setCatalogEntry({ ...h.catalogEntry, mapRevision: 8 });
     h.callbacks[0]({ type: "snapshot", ...h.snapshotFor(h.catalogEntry, 1, 1, 8) });
   });
-  await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure().entryRevision)).toBe(7);
-  const beforeFollow = await page.evaluate(() => window.snapshotHarness.measure());
+  // The snapshot's scene revision starts one manifest read in the same generation.
+  await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure().activeUpdateCount)).toBe(1);
+  const beforeUpdate = await page.evaluate(() => window.snapshotHarness.measure());
   const beforeContentSnapshot = await page.evaluate(() => window.snapshotHarness.beforeContentSnapshot);
-  expect(beforeFollow).toMatchObject({
+  expect(beforeUpdate).toMatchObject({
     catalog: beforeContentSnapshot.catalog, scene: beforeContentSnapshot.scene,
-    follow: beforeContentSnapshot.follow, entryRevision: 7, sceneRevision: 7,
+    update: 1, entryRevision: 7, sceneRevision: 7,
     generation: beforeContentSnapshot.generation,
   });
-  await page.evaluate(() => window.snapshotHarness.pendingFollows[0].resolve({
-    scene: { ...window.snapshotHarness.pendingFollows[0].scene, revision: 8 }, revision: 8,
+  await page.evaluate(() => window.snapshotHarness.pendingUpdates[0].resolve({
+    scene: { ...window.snapshotHarness.pendingUpdates[0].scene, revision: 8 }, revision: 8,
     floorCoherent: true, notModified: false,
   }));
   await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure().entryRevision)).toBe(8);
-  const afterFollow = await page.evaluate(() => window.snapshotHarness.measure());
-  expect(afterFollow).toMatchObject({
+  const afterUpdate = await page.evaluate(() => window.snapshotHarness.measure());
+  expect(afterUpdate).toMatchObject({
     catalog: beforeContentSnapshot.catalog, scene: beforeContentSnapshot.scene,
     entryRevision: 8, sceneRevision: 8, generation: beforeContentSnapshot.generation,
   });
 
+  // A read for revision 9 is in flight when the session changes.
+  await page.evaluate(() => {
+    const h = window.snapshotHarness;
+    h.callbacks[0]({ type: "snapshot", ...h.snapshotFor(h.catalogEntry, 2, 1, 9) });
+  });
+  await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure().activeUpdateCount)).toBe(1);
   await page.evaluate(() => {
     const h = window.snapshotHarness;
     const changed = { ...h.catalogEntry, mapRevision: 9, mapSessionKey: "synthetic-next-session" };
     h.setCatalogEntry(changed);
-    h.callbacks[0]({ type: "snapshot", ...h.snapshotFor(changed, 2, 2, 9) });
+    h.callbacks[0]({ type: "snapshot", ...h.snapshotFor(changed, 3, 2, 9) });
   });
   await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure().sceneRevision)).toBe(9);
   const afterBoundary = await page.evaluate(() => window.snapshotHarness.measure());
   expect(afterBoundary).toMatchObject({
-    catalog: afterFollow.catalog + 1, scene: afterFollow.scene + 1,
-    entryRevision: 9, sceneRevision: 9,
+    catalog: afterUpdate.catalog + 1, scene: afterUpdate.scene + 1,
+    entryRevision: 9, sceneRevision: 9, activeUpdateCount: 0,
   });
-  expect(afterBoundary.generation).toBeGreaterThan(afterFollow.generation);
-  const oldPendingFollowIndex = await page.evaluate(() => window.snapshotHarness.pendingFollows.findIndex(follow => follow.signal?.aborted));
-  expect(oldPendingFollowIndex).toBeGreaterThanOrEqual(0);
-  await page.evaluate(index => {
-    const follow = window.snapshotHarness.pendingFollows[index];
-    follow.resolve({ scene: { ...follow.scene, revision: 8 }, revision: 8, floorCoherent: true, notModified: false });
-  }, oldPendingFollowIndex);
+  expect(afterBoundary.generation).toBeGreaterThan(afterUpdate.generation);
+  // The aborted read answering late does not replace the new generation's scene.
+  await page.evaluate(() => {
+    const update = window.snapshotHarness.pendingUpdates[1];
+    update.resolve({ scene: { ...update.scene, revision: 8 }, revision: 8, floorCoherent: true, notModified: false });
+  });
   await page.waitForTimeout(0);
   await expect.poll(() => page.evaluate(() => window.snapshotHarness.measure())).toMatchObject({
     entryRevision: 9, sceneRevision: 9, generation: afterBoundary.generation,

@@ -115,6 +115,16 @@ async function installRobotPoses(page) {
         clearInterval(robot.timer);
         robot.timer = on ? setInterval(() => robot.send(), 500) : null;
       },
+      sequence: 0,
+      revisions: {},
+      // The invalidation the server sends when the map changes.
+      announceScene(revision) {
+        robot.sequence += 1;
+        robot.revisions = { workspace: robot.sequence, scene: revision };
+        const invalidation = { epoch: "epoch", sequence: robot.sequence, coherence_generation: 1,
+          revisions: robot.revisions, resources: ["scene"] };
+        for (const callback of subscribers) callback({ type: "invalidate", invalidation });
+      },
       connection: {
         subscribeMessage: async (callback, message) => {
           if (!message.poses) return () => {};
@@ -124,8 +134,8 @@ async function installRobotPoses(page) {
           return () => { robot.closed += 1; subscribers.delete(callback); };
         },
         sendMessagePromise: async (message) => message.type !== "matic_robot/workspace_snapshot" ? { value: null } : {
-          schema: 1, capabilities: { snapshot: 1 }, epoch: "epoch", sequence: 0,
-          coherence_generation: 1, revisions: {}, entry_id: message.entry_id,
+          schema: 1, capabilities: { snapshot: 1 }, epoch: "epoch", sequence: robot.sequence,
+          coherence_generation: 1, revisions: robot.revisions, entry_id: message.entry_id,
           identity: { entry_id: message.entry_id, floor_mission_id: 1, floor_verified: true },
           status: { state: "ready", reason: null, retryable: false },
           payload: { available: true, entry: null },
@@ -2551,7 +2561,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
-  test("retains the map when revision-wait revalidation cannot refresh the catalog", async ({ page }) => {
+  test("retains the map when scene-update revalidation cannot refresh the catalog", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
@@ -2559,15 +2569,18 @@ test.describe("Map Studio v0.4 foundation", () => {
       const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection,
         roomSettings: [{ roomId: "room-1", cleaningMode: "vacuum", coverageSetting: "standard" }] } });
       const entry = initial.resources.entry;
-      // A manifest scene is followed; its revision wait reports the floor incoherent.
+      // A newer catalog revision updates the manifest scene; that read reports the floor incoherent.
       const liveScene = { ...initial.resources.scene.value, manifest: new ArrayBuffer(1) };
-      let rejectCatalog = false, releaseFollow, commands = 0;
+      let rejectCatalog = false, catalogRevision = entry.mapRevision, releaseUpdate, commands = 0;
       const effects = new EffectController(store, {
-        catalog: async () => { if (rejectCatalog) throw new Error("Catalog offline"); return [entry]; },
+        catalog: async () => {
+          if (rejectCatalog) throw new Error("Catalog offline");
+          return [{ ...entry, mapRevision: catalogRevision, sceneRevision: catalogRevision }];
+        },
         history: async () => initial.resources.history.value,
-        scene: async (_url, _revision, _floorCoherent, _source, _signal, follow = {}) => follow.since === undefined
+        scene: async (_url, _revision, _floorCoherent, _source, _signal, options = {}) => !options.latest
           ? { revision: entry.mapRevision, floorCoherent: true, scene: liveScene }
-          : new Promise(resolve => { releaseFollow = () => resolve({ revision: entry.mapRevision, floorCoherent: false, scene: null, notModified: true }); }),
+          : new Promise(resolve => { releaseUpdate = () => resolve({ revision: entry.mapRevision + 1, floorCoherent: false, scene: null, notModified: false }); }),
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },
         plans: async () => initial.resources.plans.value,
         areas: async () => initial.resources.areas.value,
@@ -2577,13 +2590,15 @@ test.describe("Map Studio v0.4 foundation", () => {
       try {
         effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
         await effects.refreshCatalog(true);
-        for (let i = 0; i < 20 && !releaseFollow; i++) await new Promise(resolve => setTimeout(resolve, 0));
-        if (!releaseFollow) throw new Error("Revision wait did not start");
+        catalogRevision += 1;
+        await effects.refreshCatalog();
+        for (let i = 0; i < 20 && !releaseUpdate; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        if (!releaseUpdate) throw new Error("Scene update did not start");
         rejectCatalog = true;
-        releaseFollow();
+        releaseUpdate();
         for (let i = 0; i < 20 && store.value.resources.catalog.status !== "error"; i++) await new Promise(resolve => setTimeout(resolve, 0));
         await effects.executeAction("clean-rooms");
-        window.__followRecheckState = store.value;
+        window.__updateRecheckState = store.value;
         return { retained: store.value.resources.scene.value === liveScene,
           available: store.value.map.available, readOnly: store.value.floor.readOnly,
           exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status, commands,
@@ -2597,7 +2612,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const gallery = document.createElement(tag);
       gallery.controls = false; gallery.scenario = "ready";
       document.body.append(gallery); await gallery.updateComplete;
-      gallery.replaceWorkspaceState(window.__followRecheckState);
+      gallery.replaceWorkspaceState(window.__updateRecheckState);
     }, GALLERY_TAG);
     await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
     // The catalog failure leaves coherence degraded, so the workspace, not a
@@ -2887,7 +2902,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.recovered.reads).toBeGreaterThanOrEqual(2);
   });
 
-  test("catalog pixel revision falls back to a new scene when no revision wait owns it", async ({ page }) => {
+  test("catalog pixel revision reloads a saved-map-form scene, which has no manifest to update", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
       const m = await import("/plan-recovery-test.js");
@@ -6921,7 +6936,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect.poll(() => page.evaluate(() => window.__adapterConnectionHarness.fetchCount())).toBe(2);
   });
 
-  test("follows a live manifest by fetching only its changed pages", async ({ page }) => {
+  test("updates a live manifest on a pushed revision by fetching only its changed pages", async ({ page }) => {
     const initial = syntheticManifest("Initial room", 10);
     const updated = syntheticManifest("Updated room", 24);
     const pageRequests = [];
@@ -6929,16 +6944,13 @@ test.describe("Map Studio v0.4 foundation", () => {
     let catalogRequests = 0;
     let fullSceneRequests = 0;
     const fullScenePreferCached = [];
-    let followRequests = 0;
-    let failNextFollow = false;
-    let holdFollowRecoveryScene = false;
-    let releaseFollowRecoveryScene;
-    const followRecoverySceneGate = new Promise((resolve) => { releaseFollowRecoveryScene = resolve; });
+    let updateRequests = 0;
+    let failNextUpdate = false;
     let holdNextFullScene = false;
     let releaseHeldFullScene;
     const heldFullSceneGate = new Promise((resolve) => { releaseHeldFullScene = resolve; });
-    let releaseFirstFollow;
-    const firstFollowGate = new Promise((resolve) => { releaseFirstFollow = resolve; });
+    let releaseFirstUpdate;
+    const firstUpdateGate = new Promise((resolve) => { releaseFirstUpdate = resolve; });
     const catalogEntry = () => ({
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
@@ -6976,10 +6988,20 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     });
     await page.route("**/api/matic_robot/slam_scene/synthetic-entry", async (route) => {
-      fullSceneRequests += 1;
-      fullScenePreferCached.push(route.request().headers()["x-matic-prefer-cached"]);
-      if (holdFollowRecoveryScene && fullSceneRequests === 2) await followRecoverySceneGate;
-      if (holdNextFullScene) await heldFullSceneGate;
+      const preferCached = route.request().headers()["x-matic-prefer-cached"];
+      if (preferCached) {
+        fullSceneRequests += 1;
+        fullScenePreferCached.push(preferCached);
+        if (holdNextFullScene) await heldFullSceneGate;
+      } else {
+        // A pushed revision asks for the newest scene.
+        updateRequests += 1;
+        if (updateRequests === 1) await firstUpdateGate;
+        if (failNextUpdate) {
+          failNextUpdate = false;
+          return route.fulfill({ status: 503, body: "temporary" });
+        }
+      }
       return route.fulfill({
         status: 200,
         body: (catalogRevision === 1 ? initial : updated).manifest,
@@ -6997,35 +7019,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       const known = new Map([...initial.pages, ...updated.pages]);
       return route.fulfill({ status: 200, body: Buffer.concat(ids.map((id) => known.get(id))),
         headers: { "Content-Type": "application/octet-stream" } });
-    });
-    await page.route("**/api/matic_robot/slam_scene/synthetic-entry?since=*", async (route) => {
-      followRequests += 1;
-      if (failNextFollow) {
-        failNextFollow = false;
-        return route.fulfill({ status: 503, body: "temporary" });
-      }
-      if (followRequests === 1) {
-        await firstFollowGate;
-        catalogRevision = 2;
-        return route.fulfill({
-          status: 200,
-          body: updated.manifest,
-          headers: {
-            "Content-Type": "application/vnd.matic.slam-manifest",
-            "X-Matic-Revision": "2",
-            "X-Matic-Floor-Coherent": "1",
-            ETag: '"scene-2"',
-          },
-        });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      return route.fulfill({
-        status: 204,
-        headers: {
-          "X-Matic-Revision": "2",
-          "X-Matic-Floor-Coherent": "1",
-        },
-      });
     });
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
       status: 200,
@@ -7086,7 +7079,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         sample();
       });
     });
-    releaseFirstFollow();
+    catalogRevision = 2;
+    await page.evaluate(() => window.__robotPoses.announceScene(2));
+    await expect.poll(() => updateRequests).toBe(1);
+    releaseFirstUpdate();
     await expect.poll(async () => page.evaluate(() => {
       const scene = window.__followPanel.getWorkspaceSnapshot().resources.scene.value;
       return { revision: scene?.revision, room: scene?.metadata.rooms[0]?.name };
@@ -7094,7 +7090,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(await page.evaluate(() => window.__poseStayedExact)).toBe(true);
     expect(fullSceneRequests).toBe(1);
     expect(fullScenePreferCached).toEqual(["1"]);
-    expect(followRequests).toBeGreaterThanOrEqual(1);
+    expect(updateRequests).toBe(1);
     // The first load fetched both pages; the update only the page that changed.
     expect(pageRequests.map((ids) => ids.toSorted())).toEqual([
       [...initial.pages.keys()].toSorted(),
@@ -7107,16 +7103,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ revision: 2, exactPose: true });
     expect(fullSceneRequests).toBe(1);
     const contentGeneration = await page.evaluate(() => window.__followPanel.getWorkspaceSnapshot().generation);
-    holdFollowRecoveryScene = true;
-    failNextFollow = true;
-    await expect.poll(() => fullSceneRequests).toBe(2);
-    expect(await page.evaluate(() => {
-      const state = window.__followPanel.getWorkspaceSnapshot();
-      return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
-    })).toEqual({ exactPose: true, position: [10, 12] });
-    expect(await page.evaluate(() => window.__followPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
-    releaseFollowRecoveryScene();
-    expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
       window.__followPanel.getWorkspaceSnapshot().notice)).toBe(null);
     const send = (changes) => page.evaluate((pose) => window.__robotPoses.send(pose), changes);
@@ -7140,13 +7126,14 @@ test.describe("Map Studio v0.4 foundation", () => {
       exactPose: true,
       pose: expect.objectContaining({ position: [11, 13] }),
     });
+    // A failed update read recovers through the catalog and a full scene read,
+    // which keeps the verified frame and the robot's position while it loads.
     holdNextFullScene = true;
     catalogRevision = 3;
-    // End the revision wait after publishing the new catalog revision. With no
-    // healthy follower, the catalog becomes the bounded full-scene fallback and
-    // this test can assert the retained-pose loading behavior.
-    failNextFollow = true;
-    await expect.poll(() => fullSceneRequests, { timeout: 7_000 }).toBe(3);
+    failNextUpdate = true;
+    await page.evaluate(() => window.__robotPoses.announceScene(3));
+    await expect.poll(() => fullSceneRequests, { timeout: 7_000 }).toBe(2);
+    expect(fullScenePreferCached).toEqual(["1", "1"]);
     expect(await page.evaluate(() => {
       const state = window.__followPanel.getWorkspaceSnapshot();
       return {

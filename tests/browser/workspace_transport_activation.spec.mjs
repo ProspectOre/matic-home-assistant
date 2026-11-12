@@ -41,7 +41,7 @@ test.beforeEach(async ({ page, browserName }) => {
         boundaryRefreshes += 1;
         return new Promise(resolve => refreshWaiters.push(resolve));
       }, loadResources() {},
-      spatialRecoveryBlocks: () => false,
+      spatialRecoveryBlocks: () => false, sceneRevision() {},
       loadTransport: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
     });
     const enable = value => {

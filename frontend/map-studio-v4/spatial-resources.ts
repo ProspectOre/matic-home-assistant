@@ -104,8 +104,16 @@ export class SpatialResources {
 
   clearPoseExpiry(): void { this.#pose.clearExpiry(); }
   receivePose(entryId: string, pose: PoseModel): void { this.#pose.receive(entryId, pose); }
-  stopSceneFollow(): void { this.#scene.stop(); }
+  stopSceneUpdates(): void { this.#scene.stop(); }
   ownsLiveScene(entry: MapEntry): boolean { return this.#scene.owns(entry); }
+  /**
+   * The server announced `revision` of the selected entry's live scene. While
+   * a read recovery or its cooldown is pending, its scene load reads it.
+   */
+  sceneRevision(entryId: string, revision: number): void {
+    const entry = this.#store.value.resources.entry;
+    if (entry?.entryId === entryId) this.#scene.update(entry, revision, !this.recoveryPending(entry));
+  }
   async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
     if (!this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return;
     const history = await this.#spatialHistory();
@@ -225,7 +233,7 @@ export class SpatialResources {
       floor: { readOnly: state.floor.readOnly || state.resources.scene.value !== null },
       map: { exactPose: false } });
     // A pose/session mismatch can revoke the generation while a recovery
-    // attempt is waiting for its replacement revision wait. Release that
+    // attempt is waiting for its replacement scene read. Release that
     // waiter after advancing the fence and before aborting its request.
     if (this.#spatialRecovery) this.#signalSpatialRecoveryRead(this.#spatialRecovery.key);
     // Invalidate the generation before aborting requests so no completion from
@@ -356,9 +364,8 @@ export class SpatialResources {
       if (this.#coherence.current()) this.invalidateFence();
     } else {
       // A failed content download does not revoke a verified robot/floor/session.
-      // Replace its scene follower while retaining the admitted view and pose.
+      // Replace its scene read while retaining the admitted view and pose.
       this.#scene.stop();
-      this.#requests.current("scene-follow")?.abort();
     }
     let finishReplacementRead!: () => void;
     const replacementRead = new Promise<void>((resolve) => { finishReplacementRead = resolve; });
@@ -381,9 +388,8 @@ export class SpatialResources {
     try {
       await this.#callbacks.refreshCatalog(true, false, !revalidateFrame, lease);
       // A successful catalog only authorizes the replacement scene read. Keep
-      // this recovery owner until that scene either starts its replacement
-      // revision wait and receives a result, or reaches a terminal outcome.
-      // In particular, a normal 204 can take the full server poll interval.
+      // this recovery owner until that read is admitted or reaches a
+      // terminal outcome.
       if (recovery.failedKinds.has("scene")
         && this.#spatialRecovery === recovery
         && recovery.attempt === attempt) {

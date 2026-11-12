@@ -108,6 +108,7 @@ export const syntheticEntry = (): MapEntry => ({
   wifiHeatmapUrl: null,
   floorTypesUrl: null,
   mapRevision: 7,
+  sceneRevision: 7,
   mapSceneEpoch: "synthetic-scene-epoch",
   mapFloorCoherent: true,
   mapSessionVerified: true,

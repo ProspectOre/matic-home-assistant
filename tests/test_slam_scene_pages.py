@@ -1,8 +1,7 @@
-"""The live scene as a manifest of content-addressed pages, and its revision wait."""
+"""The live scene as a manifest of content-addressed pages."""
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -11,7 +10,7 @@ from dataclasses import replace
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -31,12 +30,16 @@ from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
+from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.http import SCENE_API_URL, SCENE_PAGES_API_URL
+from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_scene import (
     MaticSlamScenePagesView,
     MaticSlamSceneView,
     _encode_scene,
 )
+from custom_components.matic_robot.slam_view_data import catalog_entry_projection
+from custom_components.matic_robot.workspace_socket import WorkspaceSocket
 from tests.slam_textured_map import textured_map, textured_photo_entry
 from tests.test_map_off_loop import _plan
 from tests.test_slam_map import synthetic_slam_entry
@@ -264,150 +267,71 @@ async def test_pages_view_hides_unknown_pages_and_unverified_maps() -> None:
     assert unloaded.status == HTTPStatus.NOT_FOUND
 
 
-async def test_scene_answers_a_newer_revision_at_once() -> None:
+async def test_scene_answers_an_old_panels_since_query_at_once() -> None:
+    """A panel from before socket push reads the manifest; nothing waits."""
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
 
-    response = await view.get(_request(hass, path="/?since=1"), "entry")
+    response = await view.get(_request(hass, path="/?since=7"), "entry")
 
     assert response.status == HTTPStatus.OK
+    assert response.content_type == "application/vnd.matic.slam-manifest"
     assert response.headers["X-Matic-Revision"] == "7"
     runtime.slam_map.async_add_listener.assert_not_called()
 
 
-async def test_scene_wait_bounds_query_times_out_and_handles_unload() -> None:
+async def test_socket_scene_revision_is_the_one_the_manifest_view_serves() -> None:
     runtime = _runtime()
     entry = _entry(runtime)
+    entry.async_on_state_change = MagicMock(return_value=MagicMock())
+    entry.async_on_unload = MagicMock()
     hass = _hass(entry)
     view = MaticSlamSceneView()
+    hass.data = {DATA_SLAM_SCENE_VIEW: view}
+    map_listeners = []
+    runtime.slam_map.async_add_listener.side_effect = map_listeners.append
+    socket = WorkspaceSocket(hass)
+    socket.track_entry(entry)
+    connection = MagicMock(subscriptions={}, user=SimpleNamespace(is_admin=True))
+    socket.snapshot("entry", (connection, 1))
+    socket.subscribe(connection, "entry", 2)
+    await view.get(_request(hass), "entry")
 
-    for since in ("invalid", "-1", str(2**64)):
-        response = await view.get(_request(hass, path=f"/?since={since}"), "entry")
-        assert response.status == HTTPStatus.BAD_REQUEST
-    with pytest.raises(Unauthorized):
-        await view.get(_request(hass, admin=False, path="/?since=7"), "entry")
+    def pushed() -> int:
+        event = connection.send_event.call_args.args[1]
+        return event["invalidation"]["revisions"]["scene"]
 
-    with patch.object(scene_module, "REVISION_WAIT_SECONDS", 0):
-        timeout = await view.get(_request(hass, path="/?since=7"), "entry")
-    assert timeout.status == HTTPStatus.NO_CONTENT
-    assert timeout.headers["X-Matic-Revision"] == "7"
-    assert timeout.headers["X-Matic-Floor-Coherent"] == "1"
-    runtime.slam_map.async_add_listener.return_value.assert_called_once()
-
-    entry.state = ConfigEntryState.NOT_LOADED
-    unloaded = await view.get(_request(hass, path="/?since=7"), "entry")
-    assert unloaded.status == HTTPStatus.NOT_FOUND
-
-
-async def test_scene_wait_cancellation_removes_its_listeners() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    view = MaticSlamSceneView()
-    subscribed = asyncio.Event()
-    map_listeners = set()
-
-    def subscribe_map(listener):
-        map_listeners.add(listener)
-        return lambda: map_listeners.discard(listener)
-
+    runtime.slam_map.revision = 9
+    for listener in map_listeners:
+        listener()
+    map_pushed = pushed()
+    map_change = await view.get(_request(hass), "entry")
     floor = runtime.session.floor
-    subscribe_floor = floor.subscribe
-
-    def subscribe_and_tell(listener):
-        subscribed.set()
-        return subscribe_floor(listener)
-
-    floor.subscribe = subscribe_and_tell
-    runtime.slam_map.async_add_listener.side_effect = subscribe_map
-    waiting = asyncio.create_task(view.get(_request(hass, path="/?since=7"), "entry"))
-    await asyncio.wait_for(subscribed.wait(), timeout=1)
-    assert len(map_listeners) == 1
-    assert len(floor._listeners) == 1
-
-    waiting.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await waiting
-
-    assert map_listeners == set()
-    assert floor._listeners == []
-
-
-async def test_scene_wait_wakes_when_only_the_floor_plan_changes() -> None:
-    runtime = _runtime()
-    hass = _hass(_entry(runtime))
-    view = MaticSlamSceneView()
-    subscribed = asyncio.Event()
-    floor = runtime.session.floor
-    subscribe_floor = floor.subscribe
-
-    def subscribe(listener):
-        subscribed.set()
-        return subscribe_floor(listener)
-
-    floor.subscribe = subscribe
-    waiting = asyncio.create_task(view.get(_request(hass, path="/?since=7"), "entry"))
-    await asyncio.wait_for(subscribed.wait(), timeout=1)
     floor.set(replace(floor.value, mission_id=2))
+    floor_change = await view.get(_request(hass), "entry")
 
-    response = await asyncio.wait_for(waiting, timeout=1)
-
-    assert response.status == HTTPStatus.OK
-    assert response.content_type == "application/vnd.matic.slam-manifest"
-    assert response.headers["X-Matic-Revision"] == "8"
-    assert response.headers["X-Matic-Floor-Coherent"] == "0"
-    assert floor._listeners == []
+    assert map_pushed == 9
+    assert map_change.headers["X-Matic-Revision"] == "9"
+    assert pushed() == 10
+    assert floor_change.headers["X-Matic-Revision"] == "10"
+    assert floor_change.headers["X-Matic-Floor-Coherent"] == "0"
 
 
-@pytest.mark.parametrize(
-    ("first", "second", "status"),
-    [
-        (DecodeError(), None, HTTPStatus.CONFLICT),
-        (None, None, HTTPStatus.NOT_FOUND),
-        ("current", DecodeError(), HTTPStatus.CONFLICT),
-        ("current", None, HTTPStatus.NOT_FOUND),
-        ("current", "current", HTTPStatus.NO_CONTENT),
-    ],
-)
-async def test_scene_wait_rechecks_the_scene_after_waking(
-    first, second, status
-) -> None:
+async def test_catalog_advertises_the_revision_a_cached_scene_lags() -> None:
+    """A panel without the socket learns of the new map from the catalog."""
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
-    current = SimpleNamespace(
-        revision=7, floor_plan_coherent=True, encoded=SimpleNamespace(etag='"e"')
-    )
-    results = [current if value == "current" else value for value in (first, second)]
-    view.async_scene = AsyncMock(side_effect=results)
+    catalog = MaticSlamCatalogView(view)
+    await view.get(_request(hass), "entry")
 
-    def wake(listener):
-        listener()
-        return MagicMock()
+    runtime.slam_map.revision = 8
+    entry = json.loads((await catalog.get(_request(hass))).body)["entries"][0]
 
-    runtime.slam_map.async_add_listener.side_effect = wake
-
-    response = await view.get(_request(hass, path="/?since=7"), "entry")
-
-    assert response.status == status
-
-
-async def test_scene_wait_rejects_an_unload_while_waiting() -> None:
-    runtime = _runtime()
-    entry = _entry(runtime)
-    hass = _hass(entry)
-    view = MaticSlamSceneView()
-
-    def unload(listener):
-        entry.state = ConfigEntryState.NOT_LOADED
-        listener()
-        return MagicMock()
-
-    runtime.slam_map.async_add_listener.side_effect = unload
-
-    response = await view.get(_request(hass, path="/?since=7"), "entry")
-
-    assert response.status == HTTPStatus.NOT_FOUND
+    assert entry["map_revision"] == 7
+    assert entry["scene_revision"] == 8 == view.current_revision("entry", runtime)
+    assert catalog_entry_projection("entry", runtime)["scene_revision"] is None
 
 
 _BROWSER_FIXTURE = Path(__file__).parent / "fixtures" / "scene_manifest_v1.json"

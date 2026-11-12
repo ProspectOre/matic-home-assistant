@@ -196,6 +196,14 @@ def catalog_entry_projection(
             if scene_view is not None
             else runtime.slam_map.revision
         ),
+        # `map_revision` can stay on a cached scene while a newer one awaits its
+        # build. A panel without the workspace socket reads this revision, the
+        # one the socket announces, to request that build.
+        "scene_revision": (
+            scene_view.current_revision(entry_id, runtime)
+            if scene_view is not None
+            else None
+        ),
         "map_scene_epoch": (
             scene_view.scene_epoch(entry_id) if scene_view is not None else None
         ),

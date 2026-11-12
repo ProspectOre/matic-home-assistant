@@ -25,6 +25,8 @@ interface WorkspaceSynchronizationCallbacks {
   ) => void;
   readonly spatialRecoveryBlocks: (entry: MapEntry) => boolean;
   readonly receivePose: (entryId: string, pose: PoseModel) => void;
+  /** The server has this revision of the entry's live scene. */
+  readonly sceneRevision: (entryId: string, revision: number) => void;
   readonly loadTransport?: () => Promise<typeof import("./workspace-transport")>;
 }
 
@@ -297,6 +299,10 @@ export class WorkspaceSynchronizer {
           const projectionApplied = projectedEntry !== null
             && entry?.entryId === entryId
             && this.#applyCatalogProjection(projectedEntry);
+          // Every snapshot, first or after a resubscribe, carries the current
+          // scene revision; a map that moved while unsubscribed is read now.
+          const sceneRevision = snapshot.revisions.scene;
+          if (sceneRevision !== undefined) this.#callbacks.sceneRevision(entryId, sceneRevision);
           if (previous && changedResources.length) {
             if (snapshot.sequence <= previous.sequence) {
               transport.requestResync("invalid_message");
@@ -362,12 +368,12 @@ export class WorkspaceSynchronizer {
       this.#callbacks.refreshSpatialBoundary(entryId, invalidation.resources);
       return;
     }
-    if (resources.has("scene")) {
+    const sceneRevision = invalidation.revisions.scene;
+    if (resources.delete("scene") && sceneRevision !== undefined) {
       // A same-generation scene invalidation is a content hint, not a new
-      // floor/session proof. An active scene follower already owns incremental
-      // admission; without one, the ordinary five-second catalog poll is the
-      // bounded fallback. Never turn each content hint into a forced catalog.
-      resources.delete("scene");
+      // floor/session proof: the live scene reads the new manifest, and
+      // never turns each hint into a forced catalog.
+      this.#callbacks.sceneRevision(entryId, sceneRevision);
     }
     const entry = this.#store.value.resources.entry;
     const stamp = this.#coherence.current();
@@ -382,9 +388,9 @@ export class WorkspaceSynchronizer {
     const currentEntry = state.resources.entry;
     if (!currentEntry
       || entryCoherenceIdentity(currentEntry) !== entryCoherenceIdentity(projectedEntry)) return false;
-    // Snapshot projection can carry a newer pixel revision than the scene
-    // currently admitted by the scene follower. Keep the visible entry aligned
-    // with its admitted scene until the follower validates and advances it.
+    // Snapshot projection can carry a newer pixel revision than the admitted
+    // live scene. Keep the visible entry aligned with its admitted scene until
+    // the scene reads and admits that revision.
     const admittedEntry = projectedEntry.mapRevision === currentEntry.mapRevision
       ? projectedEntry
       : { ...projectedEntry, mapRevision: currentEntry.mapRevision };

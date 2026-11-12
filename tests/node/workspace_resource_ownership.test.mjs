@@ -103,7 +103,7 @@ const catalogOwner = (f, read, overrides = {}) => {
   const owner = new CatalogResources(f.store, { catalog: read }, f.coherence, f.requests, {
     ...f.callbacks,
     recoveryPending: () => false,
-    ownsLiveScene: () => false,
+    ownsLiveScene: () => false, sceneRevision: () => {},
     admitSpatial: (...args) => admissions.push(args),
     syncWorkspace() {}, clearPrivate() {}, resumePins() {},
     ...overrides,
@@ -366,7 +366,7 @@ test("catalog area reads wait for an area workflow or an area pin", async () => 
   }, f.coherence, f.requests, {
     ...f.callbacks,
     recoveryPending: () => false,
-    ownsLiveScene: () => false,
+    ownsLiveScene: () => false, sceneRevision: () => {},
     admitSpatial() {},
     syncWorkspace() {},
     clearPrivate() {},
