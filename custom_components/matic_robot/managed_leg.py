@@ -48,7 +48,7 @@ from .plan_model import CleaningRoom
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
-from .run_machine import CheckpointWrite, LegVerifying, RunEvent
+from .run_machine import CheckpointWrite, LegVerifying, RoomSettled, RunEvent
 
 type RoomResult = Literal[
     "started",
@@ -758,6 +758,7 @@ async def _async_run_leg(
             await manager.ledger.async_mark_skipped(
                 serial_number, plan_id, room, run_id=run_id
             )
+            await advance(RoomSettled(room.room_id))
             announce(room, "skipped", reason_code="owner_skipped")
         elif ending_early() and room.room_id not in observed_ids:
             await manager.ledger.async_mark_cancelled(serial_number, plan_id, room)
@@ -773,6 +774,7 @@ async def _async_run_leg(
             await manager.ledger.async_mark_unreachable(
                 serial_number, plan_id, room, run_id=run_id
             )
+            await advance(RoomSettled(room.room_id))
             announce(room, "skipped", reason_code="room_unreachable", cause="robot")
         else:
             if single:

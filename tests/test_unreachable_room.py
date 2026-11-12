@@ -269,7 +269,11 @@ async def test_unreachable_room_is_skipped_and_the_plan_moves_on(hass) -> None:
     assert not _events(events, "room_interrupted")
     assert [e["room_id"] for e in _events(events, "room_completed")] == ["room-study"]
     (finished,) = _events(events, "plan_finished")
-    assert finished["reason_code"] != "native_task_taken_over"
+    # Every room has a result, so the run is complete without full credit.
+    assert (finished["outcome"], finished["reason_code"]) == (
+        "completed",
+        "all_rooms_settled",
+    )
     assert finished["completed_room_count"] == 1
 
     robot_store = manager.repository.robot("serial")
