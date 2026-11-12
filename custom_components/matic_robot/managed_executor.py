@@ -373,6 +373,12 @@ async def _async_execute_rooms_reserved(
                                 motion_token,
                                 dispatch_attempted=True,
                             ),
+                            partial(
+                                dispatch_control._shutdown_suspends_run,
+                                hass,
+                                manager,
+                                serial_number,
+                            ),
                         )
                 if index > 0 and prepared_dispatch is None:
                     if not await observation._async_wait_for_settled_leg_handoff(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -26,6 +27,7 @@ async def async_dispatch_on_return(
     bind_identity: Callable[[bytes | None], None],
     on_refused: Callable[[], Awaitable[None]],
     stop_taken: Callable[[], Awaitable[None]],
+    shutting_down: Callable[[], bool],
 ) -> _PreparedRoomDispatch | None:
     """Send the next leg before the robot docks, or return None to dock first.
 
@@ -35,8 +37,9 @@ async def async_dispatch_on_return(
     robot refused without taking also returns None, so the caller falls back
     to the settled handoff at the dock, after ``on_refused``. ``dispatch``
     reports the identity of a mission the robot took through the callback it
-    is given; when the robot took it and dispatch still failed,
-    ``stop_taken`` stops that mission before the error propagates.
+    is given; when the robot took it and dispatch still failed or the task
+    was cancelled, ``stop_taken`` stops that mission before the error
+    propagates. A Home Assistant shutdown keeps it for restart recovery.
     """
     state = hass.states.get(entity_id)
     if (
@@ -56,6 +59,10 @@ async def async_dispatch_on_return(
     try:
         return await dispatch(on_identity)
     except PlanCancelledError, ManagedMotionReplacedError:
+        raise
+    except asyncio.CancelledError:
+        if taken and not shutting_down():
+            await stop_taken()
         raise
     except (HomeAssistantError, MaticError) as err:
         if taken:

@@ -200,6 +200,7 @@ async def test_only_a_returning_robot_with_no_mission_is_sent_on(
             lambda _identity: None,
             AsyncMock(),
             AsyncMock(),
+            lambda: False,
         )
         is None
     )
@@ -227,6 +228,7 @@ async def test_a_taken_or_cancelled_dispatch_is_not_retried(error) -> None:
             bound.append,
             on_refused,
             stop_taken,
+            lambda: False,
         )
     assert bound == [b"ours"]
     on_refused.assert_not_awaited()
@@ -252,3 +254,30 @@ async def test_a_room_taken_then_failed_on_the_way_home_is_stopped(hass) -> None
 
     assert robot.dispatch_states == ["docked", "returning"]
     assert sender.await_args_list[-1].args[1] is UserCommand.STOP
+
+
+@pytest.mark.parametrize(
+    ("taken", "shutting_down", "stopped"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+async def test_a_cancelled_dispatch_stops_only_a_taken_room_outside_shutdown(
+    taken, shutting_down, stopped
+) -> None:
+    async def dispatch(on_identity):
+        if taken:
+            on_identity(b"ours")
+        raise asyncio.CancelledError
+
+    stop_taken = AsyncMock()
+    with pytest.raises(asyncio.CancelledError):
+        await async_dispatch_on_return(
+            _hass("returning"),
+            "vacuum.matic",
+            AsyncMock(return_value=b""),
+            dispatch,
+            lambda _identity: None,
+            AsyncMock(),
+            stop_taken,
+            lambda: shutting_down,
+        )
+    assert stop_taken.await_count == int(stopped)
