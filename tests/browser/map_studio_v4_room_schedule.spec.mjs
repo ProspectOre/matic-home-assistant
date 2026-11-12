@@ -466,7 +466,7 @@ test.describe("room schedule model", () => {
 
   test("Reset offers only saved progress and says why it can't run", async ({ page }) => {
     const result = await run(page, `
-      const r = (saved) => m.scheduleModel(t, "en", input(p({ mopEveryN: 3, coverageEveryN: 2 }), saved)).resettable;
+      const r = (saved) => { const { mop, coverage, both } = m.scheduleModel(t, "en", input(p({ mopEveryN: 3, coverageEveryN: 2 }), saved)).resettable; return both ? null : { mop, coverage }; };
       const state = m.createGalleryState("plan-cadence-shared");
       return {
         none: r(undefined), zero: r(room(p({ mopEveryN: 3 }), g())), counted: r(room(p({ mopEveryN: 3 }), g({ mopProgress: 1 }))),

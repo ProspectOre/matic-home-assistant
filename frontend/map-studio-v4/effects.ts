@@ -79,6 +79,7 @@ const areaSaveFailedNotice = notice("error", "v4_notice_area_save_failed", "Home
 const areaDeleteFailedNotice = notice("error", "v4_notice_area_delete_failed", "Home Assistant can't confirm the area was deleted, so try again.");
 const resetMopFailedNotice = notice("error", "v4_notice_reset_mop_failed", "Mopping progress wasn't reset; try again.");
 const resetVacuumFailedNotice = notice("error", "v4_notice_reset_vacuum_failed", "Vacuum rotation progress wasn't reset; try again.");
+const resetScheduleFailedNotice = notice("error", "v4_notice_reset_schedule_failed", "Schedule progress wasn't reset; try again.");
 const deepMopFailedNotice = notice("error", "v4_deep_mop_failed", "Couldn't confirm double-pass mopping. Try again.");
 
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
@@ -1078,7 +1079,7 @@ export class EffectController {
         if (typeof idOrAction === "string" || idOrAction.id !== "reset-room-cadence") return;
         await this.#write(
           "plan-mutation",
-          idOrAction.mode === "mop" ? resetMopFailedNotice : resetVacuumFailedNotice,
+          { mop: resetMopFailedNotice, coverage: resetVacuumFailedNotice, both: resetScheduleFailedNotice }[idOrAction.mode],
           (writes, context) => writes.resetRoomCadence(context, idOrAction),
         );
         return;

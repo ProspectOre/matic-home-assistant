@@ -96,12 +96,16 @@ export const dialogCopy = (
     }
     case "confirmResetCadence":
       return {
-        title: resetMode === "mop"
-          ? t("v4_reset_mop_cadence_title", "Reset mopping progress?")
-          : t("v4_reset_coverage_cadence_title", "Reset vacuum rotation progress?"),
-        detail: sharedCadence
-          ? t("v4_reset_shared_cadence_detail", "The count for {room} starts again in every plan that shares its schedule, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.", { room: resetRoomName })
-          : t("v4_reset_private_cadence_detail", "The count for {room} starts again in this plan only, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.", { room: resetRoomName }),
+        title: resetMode === "both"
+          ? t("v4_reset_cadence_title", "Reset schedule progress?")
+          : resetMode === "mop"
+            ? t("v4_reset_mop_cadence_title", "Reset mopping progress?")
+            : t("v4_reset_coverage_cadence_title", "Reset vacuum rotation progress?"),
+        detail: resetMode === "both"
+          ? t("v4_reset_shared_cadence_both_detail", "Mopping and vacuum rotation counts for {room} start again in every plan that shares its schedule, and work brought forward to the next clean goes back to its schedule. Cleaning history doesn't change.", { room: resetRoomName })
+          : sharedCadence
+            ? t("v4_reset_shared_cadence_detail", "The count for {room} starts again in every plan that shares its schedule, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.", { room: resetRoomName })
+            : t("v4_reset_private_cadence_detail", "The count for {room} starts again in this plan only, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.", { room: resetRoomName }),
         cancelLabel: t("v4_cancel", "Cancel"),
         confirmLabel: t("v4_reset", "Reset"),
         action: "reset-room-cadence",

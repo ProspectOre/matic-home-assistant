@@ -292,11 +292,7 @@ export interface DailyLimitHeldRoom extends DailyRoomLimit {
   readonly name: string;
 }
 
-/**
- * The cadence reasons Matic Map reads. The server can also send
- * `cadence_progress_unverified` for a shared schedule; the parser refuses it.
- */
-export type CadenceReason = Exclude<wire.CadenceReason, "cadence_progress_unverified">;
+export type CadenceReason = wire.CadenceReason;
 
 export interface NextRunPreviewRoom {
   readonly roomId: string;

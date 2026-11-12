@@ -1,5 +1,6 @@
 """Shared counting uncertainty blocks dispatch until an explicit full reset."""
 
+import json
 from copy import deepcopy
 from dataclasses import replace
 
@@ -12,8 +13,10 @@ from custom_components.matic_robot.plan_model import (
     plan_floor_token,
     room_cadence_identity,
 )
+from custom_components.matic_robot.plan_views import MaticPlansView
 from tests.test_cadence_manager import _floor, _manager
 from tests.test_completion_ledger import _snapshot
+from tests.test_slam_scene import _entry, _hass, _request, _runtime
 
 
 async def _configured(hass, count=1):
@@ -168,3 +171,61 @@ async def test_verified_rebind_replaces_quarantined_history(hass, replace_identi
 
     assert "accounting_unverified" not in schedule
     assert schedule["progress"] == {"mop": 0, "coverage": 0}
+
+
+async def test_plans_view_holds_unverified_shared_progress_until_both_modes_reset(
+    hass,
+):
+    runtime = _runtime()
+    floor = runtime.session.floor.value
+    room_id = floor.rooms[0].id
+    manager = _manager(hass)
+    runtime.cleaning_plans = manager
+    await manager.catalog.async_save_plan(
+        "synthetic-serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room_id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {
+                        "scope": "shared",
+                        "mop_every_n": 5,
+                        "coverage_every_n": 5,
+                        "periodic_coverage_setting": "heavy_duty",
+                    },
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor),
+        room_identities={room_id: room_cadence_identity(floor, room_id)},
+    )
+    schedule = manager.repository.robot("synthetic-serial")["shared_room_cadence"][
+        room_id
+    ]
+    schedule["accounting_unverified"] = True
+    view_hass = _hass(_entry(runtime))
+
+    async def reasons():
+        response = await MaticPlansView().get(_request(view_hass), "entry")
+        body = json.loads(response.body)
+        return (
+            body["plans"][0]["rooms"][0]["cadence_reasons"],
+            body["rooms"][0]["shared_cadence_reasons"],
+        )
+
+    unverified = ["cadence_progress_unverified"]
+    assert await reasons() == (unverified, unverified)
+    # One mode's reset leaves the whole schedule's counting unverified, so
+    # Matic Map offers a single reset of both.
+    await manager.cadence.async_reset_cadence(
+        "synthetic-serial", "home", [room_id], modes=["mop"]
+    )
+    assert await reasons() == (unverified, unverified)
+    await manager.cadence.async_reset_cadence(
+        "synthetic-serial", "home", [room_id], modes=["mop", "coverage"]
+    )
+    assert await reasons() == ([], [])

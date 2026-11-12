@@ -429,6 +429,22 @@ test("saved-plan parsing admits explicit unverified cadence recovery state", asy
   });
 });
 
+test("saved-plan parsing admits a shared schedule's unverified progress", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async payload => {
+    const { parsePlansCatalog } = await import("/backend-contracts.js");
+    const reasons = ["cadence_progress_unverified"];
+    payload.plans[0].rooms[0].cadence.scope = "shared";
+    payload.plans[0].rooms[0].cadence_progress = null;
+    payload.plans[0].rooms[0].cadence_reasons = reasons;
+    payload.rooms = [{ room_id: "room-a", name: "Room A", shared_cadence_reasons: reasons }];
+    const parsed = parsePlansCatalog(payload);
+    return { plan: parsed.plans[0].rooms[0].cadenceReasons, room: parsed.rooms[0].sharedCadenceReasons };
+  }, plansPayload());
+
+  expect(result).toEqual({ plan: ["cadence_progress_unverified"], room: ["cadence_progress_unverified"] });
+});
+
 test("legacy saved plans remain editable up to the bounded recovery cap", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async payload => {
