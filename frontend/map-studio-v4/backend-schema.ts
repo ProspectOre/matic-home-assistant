@@ -70,14 +70,14 @@ export interface HistoryFrameCoverage {
   readonly diff_eligible: boolean;
 }
 
-/** A saved map's frame, passed on as its record stores it. */
+/** A saved map's frame, passed on as its record stores it. An imported map's coverage is the string `unknown`: it cannot be compared. */
 export interface HistoryFrame {
   readonly format_version: number;
   readonly coordinate_version: number;
   readonly origin_cells: readonly number[] | null;
   readonly meters_per_cell: number | null;
   readonly span_cells: readonly number[] | null;
-  readonly coverage: HistoryFrameCoverage;
+  readonly coverage: HistoryFrameCoverage | "unknown";
   readonly diff_eligible: boolean;
 }
 

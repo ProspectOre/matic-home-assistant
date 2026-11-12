@@ -91,14 +91,17 @@ class HistoryFrameCoverage(TypedDict):
 
 
 class HistoryFrame(TypedDict):
-    """A saved map's frame, passed on as its record stores it."""
+    """A saved map's frame, passed on as its record stores it.
+
+    An imported map's coverage is the string `unknown`: it cannot be compared.
+    """
 
     format_version: int
     coordinate_version: int
     origin_cells: list[int] | None
     meters_per_cell: float | None
     span_cells: list[int] | None
-    coverage: HistoryFrameCoverage
+    coverage: HistoryFrameCoverage | Literal["unknown"]
     diff_eligible: bool
 
 
