@@ -203,6 +203,13 @@ and the first use of each logs a warning. Matic 0.7 removes them.
   Expose**. Expose the vacuum if a tool says no robot is exposed.
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
+- Matic actions are now actions of the robot's vacuum entity. They take the
+  same fields and targets and return the same responses. A user who isn't an
+  administrator now needs control of every entity a target names, not only the
+  vacuum.
+- Each floor's Area mapping moves from the vacuum's entity options to Matic's
+  own storage, and 0.6 leaves 0.5's copy in the options. Restoring the backup
+  returns the mappings the backup held, and the next update moves them again.
 - Make a Home Assistant backup before installing. 0.6 stores saved maps and
   the Wi-Fi survey in a new format that 0.5 can't read, so going back means
   restoring that backup, which also returns both to what the backup held. The

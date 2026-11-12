@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import (
     Callable,
     Coroutine,
+    Mapping,
 )
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any
 
+import probatio
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -24,6 +26,7 @@ from homeassistant.const import (
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
+    SupportsResponse,
 )
 from homeassistant.exceptions import (
     ServiceValidationError,
@@ -31,7 +34,9 @@ from homeassistant.exceptions import (
     UnknownUser,
 )
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import target
+from homeassistant.helpers import service, target
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.typing import VolSchemaType
 
 from .const import (
     DOMAIN,
@@ -64,6 +69,45 @@ TARGET_KEYS = (
 )
 
 
+def register_robot_action(
+    hass: HomeAssistant,
+    name: str,
+    handler: Callable[[ServiceCall, list[str]], Coroutine[Any, Any, Any]],
+    schema: VolSchemaType,
+    *,
+    supports_response: SupportsResponse = SupportsResponse.NONE,
+    admin_only: bool = False,
+) -> None:
+    """Register an action on the Matic vacuums a call targets.
+
+    Core resolves the target, refuses a user who may not control every entity
+    it names, and hands over the available vacuums at once, so the handler sees
+    the whole target and returns its own response. The schema first refuses a
+    target with no loaded robot or with an unavailable one, as the domain
+    actions did; core would skip such a robot and act on the rest.
+    """
+
+    def require_loaded_robots(data: dict[str, Any]) -> dict[str, Any]:
+        _resolve_loaded_matic_vacuums(hass, data)
+        return data
+
+    async def async_call(entities: list[Entity], call: ServiceCall) -> Any:
+        entity_ids = [entity.entity_id for entity in entities]
+        if admin_only:
+            await _async_require_admin(hass, call, lambda: entity_ids)
+        return await handler(call, entity_ids)
+
+    service.async_register_batched_platform_entity_service(
+        hass,
+        DOMAIN,
+        name,
+        entity_domain=VACUUM_DOMAIN,
+        func=async_call,
+        schema=probatio.All(schema, require_loaded_robots),
+        supports_response=supports_response,
+    )
+
+
 def _require_matic_control[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
@@ -81,7 +125,7 @@ def _require_matic_control[ServiceResult](
                 raise UnknownUser(context=call.context)
             if not user.is_admin:
                 for entity_id in _resolve_loaded_matic_vacuums(
-                    hass, call, require_available=not allow_unavailable
+                    hass, call.data, require_available=not allow_unavailable
                 ):
                     if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
                         raise Unauthorized(
@@ -98,37 +142,45 @@ def _require_matic_admin[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
-    """Require an administrator for restricted previews and research routing."""
+    """Require an administrator for research routing."""
 
     @wraps(handler)
     async def async_authorized(call: ServiceCall) -> ServiceResult:
-        user_id = call.context.user_id
-        if user_id is None:
-            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
-        user = await hass.auth.async_get_user(user_id)
-        if user is None:
-            raise UnknownUser(context=call.context)
-        if not user.is_admin:
-            entity_ids = _resolve_loaded_matic_vacuums(hass, call)
-            raise Unauthorized(
-                context=call.context,
-                entity_id=entity_ids[0] if entity_ids else None,
-                permission=POLICY_CONTROL,
-            )
+        await _async_require_admin(
+            hass, call, lambda: _resolve_loaded_matic_vacuums(hass, call.data)
+        )
         return await handler(call)
 
     return async_authorized
 
 
+async def _async_require_admin(
+    hass: HomeAssistant, call: ServiceCall, entity_ids: Callable[[], list[str]]
+) -> None:
+    """Refuse a call that no current administrator made."""
+    user_id = call.context.user_id
+    if user_id is None:
+        raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+    user = await hass.auth.async_get_user(user_id)
+    if user is None:
+        raise UnknownUser(context=call.context)
+    if not user.is_admin:
+        targets = entity_ids()
+        raise Unauthorized(
+            context=call.context,
+            entity_id=targets[0] if targets else None,
+            permission=POLICY_CONTROL,
+        )
+
+
 def _saved_plan_context(
     hass: HomeAssistant,
-    call: ServiceCall,
+    entity_ids: list[str],
     *,
     require_rooms: bool = True,
     require_current_floor: bool = False,
 ) -> tuple[str, ConfigEntry[Any], str, dict[str, str]]:
-    """Resolve one loaded robot and its current stable room inventory."""
-    entity_ids = _resolve_loaded_matic_vacuums(hass, call)
+    """Return the one targeted robot and its current stable room inventory."""
     if len(entity_ids) != 1:
         raise _validation_error(
             "Saved cleaning plans require exactly one Matic robot",
@@ -154,11 +206,11 @@ def _saved_plan_context(
 
 
 def _resolve_loaded_matic_vacuums(
-    hass: HomeAssistant, call: ServiceCall, *, require_available: bool = True
+    hass: HomeAssistant, data: Mapping[str, Any], *, require_available: bool = True
 ) -> list[str]:
     """Resolve every target form and reject missing or unloaded robots."""
     selection = target.TargetSelection(
-        {key: call.data[key] for key in TARGET_KEYS if key in call.data}
+        {key: data[key] for key in TARGET_KEYS if key in data}
     )
     referenced = target.async_extract_referenced_entity_ids(hass, selection, True)
     requested = referenced.referenced | referenced.indirectly_referenced

@@ -14,6 +14,7 @@ from scripts.upgrade_drill import (
     DrillFailed,
     _phase_failure_output,
     compare,
+    compare_floor_catalogs,
     plan_state,
     run_phase,
 )
@@ -82,7 +83,33 @@ def test_plan_state_reads_the_drill_robot(tmp_path: Path) -> None:
             }
         )
     )
-    assert plan_state(tmp_path) == {
+    options = {"matic_floor_scope": "floor", "matic_floor_catalogs": {"floor": {}}}
+    (storage / "core.entity_registry").write_text(
+        json.dumps(
+            {
+                "data": {
+                    "entities": [
+                        {"platform": "matic_robot", "entity_id": "sensor.x"},
+                        {
+                            "platform": "matic_robot",
+                            "entity_id": "vacuum.sim",
+                            "options": {"vacuum": options},
+                        },
+                    ]
+                }
+            }
+        )
+    )
+    assert plan_state(tmp_path)["floor_catalogs"] == {
+        "options": options,
+        "store": None,
+    }
+    (storage / "matic_robot.floor_catalogs.matic-upgrade-drill").write_text(
+        json.dumps({"data": {"catalog": options}})
+    )
+    state = plan_state(tmp_path)
+    assert state.pop("floor_catalogs")["store"] == options
+    assert state == {
         "minor_version": 12,
         "plan": {"rooms": [], "entries": []},
         "area_plan": {
@@ -328,3 +355,36 @@ def test_history_migration_requires_safe_downgrade_refusal_and_matching_restore(
         DrillFailed, match="restored SLAM history backup lost legacy records"
     ):
         compare(missing_backup)
+
+
+def test_floor_catalogs_move_to_the_store_and_stay_in_the_options() -> None:
+    seed = {
+        "area_mapping": {"kitchen": ["room-1"]},
+        "matic_floor_scope": "floor",
+        "matic_floor_catalogs": {"floor": {"area_mapping": {"kitchen": ["room-1"]}}},
+    }
+    catalog = {key: value for key, value in seed.items() if key != "area_mapping"}
+    left = {key: value for key, value in seed.items() if key != "matic_floor_scope"}
+
+    def states(**phases: dict) -> dict:
+        default = {
+            "seed": {"options": seed, "store": None},
+            "upgrade": {"options": left, "store": catalog},
+            "downgrade": {"options": left, "store": catalog},
+            "restore": {"options": seed, "store": None},
+        }
+        return {
+            phase: {"floor_catalogs": phases.get(phase, value)}
+            for phase, value in default.items()
+        }
+
+    compare_floor_catalogs(states())
+    for phases, message in (
+        ({"seed": {"options": left, "store": None}}, "seed did not map"),
+        ({"upgrade": {"options": left, "store": None}}, "did not move"),
+        ({"upgrade": {"options": seed, "store": catalog}}, "upgrade changed"),
+        ({"downgrade": {"options": seed, "store": None}}, "downgrade changed"),
+        ({"restore": {"options": left, "store": None}}, "restored backup lost"),
+    ):
+        with pytest.raises(DrillFailed, match=message):
+            compare_floor_catalogs(states(**phases))

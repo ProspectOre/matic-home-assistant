@@ -20,6 +20,7 @@ import pytest
 from aiohttp.test_utils import TestClient
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import UnsupportedStorageVersionError
+from homeassistant.helpers import area_registry as ar
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -199,6 +200,8 @@ async def test_seed(
 ) -> None:
     """Older release: save a plan with a room schedule, finish one run and
     leave a second one cleaning when Home Assistant stops."""
+    # The vacuum maps its Kitchen room to this Area in its floor catalog.
+    ar.async_get(hass).async_create("Kitchen")
     history = plan.entry.runtime_data.slam_history
     assert await history.async_add(
         _scene(),
