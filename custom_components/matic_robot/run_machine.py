@@ -3,7 +3,8 @@
 The executor feeds an event to ``transition`` and applies the writes it
 returns to the run's recovery checkpoint; nothing else sets a run's phase or
 queue position. The checkpoint stays the one durable record, in the format
-restart recovery reads.
+restart recovery reads. After a restart, ``Restarted`` decides from that
+record whether the run resumes and in which phase.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+
+from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs
 
 
 class RunPhase(StrEnum):
@@ -35,6 +38,8 @@ class Run:
     leg_index: int = 0
     completed_room_ids: frozenset[str] = frozenset()
     finished_area_legs: frozenset[int] = frozenset()
+    # Why a restarted run ends instead of resuming; None while it can go on.
+    ended: str | None = None
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Mapping[str, Any]) -> Run:
@@ -113,6 +118,17 @@ class LegVerified:
     history: frozenset[bytes] | None
 
 
+@dataclass(frozen=True, slots=True)
+class Restarted:
+    """Home Assistant started again and found ``record``, the stored running run.
+
+    Fed to a fresh ``Run()``, it resumes the run at its checkpointed position,
+    or ends it with a reason code when the checkpoint cannot authorize more.
+    """
+
+    record: Mapping[str, Any]
+
+
 type RunEvent = (
     HandoffEntered
     | LegDispatching
@@ -121,6 +137,7 @@ type RunEvent = (
     | AreaFinished
     | LegVerifying
     | LegVerified
+    | Restarted
 )
 
 
@@ -191,11 +208,124 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
                 },
                 save=False,
             )
+        case Restarted(record):
+            return _restarted(record), CheckpointWrite({}, save=False)
     moved, write = _moved(run, RunPhase.HANDOFF, event.next_leg_index)
     return moved, CheckpointWrite(
         {**write.fields, "handoff_history": _digests(event.history)},
         drop=("verification_deadline",),
     )
+
+
+def stored_instant(value: Any) -> datetime | None:
+    """Return a checkpointed time, or None when it is unreadable or naive."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def is_digest(value: object) -> bool:
+    """Return whether ``value`` is a stored SHA-256 fingerprint."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _restarted(record: Mapping[str, Any]) -> Run:
+    """Resume a stored run, or end it, checking in the order recovery always has.
+
+    Only an accepted, verifying or handoff checkpoint, or a mixed-settings
+    dispatch with its saved session fingerprint, can resume. A malformed
+    record raises, as it always has.
+    """
+    checkpoint = record["recovery_checkpoint"]
+    unverified = Run(ended="restart_checkpoint_unverified")
+    stop_requested = Run(ended="restart_stop_requested")
+    if checkpoint.get("stop_intent") in {"immediate", "not_running"}:
+        return stop_requested
+    phase = checkpoint.get("phase")
+    mixed_dispatch = (
+        phase == RunPhase.DISPATCHING
+        and checkpoint.get("mixed_settings") is True
+        and is_digest(checkpoint.get("mixed_initial_session_hash"))
+    )
+    if checkpoint.get("version") != 1 or (
+        phase not in {RunPhase.ACCEPTED, RunPhase.VERIFYING, RunPhase.HANDOFF}
+        and not mixed_dispatch
+    ):
+        return unverified
+    verifying = phase == RunPhase.VERIFYING
+    handoff = phase == RunPhase.HANDOFF
+    if handoff and checkpoint.get("stop_intent") == "after_room":
+        # The preceding leg is already credited. A persisted graceful stop
+        # must not wait for native settlement or resume the queue.
+        return stop_requested
+    if verifying and (
+        stored_instant(checkpoint.get("verification_deadline", "")) is None
+    ):
+        return unverified
+    rooms = [CleaningRoom(**room) for room in checkpoint["rooms"]]
+    room_ids = {room.room_id for room in rooms}
+    legs = checkpoint_legs(checkpoint)
+    area_legs = {index for index, leg in enumerate(legs) if isinstance(leg, AreaLeg)}
+    finished_areas = set(checkpoint.get("finished_area_legs", []))
+    completed_ids = set(checkpoint.get("completed_room_ids", []))
+    if (
+        (rooms or area_legs)
+        and area_legs <= finished_areas
+        and len(room_ids) == len(rooms) == record["room_count"]
+        and room_ids == completed_ids
+        and record["completed_room_count"] == len(rooms)
+    ):
+        # Room credits and area finishes are saved before the checkpoint
+        # records them, so a crash before finalization keeps the completion.
+        return Run(ended="all_rooms_verified")
+    leg_index = checkpoint.get("leg_index")
+    if (
+        not isinstance(leg_index, int)
+        or leg_index < 0
+        or leg_index >= len(legs)
+        or (
+            handoff
+            and (
+                leg_index == 0
+                or not {
+                    room.room_id
+                    for leg in legs[:leg_index]
+                    if isinstance(leg, list)
+                    for room in leg
+                }.issubset(completed_ids)
+                or not {index for index in area_legs if index < leg_index}.issubset(
+                    finished_areas
+                )
+            )
+        )
+    ):
+        return unverified
+    if isinstance(legs[leg_index], AreaLeg) and (verifying or mixed_dispatch):
+        # An area is its own mission: it is never verified from history and
+        # never part of a mixed room dispatch.
+        return unverified
+    if not is_digest(
+        checkpoint.get(
+            "mixed_initial_session_hash" if mixed_dispatch else "native_identity_hash"
+        )
+    ):
+        return unverified
+    if not mixed_dispatch and not handoff:
+        # A handoff has no accepted dispatch for its next leg yet.
+        if stored_instant(checkpoint["dispatched_at"]) is None:
+            return unverified
+        deadline = checkpoint.get("completion_deadline")
+        if not verifying and (
+            not isinstance(deadline, str) or stored_instant(deadline) is None
+        ):
+            return unverified
+    return Run.from_checkpoint(checkpoint)
 
 
 def _moved(run: Run, phase: RunPhase, leg_index: int) -> tuple[Run, CheckpointWrite]:

@@ -13,6 +13,7 @@ from custom_components.matic_robot.run_machine import (
     LegDispatching,
     LegVerified,
     LegVerifying,
+    Restarted,
     RoomVerified,
     Run,
     RunPhase,
@@ -157,3 +158,103 @@ def test_a_run_resumes_from_its_checkpoint() -> None:
     assert Run.from_checkpoint({"phase": "handoff", "leg_index": 1}) == Run(
         RunPhase.HANDOFF, 1
     )
+
+
+ROOMS = [
+    {
+        "room_id": room_id,
+        "name": room_id.title(),
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+    }
+    for room_id in ("kitchen", "office")
+]
+
+
+def _stored(phase: str, leg_index: int = 0, **changes) -> dict:
+    """A running run's record with its checkpoint, as the store holds it."""
+    checkpoint = {
+        "version": 1,
+        "phase": phase,
+        "leg_index": leg_index,
+        "single_room_missions": True,
+        "rooms": ROOMS,
+        "completed_room_ids": ["kitchen"] if leg_index else [],
+        "native_identity_hash": _hash(b"session"),
+        "dispatched_at": SENT.isoformat(),
+        "completion_deadline": (SENT + timedelta(hours=6)).isoformat(),
+        "verification_deadline": (SENT + timedelta(minutes=5)).isoformat(),
+        **changes,
+    }
+    return {
+        "room_count": 2,
+        "completed_room_count": leg_index,
+        "recovery_checkpoint": checkpoint,
+    }
+
+
+@pytest.mark.parametrize(
+    ("record", "resumed"),
+    [
+        (_stored("ready"), Run(ended="restart_checkpoint_unverified")),
+        (_stored("dispatching"), Run(ended="restart_checkpoint_unverified")),
+        (
+            _stored(
+                "dispatching",
+                mixed_settings=True,
+                mixed_initial_session_hash=_hash(b"generated"),
+            ),
+            Run(RunPhase.DISPATCHING),
+        ),
+        (_stored("starting"), Run(ended="restart_checkpoint_unverified")),
+        (_stored("accepted"), Run(RunPhase.ACCEPTED)),
+        (_stored("verifying", 1), Run(RunPhase.VERIFYING, 1, frozenset({"kitchen"}))),
+        (_stored("handoff", 1), Run(RunPhase.HANDOFF, 1, frozenset({"kitchen"}))),
+    ],
+    ids=[
+        "ready",
+        "dispatching",
+        "mixed-dispatching",
+        "starting",
+        "accepted",
+        "verifying",
+        "handoff",
+    ],
+)
+def test_a_restarted_run_resumes_only_from_a_resumable_phase(record, resumed) -> None:
+    """Only an accepted, verifying, handoff or mixed dispatch can go on."""
+    assert transition(Run(), Restarted(record)) == (
+        resumed,
+        CheckpointWrite({}, save=False),
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "reason"),
+    [
+        (_stored("accepted", stop_intent="immediate"), "restart_stop_requested"),
+        (_stored("handoff", 1, stop_intent="after_room"), "restart_stop_requested"),
+        (_stored("verifying", verification_deadline="2026-01-02T03:04:05"), "un"),
+        (_stored("handoff", 0), "un"),
+        (_stored("accepted", 2), "un"),
+        (_stored("accepted", native_identity_hash="not-a-digest"), "un"),
+        (_stored("accepted", completion_deadline=None), "un"),
+        (_stored("accepted", version=2), "un"),
+        (
+            _stored("accepted", 1, completed_room_ids=["kitchen", "office"])
+            | {"completed_room_count": 2},
+            "all_rooms_verified",
+        ),
+    ],
+)
+def test_a_restarted_run_ends_when_its_checkpoint_cannot_go_on(record, reason) -> None:
+    run, _ = transition(Run(), Restarted(record))
+    assert run.ended == ("restart_checkpoint_unverified" if reason == "un" else reason)
+
+
+def test_a_restarted_run_rejects_an_unreadable_record() -> None:
+    """A malformed record raises, and recovery ends the run as unavailable."""
+    record = _stored("accepted")
+    del record["recovery_checkpoint"]["dispatched_at"]
+    with pytest.raises(KeyError):
+        transition(Run(), Restarted(record))

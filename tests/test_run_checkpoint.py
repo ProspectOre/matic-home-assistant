@@ -19,9 +19,64 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom, leg_groups
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.run_machine import (
+    Restarted,
+    Run,
+    RunPhase,
+    transition,
+)
 from tests.session_fakes import FakeRobot, robot_port
 
 from .test_restart import recovery_state as recovery_fixture
+
+
+def _release_0_6_checkpoint(phase: str) -> dict:
+    """A checkpoint as release/0.6 at 8fd81dce saved it, mid two-leg run."""
+    handoff = phase == "handoff"
+    return {
+        "version": 1,
+        "mixed_settings": True,
+        "single_room_missions": True,
+        "entity_id": "vacuum.matic",
+        "floor_token": "a" * 64,
+        "rooms": [
+            asdict(CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")),
+            asdict(CleaningRoom("office", "Office", "mop", "standard")),
+        ],
+        "data": {
+            "plan_id": "plan",
+            "start_timeout": 120,
+            "completion_timeout": 21600,
+            "return_to_base": False,
+        },
+        "leg_index": 1 if handoff else 0,
+        "phase": phase,
+        "completed_room_ids": ["kitchen"] if handoff else [],
+        "finish_current_room": True,
+        "finish_current_room_threshold": 50,
+        "dispatched_at": "2026-11-12T06:01:54.865482+00:00",
+        "completion_deadline": "2026-11-12T06:03:34.866398+00:00",
+        "native_identity_hash": hashlib.sha256(b"session").hexdigest(),
+        "history_baseline": [hashlib.sha256(b"before").hexdigest()],
+        **({"handoff_history": []} if handoff else {}),
+    }
+
+
+@pytest.mark.parametrize(
+    ("phase", "resumed"),
+    [
+        ("accepted", Run(RunPhase.ACCEPTED)),
+        ("handoff", Run(RunPhase.HANDOFF, 1, frozenset({"kitchen"}))),
+    ],
+)
+def test_a_release_0_6_checkpoint_resumes(phase, resumed) -> None:
+    """Recovery reads what release/0.6 saved; the pinned run saves the same keys."""
+    record = {
+        "room_count": 2,
+        "completed_room_count": 0,
+        "recovery_checkpoint": _release_0_6_checkpoint(phase),
+    }
+    assert transition(Run(), Restarted(record))[0] == resumed
 
 
 @pytest.fixture
@@ -241,6 +296,9 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         ("accepted", 1, ["kitchen"]),
     ]
     assert "handoff_history" not in saves[3]
+    # The same fields release/0.6 saved and reads, so either version resumes.
+    assert set(saves[3]) == set(_release_0_6_checkpoint("accepted"))
+    assert set(saves[4]) == set(_release_0_6_checkpoint("handoff"))
     assert saves[4]["handoff_history"] == [hashlib.sha256(b"after").hexdigest()]
     assert saves[2]["native_identity_hash"] == hashlib.sha256(b"session").hexdigest()
     assert saves[2]["history_baseline"] == [hashlib.sha256(b"before").hexdigest()]
