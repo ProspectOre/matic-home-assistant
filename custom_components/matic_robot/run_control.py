@@ -802,8 +802,8 @@ class RunControl:
         if active is None:
             fence_new_motion()
             self.cancel(serial_number)
-            if actor.cancellation_reason is None:
-                actor.cancellation_reason = "managed_stop"
+            # Keep a reason already given, as replacement or unload.
+            actor.cancellation_reason = actor.cancellation_reason or "managed_stop"
             return PlanStopDecision("immediate")
         if actor.cancellation_reason == "motion_replaced":
             # An external command may already have replaced this persisted
@@ -837,8 +837,7 @@ class RunControl:
         if not finish_current_room:
             fence_new_motion()
             self.cancel(serial_number)
-            if actor.cancellation_reason is None:
-                actor.cancellation_reason = "managed_stop"
+            actor.cancellation_reason = actor.cancellation_reason or "managed_stop"
             return PlanStopDecision("immediate")
         if "room_id" not in active:
             # A custom area has no duration history to estimate progress from,
@@ -852,8 +851,7 @@ class RunControl:
         if progress is not None and progress < threshold:
             fence_new_motion()
             self.cancel(serial_number)
-            if actor.cancellation_reason is None:
-                actor.cancellation_reason = "managed_stop"
+            actor.cancellation_reason = actor.cancellation_reason or "managed_stop"
             return PlanStopDecision("immediate", progress, threshold)
 
         self.cancellation_event(serial_number).clear()
