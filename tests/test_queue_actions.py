@@ -26,10 +26,10 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_run import RoomRunOutcome
-from custom_components.matic_robot.native_history import _global_room
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
+from custom_components.matic_robot.verified_completion import global_room
 from tests.session_fakes import FakeRobot, run_step
 from tests.test_entities import _entry
 from tests.test_plans import _call, _leg_manager, _leg_record, _room
@@ -207,9 +207,9 @@ async def test_a_skipped_room_keeps_its_rotation_turn(hass) -> None:
     assert record["last_result"] == "skipped"
     assert record["skipped_runs"] == 1
     assert record["last_opportunity"] == "2026-10-01T00:00:00+00:00"
-    global_room = _global_room(manager.repository.robot(SERIAL), ROOM)
-    assert "last_opportunity" not in global_room
-    assert "opportunity_before_run" not in global_room
+    stats = global_room(manager.repository.robot(SERIAL), ROOM.room_id, ROOM.name)
+    assert "last_opportunity" not in stats
+    assert "opportunity_before_run" not in stats
     assert manager.history.snapshot(SERIAL)["skipped_runs"] == 1
     assert manager.repository.robot(SERIAL)["active_plan"] is None
     assert _ROOM_RESULTS["skipped"] == "skipped"
