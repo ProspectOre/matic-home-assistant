@@ -201,13 +201,14 @@ export class SpatialScene {
   /**
    * Records that the server has `revision` of this entry's scene, from the
    * workspace socket or the catalog poll, and admits it when it is newer.
+   * Without `read`, the next load reads it.
    */
-  update(entry: MapEntry, revision: number): void {
+  update(entry: MapEntry, revision: number, read: boolean): void {
     const stamp = this.#coherence.current();
     if (!stamp || stamp.entryKey !== entry.entryId) return;
     const target = this.#target?.generation === stamp.generation ? this.#target.revision : -1;
     this.#target = { generation: stamp.generation, revision: Math.max(target, revision) };
-    void this.#update(entry);
+    if (read) void this.#update(entry);
   }
 
   /**

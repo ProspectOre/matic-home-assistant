@@ -106,10 +106,13 @@ export class SpatialResources {
   receivePose(entryId: string, pose: PoseModel): void { this.#pose.receive(entryId, pose); }
   stopSceneUpdates(): void { this.#scene.stop(); }
   ownsLiveScene(entry: MapEntry): boolean { return this.#scene.owns(entry); }
-  /** The server announced `revision` of the selected entry's live scene. */
+  /**
+   * The server announced `revision` of the selected entry's live scene. While
+   * a read recovery or its cooldown is pending, its scene load reads it.
+   */
   sceneRevision(entryId: string, revision: number): void {
     const entry = this.#store.value.resources.entry;
-    if (entry?.entryId === entryId) this.#scene.update(entry, revision);
+    if (entry?.entryId === entryId) this.#scene.update(entry, revision, !this.recoveryPending(entry));
   }
   async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
     if (!this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return;

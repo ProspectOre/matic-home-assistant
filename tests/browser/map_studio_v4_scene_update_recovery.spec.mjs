@@ -333,6 +333,25 @@ test("@safety terminal recovery reads and a second failed update read keep one c
   }
 });
 
+test("@safety announcements during the recovery cooldown wait for it, then the newest one is read", async ({ page }) => {
+  await loadUpdateHarness(page);
+  await startUpdate(page, "update");
+  const cooling = await reads(page);
+  await page.evaluate(() => {
+    window.__sceneUpdate.updateRevision = 10;
+    for (const scene of [9, 10]) window.__sceneUpdateRun.connection.invalidate({ scene });
+  });
+  await page.clock.runFor(1_000);
+  expect(await reads(page)).toEqual(cooling);
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => page.evaluate(() => typeof window.__sceneUpdate.releaseUpdate)).toBe("function");
+  expect(await reads(page)).toMatchObject({ sceneReads: { a: cooling.sceneReads.a + 1 },
+    updateReads: { a: cooling.updateReads.a + 1 } });
+  await page.evaluate(() => window.__sceneUpdate.releaseUpdate());
+  await expect.poll(() => page.evaluate(() => window.__sceneUpdateRun.store.value.resources.entry.mapRevision)).toBe(10);
+  await page.evaluate(() => window.__sceneUpdateRun.effects.dispose());
+});
+
 test("@safety a queued update recovery preserves the verified generation while superseding a catalog poll", async ({ page }) => {
   await loadUpdateHarness(page);
   await startUpdate(page, "queued-catalog");
