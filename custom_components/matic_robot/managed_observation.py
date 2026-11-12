@@ -27,6 +27,7 @@ from .managed_run import (
 )
 from .native_completion import (
     has_cancelled_single_room_record,
+    leg_room_results,
     match_single_room_completions,
     match_single_room_unreachable,
     native_room_key,
@@ -71,18 +72,21 @@ async def _async_verify_leg_completion(
     timeout_seconds: float | None = None,
     on_verified_session: Callable[[str], None] | None = None,
     skipped_room_ids: Collection[str] = (),
+    on_unreached: Callable[[str], None] | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
     The returned mapping holds ``room_id -> (ended_at, duration_seconds)`` for
-    every leg room the record marks completed with a positive duration.  A
-    missing or ambiguous record returns ``None`` and credits nothing.
+    every leg room the record marks completed with a positive duration, and
+    ``on_unreached`` gets each room the record shows the robot could not
+    reach. A missing or ambiguous record returns ``None`` and credits nothing.
     """
     if baseline is None:
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     required_room_ids = set(targets.values()) - set(skipped_room_ids)
     evidence: dict[str, tuple[str, int]] | None = None
+    unreached: set[str] = set()
     matched_key: bytes | None = None
     try:
         async with asyncio.timeout(
@@ -130,38 +134,13 @@ async def _async_verify_leg_completion(
                     if matched_key is not None and matched_key != matches[0].key:
                         return None
                     matched_key = matches[0].key
-                    session = matches[0].session
-                    ended_at = session.ended_at
-                    assert isinstance(ended_at, str)
-                    evidence = {}
-                    for room in rooms:
-                        if room.room_id not in required_room_ids:
-                            continue
-                        name = room.name.strip().casefold()
-                        durations = {
-                            name.strip().casefold(): duration
-                            for name, duration in session.room_durations_for_mode(
-                                room.cleaning_mode
-                            )
-                        }
-                        completed_names = {
-                            name.strip().casefold()
-                            for name in session.completed_rooms_for_mode(
-                                room.cleaning_mode
-                            )
-                        }
-                        duration = durations.get(name)
-                        if (
-                            name in completed_names
-                            and isinstance(duration, int)
-                            and not isinstance(duration, bool)
-                            and duration > 0
-                        ):
-                            evidence[room.room_id] = (ended_at, duration)
+                    evidence, unreached = leg_room_results(
+                        matches[0].session, rooms, required_room_ids
+                    )
                     # Native history can publish timestamps before per-room results.
                     # Keep polling the same record until complete or the bounded window
                     # expires; never combine evidence from different physical sessions.
-                    if set(evidence) == required_room_ids:
+                    if evidence.keys() | unreached == required_room_ids:
                         break
                 if len(matches) > 1:
                     return None
@@ -177,6 +156,9 @@ async def _async_verify_leg_completion(
                         raise PlanCancelledError
     except TimeoutError:
         pass
+    if evidence is not None and on_unreached is not None:
+        for room_id in unreached:
+            on_unreached(room_id)
     if evidence and matched_key is not None and on_verified_session is not None:
         if session_hash := native_session_hash(matched_key):
             on_verified_session(session_hash)

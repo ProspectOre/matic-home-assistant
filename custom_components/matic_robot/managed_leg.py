@@ -2,10 +2,11 @@
 
 A leg is one native mission, so the robot moves room to room without docking.
 Credit comes only from the robot's own history record for that mission: each
-verified room is credited with the robot's own per-room duration, and every
+verified room is credited with the robot's own per-room duration, a room the
+record shows the robot could not reach settles without credit, and every
 other room stays due. A one-room leg is judged by the single-room history
-rules, which can also prove the room unreachable, and keeps a late-history
-marker for that room when it ends without proof.
+rules and keeps a late-history marker for that room when it ends without
+proof. A Smart Stop ends a multi-room leg's mission after its current room.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from .client.models import RobotActivity
 from .const import DOMAIN
 from .coverage_accounting import async_confirm_completed_coverage
 from .grouped_native_reconciliation import build_grouped_native_reconciliation
+from .leg_finish import async_end_after_current_room
 from .managed_run import (
     NativeTaskEndedError,
     PlanCancelledError,
@@ -120,7 +122,7 @@ async def _async_run_leg(
     """Run one leg and report whether every room in it settled.
 
     A room settles when the robot's history credits it, the owner skipped
-    it, or a one-room leg's history shows the robot could not reach it.
+    it, or the history shows the robot could not reach it.
     """
     leg = list(rooms)
     single = len(leg) == 1
@@ -147,9 +149,12 @@ async def _async_run_leg(
     dispatch_attempted = False
     room_started = False
     stop_sent = False
+    # The room the robot finishes before ending the mission on a Smart Stop.
+    last_room: CleaningRoom | None = None
+    finish_task: asyncio.Task[None] | None = None
     # Room id to the robot's (ended_at, duration_seconds) for its credit.
     credited: dict[str, tuple[str | None, int | None]] = {}
-    unreachable = False
+    unreachable: set[str] = set()
     completion_sessions: list[str] = []
     dispatch = prepared_dispatch
     history_baseline: frozenset[bytes] | None = None
@@ -173,6 +178,10 @@ async def _async_run_leg(
         native_identity = identity
         if on_native_identity is not None:
             on_native_identity(identity)
+
+    def end_after(room: CleaningRoom) -> None:
+        nonlocal last_room
+        last_room = room
 
     def skipped_room_ids() -> Collection[str]:
         if run_id is None:
@@ -248,9 +257,26 @@ async def _async_run_leg(
                 marker = None
             watch_late_history(marker)
 
+    def ending_early() -> bool:
+        """Return whether a STOP or a finish request ends this mission early.
+
+        A finish request counts even when its queue change went unconfirmed:
+        the mission can end during the readback, and the robot then left
+        the rooms it had not entered.
+        """
+        return stop_sent or (
+            finish_room_event is not None and finish_room_event.is_set()
+        )
+
+    def withheld_room_ids() -> set[str]:
+        """Return the rooms the run kept the robot from, with the owner's skips."""
+        withheld = set(skipped_room_ids())
+        if ending_early():
+            withheld |= {room.room_id for room in leg} - observed_ids
+        return withheld
+
     async def async_verify_end(*, mission_ended: bool = False) -> bool:
         """Read the ended mission's history; return whether it gave a verdict."""
-        nonlocal unreachable
         assert dispatched_at is not None
         write = await advance(
             LegVerifying(
@@ -270,12 +296,14 @@ async def _async_run_leg(
                     dispatched_at,
                     robot=robot,
                     cancel_event=cancel_event,
+                    allow_active_cleaning=mission_ended,
                     on_verified_session=completion_sessions.append,
-                    skipped_room_ids=skipped_room_ids(),
+                    skipped_room_ids=withheld_room_ids(),
+                    on_unreached=unreachable.add,
                 )
                 or {}
             )
-            return bool(credited)
+            return bool(credited or unreachable)
         evidence: list[tuple[str, int]] = []
         verdict = await observation._async_adjudicate_room_end(
             robot.session_history,
@@ -292,7 +320,8 @@ async def _async_run_leg(
         )
         if verdict is observation.NativeRoomVerdict.COMPLETED:
             credited[leg[0].room_id] = evidence[-1] if evidence else (None, None)
-        unreachable = verdict is observation.NativeRoomVerdict.UNREACHABLE
+        if verdict is observation.NativeRoomVerdict.UNREACHABLE:
+            unreachable.add(leg[0].room_id)
         return verdict is not observation.NativeRoomVerdict.UNVERIFIED
 
     async def async_next_outcome() -> tuple[RoomRunOutcome, CleaningRoom | None]:
@@ -348,9 +377,10 @@ async def _async_run_leg(
             finish_room_event is not None
             and finish_room_event.is_set()
             and not stop_sent
+            and (last_room is None or changed_room.room_id != last_room.room_id)
         ):
-            # A finish-current-room stop cannot withhold the next room inside
-            # one native mission. Honor it at the first boundary.
+            # The robot kept the next room: the queue change failed or came
+            # too late. Honor the finish request at this boundary.
             await dispatch_control._async_cleanup_managed_motion(
                 managed_user_command, motion_token, dispatch_attempted=True
             )
@@ -407,7 +437,7 @@ async def _async_run_leg(
         except NativeTaskEndedError:
             # The mission this run owns ended before its room was observed.
             # Only native history can say why; robot state may still lag.
-            if not single or not await async_verify_end(mission_ended=True):
+            if not await async_verify_end(mission_ended=True):
                 raise
         else:
             suspended = start_state is RobotActivity.PAUSED or (
@@ -423,6 +453,20 @@ async def _async_run_leg(
                     suppress_pause=suspended,
                     initial_suspended=recovered_suspend_reason in _SUSPENDED,
                 )
+                if finish_room_event is not None:
+                    finish_task = asyncio.create_task(
+                        async_end_after_current_room(
+                            finish_room_event,
+                            partial(
+                                robot.end_after_current_room,
+                                motion_token,
+                                floor_token,
+                            ),
+                            lambda: native_identity,
+                            lambda: active_room,
+                            end_after,
+                        )
+                    )
             dispatch = replace(dispatch, native_identity=native_identity)
             await checkpoint_dispatch(dispatch)
             if suspended:
@@ -659,6 +703,9 @@ async def _async_run_leg(
     finally:
         if room_observer is not None:
             room_observer.close()
+        if finish_task is not None:
+            finish_task.cancel()
+            await asyncio.gather(finish_task, return_exceptions=True)
 
     verified_coverage = (
         await async_confirm_completed_coverage(
@@ -670,7 +717,11 @@ async def _async_run_leg(
         else None
     )
     # A one-room leg reads the owner's skips only when history left it due.
-    skipped = skipped_room_ids() if len(credited) < len(leg) and not unreachable else ()
+    skipped = (
+        skipped_room_ids()
+        if len(credited) < len(leg) and not (single and unreachable)
+        else ()
+    )
     marker = None if single else late_marker(tuple(credited))
     marker_saved = False
     for room in leg:
@@ -702,20 +753,13 @@ async def _async_run_leg(
             if record_room_completed is not None:
                 record_room_completed(room)
             announce(room, "completed", reason_code="verified_completion")
-        elif unreachable:
-            # The robot finished its mission without reaching the room. Settle
-            # it without credit so it stays due, and let the run go on.
-            await manager.ledger.async_mark_unreachable(
-                serial_number, plan_id, room, run_id=run_id
-            )
-            announce(room, "skipped", reason_code="room_unreachable", cause="robot")
         elif run_id is not None and room.room_id in skipped:
             # Skipped without credit, but settled, so the run goes on.
             await manager.ledger.async_mark_skipped(
                 serial_number, plan_id, room, run_id=run_id
             )
             announce(room, "skipped", reason_code="owner_skipped")
-        elif stop_sent and room.room_id not in observed_ids:
+        elif ending_early() and room.room_id not in observed_ids:
             await manager.ledger.async_mark_cancelled(serial_number, plan_id, room)
             announce(
                 room,
@@ -723,6 +767,13 @@ async def _async_run_leg(
                 reason_code="managed_cancelled",
                 cause="finish_current_room_or_stop",
             )
+        elif room.room_id in unreachable:
+            # The robot finished its mission without reaching the room. Settle
+            # it without credit so it stays due, and let the run go on.
+            await manager.ledger.async_mark_unreachable(
+                serial_number, plan_id, room, run_id=run_id
+            )
+            announce(room, "skipped", reason_code="room_unreachable", cause="robot")
         else:
             if single:
                 await manager.ledger.async_mark_ended_unverified(
@@ -750,6 +801,9 @@ async def _async_run_leg(
                 cause="unknown",
             )
     watch_late_history(marker)
-    return unreachable or all(
-        room.room_id in credited or room.room_id in skipped for room in leg
+    return all(
+        room.room_id in credited
+        or room.room_id in skipped
+        or room.room_id in unreachable
+        for room in leg
     )

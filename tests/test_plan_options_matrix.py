@@ -20,7 +20,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, one_room_missions
 from tests.wire_builders import _session_identity
 
 LAYOUTS = (
@@ -265,6 +265,7 @@ async def test_stop_threshold_does_not_estimate_from_unscoped_duration_history(
 async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     hass, monkeypatch
 ):
+    one_room_missions(monkeypatch)
     robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_TIMEOUT_SECONDS",

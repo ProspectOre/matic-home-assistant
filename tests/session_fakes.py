@@ -202,6 +202,8 @@ class FakeRobot:
 
     def __init__(self) -> None:
         self.started: list[PlanStart] = []
+        # (motion token, floor token, identity) of each end-after-current-room.
+        self.ended_after_current: list[tuple[int, str, bytes]] = []
         self.on_start: Callable[[PlanStart], Awaitable[None]] | None = None
         # The session the robot runs before any start, such as a prepared one.
         self.running = b""
@@ -270,6 +272,12 @@ class FakeRobot:
         if self.on_start is not None:
             await self.on_start(command)
 
+    async def end_after_current_room(
+        self, motion_token: int, floor_token: str, identity: bytes
+    ) -> None:
+        """Take a port's end-after-current-room."""
+        self.ended_after_current.append((motion_token, floor_token, identity))
+
     def taking_starts(self) -> Any:
         """Patch the command module so a port bound to an entry starts here."""
         return patch.object(
@@ -283,6 +291,7 @@ class FakeRobot:
         return RobotPort(
             **{
                 "start": self.start,
+                "end_after_current_room": self.end_after_current_room,
                 "state": self.state,
                 "error": self.error,
                 "refresh": AsyncMock(),
@@ -334,3 +343,15 @@ async def run_step(event: RunEvent) -> CheckpointWrite:
 def verifying_write(deadline: datetime) -> CheckpointWrite:
     """Return the write that marks a leg verifying until ``deadline``."""
     return transition(Run(), LegVerifying(deadline))[1]
+
+
+def one_room_missions(monkeypatch: Any) -> None:
+    """Run each room as its own mission, as a run saved before shared missions."""
+    from custom_components.matic_robot import managed_executor
+
+    grouped = managed_executor.leg_groups
+
+    def split(rooms: Any, **options: Any) -> Any:
+        return grouped(rooms, **{**options, "single_room_missions": True})
+
+    monkeypatch.setattr(managed_executor, "leg_groups", split)

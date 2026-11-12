@@ -394,6 +394,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             coverage_setting=coverage_setting,
         )
 
+    async def async_end_after_current_room(
+        self, floor_plan: FloorPlan, identity: bytes
+    ) -> None:
+        """Skip every room still waiting in mission ``identity``.
+
+        The robot finishes the room it is cleaning and ends the mission, as
+        when the app's queue sheet skips each waiting room. Raises
+        QueueChangeError ``last_room`` when no room is waiting, and
+        ``no_clean_running`` when ``identity`` is not the running mission.
+        """
+        await self._commands.async_change_queue(
+            floor_plan, QueueAction.END_AFTER_CURRENT, None, expected=identity
+        )
+
     async def async_start_coverage(
         self,
         floor_plan: FloorPlan,

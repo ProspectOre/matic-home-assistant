@@ -588,7 +588,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         await asyncio.wait_for(runner, 1)
     # An ended owned task is not a takeover: history is asked and finds no
     # verdict, so the room is interrupted without credit.
-    ended = final_identity == b"" and not multi_room
+    ended = final_identity == b""
     assert error.value.translation_key == (
         "room_taken_over"
         if final_identity == REPLACEMENT

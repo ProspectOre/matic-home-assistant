@@ -92,23 +92,15 @@ class MaticGetPlanTool(_MaticTool):
             # A missing area or one drawn on another map lands here too.
             raise _error("llm_plan_unavailable", error=str(err)) from err
         plan_id = preview["plan_id"]
-        single_room_missions = preview.get("finish_current_room") is True
         cadence_by_room = {
             room["room_id"]: room["cadence"] for room in preview["rooms"]
         }
-        # Each custom area keeps its saved place as a pass of its own. Smart
-        # Stop runs room entries separately so Assist matches execution.
+        # Each custom area keeps its saved place as a pass of its own.
         groups: list[list[CleaningRoom] | dict[str, Any]] = []
         rooms: list[CleaningRoom] = []
         for item in preview["entries"]:
             if item["kind"] == "area":
-                groups.extend(
-                    leg_groups(
-                        rooms,
-                        mixed_settings=True,
-                        single_room_missions=single_room_missions,
-                    )
-                )
+                groups.extend(leg_groups(rooms, mixed_settings=True))
                 rooms = []
                 groups.append(item)
                 continue
@@ -120,13 +112,7 @@ class MaticGetPlanTool(_MaticTool):
                     item["coverage_setting"],
                 )
             )
-        groups.extend(
-            leg_groups(
-                rooms,
-                mixed_settings=True,
-                single_room_missions=single_room_missions,
-            )
-        )
+        groups.extend(leg_groups(rooms, mixed_settings=True))
         rotation = preview["rotation"]
         snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
         active = snapshot.get("active_plan")

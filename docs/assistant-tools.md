@@ -29,8 +29,7 @@ Assist agents get these tools, prefixed `matic_robot__`, only for robots whose
 vacuum is exposed to Assist.
 
 `MaticGetPlan` lists the next run as legs, one per native mission: consecutive
-rooms share a leg, each custom area is its own leg, and with Smart Stop on each
-room is its own leg. The robot usually returns to the dock after each custom area.
+rooms share a leg and each custom area is its own leg. The robot usually returns to the dock after each custom area.
 `MaticGetNativeHistory` returns 5 runs by default and up to 20, with at most 64
 room results per response. `MaticGetRecentEvents` returns up to 64 events kept
 since Home Assistant started, and `MaticGetActivity` pages through up to 128
