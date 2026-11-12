@@ -20,6 +20,7 @@ from .plan_model import (
     room_cadence_identity,
 )
 from .plan_repository import MetadataAdmissionClosedError
+from .plan_schema import DailyLimitRefusal, DailyLimitRefused, DailyLimitSet
 
 
 class MaticDailyLimitView(HomeAssistantView):
@@ -42,7 +43,8 @@ class MaticDailyLimitView(HomeAssistantView):
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "invalid_request"
             )
         try:
-            body = await request.json()
+            # Untrusted: the type names the fields; each is validated below.
+            body: DailyLimitSet = await request.json()
         except ContentTypeError, json.JSONDecodeError, UnicodeDecodeError, ValueError:
             return self._json_error(HTTPStatus.BAD_REQUEST, "invalid_json")
         if not isinstance(body, dict) or set(body) != {
@@ -111,7 +113,7 @@ class MaticDailyLimitView(HomeAssistantView):
         except MetadataAdmissionClosedError:
             return self._json_error(HTTPStatus.CONFLICT, "runtime_unloading")
         except ValueError as err:
-            reason = (
+            reason: DailyLimitRefusal = (
                 "map_rechecking" if "map changed" in str(err) else "invalid_request"
             )
             status = (
@@ -122,7 +124,8 @@ class MaticDailyLimitView(HomeAssistantView):
             return self._json_error(status, reason)
         return self.json(state, headers=PRIVATE_NO_STORE_HEADERS)
 
-    def _json_error(self, status: HTTPStatus, reason: str) -> web.Response:
-        return self.json(
-            {"error": reason}, status_code=status, headers=PRIVATE_NO_STORE_HEADERS
-        )
+    def _json_error(
+        self, status: HTTPStatus, reason: DailyLimitRefusal
+    ) -> web.Response:
+        refused: DailyLimitRefused = {"error": reason}
+        return self.json(refused, status_code=status, headers=PRIVATE_NO_STORE_HEADERS)

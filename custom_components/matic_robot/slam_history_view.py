@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from functools import partial
 from hashlib import sha256
 from http import HTTPStatus
-from typing import Any
+from typing import Any, cast
 
 from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
@@ -23,7 +24,17 @@ from .http import (
     history_scene_api_url,
     runtime_for_entry,
 )
-from .map_schema import HistoryCatalog, HistoryFloor, HistorySnapshot
+from .map_schema import (
+    HistoryCatalog,
+    HistoryError,
+    HistoryExport,
+    HistoryFloor,
+    HistoryImport,
+    HistoryManagement,
+    HistoryMutation,
+    HistoryRecord,
+    HistorySnapshot,
+)
 from .slam_history import HistoryReadCapacityError
 from .slam_history_format import MAX_ARCHIVE_BYTES, SlamHistorySnapshot
 
@@ -205,19 +216,17 @@ class MaticSlamHistoryManageView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         history = runtime.slam_history
-        return self.json(
-            {
-                "generation": history.generation,
-                "capture_paused": history.capture_paused,
-                "capacity_blocked": history.capacity_blocked,
-                "usage": history.usage(),
-                "records": [
-                    _history_record_metadata(entry_id, snapshot)
-                    for snapshot in history.catalog()
-                ],
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
+        management: HistoryManagement = {
+            "generation": history.generation,
+            "capture_paused": history.capture_paused,
+            "capacity_blocked": history.capacity_blocked,
+            "usage": history.usage(),
+            "records": [
+                _history_record_metadata(entry_id, snapshot)
+                for snapshot in history.catalog()
+            ],
+        }
+        return self.json(management, headers=PRIVATE_NO_STORE_HEADERS)
 
     @require_admin
     async def post(self, request: web.Request, entry_id: str) -> web.Response:
@@ -227,7 +236,8 @@ class MaticSlamHistoryManageView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         try:
-            body = await _read_json_object(request, 16 * 1024)
+            # Untrusted: the type names the fields; each is validated below.
+            body = cast(HistoryMutation, await _read_json_object(request, 16 * 1024))
             _require_fields(
                 body,
                 {"action", "record_ids", "expected_generation", "request_id"},
@@ -279,7 +289,7 @@ class MaticSlamHistoryExportView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         try:
-            body = await _read_json_object(request, 16 * 1024)
+            body = cast(HistoryExport, await _read_json_object(request, 16 * 1024))
             _require_fields(body, {"record_ids", "expected_generation"}, set())
             record_ids = body["record_ids"]
             generation = body["expected_generation"]
@@ -312,7 +322,10 @@ class MaticSlamHistoryImportView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         try:
-            body = await _read_json_object(request, MAX_HISTORY_IMPORT_REQUEST_BYTES)
+            body = cast(
+                HistoryImport,
+                await _read_json_object(request, MAX_HISTORY_IMPORT_REQUEST_BYTES),
+            )
             _require_fields(
                 body, {"archive", "expected_generation", "request_id"}, set()
             )
@@ -367,7 +380,7 @@ async def _read_json_object(request: web.Request, maximum_bytes: int) -> dict[st
 
 
 def _require_fields(
-    body: dict[str, Any], required: set[str], optional: set[str]
+    body: Mapping[str, object], required: set[str], optional: set[str]
 ) -> None:
     keys = set(body)
     if not required <= keys or keys - required - optional:
@@ -385,9 +398,9 @@ def _history_error(err: ValueError) -> web.Response:
         if "too-large" in code
         else HTTPStatus.BAD_REQUEST
     )
-    return web.json_response(
-        {"error": code}, status=status, headers=PRIVATE_NO_STORE_HEADERS
-    )
+    error: HistoryError = {"error": code}
+    # aiohttp's json_response, unlike the views' json, keeps the spaces.
+    return web.json_response(error, status=status, headers=PRIVATE_NO_STORE_HEADERS)
 
 
 def _history_metadata(
@@ -418,7 +431,7 @@ def _history_metadata(
 
 def _history_record_metadata(
     entry_id: str, snapshot: SlamHistorySnapshot
-) -> dict[str, object]:
+) -> HistoryRecord:
     """Project management metadata without the retained compressed scene."""
     record = _history_metadata(entry_id, (snapshot,))
     if record:

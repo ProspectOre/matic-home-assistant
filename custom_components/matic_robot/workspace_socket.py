@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, cast
 from uuid import uuid4
 
 import probatio
@@ -19,6 +19,18 @@ from homeassistant.exceptions import HomeAssistantError, Unauthorized
 
 from .client.exceptions import AuthenticationRequiredError
 from .const import DOMAIN, EVENT_ACTIVITY_OBSERVED, EVENT_CLEANING_FINISHED
+from .workspace_schema import (
+    InvalidateEvent,
+    RecoveryReason,
+    ResyncEvent,
+    WorkspaceEvent,
+    WorkspaceIdentity,
+    WorkspaceSnapshot,
+    WorkspaceSnapshotRequest,
+    WorkspaceStatus,
+    WorkspaceSubscribed,
+    WorkspaceSubscribeRequest,
+)
 
 PROTOCOL_VERSION = 1
 COMMAND_SNAPSHOT = f"{DOMAIN}/workspace_snapshot"
@@ -32,17 +44,9 @@ CAPABILITIES = {
     "rest_catalog": 1,
     "catalog_projection": 1,
 }
-RecoveryReason = Literal[
-    "gap",
-    "overflow",
-    "restart",
-    "entry_removed",
-    "authorization",
-    "snapshot_required",
-]
 
 
-def _resync_event(reason: RecoveryReason) -> dict[str, str]:
+def _resync_event(reason: RecoveryReason) -> ResyncEvent:
     """Build a transport recovery request with a typed reason."""
     return {"type": "resync", "reason": reason}
 
@@ -100,7 +104,7 @@ class WorkspaceSocket:
         self._sequence: dict[str, int] = {}
         self._coherence_generation: dict[str, int] = {}
         self._removed_entries: set[str] = set()
-        self._history: dict[str, deque[dict[str, Any]]] = {}
+        self._history: dict[str, deque[InvalidateEvent]] = {}
         self._resource_revisions: dict[str, dict[str, int]] = {}
         self._subscriptions: dict[str, dict[ActiveConnection, int]] = {}
         # Subscriptions that asked for pose events. An older panel did not, and
@@ -476,7 +480,7 @@ class WorkspaceSocket:
         sequence = self._sequence.get(entry_id, 0) + 1
         self._sequence[entry_id] = sequence
         revisions = {"workspace": sequence, **resource_revisions}
-        message = {
+        message: InvalidateEvent = {
             "type": "invalidate",
             "invalidation": {
                 "epoch": self._epoch,
@@ -495,7 +499,7 @@ class WorkspaceSocket:
         entry_id: str,
         connection: ActiveConnection,
         msg_id: int,
-        event: dict[str, Any],
+        event: WorkspaceEvent,
     ) -> None:
         """Recheck administrator authority before delivering a workspace event."""
         if connection.user is None or not connection.user.is_admin:
@@ -613,7 +617,7 @@ class WorkspaceSocket:
         self,
         entry_id: str,
         request: tuple[ActiveConnection, int] | None = None,
-    ) -> dict[str, Any]:
+    ) -> WorkspaceSnapshot:
         """Return a versioned, minimized projection and remember its cursor."""
         entry = self._entry(entry_id)
         sequence = self._sequence.get(entry_id, 0)
@@ -642,6 +646,7 @@ class WorkspaceSocket:
                 runtime,
                 scene_view,
             )
+        status: WorkspaceStatus
         if available:
             status = {"state": "ready", "reason": None, "retryable": False}
         elif state_available:
@@ -657,7 +662,7 @@ class WorkspaceSocket:
                 "retryable": not _auth_failed(session),
             }
 
-        identity: dict[str, Any] = {
+        identity: WorkspaceIdentity = {
             "entry_id": entry_id,
             "floor_mission_id": None,
             "floor_verified": False,
@@ -752,7 +757,7 @@ class WorkspaceSocket:
         else:
             revisions.pop("scene", None)
 
-        result = {
+        result: WorkspaceSnapshot = {
             "schema": PROTOCOL_VERSION,
             "capabilities": dict(CAPABILITIES),
             "epoch": self._epoch,
@@ -794,7 +799,7 @@ class WorkspaceSocket:
         msg_id: int,
         *,
         poses: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[WorkspaceEvent]:
         """Subscribe and replay every invalidation since this connection's snapshot."""
         self._entry(entry_id)
         self._remove_subscription(connection, entry_id, unregister=True)
@@ -897,8 +902,9 @@ def websocket_snapshot(
     """Serve a versioned snapshot to administrators."""
     _require_admin(connection)
     manager: WorkspaceSocket = hass.data[DOMAIN]["workspace_socket"]
+    request = cast(WorkspaceSnapshotRequest, msg)
     connection.send_result(
-        msg["id"], manager.snapshot(msg["entry_id"], (connection, msg["id"]))
+        msg["id"], manager.snapshot(request["entry_id"], (connection, msg["id"]))
     )
 
 
@@ -917,22 +923,21 @@ def websocket_subscribe(
     """Install an administrator subscription and return its handshake cursor."""
     _require_admin(connection)
     manager: WorkspaceSocket = hass.data[DOMAIN]["workspace_socket"]
+    request = cast(WorkspaceSubscribeRequest, msg)
+    entry_id = request["entry_id"]
     replay = manager.subscribe(
-        connection, msg["entry_id"], msg["id"], poses=msg["poses"]
+        connection, entry_id, msg["id"], poses=request.get("poses", False)
     )
-    sequence = manager._sequence.get(msg["entry_id"], 0)
-    connection.send_result(
-        msg["id"],
-        {
-            "version": PROTOCOL_VERSION,
-            "epoch": manager._epoch,
-            "sequence": sequence,
-            "queue_limit": QUEUE_LIMIT,
-        },
-    )
+    subscribed: WorkspaceSubscribed = {
+        "version": PROTOCOL_VERSION,
+        "epoch": manager._epoch,
+        "sequence": manager._sequence.get(entry_id, 0),
+        "queue_limit": QUEUE_LIMIT,
+    }
+    connection.send_result(msg["id"], subscribed)
     for event in replay:
-        manager._send_subscription_event(msg["entry_id"], connection, msg["id"], event)
-    manager.send_pose(connection, msg["entry_id"])
+        manager._send_subscription_event(entry_id, connection, msg["id"], event)
+    manager.send_pose(connection, entry_id)
 
 
 async def async_register(hass: HomeAssistant) -> WorkspaceSocket:

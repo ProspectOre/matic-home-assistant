@@ -7,7 +7,8 @@
  * synthetic connections and cannot acquire a second connection lifecycle.
  */
 
-import { parseCatalog, parsePose, type MapEntry, type PoseModel } from "./backend-contracts";
+import { parseCatalog, parsePose, type MapEntry, type PoseModel, type Unchecked } from "./backend-contracts";
+import type * as wire from "./backend-schema";
 import { isAccessDeniedError } from "./backend";
 import {
   BoundedRequestMetric,
@@ -32,16 +33,9 @@ export interface WorkspaceConnection {
   subscribeMessage<T>(callback: (message: T) => void, message: Record<string, unknown>): Promise<() => void>;
 }
 
-export interface WorkspaceSnapshot {
-  readonly entry_id: string;
-  readonly identity: WorkspaceIdentity;
+/** A validated snapshot; its catalog entry is parsed as the REST catalog's is. */
+export interface WorkspaceSnapshot extends Omit<wire.WorkspaceSnapshot, "status" | "payload"> {
   readonly status: WorkspaceStatus;
-  readonly schema: number;
-  readonly capabilities: Readonly<Record<string, number>>;
-  readonly epoch: string;
-  readonly sequence: number;
-  readonly coherence_generation: number;
-  readonly revisions: Readonly<Record<string, number>>;
   readonly payload: WorkspaceSnapshotPayload;
 }
 
@@ -50,30 +44,15 @@ export interface WorkspaceSnapshotPayload {
   readonly entry: MapEntry | null;
 }
 
-export interface WorkspaceIdentity {
-  readonly entry_id: string;
-  readonly floor_mission_id: number | null;
-  readonly floor_verified: boolean;
-}
+export type WorkspaceIdentity = wire.WorkspaceIdentity;
 
 export interface WorkspaceStatus {
-  readonly state: "ready" | "stale" | "unavailable";
+  readonly state: wire.WorkspaceStatus["state"];
   readonly reason: WorkspaceResyncReason | null;
   readonly retryable: boolean;
 }
 
-export interface WorkspaceInvalidation {
-  readonly epoch: string;
-  readonly sequence: number;
-  readonly coherence_generation: number;
-  readonly revisions: Readonly<Record<string, number>>;
-  readonly resources: readonly string[];
-}
-
-/** Event envelope sent by Home Assistant's workspace subscription. */
-export type WorkspaceInvalidationEnvelope =
-  | { readonly type: "invalidate"; readonly invalidation: WorkspaceInvalidation }
-  | { readonly type: "resync"; readonly reason: WorkspaceResyncReason };
+export type WorkspaceInvalidation = wire.WorkspaceInvalidation;
 
 export type WorkspaceTransportEvent =
   | { readonly type: "snapshot"; readonly snapshot: WorkspaceSnapshot }
@@ -81,16 +60,8 @@ export type WorkspaceTransportEvent =
   | { readonly type: "pose"; readonly pose: PoseModel }
   | { readonly type: "resync"; readonly reason: WorkspaceResyncReason; readonly accessDenied?: boolean };
 
-export type WorkspaceResyncReason =
-  | "gap"
-  | "overflow"
-  | "reconnect"
-  | "invalid_message"
-  | "server_request"
-  | "restart"
-  | "entry_removed"
-  | "authorization"
-  | "snapshot_required";
+/** The server's recovery reasons, and the ones the transport raises itself. */
+export type WorkspaceResyncReason = wire.RecoveryReason | "reconnect" | "invalid_message" | "server_request";
 
 export interface WorkspaceTransportOptions {
   readonly entryId: string;
@@ -105,10 +76,8 @@ export interface WorkspaceTransportDiagnostics {
   readonly activeRecovery: Readonly<{ reason: WorkspaceResyncReason; durationMs: number }> | null;
 }
 
-type UnknownRecord = Record<string, unknown>;
-
-function record(value: unknown): UnknownRecord | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : null;
+function record<T = Record<string, unknown>>(value: unknown): Unchecked<T> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Unchecked<T> : null;
 }
 
 function finiteInteger(value: unknown, max: number): value is number {
@@ -144,7 +113,7 @@ function parseEpoch(value: unknown): string | null {
 }
 
 function parseVersioned(value: unknown): { schema: number; capabilities: Readonly<Record<string, number>>; epoch: string; sequence: number; coherence_generation: number; revisions: Readonly<Record<string, number>> } | null {
-  const source = record(value);
+  const source = record<wire.WorkspaceSnapshot>(value);
   const epoch = parseEpoch(source?.epoch);
   if (!source || source.schema !== WORKSPACE_PROTOCOL_VERSION || epoch === null) return null;
   const parsedCapabilities = capabilities(source.capabilities);
@@ -158,12 +127,12 @@ function parseSnapshot(value: unknown, expectedEntryId?: string): WorkspaceSnaps
   const source = record(value);
   const parsed = parseVersioned(source?.snapshot ?? value);
   if (!parsed) return null;
-  const candidate = record(source?.snapshot ?? value);
+  const candidate = record<wire.WorkspaceSnapshot>(source?.snapshot ?? value);
   if (!candidate || !("payload" in candidate)) return null;
   const entryId = candidate.entry_id;
-  const identity = record(candidate.identity);
-  const status = record(candidate.status);
-  const payload = record(candidate.payload);
+  const identity = record<wire.WorkspaceIdentity>(candidate.identity);
+  const status = record<wire.WorkspaceStatus>(candidate.status);
+  const payload = record<wire.WorkspacePayload>(candidate.payload);
   const statusReason = status ? (status.reason === null ? null : parseRecoveryReason(status.reason)) : null;
   const available = payload?.available;
   let entry: MapEntry | null = null;
@@ -206,7 +175,7 @@ function parseSnapshot(value: unknown, expectedEntryId?: string): WorkspaceSnaps
 }
 
 function parseInvalidation(value: unknown): WorkspaceInvalidation | null {
-  const source = record(value);
+  const source = record<wire.WorkspaceInvalidation>(value);
   const epoch = parseEpoch(source?.epoch);
   const revisionMap = revisions(source?.revisions);
   const resources = source?.resources;
@@ -613,7 +582,7 @@ export class WorkspaceTransport {
           type: "matic_robot/workspace_snapshot",
           version: WORKSPACE_PROTOCOL_VERSION,
           entry_id: this.#options.entryId,
-        });
+        } satisfies wire.WorkspaceSnapshotRequest);
         this.#snapshotTask = task;
         const release = (): void => { if (this.#snapshotTask === task) this.#snapshotTask = null; };
         void task.then(release, (error) => {
@@ -711,7 +680,9 @@ export class WorkspaceTransport {
     const task = (async () => {
       const unsubscribe = await this.#connection.subscribeMessage<unknown>(
         (message) => { if (!retired) this.#onMessage(message); },
-        { type: "matic_robot/workspace_subscribe", version: WORKSPACE_PROTOCOL_VERSION, entry_id: this.#options.entryId, poses: true },
+        {
+          type: "matic_robot/workspace_subscribe", version: WORKSPACE_PROTOCOL_VERSION, entry_id: this.#options.entryId, poses: true,
+        } satisfies wire.WorkspaceSubscribeRequest,
       );
       if (this.#disposed || retired) unsubscribe();
       else this.#unsubscribe = unsubscribe;

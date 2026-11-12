@@ -8,6 +8,8 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
+from .plan_schema import DailyLimit, DailyLimitReason
+
 MAX_DAILY_ROOM_LIMIT = 100
 MAX_RECENT_COMPLETIONS = 1024
 RECEIPT_RETENTION = timedelta(hours=72)
@@ -276,7 +278,7 @@ def daily_state(
     *,
     now: datetime,
     timezone: tzinfo | None,
-) -> dict[str, Any]:
+) -> DailyLimit:
     """Project a bound policy against verified completions in the local day."""
     policies = robot.get("daily_room_limits")
     if policies is not None and not isinstance(policies, Mapping):
@@ -457,12 +459,12 @@ def daily_state(
                 # Old installations may have recorded only the most recent clean;
                 # do not invent a complete daily count for that local day.
                 ambiguous = True
-    reason = (
+    reason: DailyLimitReason | None = (
         "completion_history_unverified"
         if ambiguous or (overflow is not None and overflow > now)
         else None
     )
-    result: dict[str, Any] = {
+    result: DailyLimit = {
         "limit": limit,
         "completed_today": count,
         "reached": count >= limit or reason is not None,

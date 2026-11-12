@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any, override
+from typing import Any, cast, override
 
 from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
@@ -22,6 +22,12 @@ from homeassistant.helpers.storage import Store
 from . import slam_history_format as _history_format
 from .client.slam_scene import MAX_SCENE_BYTES
 from .const import DOMAIN
+from .map_schema import (
+    HistoryAcknowledgement,
+    HistoryArchive,
+    HistoryArchiveRecord,
+    HistoryUsage,
+)
 
 STORAGE_VERSION = 2
 MAX_ACTIVE_HISTORY_READS = 2
@@ -76,7 +82,7 @@ class SlamHistoryStore:
         self._capture_paused = False
         self._capacity_blocked = False
         self._reserved_bytes = 0
-        self._requests: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._requests: dict[str, tuple[str, HistoryAcknowledgement]] = {}
         self._mutation_lock = asyncio.Lock()
         self._active_reads: dict[str, int] = {}
         self._active_read_bytes = 0
@@ -101,7 +107,8 @@ class SlamHistoryStore:
         self._generation = generation
         self._lifecycle_generation += 1
         self._capture_paused = paused
-        self._requests = requests
+        # Each stored reply is one this store sent.
+        self._requests = cast(dict[str, tuple[str, HistoryAcknowledgement]], requests)
         migrated: list[_history_format.SlamHistorySnapshot] = []
         for snapshot in snapshots:
             group = snapshot.comparison_group or self.public_group(
@@ -273,7 +280,7 @@ class SlamHistoryStore:
         """Whether the latest automatic capture could not fit in current storage."""
         return self._capacity_blocked
 
-    def usage(self) -> dict[str, int]:
+    def usage(self) -> HistoryUsage:
         active = [item for item in self._snapshots if item.retention != "trash"]
         deleted = [item for item in self._snapshots if item.retention == "trash"]
         return {
@@ -426,7 +433,7 @@ class SlamHistoryStore:
         name: str | None = None,
         allow_kept: bool = False,
         now: datetime | None = None,
-    ) -> dict[str, Any]:
+    ) -> HistoryAcknowledgement:
         """Apply one idempotent durable user mutation to exact record IDs."""
         if (
             not isinstance(request_id, str)
@@ -447,7 +454,7 @@ class SlamHistoryStore:
             if prior is not None:
                 if prior[0] != fingerprint:
                     raise ValueError("history-request-id-reused")
-                return dict(prior[1])
+                return prior[1].copy()
             if self._closed:
                 raise ValueError("history-store-closed")
             if expected_generation != self._generation:
@@ -539,7 +546,10 @@ class SlamHistoryStore:
                 "resume_capture",
             }:
                 self._generation += 1
-            response = {"generation": self._generation, "request_id": request_id}
+            response: HistoryAcknowledgement = {
+                "generation": self._generation,
+                "request_id": request_id,
+            }
             self._requests[request_id] = (fingerprint, response)
             self._requests = dict(
                 list(self._requests.items())[-_history_format.MAX_HISTORY_REQUESTS :]
@@ -619,7 +629,7 @@ class SlamHistoryStore:
 
     async def async_export(
         self, record_ids: Sequence[str], *, expected_generation: int
-    ) -> dict[str, Any]:
+    ) -> HistoryArchive:
         """Create a bounded, credential-free archive of selected active records."""
         if (
             len(record_ids) < 1
@@ -640,7 +650,7 @@ class SlamHistoryStore:
                 item.retention == "trash" for item in selected
             ):
                 raise ValueError("history-record-not-found")
-            archive_records = []
+            archive_records: list[HistoryArchiveRecord] = []
             encoded_size = 0
             for item in selected:
                 encoded = base64.b64encode(item.compressed).decode("ascii")
@@ -657,7 +667,7 @@ class SlamHistoryStore:
                         "frame": item.frame,
                     }
                 )
-            result: dict[str, Any] = {
+            result: HistoryArchive = {
                 "format": "matic-map-archive",
                 "version": 1,
                 "records": archive_records,
@@ -675,7 +685,7 @@ class SlamHistoryStore:
         *,
         expected_generation: int,
         request_id: str,
-    ) -> dict[str, Any]:
+    ) -> HistoryAcknowledgement:
         """Validate then import bounded archive records as read-only kept history."""
         if (
             not isinstance(request_id, str)
@@ -694,7 +704,7 @@ class SlamHistoryStore:
             if prior is not None:
                 if prior[0] != fingerprint:
                     raise ValueError("history-request-id-reused")
-                return dict(prior[1])
+                return prior[1].copy()
             if self._closed or expected_generation != self._generation:
                 raise ValueError("history-generation-conflict")
         prepared = await self._hass.async_add_executor_job(
@@ -705,7 +715,7 @@ class SlamHistoryStore:
             if prior is not None:
                 if prior[0] != fingerprint:
                     raise ValueError("history-request-id-reused")
-                return dict(prior[1])
+                return prior[1].copy()
             if self._closed or expected_generation != self._generation:
                 raise ValueError("history-generation-conflict")
             if (
@@ -717,7 +727,7 @@ class SlamHistoryStore:
             before = list(self._snapshots)
             self._snapshots.extend(prepared)
             self._generation += 1
-            response = {
+            response: HistoryAcknowledgement = {
                 "generation": self._generation,
                 "request_id": request_id,
                 "record_ids": [item.record_id for item in prepared],
@@ -738,7 +748,7 @@ class SlamHistoryStore:
 
     async def async_set_policy(
         self, paused: bool, *, request_id: str, expected_generation: int
-    ) -> dict[str, Any]:
+    ) -> HistoryAcknowledgement:
         return await self.async_mutate(
             "pause_capture" if paused else "resume_capture",
             (),
