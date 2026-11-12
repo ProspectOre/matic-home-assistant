@@ -37,6 +37,7 @@ from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
 from .robot_port import RobotPort
 from .room_coherence import current_floor_plan, room_completion_names_are_current
 from .run_machine import (
+    RUN_SETTLED_REASONS,
     Restarted,
     RoomVerified,
     Run,
@@ -559,10 +560,11 @@ async def async_recover_managed_run(
                     reason_code="verified_completion",
                 )
         reason = (
-            "all_rooms_verified"
-            if restarted.completed_room_ids == {room.room_id for room in rooms}
-            and {index for index, item in enumerate(legs) if isinstance(item, AreaLeg)}
-            <= restarted.finished_area_legs
+            restarted.end_reason
+            if restarted.all_settled(
+                {room.room_id for room in rooms},
+                {index for index, item in enumerate(legs) if isinstance(item, AreaLeg)},
+            )
             else "restart_remaining_queue_unverified"
         )
     except asyncio.CancelledError:
@@ -585,7 +587,7 @@ async def async_recover_managed_run(
             and not _shutdown_suspends_run(hass, manager, serial_number)
             and manager.recovery.recovery_run(serial_number) is not None
         ):
-            completed = reason == "all_rooms_verified"
+            completed = reason in RUN_SETTLED_REASONS
             cancellation = manager.control.cancellation_reason(serial_number)
             replaced = cancellation == "motion_replaced"
             stopped = (

@@ -14,6 +14,7 @@ from custom_components.matic_robot.run_machine import (
     LegVerified,
     LegVerifying,
     Restarted,
+    RoomSettled,
     RoomVerified,
     Run,
     RunPhase,
@@ -210,6 +211,11 @@ def _stored(phase: str, leg_index: int = 0, **changes) -> dict:
         (_stored("accepted"), Run(RunPhase.ACCEPTED)),
         (_stored("verifying", 1), Run(RunPhase.VERIFYING, 1, frozenset({"kitchen"}))),
         (_stored("handoff", 1), Run(RunPhase.HANDOFF, 1, frozenset({"kitchen"}))),
+        (
+            _stored("handoff", 1, completed_room_ids=[], settled_room_ids=["kitchen"])
+            | {"completed_room_count": 0},
+            Run(RunPhase.HANDOFF, 1, settled_room_ids=frozenset({"kitchen"})),
+        ),
     ],
     ids=[
         "ready",
@@ -219,6 +225,7 @@ def _stored(phase: str, leg_index: int = 0, **changes) -> dict:
         "accepted",
         "verifying",
         "handoff",
+        "handoff-after-settled",
     ],
 )
 def test_a_restarted_run_resumes_only_from_a_resumable_phase(record, resumed) -> None:
@@ -245,6 +252,10 @@ def test_a_restarted_run_resumes_only_from_a_resumable_phase(record, resumed) ->
             | {"completed_room_count": 2},
             "all_rooms_verified",
         ),
+        (
+            _stored("accepted", 1, settled_room_ids=["office"]),
+            "all_rooms_settled",
+        ),
     ],
 )
 def test_a_restarted_run_ends_when_its_checkpoint_cannot_go_on(record, reason) -> None:
@@ -258,3 +269,25 @@ def test_a_restarted_run_rejects_an_unreadable_record() -> None:
     del record["recovery_checkpoint"]["dispatched_at"]
     with pytest.raises(KeyError):
         transition(Run(), Restarted(record))
+
+
+def test_a_settled_room_is_saved_with_the_next_position() -> None:
+    """A room without credit counts toward the run's end, not its credit."""
+    run, write = transition(
+        Run(completed_room_ids=frozenset({"study"})), RoomSettled("kitchen")
+    )
+    assert run == Run(
+        completed_room_ids=frozenset({"study"}), settled_room_ids=frozenset({"kitchen"})
+    )
+    # Saved at once with the credits, so a restart before the next leg keeps both.
+    assert write == CheckpointWrite(
+        {"completed_room_ids": ["study"], "settled_room_ids": ["kitchen"]}
+    )
+    assert run.position()["settled_room_ids"] == ["kitchen"]
+    assert "settled_room_ids" not in Run().position()
+    assert not run.all_settled({"kitchen", "office", "study"}, ())
+    run, _ = transition(run, RoomVerified("office"))
+    assert run.all_settled({"kitchen", "office", "study"}, ())
+    assert not run.all_settled({"kitchen", "office", "study"}, {1})
+    assert run.end_reason == "all_rooms_settled"
+    assert Run(completed_room_ids=frozenset({"a"})).end_reason == "all_rooms_verified"

@@ -10,13 +10,16 @@ record whether the run resumes and in which phase.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
 from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs
+
+# Reason codes of a run whose every room and area has a result.
+RUN_SETTLED_REASONS = frozenset({"all_rooms_verified", "all_rooms_settled"})
 
 
 class RunPhase(StrEnum):
@@ -38,6 +41,8 @@ class Run:
     leg_index: int = 0
     completed_room_ids: frozenset[str] = frozenset()
     finished_area_legs: frozenset[int] = frozenset()
+    # Rooms settled without credit: owner skips and rooms the robot couldn't reach.
+    settled_room_ids: frozenset[str] = frozenset()
     # Why a restarted run ends instead of resuming; None while it can go on.
     ended: str | None = None
 
@@ -49,7 +54,21 @@ class Run:
             checkpoint["leg_index"],
             frozenset(checkpoint.get("completed_room_ids", [])),
             frozenset(checkpoint.get("finished_area_legs", [])),
+            frozenset(checkpoint.get("settled_room_ids", [])),
         )
+
+    def all_settled(
+        self, room_ids: Collection[str], area_legs: Collection[int]
+    ) -> bool:
+        """Return whether every room has a result and every area leg finished."""
+        return set(room_ids) == self.completed_room_ids | self.settled_room_ids and (
+            set(area_legs) <= self.finished_area_legs
+        )
+
+    @property
+    def end_reason(self) -> str:
+        """Name how a run whose every entry settled ended."""
+        return "all_rooms_settled" if self.settled_room_ids else "all_rooms_verified"
 
     def position(self) -> dict[str, Any]:
         """Return the queue position as the checkpoint stores it."""
@@ -57,6 +76,12 @@ class Run:
             "leg_index": self.leg_index,
             "phase": self.phase.value,
             "completed_room_ids": sorted(self.completed_room_ids),
+            # Written once a room settles, so other checkpoints keep 0.6.0b1's keys.
+            **(
+                {"settled_room_ids": sorted(self.settled_room_ids)}
+                if self.settled_room_ids
+                else {}
+            ),
         }
 
 
@@ -87,6 +112,13 @@ class DispatchRecorded:
 @dataclass(frozen=True, slots=True)
 class RoomVerified:
     """The robot's own history credited a room."""
+
+    room_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RoomSettled:
+    """A room ended without credit: the owner skipped it or it was unreachable."""
 
     room_id: str
 
@@ -134,6 +166,7 @@ type RunEvent = (
     | LegDispatching
     | DispatchRecorded
     | RoomVerified
+    | RoomSettled
     | AreaFinished
     | LegVerifying
     | LegVerified
@@ -192,6 +225,16 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
             return replace(
                 run, completed_room_ids=run.completed_room_ids | {room_id}
             ), CheckpointWrite({}, save=False)
+        case RoomSettled(room_id):
+            # Saved at once: the last leg has no next position to carry it.
+            # The credits go too, since this save replaces the stored checkpoint.
+            settled = replace(run, settled_room_ids=run.settled_room_ids | {room_id})
+            return settled, CheckpointWrite(
+                {
+                    "completed_room_ids": sorted(settled.completed_room_ids),
+                    "settled_room_ids": sorted(settled.settled_room_ids),
+                }
+            )
         case AreaFinished(leg_index, last_leg):
             finished = run.finished_area_legs | {leg_index}
             # No handoff save follows the last leg, so it saves now; a
@@ -272,18 +315,20 @@ def _restarted(record: Mapping[str, Any]) -> Run:
     room_ids = {room.room_id for room in rooms}
     legs = checkpoint_legs(checkpoint)
     area_legs = {index for index, leg in enumerate(legs) if isinstance(leg, AreaLeg)}
-    finished_areas = set(checkpoint.get("finished_area_legs", []))
-    completed_ids = set(checkpoint.get("completed_room_ids", []))
+    saved = Run(
+        completed_room_ids=frozenset(checkpoint.get("completed_room_ids", [])),
+        settled_room_ids=frozenset(checkpoint.get("settled_room_ids", [])),
+        finished_area_legs=frozenset(checkpoint.get("finished_area_legs", [])),
+    )
     if (
         (rooms or area_legs)
-        and area_legs <= finished_areas
+        and saved.all_settled(room_ids, area_legs)
         and len(room_ids) == len(rooms) == record["room_count"]
-        and room_ids == completed_ids
-        and record["completed_room_count"] == len(rooms)
+        and record["completed_room_count"] == len(saved.completed_room_ids)
     ):
-        # Room credits and area finishes are saved before the checkpoint
+        # Room results and area finishes are saved before the checkpoint
         # records them, so a crash before finalization keeps the completion.
-        return Run(ended="all_rooms_verified")
+        return Run(ended=saved.end_reason)
     leg_index = checkpoint.get("leg_index")
     if (
         not isinstance(leg_index, int)
@@ -298,9 +343,9 @@ def _restarted(record: Mapping[str, Any]) -> Run:
                     for leg in legs[:leg_index]
                     if isinstance(leg, list)
                     for room in leg
-                }.issubset(completed_ids)
+                }.issubset(saved.completed_room_ids | saved.settled_room_ids)
                 or not {index for index in area_legs if index < leg_index}.issubset(
-                    finished_areas
+                    saved.finished_area_legs
                 )
             )
         )
