@@ -67,6 +67,7 @@ class FloorSegmentCatalog:
         # The catalogs as last read from entity options, to tell which floors
         # a downgraded release changed there.
         self._options_copy: dict[str, Any] = {}
+        self._unsaved = False
 
     async def async_load(
         self, hass: HomeAssistant, entry_id: str, entity_id: str
@@ -130,7 +131,13 @@ class FloorSegmentCatalog:
             )
 
     def _stored(self) -> dict[str, Any]:
+        self._unsaved = False
         return {"catalog": self._catalog, "options_copy": self._options_copy}
+
+    async def async_flush(self) -> None:
+        """Write a pending save now, before a reload reads or removal deletes it."""
+        if self._unsaved:
+            await self._store.async_save(self._stored())
 
     def _options(self, entity_entry: er.RegistryEntry) -> dict[str, object]:
         """Return core's vacuum options with this robot's catalogs."""
@@ -152,6 +159,7 @@ class FloorSegmentCatalog:
         catalog = {key: options[key] for key in _CATALOG_OPTIONS if key in options}
         if catalog != self._catalog:
             self._catalog = deepcopy(catalog)
+            self._unsaved = True
             self._store.async_delay_save(self._stored, SAVE_DELAY_SECONDS)
         current: Mapping[str, Any] = entity_entry.options.get("vacuum", {})
         core = {

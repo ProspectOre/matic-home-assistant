@@ -213,3 +213,22 @@ async def test_floor_swaps_save_the_store_and_keep_the_copy_for_a_downgrade(
 
     await async_remove_floor_catalogs(hass, "entry")
     assert KEY not in hass_storage
+
+
+async def test_flush_writes_a_pending_swap_and_removal_stays_removed(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    entity_id = _vacuum(hass, OPTIONS_05)
+    catalog = await _load(hass, entity_id)
+    await catalog.async_flush()
+    catalog.reconcile(hass, entity_id, DOWNSTAIRS, MagicMock())
+
+    await catalog.async_flush()
+
+    assert hass_storage[KEY]["data"]["catalog"]["matic_floor_scope"] == DOWN
+    await async_remove_floor_catalogs(hass, "entry")
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=SAVE_DELAY_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+    assert KEY not in hass_storage

@@ -105,6 +105,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         await super().async_added_to_hass()
         self._sync_segments()
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Save the floor catalogs before the entry reloads or is removed."""
+        await self._segment_catalog.async_flush()
+        await super().async_will_remove_from_hass()
+
     def _stores(self) -> Iterable[Store[Any]]:
         return (self.session.state, self.session.floor)
 
