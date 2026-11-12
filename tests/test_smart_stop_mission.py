@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import timedelta
 from types import SimpleNamespace
@@ -435,3 +436,36 @@ async def test_an_unreachable_room_in_a_shared_mission_settles(hass, study) -> N
         "completed",
         "all_rooms_settled",
     )
+
+
+class _StudyUnreachableRobot(_UnreachableRobot):
+    """Synthetic robot that cleans the kitchen and cannot enter the study."""
+
+    async def _clean(self) -> None:
+        await asyncio.sleep(0.02)
+        self.fake.show("cleaning", current_area=KITCHEN.name)
+        await self._end({"Kitchen": "completed", "Study": "unattempted"})
+
+
+async def test_a_settled_room_is_saved_with_the_credit_before_it(hass) -> None:
+    """The settled room's own save keeps the kitchen credited for a restart."""
+    saves: list[dict] = []
+
+    def make_robot(manager):
+        save = manager.recovery.async_set_recovery_checkpoint
+
+        async def record(serial, run_id, checkpoint):
+            saves.append(deepcopy(checkpoint))
+            return await save(serial, run_id, checkpoint)
+
+        manager.recovery.async_set_recovery_checkpoint = record
+        return _StudyUnreachableRobot(hass, manager, study=False)
+
+    _robot, events, error = await _run(hass, make_robot, smart_stop=False)
+
+    assert error is None
+    settled_save = next(save for save in saves if "settled_room_ids" in save)
+    assert settled_save["completed_room_ids"] == [KITCHEN.room_id]
+    assert settled_save["settled_room_ids"] == [STUDY.room_id]
+    (finished,) = _events(events, "plan_finished")
+    assert finished["reason_code"] == "all_rooms_settled"

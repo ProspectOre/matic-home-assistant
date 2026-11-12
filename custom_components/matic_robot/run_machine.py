@@ -227,9 +227,13 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
             ), CheckpointWrite({}, save=False)
         case RoomSettled(room_id):
             # Saved at once: the last leg has no next position to carry it.
+            # The credits go too, since this save replaces the stored checkpoint.
             settled = replace(run, settled_room_ids=run.settled_room_ids | {room_id})
             return settled, CheckpointWrite(
-                {"settled_room_ids": sorted(settled.settled_room_ids)}
+                {
+                    "completed_room_ids": sorted(settled.completed_room_ids),
+                    "settled_room_ids": sorted(settled.settled_room_ids),
+                }
             )
         case AreaFinished(leg_index, last_leg):
             finished = run.finished_area_legs | {leg_index}

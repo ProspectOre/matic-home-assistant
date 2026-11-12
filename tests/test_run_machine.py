@@ -273,15 +273,21 @@ def test_a_restarted_run_rejects_an_unreadable_record() -> None:
 
 def test_a_settled_room_is_saved_with_the_next_position() -> None:
     """A room without credit counts toward the run's end, not its credit."""
-    run, write = transition(Run(), RoomSettled("kitchen"))
-    assert run == Run(settled_room_ids=frozenset({"kitchen"}))
-    # Saved at once, so a restart before the next leg still knows it.
-    assert write == CheckpointWrite({"settled_room_ids": ["kitchen"]})
+    run, write = transition(
+        Run(completed_room_ids=frozenset({"study"})), RoomSettled("kitchen")
+    )
+    assert run == Run(
+        completed_room_ids=frozenset({"study"}), settled_room_ids=frozenset({"kitchen"})
+    )
+    # Saved at once with the credits, so a restart before the next leg keeps both.
+    assert write == CheckpointWrite(
+        {"completed_room_ids": ["study"], "settled_room_ids": ["kitchen"]}
+    )
     assert run.position()["settled_room_ids"] == ["kitchen"]
     assert "settled_room_ids" not in Run().position()
-    assert not run.all_settled({"kitchen", "office"}, ())
+    assert not run.all_settled({"kitchen", "office", "study"}, ())
     run, _ = transition(run, RoomVerified("office"))
-    assert run.all_settled({"kitchen", "office"}, ())
-    assert not run.all_settled({"kitchen", "office"}, {1})
+    assert run.all_settled({"kitchen", "office", "study"}, ())
+    assert not run.all_settled({"kitchen", "office", "study"}, {1})
     assert run.end_reason == "all_rooms_settled"
     assert Run(completed_room_ids=frozenset({"a"})).end_reason == "all_rooms_verified"
