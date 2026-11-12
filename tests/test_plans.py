@@ -918,7 +918,8 @@ async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
         result, _ = await asyncio.gather(run, unload, return_exceptions=True)
     await hass.async_block_till_done()
     assert waited_for_save
-    assert isinstance(result, OSError) if save_fails else result is None
+    run_id = events[0].data["run_id"]
+    assert isinstance(result, OSError) if save_fails else result == run_id
     assert set_run_id.call_args.args == (None,)
     assert manager.control.lock("serial").locked() is False
     assert manager.control.actor("serial").run_task is None

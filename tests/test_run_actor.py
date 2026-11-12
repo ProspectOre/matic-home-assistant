@@ -12,9 +12,9 @@ import pytest
 
 from custom_components.matic_robot.run_control import RunControl, _retrieve_run_end
 
-ENTRY = SimpleNamespace(
-    async_create_background_task=lambda _hass, run, name: asyncio.create_task(
-        run, name=name
+HASS = SimpleNamespace(
+    async_create_background_task=lambda run, name, eager_start: asyncio.create_task(
+        run, name=name, eager_start=eager_start
     )
 )
 
@@ -35,9 +35,7 @@ async def test_run_returns_its_id_once_the_robot_has_the_first_command() -> None
         ended.set()
         return "run-1"
 
-    assert await control.async_start_run(None, ENTRY, run, "run", wait=False) == (
-        "run-1"
-    )
+    assert await control.async_start_run(HASS, run, "run", wait=False) == ("run-1")
     assert not ended.is_set()
     release.set()
     await ended.wait()
@@ -55,9 +53,9 @@ async def test_run_that_ends_before_its_first_command_answers_the_caller() -> No
         return "run-2"
 
     with pytest.raises(ValueError, match="plan_already_running"):
-        await control.async_start_run(None, ENTRY, refused, "run", wait=False)
+        await control.async_start_run(HASS, refused, "run", wait=False)
     assert (
-        await control.async_start_run(None, ENTRY, nothing_to_send, "run", wait=False)
+        await control.async_start_run(HASS, nothing_to_send, "run", wait=False)
         == "run-2"
     )
 
@@ -77,10 +75,10 @@ async def test_wait_returns_when_the_run_ends_with_its_error() -> None:
         await asyncio.sleep(0)
         raise RuntimeError("room interrupted")
 
-    assert await control.async_start_run(None, ENTRY, run, "run", wait=True) == "run-3"
+    assert await control.async_start_run(HASS, run, "run", wait=True) == "run-3"
     assert steps == ["ended"]
     with pytest.raises(RuntimeError, match="room interrupted"):
-        await control.async_start_run(None, ENTRY, failed, "run", wait=True)
+        await control.async_start_run(HASS, failed, "run", wait=True)
 
 
 @pytest.mark.parametrize("wait", [False, True])
@@ -97,9 +95,7 @@ async def test_cancelling_the_caller_before_the_return_cancels_the_run(
         await asyncio.Event().wait()
         return "never"
 
-    caller = asyncio.create_task(
-        control.async_start_run(None, ENTRY, run, "run", wait=wait)
-    )
+    caller = asyncio.create_task(control.async_start_run(HASS, run, "run", wait=wait))
     await running.wait()
     caller.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -117,9 +113,7 @@ async def test_a_run_nobody_awaits_logs_its_end(caplog) -> None:
         await asyncio.sleep(0)
         raise RuntimeError("room interrupted")
 
-    assert await control.async_start_run(None, ENTRY, run, "run", wait=False) == (
-        "run-5"
-    )
+    assert await control.async_start_run(HASS, run, "run", wait=False) == ("run-5")
     for _ in range(3):
         await asyncio.sleep(0)
     assert "Managed cleaning run ended: room interrupted" in caplog.text

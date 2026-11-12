@@ -18,7 +18,6 @@ from datetime import timedelta
 from time import monotonic
 from typing import Any, Literal
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -112,24 +111,9 @@ class RunControl:
         """Serialize commands that can change one robot's active task."""
         return self.actor(serial_number).command_lock
 
-    def start_run[RunResult](
-        self,
-        hass: HomeAssistant,
-        entry: ConfigEntry[Any],
-        run: Coroutine[Any, Any, RunResult],
-        name: str,
-    ) -> asyncio.Task[RunResult]:
-        """Start a plan run, new or restarted, as a task the entry cancels on unload.
-
-        Once admitted, the run registers itself with the robot's actor
-        (``register_run_task``), which makes it the task unload stops and awaits.
-        """
-        return entry.async_create_background_task(hass, run, name)
-
     async def async_start_run(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry[Any],
         run: Callable[[Callable[[str], None]], Coroutine[Any, Any, str]],
         name: str,
         *,
@@ -142,6 +126,10 @@ class RunControl:
         raises any error the run ended with before that. With ``wait`` it
         returns when the run ends, as a plan action did before runs started
         in the background. Cancelling the caller before then cancels the run.
+
+        The task starts eagerly, so a run is admitted or refused before this
+        first waits. An admitted run registers itself with the robot's actor
+        (``register_run_task``), which makes it the task unload stops and awaits.
         """
         started: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
@@ -149,7 +137,9 @@ class RunControl:
             if not started.done():
                 started.set_result(run_id)
 
-        task = self.start_run(hass, entry, run(mark_started), name)
+        task = hass.async_create_background_task(
+            run(mark_started), name, eager_start=True
+        )
         task.add_done_callback(_retrieve_run_end)
         try:
             if not wait:

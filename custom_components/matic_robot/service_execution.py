@@ -6,7 +6,6 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_ENTITY_ID,
 )
@@ -195,17 +194,15 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 on_started=on_started,
             )
 
-        return await _async_start(call, entry, run)
+        return await _async_start(call, run)
 
     async def _async_start(
         call: ServiceCall,
-        entry: ConfigEntry[Any],
         run: Callable[[Callable[[str], None]], Coroutine[Any, Any, str]],
     ) -> dict[str, Any]:
         """Start the run in the background; with ``wait``, return when it ends."""
         run_id = await manager.control.async_start_run(
             hass,
-            entry,
             run,
             f"{DOMAIN} {call.service}",
             wait=bool(call.data.get("wait", False)),
@@ -338,7 +335,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                     serial_number, internal_plan_id
                 )
 
-        return await _async_start(call, entry, run)
+        return await _async_start(call, run)
 
     hass.services.async_register(
         DOMAIN,

@@ -224,9 +224,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             plans.recovery.recovery_run(serial_number) is not None
             or plans.control.pending_stop_run_id(serial_number) is not None
         ):
-            plans.control.start_run(
+            entry.async_create_background_task(
                 hass,
-                entry,
                 async_recover_managed_run(hass, entry, serial_number),
                 f"{DOMAIN} managed run recovery",
             )
@@ -329,10 +328,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
             if callable(pending_reader)
             else None
         )
-        if recovery is not None or pending_stop is not None:
-            entry.runtime_data.cleaning_plans.control.start_run(
+        create_task = getattr(entry, "async_create_background_task", None)
+        if (recovery is not None or pending_stop is not None) and callable(create_task):
+            create_task(
                 hass,
-                entry,
                 _async_recover_after_failed_unload(
                     hass, entry, str(entry.data[CONF_SERIAL_NUMBER])
                 ),
