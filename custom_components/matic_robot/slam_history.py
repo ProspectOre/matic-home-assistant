@@ -20,8 +20,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from . import slam_history_format as _history_format
+from .client.slam_scene import MAX_SCENE_BYTES
 from .const import DOMAIN
-from .slam_delta import MAX_SCENE_BYTES
 
 STORAGE_VERSION = 2
 MAX_ACTIVE_HISTORY_READS = 2

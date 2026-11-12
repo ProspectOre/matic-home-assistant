@@ -1,10 +1,11 @@
-"""Serve and cache the active administrator-only SLAM scene."""
+"""Serve the active administrator-only SLAM scene as a manifest and its pages."""
 
 from __future__ import annotations
 
 import asyncio
 import secrets
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
@@ -17,15 +18,24 @@ from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .client.models import FloorPlan
-from .client.slam_scene import encode_slam_scene
+from .client.slam_scene import (
+    SCENE_PAGE_ID_BYTES,
+    ScenePage,
+    encode_scene_manifest,
+    encode_scene_page,
+    scene_frame,
+    scene_metadata,
+    scene_point_count,
+    scene_sample_step,
+)
 from .client.slam_tiles import SlamTile
 from .http import (
-    DELTA_API_URL,
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,
+    SCENE_PAGES_API_URL,
     runtime_for_entry,
 )
-from .slam_delta import encode_slam_scene_delta
+from .slam_decoded_map import page_digest
 from .slam_map_store import SlamMapIdentity
 
 if TYPE_CHECKING:
@@ -35,18 +45,38 @@ if TYPE_CHECKING:
 
 SCENE_ENCODE_ATTEMPTS = 2
 SCENE_CACHE_REVISIONS = 2
-DELTA_WAIT_SECONDS = 5
+REVISION_WAIT_SECONDS = 5
+MAX_PAGES_PER_REQUEST = 256
+MANIFEST_CONTENT_TYPE = "application/vnd.matic.slam-manifest"
 
 type _SceneKey = tuple[int, SlamMapIdentity | None, FloorPlan | None]
 
 
 @dataclass(frozen=True, slots=True)
+class _EncodedPage:
+    """One page's sampled points, reusable while its content and step hold."""
+
+    shown_points: int
+    sample_step: int
+    page: ScenePage
+
+
+@dataclass(frozen=True, slots=True)
+class _EncodedScene:
+    """A manifest and its pages, keyed by content digest and by page address."""
+
+    manifest: bytes
+    etag: str
+    by_content: Mapping[bytes, _EncodedPage]
+    by_address: Mapping[bytes, ScenePage]
+
+
+@dataclass(frozen=True, slots=True)
 class _CachedScene:
-    """One compact payload retained only in process memory."""
+    """One encoded scene retained only in process memory."""
 
     key: _SceneKey
-    payload: bytes
-    etag: str
+    encoded: _EncodedScene
     revision: int
     floor_plan_coherent: bool
 
@@ -59,16 +89,12 @@ class _SceneGeneration:
     revision: int
 
 
-@dataclass(frozen=True, slots=True)
-class _EncodedScene:
-    """Scene payload and digest produced together off the event loop."""
-
-    payload: bytes
-    etag: str
-
-
 class MaticSlamSceneView(HomeAssistantView):
-    """Serve a bounded binary point cloud to an authenticated administrator."""
+    """Serve the scene manifest to an authenticated administrator.
+
+    With ``since``, wait up to five seconds for a newer revision and answer
+    204 if none arrives.
+    """
 
     url = SCENE_API_URL
     name = "api:matic_robot:slam_scene"
@@ -136,9 +162,9 @@ class MaticSlamSceneView(HomeAssistantView):
             cached.floor_plan_coherent,
         ):
             # Advertise the scene that a newly opened panel can receive now.
-            # A live map revision may advance much faster than its expensive
-            # binary encoder. The delta request will join the background build
-            # and advance from this safe base without blanking the workspace.
+            # A live map revision may advance much faster than its encoder.
+            # The panel's revision wait joins the background build and moves
+            # on from this safe scene without blanking the workspace.
             return cached.revision
         return self._revision_for_key(entry_id, key)
 
@@ -154,11 +180,18 @@ class MaticSlamSceneView(HomeAssistantView):
         self._generations[entry_id] = _SceneGeneration(key, revision)
         return revision
 
-    def scene_for_revision(self, entry_id: str, revision: int) -> _CachedScene | None:
-        """Return a recent in-memory base for a delta request."""
-        versions = self._versions.get(entry_id, ())
+    def scene_page(
+        self, entry_id: str, runtime: MaticRuntimeData, page_id: bytes
+    ) -> ScenePage | None:
+        """Return a page of a recent scene of the live map, by its address."""
+        identity = runtime.slam_map.mission_identity
         return next(
-            (scene for scene in reversed(versions) if scene.revision == revision),
+            (
+                page
+                for scene in reversed(self._versions.get(entry_id, ()))
+                if scene.key[1] == identity
+                and (page := scene.encoded.by_address.get(page_id)) is not None
+            ),
             None,
         )
 
@@ -263,6 +296,7 @@ class MaticSlamSceneView(HomeAssistantView):
                             _encode_scene,
                             decoded.tiles,
                             floor_plan if floor_plan_coherent else None,
+                            {} if cached is None else cached.encoded.by_content,
                         )
                     )
                 except DecodeError:
@@ -286,13 +320,7 @@ class MaticSlamSceneView(HomeAssistantView):
                 # snapshot; the next request will observe and encode the newer
                 # key without starving the current request.
                 scene_revision = self._revision_for_key(entry_id, key)
-                cached = _CachedScene(
-                    key,
-                    encoded.payload,
-                    encoded.etag,
-                    scene_revision,
-                    floor_plan_coherent,
-                )
+                cached = _CachedScene(key, encoded, scene_revision, floor_plan_coherent)
                 self._cache[entry_id] = cached
                 versions = self._versions.setdefault(
                     entry_id, deque(maxlen=SCENE_CACHE_REVISIONS)
@@ -304,188 +332,155 @@ class MaticSlamSceneView(HomeAssistantView):
 
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
-        """Return the current local scene, using an ETag for live refreshes."""
+        """Return the current manifest, using an ETag for live refreshes."""
+        since: int | None = None
+        if "since" in request.query:
+            try:
+                since = int(request.query["since"])
+            except ValueError:
+                since = -1
+            if not 0 <= since < 2**64:
+                return _response(HTTPStatus.BAD_REQUEST)
         hass = request.app[KEY_HASS]
         runtime = runtime_for_entry(hass, entry_id)
         if runtime is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
+            return _response(HTTPStatus.NOT_FOUND)
         try:
             cached = await self.async_scene(
                 hass,
                 entry_id,
                 runtime,
-                allow_stale=request.headers.get("X-Matic-Prefer-Cached") == "1",
+                allow_stale=since is None
+                and request.headers.get("X-Matic-Prefer-Cached") == "1",
             )
+            if (
+                cached is not None
+                and cached.revision == since
+                and await _async_wait_for_change(runtime)
+            ):
+                if runtime_for_entry(hass, entry_id) is not runtime:
+                    return _response(HTTPStatus.NOT_FOUND)
+                cached = await self.async_scene(hass, entry_id, runtime)
         except DecodeError:
-            return web.Response(
-                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-            )
+            return _response(HTTPStatus.CONFLICT)
         if cached is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        if request.headers.get("If-None-Match") == cached.etag:
-            return web.Response(
-                status=HTTPStatus.NOT_MODIFIED,
-                headers={
-                    **PRIVATE_NO_STORE_HEADERS,
-                    "ETag": cached.etag,
-                    "X-Matic-Revision": str(cached.revision),
-                    "X-Matic-Floor-Coherent": _header_bool(cached.floor_plan_coherent),
-                },
-            )
+            return _response(HTTPStatus.NOT_FOUND)
+        headers = {
+            "ETag": cached.encoded.etag,
+            "X-Matic-Revision": str(cached.revision),
+            "X-Matic-Floor-Coherent": "1" if cached.floor_plan_coherent else "0",
+        }
+        if cached.revision == since:
+            return _response(HTTPStatus.NO_CONTENT, headers)
+        if request.headers.get("If-None-Match") == cached.encoded.etag:
+            return _response(HTTPStatus.NOT_MODIFIED, headers)
         return web.Response(
-            body=cached.payload,
-            content_type="application/vnd.matic.slam-scene",
-            headers={
-                **PRIVATE_NO_STORE_HEADERS,
-                "ETag": cached.etag,
-                "X-Matic-Revision": str(cached.revision),
-                "X-Matic-Floor-Coherent": _header_bool(cached.floor_plan_coherent),
-            },
+            body=cached.encoded.manifest,
+            content_type=MANIFEST_CONTENT_TYPE,
+            headers={**PRIVATE_NO_STORE_HEADERS, **headers},
         )
 
 
-class MaticSlamDeltaView(HomeAssistantView):
-    """Long-poll bounded point-cloud changes for the active scene."""
+class MaticSlamScenePagesView(HomeAssistantView):
+    """Serve the points of requested scene pages, by content address."""
 
-    url = DELTA_API_URL
-    name = "api:matic_robot:slam_delta"
+    url = SCENE_PAGES_API_URL
+    name = "api:matic_robot:slam_scene_pages"
 
     def __init__(self, scene_view: MaticSlamSceneView) -> None:
         self._scene_view = scene_view
 
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
-        """Return the next delta or a full scene when its base is unavailable."""
+        """Return the pages' points back to back, in the order requested."""
         try:
-            since = int(request.query.get("since", ""))
-        except ValueError:
-            since = -1
-        if not 0 <= since < 2**64:
-            return web.Response(
-                status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        hass = request.app[KEY_HASS]
-        runtime = runtime_for_entry(hass, entry_id)
-        if runtime is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        try:
-            current = await self._scene_view.async_scene(hass, entry_id, runtime)
-        except DecodeError:
-            return web.Response(
-                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        if current is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        if current.revision == since:
-            changed = asyncio.Event()
-            remove_listeners = [
-                runtime.slam_map.async_add_listener(changed.set),
-                runtime.session.floor.subscribe(changed.set),
+            page_ids = [
+                bytes.fromhex(value) for value in request.query["ids"].split(",")
             ]
-            try:
-                if current.revision == since:
-                    try:
-                        async with asyncio.timeout(DELTA_WAIT_SECONDS):
-                            await changed.wait()
-                    except TimeoutError:
-                        return web.Response(
-                            status=HTTPStatus.NO_CONTENT,
-                            headers={
-                                **PRIVATE_NO_STORE_HEADERS,
-                                "X-Matic-Revision": str(since),
-                                "X-Matic-Floor-Coherent": _header_bool(
-                                    current.floor_plan_coherent
-                                ),
-                            },
-                        )
-            finally:
-                for remove_listener in remove_listeners:
-                    remove_listener()
-        if runtime_for_entry(hass, entry_id) is not runtime:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        try:
-            current = await self._scene_view.async_scene(hass, entry_id, runtime)
-        except DecodeError:
-            return web.Response(
-                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        if current is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        if current.revision == since:
-            return web.Response(
-                status=HTTPStatus.NO_CONTENT,
-                headers={
-                    **PRIVATE_NO_STORE_HEADERS,
-                    "X-Matic-Revision": str(since),
-                    "X-Matic-Floor-Coherent": _header_bool(current.floor_plan_coherent),
-                },
-            )
-        base = self._scene_view.scene_for_revision(entry_id, since)
-        delta = None
-        if base is not None:
-            delta = await hass.async_add_executor_job(
-                partial(
-                    encode_slam_scene_delta,
-                    base.payload,
-                    current.payload,
-                    base_revision=base.revision,
-                    revision=current.revision,
-                )
-            )
-        if runtime_for_entry(
-            hass, entry_id
-        ) is not runtime or not _scene_snapshot_is_publishable(
-            runtime,
-            current.key[1],
-            current.key[2],
-            current.floor_plan_coherent,
+        except KeyError, ValueError:
+            page_ids = []
+        if not 0 < len(page_ids) <= MAX_PAGES_PER_REQUEST or any(
+            len(page_id) != SCENE_PAGE_ID_BYTES for page_id in page_ids
         ):
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        if delta is None:
-            return web.Response(
-                body=current.payload,
-                content_type="application/vnd.matic.slam-scene",
-                headers={
-                    **PRIVATE_NO_STORE_HEADERS,
-                    "ETag": current.etag,
-                    "X-Matic-Revision": str(current.revision),
-                    "X-Matic-Floor-Coherent": _header_bool(current.floor_plan_coherent),
-                },
-            )
-        assert base is not None
+            return _response(HTTPStatus.BAD_REQUEST)
+        runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
+        if (
+            runtime is None
+            or getattr(runtime.slam_map, "live_session_verified", False) is not True
+        ):
+            return _response(HTTPStatus.NOT_FOUND)
+        pages = [
+            self._scene_view.scene_page(entry_id, runtime, page_id)
+            for page_id in page_ids
+        ]
+        if None in pages:
+            # The scene moved on; the panel reads the new manifest.
+            return _response(HTTPStatus.NOT_FOUND)
         return web.Response(
-            body=delta,
-            content_type="application/vnd.matic.slam-delta",
-            headers={
-                **PRIVATE_NO_STORE_HEADERS,
-                "ETag": current.etag,
-                "X-Matic-Base-Revision": str(base.revision),
-                "X-Matic-Revision": str(current.revision),
-                "X-Matic-Floor-Coherent": _header_bool(current.floor_plan_coherent),
-            },
+            body=b"".join(page.points for page in pages if page is not None),
+            content_type="application/octet-stream",
+            headers=PRIVATE_NO_STORE_HEADERS,
         )
 
 
+async def _async_wait_for_change(runtime: MaticRuntimeData) -> bool:
+    """Wait for a map or floor-plan change; return False after the wait."""
+    changed = asyncio.Event()
+    remove_listeners = [
+        runtime.slam_map.async_add_listener(changed.set),
+        runtime.session.floor.subscribe(changed.set),
+    ]
+    try:
+        async with asyncio.timeout(REVISION_WAIT_SECONDS):
+            await changed.wait()
+    except TimeoutError:
+        return False
+    finally:
+        for remove_listener in remove_listeners:
+            remove_listener()
+    return True
+
+
+def _response(
+    status: HTTPStatus, headers: Mapping[str, str] | None = None
+) -> web.Response:
+    return web.Response(
+        status=status, headers={**PRIVATE_NO_STORE_HEADERS, **(headers or {})}
+    )
+
+
 def _encode_scene(
-    tiles: tuple[SlamTile, ...], floor_plan: FloorPlan | None
+    tiles: tuple[SlamTile, ...],
+    floor_plan: FloorPlan | None,
+    previous: Mapping[bytes, _EncodedPage],
 ) -> _EncodedScene:
-    """Encode a stable store snapshot off the event loop."""
-    payload = encode_slam_scene(tiles, floor_plan=floor_plan)
-    return _EncodedScene(payload, f'"{sha256(payload).hexdigest()[:24]}"')
+    """Encode the manifest off the event loop, reusing unchanged pages."""
+    frame = scene_frame(tiles)
+    digests = [page_digest(tile) for tile in tiles]
+    known = [previous.get(digest) for digest in digests]
+    counts = [
+        scene_point_count(tile) if page is None else page.shown_points
+        for tile, page in zip(tiles, known, strict=True)
+    ]
+    sample_step = scene_sample_step(counts)
+    by_content = {
+        digest: (
+            page
+            if page is not None and page.sample_step == sample_step
+            else _EncodedPage(count, sample_step, encode_scene_page(tile, sample_step))
+        )
+        for tile, digest, page, count in zip(tiles, digests, known, counts, strict=True)
+    }
+    pages = [by_content[digest].page for digest in digests]
+    manifest = encode_scene_manifest(
+        scene_metadata(tiles, frame, sample_step, floor_plan=floor_plan), tiles, pages
+    )
+    return _EncodedScene(
+        manifest,
+        f'"{sha256(manifest).hexdigest()[:24]}"',
+        by_content,
+        {page.page_id: page for page in pages},
+    )
 
 
 def _scene_snapshot_is_current(
@@ -525,7 +520,3 @@ def _scene_snapshot_key(runtime: MaticRuntimeData) -> _SceneKey:
         runtime.slam_map.mission_identity,
         runtime.session.floor.value,
     )
-
-
-def _header_bool(value: bool) -> str:
-    return "1" if value else "0"

@@ -29,7 +29,7 @@ async function createPendingAreaSave(page, { holdPlans = false, existingAreaId =
     const base = createGalleryState("ready");
     const store = new WorkspaceStore();
     const run = window.__areaMutationOwnership = {
-      entry: { ...base.resources.entry, deltaUrl: null },
+      entry: { ...base.resources.entry },
       catalogCalls: 0,
       holdPlans,
       saves: [],
@@ -275,7 +275,7 @@ test.describe("a failed area write", () => {
         const unavailable = async () => { throw new Error("Unavailable"); };
         const effects = new EffectController(store, {
           dispose() {},
-          catalog: async () => [{ ...base.resources.entry, deltaUrl: null }],
+          catalog: async () => [{ ...base.resources.entry }],
           scene: async (_url, revision) => ({ revision, floorCoherent: true, scene: base.resources.scene.value }),
           history: async () => base.resources.history.value,
           pose: async () => ({ ...base.resources.pose.value, floorCoherent: true, mapSessionKey: base.resources.entry.mapSessionKey }),

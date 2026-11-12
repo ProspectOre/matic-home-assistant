@@ -142,7 +142,6 @@ test("catalog live workspace capability defaults off and validates explicit bool
     const entry = {
       entry_id: "entry-a",
       scene_url: "/api/matic_robot/scene",
-      delta_url: null,
       history_url: "/api/matic_robot/history",
       areas_url: "/api/matic_robot/areas",
       plans_url: "/api/matic_robot/plans",

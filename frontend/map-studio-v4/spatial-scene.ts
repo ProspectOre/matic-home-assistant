@@ -22,15 +22,15 @@ interface SpatialSceneCallbacks {
 /** SpatialScene owns its requests and lifetime; admission remains in CoherenceMachine. */
 export class SpatialScene {
   readonly #store: WorkspaceStore;
-  readonly #backend: Pick<MaticBackend, "scene" | "sceneDelta">;
+  readonly #backend: Pick<MaticBackend, "scene">;
   readonly #coherence: CoherenceMachine;
   readonly #requests: ResourceRequests;
   readonly #callbacks: SpatialSceneCallbacks;
   #retryTimer: number | null = null;
-  #deltaGeneration = 0;
-  #activeDeltaOwner: { generation: number; stamp: ResourceStamp; entryId: string; coherenceIdentity: string; deltaUrl: string } | null = null;
+  #followGeneration = 0;
+  #follower: { generation: number; stamp: ResourceStamp; entryId: string; coherenceIdentity: string; sceneUrl: string } | null = null;
 
-  constructor(store: WorkspaceStore, backend: Pick<MaticBackend, "scene" | "sceneDelta">, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialSceneCallbacks) {
+  constructor(store: WorkspaceStore, backend: Pick<MaticBackend, "scene">, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialSceneCallbacks) {
     this.#store = store;
     this.#backend = backend;
     this.#coherence = coherence;
@@ -40,19 +40,19 @@ export class SpatialScene {
 
   stop(): void {
     this.#clearRetry();
-    this.#deltaGeneration += 1;
-    this.#activeDeltaOwner = null;
+    this.#followGeneration += 1;
+    this.#follower = null;
   }
 
   owns(entry: MapEntry): boolean {
-    const owner = this.#activeDeltaOwner;
+    const owner = this.#follower;
     const stamp = this.#coherence.current();
     return Boolean(owner && stamp
-      && owner.generation === this.#deltaGeneration
+      && owner.generation === this.#followGeneration
       && owner.stamp.generation === stamp.generation
       && owner.entryId === entry.entryId
       && owner.coherenceIdentity === entryCoherenceIdentity(entry)
-      && owner.deltaUrl === entry.deltaUrl
+      && owner.sceneUrl === entry.sceneUrl
       && stamp.entryKey === entry.entryId
       && stamp.floorKey === entryFloorKey(entry)
       && stamp.missionKey === entryMissionKey(entry)
@@ -73,12 +73,14 @@ export class SpatialScene {
     this.#clearRetry();
     const controller = this.#requests.begin("scene");
     try {
+      const shown = this.#store.value.resources.scene.value;
       const response = await this.#backend.scene(
         entry.sceneUrl,
         entry.mapRevision,
         entry.mapFloorCoherent,
         "live",
         controller.signal,
+        { base: shown?.source === "live" ? shown : null },
       );
       if (controller.signal.aborted || this.#callbacks.disposed() || !this.#coherence.accepts(stamp)) return;
       // A rejected response has settled: leave the request retryable on the
@@ -129,9 +131,11 @@ export class SpatialScene {
         void this.#callbacks.loadPlans();
       }
       this.#callbacks.resumeAreaCatalog();
-      if (entry.deltaUrl && typeof DecompressionStream === "function") {
-        const generation = ++this.#deltaGeneration;
-        void this.#streamDeltas(settledEntry, settledStamp, response.scene, generation);
+      // A live manifest is followed revision by revision; a saved-map scene
+      // served in its place (a stale server) is not.
+      if (response.scene.manifest) {
+        const generation = ++this.#followGeneration;
+        void this.#follow(settledEntry, settledStamp, response.scene, generation);
       } else {
         this.#callbacks.recovered(settledEntry);
       }
@@ -184,43 +188,45 @@ export class SpatialScene {
     }
   }
 
-  async #streamDeltas(
+  /** Waits for each new revision and admits it, fetching only its new pages. */
+  async #follow(
     initialEntry: MapEntry,
     initialStamp: ResourceStamp,
     initialScene: NonNullable<WorkspaceState["resources"]["scene"]["value"]>,
     generation: number,
   ): Promise<void> {
-    if (!initialEntry.deltaUrl || typeof DecompressionStream !== "function") return;
-    const deltaUrl = initialEntry.deltaUrl;
+    const sceneUrl = initialEntry.sceneUrl;
     const owner = {
       generation,
       stamp: initialStamp,
       entryId: initialEntry.entryId,
       coherenceIdentity: entryCoherenceIdentity(initialEntry),
-      deltaUrl,
+      sceneUrl,
     };
-    if (generation !== this.#deltaGeneration || !this.#coherence.accepts(initialStamp)) return;
-    this.#activeDeltaOwner = owner;
+    if (generation !== this.#followGeneration || !this.#coherence.accepts(initialStamp)) return;
+    this.#follower = owner;
     let entry = initialEntry;
     let stamp = initialStamp;
     let scene = initialScene;
     try {
       while (!this.#callbacks.disposed()
         && this.#callbacks.pageActive()
-        && generation === this.#deltaGeneration
+        && generation === this.#followGeneration
         && this.#coherence.accepts(stamp)
         && this.#store.value.selection.floorId === "current") {
-        const controller = this.#requests.begin("delta");
+        const controller = this.#requests.begin("scene-follow");
         try {
-          const response = await this.#backend.sceneDelta(
-            deltaUrl,
-            scene,
+          const response = await this.#backend.scene(
+            sceneUrl,
+            scene.revision,
             entry.mapFloorCoherent,
+            "live",
             controller.signal,
+            { since: scene.revision, base: scene },
           );
           if (controller.signal.aborted
             || this.#callbacks.disposed()
-            || generation !== this.#deltaGeneration
+            || generation !== this.#followGeneration
             || !this.#coherence.accepts(stamp)) return;
           if (!response.floorCoherent) {
             const state = this.#store.value;
@@ -242,10 +248,12 @@ export class SpatialScene {
             return;
           }
           if (response.notModified || !response.scene) {
+            if (response.revision !== scene.revision) throw new BackendError("scene-unavailable");
             this.#callbacks.recovered(entry);
             await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
             continue;
           }
+          if (response.revision <= scene.revision) throw new BackendError("scene-unavailable");
           const advanced = this.#coherence.advance(stamp, response.revision);
           if (!advanced) return;
           stamp = advanced;
@@ -267,17 +275,17 @@ export class SpatialScene {
           });
           this.#callbacks.admitPose();
         } finally {
-          this.#requests.release("delta", controller);
+          this.#requests.release("scene-follow", controller);
         }
       }
     } catch (error) {
       if (isAbort(error)
         || this.#callbacks.disposed()
-        || generation !== this.#deltaGeneration
+        || generation !== this.#followGeneration
         || !this.#coherence.accepts(stamp)) return;
       this.#callbacks.failed(entry);
     } finally {
-      if (this.#activeDeltaOwner === owner) this.#activeDeltaOwner = null;
+      if (this.#follower === owner) this.#follower = null;
     }
   }
 }

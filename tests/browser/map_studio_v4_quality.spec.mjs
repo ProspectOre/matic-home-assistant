@@ -116,7 +116,7 @@ test("a new session on the same floor waits for its scene even when pose arrives
     const { EffectController, WorkspaceStore, createGalleryState, workspacePoseConnection } = await import("/quality-modules.js");
     const initial = createGalleryState("ready");
     const store = new WorkspaceStore(initial);
-    const next = { ...initial.resources.entry, mapSessionKey: "c".repeat(64), deltaUrl: null };
+    const next = { ...initial.resources.entry, mapSessionKey: "c".repeat(64) };
     let releaseScene;
     const connection = workspacePoseConnection();
     const effects = new EffectController(store, {

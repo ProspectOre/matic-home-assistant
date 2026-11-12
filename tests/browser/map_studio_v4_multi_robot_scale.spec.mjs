@@ -4,7 +4,6 @@ import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 const entry = (id, slug, session) => ({
   entry_id: id,
   scene_url: `/api/matic_robot/slam_scene/${slug}`,
-  delta_url: null,
   history_url: `/api/matic_robot/slam_history/${slug}`,
   areas_url: `/api/matic_robot/areas/${slug}`,
   plans_url: `/api/matic_robot/plans/${slug}`,

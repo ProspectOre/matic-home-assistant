@@ -4,9 +4,14 @@ export const SCENE_HEADER_BYTES = 24;
 export const SCENE_POINT_STRIDE = 8;
 export const SCENE_MAX_POINTS = 1_500_000;
 export const SCENE_MAX_BYTES = 16 * 1024 * 1024;
-export const DELTA_HEADER_BYTES = 36;
-export const DELTA_MAX_BYTES = 16 * 1024 * 1024;
-export const SCENE_DELTA_DIRTY_BLOCK_BYTES = 65_536 as const;
+export const SCENE_DIRTY_BLOCK_BYTES = 65_536 as const;
+/** The live scene is a manifest of pages (slam_scene.py, client/slam_scene.py). */
+export const MANIFEST_HEADER_BYTES = 20;
+export const MANIFEST_PAGE_BYTES = 28;
+export const SCENE_MAX_PAGES = 4096;
+export const MANIFEST_MAX_BYTES = MANIFEST_HEADER_BYTES + 1024 * 1024 + SCENE_MAX_PAGES * MANIFEST_PAGE_BYTES;
+export const PAGE_POINT_BYTES = 6;
+export const PAGES_PER_REQUEST = 256;
 
 export type LoadStatus = "idle" | "loading" | "ready" | "empty" | "error";
 export type MapHealth = "ready" | "building" | "limited" | "problem" | "unknown";
@@ -21,7 +26,6 @@ export interface MapEntry {
   readonly entryId: string;
   readonly liveWorkspaceTransportEnabled: boolean;
   readonly sceneUrl: string;
-  readonly deltaUrl: string | null;
   readonly historyUrl: string;
   readonly areasUrl: string;
   readonly plansUrl: string;
@@ -144,6 +148,8 @@ export interface SceneModel {
   /** Optional spatial acceleration; absence never removes scene geometry. */
   readonly tileIndex?: SceneTileIndex;
   readonly source: "live" | "history";
+  /** The manifest a live scene was assembled from; its pages seed the next one. */
+  readonly manifest?: ArrayBuffer;
   readonly deltaHint?: SceneDeltaHint;
 }
 
@@ -566,9 +572,6 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
         "invalid-live-workspace-transport",
       ),
       sceneUrl: privatePath(entry.scene_url, "invalid-scene-url"),
-      deltaUrl: entry.delta_url === undefined || entry.delta_url === null
-        ? null
-        : privatePath(entry.delta_url, "invalid-delta-url"),
       historyUrl: privatePath(entry.history_url, "invalid-history-url"),
       areasUrl: privatePath(entry.areas_url, "invalid-areas-url"),
       plansUrl: privatePath(entry.plans_url, "invalid-plans-url"),

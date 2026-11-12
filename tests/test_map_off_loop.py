@@ -95,8 +95,9 @@ async def test_readers_match_the_full_decode_of_every_entry(
         assert decoded.identity == store.mission_identity
         assert decoded.tiles == tiles
         assert decoded.structure_tiles == structure_tiles
-        assert _encode_scene(decoded.tiles, plan).payload == encode_slam_scene(
-            tiles, floor_plan=plan
+        assert (
+            _encode_scene(decoded.tiles, plan, {}).manifest
+            == _encode_scene(tiles, plan, {}).manifest
         )
         assert _encode_history_scene(
             decoded.tiles, decoded.structure_tiles, plan

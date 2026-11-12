@@ -3,8 +3,9 @@ import { MAX_ROOM_SEQUENCE_SIZE, type FloorTypesLayer, type HassLike, type WifiS
 import {
   CATALOG_URL,
   ContractError,
-  DELTA_HEADER_BYTES,
-  DELTA_MAX_BYTES,
+  MANIFEST_MAX_BYTES,
+  PAGE_POINT_BYTES,
+  PAGES_PER_REQUEST,
   SCENE_MAX_BYTES,
   isPrivatePath,
   parseCatalog,
@@ -18,7 +19,7 @@ import {
   type PlansCatalog,
   type SceneModel,
 } from "./backend-contracts";
-import { SceneParser as SceneParserImplementation, type SceneParser } from "./scene-parser";
+import { SceneParser as SceneParserImplementation, manifestPages, type PageBatch, type SceneParser } from "./scene-parser";
 import {
   BackendRequestDiagnosticsStore,
   type BackendRequestDiagnostics,
@@ -30,7 +31,6 @@ import {
 const REQUEST_TIMEOUTS = {
   catalog: 10_000,
   scene: 60_000,
-  delta: 35_000,
   history: 15_000,
   runs: 25_000,
   workflow: 15_000,
@@ -181,7 +181,8 @@ export class MaticBackend {
     signal: AbortSignal | undefined,
     consume: (response: Response, signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
-    if (!isPrivatePath(path)) throw new BackendError("invalid-private-path");
+    // The query (page addresses, a revision) is built here, not taken from the server.
+    if (!isPrivatePath(path.split("?", 1)[0])) throw new BackendError("invalid-private-path");
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const started = performance.now();
     let outcome: BackendRequestOutcome = "failed";
@@ -205,7 +206,7 @@ export class MaticBackend {
       // Home Assistant's fetchWithAuth wrapper merges plain header records when it
       // injects the bearer token. Passing a native Headers instance works with the
       // browser fetch API but can bypass that merge and produce an unauthenticated
-      // request for binary scene and delta resources.
+      // request for binary scene and page resources.
       const headers = new Headers(init.headers);
       const requestInit: RequestInit = {
         ...init,
@@ -294,27 +295,45 @@ export class MaticBackend {
     return parseCatalog(await this.#json("catalog", CATALOG_URL, REQUEST_TIMEOUTS.catalog, signal));
   }
 
+  /**
+   * Reads a saved scene, or a live manifest and the pages `base` lacks. With
+   * `since`, the server holds the request until the revision moves on and
+   * answers 204 when it does not.
+   */
   async scene(
     path: string,
     expectedRevision: number,
     expectedFloorCoherent: boolean,
     source: "live" | "history",
     signal?: AbortSignal,
-    etag?: string | null,
+    follow: { readonly since?: number; readonly base?: SceneModel | null } = {},
   ): Promise<SceneResponse> {
     const parser = this.#sceneParser();
     void parser.catch(() => {});
-    const headers = new Headers({ Accept: "application/vnd.matic.slam-scene" });
-    if (source === "live") headers.set("X-Matic-Prefer-Cached", "1");
-    if (etag) headers.set("If-None-Match", etag);
-    return this.#request("scene", path, { headers }, REQUEST_TIMEOUTS.scene, signal, async (response, operationSignal) => {
+    const headers = new Headers({ Accept: "application/vnd.matic.slam-manifest, application/vnd.matic.slam-scene" });
+    if (source === "live" && follow.since === undefined) headers.set("X-Matic-Prefer-Cached", "1");
+    const query = follow.since === undefined ? "" : `?since=${encodeURIComponent(follow.since)}`;
+    return this.#request("scene", `${path}${query}`, { headers }, REQUEST_TIMEOUTS.scene, signal, async (response, operationSignal) => {
       const revision = responseRevision(response, expectedRevision);
       const floorCoherent = floorHeader(response, expectedFloorCoherent);
-      if (response.status === 304) {
+      if (response.status === 204 || response.status === 304) {
         return { scene: null, floorCoherent, revision, notModified: true };
       }
       if (!response.ok) throw new BackendError("scene-request-failed", response.status);
       const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
+      const etag = response.headers.get("ETag");
+      if (contentType === "application/vnd.matic.slam-manifest") {
+        const manifest = await this.#readBody(response, operationSignal, MANIFEST_MAX_BYTES, "invalid-scene-manifest");
+        const base = follow.base?.manifest ? follow.base : null;
+        const batches = await this.#scenePages(path, manifest, base, operationSignal);
+        const { parsed, deltaHint } = await (await parser).assemble(manifest, batches, base, operationSignal);
+        return {
+          scene: { ...parsed, revision, etag, source, manifest, ...(deltaHint ? { deltaHint } : {}) },
+          floorCoherent,
+          revision,
+          notModified: false,
+        };
+      }
       if (contentType !== "application/vnd.matic.slam-scene") {
         throw new ContractError("invalid-scene-content-type");
       }
@@ -323,12 +342,7 @@ export class MaticBackend {
         operationSignal,
       );
       return {
-        scene: {
-          ...parsed,
-          revision,
-          etag: response.headers.get("ETag"),
-          source,
-        },
+        scene: { ...parsed, revision, etag, source },
         floorCoherent,
         revision,
         notModified: false,
@@ -336,81 +350,40 @@ export class MaticBackend {
     });
   }
 
-  async sceneDelta(
+  /** Fetches, four requests at a time, the pages of `manifest` that `base` lacks. */
+  async #scenePages(
     path: string,
-    base: SceneModel,
-    expectedFloorCoherent: boolean,
-    signal?: AbortSignal,
-  ): Promise<SceneResponse> {
-    const parser = this.#sceneParser();
-    void parser.catch(() => {});
-    const separator = path.includes("?") ? "&" : "?";
-    return this.#request(
-      "sceneDelta",
-      `${path}${separator}since=${encodeURIComponent(base.revision)}`,
-      { headers: { Accept: "application/vnd.matic.slam-delta, application/vnd.matic.slam-scene" } },
-      REQUEST_TIMEOUTS.delta,
-      signal,
-      async (response, operationSignal) => {
-        const revision = responseRevision(response, base.revision);
-        const floorCoherent = floorHeader(response, expectedFloorCoherent);
-        if (response.status === 204) {
-          if (revision !== base.revision) throw new ContractError("invalid-scene-delta-revision");
-          return { scene: null, floorCoherent, revision, notModified: true };
-        }
-        if (!response.ok) throw new BackendError("delta-request-failed", response.status);
-        if (revision <= base.revision) throw new ContractError("invalid-scene-delta-revision");
-        const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
-        if (contentType !== "application/vnd.matic.slam-delta"
-          && contentType !== "application/vnd.matic.slam-scene") {
-          throw new ContractError("invalid-scene-delta-content-type");
-        }
-        const deltaPayload = contentType === "application/vnd.matic.slam-delta";
-        const maxResponseBytes = deltaPayload ? DELTA_HEADER_BYTES + DELTA_MAX_BYTES : SCENE_MAX_BYTES;
-        const declaredLength = Number(response.headers.get("Content-Length"));
-        if (Number.isFinite(declaredLength) && declaredLength > maxResponseBytes) {
-          throw new ContractError(deltaPayload ? "invalid-scene-delta-size" : "invalid-scene-size");
-        }
-        const payload = await this.#readBody(
-          response,
-          operationSignal,
-          maxResponseBytes,
-          deltaPayload ? "invalid-scene-delta-size" : "invalid-scene-size",
-        );
-        if (deltaPayload) {
-          const baseHeader = Number(response.headers.get("X-Matic-Base-Revision"));
-          if (!Number.isSafeInteger(baseHeader) || baseHeader !== base.revision) {
-            throw new ContractError("invalid-scene-delta-base");
-          }
-          const decoded = await (await parser).decodeDelta(payload, base, operationSignal);
-          if (decoded.revision !== revision) throw new ContractError("invalid-scene-delta-revision");
-          return {
-            scene: {
-              ...decoded.parsed,
-              revision,
-              etag: response.headers.get("ETag"),
-              source: "live",
-              ...(decoded.deltaHint ? { deltaHint: decoded.deltaHint } : {}),
-            },
-            floorCoherent,
-            revision,
-            notModified: false,
-          };
-        }
-        const parsed = await (await parser).parse(payload, operationSignal);
-        return {
-          scene: {
-            ...parsed,
-            revision,
-            etag: response.headers.get("ETag"),
-            source: "live",
-          },
-          floorCoherent,
-          revision,
-          notModified: false,
-        };
-      },
-    );
+    manifest: ArrayBuffer,
+    base: SceneModel | null,
+    signal: AbortSignal,
+  ): Promise<PageBatch[]> {
+    const known = new Set(base?.manifest ? manifestPages(base.manifest).map((page) => page.id) : []);
+    const wanted = new Map<string, number>();
+    for (const page of manifestPages(manifest)) {
+      const bytes = (page.floor + page.surface) * PAGE_POINT_BYTES;
+      if (bytes > 0 && !known.has(page.id)) wanted.set(page.id, bytes);
+    }
+    const ids = [...wanted.keys()];
+    const groups: string[][] = [];
+    for (let start = 0; start < ids.length; start += PAGES_PER_REQUEST) groups.push(ids.slice(start, start + PAGES_PER_REQUEST));
+    const batches: PageBatch[] = [];
+    for (let start = 0; start < groups.length; start += 4) {
+      batches.push(...await Promise.all(groups.slice(start, start + 4).map((group) => this.#request(
+        "scenePages",
+        `${path}/pages?ids=${group.join(",")}`,
+        { headers: { Accept: "application/octet-stream" } },
+        REQUEST_TIMEOUTS.scene,
+        signal,
+        async (response, operationSignal) => {
+          if (!response.ok) throw new BackendError("scene-pages-request-failed", response.status);
+          const length = group.reduce((sum, id) => sum + (wanted.get(id) ?? 0), 0);
+          const body = await this.#readBody(response, operationSignal, length, "invalid-scene-pages");
+          if (body.byteLength !== length) throw new ContractError("invalid-scene-pages");
+          return { ids: group, body };
+        },
+      ))));
+    }
+    return batches;
   }
 
   async history(path: string, signal?: AbortSignal): Promise<HistoryCatalog> {

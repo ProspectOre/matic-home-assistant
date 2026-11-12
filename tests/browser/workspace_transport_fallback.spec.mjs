@@ -37,7 +37,7 @@ async function setup(page, failureMode) {
 
     const entry = { ...syntheticEntry(), runnerLocked: true, activePlan: true };
     const wireEntry = {
-      entry_id: entry.entryId, scene_url: entry.sceneUrl, delta_url: null,
+      entry_id: entry.entryId, scene_url: entry.sceneUrl,
       history_url: entry.historyUrl, areas_url: entry.areasUrl, plans_url: entry.plansUrl,
       map_revision: entry.mapRevision, map_floor_coherent: entry.mapFloorCoherent,
       map_session_verified: entry.mapSessionVerified, map_session_key: entry.mapSessionKey,

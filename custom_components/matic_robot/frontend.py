@@ -32,7 +32,7 @@ from .slam_history_view import (
     MaticSlamHistoryView,
 )
 from .slam_run_history_view import MaticRunHistoryView
-from .slam_scene import MaticSlamDeltaView, MaticSlamSceneView
+from .slam_scene import MaticSlamScenePagesView, MaticSlamSceneView
 from .wifi_survey import MaticWifiHeatmapView
 from .workspace_socket import async_register as async_register_workspace_socket
 
@@ -146,7 +146,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     run_thumbnail_view = MaticRunThumbnailView()
     hass.data[DATA_RUN_THUMBNAIL_VIEW] = run_thumbnail_view
     hass.http.register_view(scene_view)
-    hass.http.register_view(MaticSlamDeltaView(scene_view))
+    hass.http.register_view(MaticSlamScenePagesView(scene_view))
     hass.http.register_view(MaticSlamHistoryView)
     hass.http.register_view(MaticSlamHistorySceneView)
     hass.http.register_view(MaticSlamHistoryManageView)

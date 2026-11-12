@@ -37,20 +37,21 @@ test(`${scenario.name} pushed pose is ordered against the admitted map revision`
       ...initial.resources.entry,
       mapRevision: startRevision,
       mapSessionKey: "b".repeat(64),
-      deltaUrl: "/pose-ordering-delta",
     };
     const store = new WorkspaceStore(initial);
     const connection = workspacePoseConnection();
-    let admitDelta;
-    let deltaRead = 0;
+    let admitUpdate;
+    let followRead = 0;
+    // A manifest scene is followed; the first follow read admits the next revision.
     const effects = new EffectController(store, {
       catalog: async () => [entry],
-      scene: async () => ({ revision: startRevision, floorCoherent: true, scene: initial.resources.scene.value }),
-      sceneDelta: async () => {
-        deltaRead += 1;
-        if (deltaRead === 1) return new Promise(resolve => {
-          admitDelta = () => resolve({ revision: startRevision + 1, floorCoherent: true,
-            scene: { ...initial.resources.scene.value, advanced: true } });
+      scene: async (_url, _revision, _floorCoherent, _source, _signal, follow = {}) => {
+        if (follow.since === undefined) return { revision: startRevision, floorCoherent: true,
+          scene: { ...initial.resources.scene.value, manifest: new ArrayBuffer(1) } };
+        followRead += 1;
+        if (followRead === 1) return new Promise(resolve => {
+          admitUpdate = () => resolve({ revision: startRevision + 1, floorCoherent: true,
+            scene: { ...initial.resources.scene.value, manifest: new ArrayBuffer(1), advanced: true } });
         });
         return new Promise(() => {});
       },
@@ -65,9 +66,9 @@ test(`${scenario.name} pushed pose is ordered against the admitted map revision`
     try {
       await effects.refreshCatalog(true);
       // The pose subscription opens once the map is drawn.
-      for (let i = 0; i < 200 && (!connection.subscribed() || !admitDelta); i++) await new Promise(resolve => setTimeout(resolve, 10));
-      if (!connection.subscribed() || !admitDelta) throw new Error("pose subscription or delta request did not start");
-      admitDelta();
+      for (let i = 0; i < 200 && (!connection.subscribed() || !admitUpdate); i++) await new Promise(resolve => setTimeout(resolve, 10));
+      if (!connection.subscribed() || !admitUpdate) throw new Error("pose subscription or follow request did not start");
+      admitUpdate();
       for (let i = 0; i < 100 && store.value.resources.entry.mapRevision !== startRevision + 1; i++) await new Promise(resolve => setTimeout(resolve, 0));
       const admittedGeneration = store.value.generation;
       connection.push({

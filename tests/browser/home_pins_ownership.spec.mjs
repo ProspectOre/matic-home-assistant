@@ -67,7 +67,7 @@ async function setup(page, stores) {
         return answer();
       },
     };
-    const entry = (entryId) => ({ ...syntheticEntry(), entryId, deltaUrl: null });
+    const entry = (entryId) => ({ ...syntheticEntry(), entryId });
     const backend = {
       catalog: async () => h.catalogEntries ?? [entry("synthetic-entry"), entry("entry-b")],
       plans: async () => {

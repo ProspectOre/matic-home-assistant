@@ -11,7 +11,7 @@ interface CatalogResourceCallbacks {
   readonly pageActive: () => boolean;
   readonly projection: () => HassProjection | null;
   readonly recoveryPending: (entry: MapEntry) => boolean;
-  readonly ownsLiveDelta: (entry: MapEntry) => boolean;
+  readonly ownsLiveScene: (entry: MapEntry) => boolean;
   readonly admitSpatial: (entry: MapEntry, previous: MapEntry | null, force: boolean, preserve: boolean, recovering: boolean) => void;
   readonly syncWorkspace: () => void;
   readonly clearPrivate: (problem: string, entryId: string | null) => void;
@@ -142,17 +142,17 @@ export class CatalogResources {
       }
       const sameIdentity = Boolean(selected && currentEntry
         && entryCoherenceIdentity(selected) === entryCoherenceIdentity(currentEntry));
-      const deltaOwnsContent = Boolean(sameIdentity && currentEntry && this.#callbacks.ownsLiveDelta(currentEntry));
+      const followerOwnsContent = Boolean(sameIdentity && currentEntry && this.#callbacks.ownsLiveScene(currentEntry));
       if (selected
         && currentEntry
         && sameIdentity
-        && (deltaOwnsContent
+        && (followerOwnsContent
           || selected.mapRevision < currentEntry.mapRevision
           || (!force && this.#requests.has("scene")))) {
-        // The catalog can lead an active delta owner: its pixel revision is a
-        // content hint, while the delta loop admits pixels into this scene.
+        // The catalog can lead an active scene follower: its pixel revision is a
+        // content hint, while the follower admits pixels into this scene.
         // Also preserve the admitted revision if an older catalog races a
-        // completed delta, or while the initial full scene is downloading.
+        // completed revision, or while the initial full scene is downloading.
         selected = { ...selected, mapRevision: currentEntry.mapRevision };
       }
       this.#store.dispatch({

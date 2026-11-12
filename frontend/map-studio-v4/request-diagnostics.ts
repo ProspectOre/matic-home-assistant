@@ -3,7 +3,7 @@
 export const BACKEND_REQUEST_OPERATIONS = [
   "catalog",
   "scene",
-  "sceneDelta",
+  "scenePages",
   "history",
   "plans",
   "areas",

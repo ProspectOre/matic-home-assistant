@@ -150,7 +150,7 @@ test("history camera resets on a new selection and owner while live preferences 
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/live-camera.js");
     const initial = createGalleryState("ready");
-    const entry = { ...initial.resources.entry, deltaUrl: null };
+    const entry = { ...initial.resources.entry };
     const store = new WorkspaceStore(initial);
     const effects = new EffectController(store, {
       catalog: async () => [entry],
