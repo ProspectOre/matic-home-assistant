@@ -506,10 +506,10 @@ async def _async_execute_rooms_reserved(
                         robot.session_history
                     )
                     await advance(LegVerified(index + 1, handoff_keys))
-            completed_room_count = len(run.completed_room_ids)
-            # Every room verified and every custom area's own mission ended.
+            # Every room has a result and every custom area's own mission ended.
             all_entries_done = (
-                completed_room_count == len(chosen)
+                run.completed_room_ids | run.settled_room_ids
+                == {room.room_id for room in chosen}
                 and len(run.finished_area_legs) == area_leg_count
             )
             if finish_room_event.is_set() and not all_entries_done:
@@ -520,7 +520,7 @@ async def _async_execute_rooms_reserved(
                 mark_managed_stop(serial_number)
             elif all_entries_done:
                 run_outcome = "completed"
-                run_reason_code = "all_rooms_verified"
+                run_reason_code = run.end_reason
                 run_cause = "verified_completion"
             else:
                 run_outcome = "unverified"

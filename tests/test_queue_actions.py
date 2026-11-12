@@ -29,6 +29,7 @@ from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
+from custom_components.matic_robot.run_machine import RoomSettled
 from custom_components.matic_robot.verified_completion import global_room
 from tests.session_fakes import FakeRobot, run_step
 from tests.test_entities import _entry
@@ -351,12 +352,13 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         run_id="run-1",
         floor_token="floor",
         checkpoint_dispatch=AsyncMock(),
-        advance=run_step,
+        advance=(advance := AsyncMock(side_effect=run_step)),
     )
     await hass.async_block_till_done()
 
     # The skipped room is settled, so the run goes on to its next leg.
     assert completed is True
+    advance.assert_any_await(RoomSettled("room-office"))
     manager.ledger.async_mark_ended_unverified.assert_not_awaited()
     manager.ledger.async_mark_skipped.assert_awaited_once_with(
         "serial", "away", rooms[1], run_id="run-1"
