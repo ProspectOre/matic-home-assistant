@@ -1703,11 +1703,11 @@ async def test_plan_tool_previews_custom_areas_in_run_order(hass) -> None:
     assert "runnable" not in rooms_only
     assert [leg["rooms"][0]["id"] for leg in rooms_only["legs"]] == ["kitchen"]
 
+    # Smart Stop ends the shared mission early instead of splitting it.
     smart_rooms = await plan_preview("smart-rooms")
-    assert smart_rooms["settings_boundary_count"] == 1
+    assert smart_rooms["settings_boundary_count"] == 0
     assert [[room["id"] for room in leg["rooms"]] for leg in smart_rooms["legs"]] == [
-        ["kitchen"],
-        ["study"],
+        ["kitchen", "study"]
     ]
 
     # A redrawn map or a deleted area stops the preview with its reason.

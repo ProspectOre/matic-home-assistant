@@ -404,6 +404,8 @@ class QueueAction(StrEnum):
     SKIP = "skip"
     CLEAN_NEXT = "clean_next"
     CLEAN_AGAIN = "clean_again"
+    # Every waiting room skipped at once: the clean ends after the current room.
+    END_AFTER_CURRENT = "end_after_current"
 
 
 class QueueChangeError(ValueError):
@@ -467,7 +469,11 @@ def requeue_coverage_goals(
             visits.append((goal.region_id, [goal]))
     queue = visits[queue_start_visit(visits, current_region) :]
     queued = [region for region, _goals in queue]
-    if action is QueueAction.SKIP:
+    if action is QueueAction.END_AFTER_CURRENT:
+        if len(queue) == 1:
+            raise QueueChangeError("last_room")
+        del queue[1:]
+    elif action is QueueAction.SKIP:
         if target_region not in queued:
             raise QueueChangeError("room_not_queued")
         if len(queue) == 1:

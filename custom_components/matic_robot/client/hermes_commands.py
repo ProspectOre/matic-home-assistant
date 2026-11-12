@@ -307,20 +307,20 @@ class HermesCommands:
         self,
         floor_plan: FloorPlan,
         action: QueueAction,
-        room: Room,
+        room: Room | None,
         *,
         cleaning_mode: CleaningMode | None = None,
         coverage_setting: CoverageSetting | None = None,
+        expected: bytes | None = None,
     ) -> None:
-        """Skip, bring forward or repeat a room in the clean that is running.
+        """Change the queue of the running clean, only mission ``expected`` if set.
 
-        Like the app's queue sheet, this resends the goals from the current
-        room onward under the task's own session ID, then waits until the
-        robot's plan holds every goal sent and none of the goals left out.
+        Like the app's queue sheet, resend the goals from the current room on under
+        the task's session ID; wait until the plan holds them and no dropped goal.
         """
         identity = await self._reads.async_get_cleaning_session_identity()
         active = await self._reads.async_get_active_cleaning_session_state()
-        if not identity or active is not True:
+        if not identity or active is not True or expected not in (None, identity):
             raise QueueChangeError("no_clean_running")
         try:
             session_id = uuid_string(identity)
@@ -345,7 +345,7 @@ class HermesCommands:
             [CoverageUpdateGoal(goal.round_id, *goal.signature) for goal in plan],
             action=action,
             current_region=current[0],
-            target_region=room.protocol_id,
+            target_region=current[0] if room is None else room.protocol_id,
             cleaning_mode=cleaning_mode,
             coverage_setting=coverage_setting,
         )
