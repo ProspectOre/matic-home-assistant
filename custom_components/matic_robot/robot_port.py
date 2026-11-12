@@ -27,6 +27,8 @@ class RobotPort:
     """
 
     start: Callable[[PlanStart], Awaitable[None]]
+    # Skips the rooms still waiting in the run's mission: (floor token, identity).
+    end_after_current_room: Callable[[str, bytes], Awaitable[None]]
     state: Store[LiveState]
     error: Store[Exception | None]
     refresh: Callable[[], Awaitable[None]]
@@ -47,8 +49,10 @@ class RobotPort:
         client = entry.runtime_data.client
         heartbeat = session.heartbeat
         journal = client.activity_journal
+        commands = RobotCommands(hass, entry, entity_id)
         return cls(
-            start=RobotCommands(hass, entry, entity_id).async_start_plan_leg,
+            start=commands.async_start_plan_leg,
+            end_after_current_room=commands.async_end_after_current_room,
             state=session.state,
             error=session.error,
             refresh=heartbeat.async_request_refresh,

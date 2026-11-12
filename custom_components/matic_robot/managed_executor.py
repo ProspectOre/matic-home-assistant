@@ -193,8 +193,12 @@ async def _async_execute_rooms_reserved(
             finish_room_event = manager.control.finish_room_event(serial_number)
             if checkpoint.get("stop_intent") == "after_room":
                 finish_room_event.set()
-            single_room_missions = finish_current_room and (
-                recovery is None or checkpoint.get("single_room_missions") is True
+            # Older Smart Stop runs ran each room as its own mission; a
+            # recovered one keeps that grouping.
+            single_room_missions = (
+                finish_current_room
+                and recovery is not None
+                and checkpoint.get("single_room_missions") is True
             )
             chosen = rooms
             leg_entries = (
@@ -276,11 +280,9 @@ async def _async_execute_rooms_reserved(
                 checkpoint = {
                     "version": 1,
                     "mixed_settings": True,
-                    # New Smart Stop runs must never place later rooms in the
-                    # same OEM mission, where a boundary STOP can arrive late.
-                    # Missing marker on older checkpoints preserves their
-                    # recorded mission grouping exactly during recovery.
-                    "single_room_missions": bool(finish_current_room),
+                    # A Smart Stop now ends the mission after its current
+                    # room through the robot's queue, so rooms share missions.
+                    "single_room_missions": False,
                     "entity_id": entity_id,
                     "floor_token": floor_token,
                     "rooms": [asdict(room) for room in chosen],

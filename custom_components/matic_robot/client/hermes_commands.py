@@ -307,7 +307,7 @@ class HermesCommands:
         self,
         floor_plan: FloorPlan,
         action: QueueAction,
-        room: Room,
+        room: Room | None,
         *,
         cleaning_mode: CleaningMode | None = None,
         coverage_setting: CoverageSetting | None = None,
@@ -345,7 +345,7 @@ class HermesCommands:
             [CoverageUpdateGoal(goal.round_id, *goal.signature) for goal in plan],
             action=action,
             current_region=current[0],
-            target_region=room.protocol_id,
+            target_region=current[0] if room is None else room.protocol_id,
             cleaning_mode=cleaning_mode,
             coverage_setting=coverage_setting,
         )

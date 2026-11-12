@@ -27,8 +27,7 @@ is not recorded.
 ## Plans
 
 A plan runs in one or more parts ([how a plan runs](cleaning.md#how-a-plan-runs)):
-consecutive rooms share one, each custom area gets its own, and with Smart Stop
-on each room gets its own. Each room is checked against the robot's record of
+consecutive rooms share one and each custom area gets its own. Each room is checked against the robot's record of
 the part that plan started, so a partly finished part counts only its completed
 rooms.
 
@@ -73,10 +72,11 @@ an older completed one.
 ## Rooms the robot could not reach
 
 When a plan sends the robot to a room it cannot enter, such as one behind a
-closed door, the robot ends that clean and docks. The integration reads the
-record of the clean it started: a single-room record that finished with every
-requested mode **unattempted** means the room was unreachable. The Matic app
-shows the same record as **Area inaccessible**.
+closed door, the robot leaves it out. The integration reads the record of the
+clean it started: a record that finished with every requested mode of a room
+**unattempted** means that room was unreachable. The Matic app shows a
+single-room record like that as **Area inaccessible**. A room the plan took out
+of the queue for Smart Stop, or the owner skipped, is not unreachable.
 
 The room closes as **Couldn't reach** without credit and stays due, and the
 plan moves on to the next room. `matic_robot_room_skipped` fires with

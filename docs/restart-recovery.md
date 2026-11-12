@@ -18,8 +18,10 @@ A plan runs as one or more robot missions, called legs. `plan_legs` and
 - Each custom area is its own mission. The robot heads for its dock afterwards,
   and the next leg starts once the area's mission has ended and the robot is
   returning, idle or docked.
-- With Smart Stop (finish current room) on, each room is its own mission, so a
-  Stop at a room boundary can't let the next room start.
+- Smart Stop (finish current room) takes the waiting rooms out of the robot's
+  queue, and the robot ends the mission after its current room. A run an
+  earlier version saved with one mission per room keeps that split when it
+  recovers.
 
 A room leg is one start followed by a settings update per room. The update is
 sent only to the mission the run generated, on the map it started with, while

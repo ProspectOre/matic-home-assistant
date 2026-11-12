@@ -132,6 +132,18 @@ class RobotCommands:
             managed_session_id=command.session_id,
         )
 
+    async def async_end_after_current_room(
+        self, floor_token: str, identity: bytes
+    ) -> None:
+        """Skip the rooms still waiting in a plan run's own mission ``identity``.
+
+        The robot finishes the room it is in and ends the mission. Raises
+        QueueChangeError when no room waits or the mission is not running.
+        """
+        await self._session.client.async_end_after_current_room(
+            self.current_floor_plan(floor_token), identity
+        )
+
     def require_motion_generation(
         self, serial_number: str, generation: int | None
     ) -> None:

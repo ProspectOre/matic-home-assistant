@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -11,6 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from .client.coverage_receipts import native_session_hash
 from .client.models import CleaningSession, CleaningSessionRecord
+from .plan_model import CleaningRoom
 
 LegacyCompletionPolicy = Literal["aggregate", "room_list"]
 
@@ -138,6 +139,71 @@ _REQUESTED_MODES = {
 }
 
 
+def room_unreached(
+    session: CleaningSession, room_name: str, cleaning_mode: str | None
+) -> bool:
+    """Return whether a finished mission left the room unattempted.
+
+    The OEM app titles a ``Finished`` stop reason "Area inaccessible" when the
+    requested room stayed unattempted (Matic 1.183.1). A cancelled, unknown or
+    partly attempted record is never unreachable: the robot reached the room,
+    or someone stopped the mission.
+    """
+    requested = _REQUESTED_MODES.get(cleaning_mode or "")
+    if requested is None or session.stop_reason != "finished":
+        return False
+    target = native_room_key(room_name)
+    results = [
+        result
+        for result in session.mode_results
+        if native_room_key(result.room) == target
+    ]
+    return (
+        bool(results)
+        and {result.cleaning_mode for result in results} == requested
+        and all(result.status == "unattempted" for result in results)
+    )
+
+
+def leg_room_results(
+    session: CleaningSession,
+    rooms: Sequence[CleaningRoom],
+    room_ids: Collection[str],
+) -> tuple[dict[str, tuple[str, int]], set[str]]:
+    """Return a leg record's credit for ``room_ids`` and the rooms it left unreached.
+
+    Credit maps ``room_id -> (ended_at, duration_seconds)`` for each room the
+    record marks completed with a positive duration.
+    """
+    ended_at = session.ended_at
+    assert isinstance(ended_at, str)
+    evidence: dict[str, tuple[str, int]] = {}
+    unreached: set[str] = set()
+    for room in rooms:
+        if room.room_id not in room_ids:
+            continue
+        name = room.name.strip().casefold()
+        durations = {
+            name.strip().casefold(): duration
+            for name, duration in session.room_durations_for_mode(room.cleaning_mode)
+        }
+        completed_names = {
+            name.strip().casefold()
+            for name in session.completed_rooms_for_mode(room.cleaning_mode)
+        }
+        duration = durations.get(name)
+        if (
+            name in completed_names
+            and isinstance(duration, int)
+            and not isinstance(duration, bool)
+            and duration > 0
+        ):
+            evidence[room.room_id] = (ended_at, duration)
+        elif room_unreached(session, room.name, room.cleaning_mode):
+            unreached.add(room.room_id)
+    return evidence, unreached
+
+
 def match_single_room_unreachable(
     records: Iterable[CleaningSessionRecord],
     *,
@@ -147,38 +213,18 @@ def match_single_room_unreachable(
     now: datetime,
     baseline: Collection[bytes] | None = None,
 ) -> tuple[CleaningSessionRecord, ...]:
-    """Return at most two records proving the robot could not reach a room.
-
-    The OEM app titles a ``Finished`` stop reason "Area inaccessible" when the
-    requested room stayed unattempted (Matic 1.183.1). A cancelled, unknown or
-    partly attempted record is never unreachable: the robot reached the room,
-    or someone stopped the mission.
-    """
+    """Return at most two one-room records proving the robot could not reach it."""
     target = native_room_key(room_name)
-    requested = _REQUESTED_MODES.get(cleaning_mode or "")
-    if requested is None:
-        return ()
     matches: list[CleaningSessionRecord] = []
     for record in records:
         if baseline is not None and record.key in baseline:
             continue
         session = record.session
-        if session.stop_reason != "finished":
-            continue
         if not session_overlaps_dispatch(session, dispatched_at, now):
             continue
         if tuple(native_room_key(name) for name in session.rooms) != (target,):
             continue
-        results = [
-            result
-            for result in session.mode_results
-            if native_room_key(result.room) == target
-        ]
-        if (
-            not results
-            or {result.cleaning_mode for result in results} != requested
-            or any(result.status != "unattempted" for result in results)
-        ):
+        if not room_unreached(session, room_name, cleaning_mode):
             continue
         matches.append(record)
         if len(matches) == 2:

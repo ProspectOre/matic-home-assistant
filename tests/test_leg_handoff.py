@@ -16,13 +16,14 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import PlanStart
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, one_room_missions
 from tests.test_unreachable_room import KITCHEN, STUDY, _events, _session
 from tests.wire_builders import _session_identity
 
 
 @pytest.fixture(autouse=True)
 def fast_polls(monkeypatch):
+    one_room_missions(monkeypatch)
     for name, value in (
         ("ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS", 0.001),
         ("SESSION_HISTORY_RETRY_SECONDS", 0),

@@ -112,7 +112,7 @@ from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from custom_components.matic_robot.service_context import (
     _entry_for_entity,
 )
-from tests.session_fakes import FakeRobot, robot_port, run_step
+from tests.session_fakes import FakeRobot, one_room_missions, robot_port, run_step
 from tests.wire_builders import _session_identity
 
 
@@ -9577,8 +9577,9 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
     sender.assert_not_awaited()
 
 
-async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
+async def test_execute_rooms_stops_after_unverified_room(hass, monkeypatch) -> None:
     """A terminal room without native completion never dispatches the next room."""
+    one_room_missions(monkeypatch)
     robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -9588,7 +9589,6 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
     ]
     managed_command = AsyncMock()
     robot.show("idle")
-    # Smart Stop keeps each room in its own native mission.
     manager.repository.robot("serial")["plans"]["away"] = {"finish_current_room": True}
 
     with patch(
@@ -9879,7 +9879,7 @@ async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
         lock.release()
 
 
-async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None:
+async def test_new_smart_stop_run_shares_one_native_mission(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["plans"]["away"] = {
@@ -9896,9 +9896,10 @@ async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None
 
     async def complete_leg(*args, **kwargs) -> bool:
         checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
-        assert checkpoint["single_room_missions"] is True
+        assert checkpoint["single_room_missions"] is False
         observed.append(args[5])
-        kwargs["record_room_completed"](args[5][0])
+        for room in args[5]:
+            kwargs["record_room_completed"](room)
         return True
 
     with (
@@ -9927,7 +9928,7 @@ async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None
             floor_token="a" * 64,
         )
 
-    assert observed == [[rooms[0]], [rooms[1]]]
+    assert observed == [rooms]
 
 
 async def test_smart_stop_pending_is_public_only_for_owned_run(hass) -> None:

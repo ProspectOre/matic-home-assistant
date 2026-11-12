@@ -34,7 +34,7 @@ from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import PlanStart
 from custom_components.matic_robot.run_history import run_ending, run_rooms
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, one_room_missions
 from tests.wire_builders import _session_identity
 
 KITCHEN = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
@@ -44,6 +44,7 @@ REPLACEMENT = b"synthetic-oem-session"
 
 @pytest.fixture(autouse=True)
 def fast_polls(monkeypatch):
+    one_room_missions(monkeypatch)
     for name, value in (
         ("ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS", 0.001),
         ("SESSION_HISTORY_RETRY_SECONDS", 0),
@@ -202,7 +203,6 @@ class _Robot:
 async def _run_plan(hass, robot: _Robot):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    # Smart Stop keeps each room in its own native mission.
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "finish_current_room": True
     }

@@ -37,8 +37,6 @@ A plan runs in one or more parts, and the Run view says when there are several:
   settings. It may still stop at the dock on its own to recharge or refill.
 - Each custom area is a part of its own. After an area, the robot heads back
   to the dock, and the next room or area usually starts from there.
-- With **Smart Stop** on, each room is also a part of its own, so pressing Stop
-  never lets the next room begin.
 
 So "Kitchen, Rug, Hall" runs in three parts, usually with two dock trips, while
 "Kitchen, Hall, Rug" runs in two. To keep dock trips down, put custom areas at
@@ -79,6 +77,8 @@ the plan uses its progress threshold:
 
 - Below the threshold: stop now.
 - At or above it: finish the current room, then dock without starting another.
+  The plan takes the waiting rooms out of the robot's own queue, so it ends
+  the clean itself after the room it is in.
 - Custom areas, and rooms with no learned time yet, finish first. Use **0%**
   to always finish the current room.
 
