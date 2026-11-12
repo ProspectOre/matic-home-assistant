@@ -32,11 +32,13 @@ from custom_components.matic_robot.client.slam_tiles import (
 )
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.http import SCENE_API_URL, SCENE_PAGES_API_URL
+from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_scene import (
     MaticSlamScenePagesView,
     MaticSlamSceneView,
     _encode_scene,
 )
+from custom_components.matic_robot.slam_view_data import catalog_entry_projection
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
 from tests.slam_textured_map import textured_map, textured_photo_entry
 from tests.test_map_off_loop import _plan
@@ -314,6 +316,22 @@ async def test_socket_scene_revision_is_the_one_the_manifest_view_serves() -> No
     assert pushed() == 10
     assert floor_change.headers["X-Matic-Revision"] == "10"
     assert floor_change.headers["X-Matic-Floor-Coherent"] == "0"
+
+
+async def test_catalog_advertises_the_revision_a_cached_scene_lags() -> None:
+    """A panel without the socket learns of the new map from the catalog."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    catalog = MaticSlamCatalogView(view)
+    await view.get(_request(hass), "entry")
+
+    runtime.slam_map.revision = 8
+    entry = json.loads((await catalog.get(_request(hass))).body)["entries"][0]
+
+    assert entry["map_revision"] == 7
+    assert entry["scene_revision"] == 8 == view.current_revision("entry", runtime)
+    assert catalog_entry_projection("entry", runtime)["scene_revision"] is None
 
 
 _BROWSER_FIXTURE = Path(__file__).parent / "fixtures" / "scene_manifest_v1.json"

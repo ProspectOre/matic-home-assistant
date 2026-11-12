@@ -144,7 +144,7 @@ export class CatalogResources {
       const sameIdentity = Boolean(selected && currentEntry
         && entryCoherenceIdentity(selected) === entryCoherenceIdentity(currentEntry));
       const liveSceneOwnsContent = Boolean(sameIdentity && currentEntry && this.#callbacks.ownsLiveScene(currentEntry));
-      const catalogRevision = selected?.mapRevision ?? -1;
+      const catalogRevision = selected?.sceneRevision ?? selected?.mapRevision ?? -1;
       if (selected
         && currentEntry
         && sameIdentity

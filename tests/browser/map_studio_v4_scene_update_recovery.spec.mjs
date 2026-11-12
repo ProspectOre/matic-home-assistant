@@ -57,6 +57,7 @@ async function startUpdate(page, failure = null, { socket = true } = {}) {
     const probe = window.__sceneUpdate = {
       selectedId: entryA.entryId,
       catalogRevision: entryA.mapRevision,
+      sceneRevision: entryA.mapRevision,
       sceneReads: { a: 0, b: 0 },
       updateReads: { a: 0, b: 0 },
       updateAborts: { a: 0, b: 0 },
@@ -130,7 +131,7 @@ async function startUpdate(page, failure = null, { socket = true } = {}) {
           throw new Error("synthetic terminal catalog failure");
         }
         return [probe.selectedId === entryA.entryId
-          ? { ...entryA, mapRevision: probe.catalogRevision } : entryB];
+          ? { ...entryA, mapRevision: probe.catalogRevision, sceneRevision: probe.sceneRevision } : entryB];
       },
       scene: async (url, revision, _floorCoherent, _source, signal, options = {}) => {
         if (options.latest) return updateScene(url, signal);
@@ -348,13 +349,29 @@ test("@safety a queued update recovery preserves the verified generation while s
   await page.evaluate(() => window.__sceneUpdateRun.effects.dispose());
 });
 
+test("@safety without a socket the catalog's scene revision updates a map its cached revision lags", async ({ page }) => {
+  await loadUpdateHarness(page);
+  await startUpdate(page, null, { socket: false });
+  await expect.poll(() => page.evaluate(() => window.__sceneUpdateRun.store.value.resources.scene.status)).toBe("ready");
+  // The server advertises its cached scene, revision 7, until revision 8 is
+  // built, and only a manifest read starts that build.
+  await page.evaluate(() => Object.assign(window.__sceneUpdate, { sceneRevision: 8, updateFailuresRemaining: 0 }));
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => page.evaluate(() => typeof window.__sceneUpdate.releaseUpdate)).toBe("function");
+  await page.evaluate(() => window.__sceneUpdate.releaseUpdate());
+  await expect.poll(() => page.evaluate(() => window.__sceneUpdateRun.store.value.resources.entry.mapRevision)).toBe(8);
+  expect(await reads(page)).toMatchObject({ sceneReads: { a: 1, b: 0 }, updateReads: { a: 1, b: 0 } });
+  expect(await page.evaluate(() => window.__sceneUpdate.catalogRevision)).toBe(7);
+  await page.evaluate(() => window.__sceneUpdateRun.effects.dispose());
+});
+
 test("@safety without a socket the catalog poll updates the map; a resubscribe snapshot reads what moved meanwhile", async ({ page }) => {
   await loadUpdateHarness(page);
   await startUpdate(page, null, { socket: false });
   await expect.poll(() => page.evaluate(() => window.__sceneUpdateRun.store.value.resources.scene.status)).toBe("ready");
   const generation = await page.evaluate(() => window.__sceneUpdateRun.store.value.generation);
   // The catalog shows revision 8: the next poll reads it as an update, not a reload.
-  await page.evaluate(() => { window.__sceneUpdate.catalogRevision = 8; window.__sceneUpdate.updateFailuresRemaining = 0; });
+  await page.evaluate(() => Object.assign(window.__sceneUpdate, { catalogRevision: 8, sceneRevision: 8, updateFailuresRemaining: 0 }));
   await page.clock.fastForward(5_000);
   await expect.poll(() => page.evaluate(() => typeof window.__sceneUpdate.releaseUpdate)).toBe("function");
   expect(await page.evaluate(() => window.__sceneUpdateRun.store.value.resources.entry.mapRevision)).toBe(7);

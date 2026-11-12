@@ -45,6 +45,7 @@
       "history_count": 0,
       "history_floor_count": 0,
       "map_revision": 7,
+      "scene_revision": null,
       "map_scene_epoch": null,
       "map_floor_coherent": true,
       "selected_floor_ordinal": 1,

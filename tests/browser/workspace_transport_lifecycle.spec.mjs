@@ -259,7 +259,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
           run.catalogCalls += 1;
           run.activeCatalog += 1;
           run.maxActiveCatalog = Math.max(run.maxActiveCatalog, run.activeCatalog);
-          const rows = [{ ...entry, mapRevision: run.revisions }];
+          const rows = [{ ...entry, mapRevision: run.revisions, sceneRevision: run.revisions }];
           if (!holdCatalog) {
             run.activeCatalog -= 1;
             return rows;

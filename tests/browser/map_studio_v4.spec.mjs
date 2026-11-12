@@ -2575,7 +2575,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const effects = new EffectController(store, {
         catalog: async () => {
           if (rejectCatalog) throw new Error("Catalog offline");
-          return [{ ...entry, mapRevision: catalogRevision }];
+          return [{ ...entry, mapRevision: catalogRevision, sceneRevision: catalogRevision }];
         },
         history: async () => initial.resources.history.value,
         scene: async (_url, _revision, _floorCoherent, _source, _signal, options = {}) => !options.latest
