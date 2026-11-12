@@ -80,10 +80,8 @@ these owners around one repository:
 [timing](../custom_components/matic_robot/plan_timing.py) support those owners.
 The [managed executor](../custom_components/matic_robot/managed_executor.py)
 orchestrates runs through its dispatch, [leg](../custom_components/matic_robot/managed_leg.py), area, observation
-and reconciliation modules. One leg runner runs a native mission of one or more
-rooms and announces every room event. The [run machine](../custom_components/matic_robot/run_machine.py) moves a run through its
-queue and says what to checkpoint, including the verifying write the ledger
-saves with the room's record. The run starts legs and areas through a [robot port](../custom_components/matic_robot/robot_port.py)
+and reconciliation modules. One leg runner runs a mission of one or more rooms and announces each room event.
+The [run machine](../custom_components/matic_robot/run_machine.py) moves a run through its queue and says what to checkpoint, including the verifying write. The run starts legs and areas through a [robot port](../custom_components/matic_robot/robot_port.py)
 with the [robot commands](../custom_components/matic_robot/robot_commands.py) the vacuum's clean starts use,
 and observes the session's typed state through it, not Home Assistant entity state. Native history and [grouped reconciliation](../custom_components/matic_robot/grouped_native_reconciliation.py) match room evidence to an owned session. Completion and cadence credit require
 their own evidence; a UI update or an unnamed area summary is not room proof.

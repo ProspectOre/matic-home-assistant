@@ -315,16 +315,20 @@ async def _async_run_leg(
         return outcome, None
 
     async def async_wait_for_resume(seconds: float) -> None:
+        if room_observer is None:
+            await observation._async_wait_for_owned_resume(
+                robot, seconds, cancel_event, leg, native_identity
+            )
+            return
         await observation._async_wait_for_owned_resume(
             robot,
             seconds,
             cancel_event,
             leg,
             native_identity,
-            resume_event=room_observer.resume_event if room_observer else None,
+            resume_event=room_observer.resume_event,
         )
-        if room_observer is not None:
-            room_observer.resume_after_initial_pause()
+        room_observer.resume_after_initial_pause()
 
     async def resumed_after_return() -> bool:
         return await observation._async_wait_for_active_session_resolution(
