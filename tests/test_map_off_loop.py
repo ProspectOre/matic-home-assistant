@@ -143,10 +143,28 @@ async def test_pages_are_validated_and_digested_off_the_event_loop(
     await store.async_shutdown()
 
 
+def _inline_executor(hass: HomeAssistant):
+    """Run executor jobs on the loop for weak-reference checks.
+
+    A pool worker keeps its last job, with its arguments and result, until it
+    takes the next one, so a pooled job can briefly outlive every reader.
+    """
+
+    def run(target, *args):
+        future = hass.loop.create_future()
+        try:
+            future.set_result(target(*args))
+        except Exception as err:
+            future.set_exception(err)
+        return future
+
+    return run
+
+
 async def test_readers_of_one_revision_share_one_decode(hass: HomeAssistant) -> None:
     store, _photos, _structures = await _filled_store(hass, 2, 7)
     jobs: list[str] = []
-    executor = hass.async_add_executor_job
+    executor = _inline_executor(hass)
 
     def counting(target, *args):
         jobs.append(target.__name__)
@@ -239,10 +257,11 @@ async def test_pages_leaving_their_layer_are_freed(hass: HomeAssistant) -> None:
     store = storage.SlamMapStore(hass, "tile-cache-free")
     replaced = _tracked(textured_photo_entry(0, 0, seed=1))
     discarded = _tracked(textured_photo_entry(0, 0, seed=2, mission_id=2))
-    await store.async_add(replaced)
-    for seed in range(3, 203):
-        await store.async_add(textured_photo_entry(0, 0, seed=seed))
-    await store.async_add(discarded)
+    with patch.object(hass, "async_add_executor_job", _inline_executor(hass)):
+        await store.async_add(replaced)
+        for seed in range(3, 203):
+            await store.async_add(textured_photo_entry(0, 0, seed=seed))
+        await store.async_add(discarded)
     assert len(store._candidates) == 1
     refs = (weakref.ref(replaced), weakref.ref(discarded))
     del replaced, discarded
