@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -224,3 +225,33 @@ async def test_history_collector_discards_scene_after_revision_change() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
     remove_listener.assert_called_once()
+
+
+async def test_history_collector_releases_the_decoded_map_while_waiting(hass) -> None:
+    decoded = DecodedMap(1, None, (decode_slam_tile(synthetic_slam_entry()),), ())
+    released = weakref.ref(decoded)
+    slam_map = SimpleNamespace(
+        revision=4,
+        map_complete=True,
+        mission_identity=_identity(),
+        async_decoded_map=AsyncMock(return_value=decoded),
+        async_add_listener=MagicMock(return_value=MagicMock()),
+    )
+    del decoded
+    history_added = asyncio.Event()
+    history = SimpleNamespace(
+        async_add=AsyncMock(side_effect=lambda *_args, **_kwargs: history_added.set())
+    )
+    task = asyncio.create_task(
+        async_collect_slam_history(hass, slam_map, history, _floor_plan)
+    )
+    try:
+        with patch.object(history_collector, "MAP_SETTLE_SECONDS", 0):
+            await asyncio.wait_for(history_added.wait(), timeout=1)
+        slam_map.async_decoded_map.return_value = None
+        await asyncio.sleep(0)
+        assert released() is None
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

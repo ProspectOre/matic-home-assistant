@@ -60,16 +60,8 @@ async def async_collect_slam_history(
             # retain only a mission-correlated snapshot.
             if not _mission_matches_floor_plan(identity, current_floor_plan):
                 continue
-            decoded = await slam_map.async_decoded_map()
             try:
-                scene = await hass.async_add_executor_job(
-                    partial(
-                        _encode_history_scene,
-                        decoded.tiles,
-                        decoded.structure_tiles,
-                        current_floor_plan,
-                    )
-                )
+                scene = await _async_history_scene(hass, slam_map, current_floor_plan)
             except DecodeError:
                 continue
             if (
@@ -88,6 +80,21 @@ async def async_collect_slam_history(
     finally:
         for remove_listener in remove_listeners:
             remove_listener()
+
+
+async def _async_history_scene(
+    hass: HomeAssistant, slam_map: SlamMapStore, floor_plan: FloorPlan | None
+) -> bytes:
+    # Scoped so the decoded map is released before the collector waits again.
+    decoded = await slam_map.async_decoded_map()
+    return await hass.async_add_executor_job(
+        partial(
+            _encode_history_scene,
+            decoded.tiles,
+            decoded.structure_tiles,
+            floor_plan,
+        )
+    )
 
 
 def _encode_history_scene(
