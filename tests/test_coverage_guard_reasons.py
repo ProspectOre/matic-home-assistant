@@ -24,7 +24,7 @@ from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import _failure_reason_code
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import robot_port
+from tests.session_fakes import FakeRobot
 
 
 @asynccontextmanager
@@ -87,10 +87,11 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
     reason: CoverageGuardReason,
 ) -> None:
     """A failed managed dispatch retains safe copy and its stable reason."""
+    robot = FakeRobot()
     error = CoverageGuardError(reason)
-    services = SimpleNamespace(async_call=AsyncMock(side_effect=error))
+    robot.on_start = AsyncMock(side_effect=error)
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
+    hass = SimpleNamespace(bus=bus)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(return_value=True),
@@ -119,8 +120,11 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
             "vacuum.synthetic",
             "synthetic-serial",
             CleaningRoom("synthetic-room-id", "Synthetic room", "vacuum", "quick"),
-            motion_token=17,
+            robot.port(session_identity=robot.accepting),
+            17,
             managed_user_command=stop_sender,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     assert caught.value.translation_domain == "matic_robot"
@@ -140,6 +144,7 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
     reason: CoverageGuardReason,
 ) -> None:
     """A pre-write mixed guard stays failed and cannot trigger cleanup STOP."""
+    robot = FakeRobot()
     error = CoverageGuardError(reason)
 
     async def reject_before_write(*_args: object, **_kwargs: object) -> None:
@@ -149,9 +154,9 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
             translation_key=error.reason_code,
         ) from error
 
-    services = SimpleNamespace(async_call=AsyncMock(side_effect=reject_before_write))
+    robot.on_start = reject_before_write
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
+    hass = SimpleNamespace(bus=bus)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(return_value=True),
@@ -184,8 +189,11 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
             "vacuum.synthetic",
             "synthetic-serial",
             rooms,
-            motion_token=17,
+            robot.port(session_identity=robot.accepting),
+            17,
             managed_user_command=stop_sender,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     assert caught.value.translation_key == reason.value
@@ -254,6 +262,7 @@ async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
 )
 async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, reason):
     """Final run accounting preserves a pre-write mixed guard as failed."""
+    robot = FakeRobot()
     error = CoverageGuardError(reason)
 
     async def reject_dispatch(_call) -> None:
@@ -263,7 +272,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
             translation_key=error.reason_code,
         ) from error
 
-    hass.services.async_register("vacuum", "send_command", reject_dispatch)
+    robot.on_start = reject_dispatch
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     events = []
@@ -302,7 +311,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
             "vacuum.synthetic",
             "synthetic-serial",
             rooms,
-            robot=robot_port(session_identity=session_identity),
+            robot=robot.port(session_identity=session_identity),
             managed_user_command=stop_sender,
             floor_token="synthetic-floor-token",
         )

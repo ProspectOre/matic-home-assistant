@@ -893,7 +893,6 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
     external: asyncio.Task[None] | None = None
     try:
         await asyncio.wait_for(cleanup_started.wait(), timeout=3)
-        assert manager.control.command_admission_open(serial) is False
 
         async def external_dispatch() -> None:
             async with manager.control.external_command(serial):
@@ -914,7 +913,8 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             await asyncio.gather(external, return_exceptions=True)
 
     client.async_shutdown.assert_awaited_once()
-    assert not manager.control.command_admission_open(serial)
+    with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+        manager.control.require_command_admission(serial)
 
 
 async def test_teardown_allows_only_existing_managed_token_cleanup(

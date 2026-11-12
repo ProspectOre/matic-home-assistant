@@ -3,7 +3,6 @@
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -15,9 +14,9 @@ from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.leg_handoff import async_dispatch_on_return
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
-from custom_components.matic_robot.plan_model import PLAN_SESSION_ID
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import robot_port
+from custom_components.matic_robot.robot_commands import PlanStart
+from tests.session_fakes import FakeRobot
 from tests.test_unreachable_room import KITCHEN, STUDY, _events, _session
 from tests.wire_builders import _session_identity
 
@@ -51,6 +50,9 @@ class _Robot:
         fail_after_taking: bool = False,
     ) -> None:
         self.hass = hass
+        self.fake = FakeRobot()
+        self.fake.on_start = self.send_command
+        self.state = "docked"
         self.identity = b""
         self.records: list[CleaningSessionRecord] = []
         self.dispatch_states: list[str] = []
@@ -64,8 +66,12 @@ class _Robot:
     async def history(self) -> tuple[CleaningSessionRecord, ...]:
         return tuple(self.records)
 
-    async def send_command(self, call) -> None:
-        state = self.hass.states.get("vacuum.matic").state
+    def show(self, state: str, **attributes) -> None:
+        self.state = state
+        self.fake.show(state, **attributes)
+
+    async def send_command(self, command: PlanStart) -> None:
+        state = self.state
         self.dispatch_states.append(state)
         if state == "returning" and self.refuse_while_returning:
             if self.start_late:
@@ -75,16 +81,16 @@ class _Robot:
                 )
             else:
                 # The refusal lands as the robot reaches its dock.
-                self.hass.states.async_set("vacuum.matic", "docked")
+                self.show("docked")
             raise MaticError("refused")
-        self.identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
+        self.identity = _session_identity(command.session_id)
         if state == "returning" and self.fail_after_taking:
             # The robot starts the room, then the settings readback fails.
-            self.hass.states.async_set("vacuum.matic", "cleaning")
+            self.show("cleaning")
             raise MaticError("readback failed")
         first = len(self.dispatch_states) == 1
         area = None if first else STUDY.name
-        self.hass.states.async_set("vacuum.matic", "cleaning", {"current_area": area})
+        self.show("cleaning", current_area=area)
         end = self._give_up() if first else self._finish_study()
         self.hass.async_create_task(end, eager_start=False)
 
@@ -95,18 +101,16 @@ class _Robot:
         )
         self.identity = b""
         # The robot never docks on its own here: only the next leg moves it on.
-        self.hass.states.async_set("vacuum.matic", "returning")
+        self.show("returning")
 
     async def _finish_study(self) -> None:
         await asyncio.sleep(0.01)
-        self.hass.states.async_set(
-            "vacuum.matic", "returning", {"current_area": STUDY.name}
-        )
+        self.show("returning", current_area=STUDY.name)
         self.records.append(
             CleaningSessionRecord(b"study", _session("Study", "completed"))
         )
         self.identity = b""
-        self.hass.states.async_set("vacuum.matic", "docked")
+        self.show("docked")
 
 
 async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
@@ -115,8 +119,7 @@ async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "finish_current_room": True
     }
-    hass.states.async_set("vacuum.matic", "docked")
-    hass.services.async_register("vacuum", "send_command", robot.send_command)
+    robot.show("docked")
     events: list = []
     for name in ("room_skipped", "room_completed"):
         hass.bus.async_listen(f"matic_robot_{name}", events.append)
@@ -140,7 +143,7 @@ async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
             "serial",
             [KITCHEN, STUDY],
             floor_token="floor",
-            robot=robot_port(
+            robot=robot.fake.port(
                 session_identity=robot.read_identity,
                 active_session=AsyncMock(return_value=None),
                 session_history=robot.history,
@@ -172,30 +175,29 @@ async def test_refused_next_room_waits_for_the_dock(hass) -> None:
     assert [e["room_id"] for e in _events(events, "room_completed")] == ["room-study"]
 
 
-def _hass(state: str | None):
-    current = None if state is None else SimpleNamespace(state=state)
-    return SimpleNamespace(states=SimpleNamespace(get=lambda _entity_id: current))
+def _robot(state: str | None, identity: bytes | None):
+    robot = FakeRobot()
+    if state is not None:
+        robot.show(state)
+    return robot.port(session_identity=AsyncMock(return_value=identity))
 
 
 @pytest.mark.parametrize(
-    ("state", "identity", "reader"),
+    ("state", "identity"),
     [
-        ("docked", b"", True),
-        (None, b"", True),
-        ("returning", b"ended-mission", True),
-        ("returning", None, True),
-        ("returning", b"", False),
+        ("docked", b""),
+        (None, b""),
+        ("returning", b"ended-mission"),
+        ("returning", None),
     ],
 )
 async def test_only_a_returning_robot_with_no_mission_is_sent_on(
-    state, identity, reader
+    state, identity
 ) -> None:
     dispatch = AsyncMock()
     assert (
         await async_dispatch_on_return(
-            _hass(state),
-            "vacuum.matic",
-            AsyncMock(return_value=identity) if reader else None,
+            _robot(state, identity),
             dispatch,
             lambda _identity: None,
             AsyncMock(),
@@ -221,9 +223,7 @@ async def test_a_taken_or_cancelled_dispatch_is_not_retried(error) -> None:
     stop_taken = AsyncMock()
     with pytest.raises(type(error)):
         await async_dispatch_on_return(
-            _hass("returning"),
-            "vacuum.matic",
-            AsyncMock(return_value=b""),
+            _robot("returning", b""),
             dispatch,
             bound.append,
             on_refused,
@@ -271,9 +271,7 @@ async def test_a_cancelled_dispatch_stops_only_a_taken_room_outside_shutdown(
     stop_taken = AsyncMock()
     with pytest.raises(asyncio.CancelledError):
         await async_dispatch_on_return(
-            _hass("returning"),
-            "vacuum.matic",
-            AsyncMock(return_value=b""),
+            _robot("returning", b""),
             dispatch,
             lambda _identity: None,
             AsyncMock(),

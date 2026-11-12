@@ -8,6 +8,7 @@ from datetime import UTC, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall, callback
@@ -46,6 +47,7 @@ from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
     FloorPlan,
+    RobotActivity,
     Room,
 )
 from custom_components.matic_robot.const import (
@@ -60,14 +62,10 @@ from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_observation import (
     SESSION_HISTORY_ATTEMPTS,
     NativeRoomVerdict,
-    _async_active_session_state,
     _async_adjudicate_room_end,
     _async_session_history_baseline,
     _async_verify_leg_completion,
-    _async_wait_for_active_session_resolution,
-    _async_wait_for_room_outcome,
     _async_wait_for_settled_leg_handoff,
-    _async_wait_for_vacuum_state,
 )
 from custom_components.matic_robot.managed_room import _async_run_room
 from custom_components.matic_robot.managed_run import (
@@ -91,8 +89,6 @@ from custom_components.matic_robot.plan_catalog import (
     SavedPlanLimitError,
 )
 from custom_components.matic_robot.plan_model import (
-    PLAN_FLOOR_TOKEN,
-    PLAN_MOTION_TOKEN,
     AreaBindingUpgradeResult,
     AreaLeg,
     CleaningRoom,
@@ -112,11 +108,13 @@ from custom_components.matic_robot.plan_timing import (
     _stored_count,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_commands import CleanRooms
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from custom_components.matic_robot.service_context import (
     _entry_for_entity,
 )
-from tests.session_fakes import accepting_session, robot_port
+from tests.session_fakes import FakeRobot, robot_port
+from tests.wire_builders import _session_identity
 
 
 @pytest.fixture(autouse=True)
@@ -157,6 +155,16 @@ def _owned_leg(verified: object = True) -> AsyncMock:
         return verified
 
     return AsyncMock(side_effect=run)
+
+
+def _mission_ends(robot: FakeRobot) -> AsyncMock:
+    """A room outcome after which the robot drives home, ending its session."""
+
+    async def outcome(*_args: object, **_kwargs: object) -> RoomRunOutcome:
+        robot.show("returning")
+        return RoomRunOutcome.HANDOFF_CANDIDATE
+
+    return AsyncMock(side_effect=outcome)
 
 
 def _call(hass, *, return_to_base: bool = False) -> ServiceCall:
@@ -754,6 +762,7 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
     hass, error, reason
 ) -> None:
     """The actual room boundary and terminal run agree on native failures."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     events = []
@@ -762,11 +771,11 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
 
     async def reject_dispatch(_call) -> None:
         if error == "entity_error":
-            hass.states.async_set("vacuum.matic", "error")
+            robot.show("error")
             return
         raise error
 
-    hass.services.async_register("vacuum", "send_command", reject_dispatch)
+    robot.on_start = reject_dispatch
     with pytest.raises(ServiceValidationError):
         await _async_execute_rooms(
             hass,
@@ -776,7 +785,7 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
             "serial",
             [_room("Study", "room-study")],
             floor_token="floor",
-            robot=robot_port(session_identity=accepting_session(hass)),
+            robot=robot.port(session_identity=robot.accepting),
         )
     await hass.async_block_till_done()
     last_run = manager.history.snapshot("serial")["last_run"]
@@ -982,6 +991,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
     hass, scenario, outcome, reason, room_event, credit
 ) -> None:
     """Native observations flow through both room and plan outcome boundaries."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     saved = []
     manager.repository.store = SimpleNamespace(
@@ -996,7 +1006,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
 
     for event in ("room_started", room_event, "plan_finished"):
         hass.bus.async_listen(f"{DOMAIN}_{event}", record_event)
-    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    robot.on_start = AsyncMock()
     room = _room("Study", "room-study")
     reads = 0
 
@@ -1034,13 +1044,13 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             hass.async_create_task(manager.control.async_cancel_and_wait("serial"))
             raise PlanCancelledError
         if scenario == "native_stop":
-            hass.states.async_set("vacuum.matic", "idle")
+            robot.show("idle")
             return RoomRunOutcome.STOPPED_IN_PLACE
         if scenario == "interrupted":
             return RoomRunOutcome.INTERRUPTED
         if scenario == "takeover":
             raise RoomTakenOverError("synthetic native ownership change")
-        hass.states.async_set("vacuum.matic", "returning")
+        robot.show("returning")
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
     with (
@@ -1049,7 +1059,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         else nullcontext(),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -1066,10 +1076,9 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
                 "serial",
                 [room],
                 floor_token="floor",
-                robot=robot_port(
+                robot=robot.port(
                     session_history=history,
-                    active_session=AsyncMock(return_value=False),
-                    session_identity=accepting_session(hass),
+                    session_identity=robot.accepting,
                 ),
             )
         )
@@ -1111,9 +1120,10 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
 @pytest.mark.parametrize("terminal", ["stop", "failed"])
 async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> None:
     """An ended leg cannot leave its previously visited rooms marked running."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    robot.on_start = AsyncMock()
     rooms = [_room("Kitchen", "room-kitchen"), _room("Study", "room-study")]
     older_room = _room("Storage", "room-storage")
     for plan_id in ("away", "earlier-plan"):
@@ -1135,19 +1145,17 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
         if terminal == "stop":
             manager.control.cancel(serial_number)
         else:
-            hass.states.async_set("vacuum.matic", "error")
+            robot.show("error")
 
     async def begin_observing_next_room(*_args, **_kwargs) -> float:
-        hass.states.async_set(
-            "vacuum.matic", "cleaning", {"current_area": rooms[1].name}
-        )
+        robot.show("cleaning", current_area=rooms[1].name)
         return 30
 
     with (
         nullcontext() if terminal == "stop" else pytest.raises(ServiceValidationError),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_run._async_completion_budget",
@@ -1172,7 +1180,7 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
                 "serial",
                 rooms,
                 floor_token="floor",
-                robot=robot_port(session_identity=accepting_session(hass)),
+                robot=robot.port(session_identity=robot.accepting),
             )
         )
         try:
@@ -1302,85 +1310,63 @@ def test_leg_groups_ignore_unused_mop_coverage_settings() -> None:
 
 
 async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
-    captured = []
-
-    async def send_command(call) -> None:
-        captured.append(call.data)
-
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot = FakeRobot()
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
 
     dispatch = await _async_dispatch_leg_command(
-        hass,
-        _call(hass),
-        "vacuum.matic",
-        rooms,
-        7,
-        None,
-        floor_token="a" * 64,
+        robot.port(session_identity=robot.accepting), rooms, 7, floor_token="a" * 64
     )
 
     assert dispatch.rooms == tuple(rooms)
-    assert captured[0]["command"] == "clean_rooms"
-    params = captured[0]["params"]
-    assert params["rooms"] == ["room-kitchen", "room-office"]
-    assert params["ordered"] is True
-    assert params["cleaning_mode"] == "vacuum_and_mop"
-    assert params["coverage"] == "standard"
-    assert params[PLAN_MOTION_TOKEN] == 7
-    assert params[PLAN_FLOOR_TOKEN] == "a" * 64
-    assert len(params["_matic_plan_session"]) == 36
+    [command] = robot.started
+    assert isinstance(command, CleanRooms)
+    assert command.rooms == ("room-kitchen", "room-office")
+    assert command.ordered is True
+    assert command.cleaning_mode == "vacuum_and_mop"
+    assert command.coverage == "standard"
+    assert command.motion_token == 7
+    assert command.floor_token == "a" * 64
+    assert isinstance(command.session_id, UUID)
 
 
 async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
-    captured = []
-
-    async def send_command(call) -> None:
-        captured.append(call.data)
-
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot = FakeRobot()
 
     dispatch = await _async_dispatch_leg_command(
-        hass,
-        _call(hass),
-        "vacuum.matic",
+        robot.port(session_identity=robot.accepting),
         [_room("Kitchen", "room-kitchen")],
-        None,
-        None,
+        7,
+        floor_token="floor",
     )
 
     assert dispatch.rooms == (_room("Kitchen", "room-kitchen"),)
-    params = captured[0]["params"]
-    assert params["rooms"] == ["room-kitchen"]
-    assert params["ordered"] is False
-    assert PLAN_MOTION_TOKEN not in params
-    assert PLAN_FLOOR_TOKEN not in params
+    [command] = robot.started
+    assert command.rooms == ("room-kitchen",)
+    assert command.ordered is False
 
 
 async def test_leg_dispatch_allows_stale_completed_identity(hass) -> None:
     """A blocked-doorway handoff may retain its completed identity at dispatch."""
-    captured = []
+    robot = FakeRobot()
+    identity = AsyncMock(return_value=b"completed")
 
-    async def send_command(call) -> None:
-        captured.append(call.data)
+    async def accept(command) -> None:
+        identity.return_value = _session_identity(command.session_id)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
-    identity = AsyncMock(side_effect=[b"completed", b"completed"])
+    robot.on_start = accept
 
     dispatch = await _async_dispatch_leg_command(
-        hass,
-        _call(hass),
-        "vacuum.matic",
+        robot.port(session_identity=identity),
         [_room("Dining Room", "room-dining")],
-        None,
-        None,
-        session_identity=identity,
+        7,
         expected_dispatch_identity=b"completed",
+        floor_token="floor",
     )
 
-    assert captured[0]["command"] == "clean_rooms"
+    [command] = robot.started
+    assert isinstance(command, CleanRooms)
     assert dispatch.native_identity_baseline == b"completed"
-    assert dispatch.native_identity is None
+    assert dispatch.native_identity == _session_identity(command.session_id)
 
 
 async def test_mark_completed_accepts_native_evidence(hass) -> None:
@@ -3668,6 +3654,7 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
     translation_key: str,
     last_result: str,
 ) -> None:
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     room = _room("Kitchen", "room-kitchen")
@@ -3683,8 +3670,8 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -3699,12 +3686,17 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
             "vacuum.matic",
             "serial",
             room,
-            motion_token=token,
-            session_history=AsyncMock(return_value=()),
+            robot.port(
+                session_history=AsyncMock(return_value=()),
+                session_identity=AsyncMock(return_value=_OWNED),
+            ),
+            token,
             managed_user_command=replace_during_cleanup,
             prepared_dispatch=_PreparedRoomDispatch(
                 (room,), frozenset(), dispatched_at
             ),
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     assert failure.value.translation_key == translation_key
@@ -7080,20 +7072,19 @@ async def test_saved_plan_zero_capacity_rejects_creation(hass, monkeypatch) -> N
 
 
 async def test_room_execution_uses_its_individual_settings() -> None:
+    robot = FakeRobot()
     events = []
 
-    async def send(*args, **_kwargs):
-        events.append(("send", args[2]["params"]["_matic_plan_session"]))
+    async def send(command):
+        events.append(("send", str(command.session_id)))
 
     async def claim(_serial_number, session_id, *, run_id=None):
         events.append(("claim", session_id, run_id))
 
-    services = SimpleNamespace(async_call=AsyncMock(side_effect=send))
+    robot.on_start = send
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -7119,12 +7110,12 @@ async def test_room_execution_uses_its_individual_settings() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ) as wait,
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            _mission_ends(robot),
         ),
     ):
         await _async_run_room(
@@ -7134,25 +7125,26 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             "vacuum.matic",
             "serial",
             room,
-            motion_token=3,
-            active_session=AsyncMock(return_value=False),
+            robot.port(
+                session_identity=robot.accepting,
+            ),
+            3,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
-    dispatched = services.async_call.await_args.args[2]
-    session_id = dispatched["params"].pop("_matic_plan_session")
-    assert len(session_id) == 36
+    [dispatched] = robot.started
+    session_id = str(dispatched.session_id)
     assert events == [("claim", session_id, None), ("send", session_id)]
-    assert dispatched == {
-        "entity_id": "vacuum.matic",
-        "command": "clean_rooms",
-        "params": {
-            "rooms": ["room-study"],
-            "cleaning_mode": "vacuum",
-            "coverage": "quick",
-            "ordered": False,
-            "_matic_plan_run": 3,
-        },
-    }
+    assert dispatched == CleanRooms(
+        rooms=("room-study",),
+        cleaning_mode="vacuum",
+        coverage="quick",
+        ordered=False,
+        motion_token=3,
+        session_id=dispatched.session_id,
+        floor_token="floor",
+    )
     assert wait.await_count == 1
     manager.ledger.async_mark_resumed.assert_awaited_once_with("serial", "away", room)
     manager.ledger.async_mark_ended_unverified.assert_awaited_once()
@@ -7163,12 +7155,10 @@ async def test_room_execution_uses_its_individual_settings() -> None:
 
 
 async def test_room_timeout_is_failure_safe() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -7192,7 +7182,7 @@ async def test_room_timeout_is_failure_safe() -> None:
     sender = AsyncMock(side_effect=MaticError("synthetic cleanup failure"))
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
             AsyncMock(side_effect=TimeoutError),
         ),
         pytest.raises(
@@ -7206,8 +7196,11 @@ async def test_room_timeout_is_failure_safe() -> None:
             "vacuum.matic",
             "serial",
             _room("Kitchen", "room-kitchen"),
-            motion_token=7,
+            robot.port(session_identity=robot.accepting),
+            7,
             managed_user_command=sender,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
     sender.assert_awaited_once_with(7, UserCommand.STOP)
     assert failure.value.translation_key == "plan_start_timeout"
@@ -7222,9 +7215,9 @@ async def test_room_timeout_is_failure_safe() -> None:
 
 
 async def test_room_completion_timeout_is_failure_safe() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
+    hass = SimpleNamespace(bus=bus)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -7248,8 +7241,8 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -7264,6 +7257,10 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
             "vacuum.matic",
             "serial",
             room,
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     assert failure.value.translation_key == "plan_timeout"
@@ -7276,9 +7273,9 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
 
 
 async def test_room_takeover_during_verification_is_failure_safe() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
+    hass = SimpleNamespace(bus=bus)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -7303,8 +7300,8 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -7319,6 +7316,10 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
             "vacuum.matic",
             "serial",
             room,
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     assert failure.value.translation_key == "room_taken_over"
@@ -7327,12 +7328,10 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
 
 
 async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -7356,8 +7355,8 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(side_effect=["cleaning", "cleaning"]),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(side_effect=[RobotActivity.CLEANING, RobotActivity.CLEANING]),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -7376,14 +7375,18 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             "vacuum.matic",
             "serial",
             _room("Kitchen", "room-kitchen"),
-            active_session=AsyncMock(return_value=False),
-            session_identity=AsyncMock(
-                side_effect=lambda: (
-                    b""
-                    if not services.async_call.await_count or outcome.await_count >= 2
-                    else b"native-task"
-                )
+            robot.port(
+                session_identity=AsyncMock(
+                    side_effect=lambda: (
+                        b""
+                        if not robot.started or outcome.await_count >= 2
+                        else _session_identity(robot.started[-1].session_id)
+                    )
+                ),
             ),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_suspended.assert_awaited_once_with(
@@ -7396,12 +7399,10 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
 
 async def test_active_session_clearing_at_dock_is_not_completion_credit() -> None:
     """Session disappearance permits handoff but never proves room completion."""
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -7424,16 +7425,23 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = _room("Kitchen", "room-kitchen")
-    reader = AsyncMock(side_effect=[True, False])
+    # The session is still active on the first read after the handoff, then clears.
+    active_at_dock = iter((True, False))
+
+    async def identity() -> bytes:
+        if not robot.started or (outcome.await_count and not next(active_at_dock)):
+            return b""
+        return _session_identity(robot.started[-1].session_id)
+
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
-        ),
+        ) as outcome,
     ):
         await _async_run_room(
             hass,
@@ -7442,7 +7450,10 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
             "vacuum.matic",
             "serial",
             room,
-            active_session=reader,
+            robot.port(session_identity=identity),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_suspended.assert_not_awaited()
@@ -7465,12 +7476,10 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
     ownership_current: bool,
 ) -> None:
     """A new, overlapping, single-room native success is positive evidence."""
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     order: list[str] = []
     manager = SimpleNamespace(
@@ -7534,12 +7543,12 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
     confirm = MagicMock(side_effect=lambda *_args: order.append("tracker_confirm"))
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            _mission_ends(robot),
         ),
     ):
         if ownership_current:
@@ -7550,9 +7559,14 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
                 "vacuum.matic",
                 "serial",
                 _room("Kitchen", "room-kitchen"),
-                active_session=AsyncMock(return_value=False),
-                session_history=history,
-                confirm_room_completed=confirm,
+                robot.port(
+                    session_history=history,
+                    confirm_room_completed=confirm,
+                    session_identity=robot.accepting,
+                ),
+                7,
+                floor_token="floor",
+                checkpoint_dispatch=AsyncMock(),
             )
         else:
             with pytest.raises(PlanCancelledError, match="ownership changed"):
@@ -7563,9 +7577,14 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
                     "vacuum.matic",
                     "serial",
                     _room("Kitchen", "room-kitchen"),
-                    active_session=AsyncMock(return_value=False),
-                    session_history=history,
-                    confirm_room_completed=confirm,
+                    robot.port(
+                        session_history=history,
+                        confirm_room_completed=confirm,
+                        session_identity=robot.accepting,
+                    ),
+                    7,
+                    floor_token="floor",
+                    checkpoint_dispatch=AsyncMock(),
                 )
 
     manager.ledger.async_mark_verifying.assert_awaited_once()
@@ -7592,9 +7611,10 @@ async def test_managed_plan_rejects_native_name_aliases_before_any_dispatch(
     hass, other_name: str, preceding_leg: bool
 ) -> None:
     """Completion aliases must not authorize an ambiguous room or queued leg."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    hass.states.async_set("vacuum.matic", "docked", {})
+    robot.show("docked")
     rooms = [CleaningRoom("dining", "Dining Room", "vacuum", "quick")]
     if preceding_leg:
         rooms.insert(0, CleaningRoom("kitchen", "Kitchen", "mop", "optimal"))
@@ -7615,7 +7635,7 @@ async def test_managed_plan_rejects_native_name_aliases_before_any_dispatch(
             "serial",
             rooms,
             floor_token="floor",
-            robot=robot_port(),
+            robot=robot.port(),
             mapped_room_names=("Kitchen", "Dining Room", other_name),
             managed_user_command=commands,
         )
@@ -7629,6 +7649,7 @@ async def test_managed_plan_rejects_native_name_aliases_before_any_dispatch(
 async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity() -> (
     None
 ):
+    robot = FakeRobot()
     room = _room("Kitchen", "room-kitchen")
     now = dt_util.utcnow()
 
@@ -7637,7 +7658,9 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     assert await _async_session_history_baseline(failing_reader) is None
     assert (
-        await _async_adjudicate_room_end(failing_reader, frozenset(), room, now)
+        await _async_adjudicate_room_end(
+            failing_reader, frozenset(), room, now, robot=robot.port()
+        )
         is NativeRoomVerdict.UNVERIFIED
     )
 
@@ -7683,7 +7706,9 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_adjudicate_room_end(reader, frozenset(), room, now)
+            await _async_adjudicate_room_end(
+                reader, frozenset(), room, now, robot=robot.port()
+            )
             is NativeRoomVerdict.UNVERIFIED
         )
 
@@ -7698,7 +7723,9 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_adjudicate_room_end(interrupted_reader, frozenset(), room, now)
+            await _async_adjudicate_room_end(
+                interrupted_reader, frozenset(), room, now, robot=robot.port()
+            )
             is NativeRoomVerdict.UNVERIFIED
         )
 
@@ -7707,7 +7734,9 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_adjudicate_room_end(empty, frozenset(), room, now)
+            await _async_adjudicate_room_end(
+                empty, frozenset(), room, now, robot=robot.port()
+            )
             is NativeRoomVerdict.UNVERIFIED
         )
     assert empty.await_count == SESSION_HISTORY_ATTEMPTS
@@ -7730,6 +7759,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
             frozenset(),
             room,
             now,
+            robot=robot.port(),
             cancel_event=cancel_event,
         )
 
@@ -7744,6 +7774,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
                 frozenset(),
                 room,
                 now,
+                robot=robot.port(),
                 cancel_event=unset_cancel,
             )
             is NativeRoomVerdict.UNVERIFIED
@@ -7757,34 +7788,33 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
             frozenset(),
             room,
             now,
+            robot=robot.port(),
             cancel_event=already_cancelled,
         )
 
-    cleaning_state = SimpleNamespace(state="cleaning")
-    takeover_hass = SimpleNamespace(
-        states=SimpleNamespace(get=MagicMock(return_value=cleaning_state))
-    )
+    robot.show("cleaning")
     with pytest.raises(RoomTakenOverError):
         await _async_adjudicate_room_end(
-            empty,
-            frozenset(),
-            room,
-            now,
-            hass=takeover_hass,
-            entity_id="vacuum.matic",
+            empty, frozenset(), room, now, robot=robot.port()
         )
 
 
 async def test_active_session_can_resume_then_end_unverified() -> None:
     """A returning firmware session may resume before an unverified handoff."""
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
+    robot.show("cleaning")
     bus = SimpleNamespace(async_fire=MagicMock())
-    live_state = SimpleNamespace(state="cleaning")
-    hass = SimpleNamespace(
-        services=services,
-        bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=live_state)),
-    )
+    hass = SimpleNamespace(bus=bus)
+    outcomes = 0
+
+    async def leg_outcome(*_args, **_kwargs):
+        # The mission resumes once, then ends on its way home.
+        nonlocal outcomes
+        outcomes += 1
+        if outcomes == 2:
+            robot.show("returning")
+        return RoomRunOutcome.HANDOFF_CANDIDATE
+
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -7808,17 +7838,12 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
     room = _room("Kitchen", "room-kitchen")
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
-            AsyncMock(
-                side_effect=[
-                    RoomRunOutcome.HANDOFF_CANDIDATE,
-                    RoomRunOutcome.HANDOFF_CANDIDATE,
-                ]
-            ),
+            leg_outcome,
         ),
     ):
         await _async_run_room(
@@ -7828,7 +7853,10 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
             "vacuum.matic",
             "serial",
             room,
-            active_session=AsyncMock(side_effect=[True, False]),
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_suspended.assert_not_awaited()
@@ -7905,6 +7933,7 @@ def _leg_rooms() -> list[CleaningRoom]:
 
 async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> None:
     """An API recovery STOP owns settlement; generic cleanup must not replace it."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     sender = AsyncMock()
@@ -7915,7 +7944,7 @@ async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> No
         await manager.control.async_mark_stop_pending("serial", run_id=run_id)
         raise HomeAssistantError("mixed update failed after recovery STOP")
 
-    hass.services.async_register("vacuum", "send_command", fail_dispatch)
+    robot.on_start = fail_dispatch
     rooms = [
         CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick"),
         CleaningRoom("room-office", "Office", "mop", "optimal"),
@@ -7928,7 +7957,7 @@ async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
-            robot=robot_port(session_identity=AsyncMock(return_value=b"")),
+            robot=robot.port(session_identity=AsyncMock(return_value=b"")),
             managed_user_command=sender,
             floor_token="synthetic-floor-token",
         )
@@ -7938,17 +7967,15 @@ async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> No
 
 
 async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) -> None:
+    robot = FakeRobot()
+    robot.running = _OWNED
     rooms = _leg_rooms()
     manager = _leg_manager()
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    robot.show("cleaning", current_area="Kitchen")
 
     async def end_leg() -> None:
         await asyncio.sleep(0)
-        hass.states.async_set(
-            "vacuum.matic",
-            "returning",
-            {"current_area": "Kitchen", "low_charge": False},
-        )
+        robot.show("returning", current_area="Kitchen", low_charge=False)
 
     hass.async_create_task(end_leg(), eager_start=True)
 
@@ -7967,10 +7994,16 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
-        confirm_room_completed=confirmed.append,
+        robot.port(
+            session_history=history,
+            confirm_room_completed=confirmed.append,
+            session_identity=robot.accepting,
+        ),
+        7,
         record_room_completed=lambda room: recorded.append(room.room_id),
         prepared_dispatch=prepared,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
     assert completed is True
     assert confirmed == ["Kitchen", "Office"]
@@ -7984,16 +8017,21 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
             "vacuum.matic",
             "serial",
             rooms,
+            robot.port(session_identity=robot.accepting),
+            7,
             prepared_dispatch=_PreparedRoomDispatch(
                 (rooms[0],), frozenset(), dt_util.utcnow()
             ),
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
 
 async def test_leg_start_timeout_marks_failure_and_stops(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
-    hass.states.async_set("vacuum.matic", "docked", {})
-    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    robot.show("docked")
+    robot.on_start = AsyncMock()
     sender = AsyncMock()
 
     with pytest.raises(ServiceValidationError):
@@ -8004,8 +8042,11 @@ async def test_leg_start_timeout_marks_failure_and_stops(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            robot.port(session_identity=robot.owned),
+            7,
             managed_user_command=sender,
-            motion_token=7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_failed.assert_awaited_once()
@@ -8013,6 +8054,7 @@ async def test_leg_start_timeout_marks_failure_and_stops(hass) -> None:
 
 
 async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
+    robot = FakeRobot()
     rooms = _leg_rooms()
     manager = _leg_manager()
     resumed = asyncio.Event()
@@ -8024,23 +8066,17 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
     manager.ledger.async_mark_resumed.side_effect = confirm_resume
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "paused", {"current_area": "Kitchen"})
+        robot.show("paused", current_area="Kitchen")
 
         async def resume() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": "Kitchen"}
-            )
+            robot.show("cleaning", current_area="Kitchen")
             await resumed.wait()
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": False},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=False)
 
         hass.async_create_task(resume(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
@@ -8057,18 +8093,13 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
-        session_identity=AsyncMock(
-            side_effect=lambda: (
-                b""
-                if not hass.states.get("vacuum.matic")
-                or (
-                    hass.states.get("vacuum.matic").state == "returning"
-                    and not hass.states.get("vacuum.matic").attributes.get("low_charge")
-                )
-                else b"native-task"
-            )
+        robot.port(
+            session_history=history,
+            session_identity=robot.accepting,
         ),
+        7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert completed is True
@@ -8077,6 +8108,7 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
 
 
 async def test_leg_suspension_mid_leg_resumes(hass) -> None:
+    robot = FakeRobot()
     rooms = _leg_rooms()
     manager = _leg_manager()
     resumed = asyncio.Event()
@@ -8088,29 +8120,19 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
     manager.ledger.async_mark_resumed.side_effect = confirm_resume
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def recharge() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": True},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=True)
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": "Office"}
-            )
+            robot.show("cleaning", current_area="Office")
             await resumed.wait()
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Office", "low_charge": False},
-            )
+            robot.show("returning", current_area="Office", low_charge=False)
 
         hass.async_create_task(recharge(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
@@ -8127,18 +8149,13 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
-        session_identity=AsyncMock(
-            side_effect=lambda: (
-                b""
-                if not hass.states.get("vacuum.matic")
-                or (
-                    hass.states.get("vacuum.matic").state == "returning"
-                    and not hass.states.get("vacuum.matic").attributes.get("low_charge")
-                )
-                else b"native-task"
-            )
+        robot.port(
+            session_history=history,
+            session_identity=robot.accepting,
         ),
+        7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert completed is True
@@ -8147,14 +8164,15 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
 
 
 async def test_leg_completion_timeout_fails(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
     finish_room_event = asyncio.Event()
     finish_room_event.set()
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     with pytest.raises(ServiceValidationError):
         await _async_run_leg(
@@ -8164,7 +8182,11 @@ async def test_leg_completion_timeout_fails(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            robot.port(session_identity=robot.accepting),
+            7,
             finish_room_event=finish_room_event,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_failed.assert_awaited_once()
@@ -8173,12 +8195,13 @@ async def test_leg_completion_timeout_fails(hass) -> None:
 
 
 async def test_leg_matic_error_dispatch_fails(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
         raise MaticError("synthetic")
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     with pytest.raises(ServiceValidationError):
         await _async_run_leg(
@@ -8188,18 +8211,23 @@ async def test_leg_matic_error_dispatch_fails(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_failed.assert_awaited_once()
 
 
 async def test_leg_replaced_dispatch_cancels(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
         raise ManagedMotionReplacedError("replaced")
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     with pytest.raises(PlanCancelledError):
         await _async_run_leg(
@@ -8209,6 +8237,10 @@ async def test_leg_replaced_dispatch_cancels(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_cancelled.assert_awaited_once()
@@ -8216,13 +8248,14 @@ async def test_leg_replaced_dispatch_cancels(hass) -> None:
 
 @pytest.mark.parametrize("reason", [None, "motion_replaced", "config_entry_unload"])
 async def test_leg_cancellation_records_history(hass, reason: str | None) -> None:
+    robot = FakeRobot()
     manager = _leg_manager(reason)
     cancel_event = asyncio.Event()
     events = []
     hass.bus.async_listen(f"{DOMAIN}_room_cancelled", events.append)
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def cancel() -> None:
             await asyncio.sleep(0)
@@ -8230,7 +8263,7 @@ async def test_leg_cancellation_records_history(hass, reason: str | None) -> Non
 
         hass.async_create_task(cancel(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     with pytest.raises(PlanCancelledError):
         await _async_run_leg(
@@ -8240,7 +8273,11 @@ async def test_leg_cancellation_records_history(hass, reason: str | None) -> Non
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            robot.port(session_identity=robot.accepting),
+            7,
             cancel_event=cancel_event,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     if reason != "config_entry_unload":
@@ -8263,18 +8300,19 @@ async def test_leg_cancellation_records_history(hass, reason: str | None) -> Non
 
 
 async def test_leg_error_state_raises_robot_error(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def fail() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set("vacuum.matic", "error", {})
+            robot.show("error")
 
         hass.async_create_task(fail(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     with pytest.raises(ServiceValidationError):
         await _async_run_leg(
@@ -8284,31 +8322,32 @@ async def test_leg_error_state_raises_robot_error(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_failed.assert_awaited_once()
 
 
 async def test_leg_takeover_during_verification_interrupts(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def end_leg() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": False},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=False)
 
         hass.async_create_task(end_leg(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     async def takeover(*_args, **_kwargs) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Den"})
+        robot.show("cleaning", current_area="Den")
 
     manager.ledger.async_mark_verifying = AsyncMock(side_effect=takeover)
 
@@ -8320,29 +8359,32 @@ async def test_leg_takeover_during_verification_interrupts(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
-            session_history=AsyncMock(return_value=()),
+            robot.port(
+                session_history=AsyncMock(return_value=()),
+                session_identity=robot.accepting,
+            ),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_interrupted.assert_awaited_once()
 
 
 async def test_leg_without_history_reader_credits_nothing(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def end_leg() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": False},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=False)
 
         hass.async_create_task(end_leg(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     completed = await _async_run_leg(
         hass,
@@ -8351,6 +8393,10 @@ async def test_leg_without_history_reader_credits_nothing(hass) -> None:
         "vacuum.matic",
         "serial",
         _leg_rooms(),
+        robot.port(session_identity=robot.accepting),
+        7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert completed is False
@@ -8360,19 +8406,20 @@ async def test_leg_without_history_reader_credits_nothing(hass) -> None:
 
 async def test_leg_that_ends_in_place_is_interrupted_without_credit(hass) -> None:
     """A leg stopped mid-mission never credits the room it stood in."""
+    robot = FakeRobot()
     rooms = _leg_rooms()
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def stop_in_place() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set("vacuum.matic", "idle", {"current_area": "Kitchen"})
+            robot.show("idle", current_area="Kitchen")
 
         hass.async_create_task(stop_in_place(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     record = _leg_record(("Kitchen",), ("Kitchen",))
 
     with pytest.raises(ServiceValidationError):
@@ -8383,8 +8430,13 @@ async def test_leg_that_ends_in_place_is_interrupted_without_credit(hass) -> Non
             "vacuum.matic",
             "serial",
             rooms,
-            session_history=AsyncMock(return_value=(record,)),
-            motion_token=7,
+            robot.port(
+                session_history=AsyncMock(return_value=(record,)),
+                session_identity=robot.accepting,
+            ),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_completed.assert_not_awaited()
@@ -8398,6 +8450,7 @@ async def test_leg_that_ends_in_place_is_interrupted_without_credit(hass) -> Non
 async def test_leg_partial_verification_does_not_start_next_leg(
     hass, monkeypatch
 ) -> None:
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -8406,19 +8459,15 @@ async def test_leg_partial_verification_does_not_start_next_leg(
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def end_leg() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": False},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=False)
 
         hass.async_create_task(end_leg(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
@@ -8436,9 +8485,11 @@ async def test_leg_partial_verification_does_not_start_next_leg(
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
+        robot.port(session_history=history, session_identity=robot.accepting),
+        7,
         managed_user_command=sender,
-        motion_token=7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert completed is False
@@ -8446,6 +8497,7 @@ async def test_leg_partial_verification_does_not_start_next_leg(
 
 
 async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
+    robot = FakeRobot()
     rooms = _leg_rooms()
     now = dt_util.utcnow()
     dispatched_at = now - timedelta(seconds=60)
@@ -8506,6 +8558,7 @@ async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
         frozenset({baseline_key}),
         rooms,
         dispatched_at,
+        robot=robot.port(),
         attempts=1,
     )
     assert evidence == {"room-kitchen": (records[-1].session.ended_at, 20)}
@@ -8517,6 +8570,7 @@ async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
             frozenset({baseline_key}),
             rooms,
             dispatched_at,
+            robot=robot.port(),
             attempts=1,
         )
         is None
@@ -8528,25 +8582,21 @@ async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
             frozenset(),
             rooms,
             dispatched_at,
+            robot=robot.port(),
             attempts=1,
-        )
-        is None
-    )
-    assert (
-        await _async_verify_leg_completion(
-            None, frozenset(), rooms, dispatched_at, attempts=1
         )
         is None
     )
 
 
 async def test_leg_unclassified_error_reraises_after_failure_mark(hass) -> None:
+    robot = FakeRobot()
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
         raise HomeAssistantError("boom")
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     with pytest.raises(HomeAssistantError):
         await _async_run_leg(
@@ -8556,6 +8606,10 @@ async def test_leg_unclassified_error_reraises_after_failure_mark(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_failed.assert_awaited_once()
@@ -8563,6 +8617,7 @@ async def test_leg_unclassified_error_reraises_after_failure_mark(hass) -> None:
 
 
 async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
+    robot = FakeRobot()
     rooms = _leg_rooms()
     dispatched_at = dt_util.utcnow()
 
@@ -8576,6 +8631,7 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
                 frozenset(),
                 rooms,
                 dispatched_at,
+                robot=robot.port(),
                 attempts=2,
             )
             is None
@@ -8590,6 +8646,7 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
                 frozenset(),
                 rooms,
                 dispatched_at,
+                robot=robot.port(),
                 cancel_event=cancel_event,
                 attempts=2,
             )
@@ -8601,6 +8658,7 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
                 frozenset(),
                 rooms,
                 dispatched_at,
+                robot=robot.port(),
                 cancel_event=quiet_cancel,
                 attempts=2,
             )
@@ -8621,45 +8679,10 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
             frozenset(),
             rooms,
             dispatched_at,
+            robot=robot.port(),
             cancel_event=late_cancel,
             attempts=2,
         )
-
-
-async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> None:
-    """Ending in place is a stop; only a return can end a room normally.
-
-    Live traces on firmware v172.12: a stopped task goes straight to ``idle``
-    where it stood, while a finished one goes ``returning`` first.  The robot's
-    own record calls both completed, so this transition is the only thing that
-    distinguishes them.
-    """
-    room = _room("Kitchen", "room-kitchen")
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
-
-    async def settle(state: str) -> None:
-        await asyncio.sleep(0)
-        hass.states.async_set("vacuum.matic", state, {"current_area": "Kitchen"})
-
-    hass.async_create_task(settle("idle"), eager_start=True)
-    assert (
-        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-        is RoomRunOutcome.STOPPED_IN_PLACE
-    )
-
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
-    hass.async_create_task(settle("returning"), eager_start=True)
-    assert (
-        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-        is RoomRunOutcome.HANDOFF_CANDIDATE
-    )
-
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
-    hass.async_create_task(settle("docked"), eager_start=True)
-    assert (
-        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-        is RoomRunOutcome.HANDOFF_CANDIDATE
-    )
 
 
 @pytest.mark.parametrize("real_store", [False, True])
@@ -8668,6 +8691,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     hass, real_store, reject_second_credit
 ) -> None:
     """One leg mission glides room to room; credit comes from one record."""
+    robot = FakeRobot()
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
     manager = CleaningPlanManager(hass) if real_store else _leg_manager()
     if real_store:
@@ -8680,25 +8704,19 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
         manager.ledger.async_mark_completed = AsyncMock(side_effect=[True, False])
     commands = []
 
-    async def send_command(call) -> None:
-        commands.append(call.data)
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    async def send_command(command) -> None:
+        commands.append(command)
+        robot.show("cleaning", current_area="Kitchen")
 
         async def glide() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": "Office"}
-            )
+            robot.show("cleaning", current_area="Office")
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Office", "low_charge": False},
-            )
+            robot.show("returning", current_area="Office", low_charge=False)
 
         hass.async_create_task(glide(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     record: CleaningSessionRecord | None = None
     reads = 0
 
@@ -8730,10 +8748,15 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
                 "vacuum.matic",
                 "serial",
                 rooms,
-                refresh=AsyncMock(),
-                session_history=history,
+                robot.port(
+                    refresh=AsyncMock(),
+                    session_history=history,
+                    session_identity=robot.accepting,
+                ),
+                motion_token,
                 managed_user_command=sender,
-                motion_token=motion_token,
+                floor_token="floor",
+                checkpoint_dispatch=AsyncMock(),
             )
         completed = False
     else:
@@ -8744,16 +8767,21 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
             "vacuum.matic",
             "serial",
             rooms,
-            refresh=AsyncMock(),
-            session_history=history,
+            robot.port(
+                refresh=AsyncMock(),
+                session_history=history,
+                session_identity=robot.accepting,
+            ),
+            motion_token,
             managed_user_command=sender,
-            motion_token=motion_token,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
     await hass.async_block_till_done()
 
     assert completed is (not reject_second_credit)
     assert len(commands) == 1
-    assert commands[0]["params"]["rooms"] == ["room-kitchen", "room-office"]
+    assert commands[0].rooms == ("room-kitchen", "room-office")
     assert started_events == ["Kitchen", "Office"]
     assert sorted(completed_events) == (
         ["Kitchen"] if reject_second_credit else ["Kitchen", "Office"]
@@ -8769,6 +8797,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
 async def test_leg_partial_record_credits_only_verified_subset(
     hass, monkeypatch
 ) -> None:
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -8777,19 +8806,15 @@ async def test_leg_partial_record_credits_only_verified_subset(
     manager = _leg_manager()
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def end_leg() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": False},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=False)
 
         hass.async_create_task(end_leg(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
@@ -8807,9 +8832,11 @@ async def test_leg_partial_record_credits_only_verified_subset(
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
+        robot.port(session_history=history, session_identity=robot.accepting),
+        7,
         managed_user_command=sender,
-        motion_token=7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert completed is False
@@ -8823,25 +8850,22 @@ async def test_leg_partial_record_credits_only_verified_subset(
 
 async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
     """A finish-current-room stop sends STOP at the observed room boundary."""
+    robot = FakeRobot()
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
     manager = _leg_manager()
     finish_room_event = asyncio.Event()
 
-    async def send_command(call) -> None:
-        if call.data.get("command") != "clean_rooms":
-            return
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    async def send_command(_command) -> None:
+        robot.show("cleaning", current_area="Kitchen")
 
         async def cross_boundary() -> None:
             await asyncio.sleep(0)
             finish_room_event.set()
-            hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": "Office"}
-            )
+            robot.show("cleaning", current_area="Office")
 
         hass.async_create_task(cross_boundary(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
@@ -8855,11 +8879,7 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
 
     async def stop_then_return(token, command) -> None:
         assert command is UserCommand.STOP
-        hass.states.async_set(
-            "vacuum.matic",
-            "returning",
-            {"current_area": "Office", "low_charge": False},
-        )
+        robot.show("returning", current_area="Office", low_charge=False)
 
     sender.side_effect = stop_then_return
 
@@ -8870,10 +8890,12 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
+        robot.port(session_history=history, session_identity=robot.accepting),
+        7,
         managed_user_command=sender,
-        motion_token=7,
         finish_room_event=finish_room_event,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert completed is False
@@ -8890,6 +8912,7 @@ async def test_boundary_stop_is_not_repeated_while_next_room_is_still_cleaning(
     hass,
 ):
     """Track the room after STOP so its live state cannot restart the countdown."""
+    robot = FakeRobot()
     rooms = [
         _room("Kitchen", "room-kitchen"),
         _room("Office", "room-office"),
@@ -8898,21 +8921,17 @@ async def test_boundary_stop_is_not_repeated_while_next_room_is_still_cleaning(
     manager = _leg_manager()
     finish_room_event = asyncio.Event()
 
-    async def send_command(call) -> None:
-        if call.data.get("command") != "clean_rooms":
-            return
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    async def send_command(_command) -> None:
+        robot.show("cleaning", current_area="Kitchen")
 
         async def cross_boundary() -> None:
             await asyncio.sleep(0)
             finish_room_event.set()
-            hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": "Office"}
-            )
+            robot.show("cleaning", current_area="Office")
 
         hass.async_create_task(cross_boundary(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     stop_count = 0
 
     async def stop_then_settle(token: int, command: UserCommand) -> None:
@@ -8924,21 +8943,13 @@ async def test_boundary_stop_is_not_repeated_while_next_room_is_still_cleaning(
 
             async def settle() -> None:
                 await asyncio.sleep(0.01)
-                hass.states.async_set(
-                    "vacuum.matic",
-                    "returning",
-                    {"current_area": "Office", "low_charge": False},
-                )
+                robot.show("returning", current_area="Office", low_charge=False)
 
             hass.async_create_task(settle())
         else:
             # The pre-fix loop sends STOP repeatedly while Office remains the
             # current area. Let it unwind so the assertion reports the defect.
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Office", "low_charge": False},
-            )
+            robot.show("returning", current_area="Office", low_charge=False)
 
     sender = AsyncMock(side_effect=stop_then_settle)
     completed = await _async_run_leg(
@@ -8948,9 +8959,12 @@ async def test_boundary_stop_is_not_repeated_while_next_room_is_still_cleaning(
         "vacuum.matic",
         "serial",
         rooms,
+        robot.port(session_identity=robot.accepting),
+        7,
         managed_user_command=sender,
-        motion_token=7,
         finish_room_event=finish_room_event,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
 
     assert completed is False
@@ -8962,6 +8976,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
     hass,
 ) -> None:
     """An unverified current room cannot dispatch the following room."""
+    robot = FakeRobot()
     room = _room("Kitchen", "room-kitchen")
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -8986,19 +9001,15 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
     )
 
     async def send_command(_call) -> None:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def finish_room() -> None:
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic",
-                "returning",
-                {"current_area": "Kitchen", "low_charge": False},
-            )
+            robot.show("returning", current_area="Kitchen", low_charge=False)
 
         hass.async_create_task(finish_room(), eager_start=True)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     sender = AsyncMock()
     with patch(
@@ -9012,9 +9023,14 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
             "vacuum.matic",
             "serial",
             room,
-            session_history=AsyncMock(return_value=()),
+            robot.port(
+                session_history=AsyncMock(return_value=()),
+                session_identity=robot.accepting,
+            ),
+            7,
             managed_user_command=sender,
-            motion_token=7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     assert completed is False
@@ -9024,6 +9040,8 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
 
 
 async def test_room_accepts_only_matching_prepared_dispatch() -> None:
+    robot = FakeRobot()
+    robot.running = _OWNED
     room = _room("Kitchen", "room-kitchen")
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -9047,19 +9065,17 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     hass = SimpleNamespace(
-        services=SimpleNamespace(async_call=AsyncMock()),
         bus=SimpleNamespace(async_fire=MagicMock()),
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     prepared = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            _mission_ends(robot),
         ),
     ):
         assert not await _async_run_room(
@@ -9069,8 +9085,11 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             "vacuum.matic",
             "serial",
             room,
-            active_session=AsyncMock(return_value=False),
+            robot.port(session_identity=robot.accepting),
+            7,
             prepared_dispatch=prepared,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     wrong = _PreparedRoomDispatch(
@@ -9084,20 +9103,22 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             "vacuum.matic",
             "serial",
             room,
+            robot.port(session_identity=robot.accepting),
+            7,
             prepared_dispatch=wrong,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
 
 @pytest.mark.parametrize("failure_stage", ["initial_unknown", "later_unknown"])
-async def test_unknown_active_session_interrupts_without_room_credit(
+async def test_unknown_session_identity_fails_closed_without_room_credit(
     failure_stage,
 ) -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -9120,25 +9141,32 @@ async def test_unknown_active_session_interrupts_without_room_credit(
         ),
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
-    reader = (
-        AsyncMock(return_value=None)
-        if failure_stage == "initial_unknown"
-        else AsyncMock(side_effect=[True, None, None, None])
-    )
+    # After the handoff the session reads as this run's once, while the room
+    # outcome settles, and once more for a later failure; then it is unknown.
+    known_reads = 1 if failure_stage == "initial_unknown" else 2
+
+    async def identity() -> bytes | None:
+        nonlocal known_reads
+        if outcome.await_count:
+            if not known_reads:
+                return None
+            known_reads -= 1
+        return await robot.accepting()
+
     sender = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
-        ),
+        ) as outcome,
         patch(
             "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
         ),
-        pytest.raises(ServiceValidationError) as interrupted,
+        pytest.raises(ServiceValidationError) as failure,
     ):
         await _async_run_room(
             hass,
@@ -9147,26 +9175,24 @@ async def test_unknown_active_session_interrupts_without_room_credit(
             "vacuum.matic",
             "serial",
             _room("Kitchen", "room-kitchen"),
-            active_session=reader,
-            motion_token=10,
+            robot.port(session_identity=identity),
+            10,
             managed_user_command=sender,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
-    assert interrupted.value.translation_key == "room_interrupted"
-    sender.assert_awaited_once_with(10, UserCommand.STOP)
+    assert failure.value.translation_key == "room_taken_over"
+    # A task this run cannot identify is never its to stop.
+    sender.assert_not_awaited()
     manager.ledger.async_mark_completed.assert_not_awaited()
-    interrupted_event = bus.async_fire.call_args_list[-1].args[1]
-    assert interrupted_event["reason_code"] == "interrupted"
-    assert interrupted_event["cause"] == "unknown"
 
 
 async def test_room_starting_paused_is_suspended_until_resume() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -9188,10 +9214,10 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
         ),
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
-    wait = AsyncMock(side_effect=["paused", "cleaning"])
+    wait = AsyncMock(side_effect=[RobotActivity.PAUSED, RobotActivity.CLEANING])
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
             wait,
         ),
         patch(
@@ -9206,14 +9232,18 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             "vacuum.matic",
             "serial",
             _room("Kitchen", "room-kitchen"),
-            active_session=AsyncMock(return_value=False),
-            session_identity=AsyncMock(
-                side_effect=lambda: (
-                    b""
-                    if not services.async_call.await_count or outcome.await_count >= 1
-                    else b"native-task"
-                )
+            robot.port(
+                session_identity=AsyncMock(
+                    side_effect=lambda: (
+                        b""
+                        if not robot.started or outcome.await_count >= 1
+                        else _session_identity(robot.started[-1].session_id)
+                    )
+                ),
             ),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     manager.ledger.async_mark_suspended.assert_awaited_once()
@@ -9223,12 +9253,10 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
 
 
 async def test_room_pause_and_resume_outcome() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
-        services=services,
         bus=bus,
-        states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -9252,7 +9280,7 @@ async def test_room_pause_and_resume_outcome() -> None:
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = _room("Kitchen", "room-kitchen")
-    wait = AsyncMock(return_value="cleaning")
+    wait = AsyncMock(return_value=RobotActivity.CLEANING)
     run = _async_run_room(
         hass,
         _call(hass),
@@ -9260,18 +9288,22 @@ async def test_room_pause_and_resume_outcome() -> None:
         "vacuum.matic",
         "serial",
         room,
-        active_session=AsyncMock(return_value=False),
-        session_identity=AsyncMock(
-            side_effect=lambda: (
-                b""
-                if not services.async_call.await_count or outcome.await_count >= 2
-                else b"native-task"
-            )
+        robot.port(
+            session_identity=AsyncMock(
+                side_effect=lambda: (
+                    b""
+                    if not robot.started or outcome.await_count >= 2
+                    else _session_identity(robot.started[-1].session_id)
+                )
+            ),
         ),
+        7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
             wait,
         ),
         patch(
@@ -9296,9 +9328,9 @@ async def test_room_pause_and_resume_outcome() -> None:
 async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
     room = _room("Kitchen", "room-kitchen")
     for interrupted in (True, False):
-        services = SimpleNamespace(async_call=AsyncMock())
+        robot = FakeRobot()
         bus = SimpleNamespace(async_fire=MagicMock())
-        hass = SimpleNamespace(services=services, bus=bus)
+        hass = SimpleNamespace(bus=bus)
         manager = SimpleNamespace(
             ledger=SimpleNamespace(
                 async_mark_started=AsyncMock(),
@@ -9321,9 +9353,11 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         )
         if interrupted:
             outcome = AsyncMock(return_value=RoomRunOutcome.INTERRUPTED)
-            state = AsyncMock(return_value="cleaning")
+            state = AsyncMock(return_value=RobotActivity.CLEANING)
         else:
-            services.async_call.side_effect = ManagedMotionReplacedError("replaced")
+            robot.on_start = AsyncMock(
+                side_effect=ManagedMotionReplacedError("replaced")
+            )
             outcome = AsyncMock()
             state = AsyncMock()
         sender = AsyncMock()
@@ -9333,7 +9367,7 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
                 outcome,
             ),
             patch(
-                "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
+                "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
                 state,
             ),
             pytest.raises(
@@ -9347,8 +9381,11 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
                 "vacuum.matic",
                 "serial",
                 room,
-                motion_token=4,
+                robot.port(session_identity=robot.accepting),
+                4,
                 managed_user_command=sender,
+                floor_token="floor",
+                checkpoint_dispatch=AsyncMock(),
             )
         manager.ledger.async_mark_completed.assert_not_awaited()
         if interrupted:
@@ -9365,9 +9402,9 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
 
 async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     """Config-entry unload stops accepted motion and never credits the room."""
-    services = SimpleNamespace(async_call=AsyncMock())
+    robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
+    hass = SimpleNamespace(bus=bus)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
@@ -9391,8 +9428,8 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     sender = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_vacuum_state",
-            AsyncMock(return_value="cleaning"),
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
@@ -9407,8 +9444,11 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
             "vacuum.matic",
             "serial",
             _room("Kitchen", "room-kitchen"),
-            motion_token=8,
+            robot.port(session_identity=robot.accepting),
+            8,
             managed_user_command=sender,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
         )
 
     sender.assert_awaited_once_with(8, UserCommand.STOP)
@@ -9417,166 +9457,10 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     manager.ledger.async_mark_completed.assert_not_awaited()
 
 
-async def test_wait_handles_error_unavailable_transition_and_cancel(hass) -> None:
-    hass.states.async_set("vacuum.matic", "error")
-    with pytest.raises(ServiceValidationError, match="error"):
-        await _async_wait_for_vacuum_state(hass, "vacuum.matic", {"cleaning"}, 10)
-
-    hass.states.async_set("vacuum.matic", "unavailable")
-    waiting = asyncio.create_task(
-        _async_wait_for_vacuum_state(hass, "vacuum.matic", {"cleaning"}, 10)
-    )
-    await asyncio.sleep(0)
-    hass.states.async_set("vacuum.matic", "cleaning")
-    assert await waiting == "cleaning"
-
-    cancel = asyncio.Event()
-    waiting = asyncio.create_task(
-        _async_wait_for_vacuum_state(hass, "vacuum.matic", {"docked"}, 10, cancel)
-    )
-    await asyncio.sleep(0)
-    cancel.set()
-    with pytest.raises(PlanCancelledError):
-        await waiting
-
-    room = _room("Study", "room-study")
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
-    target_wait = asyncio.create_task(
-        _async_wait_for_vacuum_state(hass, "vacuum.matic", {"cleaning"}, 10, room=room)
-    )
-    await asyncio.sleep(0)
-    assert target_wait.done() is False
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": " The   Study "})
-    assert await target_wait == "cleaning"
-
-
-async def test_room_outcome_requires_target_evidence_and_classifies_recharge(
-    hass,
-) -> None:
-    room = _room("Study", "room-study")
-    hass.states.async_set("vacuum.matic", "returning", {"low_charge": False})
-    assert (
-        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-        is RoomRunOutcome.INTERRUPTED
-    )
-
-    hass.states.async_set(
-        "vacuum.matic",
-        "returning",
-        {"current_area": "Study", "low_charge": True},
-    )
-    assert (
-        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-        is RoomRunOutcome.SUSPENDED
-    )
-
-    hass.states.async_set("vacuum.matic", "paused", {"current_area": "Study"})
-    assert (
-        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-        is RoomRunOutcome.PAUSED
-    )
-
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": None})
-    waiting = asyncio.create_task(
-        _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-    )
-    await asyncio.sleep(0)
-    hass.states.async_set("vacuum.matic", "idle")
-    assert await waiting is RoomRunOutcome.STOPPED_IN_PLACE
-
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "room-study"})
-    waiting = asyncio.create_task(
-        _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-    )
-    await asyncio.sleep(0)
-    hass.states.async_set(
-        "vacuum.matic",
-        "returning",
-        {"previous_area": "Study", "low_charge": False},
-    )
-    hass.states.async_set("vacuum.matic", "docked")
-    assert await waiting is RoomRunOutcome.HANDOFF_CANDIDATE
-
-
-async def test_room_outcome_propagates_errors_and_cancellation(hass) -> None:
-    room = _room("Study", "room-study")
-    hass.states.async_set("vacuum.matic", "error")
-    with pytest.raises(ServiceValidationError, match="reported an error"):
-        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
-    cancel = asyncio.Event()
-    waiting = asyncio.create_task(
-        _async_wait_for_room_outcome(hass, "vacuum.matic", room, cancel)
-    )
-    await asyncio.sleep(0)
-    cancel.set()
-    with pytest.raises(PlanCancelledError):
-        await waiting
-
-    cancel.clear()
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
-    waiting = asyncio.create_task(
-        _async_wait_for_room_outcome(hass, "vacuum.matic", room, cancel)
-    )
-    await asyncio.sleep(0)
-    hass.states.async_set("vacuum.matic", "returning", {"low_charge": False})
-    assert await waiting is RoomRunOutcome.HANDOFF_CANDIDATE
-
-    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
-    stopped = asyncio.create_task(
-        _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-    )
-    await asyncio.sleep(0)
-    hass.states.async_set("vacuum.matic", "idle", {"current_area": "Study"})
-    # Ending in place is a stop, never a finished room.
-    assert await stopped is RoomRunOutcome.STOPPED_IN_PLACE
-
-
-async def test_room_outcome_ignores_transit_through_other_mapped_rooms(hass) -> None:
-    room = _room("Study", "room-study")
-    rooms = {"room-study": "Study", "room-kitchen": "Kitchen"}
-    hass.states.async_set(
-        "vacuum.matic",
-        "cleaning",
-        {"current_area": "Study", "rooms": rooms},
-    )
-    waiting = asyncio.create_task(
-        _async_wait_for_room_outcome(hass, "vacuum.matic", room)
-    )
-    await asyncio.sleep(0)
-    hass.states.async_set(
-        "vacuum.matic",
-        "cleaning",
-        {"current_area": None, "rooms": rooms},
-    )
-    await asyncio.sleep(0)
-    assert waiting.done() is False
-    hass.states.async_set(
-        "vacuum.matic",
-        "cleaning",
-        {"current_area": "Hallway transit", "rooms": rooms},
-    )
-    await asyncio.sleep(0)
-    assert waiting.done() is False
-    hass.states.async_set(
-        "vacuum.matic",
-        "cleaning",
-        {"current_area": "the Kitchen", "rooms": rooms},
-    )
-    await asyncio.sleep(0)
-    assert waiting.done() is False
-    hass.states.async_set(
-        "vacuum.matic",
-        "docked",
-        {"current_area": "Kitchen", "rooms": rooms},
-    )
-    assert await waiting is RoomRunOutcome.HANDOFF_CANDIDATE
-
-
 async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
     hass,
 ) -> None:
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     room = _room("Kitchen", "room-kitchen")
@@ -9593,7 +9477,7 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
                 "serial",
                 [room],
                 floor_token="floor",
-                robot=robot_port(),
+                robot=robot.port(),
             )
     finally:
         lock.release()
@@ -9610,51 +9494,39 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
             "serial",
             [room],
             floor_token="floor",
-            robot=robot_port(),
+            robot=robot.port(),
         )
 
-    service_call = AsyncMock()
     managed_command = AsyncMock()
-    fake_hass = SimpleNamespace(
-        services=SimpleNamespace(async_call=service_call),
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="idle"))
-        ),
-    )
+    robot.show("idle")
     with patch(
         "custom_components.matic_robot.managed_room._async_run_room", _owned_leg()
     ) as run:
         await _async_execute_rooms(
-            fake_hass,
+            hass,
             call,
             manager,
             "vacuum.matic",
             "serial",
             [room],
             floor_token="floor",
-            robot=robot_port(session_identity=AsyncMock(return_value=_OWNED)),
+            robot=robot.port(session_identity=AsyncMock(return_value=_OWNED)),
             managed_user_command=managed_command,
         )
     run.assert_awaited_once()
     managed_command.assert_awaited_once()
     assert managed_command.await_args.args[1] is UserCommand.DOCK
-    service_call.assert_not_awaited()
-    service_call.assert_not_awaited()
+    assert not robot.started
 
 
 async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) -> None:
     """A graceful stop never dispatches the next room and always returns home."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    service_call = AsyncMock()
     managed_command = AsyncMock()
-    fake_hass = SimpleNamespace(
-        services=SimpleNamespace(async_call=service_call),
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="idle"))
-        ),
-    )
-    call = _call(fake_hass, return_to_base=False)
+    robot.show("idle")
+    call = _call(hass, return_to_base=False)
 
     async def finish_then_stop(*_args, on_native_identity, **_kwargs) -> bool:
         on_native_identity(_OWNED)
@@ -9666,14 +9538,14 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
         AsyncMock(side_effect=finish_then_stop),
     ) as run:
         await _async_execute_rooms(
-            fake_hass,
+            hass,
             call,
             manager,
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "one"), _heavy_room("Study", "two")],
             floor_token="floor",
-            robot=robot_port(session_identity=AsyncMock(return_value=_OWNED)),
+            robot=robot.port(session_identity=AsyncMock(return_value=_OWNED)),
             managed_user_command=managed_command,
         )
 
@@ -9684,50 +9556,40 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
 
 async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) -> None:
     """A settings boundary waits for return settlement without sending STOP."""
-    states = iter(
-        [
-            SimpleNamespace(state="returning"),
-            SimpleNamespace(state="idle"),
-        ]
-    )
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(side_effect=lambda _entity_id: next(states))
-        )
-    )
+    robot = FakeRobot()
+    shown = iter(("returning", "idle"))
+    refresh = AsyncMock(side_effect=lambda: robot.show(next(shown)))
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 0
     )
 
     assert await _async_wait_for_settled_leg_handoff(
-        fake_hass,
-        "vacuum.matic",
+        robot.port(
+            refresh=refresh,
+            active_session=AsyncMock(return_value=None),
+            session_identity=AsyncMock(return_value=b""),
+        ),
         asyncio.Event(),
-        identity_reader=AsyncMock(return_value=b""),
         timeout_seconds=1,
     )
-    assert fake_hass.states.get.call_count == 2
+    assert refresh.await_count == 2
 
 
 async def test_settled_leg_handoff_accepts_inactive_session_before_identity_clears(
     hass, monkeypatch
 ) -> None:
     """A blocked dock must not strand the next settings leg on stale identity."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 0
     )
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="returning"))
-        )
-    )
+    robot.show("returning")
 
     assert await _async_wait_for_settled_leg_handoff(
-        fake_hass,
-        "vacuum.matic",
+        robot.port(
+            session_identity=AsyncMock(return_value=b"completed-session"),
+        ),
         None,
-        active_session=AsyncMock(return_value=False),
-        identity_reader=AsyncMock(return_value=b"completed-session"),
         expected_identity=b"completed-session",
         timeout_seconds=1,
     )
@@ -9737,21 +9599,18 @@ async def test_settled_leg_handoff_tolerates_session_read_error(
     hass, monkeypatch
 ) -> None:
     """A transient session read error keeps the bounded handoff fail-closed."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 0
     )
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="returning"))
-        )
-    )
+    robot.show("returning")
 
     assert not await _async_wait_for_settled_leg_handoff(
-        fake_hass,
-        "vacuum.matic",
+        robot.port(
+            active_session=AsyncMock(side_effect=MaticError("session unavailable")),
+            session_identity=AsyncMock(return_value=b"completed-session"),
+        ),
         None,
-        active_session=AsyncMock(side_effect=MaticError("session unavailable")),
-        identity_reader=AsyncMock(return_value=b"completed-session"),
         expected_identity=b"completed-session",
         timeout_seconds=0.001,
     )
@@ -9761,48 +9620,48 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
     hass,
 ) -> None:
     """Handoff fails closed for cancellation, refresh errors, and takeover."""
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="returning"))
-        )
-    )
+    robot = FakeRobot()
+    robot.show("returning")
     cancelled = asyncio.Event()
     cancelled.set()
     with pytest.raises(PlanCancelledError):
         await _async_wait_for_settled_leg_handoff(
-            fake_hass, "vacuum.matic", cancelled, timeout_seconds=1
-        )
-
-    with pytest.raises(HomeAssistantError):
-        await _async_wait_for_settled_leg_handoff(
-            SimpleNamespace(
-                states=SimpleNamespace(
-                    get=MagicMock(return_value=SimpleNamespace(state="error"))
-                )
-            ),
-            "vacuum.matic",
-            None,
-            refresh=AsyncMock(side_effect=MaticError("refresh failed")),
-            identity_reader=AsyncMock(return_value=b""),
+            robot.port(active_session=AsyncMock(return_value=None)),
+            cancelled,
             timeout_seconds=1,
         )
 
+    robot.show("error")
+    with pytest.raises(HomeAssistantError):
+        await _async_wait_for_settled_leg_handoff(
+            robot.port(
+                refresh=AsyncMock(side_effect=MaticError("refresh failed")),
+                active_session=AsyncMock(return_value=None),
+                session_identity=AsyncMock(return_value=b""),
+            ),
+            None,
+            timeout_seconds=1,
+        )
+    robot.show("returning")
+
     with pytest.raises(RoomTakenOverError):
         await _async_wait_for_settled_leg_handoff(
-            fake_hass,
-            "vacuum.matic",
+            robot.port(
+                active_session=AsyncMock(return_value=None),
+                session_identity=AsyncMock(return_value=b"replacement"),
+            ),
             None,
-            identity_reader=AsyncMock(return_value=b"replacement"),
             expected_identity=b"original",
             timeout_seconds=1,
         )
 
     with pytest.raises(RoomTakenOverError):
         await _async_wait_for_settled_leg_handoff(
-            fake_hass,
-            "vacuum.matic",
+            robot.port(
+                active_session=AsyncMock(return_value=None),
+                session_identity=AsyncMock(return_value=b"replacement"),
+            ),
             None,
-            identity_reader=AsyncMock(return_value=b"replacement"),
             reject_new_identity=True,
             timeout_seconds=1,
         )
@@ -9810,41 +9669,37 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
 
 async def test_settled_leg_handoff_times_out_without_stop(hass, monkeypatch) -> None:
     """A returning robot reaches the bounded handoff timeout without STOP."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 0
     )
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="returning"))
-        )
-    )
+    robot.show("returning")
     assert not await _async_wait_for_settled_leg_handoff(
-        fake_hass,
-        "vacuum.matic",
+        robot.port(
+            active_session=AsyncMock(return_value=None),
+            session_identity=AsyncMock(return_value=b"active"),
+        ),
         None,
-        identity_reader=AsyncMock(return_value=b"active"),
         timeout_seconds=0.001,
     )
 
 
 async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None:
     """Cancellation while waiting aborts the handoff without cleanup."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 1
     )
     cancel_event = asyncio.Event()
     hass.loop.call_soon(cancel_event.set)
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="returning"))
-        )
-    )
+    robot.show("returning")
     with pytest.raises(PlanCancelledError):
         await _async_wait_for_settled_leg_handoff(
-            fake_hass,
-            "vacuum.matic",
+            robot.port(
+                active_session=AsyncMock(return_value=None),
+                session_identity=AsyncMock(return_value=b"active"),
+            ),
             cancel_event,
-            identity_reader=AsyncMock(return_value=b"active"),
             timeout_seconds=1,
         )
 
@@ -9854,6 +9709,7 @@ async def test_settled_handoff_wakes_on_graceful_stop(
     hass, monkeypatch, with_cancel
 ) -> None:
     """A stop wakes the real waiter promptly even while the robot returns."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 60
     )
@@ -9864,13 +9720,13 @@ async def test_settled_handoff_wakes_on_graceful_stop(
         observed.set()
         return b"previous"
 
-    hass.states.async_set("vacuum.matic", "returning")
+    robot.show("returning")
     waiting = asyncio.create_task(
         _async_wait_for_settled_leg_handoff(
-            hass,
-            "vacuum.matic",
+            robot.port(
+                active_session=AsyncMock(return_value=None), session_identity=identity
+            ),
             asyncio.Event() if with_cancel else None,
-            identity_reader=identity,
             expected_identity=b"previous",
             finish_room_event=finish,
             timeout_seconds=720,
@@ -9886,6 +9742,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     hass, settled
 ) -> None:
     """A blocked or stopped boundary leaves remaining legs unattempted."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
@@ -9912,7 +9769,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
         if settled is True:
             manager.control.finish_room_event("serial").set()
         if settled == "during_wait":
-            hass.states.async_set("vacuum.matic", "returning")
+            robot.show("returning")
             hass.loop.call_soon(manager.control.finish_room_event("serial").set)
             return await asyncio.wait_for(
                 _async_wait_for_settled_leg_handoff(*_args, **_kwargs), 1
@@ -9944,11 +9801,11 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=robot_port(
+            robot=robot.port(
                 session_identity=AsyncMock(return_value=b""),
-                active_session=AsyncMock(return_value=False)
-                if settled is True
-                else None,
+                active_session=AsyncMock(
+                    return_value=False if settled is True else None
+                ),
                 session_history=AsyncMock(return_value=()),
             ),
             managed_user_command=sender,
@@ -9977,6 +9834,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
     hass, takeover_leg, takeover, multi_room
 ) -> None:
     """Every settled boundary fences the real dispatcher, not its later reads."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
@@ -9998,22 +9856,24 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
     sender = AsyncMock()
     identity = AsyncMock(return_value=b"")
     history = AsyncMock(return_value=())
-    command = AsyncMock()
-    hass.services.async_register("vacuum", "send_command", command)
+    sessions: list[bytes] = []
+
+    async def accept(command) -> None:
+        sessions.append(_session_identity(command.session_id))
+        identity.return_value = sessions[-1]
+
+    robot.on_start = accept
     calls = 0
 
     async def run_leg(*args, **kwargs) -> bool:
         nonlocal calls
         index = calls
         calls += 1
-        assert kwargs["session_identity"] is identity
+        assert args[6].session_identity is identity
         if index == 0 and takeover_leg != 0:
             assert kwargs["expected_dispatch_identity"] is None
         else:
-            assert kwargs["expected_dispatch_identity"] in {
-                b"",
-                b"managed-session",
-            }
+            assert kwargs["expected_dispatch_identity"] in {b"", *sessions}
         if index == takeover_leg:
             if takeover == "identity":
                 identity.return_value = b"replacement"
@@ -10024,19 +9884,15 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             return await _async_run_leg(*args, **kwargs)
         # Exercise the actual before/after-command reads for each successful
         # earlier leg, allowing its newly created native identity.
-        identity.side_effect = [b"", b"managed-session"]
+        identity.return_value = b""
         dispatch = await _async_dispatch_leg_command(
-            hass,
-            _call(hass),
-            "vacuum.matic",
+            robot.port(session_identity=identity),
             args[5],
-            None,
-            None,
-            session_identity=identity,
+            7,
             expected_dispatch_identity=kwargs["expected_dispatch_identity"],
+            floor_token="floor",
         )
-        assert dispatch.native_identity == b"managed-session"
-        identity.side_effect = None
+        assert dispatch.native_identity == sessions[-1]
         for room in args[5]:
             kwargs["record_room_completed"](room)
         return True
@@ -10078,7 +9934,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             "vacuum.matic",
             "serial",
             rooms,
-            robot=robot_port(session_identity=identity, session_history=history),
+            robot=robot.port(session_identity=identity, session_history=history),
             managed_user_command=sender,
             floor_is_current=lambda: True,
             floor_token="a" * 64,
@@ -10086,12 +9942,13 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
         )
 
     assert run.await_count == takeover_leg + 1
-    assert command.await_count == takeover_leg
+    assert len(robot.started) == takeover_leg
     sender.assert_not_awaited()
 
 
 async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
     """A terminal room without native completion never dispatches the next room."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
@@ -10099,7 +9956,7 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
         _heavy_room("Study", "room-study"),
     ]
     managed_command = AsyncMock()
-    hass.states.async_set("vacuum.matic", "idle")
+    robot.show("idle")
     # Smart Stop keeps each room in its own native mission.
     manager.repository.robot("serial")["plans"]["away"] = {"finish_current_room": True}
 
@@ -10114,7 +9971,7 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
             "serial",
             rooms,
             floor_token="floor",
-            robot=robot_port(session_identity=AsyncMock(return_value=_OWNED)),
+            robot=robot.port(session_identity=AsyncMock(return_value=_OWNED)),
             managed_user_command=managed_command,
         )
 
@@ -10129,11 +9986,8 @@ async def test_execute_rooms_rechecks_ownership_after_room_history_save(hass) ->
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     managed_command = AsyncMock()
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="idle"))
-        )
-    )
+    robot = FakeRobot()
+    robot.show("idle")
 
     async def replace_after_room(*_args, **_kwargs) -> bool:
         manager.control.replace_managed_motion("serial")
@@ -10144,14 +9998,14 @@ async def test_execute_rooms_rechecks_ownership_after_room_history_save(hass) ->
         AsyncMock(side_effect=replace_after_room),
     ):
         await _async_execute_rooms(
-            fake_hass,
-            _call(fake_hass, return_to_base=True),
+            hass,
+            _call(hass, return_to_base=True),
             manager,
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "one")],
             floor_token="floor",
-            robot=robot_port(),
+            robot=robot.port(),
             managed_user_command=managed_command,
         )
 
@@ -10161,12 +10015,9 @@ async def test_execute_rooms_rechecks_ownership_after_room_history_save(hass) ->
 
 async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> None:
     room = _room("Kitchen", "one")
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="idle"))
-        )
-    )
-    call = _call(fake_hass, return_to_base=True)
+    robot = FakeRobot()
+    robot.show("idle")
+    call = _call(hass, return_to_base=True)
 
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -10182,14 +10033,14 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
         ),
     ):
         await _async_execute_rooms(
-            fake_hass,
+            hass,
             call,
             manager,
             "vacuum.matic",
             "serial",
             [room],
             floor_token="floor",
-            robot=robot_port(session_identity=AsyncMock(return_value=_OWNED)),
+            robot=robot.port(session_identity=AsyncMock(return_value=_OWNED)),
             managed_user_command=AsyncMock(),
         )
 
@@ -10205,14 +10056,14 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
             _owned_leg(),
         ):
             run = _async_execute_rooms(
-                fake_hass,
+                hass,
                 call,
                 manager,
                 "vacuum.matic",
                 "serial",
                 [room],
                 floor_token="floor",
-                robot=robot_port(session_identity=AsyncMock(return_value=_OWNED)),
+                robot=robot.port(session_identity=AsyncMock(return_value=_OWNED)),
                 managed_user_command=sender,
             )
             if isinstance(error, MaticError):
@@ -10235,25 +10086,22 @@ async def test_config_unload_waits_for_managed_runner(hass) -> None:
         await manager.control.cancellation_event("serial").wait()
         raise PlanCancelledError
 
-    fake_hass = SimpleNamespace(
-        states=SimpleNamespace(
-            get=MagicMock(return_value=SimpleNamespace(state="idle"))
-        )
-    )
+    robot = FakeRobot()
+    robot.show("idle")
     with patch(
         "custom_components.matic_robot.managed_room._async_run_room",
         AsyncMock(side_effect=wait_for_cancel),
     ):
         task = asyncio.create_task(
             _async_execute_rooms(
-                fake_hass,
-                _call(fake_hass),
+                hass,
+                _call(hass),
                 manager,
                 "vacuum.matic",
                 "serial",
                 [_room("Kitchen", "one")],
                 floor_token="floor",
-                robot=robot_port(),
+                robot=robot.port(),
             )
         )
         await entered.wait()
@@ -10334,93 +10182,6 @@ async def test_replacing_motion_cancels_obsolete_reconciliation(hass) -> None:
     manager.control.replace_managed_motion("serial")
     await asyncio.gather(task, return_exceptions=True)
     assert task.cancelled()
-
-
-async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
-    assert await _async_active_session_state(None) is None
-    with patch(
-        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
-    ):
-        assert (
-            await _async_active_session_state(
-                AsyncMock(side_effect=[None, None, False])
-            )
-            is False
-        )
-        assert (
-            await _async_active_session_state(
-                AsyncMock(side_effect=[MaticError("temporary"), False])
-            )
-            is False
-        )
-
-    hass.states.async_set("vacuum.matic", "cleaning")
-    assert (
-        await _async_wait_for_active_session_resolution(
-            hass, "vacuum.matic", AsyncMock(return_value=True)
-        )
-        is True
-    )
-    hass.states.async_set("vacuum.matic", "error")
-    with pytest.raises(ServiceValidationError, match="reported an error"):
-        await _async_wait_for_active_session_resolution(
-            hass, "vacuum.matic", AsyncMock(return_value=True)
-        )
-
-    hass.states.async_set("vacuum.matic", "returning")
-    with patch(
-        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
-    ):
-        assert (
-            await _async_wait_for_active_session_resolution(
-                hass, "vacuum.matic", AsyncMock(return_value=None)
-            )
-            is None
-        )
-        assert (
-            await _async_wait_for_active_session_resolution(
-                hass,
-                "vacuum.matic",
-                AsyncMock(side_effect=[MaticError("temporary"), False]),
-            )
-            is False
-        )
-    assert (
-        await _async_wait_for_active_session_resolution(hass, "vacuum.matic", None)
-        is None
-    )
-
-    cancelled = asyncio.Event()
-    cancelled.set()
-    with pytest.raises(PlanCancelledError):
-        await _async_wait_for_active_session_resolution(
-            hass, "vacuum.matic", AsyncMock(return_value=True), cancelled
-        )
-
-    cancelled.clear()
-
-    async def set_cancel() -> bool:
-        cancelled.set()
-        return True
-
-    with pytest.raises(PlanCancelledError):
-        await _async_wait_for_active_session_resolution(
-            hass, "vacuum.matic", set_cancel, cancelled
-        )
-
-    with patch(
-        "custom_components.matic_robot.managed_observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
-        0,
-    ):
-        assert (
-            await _async_wait_for_active_session_resolution(
-                hass,
-                "vacuum.matic",
-                AsyncMock(side_effect=[True, False]),
-                asyncio.Event(),
-            )
-            is False
-        )
 
 
 def test_entry_lookup_rejects_missing_registry_entry() -> None:
@@ -10528,7 +10289,6 @@ async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None
             rooms,
             robot=robot_port(
                 session_identity=AsyncMock(return_value=b""),
-                active_session=AsyncMock(return_value=False),
                 session_history=AsyncMock(return_value=()),
             ),
             managed_user_command=AsyncMock(),
@@ -10623,6 +10383,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
     hass, failure, activity, session, low_charge, expect_stop, monkeypatch
 ):
     """The real runner must retire ownership even when verification aborts."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     rooms = _leg_rooms()
@@ -10637,12 +10398,12 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
     manager.ledger.async_mark_resumed = resumed
 
     async def send_command(_call):
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def finish():
             # The leg docks once the run has seen its mission start.
             await started.wait()
-            hass.states.async_set("vacuum.matic", "docked", {"current_area": "Kitchen"})
+            robot.show("docked", current_area="Kitchen")
 
         hass.async_create_task(finish(), eager_start=True)
 
@@ -10654,14 +10415,10 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
         assert (
             manager.history.snapshot("serial")["active_plan"]["status"] == "verifying"
         )
-        hass.states.async_set(
-            "vacuum.matic",
-            activity,
-            {"current_area": "Kitchen", "low_charge": low_charge},
-        )
+        robot.show(activity, current_area="Kitchen", low_charge=low_charge)
         raise failure("synthetic verification abort")
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     sender = AsyncMock()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
@@ -10686,10 +10443,10 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
             "serial",
             rooms,
             floor_token="floor",
-            robot=robot_port(
+            robot=robot.port(
                 session_history=history,
                 active_session=native_session,
-                session_identity=accepting_session(hass),
+                session_identity=robot.accepting,
             ),
             managed_user_command=sender,
         )
@@ -10710,6 +10467,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
 
 async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch):
     """Returning to dock must not consume the evidence retry window."""
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     monkeypatch.setattr(
@@ -10720,20 +10478,22 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
     history_reads = 0
 
     async def send_command(_call):
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
 
         async def returning():
             await asyncio.sleep(0)
-            hass.states.async_set(
-                "vacuum.matic", "returning", {"current_area": "Kitchen"}
-            )
+            robot.show("returning", current_area="Kitchen")
 
         hass.async_create_task(returning(), eager_start=True)
 
-    async def active_session():
+    async def identity() -> bytes:
+        # The session outlasts the first two reads of the drive home.
         nonlocal session_reads
-        session_reads += 1
-        return session_reads < 3
+        if robot.state.value.operational.activity is RobotActivity.RETURNING:
+            session_reads += 1
+            if session_reads >= 3:
+                return b""
+        return await robot.owned()
 
     async def history():
         nonlocal history_reads
@@ -10745,7 +10505,7 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
         )
         return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     result = await _async_run_leg(
         hass,
         _leg_call(hass),
@@ -10753,8 +10513,10 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
         "vacuum.matic",
         "serial",
         _leg_rooms(),
-        active_session=active_session,
-        session_history=history,
+        robot.port(session_history=history, session_identity=identity),
+        manager.control.begin_managed_motion("serial"),
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
     assert result is True
     assert manager.history.snapshot("serial")["completed_runs"] == 2
@@ -10763,6 +10525,7 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
 
 async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypatch):
     """A matching but incomplete record is not the end of verification."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -10780,6 +10543,7 @@ async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypa
         frozenset(),
         _leg_rooms(),
         dt_util.utcnow() - timedelta(seconds=180),
+        robot=robot.port(),
         attempts=2,
     )
     assert evidence == {
@@ -10790,6 +10554,7 @@ async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypa
 
 
 async def test_leg_rejects_different_matching_sessions_across_retries(monkeypatch):
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -10802,16 +10567,15 @@ async def test_leg_rejects_different_matching_sessions_across_retries(monkeypatc
             frozenset(),
             _leg_rooms(),
             dt_util.utcnow() - timedelta(seconds=180),
+            robot=robot.port(),
             attempts=2,
         )
         is None
     )
 
 
-@pytest.mark.parametrize("resumes", [False, True])
-async def test_leg_handles_unknown_and_resumed_native_session(
-    hass, monkeypatch, resumes
-):
+async def test_leg_resumes_native_session_after_handoff(hass, monkeypatch):
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     motion_token = manager.control.begin_managed_motion("serial")
@@ -10820,21 +10584,17 @@ async def test_leg_handles_unknown_and_resumed_native_session(
 
     async def return_later():
         await asyncio.sleep(0)
-        hass.states.async_set("vacuum.matic", "returning", {"current_area": "Kitchen"})
+        robot.show("returning", current_area="Kitchen")
 
     async def send_command(_call):
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        robot.show("cleaning", current_area="Kitchen")
         hass.async_create_task(return_later(), eager_start=True)
 
     async def resolution(*args, **kwargs):
         nonlocal resolutions
         resolutions += 1
-        if not resumes:
-            return None
         if resolutions == 1:
-            hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": "Kitchen"}
-            )
+            robot.show("cleaning", current_area="Kitchen")
             hass.async_create_task(return_later(), eager_start=True)
             return True
         return False
@@ -10850,7 +10610,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
         "custom_components.matic_robot.managed_observation._async_wait_for_active_session_resolution",
         resolution,
     )
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     sender = AsyncMock()
     run = _async_run_leg(
         hass,
@@ -10859,27 +10619,25 @@ async def test_leg_handles_unknown_and_resumed_native_session(
         "vacuum.matic",
         "serial",
         _leg_rooms(),
-        active_session=AsyncMock(),
-        session_history=history,
+        robot.port(
+            session_history=history,
+            session_identity=robot.accepting,
+        ),
+        motion_token,
         managed_user_command=sender,
-        motion_token=motion_token,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
-    if resumes:
-        assert await run is True
-        assert resolutions == 2
-        assert manager.history.snapshot("serial")["completed_runs"] == 2
-        sender.assert_not_awaited()
-    else:
-        with pytest.raises(ServiceValidationError, match="Native session completion"):
-            await run
-        assert manager.history.snapshot("serial")["completed_runs"] == 0
-        assert manager.history.snapshot("serial")["interrupted_runs"] == 1
-        sender.assert_awaited_once_with(motion_token, UserCommand.STOP)
+    assert await run is True
+    assert resolutions == 2
+    assert manager.history.snapshot("serial")["completed_runs"] == 2
+    sender.assert_not_awaited()
     assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 async def test_leg_accepts_native_history_after_three_minutes(monkeypatch):
     """The default budget covers delayed native publication, without motion."""
+    robot = FakeRobot()
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -10891,6 +10649,7 @@ async def test_leg_accepts_native_history_after_three_minutes(monkeypatch):
         frozenset(),
         _leg_rooms(),
         dt_util.utcnow() - timedelta(seconds=300),
+        robot=robot.port(),
     )
     assert evidence == {
         "room-kitchen": (final.session.ended_at, 57),
@@ -10900,6 +10659,7 @@ async def test_leg_accepts_native_history_after_three_minutes(monkeypatch):
 
 
 async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
+    robot = FakeRobot()
     rooms = _leg_rooms()
     manager = _leg_manager()
     starts = []
@@ -10907,19 +10667,17 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         f"{DOMAIN}_room_started", lambda event: starts.append(event.data["room"])
     )
 
-    async def send_command(call):
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    async def send_command(command):
+        robot.show("cleaning", current_area="Kitchen")
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     async def begin_room_observations(*_args, **_kwargs):
         async def change_rooms() -> None:
             for room in (rooms[1], rooms[0], rooms[1]):
-                hass.states.async_set(
-                    "vacuum.matic", "cleaning", {"current_area": room.name}
-                )
+                robot.show("cleaning", current_area=room.name)
                 await asyncio.sleep(0)
-            hass.states.async_set("vacuum.matic", "returning")
+            robot.show("returning")
 
         transitions = asyncio.create_task(change_rooms())
         await transitions
@@ -10945,7 +10703,10 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
+        robot.port(session_history=history, session_identity=robot.accepting),
+        7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
     await hass.async_block_till_done()
     # HA schedules listener callbacks independently; assert delivery multiplicity.
@@ -10963,6 +10724,7 @@ async def test_terminal_history_has_its_own_budget(
     hass, monkeypatch, multi_room, resolves
 ):
     """Verification outlives the returned mission's cleaning deadline."""
+    robot = FakeRobot()
     rooms = _leg_rooms() if multi_room else [_leg_rooms()[0]]
     manager = _leg_manager()
 
@@ -10971,17 +10733,17 @@ async def test_terminal_history_has_its_own_budget(
 
     manager.ledger.async_mark_verifying = AsyncMock(side_effect=slow_persist)
 
-    async def send_command(call):
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    async def send_command(command):
+        robot.show("cleaning", current_area="Kitchen")
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
 
     async def terminal_room(*args, **kwargs):
-        hass.states.async_set("vacuum.matic", "returning")
+        robot.show("returning")
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
     async def terminal_leg(*_args, **_kwargs):
-        hass.states.async_set("vacuum.matic", "returning")
+        robot.show("returning")
         return 0.02
 
     if multi_room:
@@ -11013,12 +10775,17 @@ async def test_terminal_history_has_its_own_budget(
         "vacuum.matic",
         "serial",
         rooms,
-        session_history=history,
-        active_session=AsyncMock(side_effect=[True, False])
-        if resolves
-        else AsyncMock(return_value=False),
+        robot.port(
+            active_session=AsyncMock(side_effect=[True, False])
+            if resolves
+            else AsyncMock(return_value=False),
+            session_history=history,
+            session_identity=robot.accepting,
+        ),
+        7,
         managed_user_command=sender,
-        motion_token=7,
+        floor_token="floor",
+        checkpoint_dispatch=AsyncMock(),
     )
     assert completed
     manager.ledger.async_mark_failed.assert_not_awaited()
@@ -11048,6 +10815,7 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
         frozenset(),
         _leg_rooms() if multi_room else _leg_rooms()[0],
         dt_util.utcnow() - timedelta(seconds=300),
+        robot=FakeRobot().port(),
     )
     assert not result or result is NativeRoomVerdict.UNVERIFIED
     assert cancelled
@@ -11055,6 +10823,7 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
 
 async def test_leg_rejects_ambiguous_normalized_native_room_names():
     """Distinct native names cannot collapse into one commanded room's credit."""
+    robot = FakeRobot()
     record = _leg_record(
         ("Kitchen", " kitchen ", "Office"),
         ("Kitchen", "Office"),
@@ -11065,6 +10834,7 @@ async def test_leg_rejects_ambiguous_normalized_native_room_names():
             frozenset(),
             _leg_rooms(),
             dt_util.utcnow() - timedelta(seconds=180),
+            robot=robot.port(),
             attempts=1,
         )
         is None
@@ -11114,6 +10884,7 @@ _AREA = AreaLeg("rug", "Rug", "vacuum", "quick", "f" * 64)
 
 
 async def test_area_history_baseline_failure_never_stops_or_credits(hass) -> None:
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     await manager.ledger.async_begin_run(
@@ -11122,10 +10893,10 @@ async def test_area_history_baseline_failure_never_stops_or_credits(hass) -> Non
     motion_token = manager.control.begin_managed_motion("serial")
     sent = []
 
-    async def send_command(call) -> None:
-        sent.append(call.data)
+    async def send_command(command) -> None:
+        sent.append(command)
 
-    hass.services.async_register("vacuum", "send_command", send_command)
+    robot.on_start = send_command
     stop = AsyncMock()
     native_identity = MagicMock()
     call = ServiceCall(
@@ -11148,16 +10919,17 @@ async def test_area_history_baseline_failure_never_stops_or_credits(hass) -> Non
             "vacuum.matic",
             "serial",
             _AREA,
+            robot.port(
+                session_history=AsyncMock(side_effect=MaticError("offline")),
+                session_identity=AsyncMock(return_value=b""),
+            ),
             asyncio.Event(),
             motion_token,
-            None,
-            AsyncMock(side_effect=MaticError("offline")),
             stop,
             prepared_dispatch=None,
             finish_room_event=manager.control.finish_room_event("serial"),
             floor_is_current=None,
             floor_token=None,
-            session_identity=AsyncMock(return_value=b""),
             expected_dispatch_identity=None,
             expected_dispatch_history=None,
             on_native_identity=native_identity,

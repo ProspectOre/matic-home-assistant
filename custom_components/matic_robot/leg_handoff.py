@@ -6,21 +6,20 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from . import managed_observation as observation
 from .client.exceptions import MaticError
+from .client.models import RobotActivity
 from .managed_run import PlanCancelledError, _PreparedRoomDispatch
+from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_dispatch_on_return(
-    hass: HomeAssistant,
-    entity_id: str,
-    identity_reader: Callable[[], Awaitable[bytes | None]] | None,
+    robot: RobotPort,
     dispatch: Callable[
         [Callable[[bytes | None], None]], Awaitable[_PreparedRoomDispatch]
     ],
@@ -41,12 +40,11 @@ async def async_dispatch_on_return(
     was cancelled, ``stop_taken`` stops that mission before the error
     propagates. A Home Assistant shutdown keeps it for restart recovery.
     """
-    state = hass.states.get(entity_id)
+    state = robot.observed()
     if (
-        identity_reader is None
-        or state is None
-        or state.state != "returning"
-        or await observation._async_read_session_identity(identity_reader) != b""
+        state is None
+        or state.activity is not RobotActivity.RETURNING
+        or await observation._async_read_session_identity(robot.session_identity) != b""
     ):
         return None
     taken = False

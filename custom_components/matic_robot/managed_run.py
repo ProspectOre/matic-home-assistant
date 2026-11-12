@@ -26,11 +26,6 @@ class RoomRunOutcome(StrEnum):
     ROOM_CHANGED = "room_changed"
 
 
-type LegOutcomeWaiter = Callable[
-    ..., Awaitable[tuple[RoomRunOutcome, CleaningRoom | None]]
-]
-
-
 @dataclass(frozen=True, slots=True)
 class _PreparedRoomDispatch:
     """A dispatched leg mission and the baselines its completion is judged by."""

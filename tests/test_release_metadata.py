@@ -452,7 +452,7 @@ def test_blueprint_scanner_reads_every_blueprint() -> None:
 
 
 def _raised_keys() -> Iterator[tuple[str, int, str, frozenset[str] | None]]:
-    """Literal exception keys at every *Error(...) / _validation_error(...) call."""
+    """Literal exception keys at every *Error(...) / validation_error(...) call."""
     for path in sorted(INTEGRATION.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
             name = getattr(node, "func", None) and (
@@ -460,7 +460,8 @@ def _raised_keys() -> Iterator[tuple[str, int, str, frozenset[str] | None]]:
             )
             if not isinstance(node, ast.Call) or not (
                 name.endswith("Error")
-                or name in {"_validation_error", "_error", "_async_refusal"}
+                or name
+                in {"_validation_error", "validation_error", "_error", "_async_refusal"}
             ):
                 continue
             words = {k.arg: k.value for k in node.keywords}
@@ -490,7 +491,10 @@ def _raised_keys() -> Iterator[tuple[str, int, str, frozenset[str] | None]]:
                     frozenset(k.arg for k in node.keywords),
                 )
                 continue
-            if name == "_validation_error" and len(node.args) >= 2:
+            if (
+                name in {"_validation_error", "validation_error"}
+                and len(node.args) >= 2
+            ):
                 key, holders = (
                     node.args[1],
                     node.args[2] if len(node.args) > 2 else words.get("placeholders"),

@@ -45,7 +45,7 @@ async def test_queued_external_command_rejects_old_epoch_after_reopen(hass) -> N
         await asyncio.sleep(0)
         manager.control.begin_command_teardown(SERIAL)
         manager.control.reopen_metadata_admission(SERIAL)
-        assert manager.control.command_admission_open(SERIAL)
+        manager.control.require_command_admission(SERIAL)
         command_lock.release()
         with pytest.raises(HomeAssistantError, match="unavailable during unload"):
             await asyncio.wait_for(queued, timeout=3)

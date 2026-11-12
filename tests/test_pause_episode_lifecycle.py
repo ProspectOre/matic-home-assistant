@@ -14,6 +14,7 @@ from custom_components.matic_robot.managed_observation import (
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.session_fakes import FakeRobot
 
 SERIAL = "synthetic-pause-episode-robot"
 ENTITY_ID = "vacuum.synthetic_pause_episode"
@@ -35,17 +36,12 @@ def hass_config_dir(hass_tmp_config_dir: str) -> str:
 
 async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
     """A low-charge terminal inside a paused episode cannot queue a second suspend."""
-    hass.states.async_set(ENTITY_ID, "cleaning", {"current_area": ROOM.name})
+    robot = FakeRobot()
+    robot.show("cleaning", current_area=ROOM.name)
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     await manager.ledger.async_mark_started(SERIAL, "synthetic-plan", ROOM)
-    observer = _LegOutcomeObserver(
-        hass,
-        ENTITY_ID,
-        [ROOM],
-        ROOM,
-        initial_observed=True,
-    )
+    observer = _LegOutcomeObserver(robot.port(), [ROOM], ROOM, initial_observed=True)
     write_started = asyncio.Event()
     allow_write = asyncio.Event()
     suspend_writes = 0
@@ -62,7 +58,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
 
     manager.repository.store.async_save = observe_save
     try:
-        hass.states.async_set(ENTITY_ID, "paused", {"current_area": ROOM.name})
+        robot.show("paused", current_area=ROOM.name)
         await hass.async_block_till_done()
         assert (await observer.next())[0] is RoomRunOutcome.PAUSED
         episode_resume = observer.resume_event
@@ -75,13 +71,9 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
             )
         )
         await asyncio.wait_for(write_started.wait(), timeout=1)
-        hass.states.async_set(
-            ENTITY_ID,
-            "returning",
-            {"current_area": ROOM.name, "low_charge": True},
-        )
+        robot.show("returning", current_area=ROOM.name, low_charge=True)
         await hass.async_block_till_done()
-        hass.states.async_set(ENTITY_ID, "cleaning", {"current_area": ROOM.name})
+        robot.show("cleaning", current_area=ROOM.name)
         await hass.async_block_till_done()
         assert observer.resume_event is episode_resume
         assert episode_resume.is_set()
@@ -89,12 +81,10 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
         allow_write.set()
         await asyncio.wait_for(suspend, timeout=2)
         await _async_wait_for_owned_resume(
-            hass,
-            ENTITY_ID,
+            robot.port(session_identity=AsyncMock(return_value=SESSION_IDENTITY)),
             1,
             None,
             ROOM,
-            AsyncMock(return_value=SESSION_IDENTITY),
             SESSION_IDENTITY,
             resume_event=episode_resume,
         )

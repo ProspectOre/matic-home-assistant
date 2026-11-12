@@ -268,7 +268,6 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             stop_pending=MagicMock(return_value=False),
             async_mark_stop_pending=AsyncMock(),
             async_clear_stop_pending=AsyncMock(),
-            command_admission_open=MagicMock(return_value=True),
             command_admission_epoch=MagicMock(return_value=0),
             require_command_admission=MagicMock(),
             cancellation_event=MagicMock(return_value=asyncio.Event()),
@@ -2486,7 +2485,7 @@ def test_vacuum_rejects_a_missing_or_empty_room_map() -> None:
             entry.runtime_data.session.floor.set(floor_plan)
         entity = vacuum.MaticVacuum(entry)
         with pytest.raises(ServiceValidationError) as raised:
-            entity._floor_plan()
+            entity._commands.floor_plan()
         assert raised.value.translation_key == "room_plan_unavailable"
 
 

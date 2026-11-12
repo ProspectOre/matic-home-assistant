@@ -6,7 +6,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.core import CoreState, ServiceCall
+from homeassistant.core import CoreState
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.commands import UserCommand
@@ -19,6 +19,8 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.session_fakes import FakeRobot
+from tests.wire_builders import _session_identity
 
 from .test_restart import (
     _operational_state,
@@ -50,19 +52,14 @@ async def test_completion_budget_is_persisted_once_and_not_reset():
 
 
 async def test_dispatch_does_not_consume_the_separate_completion_budget(hass):
-    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    robot = FakeRobot()
     dispatch = await _async_dispatch_leg_command(
-        hass,
-        ServiceCall(
-            hass, "matic_robot", "run_selected_plan", {"completion_timeout": 100}
-        ),
-        "vacuum.matic",
+        robot.port(session_identity=robot.accepting),
         [CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")],
-        None,
-        AsyncMock(return_value=()),
-        session_identity=AsyncMock(side_effect=[b"", b"accepted"]),
+        7,
+        floor_token="floor",
     )
-    assert dispatch.native_identity == b"accepted"
+    assert dispatch.native_identity == _session_identity(robot.started[0].session_id)
     assert dispatch.completion_deadline is None
     delayed = replace(dispatch, dispatched_at=dt_util.utcnow() - timedelta(seconds=55))
     saver = AsyncMock()
@@ -100,10 +97,12 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
         if value is UserCommand.STOP:
             manager.control.mark_managed_stop("serial")
             hass.states.async_set(checkpoint["entity_id"], "idle")
+            entry.robot.show("idle")
             client.async_get_active_cleaning_session_state.return_value = native_active
             client.async_get_state.return_value = _operational_state()
         elif value is UserCommand.DOCK:
             hass.states.async_set(checkpoint["entity_id"], "docked")
+            entry.robot.show("docked")
             client.async_get_state.return_value = _operational_state(charging_idle=True)
 
     client.async_send_user_command.side_effect = command
@@ -200,14 +199,12 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
     checkpoint["completion_deadline"] = deadline
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     await manager.ledger.async_mark_suspended("serial", "plan", room, reason)
-    hass.states.async_set(
-        checkpoint["entity_id"], "docked" if reason == "low_charge" else "paused"
-    )
+    entry.robot.show("docked" if reason == "low_charge" else "paused")
 
     async def wait_resume(*args, **kwargs):
         active = manager.history.snapshot("serial")["active_plan"]
         assert active["status"] == "suspended" and active["suspend_reason"] == reason
-        assert 0 < args[2] <= 100
+        assert 0 < args[1] <= 100
         if multi:
             assert isinstance(kwargs["resume_event"], asyncio.Event)
         else:

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.matic_robot import vacuum
+from custom_components.matic_robot import robot_commands, vacuum
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     binding_for_floor_plan,
@@ -38,6 +38,7 @@ from custom_components.matic_robot.plan_model import (
     plan_floor_token,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_commands import RobotCommands
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from tests.test_entities import _entry
 from tests.test_mission import _labeled as _labeled_floor
@@ -173,7 +174,7 @@ async def test_explicit_vacuum_room_lists_share_the_sequence_limit(hass) -> None
     entity = vacuum.MaticVacuum(entry)
     run = AsyncMock()
 
-    with patch.object(entity, "_async_clean_rooms", run):
+    with patch.object(RobotCommands, "async_clean_rooms", run):
         await entity.async_send_command(
             "clean_rooms",
             {"rooms": [room.id for room in rooms[:MAX_ROOM_SEQUENCE_SIZE]]},
@@ -593,7 +594,7 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
     )
     hass.states.async_set("vacuum.test", "cleaning")
     with pytest.raises(ServiceValidationError) as blocked:
-        await entity._async_ensure_stop_settled("synthetic-serial")
+        await entity._commands.async_ensure_stop_settled("synthetic-serial")
     assert blocked.value.translation_key == "robot_stop_pending"
 
     state = entry.runtime_data.session.state.value
@@ -611,12 +612,12 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
     hass.states.async_set("vacuum.test", "charging")
     native_active.return_value = True
     with pytest.raises(ServiceValidationError) as native_blocked:
-        await entity._async_ensure_stop_settled("synthetic-serial")
+        await entity._commands.async_ensure_stop_settled("synthetic-serial")
     assert native_blocked.value.translation_key == "robot_stop_pending"
     assert manager.control.stop_pending("synthetic-serial") is True
 
     native_active.return_value = False
-    await entity._async_ensure_stop_settled("synthetic-serial")
+    await entity._commands.async_ensure_stop_settled("synthetic-serial")
     assert manager.control.stop_pending("synthetic-serial") is False
     assert "stop_fence_expires_at" not in manager.repository.robot("synthetic-serial")
     assert manager.repository.store.async_save.await_count == 2
@@ -708,7 +709,6 @@ async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None
         await stop
         await close
         assert manager.control.stop_pending("synthetic-serial")
-        assert manager.control.command_admission_open("synthetic-serial") is False
         with pytest.raises(HomeAssistantError, match="unavailable during unload"):
             await entity._async_command(UserCommand.PAUSE)
         assert [
@@ -757,7 +757,7 @@ async def test_stop_retains_run_id_when_run_finishes_during_checkpoint(hass) -> 
         await checkpoint(serial, behavior, **kwargs)
 
     manager.recovery.async_checkpoint_stop_intent = delayed_checkpoint
-    with patch.object(vacuum, "schedule_dock_after_stop") as schedule_dock:
+    with patch.object(robot_commands, "schedule_dock_after_stop") as schedule_dock:
         stop = asyncio.create_task(entity.async_stop())
         try:
             await checkpoint_started.wait()
@@ -944,14 +944,14 @@ async def test_stop_cancels_undispatched_direct_motion(
     release = asyncio.Event()
     checks = 0
 
-    async def delayed_check(_serial: str) -> None:
+    async def delayed(_serial: str) -> None:
         nonlocal checks
         checks += 1
         if checks == waiting_check:
             entered.set()
             await release.wait()
 
-    with patch.object(entity, "_async_ensure_stop_settled", side_effect=delayed_check):
+    with patch.object(RobotCommands, "async_ensure_stop_settled", side_effect=delayed):
         task = asyncio.create_task(
             entity.async_send_command(command, {"room": "Kitchen"})
         )

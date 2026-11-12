@@ -33,6 +33,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_commands import RobotCommands
 from custom_components.matic_robot.room_sequence import resolve_room_sequence
 from custom_components.matic_robot.vacuum import MaticVacuum
 from tests.test_entities import _entry
@@ -1174,7 +1175,7 @@ async def test_direct_clean_refuses_when_room_identity_cannot_be_resolved(
         require_current=lambda: True,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.vacuum.room_cadence_identity",
+        "custom_components.matic_robot.robot_commands.room_cadence_identity",
         MagicMock(side_effect=ValueError("map identity unavailable")),
     )
     with pytest.raises(ServiceValidationError) as clean:
@@ -1219,7 +1220,7 @@ async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
     client.async_redo_clean.assert_not_awaited()
 
 
-async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_write(hass):
+async def test_daily_policy_set_during_stop_wait_blocks_the_write(hass, monkeypatch):
     entry = _entry()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -1227,11 +1228,10 @@ async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_writ
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
     identity = room_cadence_identity(floor, room.id)
-    vacuum = MaticVacuum(entry)
     applied = False
     writes = []
 
-    async def wait_for_stop(_serial):
+    async def wait_for_stop(_commands, _serial):
         nonlocal applied
         if not applied:
             applied = True
@@ -1247,12 +1247,12 @@ async def test_daily_policy_enabled_during_command_wait_is_rechecked_before_writ
         require_current()
         writes.append("sent")
 
-    vacuum._async_ensure_stop_settled = wait_for_stop
+    monkeypatch.setattr(RobotCommands, "async_ensure_stop_settled", wait_for_stop)
     entry.runtime_data.session.client.async_start_coverage = AsyncMock(
         side_effect=start_coverage
     )
     with pytest.raises(ServiceValidationError) as raised:
-        await vacuum.async_send_command("clean_rooms", {"rooms": [room.id]})
+        await MaticVacuum(entry).async_send_command("clean_rooms", {"rooms": [room.id]})
     assert raised.value.translation_key == "daily_room_limit_requires_managed"
     assert writes == []
 

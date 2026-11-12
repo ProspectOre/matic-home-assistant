@@ -1,4 +1,4 @@
-"""Bounded Home Assistant observations and native session ownership waits."""
+"""Bounded robot observations and native session ownership waits."""
 
 from __future__ import annotations
 
@@ -10,14 +10,13 @@ from enum import StrEnum
 from time import monotonic
 from typing import Any
 
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from .client.coverage_receipts import native_session_hash
 from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord
+from .client.models import CleaningSessionRecord, RobotActivity, RobotOperationalState
 from .managed_run import (
     NativeTaskEndedError,
     PlanCancelledError,
@@ -35,6 +34,7 @@ from .native_completion import (
 )
 from .native_history import OEM_STOP_RECONCILIATION_SECONDS
 from .plan_model import CleaningRoom
+from .robot_port import RobotPort
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,15 +54,17 @@ LEG_HANDOFF_POLL_SECONDS = ROOM_STATUS_REFRESH_SECONDS
 
 LEG_HANDOFF_TIMEOUT_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 
+# The robot is on its dock, charging or not.
+HOME = frozenset({RobotActivity.DOCKED, RobotActivity.CHARGING})
+
 
 async def _async_verify_leg_completion(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     baseline: frozenset[bytes] | None,
     rooms: Sequence[CleaningRoom],
     dispatched_at: datetime,
     *,
-    hass: HomeAssistant | None = None,
-    entity_id: str | None = None,
+    robot: RobotPort,
     cancel_event: asyncio.Event | None = None,
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
@@ -76,7 +78,7 @@ async def _async_verify_leg_completion(
     every leg room the record marks completed with a positive duration.  A
     missing or ambiguous record returns ``None`` and credits nothing.
     """
-    if reader is None or baseline is None:
+    if baseline is None:
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     required_room_ids = set(targets.values()) - set(skipped_room_ids)
@@ -90,8 +92,7 @@ async def _async_verify_leg_completion(
         ):
             for attempt in range(attempts):
                 _raise_if_completion_verification_was_replaced(
-                    hass,
-                    entity_id,
+                    robot,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
                 )
@@ -103,8 +104,7 @@ async def _async_verify_leg_completion(
                     )
                     records = ()
                 _raise_if_completion_verification_was_replaced(
-                    hass,
-                    entity_id,
+                    robot,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
                 )
@@ -184,8 +184,7 @@ async def _async_verify_leg_completion(
 
 
 async def _async_wait_for_room_outcome(
-    hass: HomeAssistant,
-    entity_id: str,
+    robot: RobotPort,
     room: CleaningRoom,
     cancel_event: asyncio.Event | None = None,
     *,
@@ -200,8 +199,7 @@ async def _async_wait_for_room_outcome(
     transition is interrupted/unknown and receives no room-history credit.
     """
     outcome, _changed = await _async_wait_for_leg_outcome(
-        hass,
-        entity_id,
+        robot,
         [room],
         room,
         cancel_event,
@@ -215,8 +213,7 @@ class _LegOutcomeObserver:
 
     def __init__(
         self,
-        hass: HomeAssistant,
-        entity_id: str,
+        robot: RobotPort,
         rooms: Sequence[CleaningRoom],
         initial_room: CleaningRoom,
         *,
@@ -250,15 +247,14 @@ class _LegOutcomeObserver:
         self._overflowed = False
         self._fault: BaseException | None = None
         self._closed = False
-        self._remove_listener = async_track_state_change_event(
-            hass, entity_id, self._state_changed
-        )
+        self._robot = robot
+        self._remove_listener = robot.subscribe(self._state_changed)
         if classify_current:
-            self._classify(hass.states.get(entity_id))
+            self._classify(robot.observed())
 
     @callback
-    def _state_changed(self, event: Event[EventStateChangedData]) -> None:
-        self._classify(event.data["new_state"])
+    def _state_changed(self) -> None:
+        self._classify(self._robot.observed())
 
     def _enqueue(
         self,
@@ -274,11 +270,12 @@ class _LegOutcomeObserver:
             # both the active-room display and Finish current room ambiguous.
             self._overflowed = True
 
-    def _classify(self, state: Any) -> None:
+    def _classify(self, state: RobotOperationalState | None) -> None:
         if self._closed or self._fault is not None or state is None:
             return
-        if state.state in {"cleaning", "paused"}:
-            current_area = state.attributes.get("current_area")
+        activity = state.activity
+        if activity in {RobotActivity.CLEANING, RobotActivity.PAUSED}:
+            current_area = state.current_area
             matched = next(
                 (
                     room
@@ -291,15 +288,15 @@ class _LegOutcomeObserver:
                 self._observed_any = True
                 if (
                     matched.room_id != self._active_room.room_id
-                    and state.state == "cleaning"
+                    and activity is RobotActivity.CLEANING
                 ):
                     self._active_room = matched
                     self._enqueue((RoomRunOutcome.ROOM_CHANGED, matched))
-        if state.state == "cleaning" and matched is None:
+        if activity is RobotActivity.CLEANING and matched is None:
             # Raw activity is not evidence that this leg resumed. Keep the
             # current pause episode open until a target-room state arrives.
             return
-        if state.state == "paused":
+        if activity is RobotActivity.PAUSED:
             self._terminal_pending = False
             if not self._pause_open:
                 self._pause_open = True
@@ -311,7 +308,7 @@ class _LegOutcomeObserver:
                     self._active_pause_resume_event,
                 )
             return
-        if state.state == "cleaning":
+        if activity is RobotActivity.CLEANING:
             self._terminal_pending = False
             if self._pause_open:
                 if self._active_pause_resume_event is not None:
@@ -321,7 +318,7 @@ class _LegOutcomeObserver:
             self._pause_episode_handled = False
             self._suppress_initial_suspend_state = False
             return
-        if state.state == "error":
+        if activity is RobotActivity.ERROR:
             self._terminal_pending = True
             self._fault = _validation_error(
                 "The selected Matic robot reported an error", "robot_error"
@@ -332,10 +329,10 @@ class _LegOutcomeObserver:
                 self._queue.get_nowait()
             self._overflowed = False
             self._queue.put_nowait((self._fault, None))
-        elif state.state == "returning":
+        elif activity is RobotActivity.RETURNING:
             if not self._terminal_pending:
                 self._terminal_pending = True
-                low_charge = state.attributes.get("low_charge") is True
+                low_charge = state.low_charge
                 if self._suppress_initial_suspend_state:
                     self._suppress_initial_suspend_state = False
                     if low_charge:
@@ -360,11 +357,11 @@ class _LegOutcomeObserver:
                         ),
                         self._active_pause_resume_event if low_charge else None,
                     )
-        elif state.state == "idle":
+        elif activity is RobotActivity.READY:
             if not self._terminal_pending:
                 self._terminal_pending = True
                 self._enqueue((RoomRunOutcome.STOPPED_IN_PLACE, None))
-        elif state.state == "docked" and not self._terminal_pending:
+        elif activity in HOME and not self._terminal_pending:
             self._terminal_pending = True
             if self._suppress_initial_suspend_state:
                 self._suppress_initial_suspend_state = False
@@ -435,8 +432,7 @@ class _LegOutcomeObserver:
 
 
 async def _async_wait_for_leg_outcome(
-    hass: HomeAssistant,
-    entity_id: str,
+    robot: RobotPort,
     rooms: Sequence[CleaningRoom],
     active_room: CleaningRoom,
     cancel_event: asyncio.Event | None = None,
@@ -445,8 +441,7 @@ async def _async_wait_for_leg_outcome(
 ) -> tuple[RoomRunOutcome, CleaningRoom | None]:
     """One-shot lifecycle adapter over the shared leg outcome observer."""
     observer = _LegOutcomeObserver(
-        hass,
-        entity_id,
+        robot,
         rooms,
         active_room,
         initial_observed=initial_observed,
@@ -458,11 +453,9 @@ async def _async_wait_for_leg_outcome(
 
 
 async def _async_active_session_state(
-    reader: Callable[[], Awaitable[bool | None]] | None,
+    reader: Callable[[], Awaitable[bool | None]],
 ) -> bool | None:
     """Resolve active-task presence with a small bounded unknown retry window."""
-    if reader is None:
-        return None
     for attempt in range(ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
         try:
             state = await reader()
@@ -480,11 +473,9 @@ async def _async_active_session_state(
 
 
 async def _async_session_history_baseline(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
 ) -> frozenset[bytes] | None:
     """Capture opaque native keys before dispatch without exposing their values."""
-    if reader is None:
-        return None
     try:
         return frozenset(record.key for record in await reader())
     except MaticError as err:
@@ -503,13 +494,12 @@ class NativeRoomVerdict(StrEnum):
 
 
 async def _async_adjudicate_room_end(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     baseline: frozenset[bytes] | None,
     room: CleaningRoom,
     dispatched_at: datetime,
     *,
-    hass: HomeAssistant | None = None,
-    entity_id: str | None = None,
+    robot: RobotPort,
     cancel_event: asyncio.Event | None = None,
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
@@ -522,14 +512,13 @@ async def _async_adjudicate_room_end(
     Unreachable needs one new, overlapping record the robot finished with the
     room unattempted. Anything else, including ambiguity, earns no verdict.
     """
-    if reader is None or baseline is None:
+    if baseline is None:
         return NativeRoomVerdict.UNVERIFIED
     try:
         async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
             for attempt in range(attempts):
                 _raise_if_completion_verification_was_replaced(
-                    hass,
-                    entity_id,
+                    robot,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
                 )
@@ -542,8 +531,7 @@ async def _async_adjudicate_room_end(
                     )
                     records = ()
                 _raise_if_completion_verification_was_replaced(
-                    hass,
-                    entity_id,
+                    robot,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
                 )
@@ -601,8 +589,7 @@ async def _async_adjudicate_room_end(
 
 
 def _raise_if_completion_verification_was_replaced(
-    hass: HomeAssistant | None,
-    entity_id: str | None,
+    robot: RobotPort,
     cancel_event: asyncio.Event | None,
     *,
     allow_active_cleaning: bool = False,
@@ -610,13 +597,11 @@ def _raise_if_completion_verification_was_replaced(
     """Abort history verification if cancellation or a new task takes over."""
     if cancel_event is not None and cancel_event.is_set():
         raise PlanCancelledError
-    if hass is None or entity_id is None:
-        return
-    state = hass.states.get(entity_id)
+    state = robot.observed()
     if (
         not allow_active_cleaning
         and state is not None
-        and state.state in {"cleaning", "paused"}
+        and state.activity in {RobotActivity.CLEANING, RobotActivity.PAUSED}
     ):
         raise RoomTakenOverError(
             "Another cleaning task started while completion was being verified"
@@ -624,67 +609,46 @@ def _raise_if_completion_verification_was_replaced(
 
 
 async def _async_wait_for_active_session_resolution(
-    hass: HomeAssistant,
-    entity_id: str,
-    reader: Callable[[], Awaitable[bool | None]] | None,
+    robot: RobotPort,
     cancel_event: asyncio.Event | None = None,
     *,
-    identity_reader: Callable[[], Awaitable[bytes | None]] | None = None,
     expected_identity: bytes | None = None,
-) -> bool | None:
+) -> bool:
     """Wait for a returning task to finish or visibly resume.
 
     ``False`` means the firmware session ended and operational handoff is safe;
-    it does not prove completion. ``True`` means cleaning resumed, and ``None``
-    means repeated direct reads could not establish session ownership. The
-    enclosing room timeout bounds the wait while known-active firmware sessions
-    return to their dock.
+    it does not prove completion. ``True`` means cleaning resumed. Repeated
+    unreadable identities raise. The enclosing room timeout bounds the wait
+    while known-active firmware sessions return to their dock.
     """
-    if reader is None and identity_reader is None:
-        return None
     unknown_reads = 0
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
-        observed_state = hass.states.get(entity_id)
-        identity = await _async_read_session_identity(identity_reader)
-        state = hass.states.get(entity_id)
-        if identity_reader is not None:
-            if identity == b"" and state is observed_state:
-                return False
-            if identity and identity != expected_identity:
-                raise RoomTakenOverError("The returning native task was replaced")
+        observed_state = robot.observed()
+        identity = await _async_read_session_identity(robot.session_identity)
+        state = robot.observed()
+        if identity == b"" and state is observed_state:
+            return False
+        if identity and identity != expected_identity:
+            raise RoomTakenOverError("The returning native task was replaced")
         if state is not None:
-            if state.state == "error":
+            if state.activity is RobotActivity.ERROR:
                 raise _validation_error(
                     "The selected Matic robot reported an error", "robot_error"
                 )
-            if state.state == "cleaning" and (
-                identity_reader is None or (identity and state is observed_state)
+            if (
+                state.activity is RobotActivity.CLEANING
+                and identity
+                and state is observed_state
             ):
                 return True
-        try:
-            if identity_reader is not None:
-                session_active = True if identity is not None else None
-            else:
-                assert reader is not None
-                session_active = await reader()
-        except MaticError as err:
-            _LOGGER.debug(
-                "Native Matic active-session resolution unavailable (%s)",
-                type(err).__name__,
-            )
-            session_active = None
-        if session_active is False:
-            return False
-        if session_active is None:
+        if identity is None:
             unknown_reads += 1
             if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                if identity_reader is not None:
-                    raise RoomTakenOverError(
-                        "The returning native task ownership could not be verified"
-                    )
-                return None
+                raise RoomTakenOverError(
+                    "The returning native task ownership could not be verified"
+                )
         else:
             unknown_reads = 0
         if cancel_event is None:
@@ -699,13 +663,9 @@ async def _async_wait_for_active_session_resolution(
 
 
 async def _async_wait_for_settled_leg_handoff(
-    hass: HomeAssistant,
-    entity_id: str,
+    robot: RobotPort,
     cancel_event: asyncio.Event | None,
     *,
-    refresh: Callable[[], Awaitable[None]] | None = None,
-    active_session: Callable[[], Awaitable[bool | None]] | None = None,
-    identity_reader: Callable[[], Awaitable[bytes | None]] | None = None,
     expected_identity: bytes | None = None,
     reject_new_identity: bool = False,
     timeout_seconds: float = LEG_HANDOFF_TIMEOUT_SECONDS,
@@ -726,45 +686,39 @@ async def _async_wait_for_settled_leg_handoff(
     describe the run without issuing a second STOP.
     """
     deadline = monotonic() + max(0.0, timeout_seconds)
-    settled_states = {"docked", "charging", "idle"}
+    settled = HOME | {RobotActivity.READY}
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
         if finish_room_event is not None and finish_room_event.is_set():
             return False
-        if refresh is not None:
-            try:
-                await refresh()
-            except (MaticError, HomeAssistantError) as err:
-                _LOGGER.debug(
-                    "Matic leg handoff refresh unavailable (%s)",
-                    type(err).__name__,
-                )
-        state = hass.states.get(entity_id)
-        if state is not None and state.state == "error":
+        try:
+            await robot.refresh()
+        except (MaticError, HomeAssistantError) as err:
+            _LOGGER.debug(
+                "Matic leg handoff refresh unavailable (%s)",
+                type(err).__name__,
+            )
+        state = robot.observed()
+        if state is not None and state.activity is RobotActivity.ERROR:
             raise _validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
-        identity = await _async_read_session_identity(identity_reader)
+        identity = await _async_read_session_identity(robot.session_identity)
         session_active: bool | None = None
-        if active_session is not None:
-            try:
-                session_active = await active_session()
-            except MaticError as err:
-                _LOGGER.debug(
-                    "Native Matic handoff session read unavailable (%s)",
-                    type(err).__name__,
-                )
+        try:
+            session_active = await robot.active_session()
+        except MaticError as err:
+            _LOGGER.debug(
+                "Native Matic handoff session read unavailable (%s)",
+                type(err).__name__,
+            )
         if identity and (
             reject_new_identity
             or (expected_identity is not None and identity != expected_identity)
         ):
             raise RoomTakenOverError("The returning native task was replaced")
-        if (
-            state is not None
-            and state.state in settled_states
-            and (identity_reader is None or identity == b"")
-        ):
+        if state is not None and state.activity in settled and identity == b"":
             return True
         # A blocked doorway can leave the firmware in its homeward/idle state
         # while retaining the completed mission identity for a short period.
@@ -773,10 +727,9 @@ async def _async_wait_for_settled_leg_handoff(
         # do not abandon the remaining queue waiting for a stale identity to
         # clear.
         if (
-            active_session is not None
-            and session_active is False
+            session_active is False
             and state is not None
-            and state.state in {"returning", "docked", "charging", "idle"}
+            and state.activity in settled | {RobotActivity.RETURNING}
         ):
             return True
         if monotonic() >= deadline:
@@ -847,11 +800,9 @@ def _classify_native_identity(
 
 
 async def _async_read_session_identity(
-    reader: Callable[[], Awaitable[bytes | None]] | None,
+    reader: Callable[[], Awaitable[bytes | None]],
 ) -> bytes | None:
     """Read an opaque identity without logging its value on transport failure."""
-    if reader is None:
-        return None
     try:
         return await reader()
     except Exception as err:
@@ -863,12 +814,10 @@ async def _async_read_session_identity(
 
 async def _async_wait_with_native_identity[T](
     outcome: Callable[[], Awaitable[T]],
-    reader: Callable[[], Awaitable[bytes | None]] | None,
+    reader: Callable[[], Awaitable[bytes | None]],
     expected: bytes | None,
 ) -> T:
     """Notice replacement even when the OEM task keeps cleaning the same room."""
-    if reader is None:
-        return await outcome()
 
     async def wait_for_outcome() -> T:
         return await outcome()
@@ -909,23 +858,21 @@ async def _async_wait_with_native_identity[T](
 
 
 async def _async_wait_for_owned_start(
-    hass: HomeAssistant,
-    entity_id: str,
+    robot: RobotPort,
     timeout_seconds: int,
     cancel_event: asyncio.Event | None,
     rooms: CleaningRoom | Sequence[CleaningRoom] | None,
-    reader: Callable[[], Awaitable[bytes | None]] | None,
     bind_identity: Callable[[bytes | None], None],
     identity_baseline: bytes | None,
     expected: bytes | None,
     *,
     already_accepted: bool = False,
-) -> str:
-    """Bind the dispatched task even while HA's activity/room update lags.
+) -> RobotActivity:
+    """Bind the dispatched task even while the robot's room report lags.
 
     Publish ownership before the state waiter can fail, so timeout or unload
     cleanup can stop the same accepted task. Never replace that identity with
-    a later OEM task. A successful HA state also needs a current native read.
+    a later OEM task. A started state also needs a current native read.
     """
     if already_accepted:
         # Recovery has already verified the accepted mission twice. Requiring
@@ -933,26 +880,16 @@ async def _async_wait_for_owned_start(
         # handoff window. Join ongoing identity/outcome monitoring instead:
         # empty identity permits native-history verification, while replacement,
         # unknown ownership, and an in-place stop still fail closed there.
-        current = hass.states.get(entity_id)
+        current = robot.observed()
         return (
-            "paused"
-            if current is not None and current.state == "paused"
-            else "cleaning"
-        )
-    if reader is None:
-        return await _async_wait_for_vacuum_state(
-            hass,
-            entity_id,
-            {"cleaning", "paused"},
-            timeout_seconds,
-            cancel_event,
-            rooms,
+            RobotActivity.PAUSED
+            if current is not None and current.activity is RobotActivity.PAUSED
+            else RobotActivity.CLEANING
         )
     started = asyncio.create_task(
-        _async_wait_for_vacuum_state(
-            hass,
-            entity_id,
-            {"cleaning", "paused"},
+        _async_wait_for_robot_activity(
+            robot,
+            {RobotActivity.CLEANING, RobotActivity.PAUSED},
             timeout_seconds,
             cancel_event,
             rooms,
@@ -963,7 +900,7 @@ async def _async_wait_for_owned_start(
         async with asyncio.timeout(timeout_seconds):
             return await _async_confirm_started_identity(
                 started,
-                reader,
+                robot.session_identity,
                 bind_identity,
                 identity_baseline,
                 expected,
@@ -975,13 +912,13 @@ async def _async_wait_for_owned_start(
 
 
 async def _async_confirm_started_identity(
-    started: asyncio.Task[str],
+    started: asyncio.Task[RobotActivity],
     reader: Callable[[], Awaitable[bytes | None]],
     bind_identity: Callable[[bytes | None], None],
     identity_baseline: bytes | None,
     expected: bytes | None,
     cancel_event: asyncio.Event | None,
-) -> str:
+) -> RobotActivity:
     """Wait for a new identity, never the task that preceded dispatch."""
     unknown_reads = 0
     while True:
@@ -1017,12 +954,10 @@ async def _async_confirm_started_identity(
 
 
 async def _async_wait_for_owned_resume(
-    hass: HomeAssistant,
-    entity_id: str,
+    robot: RobotPort,
     timeout_seconds: float,
     cancel_event: asyncio.Event | None,
     rooms: CleaningRoom | Sequence[CleaningRoom],
-    reader: Callable[[], Awaitable[bytes | None]] | None,
     expected: bytes | None,
     *,
     resume_event: asyncio.Event | None = None,
@@ -1034,11 +969,11 @@ async def _async_wait_for_owned_resume(
     cannot prove resumption. Unknown ownership is bounded and fails without
     STOP or completion credit: cleanup must not cancel an independent task.
     """
-    if reader is None or not expected:
+    if not expected:
         raise RoomTakenOverError("The suspended native task could not be identified")
     resumed = asyncio.create_task(
-        _async_wait_for_vacuum_state(
-            hass, entity_id, {"cleaning"}, timeout_seconds, cancel_event, rooms
+        _async_wait_for_robot_activity(
+            robot, {RobotActivity.CLEANING}, timeout_seconds, cancel_event, rooms
         )
     )
     observed_resume = (
@@ -1053,7 +988,7 @@ async def _async_wait_for_owned_resume(
                 transition_observed = resumed.done() or (
                     observed_resume is not None and observed_resume.done()
                 )
-                identity = await _async_read_session_identity(reader)
+                identity = await _async_read_session_identity(robot.session_identity)
                 signal = _classify_native_identity(identity, expected)
                 if signal is NativeTaskSignal.UNKNOWN:
                     unknown_reads += 1
@@ -1096,21 +1031,20 @@ async def _async_wait_for_owned_resume(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _async_wait_for_vacuum_state(
-    hass: HomeAssistant,
-    entity_id: str,
-    desired: set[str],
+async def _async_wait_for_robot_activity(
+    robot: RobotPort,
+    desired: set[RobotActivity],
     timeout_seconds: float,
     cancel_event: asyncio.Event | None = None,
     room: CleaningRoom | Sequence[CleaningRoom] | None = None,
-) -> str:
-    """Wait for an expected state and optional target-room confirmation.
+) -> RobotActivity:
+    """Wait for an expected activity and optional target-room confirmation.
 
-    A dropped connection can make an entity briefly unavailable even after the
-    robot accepted a command.  Keep waiting through that transport condition;
-    the enclosing timeout remains the hard limit.  The vacuum ``error`` state,
-    by contrast, comes from verified robot error codes and is terminal.  When a
-    room is supplied, a lingering state from a prior task is not accepted until
+    A dropped connection can leave the robot briefly unreachable even after
+    it accepted a command. Keep waiting through that transport condition; the
+    enclosing timeout remains the hard limit. An error activity, by contrast,
+    comes from verified robot error codes and is terminal. When a room is
+    supplied, a lingering state from a prior task is not accepted until
     ``current_area`` identifies the commanded room.
     """
 
@@ -1118,33 +1052,32 @@ async def _async_wait_for_vacuum_state(
     if room is not None:
         room_list = (room,) if isinstance(room, CleaningRoom) else tuple(room)
 
-    def desired_state(state: Any) -> bool:
-        return state.state in desired and (
+    def desired_state(state: RobotOperationalState) -> bool:
+        return state.activity in desired and (
             room_list is None
             or any(
-                _area_matches_room(state.attributes.get("current_area"), candidate)
+                _area_matches_room(state.current_area, candidate)
                 for candidate in room_list
             )
         )
 
-    failed = {"error"}
-    if (state := hass.states.get(entity_id)) is not None:
-        if state.state in failed:
+    if (state := robot.observed()) is not None:
+        if state.activity is RobotActivity.ERROR:
             raise _validation_error(
                 "The selected Matic robot reported an error",
                 "robot_error",
             )
         if desired_state(state):
-            return state.state
+            return state.activity
 
-    future: asyncio.Future[str] = hass.loop.create_future()
+    future: asyncio.Future[RobotActivity] = asyncio.get_running_loop().create_future()
 
     @callback
-    def state_changed(event: Event[EventStateChangedData]) -> None:
-        new_state = event.data["new_state"]
+    def state_changed() -> None:
+        new_state = robot.observed()
         if new_state is None or future.done():
             return
-        if new_state.state in failed:
+        if new_state.activity is RobotActivity.ERROR:
             future.set_exception(
                 _validation_error(
                     "The selected Matic robot reported an error",
@@ -1152,9 +1085,9 @@ async def _async_wait_for_vacuum_state(
                 )
             )
         elif desired_state(new_state):
-            future.set_result(new_state.state)
+            future.set_result(new_state.activity)
 
-    remove_listener = async_track_state_change_event(hass, entity_id, state_changed)
+    remove_listener = robot.subscribe(state_changed)
     cancel_wait: asyncio.Task[bool] | None = None
     try:
         async with asyncio.timeout(timeout_seconds):

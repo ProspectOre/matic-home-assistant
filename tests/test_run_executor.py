@@ -4,7 +4,6 @@ import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -13,9 +12,9 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_observation import _LegOutcomeObserver
-from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
+from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import robot_port
+from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
 from .test_plans import _call, _room
@@ -33,7 +32,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     confirmed = MagicMock()
 
     async def fake_leg(*args, **kwargs):
-        args[11](args[5][0].name)
+        args[6].confirm_room_completed(args[5][0].name)
         kwargs["record_room_completed"](args[5][0])
         return True
 
@@ -338,24 +337,25 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
 async def test_unexpected_outer_abort_cannot_stop_a_replacement(
     hass, monkeypatch, multi_room
 ):
+    robot = FakeRobot()
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     identity = b""
     commands = []
     sender = AsyncMock()
 
-    async def dispatch(call):
+    async def dispatch(command):
         nonlocal identity
-        commands.append(call.data)
-        identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+        commands.append(command)
+        identity = _session_identity(command.session_id)
+        robot.show("cleaning", current_area=ROOM.name)
 
     async def fail_after_replacement(*args, **kwargs):
         nonlocal identity
         identity = REPLACEMENT
         raise RuntimeError("unexpected observer failure")
 
-    hass.services.async_register("vacuum", "send_command", dispatch)
+    robot.on_start = dispatch
     if multi_room:
         monkeypatch.setattr(
             _LegOutcomeObserver,
@@ -390,7 +390,7 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
             "serial",
             rooms,
             floor_token="floor",
-            robot=robot_port(session_identity=AsyncMock(side_effect=lambda: identity)),
+            robot=robot.port(session_identity=AsyncMock(side_effect=lambda: identity)),
             managed_user_command=sender,
         )
     sender.assert_not_awaited()

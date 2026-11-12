@@ -8,13 +8,10 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import Any
 from uuid import UUID, uuid4
 
 from google.protobuf.message import DecodeError
-from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -23,7 +20,6 @@ from . import managed_observation as observation
 from . import managed_run
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .managed_run import (
     NativeHistoryBaselineUnavailableError,
@@ -31,15 +27,14 @@ from .managed_run import (
     _PreparedRoomDispatch,
 )
 from .plan_model import (
-    PLAN_FLOOR_TOKEN,
-    PLAN_MOTION_TOKEN,
-    PLAN_SESSION_ID,
     AreaLeg,
     CleaningRoom,
     effective_room_settings,
     normalize_run_provenance,
 )
 from .plans import CleaningPlanManager
+from .robot_commands import CleanPlanArea, CleanRooms, PlanStart
+from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
 from .stop_return import (
     async_clear_ownerless_stop_if_settled,
@@ -133,26 +128,21 @@ def _schedule_managed_dock_after_stop(
 
 
 async def _async_dispatch_leg_command(
-    hass: HomeAssistant,
-    call: ServiceCall,
-    entity_id: str,
+    robot: RobotPort,
     rooms: Sequence[CleaningRoom] | AreaLeg,
-    motion_token: int | None,
-    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    motion_token: int,
     *,
+    floor_token: str,
     floor_is_current: Callable[[], bool] | None = None,
-    floor_token: str | None = None,
     on_dispatch: Callable[[], None] | None = None,
     on_claim: Callable[[str], Awaitable[None]] | None = None,
-    session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
 ) -> _PreparedRoomDispatch:
-    """Issue one owned leg mission with its completion-history baseline.
+    """Start one owned leg mission with its completion-history baseline.
 
-    A custom area leg is its own mission, started through the vacuum's
-    integration-private ``clean_plan_area`` command with the same ownership.
+    A custom area leg is its own mission, started with the same ownership.
     """
     area = rooms if isinstance(rooms, AreaLeg) else None
     leg = () if isinstance(rooms, AreaLeg) else tuple(rooms)
@@ -161,32 +151,30 @@ async def _async_dispatch_leg_command(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     history_baseline = await observation._async_session_history_baseline(
-        session_history
+        robot.session_history
     )
-    if session_history is not None and history_baseline is None:
-        # A configured native-history reader that failed is different from a
-        # legacy caller that has no reader. Dispatching in the former case
-        # guarantees that completion cannot be attributed to this mission.
+    if history_baseline is None:
+        # Without a baseline, completion could never be attributed to this
+        # mission, so it is not started.
         raise NativeHistoryBaselineUnavailableError(
             "The robot's cleaning history could not be read. "
             "Try again before starting this plan."
         )
     if expected_dispatch_history is not None and (
-        history_baseline is None
-        or frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
+        frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
         != expected_dispatch_history
     ):
         raise RoomTakenOverError("Native history changed during the handoff boundary")
     identity_baseline: bytes | None = None
     for attempt in range(observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
         identity_baseline = await observation._async_read_session_identity(
-            session_identity
+            robot.session_identity
         )
-        if session_identity is None or identity_baseline is not None:
+        if identity_baseline is not None:
             break
         if attempt + 1 < observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
             await asyncio.sleep(observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
-    if session_identity is not None and identity_baseline is None:
+    if identity_baseline is None:
         raise RoomTakenOverError(
             "The native task before dispatch could not be verified"
         )
@@ -199,37 +187,37 @@ async def _async_dispatch_leg_command(
         raise managed_run._validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    managed_session_id = uuid4() if motion_token is not None else None
+    managed_session_id = uuid4()
     dispatched_at = dt_util.utcnow()
-    params: dict[str, Any]
+    command: PlanStart
     if area is not None:
-        command = "clean_plan_area"
-        params = {
-            "area": area.area_id,
-            "fingerprint": area.fingerprint,
-            "cleaning_mode": area.cleaning_mode,
-            "coverage": area.coverage_setting,
-        }
+        command = CleanPlanArea(
+            area_id=area.area_id,
+            fingerprint=area.fingerprint,
+            cleaning_mode=area.cleaning_mode,
+            coverage=area.coverage_setting,
+            motion_token=motion_token,
+            session_id=managed_session_id,
+            floor_token=floor_token,
+        )
     else:
-        command = "clean_rooms"
-        params = {
-            "rooms": [room.room_id for room in leg],
-            "cleaning_mode": leg[0].cleaning_mode,
-            "coverage": leg[0].coverage_setting,
-            "ordered": len(leg) > 1,
-        }
-        if len({effective_room_settings(room) for room in leg}) > 1:
-            params["room_coverage"] = [room.coverage_setting for room in leg]
-            params["room_modes"] = [room.cleaning_mode for room in leg]
-    if motion_token is not None:
-        params[PLAN_MOTION_TOKEN] = motion_token
-    if managed_session_id is not None:
-        params[PLAN_SESSION_ID] = str(managed_session_id)
-    if floor_token is not None:
-        params[PLAN_FLOOR_TOKEN] = floor_token
-    if managed_session_id is not None and on_claim is not None:
-        # The claim is durable before the service can dispatch the session.
-        # Native history may arrive immediately after the command is accepted.
+        mixed = len({effective_room_settings(room) for room in leg}) > 1
+        command = CleanRooms(
+            rooms=tuple(room.room_id for room in leg),
+            cleaning_mode=leg[0].cleaning_mode,
+            coverage=leg[0].coverage_setting,
+            ordered=len(leg) > 1,
+            room_coverage=(
+                tuple(room.coverage_setting for room in leg) if mixed else None
+            ),
+            room_modes=tuple(room.cleaning_mode for room in leg) if mixed else None,
+            motion_token=motion_token,
+            session_id=managed_session_id,
+            floor_token=floor_token,
+        )
+    if on_claim is not None:
+        # The claim is durable before the start is sent. Native history may
+        # arrive immediately after the robot accepts it.
         await on_claim(str(managed_session_id))
         if floor_is_current is not None and not floor_is_current():
             raise managed_run._validation_error(
@@ -238,21 +226,11 @@ async def _async_dispatch_leg_command(
     if on_dispatch is not None:
         on_dispatch()
     try:
-        await hass.services.async_call(
-            VACUUM_DOMAIN,
-            "send_command",
-            {
-                ATTR_ENTITY_ID: entity_id,
-                "command": command,
-                "params": params,
-            },
-            blocking=True,
-            context=call.context,
-        )
+        await robot.start(command)
     except asyncio.CancelledError:
         try:
             identity = await _async_recover_managed_dispatch_identity(
-                session_identity,
+                robot.session_identity,
                 managed_session_id,
                 identity_baseline,
             )
@@ -264,43 +242,38 @@ async def _async_dispatch_leg_command(
             pass
         raise
     except Exception:
-        # A tracked vacuum service can fail after START reached Hermes, for
-        # example when settings readback times out. Recover cleanup ownership
-        # only when the robot reports the exact session UUID carried by that
-        # command; a changed or merely different identity is never ours to stop.
+        # A start can fail after START reached Hermes, for example when
+        # settings readback times out. Recover cleanup ownership only when the
+        # robot reports the exact session UUID carried by that command; a
+        # changed or merely different identity is never ours to stop.
         identity = await _async_recover_managed_dispatch_identity(
-            session_identity,
+            robot.session_identity,
             managed_session_id,
             identity_baseline,
         )
         if identity is not None and on_identity is not None:
             on_identity(identity)
         raise
-    observed = await observation._async_read_session_identity(session_identity)
+    observed = await observation._async_read_session_identity(robot.session_identity)
     identity = observed if observed and observed != identity_baseline else None
-    if managed_session_id is not None and session_identity is not None:
-        if identity is not None and not _identity_matches_session(
-            identity, managed_session_id
-        ):
-            # A newly observed foreign identity is explicit takeover evidence.
-            # Do not keep polling until a later value happens to match ours.
-            raise RoomTakenOverError(
-                "The dispatched native task was replaced before readback"
-            )
-        if identity is None or not _identity_matches_session(
-            identity, managed_session_id
-        ):
-            identity = await _async_recover_managed_dispatch_identity(
-                session_identity,
-                managed_session_id,
-                identity_baseline,
-            )
-        if identity is None or not _identity_matches_session(
-            identity, managed_session_id
-        ):
-            raise RoomTakenOverError(
-                "The dispatched native task could not be verified after readback"
-            )
+    if identity is not None and not _identity_matches_session(
+        identity, managed_session_id
+    ):
+        # A newly observed foreign identity is explicit takeover evidence.
+        # Do not keep polling until a later value happens to match ours.
+        raise RoomTakenOverError(
+            "The dispatched native task was replaced before readback"
+        )
+    if identity is None:
+        identity = await _async_recover_managed_dispatch_identity(
+            robot.session_identity,
+            managed_session_id,
+            identity_baseline,
+        )
+    if identity is None or not _identity_matches_session(identity, managed_session_id):
+        raise RoomTakenOverError(
+            "The dispatched native task could not be verified after readback"
+        )
     if on_identity is not None:
         on_identity(identity)
     return _PreparedRoomDispatch(
@@ -317,13 +290,11 @@ def _identity_matches_session(identity: bytes, session_id: UUID) -> bool:
 
 
 async def _async_recover_managed_dispatch_identity(
-    reader: Callable[[], Awaitable[bytes | None]] | None,
-    session_id: UUID | None,
+    reader: Callable[[], Awaitable[bytes | None]],
+    session_id: UUID,
     baseline: bytes | None,
 ) -> bytes | None:
     """Boundedly recover only this command's identity after an uncertain write."""
-    if reader is None or session_id is None:
-        return None
     try:
         async with asyncio.timeout(DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS):
             while True:
@@ -343,13 +314,13 @@ def _guard_native_commands(
     sender: Callable[[int, UserCommand], Awaitable[None]] | None,
     manager: CleaningPlanManager,
     serial_number: str,
-    reader: Callable[[], Awaitable[bytes | None]] | None,
+    reader: Callable[[], Awaitable[bytes | None]],
     expected_identity: Callable[[], bytes | None],
     *,
     allow_ended_dock: bool = False,
 ) -> Callable[[int, UserCommand], Awaitable[None]] | None:
     """Recheck native ownership at cleanup, including cancellation/unload races."""
-    if sender is None or reader is None:
+    if sender is None:
         return sender
 
     async def send(token: int, command: UserCommand) -> None:
@@ -370,7 +341,7 @@ def _guard_native_commands(
 
 async def _async_cleanup_managed_motion(
     sender: Callable[[int, UserCommand], Awaitable[None]] | None,
-    motion_token: int | None,
+    motion_token: int,
     dispatch_attempted: bool,
 ) -> None:
     """Best-effort STOP an accepted task without replacing newer ownership.
@@ -379,7 +350,7 @@ async def _async_cleanup_managed_motion(
     owns the ten-minute graceful countdown and will dock after it settles;
     sending DOCK immediately can turn that stop into a recharge-and-resume.
     """
-    if sender is None or motion_token is None or not dispatch_attempted:
+    if sender is None or not dispatch_attempted:
         return
     try:
         await sender(motion_token, UserCommand.STOP)
@@ -405,12 +376,9 @@ def _managed_stop_fence_owned_by_run(
 async def _managed_reconciliation_guard(
     manager: CleaningPlanManager,
     serial_number: str,
-    motion_token: int | None,
+    motion_token: int,
 ) -> AsyncIterator[bool]:
     """Serialize durable reconciliation against replacement command dispatch."""
-    if motion_token is None:
-        yield True
-        return
     async with manager.control.managed_reconciliation(
         serial_number, motion_token
     ) as current:
@@ -420,12 +388,10 @@ async def _managed_reconciliation_guard(
 def _managed_reconciliation_is_current(
     manager: CleaningPlanManager,
     serial_number: str,
-    motion_token: int | None,
+    motion_token: int,
 ) -> bool:
     """Recheck ownership after a durable marker write yields to other tasks."""
-    return motion_token is None or manager.control.managed_motion_is_current(
-        serial_number, motion_token
-    )
+    return manager.control.managed_motion_is_current(serial_number, motion_token)
 
 
 def _suspended_run_reason(

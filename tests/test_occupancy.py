@@ -33,7 +33,7 @@ from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
 )
-from tests.session_fakes import robot_client, robot_port
+from tests.session_fakes import FakeRobot, robot_client, robot_port
 from tests.test_services import (
     _area_floor_plan,
     _registered_handler,
@@ -364,11 +364,14 @@ def _floor_plan():
 async def _plan_services(hass, manager):
     services = await _registered_services(hass, manager)
     floor_plan = _floor_plan()
+    robot = FakeRobot()
     entry = SimpleNamespace(
         entry_id="entry",
         runtime_data=SimpleNamespace(
             session=SimpleNamespace(
                 floor=SimpleNamespace(value=floor_plan),
+                state=robot.state,
+                error=robot.error,
                 heartbeat=SimpleNamespace(
                     async_request_refresh=AsyncMock(),
                     async_confirm_room_completed=MagicMock(),

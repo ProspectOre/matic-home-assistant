@@ -18,6 +18,7 @@ from custom_components.matic_robot.native_completion import (
     match_session_room_completions,
     match_single_room_completions,
 )
+from tests.session_fakes import FakeRobot
 from tests.wire_builders import _field
 
 
@@ -139,6 +140,7 @@ def test_completion_matchers_reject_untrusted_session_clocks(changes):
 async def test_grouped_verification_finishes_without_waiting_for_skipped_room(
     completed_rooms,
 ):
+    robot = FakeRobot()
     import asyncio
     from unittest.mock import AsyncMock
 
@@ -159,6 +161,7 @@ async def test_grouped_verification_finishes_without_waiting_for_skipped_room(
             frozenset(),
             rooms,
             dt_util.utcnow() - timedelta(minutes=3),
+            robot=robot.port(),
             attempts=3,
             skipped_room_ids=frozenset({"office"}),
         ),
