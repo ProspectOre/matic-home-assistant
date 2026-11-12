@@ -6,12 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.components.vacuum.const import (
-    ATTR_PARAMS,
-    SERVICE_SEND_COMMAND,
-)
-from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
-from homeassistant.const import ATTR_COMMAND, ATTR_ENTITY_ID, EntityCategory
+from homeassistant.const import ATTR_ENTITY_ID, EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -22,6 +17,7 @@ from .const import DOMAIN
 from .entity import MaticEntity
 from .occupancy import entry_vacuum_entity_id
 from .plan_model import plan_floor_token, room_cadence_identity
+from .robot_controls import RobotControls
 from .stores import Store
 
 PARALLEL_UPDATES = 0
@@ -268,16 +264,9 @@ class MaticTakePhotoButton(MaticEntity, ButtonEntity):
                 translation_domain=DOMAIN,
                 translation_key="robot_unavailable",
             )
-        await self.hass.services.async_call(
-            VACUUM_DOMAIN,
-            SERVICE_SEND_COMMAND,
-            {
-                ATTR_ENTITY_ID: vacuum_entity_id,
-                ATTR_COMMAND: "emote",
-                ATTR_PARAMS: {"kind": "snap"},
-            },
-            blocking=True,
-        )
+        robot = RobotControls(self.hass, self._config_entry, vacuum_entity_id)
+        if robot.reachable:
+            await robot.async_take_photo()
         self._config_entry.async_create_background_task(
             self.hass,
             self._photos.async_refresh_after_snap(),

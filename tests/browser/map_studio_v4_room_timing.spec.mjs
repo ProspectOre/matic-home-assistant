@@ -5,6 +5,8 @@ import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 const history = JSON.parse(readFileSync(new URL("./fixtures/matic_active_cleaning_history.json", import.meta.url), "utf8"));
 const timing = JSON.parse(readFileSync(new URL("./fixtures/matic_current_room_timing.json", import.meta.url), "utf8"));
+// The Current room sensor.
+const currentRoom = (state) => ({ state, attributes: { matic_entry_id: "synthetic-entry", matic_metric: "current_area" } });
 
 for (const [viewport, fontSize] of [
   [{ width: 320, height: 700 }, 16],
@@ -22,7 +24,8 @@ for (const [viewport, fontSize] of [
     activeTiming.attributes.room_id = room.id;
     activeTiming.attributes.room = room.name;
     const fixture = await installPanelFixture(page, { sceneRooms: [room], initialRobotStates: {
-      "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70, current_area: "The Master Bedroom" } },
+      "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
+      "sensor.synthetic_current_room": currentRoom("The Master Bedroom"),
       "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
       "sensor.synthetic_progress": activeTiming,
     } });
@@ -90,7 +93,8 @@ test("map options remain usable when the robot starts cleaning @mobile", async (
   const activeHistory = structuredClone(history);
   activeHistory.active_plan.room_id = room.id;
   const fixture = await installPanelFixture(page, { sceneRooms: [room], initialRobotStates: {
-    "vacuum.synthetic": { state: "docked", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70, current_area: "Master Bedroom" } },
+    "vacuum.synthetic": { state: "docked", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
+    "sensor.synthetic_current_room": currentRoom("Master Bedroom"),
     "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
   } });
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
@@ -155,7 +159,8 @@ test("an already-open Home Assistant page with old translations shows the new es
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", sceneRooms: [
     { id: "room-kitchen", name: "Kitchen", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] },
   ], initialRobotStates: {
-    "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", current_area: "Kitchen" } },
+    "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry" } },
+    "sensor.synthetic_current_room": currentRoom("Kitchen"),
     "sensor.synthetic_history": { state: "ready", attributes: history },
     "sensor.synthetic_progress": timing,
   } });
@@ -186,7 +191,8 @@ for (const viewport of [{ width: 320, height: 700 }, { width: 390, height: 844 }
     const fixture = await installPanelFixture(page, { moduleSource: "packaged", sceneRooms: [
       { id: "bedroom", name: "Master Bedroom", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] },
     ], initialRobotStates: {
-      "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70, current_area: "Master Bedroom" } },
+      "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
+      "sensor.synthetic_current_room": currentRoom("Master Bedroom"),
       "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
       "sensor.synthetic_progress": activeTiming,
     } });
@@ -301,7 +307,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       const fixture = await installPanelFixture(page, { moduleSource: "packaged", sceneRooms: [
         { id: "room-kitchen", name: "Kitchen", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] },
       ], initialRobotStates: {
-        "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70, current_area: "The Kitchen" } },
+        "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
+        "sensor.synthetic_current_room": currentRoom("The Kitchen"),
         "sensor.synthetic_history": { state: "ready", attributes: history },
         "sensor.synthetic_progress": timing,
       } });
@@ -324,7 +331,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       const update = (fields) => panel.evaluate((element, fields) => {
         const states = structuredClone(element.hass.states);
         if (fields.percent !== undefined) states["sensor.synthetic_progress"].state = fields.percent;
-        if (fields.room !== undefined) states["vacuum.synthetic"].attributes.current_area = fields.room;
+        if (fields.room !== undefined) states["sensor.synthetic_current_room"].state = fields.room;
         if (fields.activity) states["vacuum.synthetic"].state = fields.activity;
         if (fields.run) states["sensor.synthetic_history"].attributes.active_plan.run_id = fields.run;
         element.hass = { ...element.hass, states };

@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -30,16 +31,15 @@ from custom_components.matic_robot.client.exceptions import (
 from custom_components.matic_robot.client.mission import decode_mission_client_state
 from custom_components.matic_robot.const import MAX_ROOM_SEQUENCE_SIZE
 from custom_components.matic_robot.plan_model import (
-    PLAN_FLOOR_TOKEN,
-    PLAN_MOTION_TOKEN,
-    PLAN_SESSION_ID,
     CleaningRoom,
     plan_area_fingerprint,
     plan_floor_token,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_commands import RobotCommands
+from custom_components.matic_robot.robot_commands import CleanPlanArea, RobotCommands
+from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
+from tests.session_fakes import managed_clean_rooms
 from tests.test_entities import _entry
 from tests.test_mission import _labeled as _labeled_floor
 from tests.test_mission import _state as _mission_client_state
@@ -103,7 +103,7 @@ async def test_numeric_floor_label_preserves_map_command_guard(command, coherent
     operation = (
         entity.async_start()
         if command == "start"
-        else entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+        else entity._commands.async_clean(["Study"])
     )
 
     if coherent:
@@ -132,10 +132,7 @@ async def test_managed_clean_token_is_required_until_external_replacement(hass) 
     token = manager.control.begin_managed_motion("synthetic-serial")
     session_id = "11111111-1111-4111-8111-111111111111"
 
-    await entity.async_send_command(
-        "clean_rooms",
-        {"rooms": ["Study"], PLAN_MOTION_TOKEN: token, PLAN_SESSION_ID: session_id},
-    )
+    await managed_clean_rooms(entry, ["Study"], token=token, session_id=session_id)
     assert manager.control.managed_motion_is_current("synthetic-serial", token) is True
     assert (
         entry.runtime_data.session.client.async_start_coverage.await_args.kwargs[
@@ -147,13 +144,10 @@ async def test_managed_clean_token_is_required_until_external_replacement(hass) 
         "session_id"
     ].hex == session_id.replace("-", "")
 
-    await entity.async_send_command("clean_all")
+    await entity._commands.async_clean()
     assert manager.control.managed_motion_is_current("synthetic-serial", token) is False
     with pytest.raises(ManagedMotionReplacedError):
-        await entity.async_send_command(
-            "clean_rooms",
-            {"rooms": ["Study"], PLAN_MOTION_TOKEN: token, PLAN_SESSION_ID: session_id},
-        )
+        await managed_clean_rooms(entry, ["Study"], token=token, session_id=session_id)
 
 
 async def test_explicit_vacuum_room_lists_share_the_sequence_limit(hass) -> None:
@@ -175,70 +169,16 @@ async def test_explicit_vacuum_room_lists_share_the_sequence_limit(hass) -> None
     run = AsyncMock()
 
     with patch.object(RobotCommands, "async_clean_rooms", run):
-        await entity.async_send_command(
-            "clean_rooms",
-            {"rooms": [room.id for room in rooms[:MAX_ROOM_SEQUENCE_SIZE]]},
+        await entity._commands.async_clean(
+            [room.id for room in rooms[:MAX_ROOM_SEQUENCE_SIZE]]
         )
         assert len(run.await_args.args[0]) == MAX_ROOM_SEQUENCE_SIZE
         run.reset_mock()
         with pytest.raises(ServiceValidationError) as raised:
-            await entity.async_send_command(
-                "clean_rooms", {"rooms": [room.id for room in rooms]}
-            )
+            await entity._commands.async_clean([room.id for room in rooms])
 
     assert raised.value.translation_key == "room_sequence_limit"
     run.assert_not_awaited()
-
-
-async def test_managed_clean_token_rejects_non_integer_values(hass) -> None:
-    entry = _entry()
-    entry.runtime_data.cleaning_plans = CleaningPlanManager(hass)
-    entity = vacuum.MaticVacuum(entry)
-
-    for value in (True, "1"):
-        with pytest.raises(ServiceValidationError, match="token is invalid"):
-            await entity.async_send_command("clean_all", {PLAN_MOTION_TOKEN: value})
-
-    for value in (True, "not-a-token", "A" * 64):
-        with pytest.raises(ServiceValidationError, match="floor token is invalid"):
-            await entity.async_send_command("clean_all", {PLAN_FLOOR_TOKEN: value})
-
-
-async def test_managed_session_marker_is_private_and_canonical(hass) -> None:
-    entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    entry.runtime_data.cleaning_plans = manager
-    entity = vacuum.MaticVacuum(entry)
-    valid_session = "abcdefab-cdef-4abc-8def-abcdefabcdef"
-    token = manager.control.begin_managed_motion("synthetic-serial")
-
-    for value in (1, "not-a-uuid", valid_session.upper()):
-        with pytest.raises(ServiceValidationError, match="session ID is invalid"):
-            await entity.async_send_command(
-                "clean_rooms", {"rooms": ["Study"], PLAN_SESSION_ID: value}
-            )
-
-    with pytest.raises(ServiceValidationError, match="invalid for this room command"):
-        await entity.async_send_command(
-            "clean_rooms", {"rooms": ["Study"], PLAN_SESSION_ID: valid_session}
-        )
-    with pytest.raises(ServiceValidationError, match="has no session ID"):
-        await entity.async_send_command(
-            "clean_rooms", {"rooms": ["Study"], PLAN_MOTION_TOKEN: token}
-        )
-    with pytest.raises(ServiceValidationError, match="has no session ID"):
-        await entity.async_send_command(
-            "clean_rooms",
-            {
-                "rooms": ["Study"],
-                PLAN_MOTION_TOKEN: token,
-                "room_coverage": ["quick"],
-                "room_modes": ["vacuum"],
-            },
-        )
-    with pytest.raises(ServiceValidationError, match="requires a managed room command"):
-        await entity.async_send_command("clean_all", {PLAN_SESSION_ID: valid_session})
 
 
 @pytest.mark.parametrize(
@@ -262,7 +202,6 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    entity = vacuum.MaticVacuum(entry)
     floor_plan = entry.runtime_data.session.floor.value
     assert floor_plan is not None
     motion_token = manager.control.begin_managed_motion("synthetic-serial")
@@ -271,14 +210,12 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
     await command_lock.acquire()
 
     task = asyncio.create_task(
-        entity.async_send_command(
-            "clean_rooms",
-            {
-                "rooms": ["Study"],
-                PLAN_MOTION_TOKEN: motion_token,
-                PLAN_FLOOR_TOKEN: plan_floor_token(floor_plan),
-                PLAN_SESSION_ID: session_id,
-            },
+        managed_clean_rooms(
+            entry,
+            ["Study"],
+            token=motion_token,
+            session_id=session_id,
+            floor_token=plan_floor_token(floor_plan),
         )
     )
     await asyncio.sleep(0)
@@ -324,21 +261,18 @@ async def test_queued_room_clean_uses_fresh_map_after_geometry_update(hass, chan
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    entity = vacuum.MaticVacuum(entry)
     floor = entry.runtime_data.session.floor.value
     assert floor is not None
     token = manager.control.begin_managed_motion("synthetic-serial")
     lock = manager.control.command_lock("synthetic-serial")
     await lock.acquire()
     task = asyncio.create_task(
-        entity.async_send_command(
-            "clean_rooms",
-            {
-                "rooms": ["Study"],
-                PLAN_MOTION_TOKEN: token,
-                PLAN_FLOOR_TOKEN: plan_floor_token(floor),
-                PLAN_SESSION_ID: "33333333-3333-4333-8333-333333333333",
-            },
+        managed_clean_rooms(
+            entry,
+            ["Study"],
+            token=token,
+            session_id="33333333-3333-4333-8333-333333333333",
+            floor_token=plan_floor_token(floor),
         )
     )
     await asyncio.sleep(0)
@@ -387,7 +321,7 @@ async def test_room_commands_prefer_stable_ids_and_reject_ambiguous_names() -> N
     )
     entity = vacuum.MaticVacuum(entry)
 
-    await entity.async_send_command("clean_rooms", {"rooms": ["stable-bedroom"]})
+    await entity._commands.async_clean(["stable-bedroom"])
     call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert call.args[1] == ["protocol-1"]
 
@@ -401,7 +335,7 @@ async def test_room_commands_prefer_stable_ids_and_reject_ambiguous_names() -> N
         )
     )
     with pytest.raises(ServiceValidationError, match="ambiguous room name"):
-        await entity.async_send_command("clean_rooms", {"rooms": ["Bedroom"]})
+        await entity._commands.async_clean(["Bedroom"])
 
 
 @pytest.mark.parametrize(
@@ -710,7 +644,7 @@ async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None
         await close
         assert manager.control.stop_pending("synthetic-serial")
         with pytest.raises(HomeAssistantError, match="unavailable during unload"):
-            await entity._async_command(UserCommand.PAUSE)
+            await entity._commands.async_send_user_command(UserCommand.PAUSE)
         assert [
             call.args[0] for call in client.async_send_user_command.call_args_list
         ] == [UserCommand.STOP]
@@ -953,7 +887,9 @@ async def test_stop_cancels_undispatched_direct_motion(
 
     with patch.object(RobotCommands, "async_ensure_stop_settled", side_effect=delayed):
         task = asyncio.create_task(
-            entity.async_send_command(command, {"room": "Kitchen"})
+            entity._commands.async_clean()
+            if command == "clean_all"
+            else entity.async_send_command(command, {"room": "Kitchen"})
         )
         await entered.wait()
         manager.control.request_stop("synthetic-serial")
@@ -978,9 +914,7 @@ async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -
     lock = manager.control.command_lock(serial_number)
     await lock.acquire()
 
-    task = asyncio.create_task(
-        entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
-    )
+    task = asyncio.create_task(entity._commands.async_clean(["Study"]))
     for _ in range(30):
         waiters = getattr(lock, "_waiters", None)
         if waiters is not None and any(not waiter.done() for waiter in waiters):
@@ -1029,9 +963,7 @@ async def test_after_room_stop_supersedes_queued_direct_motion(
     await command_lock.acquire()
     entity = vacuum.MaticVacuum(entry)
     if command == "clean_rooms":
-        task = asyncio.create_task(
-            entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
-        )
+        task = asyncio.create_task(entity._commands.async_clean(["Study"]))
     elif command == "resume":
         task = asyncio.create_task(entity.async_send_command("resume"))
     else:
@@ -1257,7 +1189,7 @@ async def test_go_to_room_keeps_the_plan_driving_the_task_it_joins(hass) -> None
     plan_lock = manager.control.lock(serial_number)
     await plan_lock.acquire()
     try:
-        await vacuum.MaticVacuum(entry).async_go_to_room("Kitchen")
+        await RobotControls(None, entry, None).async_go_to_room("Kitchen")
     finally:
         plan_lock.release()
 
@@ -1280,7 +1212,9 @@ async def test_go_to_room_refuses_when_the_task_ends_while_queued(hass) -> None:
     entry.runtime_data.cleaning_plans = manager
     command_lock = manager.control.command_lock("synthetic-serial")
     await command_lock.acquire()
-    task = asyncio.create_task(vacuum.MaticVacuum(entry).async_go_to_room("Kitchen"))
+    task = asyncio.create_task(
+        RobotControls(None, entry, None).async_go_to_room("Kitchen")
+    )
     try:
         for _ in range(30):
             waiters = getattr(command_lock, "_waiters", None)
@@ -1321,14 +1255,14 @@ async def test_go_to_room_without_a_task_owns_motion_only_when_it_goes(
 
     if room == "Attic":
         with pytest.raises(ServiceValidationError):
-            await vacuum.MaticVacuum(entry).async_go_to_room(room)
+            await RobotControls(None, entry, None).async_go_to_room(room)
         entry.runtime_data.session.client.async_go_to_room.assert_not_awaited()
         assert manager.control.managed_motion_is_current(serial_number, token)
         return
     plan_lock = manager.control.lock(serial_number)
     await plan_lock.acquire()
     try:
-        await vacuum.MaticVacuum(entry).async_go_to_room(room)
+        await RobotControls(None, entry, None).async_go_to_room(room)
     finally:
         plan_lock.release()
     entry.runtime_data.session.client.async_go_to_room.assert_awaited_once()
@@ -1358,23 +1292,23 @@ def _plan_area_vacuum(hass, area: dict | None = None):
     }
     manager.repository.robot("synthetic-serial")["areas"]["rug"] = saved
     token = manager.control.begin_managed_motion("synthetic-serial")
-    params = {
-        "area": "rug",
-        "fingerprint": plan_area_fingerprint(saved),
-        "cleaning_mode": "vacuum_and_mop",
-        "coverage": "heavy_duty",
-        PLAN_MOTION_TOKEN: token,
-        PLAN_SESSION_ID: _AREA_SESSION,
-        PLAN_FLOOR_TOKEN: plan_floor_token(floor),
-    }
-    return entry, manager, vacuum.MaticVacuum(entry), params
+    command = CleanPlanArea(
+        area_id="rug",
+        fingerprint=plan_area_fingerprint(saved),
+        cleaning_mode="vacuum_and_mop",
+        coverage="heavy_duty",
+        motion_token=token,
+        session_id=UUID(_AREA_SESSION),
+        floor_token=plan_floor_token(floor),
+    )
+    return entry, manager, RobotCommands(hass, entry, None), command
 
 
 async def test_plan_area_command_starts_its_owned_custom_coverage(hass) -> None:
-    entry, manager, entity, params = _plan_area_vacuum(hass)
+    entry, manager, commands, command = _plan_area_vacuum(hass)
     client = entry.runtime_data.session.client
 
-    await entity.async_send_command("clean_plan_area", params)
+    await commands.async_start_plan_leg(command)
 
     client.async_start_custom_coverage.assert_awaited_once()
     call = client.async_start_custom_coverage.await_args
@@ -1397,42 +1331,6 @@ async def test_plan_area_command_starts_its_owned_custom_coverage(hass) -> None:
 
 
 @pytest.mark.parametrize(
-    "change",
-    [
-        {PLAN_MOTION_TOKEN: None},
-        {PLAN_SESSION_ID: None},
-        {PLAN_FLOOR_TOKEN: None},
-        {"area": None},
-        {"area": ""},
-        {"area": 1},
-        {"fingerprint": None},
-        {"fingerprint": 1},
-    ],
-)
-async def test_plan_area_command_requires_its_managed_run(hass, change) -> None:
-    entry, _manager, entity, params = _plan_area_vacuum(hass)
-    for key, value in change.items():
-        if value is None:
-            params.pop(key)
-        else:
-            params[key] = value
-
-    with pytest.raises(ServiceValidationError) as raised:
-        await entity.async_send_command("clean_plan_area", params)
-
-    assert raised.value.translation_key == "invalid_plan_command"
-    entry.runtime_data.session.client.async_start_custom_coverage.assert_not_awaited()
-
-
-async def test_plan_area_command_without_params_is_refused(hass) -> None:
-    entry, _manager, entity, _params = _plan_area_vacuum(hass)
-    with pytest.raises(ServiceValidationError) as raised:
-        await entity.async_send_command("clean_plan_area")
-    assert raised.value.translation_key == "invalid_plan_command"
-    entry.runtime_data.session.client.async_start_custom_coverage.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
     ("change", "translation_key"),
     [
         ("deleted", "plan_area_missing"),
@@ -1446,7 +1344,7 @@ async def test_plan_area_command_without_params_is_refused(hass) -> None:
 async def test_plan_area_command_rechecks_the_area_before_starting(
     hass, change, translation_key
 ) -> None:
-    entry, manager, entity, params = _plan_area_vacuum(hass)
+    entry, manager, commands, command = _plan_area_vacuum(hass)
     areas = manager.repository.robot("synthetic-serial")["areas"]
     floor = entry.runtime_data.session.floor.value
     if change == "deleted":
@@ -1459,15 +1357,15 @@ async def test_plan_area_command_rechecks_the_area_before_starting(
         areas["rug"]["map_binding"] = binding_for_floor_plan(
             replace(floor, mission_id=floor.mission_id + 1)
         )
-        params["fingerprint"] = plan_area_fingerprint(areas["rug"])
+        command = replace(command, fingerprint=plan_area_fingerprint(areas["rug"]))
     elif change == "bad_circle":
         areas["rug"]["circles"] = [{"x": "left", "y": 2.0, "radius": 0.35}]
-        params["fingerprint"] = plan_area_fingerprint(areas["rug"])
+        command = replace(command, fingerprint=plan_area_fingerprint(areas["rug"]))
     else:
-        params[PLAN_FLOOR_TOKEN] = "0" * 64
+        command = replace(command, floor_token="0" * 64)
 
     with pytest.raises(ServiceValidationError) as raised:
-        await entity.async_send_command("clean_plan_area", params)
+        await commands.async_start_plan_leg(command)
 
     assert raised.value.translation_key == translation_key
     entry.runtime_data.session.client.async_start_custom_coverage.assert_not_awaited()
@@ -1488,12 +1386,12 @@ async def test_plan_area_command_rechecks_the_area_before_starting(
 async def test_plan_area_command_translates_start_failures(
     hass, error, expected, translation_key
 ) -> None:
-    entry, _manager, entity, params = _plan_area_vacuum(hass)
+    entry, _manager, commands, command = _plan_area_vacuum(hass)
     client = entry.runtime_data.session.client
     client.async_start_custom_coverage.side_effect = error
 
     with pytest.raises(expected) as raised:
-        await entity.async_send_command("clean_plan_area", params)
+        await commands.async_start_plan_leg(command)
 
     assert raised.value.translation_key == translation_key
     assert raised.value.__cause__ is error

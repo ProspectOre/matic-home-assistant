@@ -46,7 +46,6 @@ from custom_components.matic_robot.client.exceptions import (
     SinkLocationUnavailableError,
 )
 from custom_components.matic_robot.client.models import (
-    CleaningPhase,
     CleaningSchedule,
     CleaningSession,
     CleaningSessionRecord,
@@ -68,12 +67,11 @@ from custom_components.matic_robot.client.slam_tiles import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.entity import MaticEntity
 from custom_components.matic_robot.plan_model import (
-    PLAN_MOTION_TOKEN,
-    PLAN_SESSION_ID,
     CleaningRoom,
     PlanStopDecision,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.slam_decoded_map import DecodedMap
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
@@ -81,7 +79,7 @@ from custom_components.matic_robot.slam_map_store import (
 )
 from custom_components.matic_robot.stores import CleaningHistory
 from tests.frontend_sources import common_strings
-from tests.session_fakes import fake_session, set_operational
+from tests.session_fakes import fake_session, managed_clean_rooms, set_operational
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 _TILES = (decode_slam_tile(synthetic_slam_entry()),)
@@ -495,8 +493,8 @@ async def test_bag_alerts_are_exposed_but_bag_statistics_stay_latent(
     hass,
 ) -> None:
     # Owner decision 2026-10-30: the natively mapped bag alerts (205, 206)
-    # get binary sensors. The full/replacement statistics wait for a real
-    # robot transition.
+    # get binary sensors. 0.6 deleted the unregistered full/replacement
+    # statistics.
     entry = _entry()
     session = entry.runtime_data.session
     set_operational(session, bag_full=True, bag_missing=False)
@@ -514,157 +512,12 @@ async def test_bag_alerts_are_exposed_but_bag_statistics_stay_latent(
 
     added.clear()
     await sensor.async_setup_entry(hass, entry, lambda values: added.extend(values))
-    # The bag pass is a purchase, not the latent bag-full statistics.
+    # The bag pass is a purchase, not a bag-full statistic.
     assert not any(
         entity.entity_description.key.startswith("bag_")
         and entity.entity_description.key != "bag_pass_expires"
         for entity in added
     )
-
-
-async def test_bag_statistics_restore_and_count_full_transitions() -> None:
-    entry = _entry()
-    session = entry.runtime_data.session
-    count = sensor.MaticBagFullCountSensor(entry)
-    last_full = sensor.MaticBagLastFullSensor(entry)
-    replacement_count = sensor.MaticBagReplacementCountSensor(entry)
-    last_replaced = sensor.MaticBagLastReplacedSensor(entry)
-    sensor._MaticBagStatisticsSensor(entry)._async_apply_full_transition()
-    sensor._MaticBagStatisticsSensor(entry)._async_apply_replacement_transition()
-    count.async_write_ha_state = MagicMock()
-    last_full.async_write_ha_state = MagicMock()
-    replacement_count.async_write_ha_state = MagicMock()
-    last_replaced.async_write_ha_state = MagicMock()
-    count._async_state_updated()
-    set_operational(session, bag_full=False)
-    restored_at = sensor.dt_util.parse_datetime("2026-01-01T00:00:00+00:00")
-    with (
-        patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
-        patch.object(
-            sensor.MaticBagFullCountSensor,
-            "async_get_last_sensor_data",
-            AsyncMock(return_value=SimpleNamespace(native_value=4)),
-        ),
-        patch.object(
-            sensor.MaticBagLastFullSensor,
-            "async_get_last_sensor_data",
-            AsyncMock(return_value=SimpleNamespace(native_value=restored_at)),
-        ),
-        patch.object(
-            sensor.MaticBagReplacementCountSensor,
-            "async_get_last_sensor_data",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(
-            sensor.MaticBagLastReplacedSensor,
-            "async_get_last_sensor_data",
-            AsyncMock(return_value=None),
-        ),
-    ):
-        await count.async_added_to_hass()
-        await last_full.async_added_to_hass()
-        await replacement_count.async_added_to_hass()
-        await last_replaced.async_added_to_hass()
-
-    assert count.native_value == 4
-    assert last_full.native_value == restored_at
-    assert replacement_count.native_value == 0
-    assert last_replaced.native_value is None
-
-    set_operational(session, bag_full=True)
-    assert count.native_value == 5
-    assert last_full.native_value is not None
-    assert last_full.native_value != restored_at
-    assert replacement_count.native_value == 0
-    assert last_replaced.native_value is None
-
-    set_operational(session, bag_full=False)
-    assert replacement_count.native_value == 0
-    assert last_replaced.native_value is None
-
-    # A single clear followed by a full report is treated as telemetry noise.
-    set_operational(session, bag_full=True)
-    assert count.native_value == 5
-    assert replacement_count.native_value == 0
-
-    # Two consecutive clear reports identify the replacement. The subscribed
-    # sensors see each report the state store publishes.
-    set_operational(session, bag_full=False)
-    set_operational(session, bag_full=False, battery_percentage=81)
-    assert replacement_count.native_value == 1
-    assert last_replaced.native_value is not None
-
-    set_operational(session, bag_full=True)
-    assert count.native_value == 6
-
-
-async def test_bag_statistics_ignore_a_clear_flag_while_the_bag_is_missing() -> None:
-    """A bag taken out and not put back is not a confirmed replacement."""
-    entry = _entry()
-    session = entry.runtime_data.session
-    replacement_count = sensor.MaticBagReplacementCountSensor(entry)
-    last_replaced = sensor.MaticBagLastReplacedSensor(entry)
-    replacement_count.async_write_ha_state = MagicMock()
-    last_replaced.async_write_ha_state = MagicMock()
-
-    def observe(**flags: object) -> None:
-        nonlocal session
-        set_operational(session, **flags)
-        replacement_count._async_state_updated()
-        last_replaced._async_state_updated()
-
-    observe(bag_full=False, bag_missing=False)
-    observe(bag_full=True, bag_missing=False)
-
-    # The bag is pulled out and left out: the full flag clears because there is
-    # no bag to be full, which is not evidence that a fresh one went in.
-    observe(bag_full=False, bag_missing=True)
-    observe(bag_full=False, bag_missing=True)
-    assert replacement_count.native_value == 0
-    assert last_replaced.native_value is None
-
-    # A present bag reporting clear twice is the confirmed replacement.
-    observe(bag_full=False, bag_missing=False)
-    observe(bag_full=False, bag_missing=False)
-    assert replacement_count.native_value == 1
-    assert last_replaced.native_value is not None
-
-
-async def test_bag_replacement_statistics_restore_previous_values() -> None:
-    entry = _entry()
-    session = entry.runtime_data.session
-    replacement_count = sensor.MaticBagReplacementCountSensor(entry)
-    last_replaced = sensor.MaticBagLastReplacedSensor(entry)
-    replacement_count.async_write_ha_state = MagicMock()
-    last_replaced.async_write_ha_state = MagicMock()
-    set_operational(session, bag_full=False)
-    restored_at = sensor.dt_util.parse_datetime("2026-02-03T04:05:06+00:00")
-    with (
-        patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
-        patch.object(
-            sensor.MaticBagReplacementCountSensor,
-            "async_get_last_sensor_data",
-            AsyncMock(return_value=SimpleNamespace(native_value=3)),
-        ),
-        patch.object(
-            sensor.MaticBagLastReplacedSensor,
-            "async_get_last_sensor_data",
-            AsyncMock(return_value=SimpleNamespace(native_value=restored_at)),
-        ),
-    ):
-        await replacement_count.async_added_to_hass()
-        await last_replaced.async_added_to_hass()
-
-    assert replacement_count.native_value == 3
-    assert last_replaced.native_value == restored_at
-
-    # A replacement observed after the restore continues from the stored count.
-    set_operational(session, bag_full=True)
-    for battery in (81, 80):
-        set_operational(session, bag_full=False, battery_percentage=battery)
-
-    assert replacement_count.native_value == 4
-    assert last_replaced.native_value != restored_at
 
 
 async def test_cues_event_entity_records_live_event(hass) -> None:
@@ -1289,8 +1142,19 @@ def test_sensor_and_binary_sensor_values() -> None:
         for description in sensor.STATE_DESCRIPTIONS
     }
     assert state_sensors["current_area"].extra_state_attributes == {
-        "previous_area": None
+        "matic_entry_id": "entry",
+        "matic_metric": "current_area",
+        "previous_area": None,
     }
+    # Matic Map finds the sensors it shows by entry and key.
+    for key in ("cleaning_phase", "run_progress", "time_remaining"):
+        assert state_sensors[key].extra_state_attributes == {
+            "matic_entry_id": "entry",
+            "matic_metric": key,
+        }
+    assert {"matic_entry_id", "matic_metric"} <= (
+        sensor.MaticStateSensor._unrecorded_attributes
+    )
     wifi = state_sensors["wifi_state"].extra_state_attributes
     assert wifi is not None
     assert wifi["known_networks"] == 1
@@ -2307,15 +2171,12 @@ async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
 
 async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
     entry = _entry()
-    entity = vacuum.MaticVacuum(entry)
 
-    await entity.async_send_command(
-        "clean_rooms",
-        {
-            "rooms": ["room-2"],
-            PLAN_MOTION_TOKEN: 7,
-            PLAN_SESSION_ID: "11111111-1111-4111-8111-111111111111",
-        },
+    await managed_clean_rooms(
+        entry,
+        ["room-2"],
+        token=7,
+        session_id="11111111-1111-4111-8111-111111111111",
     )
 
     coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
@@ -2436,25 +2297,12 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     entity = vacuum.MaticVacuum(_entry())
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
-        "low_charge": False,
         "recharge_and_resume": False,
-        "current_area": None,
         "previous_area": None,
-        "cleaning_phase": None,
-        "run_progress": None,
-        "time_remaining": None,
         "rooms": {"room-1": "Kitchen", "room-2": "Study"},
     }
     assert vacuum.MaticVacuum._unrecorded_attributes == frozenset(
-        {
-            "matic_entry_id",
-            "rooms",
-            "current_area",
-            "previous_area",
-            "cleaning_phase",
-            "run_progress",
-            "time_remaining",
-        }
+        {"matic_entry_id", "rooms", "previous_area"}
     )
 
     bare_entry = _entry(with_floor_plan=False)
@@ -2465,13 +2313,8 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     bare = vacuum.MaticVacuum(bare_entry)
     assert bare.extra_state_attributes == {
         "matic_entry_id": "entry",
-        "low_charge": False,
         "recharge_and_resume": False,
-        "current_area": None,
         "previous_area": None,
-        "cleaning_phase": CleaningPhase.EDGES,
-        "run_progress": 75,
-        "time_remaining": 300,
         "rooms": {},
     }
     assert await bare.async_get_segments() == []
@@ -2614,7 +2457,7 @@ async def test_sink_summon_rejects_a_floor_without_a_saved_location() -> None:
         SinkLocationUnavailableError("synthetic")
     )
     with pytest.raises(ServiceValidationError) as missing:
-        await vacuum.MaticVacuum(unsaved).async_sink_summon()
+        await RobotControls(None, unsaved, None).async_sink_summon()
     assert missing.value.translation_key == "sink_location_unavailable"
     unsaved.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
 
@@ -2623,7 +2466,7 @@ async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> No
     stale = _entry(idle=True)
     stale.runtime_data.slam_map.floor_plan_is_current.return_value = False
     with pytest.raises(ServiceValidationError) as unavailable:
-        await vacuum.MaticVacuum(stale).async_sink_summon()
+        await RobotControls(None, stale, None).async_sink_summon()
     assert unavailable.value.translation_key == "room_plan_unavailable"
     stale.runtime_data.session.client.async_sink_summon.assert_not_awaited()
 
@@ -2633,7 +2476,7 @@ async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> No
             unsupported.runtime_data.session.client, method
         ).side_effect = EndpointUnsupportedError("synthetic")
         with pytest.raises(HomeAssistantError) as failed:
-            await vacuum.MaticVacuum(unsupported).async_sink_summon()
+            await RobotControls(None, unsupported, None).async_sink_summon()
         assert not isinstance(failed.value, ServiceValidationError)
         assert failed.value.translation_key == "robot_command_failed"
         unsupported.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
@@ -2669,7 +2512,7 @@ async def test_go_to_room_requires_one_room(params) -> None:
 async def test_go_to_room_refuses_unknown_and_ambiguous_rooms() -> None:
     entry = _entry(idle=True)
     with pytest.raises(ServiceValidationError) as unknown:
-        await vacuum.MaticVacuum(entry).async_go_to_room("Attic")
+        await RobotControls(None, entry, None).async_go_to_room("Attic")
     assert unknown.value.translation_key == "unknown_rooms"
     assert unknown.value.translation_placeholders == {"rooms": "Attic"}
 
@@ -2679,7 +2522,7 @@ async def test_go_to_room_refuses_unknown_and_ambiguous_rooms() -> None:
     )
     entry.runtime_data.session.floor.set(twin)
     with pytest.raises(ServiceValidationError) as ambiguous:
-        await vacuum.MaticVacuum(entry).async_go_to_room("Study")
+        await RobotControls(None, entry, None).async_go_to_room("Study")
     assert ambiguous.value.translation_key == "ambiguous_room"
     assert ambiguous.value.translation_placeholders == {"room": "Study"}
     entry.runtime_data.session.client.async_go_to_room.assert_not_awaited()
@@ -2690,7 +2533,7 @@ async def test_go_to_room_rejects_stale_maps_and_reports_robot_failures() -> Non
     stale = _entry(idle=True)
     stale.runtime_data.slam_map.floor_plan_is_current.return_value = False
     with pytest.raises(ServiceValidationError) as unavailable:
-        await vacuum.MaticVacuum(stale).async_go_to_room("Kitchen")
+        await RobotControls(None, stale, None).async_go_to_room("Kitchen")
     assert unavailable.value.translation_key == "room_plan_unavailable"
     stale.runtime_data.session.client.async_go_to_room.assert_not_awaited()
 
@@ -2699,7 +2542,7 @@ async def test_go_to_room_rejects_stale_maps_and_reports_robot_failures() -> Non
         EndpointUnsupportedError("synthetic")
     )
     with pytest.raises(HomeAssistantError) as failed:
-        await vacuum.MaticVacuum(unsupported).async_go_to_room("Kitchen")
+        await RobotControls(None, unsupported, None).async_go_to_room("Kitchen")
     assert not isinstance(failed.value, ServiceValidationError)
     assert failed.value.translation_key == "robot_command_failed"
     unsupported.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()

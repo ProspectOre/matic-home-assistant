@@ -17,6 +17,7 @@ from PIL import Image
 from custom_components.matic_robot import button, photos
 from custom_components.matic_robot import image as image_platform
 from custom_components.matic_robot.client import snaps
+from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.client.snaps import decode_instamatic_snap
@@ -299,16 +300,8 @@ async def test_take_photo_button_sends_snap_and_reads_the_photo(hass) -> None:
         await take_photo.async_press()
 
     lookup.assert_called_once_with(take_photo.hass, "entry")
-    take_photo.hass.services.async_call.assert_awaited_once_with(
-        "vacuum",
-        "send_command",
-        {
-            "entity_id": "vacuum.test_robot",
-            "command": "emote",
-            "params": {"kind": "snap"},
-        },
-        blocking=True,
-    )
+    send = entry.runtime_data.session.client.async_send_user_command
+    send.assert_awaited_once_with(UserCommand.EMOTE_SNAP)
     entry.runtime_data.photos.async_refresh_after_snap.assert_called_once_with()
     entry.async_create_background_task.assert_called_once()
 
@@ -317,4 +310,5 @@ async def test_take_photo_button_sends_snap_and_reads_the_photo(hass) -> None:
         pytest.raises(HomeAssistantError),
     ):
         await take_photo.async_press()
-    take_photo.hass.services.async_call.assert_awaited_once()
+    send.assert_awaited_once()
+    take_photo.hass.services.async_call.assert_not_awaited()

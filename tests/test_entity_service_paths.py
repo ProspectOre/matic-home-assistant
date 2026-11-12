@@ -94,6 +94,7 @@ async def platforms(hass: HomeAssistant) -> AsyncIterator[SimpleNamespace]:
     for area_id, name in (("area-one", "First area"), ("area-two", "Second area")):
         await manager.catalog.async_save_area(serial, area_id, {"name": name})
     dependency.runtime_data.cleaning_plans = manager
+    dependency.runtime_data.client = session.client
     entry = MockConfigEntry(
         domain=DOMAIN, data={"serial_number": serial}, state=ConfigEntryState.LOADED
     )
@@ -237,19 +238,13 @@ async def test_vacuum_start_and_named_room_validation(
     ]
     client.async_start_coverage.reset_mock()
     await hass.services.async_call(
-        "vacuum",
-        "send_command",
-        {**target, "command": "clean_rooms", "params": {"rooms": ["Study"]}},
-        blocking=True,
+        DOMAIN, "clean", {**target, "rooms": ["Study"]}, blocking=True
     )
     assert client.async_start_coverage.await_args.args[1] == ["protocol-2"]
     client.async_start_coverage.reset_mock()
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(
-            "vacuum",
-            "send_command",
-            {**target, "command": "clean_rooms", "params": {"rooms": ["Missing room"]}},
-            blocking=True,
+            DOMAIN, "clean", {**target, "rooms": ["Missing room"]}, blocking=True
         )
     client.async_start_coverage.assert_not_awaited()
 

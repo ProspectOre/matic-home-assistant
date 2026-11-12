@@ -2312,7 +2312,6 @@ async def test_failed_area_stops_its_own_mission_and_fails_the_run(
     [
         "area_map_changed",
         "invalid_area",
-        "invalid_plan_command",
         "plan_area_missing",
         "room_plan_unavailable",
     ],

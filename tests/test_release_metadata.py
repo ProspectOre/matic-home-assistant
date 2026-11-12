@@ -767,8 +767,8 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             "another read-only check. The firmware alerts blueprint uses it."
         )
         exceptions = translations["exceptions"]
-        for alias in ("start", "clean_segments", "dock"):
-            assert alias in exceptions["unsupported_command"]["message"]
+        for command in ("resume", "sink_summon", "emote"):
+            assert command in exceptions["unsupported_command"]["message"]
         assert exceptions["single_robot_required"]["message"] == (
             "Select exactly one robot."
         )

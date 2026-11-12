@@ -14,12 +14,6 @@ from .client.models import FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
 from .room_identity import room_cadence_identity as room_cadence_identity
 
-PLAN_MOTION_TOKEN = "_matic_plan_run"
-
-PLAN_FLOOR_TOKEN = "_matic_plan_floor"
-
-PLAN_SESSION_ID = "_matic_plan_session"
-
 _PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v2\0"
 
 MANUAL_ROOM_SEQUENCE_PLAN_ID = "__matic_manual_room_sequence__"
