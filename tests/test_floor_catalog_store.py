@@ -126,6 +126,14 @@ async def test_a_new_robot_starts_with_an_empty_store(
     assert set(_options(hass, entity_id)) == {"last_seen_segments"}
     assert catalog._catalog["matic_floor_scope"] == UP
 
+    # Core lost its segments; the store already has this floor, so only core
+    # is written.
+    catalog._store.async_delay_save.reset_mock()
+    er.async_get(hass).async_update_entity_options(entity_id, "vacuum", {})
+    catalog.reconcile(hass, entity_id, UPSTAIRS, MagicMock())
+    assert _options(hass, entity_id) == {"last_seen_segments": _segments("bedroom")}
+    catalog._store.async_delay_save.assert_not_called()
+
 
 async def test_reupgrade_keeps_floors_only_the_downgrade_changed(
     hass: HomeAssistant, hass_storage: dict[str, Any]
