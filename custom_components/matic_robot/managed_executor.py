@@ -367,6 +367,12 @@ async def _async_execute_rooms_reserved(
                             dispatch_on_return,
                             bind_native_identity,
                             back_to_handoff,
+                            partial(
+                                dispatch_control._async_cleanup_managed_motion,
+                                outer_command,
+                                motion_token,
+                                dispatch_attempted=True,
+                            ),
                         )
                 if index > 0 and prepared_dispatch is None:
                     if not await observation._async_wait_for_settled_leg_handoff(

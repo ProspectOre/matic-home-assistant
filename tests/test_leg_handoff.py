@@ -9,6 +9,7 @@ import pytest
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.leg_handoff import async_dispatch_on_return
@@ -42,7 +43,12 @@ class _Robot:
     """Synthetic robot that cannot reach the kitchen and heads home slowly."""
 
     def __init__(
-        self, hass, *, refuse_while_returning: bool, start_late: bool = False
+        self,
+        hass,
+        *,
+        refuse_while_returning: bool,
+        start_late: bool = False,
+        fail_after_taking: bool = False,
     ) -> None:
         self.hass = hass
         self.identity = b""
@@ -50,6 +56,7 @@ class _Robot:
         self.dispatch_states: list[str] = []
         self.refuse_while_returning = refuse_while_returning
         self.start_late = start_late
+        self.fail_after_taking = fail_after_taking
 
     async def read_identity(self) -> bytes:
         return self.identity
@@ -71,6 +78,10 @@ class _Robot:
                 self.hass.states.async_set("vacuum.matic", "docked")
             raise MaticError("refused")
         self.identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
+        if state == "returning" and self.fail_after_taking:
+            # The robot starts the room, then the settings readback fails.
+            self.hass.states.async_set("vacuum.matic", "cleaning")
+            raise MaticError("readback failed")
         first = len(self.dispatch_states) == 1
         area = None if first else STUDY.name
         self.hass.states.async_set("vacuum.matic", "cleaning", {"current_area": area})
@@ -98,7 +109,7 @@ class _Robot:
         self.hass.states.async_set("vacuum.matic", "docked")
 
 
-async def _run(hass, robot: _Robot) -> list:
+async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["plans"]["test-plan"] = {
@@ -134,7 +145,7 @@ async def _run(hass, robot: _Robot) -> list:
                 active_session=AsyncMock(return_value=None),
                 session_history=robot.history,
             ),
-            managed_user_command=AsyncMock(),
+            managed_user_command=sender or AsyncMock(),
         ),
         3,
     )
@@ -188,6 +199,7 @@ async def test_only_a_returning_robot_with_no_mission_is_sent_on(
             dispatch,
             lambda _identity: None,
             AsyncMock(),
+            AsyncMock(),
         )
         is None
     )
@@ -205,6 +217,7 @@ async def test_a_taken_or_cancelled_dispatch_is_not_retried(error) -> None:
         raise error
 
     on_refused = AsyncMock()
+    stop_taken = AsyncMock()
     with pytest.raises(type(error)):
         await async_dispatch_on_return(
             _hass("returning"),
@@ -213,9 +226,14 @@ async def test_a_taken_or_cancelled_dispatch_is_not_retried(error) -> None:
             dispatch,
             bound.append,
             on_refused,
+            stop_taken,
         )
     assert bound == [b"ours"]
     on_refused.assert_not_awaited()
+    if isinstance(error, PlanCancelledError):
+        stop_taken.assert_not_awaited()
+    else:
+        stop_taken.assert_awaited_once()
 
 
 async def test_a_refused_room_that_starts_late_is_never_sent_twice(hass) -> None:
@@ -224,3 +242,13 @@ async def test_a_refused_room_that_starts_late_is_never_sent_twice(hass) -> None
         await _run(hass, robot)
 
     assert robot.dispatch_states == ["docked", "returning"]
+
+
+async def test_a_room_taken_then_failed_on_the_way_home_is_stopped(hass) -> None:
+    robot = _Robot(hass, refuse_while_returning=False, fail_after_taking=True)
+    sender = AsyncMock()
+    with pytest.raises(MaticError):
+        await _run(hass, robot, sender)
+
+    assert robot.dispatch_states == ["docked", "returning"]
+    assert sender.await_args_list[-1].args[1] is UserCommand.STOP

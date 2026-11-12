@@ -25,6 +25,7 @@ async def async_dispatch_on_return(
     ],
     bind_identity: Callable[[bytes | None], None],
     on_refused: Callable[[], Awaitable[None]],
+    stop_taken: Callable[[], Awaitable[None]],
 ) -> _PreparedRoomDispatch | None:
     """Send the next leg before the robot docks, or return None to dock first.
 
@@ -34,7 +35,8 @@ async def async_dispatch_on_return(
     robot refused without taking also returns None, so the caller falls back
     to the settled handoff at the dock, after ``on_refused``. ``dispatch``
     reports the identity of a mission the robot took through the callback it
-    is given.
+    is given; when the robot took it and dispatch still failed,
+    ``stop_taken`` stops that mission before the error propagates.
     """
     state = hass.states.get(entity_id)
     if (
@@ -57,6 +59,7 @@ async def async_dispatch_on_return(
         raise
     except (HomeAssistantError, MaticError) as err:
         if taken:
+            await stop_taken()
             raise
         _LOGGER.debug(
             "Matic refused the next leg on its way home (%s)", type(err).__name__
