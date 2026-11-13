@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from contextlib import asynccontextmanager
 
 import pytest
 from homeassistant.core import CoreState
@@ -295,11 +296,8 @@ async def test_failed_accepted_area_write_does_not_abort_lifecycle_drain(
         assert reloaded.history.snapshot(SERIAL)["selected_area"] == before_selected
 
 
-@pytest.mark.parametrize("concurrent_update", (False, True))
-async def test_failed_fresh_robot_commit_removes_only_empty_record(
-    hass, monkeypatch, concurrent_update
-):
-    """Failed Area creation removes defaults but preserves concurrent metadata."""
+async def test_failed_fresh_robot_commit_leaves_no_record(hass, monkeypatch):
+    """Failed Area creation leaves no robot record in memory or on disk."""
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     assert SERIAL not in manager.repository.data["robots"]
@@ -329,10 +327,6 @@ async def test_failed_fresh_robot_commit_removes_only_empty_record(
     )
     try:
         await asyncio.wait_for(write_started.wait(), timeout=3)
-        if concurrent_update:
-            robot = manager.repository.data["robots"][SERIAL]
-            robot["plans"]["concurrent-write"] = {"name": "Concurrent"}
-            robot["rooms"]["concurrent-write"] = {"name": "Concurrent"}
         release_write.set()
         with pytest.raises(
             HomeAssistantError, match="Cleaning plan state could not be saved"
@@ -342,13 +336,7 @@ async def test_failed_fresh_robot_commit_removes_only_empty_record(
         release_write.set()
         await asyncio.gather(mutation, return_exceptions=True)
 
-    if concurrent_update:
-        robot = manager.repository.data["robots"][SERIAL]
-        assert robot["areas"] == {}
-        assert robot["plans"]["concurrent-write"] == {"name": "Concurrent"}
-        assert robot["rooms"]["concurrent-write"] == {"name": "Concurrent"}
-    else:
-        assert SERIAL not in manager.repository.data["robots"]
+    assert SERIAL not in manager.repository.data["robots"]
     assert notifications == 0
     assert not manager.repository.state_lock(SERIAL).locked()
 
@@ -516,15 +504,16 @@ async def test_area_failure_cannot_leak_into_queued_other_robot_write(
     manager = await _manager_with_areas(hass)
     other_serial = "synthetic-other-robot"
     area_worker_waiting = asyncio.Event()
-    original_area_worker = manager.repository.async_persist_area_metadata
+    original_commit = manager.repository.commit
 
-    async def observe_area_worker(serial_number, mutate, *, precondition=None) -> None:
-        area_worker_waiting.set()
-        await original_area_worker(serial_number, mutate, precondition=precondition)
+    @asynccontextmanager
+    async def observe_area_worker(serial_number, **kwargs):
+        if serial_number == SERIAL:
+            area_worker_waiting.set()
+        async with original_commit(serial_number, **kwargs) as robot:
+            yield robot
 
-    monkeypatch.setattr(
-        manager.repository, "async_persist_area_metadata", observe_area_worker
-    )
+    monkeypatch.setattr(manager.repository, "commit", observe_area_worker)
     await manager.repository.store_lock.acquire()
     test_holds_store_lock = True
     other_write = None
@@ -893,14 +882,16 @@ async def test_removal_before_area_worker_mutation_rejects_accepted_task(
     manager.repository.async_add_listener(SERIAL, notified)
     worker_started = asyncio.Event()
     release_worker = asyncio.Event()
-    original_worker = manager.repository.async_persist_area_metadata
+    original_commit = manager.repository.commit
 
-    async def defer_worker(serial_number, mutate, *, precondition=None):
+    @asynccontextmanager
+    async def defer_worker(serial_number, **kwargs):
         worker_started.set()
         await release_worker.wait()
-        await original_worker(serial_number, mutate, precondition=precondition)
+        async with original_commit(serial_number, **kwargs) as robot:
+            yield robot
 
-    monkeypatch.setattr(manager.repository, "async_persist_area_metadata", defer_worker)
+    monkeypatch.setattr(manager.repository, "commit", defer_worker)
     waiter = asyncio.create_task(
         manager.catalog.async_save_area(SERIAL, "existing", UPDATED_AREA)
     )

@@ -244,7 +244,7 @@ async def test_late_plan_save_cannot_recreate_robot_during_removal(hass) -> None
         assert late_save.done()
         with pytest.raises(MetadataAdmissionClosedError):
             await late_save
-        assert "removed" not in manager.repository.data["robots"]
+        assert "removed" in manager.repository.data["robots"]
     finally:
         release_save.set()
     await removal
@@ -278,7 +278,7 @@ async def test_robot_removal_serializes_store_writes_across_robots(hass) -> None
 
     manager.repository.store = SimpleNamespace(async_save=save)
     retained_save = asyncio.create_task(
-        manager.repository.async_save_and_notify("retained")
+        manager.ledger.async_set_native_cleanings_enabled("retained", True)
     )
     await save_started.wait()
 
@@ -950,11 +950,10 @@ async def test_initial_save_failure_still_retires_the_run(
             robot=robot_port(set_activity_run_id=set_run_id),
         )
     await hass.async_block_till_done()
-    last_run = manager.history.snapshot("serial")["last_run"]
-    assert last_run["outcome"] == "failed"
-    assert last_run["completed_room_count"] == 0
+    # The start was never saved, so no run record exists to finish.
+    assert manager.history.snapshot("serial")["last_run"] is None
+    manager.repository.store.async_save.assert_awaited_once()
     assert events[0].data["outcome"] == "failed"
-    assert events[0].data["run_id"] == last_run["run_id"]
     assert set_run_id.call_args.args == (None,)
     assert manager.control.lock("serial").locked() is False
     assert manager.control.actor("serial").run_task is None
@@ -1777,6 +1776,7 @@ async def test_area_binding_upgrade_stays_pending_on_rebuild_budget_exhaustion(
         },
     }
     manager.repository.robot("serial")["areas"] = {"legacy": area}
+    plan_state_module.parse_robot(manager.repository.robot("serial"))
 
     with patch.object(
         plan_catalog_module,
@@ -1851,6 +1851,7 @@ async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
             "map_binding": binding_for_floor_plan(complete),
         }
     }
+    plan_state_module.parse_robot(manager.repository.robot("serial"))
 
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", partial
@@ -1886,6 +1887,7 @@ async def test_area_binding_upgrade_ignores_unknown_binding_version(hass) -> Non
             "map_binding": {"version": 99},
         }
     }
+    plan_state_module.parse_robot(manager.repository.robot("serial"))
 
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", None
@@ -1925,6 +1927,7 @@ async def test_dense_hash_only_area_upgrade_is_a_noop(hass, legacy) -> None:
         "map_binding": binding,
     }
     manager.repository.robot("serial")["areas"] = {"dense": area}
+    plan_state_module.parse_robot(manager.repository.robot("serial"))
 
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", floor_plan
@@ -2348,7 +2351,7 @@ async def test_terminal_run_cannot_credit_late_completion(hass, outcome: str) ->
             },
         }
     )
-    robot = manager.repository.robot("serial")
+    plan_state_module.parse_robot(robot)
     before = deepcopy(robot)
 
     accepted = await manager.ledger.async_mark_completed(
@@ -2535,6 +2538,7 @@ def test_rotation_recovers_from_corrupt_or_future_history(hass) -> None:
         }
     }
     robot["rooms"] = "corrupt-global-history"
+    plan_state_module.parse_robot(robot)
 
     assert manager.planning.choose("serial", "away", [kitchen, study, bedroom]) == [
         kitchen,
@@ -2659,11 +2663,6 @@ async def test_load_repairs_malformed_plan_storage_without_inventing_history(
     manager.repository.store.async_save.assert_awaited_once_with(
         manager.repository.data
     )
-
-    manager.repository.data = {"robots": "not-a-container"}
-    robot = manager.repository.robot("serial")
-    assert robot["rooms"] == {}
-    assert manager.repository.data["robots"] == {"serial": robot}
 
     root_repair = CleaningPlanManager(hass)
     root_repair.repository.store = SimpleNamespace(
@@ -5155,7 +5154,7 @@ async def test_reset_history_revalidates_plan_after_metadata_wait(hass) -> None:
     reset = None
     try:
         await asyncio.wait_for(delete_write_started.wait(), timeout=2)
-        assert "selected" not in manager.repository.robot("serial")["plans"]
+        assert "selected" in manager.repository.robot("serial")["plans"]
         assert manager.repository.state_lock("serial").locked()
 
         reset = asyncio.create_task(
@@ -5419,7 +5418,7 @@ async def test_failed_plan_save_preserves_overlapping_mutation(hass) -> None:
 
     second = asyncio.create_task(select_home())
     await asyncio.wait_for(second_started.wait(), timeout=1)
-    assert manager.repository.robot("serial")["selected_plan"] == "home"
+    assert manager.repository.robot("serial")["selected_plan"] == "away"
     assert not second.done()
 
     release_first_write.set()
@@ -5686,12 +5685,14 @@ async def test_partial_cadence_reset_preserves_other_mode_and_active_room(hass) 
     assert shared_policy["do_mop_next"] is False
     assert shared_policy["do_coverage_next"] is True
 
-    private_policy = robot["plans"]["everyday"]["rooms"][1]["cadence"]
-    private_policy.update(do_mop_next=True, do_coverage_next=True)
+    robot["plans"]["everyday"]["rooms"][1]["cadence"].update(
+        do_mop_next=True, do_coverage_next=True
+    )
     robot["active_plan"] = {"plan_id": "everyday", "room_id": "room-kitchen"}
     await manager.cadence.async_reset_cadence(
         "serial", "everyday", ["room-hall"], modes=["coverage"]
     )
+    private_policy = robot["plans"]["everyday"]["rooms"][1]["cadence"]
     private_progress = robot["plan_room_cadence"]["everyday"]["room-hall"]["progress"]
     assert private_progress == {"mop": 2, "coverage": 0}
     assert private_policy["do_mop_next"] is True
@@ -6165,6 +6166,7 @@ async def test_cadence_reset_normalizes_malformed_progress_and_rejects_empty_mod
     robot = manager.repository.robot("serial")
     robot["shared_room_cadence"]["shared"]["progress"] = None
     robot["plan_room_cadence"].setdefault("plan", {})["private"] = {"progress": None}
+    plan_state_module.parse_robot(robot)
 
     with pytest.raises(ValueError, match="cadence reset modes"):
         await manager.cadence.async_reset_cadence(

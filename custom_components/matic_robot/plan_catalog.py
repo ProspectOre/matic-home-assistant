@@ -129,18 +129,8 @@ class PlanCatalog:
         """Upgrade verified area bindings without rebasing tolerated drift."""
 
         async def commit(_lease: _MetadataLockLease) -> AreaBindingUpgradeResult:
-            async with self.repository.store_lock:
-                areas_before = deepcopy(self.repository.robot(serial_number)["areas"])
-                try:
-                    result = await self.async_upgrade_area_bindings_transaction(
-                        serial_number, floor_plan
-                    )
-                    if result.upgraded:
-                        await self.repository.store.async_save(self.repository.data)
-                except BaseException:
-                    self.repository.robot(serial_number)["areas"] = areas_before
-                    raise
-                return result
+            async with self.repository.commit(serial_number):
+                return self.upgrade_area_bindings_transaction(serial_number, floor_plan)
 
         def notify_if_upgraded(result: AreaBindingUpgradeResult) -> None:
             if result.upgraded:
@@ -151,10 +141,10 @@ class PlanCatalog:
         )
         return cast(AreaBindingUpgradeResult, result)
 
-    async def async_upgrade_area_bindings_transaction(
+    def upgrade_area_bindings_transaction(
         self, serial_number: str, floor_plan: FloorPlan | None
     ) -> AreaBindingUpgradeResult:
-        """Apply a verified Area binding migration inside its Store transaction."""
+        """Apply a verified Area binding migration inside its commit."""
         upgraded = 0
         pending = False
         room_geometry = None
@@ -325,8 +315,7 @@ class PlanCatalog:
         """
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number, user=True) as robot:
                 using = self.plans_using_area(serial_number, area_id)
                 emptied = [
                     str(robot["plans"][plan_id].get("name", plan_id))
@@ -338,7 +327,6 @@ class PlanCatalog:
                 ]
                 if emptied:
                     raise AreaInUseError(emptied)
-                before = deepcopy(robot)
                 for plan_id in using:
                     plan = robot["plans"][plan_id]
                     plan["entries"] = [
@@ -356,7 +344,6 @@ class PlanCatalog:
                     rotation.get("areas", {}).pop(area_id, None)
                 if robot.get("selected_area") == area_id:
                     robot["selected_area"] = next(iter(robot["areas"]), None)
-                await self.repository.async_save_with_rollback(serial_number, before)
 
         await self.repository.async_run_owned_metadata(
             serial_number,
@@ -402,14 +389,16 @@ class PlanCatalog:
         """Create or replace a validated room-native plan definition."""
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                await self.async_save_plan_transaction(
-                    serial_number,
-                    plan_id,
-                    plan,
-                    select=select,
-                    floor_token=floor_token,
-                    room_identities=room_identities,
+            async with self.cadence.cadence_commit(serial_number) as mutations:
+                mutations.append(
+                    self.save_plan_transaction(
+                        serial_number,
+                        plan_id,
+                        plan,
+                        select=select,
+                        floor_token=floor_token,
+                        room_identities=room_identities,
+                    )
                 )
 
         await self.repository.async_run_owned_metadata(
@@ -420,7 +409,7 @@ class PlanCatalog:
             reject_on_admission_close=True,
         )
 
-    async def async_save_plan_transaction(
+    def save_plan_transaction(
         self,
         serial_number: str,
         plan_id: str,
@@ -429,10 +418,9 @@ class PlanCatalog:
         select: bool,
         floor_token: str | None,
         room_identities: Mapping[str, str] | None,
-    ) -> None:
-        """Create or replace a validated room-native plan definition."""
+    ) -> _CadenceMutation:
+        """Write a validated room-native plan into the open commit."""
         robot = self.repository.robot(serial_number)
-        before = deepcopy(robot)
         plans = robot["plans"]
         if plan_id not in plans and _is_manual_room_sequence_plan_id(plan_id):
             raise ValueError("This ID is reserved for manual Map Studio room runs")
@@ -782,18 +770,11 @@ class PlanCatalog:
         plans[plan_id] = saved_plan
         if select or robot.get("selected_plan") is None:
             robot["selected_plan"] = plan_id
-        mutation_token = self.cadence.begin_cadence_mutation(
-            serial_number,
-            _CadenceMutation(
-                plan_id,
-                frozenset(changed_plan_rooms),
-                frozenset(changed_shared_rooms),
-            ),
+        return _CadenceMutation(
+            plan_id,
+            frozenset(changed_plan_rooms),
+            frozenset(changed_shared_rooms),
         )
-        try:
-            await self.repository.async_save_with_rollback(serial_number, before)
-        finally:
-            self.cadence.end_cadence_mutation(serial_number, mutation_token)
 
     @staticmethod
     def normalized_plan_entries(
@@ -829,8 +810,8 @@ class PlanCatalog:
         """Delete one saved plan without deleting unrelated history."""
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                await self.async_delete_plan_transaction(serial_number, plan_id)
+            async with self.cadence.cadence_commit(serial_number) as mutations:
+                mutations.append(self.delete_plan_transaction(serial_number, plan_id))
 
         await self.repository.async_run_owned_metadata(
             serial_number,
@@ -840,10 +821,10 @@ class PlanCatalog:
             reject_on_admission_close=True,
         )
 
-    async def async_delete_plan_transaction(
+    def delete_plan_transaction(
         self, serial_number: str, plan_id: str
-    ) -> None:
-        """Delete one saved plan without deleting unrelated history."""
+    ) -> _CadenceMutation:
+        """Delete one saved plan in the open commit, keeping unrelated history."""
         robot = self.repository.robot(serial_number)
         active = robot.get("active_plan")
         pending = native_history._validated_native_reconciliation(
@@ -866,7 +847,6 @@ class PlanCatalog:
             (),
             deletes_plan=True,
         )
-        before = deepcopy(robot)
         plan_room_ids = frozenset(
             str(room.get("room_id"))
             for room in robot["plans"].get(plan_id, {}).get("rooms", [])
@@ -877,26 +857,16 @@ class PlanCatalog:
         robot["plan_room_cadence"].pop(plan_id, None)
         if robot.get("selected_plan") == plan_id:
             robot["selected_plan"] = next(iter(robot["plans"]), None)
-        mutation_token = self.cadence.begin_cadence_mutation(
-            serial_number,
-            _CadenceMutation(plan_id, plan_room_ids, frozenset(), deletes_plan=True),
-        )
-        try:
-            await self.repository.async_save_with_rollback(serial_number, before)
-        finally:
-            self.cadence.end_cadence_mutation(serial_number, mutation_token)
+        return _CadenceMutation(plan_id, plan_room_ids, frozenset(), deletes_plan=True)
 
     async def async_select_plan(self, serial_number: str, plan_id: str) -> None:
         """Persist the selected plan used by native entities."""
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number, user=True) as robot:
                 if plan_id not in robot["plans"]:
                     raise KeyError(plan_id)
-                before = deepcopy(robot)
                 robot["selected_plan"] = plan_id
-                await self.repository.async_save_with_rollback(serial_number, before)
 
         await self.repository.async_run_owned_metadata(
             serial_number,

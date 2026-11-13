@@ -6,11 +6,13 @@ import asyncio
 import hashlib
 import logging
 from collections.abc import (
+    AsyncIterator,
     Callable,
     Iterable,
     Mapping,
     Sequence,
 )
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
@@ -288,7 +290,7 @@ class PlanLedger:
         async def commit(lease: _MetadataLockLease) -> bool | None:
             motion_generation = self.control.motion_generation(serial_number)
             lease.release(self.control.command_lock(serial_number))
-            async with self.repository.store_lock:
+            async with self.native_history_commit(serial_number):
                 if (
                     serial_number in self.repository.removed_robots
                     or self.control.robot_generation(serial_number) != entry_generation
@@ -305,7 +307,7 @@ class PlanLedger:
                     current = current_floor_plan()
                     if current is None or plan_floor_token(current) != floor_token:
                         return None
-                return await self.async_import_native_history_transaction(
+                return self.import_native_history_transaction(
                     serial_number,
                     floor_plan,
                     records,
@@ -376,7 +378,7 @@ class PlanLedger:
             current_floor_plan=current_floor_plan,
         )
 
-    async def async_import_native_history_transaction(
+    def import_native_history_transaction(
         self,
         serial_number: str,
         floor_plan: FloorPlan,
@@ -385,9 +387,8 @@ class PlanLedger:
         reconciled: list[dict[str, Any]],
         verified_coverage_receipt: CoverageReceipt | None = None,
     ) -> bool:
-        """Import and reconcile native history under the plan-write lock."""
+        """Import and reconcile native history inside its commit."""
         robot = self.repository.robot(serial_number)
-        before = deepcopy(robot)
         records = tuple(records)
         changed = native_history._import_native_room_activity(
             robot, floor_plan, records
@@ -407,12 +408,7 @@ class PlanLedger:
             native_history._import_daily_native_uncertainty(robot, floor_plan, records)
             or changed
         )
-        # Admission was rechecked under the store lock before this transaction;
-        # no await can change that ownership before the save below.
-        if not changed:
-            return False
-        await self.async_save_native_history(serial_number, before)
-        return True
+        return changed
 
     async def async_set_native_cleanings_enabled(
         self, serial_number: str, enabled: bool
@@ -422,18 +418,15 @@ class PlanLedger:
             raise ValueError("native cleanings option must be boolean")
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number) as robot:
                 state = robot.get("native_cleanings")
                 if isinstance(state, dict) and state.get("enabled") is enabled:
                     return False
-                before = deepcopy(robot)
                 robot["native_cleanings"] = {
                     "enabled": enabled,
                     "since": dt_util.utcnow().isoformat(),
                 }
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return True
+            return True
 
         await self.repository.async_run_owned_metadata(
             serial_number, commit, notify=True
@@ -447,8 +440,7 @@ class PlanLedger:
         claim = hashlib.sha256(canonical_id.encode("ascii")).hexdigest()
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number) as robot:
                 last_run = robot.get("last_run")
                 if run_id is not None and (
                     not isinstance(last_run, dict)
@@ -459,7 +451,6 @@ class PlanLedger:
                 claims = robot.setdefault("managed_native_sessions", {})
                 if claim in claims:
                     return False
-                before = deepcopy(robot)
                 claims[claim] = {"at": dt_util.utcnow().isoformat(), "run_id": run_id}
                 # This is only a deduplication window; old claims cannot affect
                 # any future session and must not make storage grow forever.
@@ -467,8 +458,7 @@ class PlanLedger:
                     : -plan_state.MAX_MANAGED_NATIVE_SESSION_CLAIMS
                 ]:
                     claims.pop(old_claim, None)
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return True
+            return True
 
         await self.repository.async_run_owned_metadata(
             serial_number,
@@ -482,11 +472,9 @@ class PlanLedger:
         """Reset one plan's room and area history or all managed history."""
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number, user=True) as robot:
                 if plan_id is not None and plan_id not in robot["plans"]:
                     raise KeyError(plan_id)
-                before = deepcopy(robot)
                 pending = native_history._validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")
                 )
@@ -503,9 +491,8 @@ class PlanLedger:
                 else:
                     robot["rotations"].pop(plan_id, None)
                     robot["rotation_resets"][plan_id] = dt_util.utcnow().isoformat()
-                await self.repository.async_save_with_rollback(serial_number, before)
-                if clear_reconciliation:
-                    self.control.cancel_reconciliation_tasks(serial_number)
+            if clear_reconciliation:
+                self.control.cancel_reconciliation_tasks(serial_number)
 
         await self.repository.async_run_owned_metadata(
             serial_number,
@@ -531,8 +518,7 @@ class PlanLedger:
         """Persist the bounded identity and provenance of a managed run."""
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number) as robot:
                 safe_provenance = normalize_run_provenance(provenance or trigger)
                 stop_enabled, stop_threshold = _managed_stop_policy(
                     robot["plans"].get(plan_id, {})
@@ -563,7 +549,6 @@ class PlanLedger:
                     robot["last_run"]["held_rooms"] = [
                         dict(room) for room in held_rooms
                     ]
-                await self.repository.store.async_save(self.repository.data)
 
         await self.repository.async_run_owned_metadata(
             serial_number, commit, notify=True
@@ -587,16 +572,24 @@ class PlanLedger:
         async def commit(
             _lease: _MetadataLockLease,
         ) -> tuple[bool, list[dict[str, Any]]]:
-            async with self.repository.store_lock:
-                return await self.async_finish_run_transaction(
-                    serial_number,
-                    run_id,
-                    outcome,
-                    reason_code,
-                    completed_room_count,
-                    terminal_activity=terminal_activity,
-                    cause=cause,
-                )
+            result: tuple[bool, list[dict[str, Any]]] = (False, [])
+            try:
+                async with self.repository.commit(serial_number):
+                    result = self.finish_run_transaction(
+                        serial_number,
+                        run_id,
+                        outcome,
+                        reason_code,
+                        completed_room_count,
+                        terminal_activity=terminal_activity,
+                        cause=cause,
+                    )
+            finally:
+                # Release even when the save fails: a restart rebuilds
+                # ownership from the persisted checkpoint and run ID.
+                if result[0]:
+                    self.cadence.release_prepared_run(serial_number, run_id)
+            return result
 
         def after_commit(result: tuple[bool, list[dict[str, Any]]]) -> None:
             committed, unfinished = result
@@ -630,7 +623,7 @@ class PlanLedger:
         )
         return bool(result and result[0])
 
-    async def async_finish_run_transaction(
+    def finish_run_transaction(
         self,
         serial_number: str,
         run_id: str,
@@ -711,13 +704,6 @@ class PlanLedger:
         active = robot.get("active_plan")
         if isinstance(active, dict) and active.get("run_id") == run_id:
             robot["active_plan"] = None
-        try:
-            await self.repository.store.async_save(self.repository.data)
-        finally:
-            # A failed save still leaves this in-memory run terminal. If HA
-            # restarts before that write becomes durable, async_load rebuilds
-            # ownership from the persisted checkpoint and run ID.
-            self.cadence.release_prepared_run(serial_number, run_id)
         return True, unfinished
 
     @callback
@@ -959,14 +945,10 @@ class PlanLedger:
         """Commit area evidence atomically; failed writes cannot publish credit."""
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
+            async with self.repository.commit(serial_number):
                 if serial_number in self.repository.removed_robots:
                     return False
-                before = deepcopy(self.repository.robot(serial_number))
-                if not mutate():
-                    return False
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return True
+                return mutate()
 
         def notify(changed: bool) -> None:
             if changed:
@@ -1124,10 +1106,10 @@ class PlanLedger:
         """
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
+            async with self.repository.commit(serial_number):
                 if completion_is_current is not None and not completion_is_current():
                     return False
-                return await self.async_mark_completed_transaction(
+                return self.mark_completed_transaction(
                     serial_number,
                     plan_id,
                     room,
@@ -1150,7 +1132,7 @@ class PlanLedger:
         )
         return bool(result)
 
-    async def async_mark_completed_transaction(
+    def mark_completed_transaction(
         self,
         serial_number: str,
         plan_id: str,
@@ -1162,10 +1144,9 @@ class PlanLedger:
         verified_coverage_receipt: CoverageReceipt | None = None,
         completion_session_hash: str | None = None,
     ) -> bool:
-        """Credit verified completion while owning the plan-write transaction."""
+        """Credit verified completion inside its commit."""
         now_value = dt_util.utcnow()
         robot = self.repository.robot(serial_number)
-        before = deepcopy(robot)
         run = robot.get("last_run")
         if run_id is not None and (
             not isinstance(run, dict)
@@ -1182,9 +1163,7 @@ class PlanLedger:
         ):
             credited = checkpoint.setdefault("completed_room_ids", [])
             if room.room_id in credited:
-                # A previous disk write may have failed after updating the
-                # in-memory credit. Retry persistence, never increment twice.
-                await self.repository.store.async_save(self.repository.data)
+                # Already credited and saved; never increment twice.
                 return True
             credited.append(room.room_id)
         now = (
@@ -1269,7 +1248,6 @@ class PlanLedger:
             and active.get("plan_id") == plan_id
         ):
             robot["active_plan"] = None
-        await self.repository.async_save_with_rollback(serial_number, before)
         return True
 
     async def async_mark_ended_unverified(
@@ -1360,9 +1338,8 @@ class PlanLedger:
         changed = False
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            nonlocal changed
-            async with self.repository.store_lock:
-                return await self.async_mark_native_completed_transaction(
+            async with self.native_history_commit(serial_number):
+                return self.mark_native_completed_transaction(
                     serial_number,
                     plan_id,
                     room,
@@ -1390,7 +1367,7 @@ class PlanLedger:
         )
         return bool(result)
 
-    async def async_mark_native_completed_transaction(
+    def mark_native_completed_transaction(
         self,
         serial_number: str,
         plan_id: str,
@@ -1403,9 +1380,8 @@ class PlanLedger:
         verified_coverage_receipt: CoverageReceipt | None = None,
         changed: Callable[[], None] | None = None,
     ) -> bool:
-        """Reconcile late completion while owning the plan-write transaction."""
+        """Reconcile late completion inside its native-history commit."""
         robot = self.repository.robot(serial_number)
-        before = deepcopy(robot)
         pending = native_history._validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
@@ -1418,7 +1394,6 @@ class PlanLedger:
             robot.pop("pending_native_reconciliation", None)
             if changed is not None:
                 changed()
-            await self.async_save_native_history(serial_number, before)
             return False
         if (
             pending["plan_id"] != plan_id
@@ -1430,7 +1405,6 @@ class PlanLedger:
             robot.pop("pending_native_reconciliation", None)
             if changed is not None:
                 changed()
-            await self.async_save_native_history(serial_number, before)
             return False
         completed_value = (
             completed_at
@@ -1467,7 +1441,6 @@ class PlanLedger:
         robot.pop("pending_native_reconciliation", None)
         if changed is not None:
             changed()
-        await self.async_save_native_history(serial_number, before)
         return True
 
     async def async_clear_native_reconciliation(
@@ -1480,8 +1453,7 @@ class PlanLedger:
         """Durably clear one exact late-completion marker after its watcher ends."""
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number) as robot:
                 pending = native_history._validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")
                 )
@@ -1492,15 +1464,8 @@ class PlanLedger:
                     or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
                 ):
                     return False
-                before = deepcopy(robot)
                 robot.pop("pending_native_reconciliation", None)
-                applied = deepcopy(robot)
-                try:
-                    await self.repository.store.async_save(self.repository.data)
-                except Exception, asyncio.CancelledError:
-                    plan_storage._restore_unsaved_changes(robot, before, applied)
-                    raise
-                return True
+            return True
 
         def notify_if_cleared(cleared: bool) -> None:
             if cleared:
@@ -1753,29 +1718,17 @@ class PlanLedger:
         record.update(asdict(room))
         return cast(dict[str, Any], record)
 
-    async def async_save_native_history(
-        self,
-        serial_number: str,
-        before: dict[str, Any],
-    ) -> None:
-        """Retain retryable evidence and fence replacement behind this save."""
-        robot = self.repository.robot(serial_number)
-        applied = deepcopy(robot)
-        generation = self.control.motion_generation(serial_number)
+    @asynccontextmanager
+    async def native_history_commit(
+        self, serial_number: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Commit native-history evidence; replacement motion waits for it."""
         done = asyncio.Event()
         saves = self.repository.native_history_saves.setdefault(serial_number, set())
         saves.add(done)
         try:
-            await self.repository.store.async_save(self.repository.data)
-        except Exception, asyncio.CancelledError:
-            if self.control.motion_generation(serial_number) != generation:
-                # Replacement must persist removal after this rollback finishes.
-                if before.get("pending_native_reconciliation") is not None:
-                    self.repository.reconciliation_removal_pending.add(serial_number)
-                before.pop("pending_native_reconciliation", None)
-                applied.pop("pending_native_reconciliation", None)
-            plan_storage._restore_unsaved_changes(robot, before, applied)
-            raise
+            async with self.repository.commit(serial_number) as robot:
+                yield robot
         finally:
             saves.discard(done)
             if not saves:

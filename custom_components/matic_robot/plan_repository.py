@@ -1,4 +1,4 @@
-"""Single owner of durable plan state and admitted metadata transactions."""
+"""Single owner of durable plan state, its one commit and admitted writes."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any, TypeVar, cast
 
@@ -24,6 +25,43 @@ from .plan_model import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_DRAFT: ContextVar[dict[str, Any] | None] = ContextVar("matic_plan_draft", default=None)
+
+_MISSING = object()
+
+
+def _committed(
+    live: dict[str, Any], draft: dict[str, Any], changed: set[str]
+) -> dict[str, Any]:
+    """Return the draft's changed fields and memory's others, in draft order."""
+    robot = {
+        key: draft[key] if key in changed else live[key]
+        for key in draft
+        if key in changed or key in live
+    }
+    robot.update(
+        (key, value)
+        for key, value in live.items()
+        if key not in robot and key not in changed
+    )
+    return robot
+
+
+def _merge(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """Make ``target`` equal ``source`` in place, keeping its nested dicts."""
+    previous = dict(target)
+    target.clear()
+    for key, value in source.items():
+        current = previous.get(key)
+        if (
+            isinstance(current, dict)
+            and isinstance(value, dict)
+            and current is not value
+        ):
+            _merge(current, value)
+            value = current
+        target[key] = value
 
 
 class _MetadataLockLease:
@@ -77,6 +115,7 @@ class PlanRepository:
         self.metadata_admission_closed: set[str] = set()
         self.reconciliation_removal_pending: set[str] = set()
         self.removed_robots: set[str] = set()
+        self.open_draft: tuple[str, dict[str, Any]] | None = None
 
     @staticmethod
     def empty_data() -> dict[str, Any]:
@@ -114,26 +153,121 @@ class PlanRepository:
         return remove_listener
 
     def robot(self, serial_number: str) -> dict[str, Any]:
-        robots = self.data.get("robots")
-        if not isinstance(robots, dict):
-            robots = {}
-            self.data["robots"] = robots
-        robot_value = robots.get(serial_number)
-        if not isinstance(robot_value, dict):
-            robot_value = {}
-            if serial_number not in self.removed_robots:
-                robots[serial_number] = robot_value
-        robot = cast(dict[str, Any], robot_value)
-        plan_state._normalize_robot(robot)
-        return robot
+        """Return the committed robot, or inside ``commit`` this task's draft."""
+        # A task started inside the commit copies its context, so also check
+        # that the commit is still open.
+        if (
+            self.open_draft is not None
+            and self.open_draft[0] == serial_number
+            and _DRAFT.get() is self.open_draft[1]
+        ):
+            return self.open_draft[1]
+        return self._live(serial_number)
 
-    async def async_save_and_notify(self, serial_number: str) -> None:
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.store_lock:
-                if serial_number in self.removed_robots:
-                    return False
-                await self.store.async_save(self.data)
+    def _live(self, serial_number: str) -> dict[str, Any]:
+        """Return the committed robot, adding an empty one if it is new."""
+        robots = self.data["robots"]
+        robot = robots.get(serial_number)
+        if robot is None:
+            robot = {}
+            plan_state._normalize_robot(robot)
+            if serial_number not in self.removed_robots:
+                robots[serial_number] = robot
+        return cast(dict[str, Any], robot)
+
+    @asynccontextmanager
+    async def commit(
+        self, serial_number: str, *, user: bool = False, always: bool = False
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Write one robot on a draft, save it, then apply it to memory.
+
+        Inside the block ``robot(serial_number)`` returns the draft. A block
+        that raises saves nothing, nor does one that leaves the draft
+        unchanged unless ``always`` is set. A failed save leaves memory as it
+        was. The save and memory take the writer's changed fields and keep
+        memory's own for the rest, so fence fields ride along and a fence set
+        meanwhile stands. ``user`` applies the public-edit admission check
+        under the lock.
+        """
+        async with self.store_lock:
+            if user:
+                self.metadata_write_rejected(
+                    serial_number,
+                    allow_removed=False,
+                    allow_closed=False,
+                    reject_on_admission_close=True,
+                )
+            robots = self.data["robots"]
+            live = robots.get(serial_number)
+            if live is None:
+                live = {}
+                plan_state._normalize_robot(live)
+            base = dict(live)
+            draft = deepcopy(live)
+            token = _DRAFT.set(draft)
+            self.open_draft = (serial_number, draft)
+            try:
+                yield draft
+            finally:
+                self.open_draft = None
+                _DRAFT.reset(token)
+            plan_state._normalize_robot(draft)
+            changed = {
+                key
+                for key in base.keys() | draft.keys()
+                if base.get(key, _MISSING) != draft.get(key, _MISSING)
+            }
+            if not (changed or always) or serial_number in self.removed_robots:
+                return
+            await self._async_write(
+                {**robots, serial_number: _committed(live, draft, changed)}
+            )
+            _merge(
+                robots.setdefault(serial_number, live),
+                _committed(live, draft, changed),
+            )
+
+    def fence(self, serial_number: str, fields: dict[str, Any]) -> None:
+        """Set stop-fence fields in memory now; the next commit saves them.
+
+        A fence must hold at once, even when its save fails, so it cannot
+        wait for a commit. Nothing else writes outside ``commit``.
+        """
+        self._live(serial_number).update(fields)
+
+    def revoke(self, serial_number: str, *keys: str) -> bool:
+        """Drop fence or ownership fields from memory now, like ``fence``.
+
+        Returns whether any of the fields held a value.
+        """
+        robot = self.data["robots"].get(serial_number, {})
+        values = [robot.pop(key, None) for key in keys]
+        return any(value is not None for value in values)
+
+    async def async_save_loaded(self) -> None:
+        """Save what loading repaired."""
+        async with self.store_lock:
+            await self._async_write(self.data["robots"])
+
+    async def async_remove(self, serial_number: str) -> bool:
+        """Save the document without one robot, then forget it in memory."""
+        async with self.store_lock:
+            robots = self.data["robots"]
+            if serial_number not in robots:
+                return False
+            remaining = {
+                key: value for key, value in robots.items() if key != serial_number
+            }
+            await self._async_write(remaining)
+            robots.pop(serial_number, None)
             return True
+
+    async def async_save_fences(self, serial_number: str) -> None:
+        """Save a robot with the fence fields memory holds, then notify."""
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self.commit(serial_number, always=True):
+                return serial_number not in self.removed_robots
 
         def notify_if_saved(saved: bool) -> None:
             if saved:
@@ -147,6 +281,10 @@ class PlanRepository:
             register_before_lock_wait=True,
         )
 
+    async def _async_write(self, robots: dict[str, Any]) -> None:
+        """Save the document with these robots; the only plan-state save."""
+        await self.store.async_save({**self.data, "robots": robots})
+
     async def async_mutate_and_save(
         self,
         serial_number: str,
@@ -154,18 +292,19 @@ class PlanRepository:
         *,
         domain_locks: Sequence[asyncio.Lock] = (),
         after_commit: Callable[[_MetadataResult | None], None] | None = None,
+        finish_during_unload: bool = False,
     ) -> _MetadataResult | None:
-        """Serialize a sticky robot mutation before exposing it to Store."""
+        """Commit a sticky robot mutation and notify unless it returns ``None``.
+
+        ``finish_during_unload`` admits the write before its locks, so an
+        unload that starts while it waits lets it finish.
+        """
 
         async def commit(_lease: _MetadataLockLease) -> _MetadataResult | None:
-            async with self.store_lock:
+            async with self.commit(serial_number):
                 if serial_number in self.removed_robots:
                     return None
-                result = mutate()
-                if result is None:
-                    return None
-                await self.store.async_save(self.data)
-            return result
+                return mutate()
 
         def after_saved(result: _MetadataResult | None) -> None:
             if result is None:
@@ -179,6 +318,8 @@ class PlanRepository:
             commit,
             domain_locks=domain_locks,
             after_commit=after_saved,
+            allow_closed=finish_during_unload,
+            register_before_lock_wait=finish_during_unload,
         )
 
     async def async_mutate_area_metadata(
@@ -191,9 +332,12 @@ class PlanRepository:
         """Own an admitted Area metadata commit independently of its waiter."""
 
         async def persist(_lease: _MetadataLockLease) -> None:
-            await self.async_persist_area_metadata(
-                serial_number, mutate, precondition=precondition
-            )
+            async with self.commit(serial_number, user=True) as robot:
+                # The caller's synchronous guard and mutation share this
+                # commit. No await may separate them.
+                if precondition is not None:
+                    precondition()
+                mutate(robot)
 
         await self.async_run_owned_metadata(
             serial_number,
@@ -252,20 +396,6 @@ class PlanRepository:
                 "Matic metadata is unavailable during unload"
             )
         return rejected
-
-    @asynccontextmanager
-    async def user_metadata_store_transaction(
-        self, serial_number: str
-    ) -> AsyncIterator[None]:
-        """Acquire the shared Store and recheck admission before a public edit."""
-        async with self.store_lock:
-            self.metadata_write_rejected(
-                serial_number,
-                allow_removed=False,
-                allow_closed=False,
-                reject_on_admission_close=True,
-            )
-            yield
 
     async def async_run_owned_metadata(
         self,
@@ -358,48 +488,6 @@ class PlanRepository:
             self.end_metadata_admission(serial_number)
         return await asyncio.shield(task)
 
-    async def async_persist_area_metadata(
-        self,
-        serial_number: str,
-        mutate: Callable[[dict[str, Any]], None],
-        *,
-        precondition: Callable[[], None] | None = None,
-    ) -> None:
-        """Persist current shared state while retaining its per-robot fence."""
-        async with self.user_metadata_store_transaction(serial_number):
-            # Do not expose an uncommitted Area change to another robot's
-            # whole-root Store serialization while it is queued here.
-            robots = self.data["robots"]
-            robot_was_present = serial_number in robots
-            robot = self.robot(serial_number)
-            area_keys = ("areas", "selected_area")
-            before = {key: deepcopy(robot[key]) for key in area_keys if key in robot}
-            try:
-                # The caller's synchronous guard and mutation share this locked
-                # transaction. No await may separate them.
-                if precondition is not None:
-                    precondition()
-                mutate(robot)
-            except BaseException:
-                current = {
-                    key: deepcopy(robot[key]) for key in area_keys if key in robot
-                }
-                plan_storage._restore_unsaved_changes(robot, before, current)
-                if not robot_was_present:
-                    robots.pop(serial_number, None)
-                raise
-            applied = {key: deepcopy(robot[key]) for key in area_keys if key in robot}
-            try:
-                await self.store.async_save(self.data)
-            except Exception:
-                plan_storage._restore_unsaved_changes(robot, before, applied)
-                if not robot_was_present:
-                    empty_robot: dict[str, Any] = {}
-                    plan_state._normalize_robot(empty_robot)
-                    if robot == empty_robot:
-                        robots.pop(serial_number, None)
-                raise
-
     def metadata_task_done(
         self,
         serial_number: str,
@@ -425,8 +513,8 @@ class PlanRepository:
         """Wait until all accepted metadata commits for a robot have settled.
 
         Mutation waiters receive their commit errors, while lifecycle cleanup
-        only needs each worker to finish its rollback and release the state
-        lock before unloading or removing the robot.
+        only needs each worker to finish and release the state lock before
+        unloading or removing the robot.
         """
         idle = self.metadata_admission_idle.get(serial_number)
         while True:
@@ -439,20 +527,6 @@ class PlanRepository:
                 await asyncio.gather(
                     *(asyncio.shield(task) for task in tasks), return_exceptions=True
                 )
-
-    async def async_save_with_rollback(
-        self,
-        serial_number: str,
-        before: dict[str, Any],
-    ) -> None:
-        """Restore this failed mutation without reverting later writers."""
-        robot = self.robot(serial_number)
-        applied = deepcopy(robot)
-        try:
-            await self.store.async_save(self.data)
-        except Exception, asyncio.CancelledError:
-            plan_storage._restore_unsaved_changes(robot, before, applied)
-            raise
 
     def notify_listeners(self, serial_number: str) -> None:
         for listener in tuple(self.listeners.get(serial_number, ())):

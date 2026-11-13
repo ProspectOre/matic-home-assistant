@@ -162,13 +162,20 @@ class RunControl:
     ) -> None:
         """Fence replacement motion while Matic's native STOP settles."""
         self.arm_stop_pending(serial_number, duration_seconds, renew=True)
-        self.repository.robot(serial_number)[plan_storage.STOP_FENCE_EXPIRES_AT] = (
-            dt_util.utcnow() + timedelta(seconds=duration_seconds)
-        ).isoformat()
-        robot = self.repository.robot(serial_number)
-        robot.pop(plan_storage.STOP_FENCE_RUN_ID, None)
-        if run_id is not None:
-            robot[plan_storage.STOP_FENCE_RUN_ID] = run_id
+        self.repository.revoke(serial_number, plan_storage.STOP_FENCE_RUN_ID)
+        self.repository.fence(
+            serial_number,
+            {
+                plan_storage.STOP_FENCE_EXPIRES_AT: (
+                    dt_util.utcnow() + timedelta(seconds=duration_seconds)
+                ).isoformat(),
+                **(
+                    {plan_storage.STOP_FENCE_RUN_ID: run_id}
+                    if run_id is not None
+                    else {}
+                ),
+            },
+        )
 
     async def async_mark_stop_pending(
         self,
@@ -181,7 +188,7 @@ class RunControl:
         if serial_number in self.repository.metadata_admission_closed:
             return
         self.mark_stop_pending(serial_number, duration_seconds, run_id=run_id)
-        await self.repository.async_save_and_notify(serial_number)
+        await self.repository.async_save_fences(serial_number)
 
     @callback
     def stop_pending(self, serial_number: str) -> bool:
@@ -192,11 +199,10 @@ class RunControl:
             return False
         if monotonic() >= fence.deadline:
             actor.stop_fence = None
-            self.repository.robot(serial_number).pop(
-                plan_storage.STOP_FENCE_EXPIRES_AT, None
-            )
-            self.repository.robot(serial_number).pop(
-                plan_storage.STOP_FENCE_RUN_ID, None
+            self.repository.revoke(
+                serial_number,
+                plan_storage.STOP_FENCE_EXPIRES_AT,
+                plan_storage.STOP_FENCE_RUN_ID,
             )
             return False
         return True
@@ -207,19 +213,13 @@ class RunControl:
         actor = self.actor(serial_number)
         removed = actor.stop_fence is not None
         actor.stop_fence = None
-        owner_removed = (
-            self.repository.robot(serial_number).pop(
-                plan_storage.STOP_FENCE_RUN_ID, None
-            )
-            is not None
-        )
         return (
-            self.repository.robot(serial_number).pop(
-                plan_storage.STOP_FENCE_EXPIRES_AT, None
+            self.repository.revoke(
+                serial_number,
+                plan_storage.STOP_FENCE_RUN_ID,
+                plan_storage.STOP_FENCE_EXPIRES_AT,
             )
-            is not None
             or removed
-            or owner_removed
         )
 
     def stop_fence_token(self, serial_number: str) -> int | None:
@@ -259,7 +259,7 @@ class RunControl:
         ):
             return
         if self.clear_stop_pending(serial_number):
-            await self.repository.async_save_and_notify(serial_number)
+            await self.repository.async_save_fences(serial_number)
 
     async def async_clear_stop_pending_if_token(
         self, serial_number: str, stop_fence_token: int, *, run_id: str | None
@@ -272,7 +272,7 @@ class RunControl:
         ):
             return False
         self.clear_stop_pending(serial_number)
-        await self.repository.async_save_and_notify(serial_number)
+        await self.repository.async_save_fences(serial_number)
         return True
 
     @callback
@@ -357,17 +357,11 @@ class RunControl:
         # Keep the settle countdown active, but revoke its persisted run owner:
         # replacement motion must not resume an obsolete dock watcher after a
         # Home Assistant restart.
-        stop_owner_removed = (
-            self.repository.robot(serial_number).pop(
-                plan_storage.STOP_FENCE_RUN_ID, None
-            )
-            is not None
+        stop_owner_removed = self.repository.revoke(
+            serial_number, plan_storage.STOP_FENCE_RUN_ID
         )
-        reconciliation_removed = (
-            self.repository.robot(serial_number).pop(
-                "pending_native_reconciliation", None
-            )
-            is not None
+        reconciliation_removed = self.repository.revoke(
+            serial_number, "pending_native_reconciliation"
         ) or bool(self.repository.native_history_saves.get(serial_number))
         reconciliation_removed = stop_owner_removed or reconciliation_removed
         if reconciliation_removed:
@@ -699,11 +693,8 @@ class RunControl:
             )
             if not self.managed_motion_is_current(serial_number, token):
                 raise ManagedMotionReplacedError("managed motion was replaced")
-            reconciliation_removed = (
-                self.repository.robot(serial_number).pop(
-                    "pending_native_reconciliation", None
-                )
-                is not None
+            reconciliation_removed = self.repository.revoke(
+                serial_number, "pending_native_reconciliation"
             )
             await self.async_persist_reconciliation_removal(
                 serial_number, reconciliation_removed
@@ -875,12 +866,10 @@ class RunControl:
         if serial_number in self.repository.reconciliation_removal_pending:
             for done in pending_saves:
                 await done.wait()
-            # A failed same-generation import can restore its marker while
-            # this command waits. Remove it again before persisting ownership.
-            self.repository.robot(serial_number).pop(
-                "pending_native_reconciliation", None
-            )
-            await self.repository.async_save_and_notify(serial_number)
+            # An import that saved while this command waited can bring its
+            # marker back. Remove it again before persisting ownership.
+            self.repository.revoke(serial_number, "pending_native_reconciliation")
+            await self.repository.async_save_fences(serial_number)
             self.repository.reconciliation_removal_pending.discard(serial_number)
 
 

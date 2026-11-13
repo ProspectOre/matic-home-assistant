@@ -290,8 +290,13 @@ async def test_three_robot_map_history_workspace_and_plan_isolation(hass) -> Non
 
     # Shared plan storage is keyed by serial, while workspace listeners are keyed
     # by entry. Editing one robot's plan cannot invalidate either neighbor.
-    plans.repository.robot("serial-garage")["plans"]["plan-2"]["name"] = "Garage only"
-    await plans.repository.async_save_and_notify("serial-garage")
+    def rename() -> bool:
+        plans.repository.robot("serial-garage")["plans"]["plan-2"]["name"] = (
+            "Garage only"
+        )
+        return True
+
+    await plans.repository.async_mutate_and_save("serial-garage", rename)
     assert [call.args[0] for call in connection.send_event.call_args_list] == [13]
     connection.send_event.reset_mock()
     assert plans.catalog.plans("serial-garage")["plan-2"]["name"] == "Garage only"

@@ -251,7 +251,7 @@ async def test_0_5_store_loads_and_survives_cold_manager_reload(
     }
     assert loaded["last_run"]["run_id"] == "completed-run-7"
 
-    await manager.repository.async_save_and_notify(SERIAL)
+    await manager.ledger.async_set_native_cleanings_enabled(SERIAL, True)
     disk = json.loads(await hass.async_add_executor_job(path.read_text))
     assert (disk["version"], disk["minor_version"]) == (1, STORAGE_MINOR_VERSION)
     reloaded = CleaningPlanManager(hass)

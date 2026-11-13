@@ -6,12 +6,14 @@ import hashlib
 import json
 import logging
 from collections.abc import (
+    AsyncIterator,
     Callable,
     Iterable,
     Mapping,
     MutableMapping,
     Sequence,
 )
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,7 +42,6 @@ from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
 )
-from .plan_storage import _restore_unsaved_changes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -160,16 +161,14 @@ class PlanCadence:
             raise ValueError("daily room limit must be between 1 and 100")
 
         async def commit(_lease: _MetadataLockLease) -> plan_schema.DailyLimit:
-            async with self.repository.user_metadata_store_transaction(serial_number):
+            async with self.repository.commit(serial_number, user=True) as robot:
                 if not require_current():
                     raise ValueError("room map changed")
-                robot = self.repository.robot(serial_number)
                 reservation = self.prepared_runs.get(serial_number)
                 if reservation is not None and room_id in reservation.rooms:
                     raise SharedRoomScheduleLockedError(
                         "room is reserved by a cleaning run"
                     )
-                before = deepcopy(robot)
                 limits = robot.setdefault("daily_room_limits", {})
                 if not isinstance(limits, dict):
                     raise ValueError("daily room limits are invalid")
@@ -177,8 +176,7 @@ class PlanCadence:
                     limits.pop(room_id, None)
                 else:
                     limits[room_id] = {"identity": room_identity, "limit": limit}
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return self.daily_limit_state(serial_number, room_id, room_identity)
+            return self.daily_limit_state(serial_number, room_id, room_identity)
 
         result = await self.repository.async_run_owned_metadata(
             serial_number,
@@ -335,6 +333,24 @@ class PlanCadence:
         pending.pop(token, None)
         if not pending:
             self.pending_cadence_mutations.pop(serial_number, None)
+
+    @asynccontextmanager
+    async def cadence_commit(
+        self, serial_number: str
+    ) -> AsyncIterator[list[_CadenceMutation]]:
+        """Commit a user edit; prepared runs see its cadence changes until saved."""
+        mutations: list[_CadenceMutation] = []
+        tokens: list[object] = []
+        try:
+            async with self.repository.commit(serial_number, user=True):
+                yield mutations
+                tokens = [
+                    self.begin_cadence_mutation(serial_number, mutation)
+                    for mutation in mutations
+                ]
+        finally:
+            for token in tokens:
+                self.end_cadence_mutation(serial_number, token)
 
     def assert_cadence_reservation_edit_allowed(
         self,
@@ -643,7 +659,7 @@ class PlanCadence:
         """Delete one shared schedule and detach every saved consumer atomically."""
 
         async def commit(_lease: _MetadataLockLease) -> dict[str, Any]:
-            async with self.repository.user_metadata_store_transaction(serial_number):
+            async with self.cadence_commit(serial_number) as mutations:
                 robot = self.repository.robot(serial_number)
                 schedule = robot.get("shared_room_cadence", {}).get(room_id)
                 if not isinstance(schedule, Mapping):
@@ -710,7 +726,6 @@ class PlanCadence:
                             "shared room schedule is being saved"
                         )
 
-                before = deepcopy(robot)
                 shared = robot["shared_room_cadence"]
                 shared.pop(room_id)
                 plan_room_ids: dict[str, set[str]] = {}
@@ -724,35 +739,20 @@ class PlanCadence:
                     if isinstance(private_records, MutableMapping):
                         private_records.pop(room_id, None)
                     plan_room_ids.setdefault(plan_id, set()).add(room_id)
-                mutation_tokens = [
-                    self.begin_cadence_mutation(
-                        serial_number,
-                        _CadenceMutation(
-                            plan_id,
-                            frozenset(changed_rooms),
-                            frozenset({room_id}),
-                        ),
+                mutations.extend(
+                    _CadenceMutation(
+                        plan_id, frozenset(changed_rooms), frozenset({room_id})
                     )
                     for plan_id, changed_rooms in sorted(plan_room_ids.items())
-                ]
-                if not mutation_tokens:
-                    mutation_tokens.append(
-                        self.begin_cadence_mutation(
-                            serial_number,
-                            _CadenceMutation("", frozenset(), frozenset({room_id})),
-                        )
+                )
+                if not mutations:
+                    mutations.append(
+                        _CadenceMutation("", frozenset(), frozenset({room_id}))
                     )
-                try:
-                    await self.repository.async_save_with_rollback(
-                        serial_number, before
-                    )
-                finally:
-                    for token in mutation_tokens:
-                        self.end_cadence_mutation(serial_number, token)
-                return {
-                    "room_id": room_id,
-                    "affected_plan_ids": sorted(plan_room_ids),
-                }
+            return {
+                "room_id": room_id,
+                "affected_plan_ids": sorted(plan_room_ids),
+            }
 
         result = await self.repository.async_run_owned_metadata(
             serial_number,
@@ -924,13 +924,19 @@ class PlanCadence:
         """
 
         async def commit(_lease: _MetadataLockLease) -> dict[str, list[str]]:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                return await self.async_reset_cadence_transaction(
-                    serial_number,
-                    plan_id,
-                    room_ids,
-                    modes=modes,
+            async with self.cadence_commit(serial_number) as mutations:
+                result = self.reset_cadence_transaction(
+                    serial_number, plan_id, room_ids, modes=modes
                 )
+                if result is not None:
+                    mutations.append(result[1])
+            if result is None:
+                self.repository.notify_listeners(serial_number)
+                raise ValueError(
+                    "room cadence progress is unverified; reset mop and "
+                    "coverage before use"
+                )
+            return result[0]
 
         result = await self.repository.async_run_owned_metadata(
             serial_number,
@@ -941,15 +947,19 @@ class PlanCadence:
         )
         return cast(dict[str, list[str]], result)
 
-    async def async_reset_cadence_transaction(
+    def reset_cadence_transaction(
         self,
         serial_number: str,
         plan_id: str,
         room_ids: Sequence[str] | None = None,
         *,
         modes: Sequence[str] | None = None,
-    ) -> dict[str, list[str]]:
-        """Apply a cadence reset while holding the per-robot plan-write lock."""
+    ) -> tuple[dict[str, list[str]], _CadenceMutation] | None:
+        """Apply a cadence reset in the open commit.
+
+        Returns ``None`` after leaving only the quarantine of a schedule whose
+        progress cannot be reset.
+        """
         requested_modes = set(("mop", "coverage") if modes is None else modes)
         if not requested_modes or requested_modes - {"mop", "coverage"}:
             raise ValueError("cadence reset modes must be mop and/or coverage")
@@ -1020,20 +1030,14 @@ class PlanCadence:
                         # Refusing one reset must not leave earlier rooms partly
                         # reset. Persist only the quarantine that callers need
                         # to recover through an explicit full reset.
-                        _restore_unsaved_changes(robot, before, deepcopy(robot))
+                        robot.clear()
+                        robot.update(before)
                         robot["shared_room_cadence"][room_id][
                             "accounting_unverified"
                         ] = True
-                        await self.repository.async_save_with_rollback(
-                            serial_number, before
-                        )
-                        self.repository.notify_listeners(serial_number)
-                        raise ValueError(
-                            "room cadence progress is unverified; reset mop and "
-                            "coverage before use"
-                        )
-                    # _robot() has already normalized each persisted progress
-                    # record before this policy mutation begins.
+                        return None
+                    # Load and every commit normalize each persisted progress
+                    # record, so this one is already well formed.
                     progress = schedule["progress"]
                     for mode in reset_modes:
                         progress[mode] = 0
@@ -1064,19 +1068,13 @@ class PlanCadence:
                 if isinstance(policy, dict):
                     for mode in reset_modes:
                         policy[f"do_{mode}_next"] = False
-        mutation_token = self.begin_cadence_mutation(
-            serial_number,
+        return {"reset_room_ids": target_ids, "reset_modes": reset_modes}, (
             _CadenceMutation(
                 plan_id,
                 frozenset(set(target_ids) - shared_ids),
                 frozenset(shared_ids),
-            ),
+            )
         )
-        try:
-            await self.repository.async_save_with_rollback(serial_number, before)
-        finally:
-            self.end_cadence_mutation(serial_number, mutation_token)
-        return {"reset_room_ids": target_ids, "reset_modes": reset_modes}
 
     def assert_cadence_edit_allowed(
         self,
