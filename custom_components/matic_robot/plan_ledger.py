@@ -21,7 +21,7 @@ from homeassistant.core import Context, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from . import native_history, plan_storage, plan_timing
+from . import native_history, plan_state, plan_storage, plan_timing
 from .client.coverage_receipts import (
     CoverageReceipt,
     CoverageVerifier,
@@ -464,7 +464,7 @@ class PlanLedger:
                 # This is only a deduplication window; old claims cannot affect
                 # any future session and must not make storage grow forever.
                 for old_claim in tuple(claims)[
-                    : -plan_storage.MAX_MANAGED_NATIVE_SESSION_CLAIMS
+                    : -plan_state.MAX_MANAGED_NATIVE_SESSION_CLAIMS
                 ]:
                     claims.pop(old_claim, None)
                 await self.repository.async_save_with_rollback(serial_number, before)

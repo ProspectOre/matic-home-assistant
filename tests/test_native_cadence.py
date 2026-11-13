@@ -200,9 +200,9 @@ async def test_claim_save_failure_prevents_reservation_and_ownership_is_checked(
 
 
 async def test_managed_claim_window_retains_latest_sessions(hass, monkeypatch):
-    from custom_components.matic_robot import plan_storage
+    from custom_components.matic_robot import plan_state
 
-    monkeypatch.setattr(plan_storage, "MAX_MANAGED_NATIVE_SESSION_CLAIMS", 2)
+    monkeypatch.setattr(plan_state, "MAX_MANAGED_NATIVE_SESSION_CLAIMS", 2)
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     sessions = [str(UUID(int=index)) for index in (40, 41, 42)]
@@ -218,9 +218,9 @@ async def test_managed_claim_window_retains_latest_sessions(hass, monkeypatch):
 
 
 def test_loaded_managed_claims_are_validated_and_bounded(hass, monkeypatch):
-    from custom_components.matic_robot import plan_storage
+    from custom_components.matic_robot import plan_state
 
-    monkeypatch.setattr(plan_storage, "MAX_MANAGED_NATIVE_SESSION_CLAIMS", 2)
+    monkeypatch.setattr(plan_state, "MAX_MANAGED_NATIVE_SESSION_CLAIMS", 2)
     manager = CleaningPlanManager(hass)
     robot = manager.repository.robot("serial")
     robot["managed_native_sessions"] = {
@@ -231,7 +231,7 @@ def test_loaded_managed_claims_are_validated_and_bounded(hass, monkeypatch):
         "4" * 64: [],
     }
 
-    assert plan_storage._normalize_robot(robot)
+    assert plan_state._normalize_robot(robot)
 
     assert robot["managed_native_sessions"] == {
         "2" * 64: {"run_id": "second"},

@@ -236,9 +236,11 @@ and the first use of each logs a warning. Matic 0.7 removes them.
 - Each floor's Area mapping moves from the vacuum's entity options to Matic's
   own storage, and 0.6 leaves 0.5's copy in the options. Restoring the backup
   returns the mappings the backup held, and the next update moves them again.
-- Make a Home Assistant backup before installing. 0.6 stores saved maps and
-  the Wi-Fi survey in a new format that 0.5 can't read, so going back means
-  restoring that backup, which also returns both to what the backup held. The
+- Make a Home Assistant backup before installing. 0.6 stores saved maps,
+  the Wi-Fi survey and plans in a new format that 0.5 can't read, so going
+  back means restoring that backup, which also returns them to what the
+  backup held. Reinstalling 0.5.4 over 0.6's plans leaves them untouched,
+  but Matic does not start. The
   survey keeps its older one-metre readings when it upgrades.
 - Restoring a backup on a real Home Assistant host has not been tried yet. The
   [upgrade and rollback drill](upgrade-drill.md) covers it on test data only.
