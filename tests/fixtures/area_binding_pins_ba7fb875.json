@@ -1,0 +1,4179 @@
+{
+ "pins": {
+  "v1": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "remote_room_added_new_partition": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "partition_changed"
+     },
+     "review": false,
+     "status": "partition_changed"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+       "version": 1
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+       "version": 1
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+       "version": 1
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+       "version": 1
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+       "version": 1
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 1,
+     "upgraded": 1
+    }
+   }
+  },
+  "v2": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "remote_room_added_new_partition": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "partition_changed"
+     },
+     "review": false,
+     "status": "partition_changed"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+       "version": 2
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+       "version": 2
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+       "version": 2
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+       "version": 2
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+       "version": 2
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 1,
+     "upgraded": 1
+    }
+   }
+  },
+  "v3": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    },
+    "remote_room_added_new_partition": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    }
+   }
+  },
+  "v3_unanchored": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "remote_room_added_new_partition": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+       "version": 3
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+       "version": 3
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+       "version": 3
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+       "version": 3
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 1,
+     "upgraded": 1
+    }
+   }
+  },
+  "v3_without_boundaries": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    },
+    "remote_room_added_new_partition": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       1.0,
+       0.75,
+       0.25
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.25,
+        "x": 1.0,
+        "y": 0.75
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+       "version": 3
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 1,
+     "upgraded": 1
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+       "version": 3
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+       "version": 3
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+       "version": 3
+      }
+     },
+     "pending": false,
+     "saves": 1,
+     "upgraded": 1
+    }
+   }
+  },
+  "v4": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "remote_room_added_new_partition": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "partition_changed"
+     },
+     "review": false,
+     "status": "partition_changed"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       3.5,
+       0.5,
+       0.5
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+       "version": 4
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+       "version": 4
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+       "version": 4
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+       "version": 4
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+       "version": 4
+      }
+     },
+     "pending": true,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+       "version": 6
+      }
+     },
+     "pending": false,
+     "saves": 1,
+     "upgraded": 1
+    }
+   }
+  },
+  "v5": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": [
+      [
+       3.5,
+       0.5,
+       0.5
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    },
+    "remote_room_added_new_partition": {
+     "command": [
+      [
+       3.5,
+       0.5,
+       0.5
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       3.5,
+       0.5,
+       0.5
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+       "version": 5
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+       "version": 5
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+       "version": 5
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+       "version": 5
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+       "version": 5
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+       "version": 5
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    }
+   }
+  },
+  "v6": {
+   "resolved": {
+    "map_translated": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "other_floor": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "mission_changed"
+     },
+     "review": false,
+     "status": "mission_changed"
+    },
+    "remote_room_added": {
+     "command": [
+      [
+       3.5,
+       0.5,
+       0.5
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    },
+    "remote_room_added_new_partition": {
+     "command": [
+      [
+       3.5,
+       0.5,
+       0.5
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    },
+    "rooms_edited": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": true,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "geometry_changed"
+     },
+     "review": true,
+     "status": "geometry_changed"
+    },
+    "same": {
+     "command": [
+      [
+       3.5,
+       0.5,
+       0.5
+      ]
+     ],
+     "map": {
+      "can_rebind": false,
+      "circles": [
+       {
+        "radius": 0.5,
+        "x": 3.5,
+        "y": 0.5
+       }
+      ],
+      "status": "current"
+     },
+     "review": false,
+     "status": "current"
+    }
+   },
+   "upgrade": {
+    "map_translated": {
+     "bindings": {
+      "area": {
+       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+       "version": 6
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "other_floor": {
+     "bindings": {
+      "area": {
+       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+       "version": 6
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added": {
+     "bindings": {
+      "area": {
+       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+       "version": 6
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "remote_room_added_new_partition": {
+     "bindings": {
+      "area": {
+       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+       "version": 6
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "rooms_edited": {
+     "bindings": {
+      "area": {
+       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+       "version": 6
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    },
+    "same": {
+     "bindings": {
+      "area": {
+       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+       "version": 6
+      }
+     },
+     "pending": false,
+     "saves": 0,
+     "upgraded": 0
+    }
+   }
+  }
+ },
+ "stored": {
+  "v1": {
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "mission_id": 7,
+   "partition_id": "partition",
+   "version": 1
+  },
+  "v2": {
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "local_geometry_sha256": "7625961af9dda734ce45bb0b307c49e3e871ac37a310452c3244078067cb69bb",
+   "mission_id": 7,
+   "partition_id": "partition",
+   "version": 2
+  },
+  "v3": {
+   "area_shape_sha256": "9fc3ea5fbf01cbbbcf39725b240512ec14656a2663d37acdd5bc295a992fdceb",
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "local_geometry_sha256": "db94ca8409e969f576ce61cb0f73894ba355515550f72f7bef10dc08ab22e60b",
+   "local_occupancy": [
+    511
+   ],
+   "local_segments_mm": [],
+   "mission_id": 7,
+   "partition_id": "partition",
+   "translation_frame_bounds": [
+    0,
+    0,
+    4000,
+    1500
+   ],
+   "translation_invariant_geometry_sha256": "ce397661a57995ceda1583ebfc65f37122ea3f5ec3f0c08f8154d8ef866367e7",
+   "translation_room_anchors": [
+    {
+     "boundary_mm": [
+      [
+       0,
+       0
+      ],
+      [
+       0,
+       1500
+      ],
+      [
+       2000,
+       1500
+      ],
+      [
+       2000,
+       0
+      ]
+     ],
+     "bounds": [
+      0,
+      0,
+      2000,
+      1500
+     ],
+     "circle_keys": [
+      "99c3b1550867a36cf8b1a6c57201b9a60bede5219bd6501404e6c163e1f0c175"
+     ],
+     "fingerprint": "0728fc0713997d02319b5786fcb4d23a16dfcbe10338824f11a85e273dfd2fb7",
+     "room_key": "7e1d4ae6380638b47e937f2cd00486322eab07bfe4b502364047983daf458c44"
+    }
+   ],
+   "version": 3
+  },
+  "v3_unanchored": {
+   "area_shape_sha256": "9fc3ea5fbf01cbbbcf39725b240512ec14656a2663d37acdd5bc295a992fdceb",
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "local_geometry_sha256": "db94ca8409e969f576ce61cb0f73894ba355515550f72f7bef10dc08ab22e60b",
+   "local_occupancy": [
+    511
+   ],
+   "local_segments_mm": [],
+   "mission_id": 7,
+   "partition_id": "partition",
+   "version": 3
+  },
+  "v3_without_boundaries": {
+   "area_shape_sha256": "9fc3ea5fbf01cbbbcf39725b240512ec14656a2663d37acdd5bc295a992fdceb",
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "local_geometry_sha256": "db94ca8409e969f576ce61cb0f73894ba355515550f72f7bef10dc08ab22e60b",
+   "local_occupancy": [
+    511
+   ],
+   "local_segments_mm": [],
+   "mission_id": 7,
+   "partition_id": "partition",
+   "translation_frame_bounds": [
+    0,
+    0,
+    4000,
+    1500
+   ],
+   "translation_invariant_geometry_sha256": "ce397661a57995ceda1583ebfc65f37122ea3f5ec3f0c08f8154d8ef866367e7",
+   "translation_room_anchors": [
+    {
+     "bounds": [
+      0,
+      0,
+      2000,
+      1500
+     ],
+     "circle_keys": [
+      "99c3b1550867a36cf8b1a6c57201b9a60bede5219bd6501404e6c163e1f0c175"
+     ],
+     "fingerprint": "0728fc0713997d02319b5786fcb4d23a16dfcbe10338824f11a85e273dfd2fb7",
+     "room_key": "7e1d4ae6380638b47e937f2cd00486322eab07bfe4b502364047983daf458c44"
+    }
+   ],
+   "version": 3
+  },
+  "v4": {
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "local_geometry_sha256": "d5b7bda4a25aa98551e1ccc759808901dca8cd118801fcf1649be0d13c4f29e0",
+   "mission_id": 7,
+   "partition_id": "partition",
+   "version": 4
+  },
+  "v5": {
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "local_geometry_sha256": "d5b7bda4a25aa98551e1ccc759808901dca8cd118801fcf1649be0d13c4f29e0",
+   "mission_id": 7,
+   "partition_id": "partition",
+   "translation_invariant_geometry_sha256": "ce397661a57995ceda1583ebfc65f37122ea3f5ec3f0c08f8154d8ef866367e7",
+   "translation_room_anchors": [
+    {
+     "boundary_mm": [
+      [
+       3000,
+       0
+      ],
+      [
+       3000,
+       13
+      ],
+      [
+       3000,
+       27
+      ],
+      [
+       3000,
+       40
+      ],
+      [
+       3000,
+       53
+      ],
+      [
+       3000,
+       67
+      ],
+      [
+       3000,
+       80
+      ],
+      [
+       3000,
+       93
+      ],
+      [
+       3000,
+       107
+      ],
+      [
+       3000,
+       120
+      ],
+      [
+       3000,
+       133
+      ],
+      [
+       3000,
+       147
+      ],
+      [
+       3000,
+       160
+      ],
+      [
+       3000,
+       173
+      ],
+      [
+       3000,
+       187
+      ],
+      [
+       3000,
+       200
+      ],
+      [
+       3000,
+       213
+      ],
+      [
+       3000,
+       227
+      ],
+      [
+       3000,
+       240
+      ],
+      [
+       3000,
+       253
+      ],
+      [
+       3000,
+       267
+      ],
+      [
+       3000,
+       280
+      ],
+      [
+       3000,
+       293
+      ],
+      [
+       3000,
+       307
+      ],
+      [
+       3000,
+       320
+      ],
+      [
+       3000,
+       333
+      ],
+      [
+       3000,
+       347
+      ],
+      [
+       3000,
+       360
+      ],
+      [
+       3000,
+       373
+      ],
+      [
+       3000,
+       387
+      ],
+      [
+       3000,
+       400
+      ],
+      [
+       3000,
+       413
+      ],
+      [
+       3000,
+       427
+      ],
+      [
+       3000,
+       440
+      ],
+      [
+       3000,
+       453
+      ],
+      [
+       3000,
+       467
+      ],
+      [
+       3000,
+       480
+      ],
+      [
+       3000,
+       493
+      ],
+      [
+       3000,
+       507
+      ],
+      [
+       3000,
+       520
+      ],
+      [
+       3000,
+       533
+      ],
+      [
+       3000,
+       547
+      ],
+      [
+       3000,
+       560
+      ],
+      [
+       3000,
+       573
+      ],
+      [
+       3000,
+       587
+      ],
+      [
+       3000,
+       600
+      ],
+      [
+       3000,
+       613
+      ],
+      [
+       3000,
+       627
+      ],
+      [
+       3000,
+       640
+      ],
+      [
+       3000,
+       653
+      ],
+      [
+       3000,
+       667
+      ],
+      [
+       3000,
+       680
+      ],
+      [
+       3000,
+       693
+      ],
+      [
+       3000,
+       707
+      ],
+      [
+       3000,
+       720
+      ],
+      [
+       3000,
+       733
+      ],
+      [
+       3000,
+       747
+      ],
+      [
+       3000,
+       760
+      ],
+      [
+       3000,
+       773
+      ],
+      [
+       3000,
+       787
+      ],
+      [
+       3000,
+       800
+      ],
+      [
+       3000,
+       813
+      ],
+      [
+       3000,
+       827
+      ],
+      [
+       3000,
+       840
+      ],
+      [
+       3000,
+       853
+      ],
+      [
+       3000,
+       867
+      ],
+      [
+       3000,
+       880
+      ],
+      [
+       3000,
+       893
+      ],
+      [
+       3000,
+       907
+      ],
+      [
+       3000,
+       920
+      ],
+      [
+       3000,
+       933
+      ],
+      [
+       3000,
+       947
+      ],
+      [
+       3000,
+       960
+      ],
+      [
+       3000,
+       973
+      ],
+      [
+       3000,
+       987
+      ],
+      [
+       3000,
+       1000
+      ],
+      [
+       3013,
+       1000
+      ],
+      [
+       3027,
+       1000
+      ],
+      [
+       3040,
+       1000
+      ],
+      [
+       3053,
+       1000
+      ],
+      [
+       3067,
+       1000
+      ],
+      [
+       3080,
+       1000
+      ],
+      [
+       3093,
+       1000
+      ],
+      [
+       3107,
+       1000
+      ],
+      [
+       3120,
+       1000
+      ],
+      [
+       3133,
+       1000
+      ],
+      [
+       3147,
+       1000
+      ],
+      [
+       3160,
+       1000
+      ],
+      [
+       3173,
+       1000
+      ],
+      [
+       3187,
+       1000
+      ],
+      [
+       3200,
+       1000
+      ],
+      [
+       3213,
+       1000
+      ],
+      [
+       3227,
+       1000
+      ],
+      [
+       3240,
+       1000
+      ],
+      [
+       3253,
+       1000
+      ],
+      [
+       3267,
+       1000
+      ],
+      [
+       3280,
+       1000
+      ],
+      [
+       3293,
+       1000
+      ],
+      [
+       3307,
+       1000
+      ],
+      [
+       3320,
+       1000
+      ],
+      [
+       3333,
+       1000
+      ],
+      [
+       3347,
+       1000
+      ],
+      [
+       3360,
+       1000
+      ],
+      [
+       3373,
+       1000
+      ],
+      [
+       3387,
+       1000
+      ],
+      [
+       3400,
+       1000
+      ],
+      [
+       3413,
+       1000
+      ],
+      [
+       3427,
+       1000
+      ],
+      [
+       3440,
+       1000
+      ],
+      [
+       3453,
+       1000
+      ],
+      [
+       3467,
+       1000
+      ],
+      [
+       3480,
+       1000
+      ],
+      [
+       3493,
+       1000
+      ],
+      [
+       3507,
+       1000
+      ],
+      [
+       3520,
+       1000
+      ],
+      [
+       3533,
+       1000
+      ],
+      [
+       3547,
+       1000
+      ],
+      [
+       3560,
+       1000
+      ],
+      [
+       3573,
+       1000
+      ],
+      [
+       3587,
+       1000
+      ],
+      [
+       3600,
+       1000
+      ],
+      [
+       3613,
+       1000
+      ],
+      [
+       3627,
+       1000
+      ],
+      [
+       3640,
+       1000
+      ],
+      [
+       3653,
+       1000
+      ],
+      [
+       3667,
+       1000
+      ],
+      [
+       3680,
+       1000
+      ],
+      [
+       3693,
+       1000
+      ],
+      [
+       3707,
+       1000
+      ],
+      [
+       3720,
+       1000
+      ],
+      [
+       3733,
+       1000
+      ],
+      [
+       3747,
+       1000
+      ],
+      [
+       3760,
+       1000
+      ],
+      [
+       3773,
+       1000
+      ],
+      [
+       3787,
+       1000
+      ],
+      [
+       3800,
+       1000
+      ],
+      [
+       3813,
+       1000
+      ],
+      [
+       3827,
+       1000
+      ],
+      [
+       3840,
+       1000
+      ],
+      [
+       3853,
+       1000
+      ],
+      [
+       3867,
+       1000
+      ],
+      [
+       3880,
+       1000
+      ],
+      [
+       3893,
+       1000
+      ],
+      [
+       3907,
+       1000
+      ],
+      [
+       3920,
+       1000
+      ],
+      [
+       3933,
+       1000
+      ],
+      [
+       3947,
+       1000
+      ],
+      [
+       3960,
+       1000
+      ],
+      [
+       3973,
+       1000
+      ],
+      [
+       3987,
+       1000
+      ],
+      [
+       4000,
+       1000
+      ],
+      [
+       4000,
+       987
+      ],
+      [
+       4000,
+       973
+      ],
+      [
+       4000,
+       960
+      ],
+      [
+       4000,
+       947
+      ],
+      [
+       4000,
+       933
+      ],
+      [
+       4000,
+       920
+      ],
+      [
+       4000,
+       907
+      ],
+      [
+       4000,
+       893
+      ],
+      [
+       4000,
+       880
+      ],
+      [
+       4000,
+       867
+      ],
+      [
+       4000,
+       853
+      ],
+      [
+       4000,
+       840
+      ],
+      [
+       4000,
+       827
+      ],
+      [
+       4000,
+       813
+      ],
+      [
+       4000,
+       800
+      ],
+      [
+       4000,
+       787
+      ],
+      [
+       4000,
+       773
+      ],
+      [
+       4000,
+       760
+      ],
+      [
+       4000,
+       747
+      ],
+      [
+       4000,
+       733
+      ],
+      [
+       4000,
+       720
+      ],
+      [
+       4000,
+       707
+      ],
+      [
+       4000,
+       693
+      ],
+      [
+       4000,
+       680
+      ],
+      [
+       4000,
+       667
+      ],
+      [
+       4000,
+       653
+      ],
+      [
+       4000,
+       640
+      ],
+      [
+       4000,
+       627
+      ],
+      [
+       4000,
+       613
+      ],
+      [
+       4000,
+       600
+      ],
+      [
+       4000,
+       587
+      ],
+      [
+       4000,
+       573
+      ],
+      [
+       4000,
+       560
+      ],
+      [
+       4000,
+       547
+      ],
+      [
+       4000,
+       533
+      ],
+      [
+       4000,
+       520
+      ],
+      [
+       4000,
+       507
+      ],
+      [
+       4000,
+       493
+      ],
+      [
+       4000,
+       480
+      ],
+      [
+       4000,
+       467
+      ],
+      [
+       4000,
+       453
+      ],
+      [
+       4000,
+       440
+      ],
+      [
+       4000,
+       427
+      ],
+      [
+       4000,
+       413
+      ],
+      [
+       4000,
+       400
+      ],
+      [
+       4000,
+       387
+      ],
+      [
+       4000,
+       373
+      ],
+      [
+       4000,
+       360
+      ],
+      [
+       4000,
+       347
+      ],
+      [
+       4000,
+       333
+      ],
+      [
+       4000,
+       320
+      ],
+      [
+       4000,
+       307
+      ],
+      [
+       4000,
+       293
+      ],
+      [
+       4000,
+       280
+      ],
+      [
+       4000,
+       267
+      ],
+      [
+       4000,
+       253
+      ],
+      [
+       4000,
+       240
+      ],
+      [
+       4000,
+       227
+      ],
+      [
+       4000,
+       213
+      ],
+      [
+       4000,
+       200
+      ],
+      [
+       4000,
+       187
+      ],
+      [
+       4000,
+       173
+      ],
+      [
+       4000,
+       160
+      ],
+      [
+       4000,
+       147
+      ],
+      [
+       4000,
+       133
+      ],
+      [
+       4000,
+       120
+      ],
+      [
+       4000,
+       107
+      ],
+      [
+       4000,
+       93
+      ],
+      [
+       4000,
+       80
+      ],
+      [
+       4000,
+       67
+      ],
+      [
+       4000,
+       53
+      ],
+      [
+       4000,
+       40
+      ],
+      [
+       4000,
+       27
+      ],
+      [
+       4000,
+       13
+      ],
+      [
+       4000,
+       0
+      ],
+      [
+       3987,
+       0
+      ],
+      [
+       3973,
+       0
+      ],
+      [
+       3960,
+       0
+      ],
+      [
+       3947,
+       0
+      ],
+      [
+       3933,
+       0
+      ],
+      [
+       3920,
+       0
+      ],
+      [
+       3907,
+       0
+      ],
+      [
+       3893,
+       0
+      ],
+      [
+       3880,
+       0
+      ],
+      [
+       3867,
+       0
+      ],
+      [
+       3853,
+       0
+      ],
+      [
+       3840,
+       0
+      ],
+      [
+       3827,
+       0
+      ],
+      [
+       3813,
+       0
+      ],
+      [
+       3800,
+       0
+      ],
+      [
+       3787,
+       0
+      ],
+      [
+       3773,
+       0
+      ],
+      [
+       3760,
+       0
+      ],
+      [
+       3747,
+       0
+      ],
+      [
+       3733,
+       0
+      ],
+      [
+       3720,
+       0
+      ],
+      [
+       3707,
+       0
+      ],
+      [
+       3693,
+       0
+      ],
+      [
+       3680,
+       0
+      ],
+      [
+       3667,
+       0
+      ],
+      [
+       3653,
+       0
+      ],
+      [
+       3640,
+       0
+      ],
+      [
+       3627,
+       0
+      ],
+      [
+       3613,
+       0
+      ],
+      [
+       3600,
+       0
+      ],
+      [
+       3587,
+       0
+      ],
+      [
+       3573,
+       0
+      ],
+      [
+       3560,
+       0
+      ],
+      [
+       3547,
+       0
+      ],
+      [
+       3533,
+       0
+      ],
+      [
+       3520,
+       0
+      ],
+      [
+       3507,
+       0
+      ],
+      [
+       3493,
+       0
+      ],
+      [
+       3480,
+       0
+      ],
+      [
+       3467,
+       0
+      ],
+      [
+       3453,
+       0
+      ],
+      [
+       3440,
+       0
+      ],
+      [
+       3427,
+       0
+      ],
+      [
+       3413,
+       0
+      ],
+      [
+       3400,
+       0
+      ],
+      [
+       3387,
+       0
+      ],
+      [
+       3373,
+       0
+      ],
+      [
+       3360,
+       0
+      ],
+      [
+       3347,
+       0
+      ],
+      [
+       3333,
+       0
+      ],
+      [
+       3320,
+       0
+      ],
+      [
+       3307,
+       0
+      ],
+      [
+       3293,
+       0
+      ],
+      [
+       3280,
+       0
+      ],
+      [
+       3267,
+       0
+      ],
+      [
+       3253,
+       0
+      ],
+      [
+       3240,
+       0
+      ],
+      [
+       3227,
+       0
+      ],
+      [
+       3213,
+       0
+      ],
+      [
+       3200,
+       0
+      ],
+      [
+       3187,
+       0
+      ],
+      [
+       3173,
+       0
+      ],
+      [
+       3160,
+       0
+      ],
+      [
+       3147,
+       0
+      ],
+      [
+       3133,
+       0
+      ],
+      [
+       3120,
+       0
+      ],
+      [
+       3107,
+       0
+      ],
+      [
+       3093,
+       0
+      ],
+      [
+       3080,
+       0
+      ],
+      [
+       3067,
+       0
+      ],
+      [
+       3053,
+       0
+      ],
+      [
+       3040,
+       0
+      ],
+      [
+       3027,
+       0
+      ],
+      [
+       3013,
+       0
+      ]
+     ],
+     "bounds": [
+      3000,
+      0,
+      4000,
+      1000
+     ],
+     "circle_keys": [
+      "a2842e9cb842ee9e1f152f8f7c5fd84c84c54c8ca1db15d316e643a3708fdae5"
+     ],
+     "fingerprint": "1a9d83528b11823198d805be1887e99b3265c5161653c259a744d86cb6df1702",
+     "room_key": "05780641ef34b8d701ed165b8e6a74230a3bda18d75ed28209e454515e97f8e8"
+    }
+   ],
+   "version": 5
+  },
+  "v6": {
+   "area_shape_sha256": "5335c84aca19466d6a2df21f374ba30cfcadb94d67d220fd84762acd428531a0",
+   "geometry_sha256": "eed11c89593a63d0c5713680663fd934a5c71b4a17182f3be17034649cf16bf3",
+   "local_geometry_sha256": "d5b7bda4a25aa98551e1ccc759808901dca8cd118801fcf1649be0d13c4f29e0",
+   "mission_id": 7,
+   "partition_id": "partition",
+   "translation_invariant_geometry_sha256": "ce397661a57995ceda1583ebfc65f37122ea3f5ec3f0c08f8154d8ef866367e7",
+   "translation_room_anchors": [
+    {
+     "boundary_mm": [
+      [
+       3000,
+       0
+      ],
+      [
+       3000,
+       13
+      ],
+      [
+       3000,
+       27
+      ],
+      [
+       3000,
+       40
+      ],
+      [
+       3000,
+       53
+      ],
+      [
+       3000,
+       67
+      ],
+      [
+       3000,
+       80
+      ],
+      [
+       3000,
+       93
+      ],
+      [
+       3000,
+       107
+      ],
+      [
+       3000,
+       120
+      ],
+      [
+       3000,
+       133
+      ],
+      [
+       3000,
+       147
+      ],
+      [
+       3000,
+       160
+      ],
+      [
+       3000,
+       173
+      ],
+      [
+       3000,
+       187
+      ],
+      [
+       3000,
+       200
+      ],
+      [
+       3000,
+       213
+      ],
+      [
+       3000,
+       227
+      ],
+      [
+       3000,
+       240
+      ],
+      [
+       3000,
+       253
+      ],
+      [
+       3000,
+       267
+      ],
+      [
+       3000,
+       280
+      ],
+      [
+       3000,
+       293
+      ],
+      [
+       3000,
+       307
+      ],
+      [
+       3000,
+       320
+      ],
+      [
+       3000,
+       333
+      ],
+      [
+       3000,
+       347
+      ],
+      [
+       3000,
+       360
+      ],
+      [
+       3000,
+       373
+      ],
+      [
+       3000,
+       387
+      ],
+      [
+       3000,
+       400
+      ],
+      [
+       3000,
+       413
+      ],
+      [
+       3000,
+       427
+      ],
+      [
+       3000,
+       440
+      ],
+      [
+       3000,
+       453
+      ],
+      [
+       3000,
+       467
+      ],
+      [
+       3000,
+       480
+      ],
+      [
+       3000,
+       493
+      ],
+      [
+       3000,
+       507
+      ],
+      [
+       3000,
+       520
+      ],
+      [
+       3000,
+       533
+      ],
+      [
+       3000,
+       547
+      ],
+      [
+       3000,
+       560
+      ],
+      [
+       3000,
+       573
+      ],
+      [
+       3000,
+       587
+      ],
+      [
+       3000,
+       600
+      ],
+      [
+       3000,
+       613
+      ],
+      [
+       3000,
+       627
+      ],
+      [
+       3000,
+       640
+      ],
+      [
+       3000,
+       653
+      ],
+      [
+       3000,
+       667
+      ],
+      [
+       3000,
+       680
+      ],
+      [
+       3000,
+       693
+      ],
+      [
+       3000,
+       707
+      ],
+      [
+       3000,
+       720
+      ],
+      [
+       3000,
+       733
+      ],
+      [
+       3000,
+       747
+      ],
+      [
+       3000,
+       760
+      ],
+      [
+       3000,
+       773
+      ],
+      [
+       3000,
+       787
+      ],
+      [
+       3000,
+       800
+      ],
+      [
+       3000,
+       813
+      ],
+      [
+       3000,
+       827
+      ],
+      [
+       3000,
+       840
+      ],
+      [
+       3000,
+       853
+      ],
+      [
+       3000,
+       867
+      ],
+      [
+       3000,
+       880
+      ],
+      [
+       3000,
+       893
+      ],
+      [
+       3000,
+       907
+      ],
+      [
+       3000,
+       920
+      ],
+      [
+       3000,
+       933
+      ],
+      [
+       3000,
+       947
+      ],
+      [
+       3000,
+       960
+      ],
+      [
+       3000,
+       973
+      ],
+      [
+       3000,
+       987
+      ],
+      [
+       3000,
+       1000
+      ],
+      [
+       3013,
+       1000
+      ],
+      [
+       3027,
+       1000
+      ],
+      [
+       3040,
+       1000
+      ],
+      [
+       3053,
+       1000
+      ],
+      [
+       3067,
+       1000
+      ],
+      [
+       3080,
+       1000
+      ],
+      [
+       3093,
+       1000
+      ],
+      [
+       3107,
+       1000
+      ],
+      [
+       3120,
+       1000
+      ],
+      [
+       3133,
+       1000
+      ],
+      [
+       3147,
+       1000
+      ],
+      [
+       3160,
+       1000
+      ],
+      [
+       3173,
+       1000
+      ],
+      [
+       3187,
+       1000
+      ],
+      [
+       3200,
+       1000
+      ],
+      [
+       3213,
+       1000
+      ],
+      [
+       3227,
+       1000
+      ],
+      [
+       3240,
+       1000
+      ],
+      [
+       3253,
+       1000
+      ],
+      [
+       3267,
+       1000
+      ],
+      [
+       3280,
+       1000
+      ],
+      [
+       3293,
+       1000
+      ],
+      [
+       3307,
+       1000
+      ],
+      [
+       3320,
+       1000
+      ],
+      [
+       3333,
+       1000
+      ],
+      [
+       3347,
+       1000
+      ],
+      [
+       3360,
+       1000
+      ],
+      [
+       3373,
+       1000
+      ],
+      [
+       3387,
+       1000
+      ],
+      [
+       3400,
+       1000
+      ],
+      [
+       3413,
+       1000
+      ],
+      [
+       3427,
+       1000
+      ],
+      [
+       3440,
+       1000
+      ],
+      [
+       3453,
+       1000
+      ],
+      [
+       3467,
+       1000
+      ],
+      [
+       3480,
+       1000
+      ],
+      [
+       3493,
+       1000
+      ],
+      [
+       3507,
+       1000
+      ],
+      [
+       3520,
+       1000
+      ],
+      [
+       3533,
+       1000
+      ],
+      [
+       3547,
+       1000
+      ],
+      [
+       3560,
+       1000
+      ],
+      [
+       3573,
+       1000
+      ],
+      [
+       3587,
+       1000
+      ],
+      [
+       3600,
+       1000
+      ],
+      [
+       3613,
+       1000
+      ],
+      [
+       3627,
+       1000
+      ],
+      [
+       3640,
+       1000
+      ],
+      [
+       3653,
+       1000
+      ],
+      [
+       3667,
+       1000
+      ],
+      [
+       3680,
+       1000
+      ],
+      [
+       3693,
+       1000
+      ],
+      [
+       3707,
+       1000
+      ],
+      [
+       3720,
+       1000
+      ],
+      [
+       3733,
+       1000
+      ],
+      [
+       3747,
+       1000
+      ],
+      [
+       3760,
+       1000
+      ],
+      [
+       3773,
+       1000
+      ],
+      [
+       3787,
+       1000
+      ],
+      [
+       3800,
+       1000
+      ],
+      [
+       3813,
+       1000
+      ],
+      [
+       3827,
+       1000
+      ],
+      [
+       3840,
+       1000
+      ],
+      [
+       3853,
+       1000
+      ],
+      [
+       3867,
+       1000
+      ],
+      [
+       3880,
+       1000
+      ],
+      [
+       3893,
+       1000
+      ],
+      [
+       3907,
+       1000
+      ],
+      [
+       3920,
+       1000
+      ],
+      [
+       3933,
+       1000
+      ],
+      [
+       3947,
+       1000
+      ],
+      [
+       3960,
+       1000
+      ],
+      [
+       3973,
+       1000
+      ],
+      [
+       3987,
+       1000
+      ],
+      [
+       4000,
+       1000
+      ],
+      [
+       4000,
+       987
+      ],
+      [
+       4000,
+       973
+      ],
+      [
+       4000,
+       960
+      ],
+      [
+       4000,
+       947
+      ],
+      [
+       4000,
+       933
+      ],
+      [
+       4000,
+       920
+      ],
+      [
+       4000,
+       907
+      ],
+      [
+       4000,
+       893
+      ],
+      [
+       4000,
+       880
+      ],
+      [
+       4000,
+       867
+      ],
+      [
+       4000,
+       853
+      ],
+      [
+       4000,
+       840
+      ],
+      [
+       4000,
+       827
+      ],
+      [
+       4000,
+       813
+      ],
+      [
+       4000,
+       800
+      ],
+      [
+       4000,
+       787
+      ],
+      [
+       4000,
+       773
+      ],
+      [
+       4000,
+       760
+      ],
+      [
+       4000,
+       747
+      ],
+      [
+       4000,
+       733
+      ],
+      [
+       4000,
+       720
+      ],
+      [
+       4000,
+       707
+      ],
+      [
+       4000,
+       693
+      ],
+      [
+       4000,
+       680
+      ],
+      [
+       4000,
+       667
+      ],
+      [
+       4000,
+       653
+      ],
+      [
+       4000,
+       640
+      ],
+      [
+       4000,
+       627
+      ],
+      [
+       4000,
+       613
+      ],
+      [
+       4000,
+       600
+      ],
+      [
+       4000,
+       587
+      ],
+      [
+       4000,
+       573
+      ],
+      [
+       4000,
+       560
+      ],
+      [
+       4000,
+       547
+      ],
+      [
+       4000,
+       533
+      ],
+      [
+       4000,
+       520
+      ],
+      [
+       4000,
+       507
+      ],
+      [
+       4000,
+       493
+      ],
+      [
+       4000,
+       480
+      ],
+      [
+       4000,
+       467
+      ],
+      [
+       4000,
+       453
+      ],
+      [
+       4000,
+       440
+      ],
+      [
+       4000,
+       427
+      ],
+      [
+       4000,
+       413
+      ],
+      [
+       4000,
+       400
+      ],
+      [
+       4000,
+       387
+      ],
+      [
+       4000,
+       373
+      ],
+      [
+       4000,
+       360
+      ],
+      [
+       4000,
+       347
+      ],
+      [
+       4000,
+       333
+      ],
+      [
+       4000,
+       320
+      ],
+      [
+       4000,
+       307
+      ],
+      [
+       4000,
+       293
+      ],
+      [
+       4000,
+       280
+      ],
+      [
+       4000,
+       267
+      ],
+      [
+       4000,
+       253
+      ],
+      [
+       4000,
+       240
+      ],
+      [
+       4000,
+       227
+      ],
+      [
+       4000,
+       213
+      ],
+      [
+       4000,
+       200
+      ],
+      [
+       4000,
+       187
+      ],
+      [
+       4000,
+       173
+      ],
+      [
+       4000,
+       160
+      ],
+      [
+       4000,
+       147
+      ],
+      [
+       4000,
+       133
+      ],
+      [
+       4000,
+       120
+      ],
+      [
+       4000,
+       107
+      ],
+      [
+       4000,
+       93
+      ],
+      [
+       4000,
+       80
+      ],
+      [
+       4000,
+       67
+      ],
+      [
+       4000,
+       53
+      ],
+      [
+       4000,
+       40
+      ],
+      [
+       4000,
+       27
+      ],
+      [
+       4000,
+       13
+      ],
+      [
+       4000,
+       0
+      ],
+      [
+       3987,
+       0
+      ],
+      [
+       3973,
+       0
+      ],
+      [
+       3960,
+       0
+      ],
+      [
+       3947,
+       0
+      ],
+      [
+       3933,
+       0
+      ],
+      [
+       3920,
+       0
+      ],
+      [
+       3907,
+       0
+      ],
+      [
+       3893,
+       0
+      ],
+      [
+       3880,
+       0
+      ],
+      [
+       3867,
+       0
+      ],
+      [
+       3853,
+       0
+      ],
+      [
+       3840,
+       0
+      ],
+      [
+       3827,
+       0
+      ],
+      [
+       3813,
+       0
+      ],
+      [
+       3800,
+       0
+      ],
+      [
+       3787,
+       0
+      ],
+      [
+       3773,
+       0
+      ],
+      [
+       3760,
+       0
+      ],
+      [
+       3747,
+       0
+      ],
+      [
+       3733,
+       0
+      ],
+      [
+       3720,
+       0
+      ],
+      [
+       3707,
+       0
+      ],
+      [
+       3693,
+       0
+      ],
+      [
+       3680,
+       0
+      ],
+      [
+       3667,
+       0
+      ],
+      [
+       3653,
+       0
+      ],
+      [
+       3640,
+       0
+      ],
+      [
+       3627,
+       0
+      ],
+      [
+       3613,
+       0
+      ],
+      [
+       3600,
+       0
+      ],
+      [
+       3587,
+       0
+      ],
+      [
+       3573,
+       0
+      ],
+      [
+       3560,
+       0
+      ],
+      [
+       3547,
+       0
+      ],
+      [
+       3533,
+       0
+      ],
+      [
+       3520,
+       0
+      ],
+      [
+       3507,
+       0
+      ],
+      [
+       3493,
+       0
+      ],
+      [
+       3480,
+       0
+      ],
+      [
+       3467,
+       0
+      ],
+      [
+       3453,
+       0
+      ],
+      [
+       3440,
+       0
+      ],
+      [
+       3427,
+       0
+      ],
+      [
+       3413,
+       0
+      ],
+      [
+       3400,
+       0
+      ],
+      [
+       3387,
+       0
+      ],
+      [
+       3373,
+       0
+      ],
+      [
+       3360,
+       0
+      ],
+      [
+       3347,
+       0
+      ],
+      [
+       3333,
+       0
+      ],
+      [
+       3320,
+       0
+      ],
+      [
+       3307,
+       0
+      ],
+      [
+       3293,
+       0
+      ],
+      [
+       3280,
+       0
+      ],
+      [
+       3267,
+       0
+      ],
+      [
+       3253,
+       0
+      ],
+      [
+       3240,
+       0
+      ],
+      [
+       3227,
+       0
+      ],
+      [
+       3213,
+       0
+      ],
+      [
+       3200,
+       0
+      ],
+      [
+       3187,
+       0
+      ],
+      [
+       3173,
+       0
+      ],
+      [
+       3160,
+       0
+      ],
+      [
+       3147,
+       0
+      ],
+      [
+       3133,
+       0
+      ],
+      [
+       3120,
+       0
+      ],
+      [
+       3107,
+       0
+      ],
+      [
+       3093,
+       0
+      ],
+      [
+       3080,
+       0
+      ],
+      [
+       3067,
+       0
+      ],
+      [
+       3053,
+       0
+      ],
+      [
+       3040,
+       0
+      ],
+      [
+       3027,
+       0
+      ],
+      [
+       3013,
+       0
+      ]
+     ],
+     "bounds": [
+      3000,
+      0,
+      4000,
+      1000
+     ],
+     "circle_keys": [
+      "a2842e9cb842ee9e1f152f8f7c5fd84c84c54c8ca1db15d316e643a3708fdae5"
+     ],
+     "fingerprint": "1a9d83528b11823198d805be1887e99b3265c5161653c259a744d86cb6df1702",
+     "room_key": "05780641ef34b8d701ed165b8e6a74230a3bda18d75ed28209e454515e97f8e8"
+    }
+   ],
+   "version": 6
+  }
+ },
+ "together": {
+  "map_translated": {
+   "bindings": {
+    "v1": {
+     "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+     "version": 1
+    },
+    "v2": {
+     "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+     "version": 2
+    },
+    "v3": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3_unanchored": {
+     "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+     "version": 3
+    },
+    "v3_without_boundaries": {
+     "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+     "version": 3
+    },
+    "v4": {
+     "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+     "version": 4
+    },
+    "v5": {
+     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+     "version": 5
+    },
+    "v6": {
+     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+     "version": 6
+    }
+   },
+   "pending": true,
+   "saves": 0,
+   "upgraded": 0
+  },
+  "other_floor": {
+   "bindings": {
+    "v1": {
+     "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+     "version": 1
+    },
+    "v2": {
+     "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+     "version": 2
+    },
+    "v3": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3_unanchored": {
+     "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+     "version": 3
+    },
+    "v3_without_boundaries": {
+     "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+     "version": 3
+    },
+    "v4": {
+     "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+     "version": 4
+    },
+    "v5": {
+     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+     "version": 5
+    },
+    "v6": {
+     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+     "version": 6
+    }
+   },
+   "pending": false,
+   "saves": 0,
+   "upgraded": 0
+  },
+  "remote_room_added": {
+   "bindings": {
+    "v1": {
+     "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+     "version": 1
+    },
+    "v2": {
+     "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+     "version": 2
+    },
+    "v3": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3_unanchored": {
+     "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+     "version": 3
+    },
+    "v3_without_boundaries": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v4": {
+     "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+     "version": 4
+    },
+    "v5": {
+     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+     "version": 5
+    },
+    "v6": {
+     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+     "version": 6
+    }
+   },
+   "pending": true,
+   "saves": 1,
+   "upgraded": 1
+  },
+  "remote_room_added_new_partition": {
+   "bindings": {
+    "v1": {
+     "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+     "version": 1
+    },
+    "v2": {
+     "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+     "version": 2
+    },
+    "v3": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3_unanchored": {
+     "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+     "version": 3
+    },
+    "v3_without_boundaries": {
+     "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+     "version": 3
+    },
+    "v4": {
+     "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+     "version": 4
+    },
+    "v5": {
+     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+     "version": 5
+    },
+    "v6": {
+     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+     "version": 6
+    }
+   },
+   "pending": true,
+   "saves": 0,
+   "upgraded": 0
+  },
+  "rooms_edited": {
+   "bindings": {
+    "v1": {
+     "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+     "version": 1
+    },
+    "v2": {
+     "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+     "version": 2
+    },
+    "v3": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3_unanchored": {
+     "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+     "version": 3
+    },
+    "v3_without_boundaries": {
+     "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+     "version": 3
+    },
+    "v4": {
+     "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
+     "version": 4
+    },
+    "v5": {
+     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+     "version": 5
+    },
+    "v6": {
+     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+     "version": 6
+    }
+   },
+   "pending": true,
+   "saves": 0,
+   "upgraded": 0
+  },
+  "same": {
+   "bindings": {
+    "v1": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v2": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3_unanchored": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v3_without_boundaries": {
+     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
+     "version": 3
+    },
+    "v4": {
+     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+     "version": 6
+    },
+    "v5": {
+     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+     "version": 5
+    },
+    "v6": {
+     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
+     "version": 6
+    }
+   },
+   "pending": false,
+   "saves": 1,
+   "upgraded": 5
+  }
+ }
+}

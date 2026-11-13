@@ -37,6 +37,7 @@ ENTRY_ID = "matic-upgrade-drill"
 PLAN = "evening"
 AREA_ID = "entry_rug"
 AREA_PLAN = "entry-area"
+LEGACY_AREA_ID = "legacy_rug"
 
 
 def _scene(page_x: int = 0) -> bytes:
@@ -96,6 +97,39 @@ async def _write_retention_examples(history: Any) -> None:
         "kept",
         "trash",
     }
+
+
+def _plan_store() -> Path:
+    return Path(os.environ["MATIC_DRILL_CONFIG"]) / ".storage" / "matic_robot.plans"
+
+
+def _floor_plan() -> Any:
+    """The simulator's floor as the integration decodes it, in either release."""
+    from custom_components.matic_robot.client.floor_plan import decode_floor_plan
+
+    return decode_floor_plan(two_room_floor().encode())
+
+
+def _add_legacy_area() -> None:
+    """Store a second area with the whole-floor v1 binding 0.3 releases wrote."""
+    from custom_components.matic_robot.area_binding import binding_for_floor_plan
+
+    path = _plan_store()
+    store = json.loads(path.read_text())
+    (robot,) = store["data"]["robots"].values()
+    robot["areas"][LEGACY_AREA_ID] = {
+        **robot["areas"][AREA_ID],
+        "name": "Legacy rug",
+        "circles": [{"x": 3.0, "y": 0.75, "radius": 0.25}],
+        "map_binding": binding_for_floor_plan(_floor_plan()),
+    }
+    robot["areas"][LEGACY_AREA_ID].pop("outline", None)
+    path.write_text(json.dumps(store))
+
+
+def _stored_binding_version(area_id: str) -> int:
+    (robot,) = json.loads(_plan_store().read_text())["data"]["robots"].values()
+    return robot["areas"][area_id]["map_binding"]["version"]
 
 
 @pytest.fixture(autouse=True)
@@ -268,11 +302,13 @@ async def test_seed(
     await plan.poll()
     assert await hass.config_entries.async_unload(plan.entry.entry_id)
     await hass.async_block_till_done()
+    _add_legacy_area()
 
 
 async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
     """Newer release on the older stores: settle the interrupted run, then
-    run the saved plan again."""
+    run the saved plan again. Setup upgrades the legacy area's v1 binding."""
+    assert _stored_binding_version(LEGACY_AREA_ID) == 3
     await _settle(plan)
     await _run_plan(plan, robot)
     await _run_area_plan(plan, robot)
@@ -285,19 +321,25 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
 async def test_downgrade(hass: HomeAssistant) -> None:
     """The older release loads 0.6's plan store but not the v2 history file.
 
+    Both areas, including the binding 0.6 upgraded, are current on the floor.
     0.5.0 to 0.5.2 refuse the history file; 0.5.3 and later keep a temporary,
     empty timeline in memory instead.
     """
+    from custom_components.matic_robot.area_binding import (
+        AreaBindingStatus,
+        area_binding_status,
+    )
     from custom_components.matic_robot.plans import CleaningPlanManager
     from custom_components.matic_robot.slam_history import SlamHistoryStore
 
-    storage = Path(os.environ["MATIC_DRILL_CONFIG"]) / ".storage"
-    (serial,) = json.loads((storage / "matic_robot.plans").read_text())["data"][
-        "robots"
-    ]
+    (serial,) = json.loads(_plan_store().read_text())["data"]["robots"]
     plans = CleaningPlanManager(hass)
     await plans.async_load()
     assert PLAN in plans.plans(serial)
+    areas = plans.areas(serial)
+    for area_id in (AREA_ID, LEGACY_AREA_ID):
+        status = area_binding_status(areas[area_id], _floor_plan())
+        assert status is AreaBindingStatus.CURRENT
 
     path = (
         Path(os.environ["MATIC_DRILL_CONFIG"])
