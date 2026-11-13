@@ -18,9 +18,9 @@ git fetch origin tag v0.5.4
 
 | Phase | Code | What it does |
 | --- | --- | --- |
-| seed | older | Saves plans and a version-1 map-history sample, finishes a run, then stops Home Assistant mid-clean. The stores are copied as the pre-upgrade backup. |
-| upgrade | this checkout | Migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
-| downgrade | older | Checks the version-1 map-history reader leaves v2 unread and its bytes unchanged (0.5.4 keeps a temporary, empty history; 0.5.2 and older refuse it); loads the newer plan store with the older plan manager without starting a run. |
+| seed | older | Saves plans and a version-1 map-history sample, finishes a run, then stops Home Assistant mid-clean. It adds a second area with the whole-floor v1 binding 0.3 wrote to the stored file. The stores are copied as the pre-upgrade backup. |
+| upgrade | this checkout | Upgrades the v1 area binding to v3, migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
+| downgrade | older | Checks the version-1 map-history reader leaves v2 unread and its bytes unchanged (0.5.4 keeps a temporary, empty history; 0.5.2 and older refuse it); loads the newer plan store with the older plan manager without starting a run, and requires both areas, including the binding 0.6 upgraded, to be current on the floor. |
 | restore | older | Runs the plan on the matching pre-upgrade version-1 backup. |
 
 The drill also saves and executes a separate custom-area plan. It checks area identity,
@@ -39,6 +39,9 @@ its floor scope, in the vacuum's entity options, and that the restored backup st
   such as `run_history` and the per-run `skipped_room_ids` and `held_rooms`.
   It repairs fields older releases saved, such as duration scalars and run
   `trigger`, in memory once per start and saves them with its next write.
+- Custom-area bindings keep their format. Both releases write v3, v4 and v6
+  and read v1 to v6. At startup each upgrades an older binding it can verify
+  on the current floor to what both write, so 0.5.4 reads it as current.
 - 0.6 settles the run that 0.5.4 left cleaning as unverified
   (`restart_native_mission_changed_or_ended`) and then runs the plan normally.
 - 0.5.4 runs on a plan store 0.6 wrote. It keeps `run_history` but does not add
