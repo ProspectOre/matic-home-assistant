@@ -17,9 +17,6 @@ from homeassistant.core import (
 from homeassistant.helpers.event import async_track_state_change_event
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot.client.operational_state import (
-    decode_operational_state,
-)
 from custom_components.matic_robot.const import (
     DOMAIN,
     EVENT_PLAN_DOCKED,
@@ -36,9 +33,18 @@ async def sighting(entry: MockConfigEntry, robot: SimulatedRobot) -> None:
     """Do what half a minute of running does, now.
 
     Wait for the robot's pushed state, count it as one health sample and run
-    one heartbeat.
+    one heartbeat. The 0.5 code the upgrade drill seeds from polls a
+    coordinator instead.
     """
-    session = entry.runtime_data.session
+    runtime = entry.runtime_data
+    if not hasattr(runtime, "session"):
+        await runtime.coordinator.async_refresh()
+        return
+    from custom_components.matic_robot.client.operational_state import (
+        decode_operational_state,
+    )
+
+    session = runtime.session
     state = decode_operational_state(robot.kabuki_state())
     async with asyncio.timeout(5):
         # No event marks a snapshot that changes nothing entities show.

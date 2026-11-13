@@ -1,14 +1,18 @@
-"""Load the shipped plan-store migration through Home Assistant's real Store."""
+"""Load stored plan files through Home Assistant's real Store."""
 
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import pytest
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 
+from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.migrations import UPGRADE_ISSUE_ID
 from custom_components.matic_robot.plan_storage import (
     STORAGE_KEY,
     STORAGE_MINOR_VERSION,
@@ -19,6 +23,11 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 SERIAL = "migration-test-robot"
 PLAN = "legacy-evening"
 ROOM = "room-dining"
+TIER = {
+    "duration_history_seconds": [100, 120, 140],
+    "duration_samples": 5,
+    "last_completed": "2026-10-01T08:00:00+00:00",
+}
 
 
 @pytest.fixture
@@ -190,3 +199,62 @@ async def test_minor_11_file_migrates_and_survives_cold_manager_reload(
     assert persisted["plan_room_cadence"] == migrated["plan_room_cadence"]
     assert persisted["rotations"] == migrated["rotations"]
     assert persisted["last_run"] == migrated["last_run"]
+
+
+def _v0_5_4_data() -> dict[str, Any]:
+    """The same store as 0.5.0 to 0.5.4 save it."""
+    data = _minor_11_data()
+    robot = data["robots"][SERIAL]
+    robot["plans"][PLAN]["entries"] = [{"kind": "room", "room_id": ROOM}]
+    robot["rotations"][PLAN]["rooms"][ROOM]["duration_profiles"] = {
+        "vacuum:quick": deepcopy(TIER)
+    }
+    for key in ("rotation_resets", "area_history", "managed_native_sessions"):
+        robot[key] = {}
+    robot["native_completion_dedup"] = []
+    robot["active_plan"] = None
+    return data
+
+
+async def _write(hass, minor_version: int, data: dict[str, Any]) -> Path:
+    store = Store(
+        hass, STORAGE_VERSION, STORAGE_KEY, private=True, minor_version=minor_version
+    )
+    await store.async_save(data)
+    return Path(hass.config.path(".storage", STORAGE_KEY))
+
+
+@pytest.mark.parametrize("minor_version", [12, 13])
+async def test_0_5_store_loads_and_survives_cold_manager_reload(
+    hass, minor_version: int
+) -> None:
+    """0.5.0 saved 1.12 and 0.5.1 to 0.5.4 save 1.13; both load unchanged."""
+    path = await _write(hass, minor_version, _v0_5_4_data())
+
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+
+    loaded = manager.repository.robot(SERIAL)
+    stored = _v0_5_4_data()["robots"][SERIAL]
+    for key in (
+        "plans",
+        "areas",
+        "rooms",
+        "shared_room_cadence",
+        "plan_room_cadence",
+        "selected_plan",
+        "selected_area",
+    ):
+        assert loaded[key] == stored[key]
+    assert loaded["rotations"][PLAN]["rooms"][ROOM]["duration_profiles"] == {
+        "vacuum:quick": TIER
+    }
+    assert loaded["last_run"]["run_id"] == "completed-run-7"
+
+    await manager.repository.async_save_and_notify(SERIAL)
+    disk = json.loads(await hass.async_add_executor_job(path.read_text))
+    assert (disk["version"], disk["minor_version"]) == (1, STORAGE_MINOR_VERSION)
+    reloaded = CleaningPlanManager(hass)
+    await reloaded.async_load()
+    assert reloaded.repository.robot(SERIAL) == loaded
+    assert not ir.async_get(hass).async_get_issue(DOMAIN, UPGRADE_ISSUE_ID)

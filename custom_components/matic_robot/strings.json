@@ -2042,6 +2042,10 @@
       "title": "Matic Map is not installed",
       "description": "This copy of the integration was installed without its Matic Map files, so the sidebar has no Matic Map. Download Matic (Unofficial) again in HACS, or replace `custom_components/matic_robot` with the contents of `matic_robot.zip` from a release, then restart Home Assistant."
     },
+    "upgrade_through_0_5_4": {
+      "title": "Install Matic (Unofficial) {version} before this update",
+      "description": "This update reads data saved by Matic (Unofficial) {version}, and this installation's data is older, so the integration did not start. Nothing was changed or deleted.\n\nInstall {version} from HACS, restart Home Assistant once, then install this update again."
+    },
     "blueprints_use_removed_action": {
       "title": "Matic blueprints need an update",
       "fix_flow": {

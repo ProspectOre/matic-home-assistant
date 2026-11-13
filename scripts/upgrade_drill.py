@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Upgrade from an older release, then roll back, against the simulated robot.
 
-The older release runs from a temporary Git worktree with this checkout's
-simulator copied in. Phases share real store files:
+The older release runs from a temporary Git worktree with its own tests and
+this checkout's simulator harness copied in. Phases share real store files:
 
 1. seed (older): save a plan with a room schedule, finish one run and leave a
    second one cleaning when Home Assistant stops. The stores are copied as
    the pre-upgrade backup.
 2. upgrade (this checkout): settle the interrupted run and run the plan.
-3. downgrade (older): require its version-1 history reader to refuse the
-   version-2 history file without changing it; the newer plan store is read
+3. downgrade (older): require its version-1 history reader to leave the
+   version-2 history file unread and unchanged; the newer plan store is read
    for comparison only.
 4. restore (older): run the plan on the pre-upgrade version-1 backup.
 
@@ -33,7 +33,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DRILL = "tests/e2e/upgrade_drill.py"
-HARNESS = ("tests/__init__.py", "tests/conftest.py", "tests/e2e")
+HARNESS = ("tests/e2e",)
 PLAN = "evening"
 AREA_PLAN = "entry-area"
 ENTRY_ID = "matic-upgrade-drill"
@@ -360,7 +360,7 @@ def drill(tag: str, work: Path) -> dict[str, dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("tag", help="older release tag, for example v0.5.0")
+    parser.add_argument("tag", help="older release tag, for example v0.5.4")
     args = parser.parse_args(argv)
     with tempfile.TemporaryDirectory(prefix="matic-upgrade-drill-") as work:
         try:
@@ -381,8 +381,8 @@ def main(argv: list[str] | None = None) -> int:
             f"SLAM v{slam_history['version']} {retentions}"
         )
     print(
-        "passed: plan/area history survived; SLAM history migrated v1→v2, "
-        "old-reader refusal preserved bytes, and restored v1 backup remained usable"
+        "passed: plan/area history survived; SLAM history migrated v1→v2, the "
+        "old reader left its bytes unchanged, and the restored v1 backup was usable"
     )
     return 0
 
