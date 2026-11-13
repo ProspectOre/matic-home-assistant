@@ -9,12 +9,12 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import probatio
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
     ATTR_AREA_ID,
     ATTR_DEVICE_ID,
@@ -49,6 +49,9 @@ from .managed_run import (
 )
 from .plans import CleaningPlanManager
 from .room_coherence import current_floor_plan as _current_floor_plan
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +182,7 @@ def _saved_plan_context(
     *,
     require_rooms: bool = True,
     require_current_floor: bool = False,
-) -> tuple[str, ConfigEntry[Any], str, dict[str, str]]:
+) -> tuple[str, MaticConfigEntry, str, dict[str, str]]:
     """Return the one targeted robot and its current stable room inventory."""
     if len(entity_ids) != 1:
         raise _validation_error(
@@ -254,7 +257,7 @@ def _resolve_loaded_matic_vacuums(
     return entity_ids
 
 
-def _entry_for_entity(hass: HomeAssistant, entity_id: str) -> ConfigEntry[Any]:
+def _entry_for_entity(hass: HomeAssistant, entity_id: str) -> MaticConfigEntry:
     """Return the loaded typed Matic config entry behind a vacuum entity."""
     registry_entry = er.async_get(hass).async_get(entity_id)
     if registry_entry is None or registry_entry.config_entry_id is None:

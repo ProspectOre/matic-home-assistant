@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import probatio
@@ -14,11 +14,13 @@ from homeassistant.components.websocket_api.connection import ActiveConnection
 from homeassistant.components.websocket_api.decorators import websocket_command
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 
 from .client.exceptions import AuthenticationRequiredError
 from .const import DOMAIN, EVENT_ACTIVITY_OBSERVED, EVENT_CLEANING_FINISHED
+from .slam_scene import _scene_snapshot_key
+from .slam_view_data import catalog_entry_projection, pose_projection
 from .workspace_schema import (
     InvalidateEvent,
     RecoveryReason,
@@ -32,6 +34,14 @@ from .workspace_schema import (
     WorkspaceSubscribeRequest,
 )
 
+if TYPE_CHECKING:
+    from . import MaticConfigEntry, MaticRuntimeData
+    from .client.models import RobotOperationalState
+    from .session import RobotSession
+    from .slam_history import SlamHistoryStore
+    from .slam_scene import MaticSlamSceneView
+
+DATA_WORKSPACE_SOCKET = "workspace_socket"
 PROTOCOL_VERSION = 1
 COMMAND_SNAPSHOT = f"{DOMAIN}/workspace_snapshot"
 COMMAND_SUBSCRIBE = f"{DOMAIN}/workspace_subscribe"
@@ -51,20 +61,14 @@ def _resync_event(reason: RecoveryReason) -> ResyncEvent:
     return {"type": "resync", "reason": reason}
 
 
-def _auth_failed(session: Any) -> bool:
+def _auth_failed(session: RobotSession) -> bool:
     """Return whether the robot refused the entry's credential."""
-    error = getattr(getattr(session, "error", None), "value", None)
-    return isinstance(error, AuthenticationRequiredError)
+    return isinstance(session.error.value, AuthenticationRequiredError)
 
 
-def _recovery_reason(session: Any) -> RecoveryReason:
+def _recovery_reason(session: RobotSession) -> RecoveryReason:
     """Map why the robot is away to a bounded reason without exposing details."""
     return "authorization" if _auth_failed(session) else "snapshot_required"
-
-
-def _session_zones(session: Any) -> object:
-    telemetry = getattr(getattr(session, "telemetry", None), "value", None)
-    return getattr(telemetry, "zones", ())
 
 
 def _next_resource_revision(current: int) -> int:
@@ -80,9 +84,9 @@ class WorkspaceError(HomeAssistantError):
 class _EntryListeners:
     """Lifecycle and publisher subscriptions owned for one loaded entry."""
 
-    entry: Any
-    state_unsubscribe: Any
-    source_unsubscribers: list[Any] = field(default_factory=list)
+    entry: MaticConfigEntry
+    state_unsubscribe: CALLBACK_TYPE
+    source_unsubscribers: list[CALLBACK_TYPE] = field(default_factory=list)
     source_state: dict[str, Any] = field(default_factory=dict)
     sources_closed: bool = False
 
@@ -158,9 +162,9 @@ class WorkspaceSocket:
         self._removed_entries.clear()
 
     @callback
-    def _async_event(self, event: Any) -> None:
+    def _async_event(self, event: Event) -> None:
         """Record an entry-local invalidation and deliver it to its listeners."""
-        data = getattr(event, "data", None) or {}
+        data = event.data
         entry_id = data.get("entry_id")
         if self._closed or not isinstance(entry_id, str):
             return
@@ -210,7 +214,7 @@ class WorkspaceSocket:
         self._close_entry_sources(entry_id)
         self._clear_entry(entry_id)
 
-    def track_entry(self, entry: Any) -> None:
+    def track_entry(self, entry: MaticConfigEntry) -> None:
         """Release entry-local subscriptions as soon as HA starts unloading it.
 
         ConfigEntry.async_on_state_change runs synchronously when HA changes
@@ -247,65 +251,52 @@ class WorkspaceSocket:
 
     def _attach_entry_sources(self, entry_id: str, tracked: _EntryListeners) -> None:
         """Subscribe to the entry's authoritative local resource publishers."""
-        runtime = getattr(tracked.entry, "runtime_data", None)
-        session = getattr(runtime, "session", None)
-        if session is not None:
-            tracked.source_state["session"] = self._session_state(session)
-            tracked.source_state["zones"] = _session_zones(session)
-            revisions = self._resource_revisions.setdefault(entry_id, {})
-            revisions.update({"status": 0, "robot_state": 0})
-            tracked.source_unsubscribers.extend(
-                store.subscribe(lambda: self._async_session_changed(entry_id))
-                for store in (
-                    session.error,
-                    session.state,
-                    session.floor,
-                    session.telemetry,
-                )
+        runtime = tracked.entry.runtime_data
+        session = runtime.session
+        serial_number = session.info.serial_number
+        plans = runtime.cleaning_plans
+        tracked.source_state["session"] = self._session_state(session)
+        tracked.source_state["zones"] = session.telemetry.value.zones
+        tracked.source_state["plans"] = plans.catalog.plans(serial_number)
+        tracked.source_state["areas"] = plans.catalog.areas(serial_number)
+        tracked.source_state["scene"] = _scene_snapshot_key(runtime)
+        tracked.source_state["scene_boundary"] = self._scene_boundary_state(runtime)
+        tracked.source_state["history"] = self._history_state(runtime.slam_history)
+        tracked.source_unsubscribers.extend(
+            store.subscribe(lambda: self._async_session_changed(entry_id))
+            for store in (
+                session.error,
+                session.state,
+                session.floor,
+                session.telemetry,
             )
-            tracked.source_unsubscribers.append(
-                session.poses.subscribe(lambda: self._async_pose_changed(entry_id))
+        )
+        tracked.source_unsubscribers.extend(
+            (
+                session.poses.subscribe(lambda: self._async_pose_changed(entry_id)),
+                plans.repository.async_add_listener(
+                    serial_number, lambda: self._async_plan_store_changed(entry_id)
+                ),
+                runtime.slam_map.async_add_listener(
+                    lambda: self._async_scene_changed(entry_id)
+                ),
+                runtime.slam_history.async_add_listener(
+                    lambda: self._async_history_changed(entry_id)
+                ),
             )
-
-        serial_number = self._serial_number(session)
-        plans = getattr(runtime, "cleaning_plans", None)
-        if plans is not None and isinstance(serial_number, str):
-            tracked.source_state["plans"] = plans.catalog.plans(serial_number)
-            tracked.source_state["areas"] = plans.catalog.areas(serial_number)
-            add_listener = getattr(plans.repository, "async_add_listener", None)
-            if callable(add_listener):
-                tracked.source_unsubscribers.append(
-                    add_listener(
-                        serial_number,
-                        lambda: self._async_plan_store_changed(entry_id),
-                    )
-                )
-            revisions = self._resource_revisions.setdefault(entry_id, {})
-            revisions.update({"plans": 0, "areas": 0, "plan_state": 0})
-
-        slam_map = getattr(runtime, "slam_map", None)
-        if slam_map is not None:
-            tracked.source_state["scene"] = self._scene_state(runtime)
-            tracked.source_state["scene_boundary"] = self._scene_boundary_state(runtime)
-            add_listener = getattr(slam_map, "async_add_listener", None)
-            if callable(add_listener):
-                tracked.source_unsubscribers.append(
-                    add_listener(lambda: self._async_scene_changed(entry_id))
-                )
-            scene_revision = self._scene_revision(entry_id, runtime)
-            self._resource_revisions.setdefault(entry_id, {})["scene"] = (
-                scene_revision if scene_revision is not None else 0
-            )
-
-        history = getattr(runtime, "slam_history", None)
-        if history is not None:
-            tracked.source_state["history"] = self._history_state(history)
-            add_listener = getattr(history, "async_add_listener", None)
-            if callable(add_listener):
-                tracked.source_unsubscribers.append(
-                    add_listener(lambda: self._async_history_changed(entry_id))
-                )
-            self._resource_revisions.setdefault(entry_id, {}).setdefault("history", 0)
+        )
+        revisions = self._resource_revisions.setdefault(entry_id, {})
+        revisions.update(
+            {
+                "status": 0,
+                "robot_state": 0,
+                "plans": 0,
+                "areas": 0,
+                "plan_state": 0,
+                "scene": self._scene_revision(entry_id, runtime),
+            }
+        )
+        revisions.setdefault("history", 0)
 
     def _close_entry_sources(self, entry_id: str) -> None:
         """Stop runtime publishers immediately when entry unloading begins."""
@@ -331,11 +322,9 @@ class WorkspaceSocket:
         tracked = self._tracked_entries.get(entry_id)
         if tracked is None or tracked.sources_closed:
             return
-        runtime = getattr(tracked.entry, "runtime_data", None)
-        serial_number = self._serial_number(getattr(runtime, "session", None))
-        plans = getattr(runtime, "cleaning_plans", None)
-        if plans is None or not isinstance(serial_number, str):
-            return
+        runtime = tracked.entry.runtime_data
+        serial_number = runtime.session.info.serial_number
+        plans = runtime.cleaning_plans
         current_plans = plans.catalog.plans(serial_number)
         current_areas = plans.catalog.areas(serial_number)
         resources = ["plan_state"]
@@ -355,10 +344,7 @@ class WorkspaceSocket:
         tracked = self._tracked_entries.get(entry_id)
         if tracked is None or tracked.sources_closed:
             return
-        runtime = getattr(tracked.entry, "runtime_data", None)
-        session = getattr(runtime, "session", None)
-        if session is None:
-            return
+        session = tracked.entry.runtime_data.session
         current = self._session_state(session)
         previous = tracked.source_state.get("session")
         tracked.source_state["session"] = current
@@ -369,7 +355,7 @@ class WorkspaceSocket:
             resources.append("robot_state")
         # Robot zones ride the areas view; a zone drawn in the Matic app
         # reaches an open map through this revision.
-        zones = _session_zones(session)
+        zones = session.telemetry.value.zones
         if zones != tracked.source_state.get("zones"):
             resources.append("areas")
         tracked.source_state["zones"] = zones
@@ -382,10 +368,8 @@ class WorkspaceSocket:
         tracked = self._tracked_entries.get(entry_id)
         if tracked is None or tracked.sources_closed:
             return
-        if "scene" not in tracked.source_state:
-            return
-        runtime = getattr(tracked.entry, "runtime_data", None)
-        current = self._scene_state(runtime)
+        runtime = tracked.entry.runtime_data
+        current = _scene_snapshot_key(runtime)
         current_boundary = self._scene_boundary_state(runtime)
         previous = tracked.source_state.get("scene")
         previous_boundary = tracked.source_state.get("scene_boundary")
@@ -393,12 +377,9 @@ class WorkspaceSocket:
             return
         tracked.source_state["scene"] = current
         tracked.source_state["scene_boundary"] = current_boundary
-        revision = self._scene_revision(entry_id, runtime)
-        resource_revisions = self._resource_revisions.setdefault(entry_id, {})
-        if revision is not None:
-            resource_revisions["scene"] = revision
-        else:
-            resource_revisions.pop("scene", None)
+        self._resource_revisions.setdefault(entry_id, {})["scene"] = (
+            self._scene_revision(entry_id, runtime)
+        )
         self._invalidate(
             entry_id,
             ["scene"],
@@ -427,14 +408,7 @@ class WorkspaceSocket:
             or connection not in self._pose_subscribers.get(entry_id, ())
         ):
             return
-        from .frontend import DATA_SLAM_SCENE_VIEW
-        from .slam_view_data import pose_projection
-
-        pose = pose_projection(
-            entry_id,
-            tracked.entry.runtime_data,
-            self.hass.data.get(DATA_SLAM_SCENE_VIEW),
-        )
+        pose = pose_projection(entry_id, tracked.entry.runtime_data, self._scene_view())
         self._send_subscription_event(
             entry_id, connection, msg_id, {"type": "pose", "pose": pose}
         )
@@ -444,11 +418,7 @@ class WorkspaceSocket:
         tracked = self._tracked_entries.get(entry_id)
         if tracked is None or tracked.sources_closed:
             return
-        runtime = getattr(tracked.entry, "runtime_data", None)
-        history = getattr(runtime, "slam_history", None)
-        if history is None:
-            return
-        current = self._history_state(history)
+        current = self._history_state(tracked.entry.runtime_data.slam_history)
         if tracked.source_state.get("history") == current:
             return
         tracked.source_state["history"] = current
@@ -508,109 +478,80 @@ class WorkspaceSocket:
         connection.send_event(msg_id, event)
 
     @staticmethod
-    def _serial_number(session: Any) -> str | None:
-        """Read robot identity internally without placing it on the wire."""
-        info = getattr(session, "info", None)
-        serial_number = getattr(info, "serial_number", None)
-        return serial_number if isinstance(serial_number, str) else None
-
-    @staticmethod
-    def _session_state(session: Any) -> tuple[bool, Any]:
+    def _session_state(session: RobotSession) -> tuple[bool, RobotOperationalState]:
         """Return reachability and operational state for change detection."""
         return session.error.value is None, session.state.value.operational
 
     @staticmethod
-    def _scene_state(runtime: Any) -> tuple[Any, ...]:
-        """Return the exact private scene-cache key for change detection."""
-        from .slam_scene import _scene_snapshot_key
-
-        return _scene_snapshot_key(runtime)
-
-    def _scene_boundary_state(self, runtime: Any) -> tuple[Any, ...]:
+    def _scene_boundary_state(runtime: MaticRuntimeData) -> tuple[object, ...]:
         """Return private authorities that require spatial revalidation."""
-        session = getattr(runtime, "session", None)
-        floor_plan = getattr(getattr(session, "floor", None), "value", None)
-        slam_map = getattr(runtime, "slam_map", None)
-        identity = getattr(slam_map, "mission_identity", None)
-        current_check = getattr(slam_map, "floor_plan_is_current", None)
-        floor_current = (
-            current_check(floor_plan) is True if callable(current_check) else False
-        )
-        session_verified = getattr(slam_map, "live_session_verified", False)
+        session = runtime.session
+        floor_plan = session.floor.value
+        slam_map = runtime.slam_map
         return (
-            self._serial_number(session),
-            identity,
+            session.info.serial_number,
+            slam_map.mission_identity,
             floor_plan,
-            session_verified is True,
-            floor_current,
+            slam_map.live_session_verified,
+            slam_map.floor_plan_is_current(floor_plan),
         )
 
-    def _scene_revision(self, entry_id: str, runtime: Any) -> int | None:
-        """Project the scene view's canonical transport revision when present."""
-        from .frontend import DATA_SLAM_SCENE_VIEW
+    def _scene_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
+        """Project the scene view's transport revision, or the map's without it.
 
-        scene_view = self.hass.data.get(DATA_SLAM_SCENE_VIEW)
-        current_revision = getattr(scene_view, "current_revision", None)
+        The scene view is absent when Home Assistant serves no frontend.
+        """
+        scene_view = self._scene_view()
         raw_revision = (
-            current_revision(entry_id, runtime)
-            if callable(current_revision)
-            else getattr(getattr(runtime, "slam_map", None), "revision", None)
+            scene_view.current_revision(entry_id, runtime)
+            if scene_view is not None
+            else runtime.slam_map.revision
         )
-        if not isinstance(raw_revision, int) or isinstance(raw_revision, bool):
-            return None
         return min(MAX_RESOURCE_REVISION, max(0, raw_revision))
 
+    def _scene_view(self) -> MaticSlamSceneView | None:
+        from .frontend import DATA_SLAM_SCENE_VIEW
+
+        return cast(
+            "MaticSlamSceneView | None", self.hass.data.get(DATA_SLAM_SCENE_VIEW)
+        )
+
     @staticmethod
-    def _history_state(history: Any) -> tuple[object, ...]:
+    def _history_state(history: SlamHistoryStore) -> tuple[object, ...]:
         """Return bounded catalog identity without retaining scene payloads."""
-        catalog = getattr(history, "catalog", None)
-        if not callable(catalog):
-            return ()
-        snapshots = catalog()
         records = tuple(
             (
                 snapshot.snapshot_id,
                 snapshot.revision,
-                getattr(snapshot, "mission_token", None),
-                (
-                    created_at.isoformat()
-                    if (created_at := getattr(snapshot, "created_at", None)) is not None
-                    else None
-                ),
-                getattr(snapshot, "point_count", None),
-                getattr(snapshot, "record_id", None),
-                getattr(snapshot, "name", None),
-                getattr(snapshot, "retention", "automatic"),
+                snapshot.mission_token,
+                snapshot.created_at.isoformat(),
+                snapshot.point_count,
+                snapshot.record_id,
+                snapshot.name,
+                snapshot.retention,
                 (
                     snapshot.deleted_until.isoformat()
-                    if getattr(snapshot, "deleted_until", None) is not None
+                    if snapshot.deleted_until is not None
                     else None
                 ),
-                getattr(snapshot, "imported", False),
-                getattr(snapshot, "comparison_group", None),
-                json.dumps(
-                    getattr(snapshot, "frame", None),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
+                snapshot.imported,
+                snapshot.comparison_group,
+                json.dumps(snapshot.frame, sort_keys=True, separators=(",", ":")),
             )
-            for snapshot in snapshots
-            if isinstance(getattr(snapshot, "snapshot_id", None), str)
-            and isinstance(getattr(snapshot, "revision", None), int)
-            and not isinstance(getattr(snapshot, "revision", None), bool)
+            for snapshot in history.catalog()
         )
         return (
-            getattr(history, "generation", None),
-            getattr(history, "capture_paused", None),
-            getattr(history, "capacity_blocked", None),
+            history.generation,
+            history.capture_paused,
+            history.capacity_blocked,
             records,
         )
 
-    def _entry(self, entry_id: str) -> Any:
+    def _entry(self, entry_id: str) -> MaticConfigEntry:
         """Return only a currently loaded integration entry."""
         for entry in self.hass.config_entries.async_entries(DOMAIN):
             if entry.entry_id == entry_id and entry.state is ConfigEntryState.LOADED:
-                return entry
+                return cast("MaticConfigEntry", entry)
         raise WorkspaceError("Matic entry is unavailable")
 
     def snapshot(
@@ -623,41 +564,22 @@ class WorkspaceSocket:
         sequence = self._sequence.get(entry_id, 0)
         generation = self._coherence_generation.setdefault(entry_id, 1)
         self._removed_entries.discard(entry_id)
-        runtime = getattr(entry, "runtime_data", None)
-        session: Any = getattr(runtime, "session", None)
-        state_available = session is not None
-        available = session is not None and session.error.value is None
-        entry_projection = None
-        if (
-            available
-            and runtime is not None
-            and getattr(runtime, "slam_map", None) is not None
-            and getattr(runtime, "cleaning_plans", None) is not None
-            and getattr(runtime, "slam_history", None) is not None
-        ):
-            # Use the exact field owner and serializer shared with the REST
-            # catalog; WebSocket projection cannot invent map or run state.
-            from .frontend import DATA_SLAM_SCENE_VIEW
-            from .slam_view_data import catalog_entry_projection
-
-            scene_view = self.hass.data.get(DATA_SLAM_SCENE_VIEW)
-            entry_projection = catalog_entry_projection(
-                entry_id,
-                runtime,
-                scene_view,
-            )
+        runtime = entry.runtime_data
+        session = runtime.session
+        available = session.error.value is None
+        # Use the exact field owner and serializer shared with the REST
+        # catalog; WebSocket projection cannot invent map or run state.
+        entry_projection = (
+            catalog_entry_projection(entry_id, runtime, self._scene_view())
+            if available
+            else None
+        )
         status: WorkspaceStatus
         if available:
             status = {"state": "ready", "reason": None, "retryable": False}
-        elif state_available:
-            status = {
-                "state": "stale",
-                "reason": _recovery_reason(session),
-                "retryable": not _auth_failed(session),
-            }
         else:
             status = {
-                "state": "unavailable",
+                "state": "stale",
                 "reason": _recovery_reason(session),
                 "retryable": not _auth_failed(session),
             }
@@ -684,76 +606,36 @@ class WorkspaceSocket:
             "plan_state",
         ):
             resource_revisions.setdefault(name, 0)
-        slam_map = getattr(runtime, "slam_map", None)
-        if slam_map is not None and available:
-            revision = getattr(slam_map, "revision", None)
-            if isinstance(revision, int) and not isinstance(revision, bool):
-                resource_revisions.setdefault("scene", 0)
-        history = getattr(runtime, "slam_history", None)
+        if available:
+            resource_revisions.setdefault("scene", 0)
         if "history" not in resource_revisions:
-            catalog = getattr(history, "catalog", None)
-            snapshots = catalog() if callable(catalog) else ()
             history_revisions = [
-                revision
-                for snapshot in snapshots
-                if isinstance((revision := getattr(snapshot, "revision", None)), int)
-                and not isinstance(revision, bool)
-                and revision >= 0
+                snapshot.revision
+                for snapshot in runtime.slam_history.catalog()
+                if snapshot.revision >= 0
             ]
             resource_revisions["history"] = min(
                 MAX_RESOURCE_REVISION, max(history_revisions, default=0)
             )
         revisions = {"workspace": sequence, **resource_revisions}
         if entry_projection is not None:
-            floor_verified = bool(
-                entry_projection["map_floor_coherent"]
-                and entry_projection["map_session_verified"]
-            )
             floor_plan = session.floor.value
-            mission_id = getattr(floor_plan, "mission_id", None)
-            map_revision: object = entry_projection["map_revision"]
             if (
-                floor_verified
-                and isinstance(mission_id, int)
-                and not isinstance(mission_id, bool)
+                floor_plan is not None
+                and entry_projection["map_floor_coherent"]
+                and entry_projection["map_session_verified"]
             ):
-                identity["floor_mission_id"] = mission_id
+                identity["floor_mission_id"] = floor_plan.mission_id
                 identity["floor_verified"] = True
-            if isinstance(map_revision, int) and not isinstance(map_revision, bool):
-                # The payload may be an older cached encoding while a newer
-                # scene revision is being built. Keep its usable revision in
-                # the payload, but use the same current-revision authority as
-                # scene invalidations for the transport fence.
-                current_revision = self._scene_revision(entry_id, runtime)
-                if current_revision is not None:
-                    resource_revisions["scene"] = max(
-                        resource_revisions.get("scene", 0), current_revision
-                    )
-                    revisions["scene"] = resource_revisions["scene"]
-                else:
-                    revisions.pop("scene", None)
-            else:
-                revisions.pop("scene", None)
-        elif available:
-            floor_plan = session.floor.value
-            slam_map = getattr(runtime, "slam_map", None)
-            is_current = bool(
-                slam_map is not None
-                and callable(getattr(slam_map, "floor_plan_is_current", None))
-                and slam_map.floor_plan_is_current(floor_plan)
+            # The payload may be an older cached encoding while a newer scene
+            # revision is being built. Keep its usable revision in the
+            # payload, but use the same current-revision authority as scene
+            # invalidations for the transport fence.
+            resource_revisions["scene"] = max(
+                resource_revisions.get("scene", 0),
+                self._scene_revision(entry_id, runtime),
             )
-            if is_current:
-                mission_id = getattr(floor_plan, "mission_id", None)
-                map_revision = getattr(slam_map, "revision", None)
-                if isinstance(mission_id, int) and not isinstance(mission_id, bool):
-                    identity["floor_mission_id"] = mission_id
-                    identity["floor_verified"] = True
-                if isinstance(map_revision, int) and not isinstance(map_revision, bool):
-                    revisions["scene"] = min(
-                        MAX_RESOURCE_REVISION, max(0, map_revision)
-                    )
-            else:
-                revisions.pop("scene", None)
+            revisions["scene"] = resource_revisions["scene"]
         else:
             revisions.pop("scene", None)
 
@@ -901,7 +783,7 @@ def websocket_snapshot(
 ) -> None:
     """Serve a versioned snapshot to administrators."""
     _require_admin(connection)
-    manager: WorkspaceSocket = hass.data[DOMAIN]["workspace_socket"]
+    manager = workspace_socket(hass)
     request = cast(WorkspaceSnapshotRequest, msg)
     connection.send_result(
         msg["id"], manager.snapshot(request["entry_id"], (connection, msg["id"]))
@@ -922,7 +804,7 @@ def websocket_subscribe(
 ) -> None:
     """Install an administrator subscription and return its handshake cursor."""
     _require_admin(connection)
-    manager: WorkspaceSocket = hass.data[DOMAIN]["workspace_socket"]
+    manager = workspace_socket(hass)
     request = cast(WorkspaceSubscribeRequest, msg)
     entry_id = request["entry_id"]
     replay = manager.subscribe(
@@ -940,13 +822,18 @@ def websocket_subscribe(
     manager.send_pose(connection, entry_id)
 
 
+def workspace_socket(hass: HomeAssistant) -> WorkspaceSocket:
+    """Return the socket ``async_setup`` registered before any entry loads."""
+    return cast(WorkspaceSocket, hass.data[DOMAIN][DATA_WORKSPACE_SOCKET])
+
+
 async def async_register(hass: HomeAssistant) -> WorkspaceSocket:
     """Register commands once and return the lifecycle owner."""
-    existing = hass.data.setdefault(DOMAIN, {}).get("workspace_socket")
+    existing = hass.data.setdefault(DOMAIN, {}).get(DATA_WORKSPACE_SOCKET)
     if existing is not None:
         return cast(WorkspaceSocket, existing)
     manager = WorkspaceSocket(hass)
-    hass.data[DOMAIN]["workspace_socket"] = manager
+    hass.data[DOMAIN][DATA_WORKSPACE_SOCKET] = manager
     websocket_api.async_register_command(hass, websocket_snapshot)
     websocket_api.async_register_command(hass, websocket_subscribe)
     await manager.async_start()

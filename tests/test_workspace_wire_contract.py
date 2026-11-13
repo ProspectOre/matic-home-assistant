@@ -29,6 +29,7 @@ from custom_components.matic_robot.workspace_socket import (
     _resync_event,
     websocket_subscribe,
 )
+from tests import runtime_fakes
 from tests.test_slam_scene import _runtime as _scene_runtime
 from tests.test_workspace_socket import _connection, _entry, _Hass, _LifecycleEntry
 
@@ -72,10 +73,7 @@ def _synthetic_workspace_hass() -> tuple[SimpleNamespace, str]:
         ),
         history=SimpleNamespace(snapshot=lambda _serial: {}),
     )
-    slam_history = SimpleNamespace(
-        catalog_for_mission=lambda _mission: (),
-        catalogs_by_mission=dict,
-    )
+    slam_history = runtime_fakes.mock_history()
     session = SimpleNamespace(
         info=SimpleNamespace(serial_number="synthetic-serial"),
         error=SimpleNamespace(value=None),
@@ -126,24 +124,10 @@ def test_snapshot_bytes() -> None:
 def test_unavailable_snapshot_bytes() -> None:
     stale = _entry("entry-a")
     stale.runtime_data.session.error.value = AuthenticationRequiredError("refused")
-    missing = _entry("entry-b")
-    missing.runtime_data.session = None
-    socket = WorkspaceSocket(_Hass([stale, missing]))
+    socket = WorkspaceSocket(_Hass([stale]))
     socket._epoch = "epoch"
 
     assert json_bytes(socket.snapshot("entry-a")) == json_bytes(STALE_SNAPSHOT)
-    assert json_bytes(socket.snapshot("entry-b")) == json_bytes(
-        STALE_SNAPSHOT
-        | {
-            "entry_id": "entry-b",
-            "identity": STALE_SNAPSHOT["identity"] | {"entry_id": "entry-b"},
-            "status": {
-                "state": "unavailable",
-                "reason": "snapshot_required",
-                "retryable": True,
-            },
-        }
-    )
 
 
 def test_subscription_message_bytes() -> None:

@@ -53,16 +53,16 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
 
     async def async_clean(call: ServiceCall, entity_ids: list[str]) -> None:
         """Route the complete verified cleaning matrix to selected vacuums."""
-        if callable(getattr(manager.control, "stop_pending", None)):
-            for entity_id in entity_ids:
-                entry = context._entry_for_entity(hass, entity_id)
-                await _ensure_stop_settled(
-                    hass,
-                    manager,
-                    entry.runtime_data.session.info.serial_number,
-                    entity_id,
-                    entry.runtime_data.client.async_get_active_cleaning_session_state,
-                )
+        for entity_id in entity_ids:
+            entry = context._entry_for_entity(hass, entity_id)
+            await _ensure_stop_settled(
+                hass,
+                manager,
+                entry.runtime_data.session.info.serial_number,
+                entity_id,
+                entry.runtime_data.client.async_get_active_cleaning_session_state,
+                entry.runtime_data.client.async_get_state,
+            )
         await _async_each_robot(
             hass,
             entity_ids,
@@ -182,6 +182,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
             serial_number,
             entity_id,
             entry.runtime_data.client.async_get_active_cleaning_session_state,
+            entry.runtime_data.client.async_get_state,
         )
         require_current_request(request_generation)
         manager.control.require_command_admission(
@@ -210,6 +211,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                 serial_number,
                 entity_id,
                 entry.runtime_data.client.async_get_active_cleaning_session_state,
+                entry.runtime_data.client.async_get_state,
             )
             require_current_request(request_generation)
             try:

@@ -47,12 +47,10 @@ def _session(started_at: str, ended_at: str | None) -> CleaningSession:
     )
 
 
-async def test_history_view_requires_a_loaded_robot_with_trails() -> None:
+async def test_history_view_requires_a_loaded_robot() -> None:
     view = MaticRunHistoryView()
     missing = await view.get(_request(_hass(None)), "entry")
     assert missing.status == HTTPStatus.NOT_FOUND
-    without_trails = await view.get(_request(_hass(_entry(_runtime()))), "entry")
-    assert without_trails.status == HTTPStatus.NOT_FOUND
 
 
 async def test_history_view_lists_runs_with_trails_on_this_map(
@@ -174,7 +172,6 @@ def test_each_pose_on_the_current_map_feeds_the_trail_recorder() -> None:
     observe_trail(without_pose)
     assert without_pose.run_trails.observe.call_args.kwargs["point"] is None
     assert without_pose.run_trails.observe.call_args.kwargs["observed_at"] is None
-    observe_trail(_runtime())
 
 
 async def test_manager_history_freezes_runs_and_follows_a_late_dock(

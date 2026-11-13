@@ -65,13 +65,8 @@ async def _syncing(hass, *, processed=False, generation=None):
     )
     entry = session_entry()
     session = await start_session(hass, client, entry)
-    control = (
-        SimpleNamespace()
-        if generation is None
-        else SimpleNamespace(robot_generation=generation)
-    )
     plans = SimpleNamespace(
-        control=control,
+        control=SimpleNamespace(robot_generation=generation or (lambda _serial: 0)),
         ledger=SimpleNamespace(
             async_process_native_history=AsyncMock(return_value=processed)
         ),
@@ -450,7 +445,8 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
         ),
     )
     client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(return_value=(native_record,))
+        async_get_cleaning_session_records=AsyncMock(return_value=(native_record,)),
+        async_confirm_coverage_receipt=AsyncMock(return_value=False),
     )
     session = SimpleNamespace(client=client, floor=Store(floor_plan))
 

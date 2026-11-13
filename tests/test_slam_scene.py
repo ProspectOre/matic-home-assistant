@@ -95,6 +95,7 @@ from custom_components.matic_robot.slam_view_data import (
     pose_projection,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
+from tests import runtime_fakes
 from tests.test_slam_map import synthetic_slam_entry
 
 
@@ -196,12 +197,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
         client=SimpleNamespace(),
         session=_pose_session(robot_pose, floor_plan),
         slam_map=slam_map,
-        slam_history=SimpleNamespace(
-            catalog=MagicMock(return_value=()),
-            catalog_for_mission=MagicMock(return_value=()),
-            catalogs_by_mission=MagicMock(return_value=()),
-            async_scene=AsyncMock(return_value=None),
-        ),
+        slam_history=runtime_fakes.mock_history(),
         cleaning_plans=SimpleNamespace(
             catalog=SimpleNamespace(
                 areas=MagicMock(return_value={}),
@@ -215,6 +211,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 snapshot=MagicMock(
                     return_value={"selected_plan": None, "active_plan": None}
                 ),
+                next_run_estimate_seconds=MagicMock(return_value=None),
             ),
             ledger=SimpleNamespace(
                 pending_native_reconciliation=MagicMock(return_value=None),
@@ -225,8 +222,8 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 ),
                 stop_pending=MagicMock(return_value=False),
             ),
-            cadence=SimpleNamespace(),
-            repository=SimpleNamespace(),
+            cadence=runtime_fakes.mock_cadence(),
+            repository=runtime_fakes.mock_repository(),
         ),
     )
 
@@ -863,20 +860,6 @@ async def test_scene_view_rechecks_live_session_before_encoding() -> None:
 
     assert response.status == HTTPStatus.NOT_FOUND
     assert runtime.slam_map.checks == 3
-    assert not view._cache
-    hass.async_add_executor_job.assert_not_awaited()
-
-
-async def test_scene_view_requires_explicit_live_session_verification() -> None:
-    """An adapter missing the production proof property fails closed."""
-    runtime = _runtime()
-    del runtime.slam_map.live_session_verified
-    hass = _hass(_entry(runtime))
-    view = MaticSlamSceneView()
-
-    response = await view.get(_request(hass), "entry")
-
-    assert response.status == HTTPStatus.NOT_FOUND
     assert not view._cache
     hass.async_add_executor_job.assert_not_awaited()
 
@@ -1698,34 +1681,6 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
     runtime.cleaning_plans.catalog.async_delete_area.assert_not_awaited()
 
 
-async def test_plan_workspace_reports_preview_unavailable() -> None:
-    runtime = _runtime()
-    runtime.cleaning_plans.catalog.plans.return_value = {
-        "weekday": {
-            "rooms": [
-                {
-                    "room_id": "room-1",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "standard",
-                }
-            ],
-            "room_order": ["room-1"],
-        }
-    }
-    runtime.slam_map.floor_plan_is_current.return_value = True
-    runtime.cleaning_plans.planning.preview = None
-    request_hass = _hass(_entry(runtime))
-
-    response = await MaticPlansView().get(_request(request_hass), "entry")
-
-    preview = json.loads(response.body)["plans"][0]["next_run_preview"]
-    assert preview == {
-        "rooms": [],
-        "mission_boundaries": [],
-        "blocker": "preview_unavailable",
-    }
-
-
 async def test_plan_workspace_shows_daily_limit_and_held_preview() -> None:
     runtime = _runtime()
     runtime.slam_map.floor_plan_is_current.return_value = True
@@ -2357,7 +2312,7 @@ async def test_history_scene_cancellation_propagates_to_store_read() -> None:
     hass = _hass(_entry(runtime))
     mission_token = runtime.slam_map.mission_identity.mission_token
     assert mission_token is not None
-    snapshot = SimpleNamespace(
+    snapshot = runtime_fakes.saved_map(
         snapshot_id="0123456789abcdef01234567",
         mission_token=mission_token,
     )
@@ -2396,7 +2351,7 @@ async def test_history_scene_cancellation_propagates_to_store_read() -> None:
 
 async def test_history_scene_capacity_returns_retryable_status() -> None:
     runtime = _runtime()
-    snapshot = SimpleNamespace(
+    snapshot = runtime_fakes.saved_map(
         record_id="a" * 32,
         snapshot_id="b" * 64,
         retention="automatic",
@@ -2419,21 +2374,21 @@ async def test_history_scene_capacity_returns_retryable_status() -> None:
 async def test_history_views_list_serve_hide_and_require_admin() -> None:
     runtime = _runtime()
     current_token = runtime.slam_map.mission_identity.mission_token
-    snapshot = SimpleNamespace(
+    snapshot = runtime_fakes.saved_map(
         snapshot_id="0123456789abcdef01234567",
         created_at=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
         revision=5,
         point_count=1025,
         mission_token=current_token,
     )
-    saved_snapshot = SimpleNamespace(
+    saved_snapshot = runtime_fakes.saved_map(
         snapshot_id="89abcdef0123456701234567",
         created_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
         revision=3,
         point_count=512,
         mission_token="1" * 64,
     )
-    archive_snapshot = SimpleNamespace(
+    archive_snapshot = runtime_fakes.saved_map(
         record_id="a" * 32,
         snapshot_id="c" * 64,
         created_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
@@ -2613,7 +2568,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
 
 async def test_history_management_views_use_bounded_contracts() -> None:
     runtime = _runtime()
-    record = SimpleNamespace(
+    record = runtime_fakes.saved_map(
         record_id="a" * 32,
         snapshot_id="b" * 64,
         created_at=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
@@ -2765,7 +2720,7 @@ async def test_history_scene_read_rechecks_entry_runtime_and_store(
     invalidation,
 ) -> None:
     runtime = _runtime()
-    snapshot = SimpleNamespace(
+    snapshot = runtime_fakes.saved_map(
         snapshot_id="0123456789abcdef01234567",
         mission_token=runtime.slam_map.mission_identity.mission_token,
     )
@@ -3169,7 +3124,7 @@ async def test_history_management_and_archive_views_report_bounded_input_errors(
 def test_history_record_trash_metadata_omits_scene_url_and_errors_map_statuses() -> (
     None
 ):
-    record = SimpleNamespace(
+    record = runtime_fakes.saved_map(
         record_id="a" * 32,
         snapshot_id="b" * 24,
         created_at=datetime(2026, 7, 26, tzinfo=UTC),

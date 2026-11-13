@@ -108,13 +108,7 @@ class PlanCadence:
         now: datetime | None = None,
     ) -> plan_schema.DailyLimit:
         """Read a room's verified local-day allowance without writing state."""
-        config = getattr(self.repository.hass, "config", None)
-        zone_name = getattr(config, "time_zone", None)
-        zone = (
-            dt_util.get_time_zone(zone_name)
-            if isinstance(zone_name, str)
-            else dt_util.DEFAULT_TIME_ZONE
-        )
+        zone = dt_util.get_time_zone(self.repository.hass.config.time_zone)
         return daily_room_limit.daily_state(
             self.repository.robot(serial_number),
             room_id,

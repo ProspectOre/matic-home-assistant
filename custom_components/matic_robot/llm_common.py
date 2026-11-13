@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, override
 
 import probatio
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
@@ -17,6 +16,9 @@ from homeassistant.helpers import llm
 
 from .const import DOMAIN
 from .plans import CleaningPlanManager
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 NON_ADMIN_PROMPT = (
     "These tools are only for Home Assistant administrators. Ask an administrator."
@@ -139,7 +141,7 @@ class _MaticTool(llm.Tool):
 
     def entries(
         self, hass: HomeAssistant, llm_context: llm.LLMContext
-    ) -> list[ConfigEntry[Any]]:
+    ) -> list[MaticConfigEntry]:
         """Return the loaded robots this caller may see, or a plain error."""
         loaded = hass.config_entries.async_loaded_entries(DOMAIN)
         if not loaded:
@@ -156,7 +158,7 @@ class _MaticTool(llm.Tool):
         hass: HomeAssistant,
         llm_context: llm.LLMContext,
         reference: str | None,
-    ) -> ConfigEntry[Any]:
+    ) -> MaticConfigEntry:
         """Resolve one visible robot without accepting its serial number."""
         return _resolve_entry(self.entries(hass, llm_context), reference)
 
@@ -187,7 +189,7 @@ _ROBOT_FIELD: dict[probatio.Marker, Any] = {
 }
 
 
-def _exposed_to(hass: HomeAssistant, assistant: str, entry: ConfigEntry[Any]) -> bool:
+def _exposed_to(hass: HomeAssistant, assistant: str, entry: MaticConfigEntry) -> bool:
     """Return whether the robot's vacuum is exposed to the assistant."""
     return any(
         async_should_expose(hass, assistant, entity.entity_id)
@@ -199,7 +201,7 @@ def _exposed_to(hass: HomeAssistant, assistant: str, entry: ConfigEntry[Any]) ->
 
 
 def _robot_identifiers(
-    hass: HomeAssistant, entries: list[ConfigEntry[Any]]
+    hass: HomeAssistant, entries: list[MaticConfigEntry]
 ) -> set[str]:
     """Return the entry, device and entity ids that identify these robots."""
     registry = er.async_get(hass)
@@ -214,8 +216,8 @@ def _robot_identifiers(
 
 
 def _resolve_entry(
-    entries: list[ConfigEntry[Any]], reference: str | None
-) -> ConfigEntry[Any]:
+    entries: list[MaticConfigEntry], reference: str | None
+) -> MaticConfigEntry:
     """Resolve one robot without exposing or accepting its serial number."""
     if reference is None:
         if len(entries) != 1:
@@ -241,7 +243,7 @@ def _resolve_entry(
     raise _error("llm_robot_unknown", robot=reference)
 
 
-def _entry_name(entry: ConfigEntry[Any]) -> str:
+def _entry_name(entry: MaticConfigEntry) -> str:
     """Return the local robot display name with a config-entry fallback."""
     name = entry.runtime_data.session.info.name
     return name if name else entry.title

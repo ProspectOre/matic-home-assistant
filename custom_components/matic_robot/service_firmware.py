@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import probatio
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import (
     ServiceCall,
     SupportsResponse,
@@ -35,6 +34,9 @@ from .service_schemas import (
     FIRMWARE_SNAPSHOT_SCHEMA,
     INSPECT_ENDPOINT_SERVICE_SCHEMA,
 )
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 
 def register_firmware_services(runtime: ServiceRuntime) -> None:
@@ -75,7 +77,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
                 "firmware_notification_stale",
             ) from err
 
-    def firmware_entry(call: ServiceCall) -> ConfigEntry[Any]:
+    def firmware_entry(call: ServiceCall) -> MaticConfigEntry:
         entity_ids = context._resolve_loaded_matic_vacuums(
             hass, call.data, require_available=False
         )

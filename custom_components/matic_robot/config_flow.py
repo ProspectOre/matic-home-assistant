@@ -253,7 +253,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         reason: str,
     ) -> config_entries.ConfigFlowResult:
         """Update connection data and schedule exactly one entry reload."""
-        if not getattr(entry, "update_listeners", ()):
+        if not entry.update_listeners:
             return self.async_update_reload_and_abort(
                 entry, data_updates=data_updates, reason=reason
             )

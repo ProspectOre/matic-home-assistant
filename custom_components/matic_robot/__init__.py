@@ -41,7 +41,7 @@ from .firmware import FirmwareTracker
 from .floor_sync import AreaBindingSync, async_follow_slam_mission
 from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
-from .media_source import DATA_PHOTO_ATTACHMENT_SOURCE
+from .media_source import existing_photo_attachment_source
 from .migrations import async_migrate_entry
 from .native_history_sync import NativeHistorySync, async_resume_native_reconciliation
 from .photos import RobotPhotoStore
@@ -57,6 +57,7 @@ from .slam_map_store import SlamMapStore
 from .slam_view_data import observe_trail
 from .vacuum_catalog import async_remove_floor_catalogs
 from .wifi_survey import WifiSurveyStore
+from .workspace_socket import workspace_socket
 
 __all__ = ["async_migrate_entry"]
 
@@ -87,12 +88,12 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 def _entry_update_listener(
-    entry: ConfigEntry, plans: CleaningPlanManager, serial_number: str
-) -> Callable[[HomeAssistant, ConfigEntry], Coroutine[Any, Any, None]]:
+    entry: MaticConfigEntry, plans: CleaningPlanManager, serial_number: str
+) -> Callable[[HomeAssistant, MaticConfigEntry], Coroutine[Any, Any, None]]:
     """Apply options in place and reload when connection data changes."""
     loaded_entry_data = dict(entry.data)
 
-    async def update(hass: HomeAssistant, updated: ConfigEntry) -> None:
+    async def update(hass: HomeAssistant, updated: MaticConfigEntry) -> None:
         nonlocal loaded_entry_data
         if updated.data != loaded_entry_data:
             loaded_entry_data = dict(updated.data)
@@ -109,9 +110,9 @@ async def _async_recover_after_failed_unload(
     hass: HomeAssistant, entry: MaticConfigEntry, serial_number: str
 ) -> None:
     """Resume ownership after HA finishes marking a failed unload."""
-    while getattr(entry, "state", None) is ConfigEntryState.UNLOAD_IN_PROGRESS:  # noqa: ASYNC110 - lifecycle state changes after callback return
+    while entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:  # noqa: ASYNC110 - lifecycle state changes after callback return
         await asyncio.sleep(0)
-    if getattr(hass, "is_stopping", False) or getattr(entry, "disabled_by", None):
+    if hass.is_stopping or entry.disabled_by:
         return
     await async_recover_managed_run(hass, entry, serial_number)
 
@@ -127,7 +128,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 def _client(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: MaticConfigEntry,
     observe: Callable[[dict[str, Any]], None],
 ) -> MaticHermesClient:
     """Build the robot client from the entry's connection data."""
@@ -215,10 +216,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         observe = partial(observe_trail, runtime_data)
         entry.async_on_unload(session.state.subscribe(observe))
         entry.async_on_unload(session.poses.subscribe(observe))
-        workspace_socket = hass.data.get(DOMAIN, {}).get("workspace_socket")
-        track_workspace_entry = getattr(workspace_socket, "track_entry", None)
-        if callable(track_workspace_entry):
-            track_workspace_entry(entry)
+        workspace_socket(hass).track_entry(entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         session_listeners.async_listen(hass, entry, session, firmware_tracker)
         if (
@@ -277,10 +275,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             await slam_map.async_shutdown()
         await session.async_stop()
         raise
-    photo_source = hass.data.get(DOMAIN, {}).get(DATA_PHOTO_ATTACHMENT_SOURCE)
-    activate_photo_entry = getattr(photo_source, "activate_entry", None)
-    if callable(activate_photo_entry):
-        activate_photo_entry(entry.entry_id)
+    # The photo source starts with the first photo staged; until then there
+    # is no entry state to restore.
+    if (photo_source := existing_photo_attachment_source(hass)) is not None:
+        photo_source.activate_entry(entry.entry_id)
     return True
 
 
@@ -289,60 +287,34 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
     # HA can reload an enabled entry again during startup (for example after
     # discovery updates its endpoint). Losing this observer is not a Stop.
     preserve_run = entry.disabled_by is None
-    plan_manager = entry.runtime_data.cleaning_plans
-    entry.runtime_data.cleaning_plans.control.begin_command_teardown(
-        str(entry.data[CONF_SERIAL_NUMBER])
-    )
-    await entry.runtime_data.cleaning_plans.control.async_cancel_and_wait(
-        str(entry.data[CONF_SERIAL_NUMBER]),
-        preserve_run=preserve_run,
-    )
+    plans = entry.runtime_data.cleaning_plans
+    serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+    plans.control.begin_command_teardown(serial_number)
+    await plans.control.async_cancel_and_wait(serial_number, preserve_run=preserve_run)
     if not preserve_run:
-        await entry.runtime_data.cleaning_plans.recovery.async_retire_recovery(
-            str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
-        )
-    await plan_manager.control.async_close_command_admission_and_wait(
-        str(entry.data[CONF_SERIAL_NUMBER])
-    )
-    await plan_manager.repository.async_close_metadata_admission_and_wait(
-        str(entry.data[CONF_SERIAL_NUMBER])
-    )
+        await plans.recovery.async_retire_recovery(serial_number, "config_entry_unload")
+    await plans.control.async_close_command_admission_and_wait(serial_number)
+    await plans.repository.async_close_metadata_admission_and_wait(serial_number)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
-        entry.runtime_data.cleaning_plans.control.reopen_metadata_admission(
-            str(entry.data[CONF_SERIAL_NUMBER])
+        plans.control.reopen_metadata_admission(serial_number)
+    if (
+        not unload_ok
+        and preserve_run
+        and not hass.is_stopping
+        and (
+            plans.recovery.recovery_run(serial_number) is not None
+            or plans.control.pending_stop_run_id(serial_number) is not None
         )
-    if not unload_ok and preserve_run and not getattr(hass, "is_stopping", False):
-        recovery_reader = getattr(
-            entry.runtime_data.cleaning_plans.recovery, "recovery_run", None
+    ):
+        entry.async_create_background_task(
+            hass,
+            _async_recover_after_failed_unload(hass, entry, serial_number),
+            f"{DOMAIN} managed run recovery after unload failure",
         )
-        recovery = (
-            recovery_reader(str(entry.data[CONF_SERIAL_NUMBER]))
-            if callable(recovery_reader)
-            else None
-        )
-        pending_reader = getattr(
-            entry.runtime_data.cleaning_plans.control, "pending_stop_run_id", None
-        )
-        pending_stop = (
-            pending_reader(str(entry.data[CONF_SERIAL_NUMBER]))
-            if callable(pending_reader)
-            else None
-        )
-        create_task = getattr(entry, "async_create_background_task", None)
-        if (recovery is not None or pending_stop is not None) and callable(create_task):
-            create_task(
-                hass,
-                _async_recover_after_failed_unload(
-                    hass, entry, str(entry.data[CONF_SERIAL_NUMBER])
-                ),
-                f"{DOMAIN} managed run recovery after unload failure",
-            )
     if unload_ok:
-        photo_source = hass.data.get(DOMAIN, {}).get(DATA_PHOTO_ATTACHMENT_SOURCE)
-        release_photo_entry = getattr(photo_source, "async_release_entry", None)
-        if callable(release_photo_entry):
-            await release_photo_entry(entry.entry_id)
+        if (photo_source := existing_photo_attachment_source(hass)) is not None:
+            await photo_source.async_release_entry(entry.entry_id)
         await entry.runtime_data.run_trails.async_shutdown()
         await entry.runtime_data.wifi_survey.async_shutdown()
         await entry.runtime_data.slam_history.async_shutdown()

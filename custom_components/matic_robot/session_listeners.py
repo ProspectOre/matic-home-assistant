@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from time import monotonic
+from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -26,6 +26,9 @@ from .session import RobotSession
 from .session_tracking import _parse_timestamp, _sessions_overlap
 from .time_zone import known_zone, time_zones_differ
 
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
+
 # Unexpected snapshot failures retain a RAM cooldown in addition to the
 # tracker's persisted normal discovery/recovery cadence.
 SNAPSHOT_RETRY_SECONDS = 900
@@ -37,7 +40,7 @@ FIRMWARE_CHECK_SECONDS = SLOW_UPDATE_INTERVAL_SECONDS
 @callback
 def async_listen(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: MaticConfigEntry,
     session: RobotSession,
     firmware_tracker: FirmwareTracker,
 ) -> None:
@@ -49,7 +52,7 @@ def async_listen(
     _FinishedSessions(hass, entry, session).async_start()
 
 
-def _device_id(hass: HomeAssistant, entry: ConfigEntry, serial: str) -> str | None:
+def _device_id(hass: HomeAssistant, entry: MaticConfigEntry, serial: str) -> str | None:
     """Return the Home Assistant device id for event payloads."""
     device = dr.async_get(hass).async_get_device_by_identifier(
         (DOMAIN, serial), entry.entry_id
@@ -74,7 +77,7 @@ class _FirmwareWatch:
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: MaticConfigEntry,
         session: RobotSession,
         tracker: FirmwareTracker,
     ) -> None:
@@ -225,7 +228,7 @@ class _TimeZoneCheck:
     """
 
     def __init__(
-        self, hass: HomeAssistant, entry: ConfigEntry, session: RobotSession
+        self, hass: HomeAssistant, entry: MaticConfigEntry, session: RobotSession
     ) -> None:
         self._hass = hass
         self._entry = entry
@@ -317,7 +320,7 @@ class _FinishedSessions:
     """
 
     def __init__(
-        self, hass: HomeAssistant, entry: ConfigEntry, session: RobotSession
+        self, hass: HomeAssistant, entry: MaticConfigEntry, session: RobotSession
     ) -> None:
         self._hass = hass
         self._entry = entry

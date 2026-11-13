@@ -34,6 +34,7 @@ class RobotPort:
     error: Store[Exception | None]
     refresh: Callable[[], Awaitable[None]]
     active_session: Callable[[], Awaitable[bool | None]]
+    fresh_state: Callable[[], Awaitable[object]]
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
     session_identity: Callable[[], Awaitable[bytes | None]]
     coverage_verifier: CoverageVerifier
@@ -58,6 +59,7 @@ class RobotPort:
             error=session.error,
             refresh=heartbeat.async_request_refresh,
             active_session=client.async_get_active_cleaning_session_state,
+            fresh_state=client.async_get_state,
             # Strict: a history the robot could not read is never empty.
             session_history=partial(
                 client.async_get_cleaning_session_records, strict=True

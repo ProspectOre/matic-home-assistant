@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
@@ -15,6 +14,9 @@ from .client.models import FloorPlan
 from .const import DOMAIN
 from .native_completion import native_room_key
 from .plan_model import CleaningRoom, room_cadence_identity
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 
 def room_completion_names_are_current(
@@ -30,7 +32,7 @@ def room_completion_names_are_current(
     )
 
 
-def current_floor_plan(entry: ConfigEntry[Any]) -> FloorPlan:
+def current_floor_plan(entry: MaticConfigEntry) -> FloorPlan:
     """Return the session's floor only while SLAM identity still matches."""
     floor_plan: FloorPlan | None = entry.runtime_data.session.floor.value
     if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
@@ -53,7 +55,7 @@ def current_entity_floor_plan(hass: HomeAssistant, entity_id: str) -> FloorPlan:
             translation_domain=DOMAIN,
             translation_key="robot_unavailable",
         )
-    entry: ConfigEntry[Any] | None = hass.config_entries.async_get_entry(
+    entry: MaticConfigEntry | None = hass.config_entries.async_get_entry(
         registry_entry.config_entry_id
     )
     if entry is None:

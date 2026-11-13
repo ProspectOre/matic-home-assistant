@@ -85,6 +85,9 @@ def diagnostic_entry(hass) -> SimpleNamespace:
                 health=robot_health,
                 pose_on=lambda _floor: None,
             ),
+            cleaning_plans=SimpleNamespace(),
+            slam_map=SimpleNamespace(),
+            slam_history=SimpleNamespace(),
         ),
     )
 

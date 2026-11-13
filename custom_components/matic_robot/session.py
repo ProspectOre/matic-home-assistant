@@ -7,8 +7,8 @@ import logging
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
@@ -36,6 +36,9 @@ from .heartbeat import Heartbeat
 from .repairs import repair_placeholders
 from .robot_health import RobotHealth
 from .stores import CleaningHistory, LiveState, Store
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -129,7 +132,7 @@ class RobotSession:
     state: Store[LiveState]
 
     def __init__(
-        self, hass: HomeAssistant, entry: ConfigEntry, client: MaticHermesClient
+        self, hass: HomeAssistant, entry: MaticConfigEntry, client: MaticHermesClient
     ) -> None:
         self.hass = hass
         self.client = client

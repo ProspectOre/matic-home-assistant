@@ -373,7 +373,7 @@ async def _registered_services(hass, manager=None, *, is_running=False):
     hass.bus = SimpleNamespace(async_listen_once=listen_once)
     hass.is_running = is_running
     replacement = manager or SimpleNamespace(
-        async_load=AsyncMock(), control=SimpleNamespace()
+        async_load=AsyncMock(), control=SimpleNamespace(stop_pending=lambda _s: False)
     )
     if manager is not None:
         replacement.async_load = AsyncMock()
@@ -448,7 +448,8 @@ def test_room_management_reference_is_stable_and_fail_closed() -> None:
 def _reachable_entry() -> SimpleNamespace:
     robot = FakeRobot()
     robot.show("docked")
-    return SimpleNamespace(runtime_data=SimpleNamespace(session=_session(robot=robot)))
+    runtime = SimpleNamespace(session=_session(robot=robot), client=robot_client())
+    return SimpleNamespace(runtime_data=runtime)
 
 
 async def _route(hass, services, service: str, data: dict, method: str):
@@ -564,7 +565,7 @@ async def test_clean_action_checks_oem_stop_fence() -> None:
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             session=_session(info=SimpleNamespace(serial_number="serial")),
-            client=SimpleNamespace(async_get_active_cleaning_session_state=AsyncMock()),
+            client=robot_client(async_get_active_cleaning_session_state=AsyncMock()),
         )
     )
     with (
@@ -600,7 +601,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         },
     )
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(
+    client = robot_client(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
@@ -654,7 +655,7 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
-    client = SimpleNamespace(
+    client = robot_client(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
@@ -799,7 +800,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            client=SimpleNamespace(
+            client=robot_client(
                 async_start_custom_coverage=AsyncMock(),
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
             ),
@@ -893,7 +894,7 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
     await manager.catalog.async_save_area("serial", "litter_box", area)
     managed_token = manager.control.begin_managed_motion("serial")
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(
+    client = robot_client(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
@@ -948,7 +949,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     )
     managed_token = manager.control.begin_managed_motion("serial")
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(
+    client = robot_client(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
@@ -1073,7 +1074,7 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
     )
     managed_token = manager.control.begin_managed_motion("serial")
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(
+    client = robot_client(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
@@ -1149,7 +1150,7 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
     command_lock = manager.control.command_lock("serial")
     await command_lock.acquire()
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(
+    client = robot_client(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
@@ -1697,7 +1698,7 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
             "map_binding": binding_for_floor_plan(floor_plan),
         },
     )
-    client = SimpleNamespace(
+    client = robot_client(
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_start_custom_coverage=AsyncMock(
             side_effect=MaticError("synthetic protocol detail")
@@ -1751,6 +1752,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
         floor_plan=floor_plan, refresh=AsyncMock(), confirm_room_completed=MagicMock()
     )
     entry = SimpleNamespace(
+        entry_id="entry",
         runtime_data=SimpleNamespace(
             session=session,
             client=robot_client(
@@ -1764,7 +1766,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
-        )
+        ),
     )
     call = ServiceCall(
         hass,
@@ -2287,6 +2289,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         floor_plan=floor_plan, refresh=AsyncMock(), confirm_room_completed=MagicMock()
     )
     entry = SimpleNamespace(
+        entry_id="entry",
         runtime_data=SimpleNamespace(
             session=session,
             client=robot_client(
@@ -2298,7 +2301,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
-        )
+        ),
     )
     services = await _registered_services(hass, manager)
     service_data = {
@@ -2886,12 +2889,13 @@ async def test_cleaning_service_rejects_invalid_cadence_resolution(
     )
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
+        entry_id="entry",
         runtime_data=SimpleNamespace(
             session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
-        )
+        ),
     )
     services = await _registered_services(hass, manager)
     context = (
@@ -2967,12 +2971,13 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
     )
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
+        entry_id="entry",
         runtime_data=SimpleNamespace(
             session=_session(floor_plan=floor_plan),
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
-        )
+        ),
     )
     services = await _registered_services(hass, manager)
     context = ("vacuum.test", entry, "serial", {"room-office": "Office"})
@@ -3192,6 +3197,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
     )
     floor_plan = _area_floor_plan()
     entry = SimpleNamespace(
+        entry_id="entry",
         runtime_data=SimpleNamespace(
             session=_session(
                 floor_plan=floor_plan,
@@ -3208,7 +3214,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
-        )
+        ),
     )
     services = await _registered_services(hass, manager)
     context = ("vacuum.test", entry, "serial", {"room-office": "Office"})
@@ -3437,13 +3443,14 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         async_send_user_command=AsyncMock(),
     )
     entry = SimpleNamespace(
+        entry_id="entry",
         runtime_data=SimpleNamespace(
             session=session,
             client=client,
             slam_map=SimpleNamespace(
                 floor_plan_is_current=MagicMock(return_value=True)
             ),
-        )
+        ),
     )
     context = (
         "vacuum.test",
@@ -5712,22 +5719,11 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     )
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    _schedule_native_reconciliation(
-        SimpleNamespace(),
-        manager,
-        "serial",
-        "vacuum.test",
-        room,
-        reconciliation,
-        frozenset(),
-        robot.port(session_history=AsyncMock()),
-        None,
-    )
     created: list[str] = []
 
-    def create_background_task(coro, name: str) -> None:
+    def create_background_task(coro, name: str) -> asyncio.Task:
         created.append(name)
-        coro.close()
+        return hass.async_create_task(asyncio.sleep(0, coro.close()))
 
     _schedule_native_reconciliation(
         SimpleNamespace(async_create_background_task=create_background_task),
@@ -5936,7 +5932,7 @@ async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> No
         },
     )
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(
+    client = robot_client(
         async_start_custom_coverage=AsyncMock(),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )

@@ -227,8 +227,7 @@ class RobotCommands:
 
     async def async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
-        pending = getattr(self._plans.control, "stop_pending", None)
-        if not callable(pending) or not pending(serial_number):
+        if not self._plans.control.stop_pending(serial_number):
             return
         if self._entity_id is not None and await async_clear_ownerless_stop_if_settled(
             self._hass,
@@ -581,14 +580,7 @@ class RobotCommands:
             return
         on_docked: Callable[[], Awaitable[bool | None]] | None = None
         if run_id is not None:
-            stop_fence_token_reader = getattr(
-                self._plans.control, "stop_fence_token", None
-            )
-            stop_fence_token = (
-                stop_fence_token_reader(serial_number)
-                if callable(stop_fence_token_reader)
-                else None
-            )
+            stop_fence_token = self._plans.control.stop_fence_token(serial_number)
 
             async def mark_docked() -> bool:
                 return await self._plans.ledger.async_mark_run_docked(
@@ -607,16 +599,8 @@ class RobotCommands:
             serial_number=serial_number,
             entity_id=self._entity_id,
             run_id=run_id,
-            set_run_id=getattr(
-                getattr(self._session.client, "activity_journal", None),
-                "set_run_id",
-                None,
-            ),
-            get_run_id=getattr(
-                getattr(self._session.client, "activity_journal", None),
-                "current_run_id",
-                None,
-            ),
+            set_run_id=self._session.client.activity_journal.set_run_id,
+            get_run_id=self._session.client.activity_journal.current_run_id,
             on_docked=on_docked,
         )
 

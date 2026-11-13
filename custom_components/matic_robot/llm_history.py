@@ -12,7 +12,7 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
 from .client.exceptions import MaticError
-from .client.models import CleaningSession
+from .client.models import CleaningSession, CleaningSessionRecord
 from .client.observations import MAX_OBSERVATIONS
 from .llm_common import (
     _READ_ONLY,
@@ -29,7 +29,6 @@ MAX_NATIVE_HISTORY_ROOM_EVIDENCE = 64
 MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES = 32 * 1024
 MAX_ACTIVITY_RESULTS = 128
 MAX_RUN_HISTORY_RESULTS = 20
-_RUN_FIELDS = ("source", "started_at", "ended_at", "plan_name", "outcome", "ending")
 
 _ACTIVITY_FIELDS = (
     "observation_session",
@@ -348,7 +347,7 @@ class MaticGetRunHistoryTool(_MaticTool):
     ) -> llm.ToolResult:
         entry = self.resolve_entry(hass, llm_context, args.get("robot"))
         runtime = entry.runtime_data
-        native = ()
+        native: tuple[CleaningSessionRecord, ...] = ()
         robot_history = True
         try:
             async with asyncio.timeout(RUNS_NATIVE_READ_SECONDS):
@@ -382,7 +381,12 @@ class MaticGetRunHistoryTool(_MaticTool):
                     cast(
                         JsonObjectType,
                         {
-                            **{key: run[key] for key in _RUN_FIELDS},
+                            "source": run["source"],
+                            "started_at": run["started_at"],
+                            "ended_at": run["ended_at"],
+                            "plan_name": run["plan_name"],
+                            "outcome": run["outcome"],
+                            "ending": run["ending"],
                             "rooms": run["rooms"][:MAX_HISTORY_ROOMS],
                             "areas": run["areas"][:MAX_HISTORY_ROOMS],
                         },

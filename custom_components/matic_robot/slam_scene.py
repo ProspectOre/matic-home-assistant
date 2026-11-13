@@ -203,7 +203,7 @@ class MaticSlamSceneView(HomeAssistantView):
         allow_stale: bool = False,
     ) -> _CachedScene | None:
         """Encode or return the current coherent scene snapshot."""
-        if getattr(runtime.slam_map, "live_session_verified", False) is not True:
+        if not runtime.slam_map.live_session_verified:
             self.clear_entry(entry_id)
             return None
         epoch = self._epochs.get(entry_id, 0)
@@ -266,7 +266,7 @@ class MaticSlamSceneView(HomeAssistantView):
             # A concurrent encoder can populate this cache while this request
             # waits for the lock. Check the live session before returning that
             # newly available payload, not only before entering the lock.
-            if getattr(runtime.slam_map, "live_session_verified", False) is not True:
+            if not runtime.slam_map.live_session_verified:
                 self.clear_entry(entry_id)
                 return None
             cached = self._cache.get(entry_id)
@@ -277,10 +277,7 @@ class MaticSlamSceneView(HomeAssistantView):
                 identity = runtime.slam_map.mission_identity
                 floor_plan = runtime.session.floor.value
                 key = (map_revision, identity, floor_plan)
-                if (
-                    getattr(runtime.slam_map, "live_session_verified", False)
-                    is not True
-                ):
+                if not runtime.slam_map.live_session_verified:
                     self.clear_entry(entry_id)
                     return None
                 cached = self._cache.get(entry_id)
@@ -384,10 +381,7 @@ class MaticSlamScenePagesView(HomeAssistantView):
         ):
             return _response(HTTPStatus.BAD_REQUEST)
         runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
-        if (
-            runtime is None
-            or getattr(runtime.slam_map, "live_session_verified", False) is not True
-        ):
+        if runtime is None or not runtime.slam_map.live_session_verified:
             return _response(HTTPStatus.NOT_FOUND)
         pages = [
             self._scene_view.scene_page(entry_id, runtime, page_id)
@@ -468,7 +462,7 @@ def _scene_snapshot_is_publishable(
 ) -> bool:
     """Return whether a captured point-in-time scene remains safe to publish."""
     return (
-        getattr(runtime.slam_map, "live_session_verified", False) is True
+        runtime.slam_map.live_session_verified
         and runtime.slam_map.mission_identity == identity
         and runtime.session.floor.value == floor_plan
         and runtime.slam_map.floor_plan_is_current(floor_plan) == floor_plan_coherent

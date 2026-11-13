@@ -49,7 +49,7 @@ class MaticGetFirmwareTool(_MaticTool):
         robots = []
         for entry in entries:
             tracker = entry.runtime_data.firmware_tracker
-            result = {
+            result: dict[str, Any] = {
                 "robot": _entry_name(entry),
                 "entry_id": entry.entry_id,
                 "report": tracker.report(entry.entry_id),

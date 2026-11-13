@@ -12,11 +12,9 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import frontend, panel_custom
-from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 
 from custom_components.matic_robot import (
-    _async_recover_after_failed_unload,
     async_remove_entry,
     async_setup,
     async_setup_entry,
@@ -56,6 +54,7 @@ from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_view_data import observe_trail
 from custom_components.matic_robot.stores import CleaningHistory
+from custom_components.matic_robot.workspace_socket import DATA_WORKSPACE_SOCKET
 from tests.session_fakes import fake_session
 
 
@@ -259,7 +258,9 @@ async def test_setup_starts_the_session_before_forwarding_platforms(
                 DATA_PLAN_MANAGER: plans,
                 DATA_FIRMWARE_TRACKER: firmware_tracker,
                 DATA_PHOTO_ATTACHMENT_SOURCE: photo_source,
-                "workspace_socket": SimpleNamespace(track_entry=track_workspace_entry),
+                DATA_WORKSPACE_SOCKET: SimpleNamespace(
+                    track_entry=track_workspace_entry
+                ),
             }
         },
     )
@@ -551,7 +552,10 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         async_shutdown=AsyncMock(),
     )
     hass.data.setdefault(DOMAIN, {})[DATA_PLAN_MANAGER] = manager
-    hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = MagicMock()
+    hass.data[DOMAIN] |= {
+        DATA_FIRMWARE_TRACKER: MagicMock(),
+        DATA_WORKSPACE_SOCKET: MagicMock(),
+    }
     with (
         patch.object(
             hass.config_entries,
@@ -638,6 +642,7 @@ async def test_setup_closes_client_when_the_session_cannot_start(
             DOMAIN: {
                 DATA_PLAN_MANAGER: MagicMock(),
                 DATA_FIRMWARE_TRACKER: MagicMock(),
+                DATA_WORKSPACE_SOCKET: MagicMock(),
             }
         },
     )
@@ -665,6 +670,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup(
             DOMAIN: {
                 DATA_PLAN_MANAGER: MagicMock(),
                 DATA_FIRMWARE_TRACKER: MagicMock(),
+                DATA_WORKSPACE_SOCKET: MagicMock(),
             }
         },
     )
@@ -707,6 +713,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
                 DATA_FIRMWARE_TRACKER: MagicMock(),
+                DATA_WORKSPACE_SOCKET: MagicMock(),
             }
         },
     )
@@ -767,9 +774,12 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             async_close_command_admission_and_wait=AsyncMock(),
             begin_command_teardown=MagicMock(),
             reopen_metadata_admission=MagicMock(),
+            pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(),
-        recovery=SimpleNamespace(async_retire_recovery=AsyncMock()),
+        recovery=SimpleNamespace(
+            async_retire_recovery=AsyncMock(), recovery_run=MagicMock(return_value=None)
+        ),
     )
     entry = SimpleNamespace(
         entry_id="entry",
@@ -1063,30 +1073,6 @@ async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
     await async_unload_entry(hass, entry)
     plans.control.reopen_metadata_admission.assert_called_once_with("serial")
     entry.async_create_background_task.assert_not_called()
-
-
-async def test_failed_unload_recovery_waits_for_entry_state(hass) -> None:
-    entry = SimpleNamespace(state=ConfigEntryState.UNLOAD_IN_PROGRESS)
-    with patch(
-        "custom_components.matic_robot.async_recover_managed_run",
-        new_callable=AsyncMock,
-    ) as recover:
-        asyncio.get_running_loop().call_soon(
-            setattr, entry, "state", ConfigEntryState.FAILED_UNLOAD
-        )
-        await _async_recover_after_failed_unload(hass, entry, "serial")
-    recover.assert_awaited_once_with(hass, entry, "serial")
-
-
-async def test_failed_unload_recovery_rechecks_shutdown(hass) -> None:
-    entry = SimpleNamespace(state=ConfigEntryState.FAILED_UNLOAD, disabled_by=None)
-    hass.is_stopping = True
-    with patch(
-        "custom_components.matic_robot.async_recover_managed_run",
-        new_callable=AsyncMock,
-    ) as recover:
-        await _async_recover_after_failed_unload(hass, entry, "serial")
-    recover.assert_not_awaited()
 
 
 @pytest.mark.parametrize("with_plans", [True, False])

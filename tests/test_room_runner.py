@@ -35,7 +35,7 @@ from tests.wire_builders import _session_identity
 async def test_room_cancellation_records_history_and_reraises() -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
@@ -83,7 +83,7 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
     """Room cleanup carries suspension evidence to the plan finalizer."""
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
@@ -324,7 +324,7 @@ async def test_room_failures_translate_client_errors_at_boundary(
 ) -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value=None),
@@ -391,9 +391,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
 
     robot.on_start = send
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -466,9 +464,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
 async def test_room_timeout_is_failure_safe() -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -527,7 +523,11 @@ async def test_room_timeout_is_failure_safe() -> None:
 async def test_room_completion_timeout_is_failure_safe() -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(
+        bus=bus,
+        is_stopping=False,
+        async_create_background_task=lambda watcher, _name: watcher.close(),
+    )
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -586,7 +586,7 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
 async def test_room_takeover_during_verification_is_failure_safe() -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -642,9 +642,7 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
 async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -714,9 +712,7 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
     """Session disappearance permits handoff but never proves room completion."""
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),

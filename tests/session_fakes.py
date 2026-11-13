@@ -178,6 +178,8 @@ def robot_client(**methods: Any) -> SimpleNamespace:
                 current_run_id=lambda: scope["run_id"],
             ),
             "async_confirm_coverage_receipt": AsyncMock(return_value=False),
+            "async_get_active_cleaning_session_state": AsyncMock(return_value=False),
+            "async_get_state": AsyncMock(return_value=None),
             **methods,
         }
     )
@@ -297,6 +299,7 @@ class FakeRobot:
                 "error": self.error,
                 "refresh": AsyncMock(),
                 "active_session": AsyncMock(return_value=False),
+                "fresh_state": AsyncMock(return_value=None),
                 "session_history": AsyncMock(return_value=()),
                 "session_identity": AsyncMock(return_value=b""),
                 "coverage_verifier": AsyncMock(return_value=False),
