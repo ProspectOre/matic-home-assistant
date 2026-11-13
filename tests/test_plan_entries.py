@@ -119,6 +119,54 @@ def _entry(floor: FloorPlan) -> SimpleNamespace:
 # Storage -----------------------------------------------------------------
 
 
+async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    assert manager.repository.store.minor_version == 13
+    stored = {
+        "robots": {
+            SERIAL: {
+                "plans": {
+                    "home": {
+                        "name": "Home",
+                        "rooms": [
+                            _room("room-kitchen"),
+                            "not-a-room",
+                            {"room_id": ""},
+                            _room("room-study"),
+                        ],
+                    },
+                    "no_rooms": {"name": "Empty", "rooms": "corrupt"},
+                    "stamped": {
+                        "rooms": [_room("room-hall")],
+                        "entries": [_room_entry("room-hall")],
+                    },
+                    "corrupt": "not-a-plan",
+                },
+            },
+            "no_plans": {"plans": []},
+            "corrupt": "not-a-robot",
+        }
+    }
+    original_rooms = deepcopy(stored["robots"][SERIAL]["plans"]["home"]["rooms"])
+
+    migrated = await manager.repository.store._async_migrate_func(1, 10, stored)
+
+    plans = migrated["robots"][SERIAL]["plans"]
+    assert plans["home"]["entries"] == [
+        _room_entry("room-kitchen"),
+        _room_entry("room-study"),
+    ]
+    # Room entries keep every stored byte; only the order list is added.
+    assert plans["home"]["rooms"] == original_rooms
+    assert plans["no_rooms"]["entries"] == []
+    assert plans["stamped"]["entries"] == [_room_entry("room-hall")]
+    assert plans["corrupt"] == "not-a-plan"
+    with pytest.raises(ValueError, match="minor version"):
+        await manager.repository.store._async_migrate_func(1, 14, stored)
+
+
 async def test_room_only_save_stores_identical_rooms_and_room_entries(hass) -> None:
     manager = await _manager(hass)
     rooms = [_room("room-kitchen", "vacuum_and_mop"), _room("room-study")]

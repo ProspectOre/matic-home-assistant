@@ -1,7 +1,8 @@
 """Pre-1.0 migrations to the integration's canonical data model.
 
-0.6 migrates from what 0.5.4 stores. An older install steps through 0.5.4
-first; 0.6 refuses its data with a Repair instead of guessing at it.
+0.6 migrates config entries from what 0.5.4 stores. An older entry steps
+through 0.5.4 first, which migrates it on load; 0.6 refuses it with a Repair
+instead of guessing at it.
 """
 
 from __future__ import annotations

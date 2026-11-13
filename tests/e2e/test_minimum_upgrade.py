@@ -1,10 +1,10 @@
-"""Data older than 0.5.4's stops setup with a Repair and stays as it was."""
+"""0.6 starts on what 0.5.4 leaves and refuses an older config entry."""
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -28,23 +28,6 @@ def _plans(minor_version: int) -> dict[str, Any]:
     }
 
 
-async def test_pre_0_5_plan_store_stops_setup_untouched(
-    hass: HomeAssistant,
-    hass_storage: dict[str, Any],
-    config_entry: MockConfigEntry,
-) -> None:
-    hass_storage[STORAGE_KEY] = _plans(5)
-    before = deepcopy(hass_storage[STORAGE_KEY])
-    config_entry.add_to_hass(hass)
-
-    assert not await hass.config_entries.async_setup(config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    assert config_entry.state is not ConfigEntryState.LOADED
-    assert ir.async_get(hass).async_get_issue(DOMAIN, UPGRADE_ISSUE_ID)
-    assert hass_storage[STORAGE_KEY] == before
-
-
 async def test_pre_0_5_entry_stops_setup_untouched(
     hass: HomeAssistant, simulator: RunningSimulator, credential: Any
 ) -> None:
@@ -65,16 +48,20 @@ async def test_pre_0_5_entry_stops_setup_untouched(
     assert ir.async_get(hass).async_get_issue(DOMAIN, UPGRADE_ISSUE_ID)
 
 
-async def test_0_5_4_entry_and_plan_store_load(
+@pytest.mark.parametrize("minor_version", [5, 13])
+async def test_0_5_4_entry_loads_with_its_plan_store(
     hass: HomeAssistant,
     hass_storage: dict[str, Any],
     config_entry: MockConfigEntry,
+    minor_version: int,
 ) -> None:
-    """The e2e entry is 1.3, as 0.5.4 left it."""
-    hass_storage[STORAGE_KEY] = _plans(13)
+    """The e2e entry is 1.3, as 0.5.4 leaves it. 0.5.4 rewrites its plan file
+    only on a save, so a 0.4 plan file (1.5) can sit beside it."""
+    hass_storage[STORAGE_KEY] = _plans(minor_version)
     config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
+
     assert config_entry.minor_version == 5
     repository = config_entry.runtime_data.cleaning_plans.repository
     assert repository.robot("SIM0000001")["plans"]["evening"]["name"] == "Evening"
