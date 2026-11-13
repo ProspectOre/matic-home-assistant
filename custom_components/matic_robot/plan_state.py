@@ -1,10 +1,9 @@
-"""Parse a stored plan document once, at load, into the form 0.6 reads.
+"""Parse stored plan state once per start into the form 0.6 reads.
 
-The store migration runs `parse_plan_document` on any file older than the
-current minor version and Home Assistant saves the result, so the version
-steps and the legacy-field repairs below run once per install. The read path
-keeps only `_normalize_robot`, which repairs containers the runtime writers
-also rely on.
+The Store's migration runs the version steps on a file older than 1.13.
+`parse_robot` then repairs each stored robot once, when the plan manager
+loads; `robot()` keeps only `_normalize_robot`, the container repairs the
+runtime writers rely on. The file stays at 1.13, which 0.5.4 reads.
 """
 
 from __future__ import annotations
@@ -42,20 +41,26 @@ _LEGACY_MANUAL_ROOM_SEQUENCE_PLAN_NAME = "Map Studio room clean"
 MAX_MANAGED_NATIVE_SESSION_CLAIMS = 1024
 
 
-def parse_plan_document(old_minor_version: int, data: dict[str, Any]) -> dict[str, Any]:
-    """Apply every version step and legacy repair to each stored robot."""
+def migrate_plan_document(
+    old_minor_version: int, data: dict[str, Any]
+) -> dict[str, Any]:
+    """Run the version steps for a file the Store found older than 1.13."""
     robots = data.get("robots")
     if isinstance(robots, dict):
         for robot in robots.values():
             if isinstance(robot, dict):
                 _migrate_robot(old_minor_version, robot)
-                _normalize_robot(robot)
-                _repair_legacy_fields(robot)
     return data
 
 
+def parse_robot(robot: dict[str, Any]) -> bool:
+    """Repair one loaded robot's containers and legacy fields; True if changed."""
+    changed = _normalize_robot(robot)
+    return _repair_legacy_fields(robot) or changed
+
+
 def _migrate_robot(old_minor_version: int, robot: dict[str, Any]) -> None:
-    """Bring one robot from its stored minor version to 1.11's shape."""
+    """Bring one robot from its stored minor version to 1.12's shape."""
     if old_minor_version < 2:
         areas = robot.get("areas")
         if isinstance(areas, dict):
@@ -98,24 +103,44 @@ def _migrate_robot(old_minor_version: int, robot: dict[str, Any]) -> None:
             _move_legacy_manual_rotation(robot, run["run_id"], run["plan_id"])
     if old_minor_version < 11:
         _stamp_plan_entries(robot)
+    if old_minor_version < 12:
+        rotations = robot.get("rotations")
+        if isinstance(rotations, dict):
+            for rotation in rotations.values():
+                if not isinstance(rotation, dict):
+                    continue
+                records = rotation.get("rooms")
+                if isinstance(records, dict):
+                    for record in records.values():
+                        if isinstance(record, dict):
+                            _normalize_duration_profiles(record)
 
 
-def _repair_legacy_fields(robot: dict[str, Any]) -> None:
+def _repair_legacy_fields(robot: dict[str, Any]) -> bool:
     """Rewrite fields older releases saved; nothing in 0.6 writes them."""
+    changed = False
     for rotation in robot["rotations"].values():
         for record in rotation["rooms"].values():
-            _normalize_duration_profiles(record)
+            changed = _normalize_duration_profiles(record) or changed
     last_run = robot["last_run"]
     if last_run is not None:
         outcome = last_run.get("outcome")
         if isinstance(outcome, str) and outcome != "running":
-            last_run["outcome"] = normalize_run_outcome(outcome)
+            normalized_outcome = normalize_run_outcome(outcome)
+            if outcome != normalized_outcome:
+                last_run["outcome"] = normalized_outcome
+                changed = True
         raw_provenance = last_run.get("provenance") or last_run.get("trigger")
         safe_provenance = normalize_run_provenance(
             raw_provenance if isinstance(raw_provenance, str) else None
         )
-        last_run["trigger"] = safe_provenance
-        last_run["provenance"] = safe_provenance
+        if (
+            last_run.get("trigger") != safe_provenance
+            or last_run.get("provenance") != safe_provenance
+        ):
+            last_run["trigger"] = safe_provenance
+            last_run["provenance"] = safe_provenance
+            changed = True
     for key in ("last_run", "active_plan"):
         record = robot[key]
         if (
@@ -124,6 +149,8 @@ def _repair_legacy_fields(robot: dict[str, Any]) -> None:
             and _is_manual_room_sequence_plan_id(record.get("plan_id"))
         ):
             record["plan_name"] = MANUAL_ROOM_SEQUENCE_PLAN_NAME
+            changed = True
+    return changed
 
 
 def _move_legacy_manual_rotation(

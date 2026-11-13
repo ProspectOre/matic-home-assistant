@@ -8,8 +8,9 @@ this checkout's simulator harness copied in. Phases share real store files:
    second one cleaning when Home Assistant stops. The stores are copied as
    the pre-upgrade backup.
 2. upgrade (this checkout): settle the interrupted run and run the plan.
-3. downgrade (older): require it to refuse plan store 1.14 and its version-1
-   history reader to leave the version-2 history file unread, both unchanged.
+3. downgrade (older): require its version-1 history reader to leave the
+   version-2 history file unread and unchanged; the newer plan store is read
+   for comparison only.
 4. restore (older): run the plan on the pre-upgrade version-1 backup.
 
 Afterwards the saved plan and room/area history must survive. The SLAM history

@@ -15,20 +15,12 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.test_plan_entries import SERIAL, _room, _room_entry
 
 
-def _migration_steps(old_minor_version: int, data: dict[str, Any]) -> dict[str, Any]:
-    """Run only the version steps, which the parser applies before its repairs."""
-    for robot in data["robots"].values():
-        if isinstance(robot, dict):
-            plan_state_module._migrate_robot(old_minor_version, robot)
-    return data
-
-
 async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     hass,
 ) -> None:
     manager = CleaningPlanManager(hass)
     assert manager.repository.store.version == 1
-    assert manager.repository.store.minor_version == 14
+    assert manager.repository.store.minor_version == 13
     assert manager.repository.store._private is True
     stored = {
         "robots": {
@@ -60,7 +52,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
         }
     }
 
-    migrated = _migration_steps(1, stored)
+    migrated = await manager.repository.store._async_migrate_func(1, 1, stored)
 
     legacy = migrated["robots"]["serial"]["areas"]["legacy"]
     assert legacy["schema_version"] == 0
@@ -87,7 +79,9 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
             }
         }
     }
-    migrated_version_two = _migration_steps(2, version_two)
+    migrated_version_two = await manager.repository.store._async_migrate_func(
+        1, 2, version_two
+    )
     assert migrated_version_two["robots"]["serial"]["areas"]["current"] == {}
     assert migrated_version_two["robots"]["serial"]["rooms"]["room"] == {
         "last_started": "legacy-attempt",
@@ -97,12 +91,13 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     with pytest.raises(ValueError, match="storage version"):
         await manager.repository.store._async_migrate_func(2, 1, stored)
     with pytest.raises(ValueError, match="minor version"):
-        await manager.repository.store._async_migrate_func(1, 15, stored)
+        await manager.repository.store._async_migrate_func(1, 14, stored)
 
 
 async def test_plan_store_migrates_interrupted_manual_run_without_private_credit(
     hass,
 ) -> None:
+    manager = CleaningPlanManager(hass)
     room_id = "room-office"
     identity = "a" * 64
     shared = {
@@ -209,7 +204,7 @@ async def test_plan_store_migrates_interrupted_manual_run_without_private_credit
         }
     }
 
-    migrated = _migration_steps(8, data)
+    migrated = await manager.repository.store._async_migrate_func(1, 8, data)
 
     target = f"{plan_model_module.MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
     migrated_robot = migrated["robots"]["serial"]
@@ -252,13 +247,14 @@ async def test_plan_store_migrates_interrupted_manual_run_without_private_credit
     assert malformed_run["run_id"] == ""
     assert malformed_run["plan_id"] == "quick_clean"
 
-    _migration_steps(8, migrated)
+    await manager.repository.store._async_migrate_func(1, 8, migrated)
     assert migrated_robot["last_run"]["plan_id"] == target
 
 
 async def test_plan_store_quarantines_legacy_private_cadence_and_moves_owned_rotation(
     hass,
 ) -> None:
+    manager = CleaningPlanManager(hass)
     manual_id = plan_model_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
     room_policy = {
         "scope": "plan",
@@ -325,7 +321,7 @@ async def test_plan_store_quarantines_legacy_private_cadence_and_moves_owned_rot
     }
     stored = {"robots": {"serial": robot}}
 
-    migrated = _migration_steps(9, stored)
+    migrated = await manager.repository.store._async_migrate_func(1, 9, stored)
     migrated_robot = migrated["robots"]["serial"]
 
     assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-office"] == {
@@ -359,7 +355,7 @@ async def test_plan_store_quarantines_legacy_private_cadence_and_moves_owned_rot
         "room-office": {"run_id": "legacy-manual", "last_result": "completed"},
     }
 
-    _migration_steps(9, migrated)
+    await manager.repository.store._async_migrate_func(1, 9, migrated)
     assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-office"][
         "unverified_modes"
     ] == ["mop", "coverage"]
@@ -652,7 +648,7 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     hass,
 ) -> None:
     manager = CleaningPlanManager(hass)
-    assert manager.repository.store.minor_version == 14
+    assert manager.repository.store.minor_version == 13
     stored = {
         "robots": {
             SERIAL: {
@@ -680,7 +676,7 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     }
     original_rooms = deepcopy(stored["robots"][SERIAL]["plans"]["home"]["rooms"])
 
-    migrated = _migration_steps(10, stored)
+    migrated = await manager.repository.store._async_migrate_func(1, 10, stored)
 
     plans = migrated["robots"][SERIAL]["plans"]
     assert plans["home"]["entries"] == [
@@ -693,12 +689,13 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     assert plans["stamped"]["entries"] == [_room_entry("room-hall")]
     assert plans["corrupt"] == "not-a-plan"
     with pytest.raises(ValueError, match="minor version"):
-        await manager.repository.store._async_migrate_func(1, 15, stored)
+        await manager.repository.store._async_migrate_func(1, 14, stored)
 
 
-def test_parser_keeps_what_needs_no_repair() -> None:
+async def test_steps_and_parser_keep_what_needs_no_repair(hass) -> None:
     """Shared reconciliation, set opportunities and running runs stay as saved."""
-    assert plan_state_module.parse_plan_document(1, {"robots": []}) == {"robots": []}
+    store = CleaningPlanManager(hass).repository.store
+    assert await store._async_migrate_func(1, 1, {"robots": []}) == {"robots": []}
     pending = {
         "plan_id": "quick_clean",
         "room_id": "room-office",
@@ -748,7 +745,8 @@ def test_parser_keeps_what_needs_no_repair() -> None:
         "native_completion_dedup": ["c" * 64],
     }
 
-    plan_state_module.parse_plan_document(1, {"robots": {SERIAL: robot}})
+    await store._async_migrate_func(1, 1, {"robots": {SERIAL: robot}})
+    plan_state_module.parse_robot(robot)
 
     manual_id = plan_model_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
     assert robot["last_run"]["plan_id"] == manual_id

@@ -10,12 +10,11 @@ from homeassistant.util.file import WriteError
 from homeassistant.util.json import SerializationError
 
 from .const import DOMAIN
-from .plan_state import parse_plan_document
+from .plan_state import migrate_plan_document
 
 STORAGE_VERSION = 1
 
-# 0.5.4 refuses 14: it marks a file whose legacy fields 0.6 has rewritten.
-STORAGE_MINOR_VERSION = 14
+STORAGE_MINOR_VERSION = 13
 
 STORAGE_KEY = f"{DOMAIN}.plans"
 
@@ -49,14 +48,14 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
         old_minor_version: int,
         old_data: dict[str, Any],
     ) -> dict[str, Any]:
-        """Parse an older file once; Home Assistant then saves it at this version."""
+        """Run the version steps; Home Assistant then saves the file at 1.13."""
         if old_major_version != STORAGE_VERSION:
             raise ValueError(f"unsupported plan storage version {old_major_version}")
         if old_minor_version > STORAGE_MINOR_VERSION:
             raise ValueError(
                 f"unsupported plan storage minor version {old_minor_version}"
             )
-        return parse_plan_document(old_minor_version, old_data)
+        return migrate_plan_document(old_minor_version, old_data)
 
 
 def _restore_unsaved_changes(

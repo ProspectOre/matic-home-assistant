@@ -20,7 +20,7 @@ git fetch origin tag v0.5.4
 | --- | --- | --- |
 | seed | older | Saves plans and a version-1 map-history sample, finishes a run, then stops Home Assistant mid-clean. The stores are copied as the pre-upgrade backup. |
 | upgrade | this checkout | Migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
-| downgrade | older | Checks that the older plan store refuses plan store 1.14 and the version-1 map-history reader leaves v2 unread (0.5.4 keeps a temporary, empty history; 0.5.2 and older refuse it), and that both files keep their bytes. |
+| downgrade | older | Checks the version-1 map-history reader leaves v2 unread and its bytes unchanged (0.5.4 keeps a temporary, empty history; 0.5.2 and older refuse it); loads the newer plan store with the older plan manager without starting a run. |
 | restore | older | Runs the plan on the matching pre-upgrade version-1 backup. |
 
 The drill also saves and executes a separate custom-area plan. It checks area identity,
@@ -35,12 +35,15 @@ its floor scope, in the vacuum's entity options, and that the restored backup st
 - Map history moves from version 1 to version 2 on upgrade. 0.5 refuses to read
   version 2 and leaves it untouched, so going back means restoring the Home
   Assistant backup made before the update, not reinstalling 0.5 in place.
-- The plan store moves from 1.13 to 1.14 on upgrade. 0.6 rewrites the fields
-  older releases saved, such as duration scalars and run `trigger`, once, and
-  adds keys such as `run_history` and the per-run `skipped_room_ids` and
-  `held_rooms`. 0.5.4 refuses 1.14 without changing it and does not start.
+- The plan store stays at version 1.13 in both releases. 0.6 only adds keys,
+  such as `run_history` and the per-run `skipped_room_ids` and `held_rooms`.
+  It repairs fields older releases saved, such as duration scalars and run
+  `trigger`, in memory once per start and saves them with its next write.
 - 0.6 settles the run that 0.5.4 left cleaning as unverified
   (`restart_native_mission_changed_or_ended`) and then runs the plan normally.
+- 0.5.4 runs on a plan store 0.6 wrote. It keeps `run_history` but does not add
+  to it, so runs made after going back in place are missing from the history
+  if you upgrade again.
 - Restoring the pre-upgrade backup brings back the 0.5.4 state exactly,
   including the interrupted run, which 0.5.4 settles the same way.
 

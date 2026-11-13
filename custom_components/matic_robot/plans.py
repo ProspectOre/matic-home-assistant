@@ -80,7 +80,7 @@ class CleaningPlanManager:
                 robots.pop(serial_number)
                 recovered = True
                 continue
-            recovered = plan_state._normalize_robot(robot) or recovered
+            recovered = plan_state.parse_robot(robot) or recovered
             last_run = robot.get("last_run")
             if isinstance(last_run, dict) and last_run.get("outcome") == "running":
                 if not isinstance(last_run.get("recovery_checkpoint"), dict):

@@ -283,22 +283,28 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
 
 
 async def test_downgrade(hass: HomeAssistant) -> None:
-    """The older readers must not read or rewrite the newer files.
+    """The older release loads 0.6's plan store but not the v2 history file.
 
-    0.5.4 refuses plan store 1.14 and fails setup. Its history reader keeps a
-    temporary, empty timeline in memory instead of the v2 file; 0.5.0 to
-    0.5.2 refuse that too.
+    0.5.0 to 0.5.2 refuse the history file; 0.5.3 and later keep a temporary,
+    empty timeline in memory instead.
     """
     from custom_components.matic_robot.plans import CleaningPlanManager
     from custom_components.matic_robot.slam_history import SlamHistoryStore
 
     storage = Path(os.environ["MATIC_DRILL_CONFIG"]) / ".storage"
-    plans = storage / "matic_robot.plans"
-    path = storage / f"matic_robot.slam_history.{ENTRY_ID}"
-    plans_before = plans.read_bytes()
+    (serial,) = json.loads((storage / "matic_robot.plans").read_text())["data"][
+        "robots"
+    ]
+    plans = CleaningPlanManager(hass)
+    await plans.async_load()
+    assert PLAN in plans.plans(serial)
+
+    path = (
+        Path(os.environ["MATIC_DRILL_CONFIG"])
+        / ".storage"
+        / f"matic_robot.slam_history.{ENTRY_ID}"
+    )
     before = path.read_bytes()
-    with pytest.raises(ValueError, match="unsupported plan storage minor version"):
-        await CleaningPlanManager(hass).async_load()
     history = SlamHistoryStore(hass, ENTRY_ID)
     try:
         await history.async_load()
@@ -307,7 +313,6 @@ async def test_downgrade(hass: HomeAssistant) -> None:
     else:
         assert not history.catalog()
         await history.async_shutdown()
-    assert plans.read_bytes() == plans_before
     assert path.read_bytes() == before
 
 

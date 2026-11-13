@@ -845,7 +845,7 @@ async def test_restart_retires_persisted_running_outcome(
     assert recovering.history.snapshot("serial")["last_run"] == last_run
 
 
-async def test_parser_repairs_legacy_run_outcome_and_provenance(hass) -> None:
+async def test_load_normalizes_legacy_run_outcome_and_provenance(hass) -> None:
     """Old persisted labels are repaired without retaining service identity."""
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
@@ -864,10 +864,7 @@ async def test_parser_repairs_legacy_run_outcome_and_provenance(hass) -> None:
     legacy_run.pop("provenance", None)
     recovering = CleaningPlanManager(hass)
     recovering.repository.store = SimpleNamespace(
-        async_load=AsyncMock(
-            return_value=plan_state_module.parse_plan_document(13, legacy)
-        ),
-        async_save=AsyncMock(),
+        async_load=AsyncMock(return_value=legacy), async_save=AsyncMock()
     )
     await recovering.async_load()
     last_run = recovering.history.snapshot("serial")["last_run"]
@@ -10102,7 +10099,7 @@ async def test_stop_during_an_area_finishes_the_area_or_stops_now(
         assert cancel.is_set()
 
 
-def test_parser_renames_stored_one_time_room_runs() -> None:
+def test_parse_renames_stored_one_time_room_runs() -> None:
     """Stores from 0.5 show one-time room runs under their current name."""
     manual_id = f"{plan_model_module.MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
     legacy_name = "Map Studio room clean"
@@ -10129,7 +10126,8 @@ def test_parser_renames_stored_one_time_room_runs() -> None:
         }
     }
 
-    plan_state_module.parse_plan_document(13, {"robots": {"a": robot, "b": saved}})
+    assert plan_state_module.parse_robot(robot) is True
+    plan_state_module.parse_robot(saved)
 
     assert robot["last_run"]["plan_name"] == "One-time room clean"
     assert robot["active_plan"]["plan_name"] == "One-time room clean"
