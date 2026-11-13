@@ -283,12 +283,21 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
 
 
 async def test_downgrade(hass: HomeAssistant) -> None:
-    """The older history reader must not read or rewrite the v2 file.
+    """The older release loads 0.6's plan store but not the v2 history file.
 
-    0.5.0 to 0.5.2 refuse it; 0.5.3 and later keep a temporary, empty
-    timeline in memory instead.
+    0.5.0 to 0.5.2 refuse the history file; 0.5.3 and later keep a temporary,
+    empty timeline in memory instead.
     """
+    from custom_components.matic_robot.plans import CleaningPlanManager
     from custom_components.matic_robot.slam_history import SlamHistoryStore
+
+    storage = Path(os.environ["MATIC_DRILL_CONFIG"]) / ".storage"
+    (serial,) = json.loads((storage / "matic_robot.plans").read_text())["data"][
+        "robots"
+    ]
+    plans = CleaningPlanManager(hass)
+    await plans.async_load()
+    assert PLAN in plans.plans(serial)
 
     path = (
         Path(os.environ["MATIC_DRILL_CONFIG"])

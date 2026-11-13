@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.util import dt as dt_util
 
-import custom_components.matic_robot.plan_storage as plan_storage_module
+import custom_components.matic_robot.plan_state as plan_state_module
 from custom_components.matic_robot.cadence import advance_cadence
 from custom_components.matic_robot.cadence_accounting import (
     apply_verified_cadence as _apply_verified_cadence,
@@ -1092,12 +1092,12 @@ def test_unverified_cadence_storage_normalizes_modes_and_removes_empty_marker() 
         },
     }
 
-    assert plan_storage_module._normalize_robot(robot) is True
+    assert plan_state_module._normalize_robot(robot) is True
     record = robot["plan_room_cadence"]["quick_clean"]["room-a"]
     assert record["unverified_modes"] == ["mop", "coverage"]
     record["unverified_modes"] = None
 
-    assert plan_storage_module._normalize_robot(robot) is True
+    assert plan_state_module._normalize_robot(robot) is True
     assert "unverified_modes" not in record
 
 

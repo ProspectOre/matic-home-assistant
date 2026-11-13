@@ -17,7 +17,7 @@ from typing import Any, TypeVar, cast
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from . import plan_storage
+from . import plan_state, plan_storage
 from .plan_model import (
     AreaInUseError,
     AreaSavePreconditionError,
@@ -124,7 +124,7 @@ class PlanRepository:
             if serial_number not in self.removed_robots:
                 robots[serial_number] = robot_value
         robot = cast(dict[str, Any], robot_value)
-        plan_storage._normalize_robot(robot)
+        plan_state._normalize_robot(robot)
         return robot
 
     async def async_save_and_notify(self, serial_number: str) -> None:
@@ -395,7 +395,7 @@ class PlanRepository:
                 plan_storage._restore_unsaved_changes(robot, before, applied)
                 if not robot_was_present:
                     empty_robot: dict[str, Any] = {}
-                    plan_storage._normalize_robot(empty_robot)
+                    plan_state._normalize_robot(empty_robot)
                     if robot == empty_robot:
                         robots.pop(serial_number, None)
                 raise

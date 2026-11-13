@@ -258,3 +258,14 @@ async def test_0_5_store_loads_and_survives_cold_manager_reload(
     await reloaded.async_load()
     assert reloaded.repository.robot(SERIAL) == loaded
     assert not ir.async_get(hass).async_get_issue(DOMAIN, UPGRADE_ISSUE_ID)
+
+
+async def test_newer_store_is_refused_untouched(hass) -> None:
+    """A file from a newer release fails the load and keeps its bytes."""
+    path = await _write(hass, STORAGE_MINOR_VERSION + 1, _v0_5_4_data())
+    before = await hass.async_add_executor_job(path.read_bytes)
+
+    with pytest.raises(ValueError, match="unsupported plan storage minor version"):
+        await CleaningPlanManager(hass).async_load()
+
+    assert await hass.async_add_executor_job(path.read_bytes) == before

@@ -39,7 +39,7 @@ the connection itself replaces it. Bounded telemetry decoders handle robot
 state and native cleaning summaries.
 [Discovery](../custom_components/matic_robot/config_flow_discovery.py) selects
 a certificate-bound address; [vacuum catalogs](../custom_components/matic_robot/vacuum_catalog.py)
-keep each floor's Area mapping in the integration's store and give core only the active floor's. [Migrations](../custom_components/matic_robot/migrations.py) upgrade config entries from what 0.5.4 saved and refuse older ones, untouched, with a Repair that asks for 0.5.4 first; the [plan storage](../custom_components/matic_robot/plan_storage.py) still migrates any older plan file.
+keep each floor's Area mapping in the integration's store and give core only the active floor's. [Migrations](../custom_components/matic_robot/migrations.py) upgrade config entries from what 0.5.4 saved and refuse older ones, untouched, with a Repair that asks for 0.5.4 first; the [plan storage](../custom_components/matic_robot/plan_storage.py) still migrates any older plan file to 1.13, which 0.5.4 also reads, and the [plan parser](../custom_components/matic_robot/plan_state.py) repairs what older releases saved once per start.
 
 Each config entry has one [robot session](../custom_components/matic_robot/session.py).
 It reads identity and state once at setup; after that a `kabuki_state` watch,
@@ -75,9 +75,8 @@ these owners around one repository:
 | [Recovery](../custom_components/matic_robot/plan_recovery.py) | Recovery checkpoints and dispatch evidence. |
 | [Execution planning](../custom_components/matic_robot/execution_planning.py) | Execution previews and rotation target selection. |
 
-[Plan model](../custom_components/matic_robot/plan_model.py),
-[storage migrations](../custom_components/matic_robot/plan_storage.py) and
-[timing](../custom_components/matic_robot/plan_timing.py) support those owners.
+[Plan model](../custom_components/matic_robot/plan_model.py), [storage](../custom_components/matic_robot/plan_storage.py),
+its [parser](../custom_components/matic_robot/plan_state.py) and [timing](../custom_components/matic_robot/plan_timing.py) support those owners.
 The [managed executor](../custom_components/matic_robot/managed_executor.py)
 orchestrates runs through its dispatch, [leg](../custom_components/matic_robot/managed_leg.py), area, observation
 and reconciliation modules. One leg runner runs a mission of one or more rooms and announces each room event.

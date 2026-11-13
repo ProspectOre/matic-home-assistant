@@ -36,8 +36,8 @@ tests/test_init.py 1217
 tests/test_llm.py 3062
 tests/test_mixed_coverage.py 2115
 tests/test_photo_patrol.py 1622
-tests/test_plan_entries.py 1122
-tests/test_plans.py 10764
+tests/test_plan_entries.py 1074
+tests/test_plans.py 10136
 tests/test_restart.py 1550
 tests/test_services.py 6392
 tests/test_session_ownership.py 2634
