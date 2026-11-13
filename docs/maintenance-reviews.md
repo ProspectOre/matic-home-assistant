@@ -1,29 +1,25 @@
 # Review and manual merge
 
-The owner-approved process replaces Matic's bespoke status gate with authentic
-complete review, required CI and a designated-owner manual merge. The canonical
+The shared `prospectore-review` app is Matic's required code-review gate. It
+reviews the complete diff against the intended base and publishes a result on
+the exact PR head. The canonical
 [workspace checklist](https://github.com/ProspectOre/wiki/blob/main/workflows/pr-gates.md)
-owns the shared process.
-
-The owner retired the request coordinator on October 8, 2026. Request regular
-`@codex review` directly for each opened or pushed PR head, after checking for an
-existing request on the unchanged comparison. Do not use the retired coordinator.
+owns the shared process. Do not require a separate native Codex review request.
 
 ## Candidate evidence
 
-Freeze the full candidate head and intended base OIDs. Obtain an authentic Codex
-review of their complete diff; a final-commit-only review is insufficient. Resolve
-an abbreviated footer uniquely to its full commit and verify comparison provenance.
-Native review requires unchanged source hashes before and after the live capture;
-archival receipts cannot authorize a later invocation.
+Freeze the full candidate head and intended base OIDs. Require a complete
+`prospectore-review` result for that comparison; a final-commit-only review is
+insufficient. Resolve abbreviated commit IDs uniquely and verify comparison
+provenance. A later push invalidates the earlier result.
 
 Disposition every actionable finding with evidence before resolving its thread.
-A resolved thread is not itself a clean review. Reuse a pending or delivered review
-request for an unchanged comparison instead of posting duplicates.
+A resolved thread is not itself a clean review. The shared gate records one result
+per exact head; retries must not duplicate findings or reuse stale results.
 
 Run Test, Browser and Validate through the configured public GitHub-hosted route.
-Retain all required contexts and native branch protections except the explicitly
-removed custom `review-gate` context. Never enable automatic merge or force pushes.
+Require the `review` status from `prospectore-review` alongside required CI and
+native branch protections. Never enable automatic merge or force pushes.
 
 Immediately before manual merge, the designated owner rechecks head, base, review,
 findings, required checks and native protections. Changed inputs invalidate the
