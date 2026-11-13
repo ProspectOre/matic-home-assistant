@@ -67,7 +67,7 @@ def test_plan_state_reads_the_drill_robot(tmp_path: Path) -> None:
         "last_run": {"outcome": "completed"},
     }
     (storage / "matic_robot.plans").write_text(
-        json.dumps({"minor_version": 12, "data": {"robots": {"SIM": robot}}})
+        json.dumps({"minor_version": 13, "data": {"robots": {"SIM": robot}}})
     )
     (storage / "matic_robot.slam_history.matic-upgrade-drill").write_text(
         json.dumps(
@@ -110,7 +110,7 @@ def test_plan_state_reads_the_drill_robot(tmp_path: Path) -> None:
     state = plan_state(tmp_path)
     assert state.pop("floor_catalogs")["store"] == options
     assert state == {
-        "minor_version": 12,
+        "minor_version": 13,
         "plan": {"rooms": [], "entries": []},
         "area_plan": {
             "rooms": [],

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from aiohttp.test_utils import TestClient
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import UnsupportedStorageVersionError
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -100,6 +102,33 @@ async def _write_retention_examples(history: Any) -> None:
 async def frontend(hass: HomeAssistant) -> None:
     """Register the same area API that an installed frontend uses."""
     assert await async_setup_component(hass, "frontend", {})
+
+
+@pytest.fixture(autouse=True)
+def registries(hass: HomeAssistant) -> None:
+    """Restore what the registries held when the previous phase stopped.
+
+    The test Home Assistant starts with empty registries instead of loading
+    the config directory's, so recreate the Area the vacuum maps its Kitchen
+    room to and the vacuum's entity options, where 0.5 keeps the floor
+    catalogs.
+    """
+    ar.async_get(hass).async_create("Kitchen")
+    path = Path(os.environ["MATIC_DRILL_CONFIG"]) / ".storage" / "core.entity_registry"
+    if not path.exists():
+        return
+    registry = er.async_get(hass)
+    for stored in json.loads(path.read_text())["data"]["entities"]:
+        domain, object_id = stored["entity_id"].split(".", 1)
+        if stored["platform"] != DOMAIN or domain != "vacuum":
+            continue
+        entity = registry.async_get_or_create(
+            domain, DOMAIN, stored["unique_id"], suggested_object_id=object_id
+        )
+        for options_domain, options in stored["options"].items():
+            registry.async_update_entity_options(
+                entity.entity_id, options_domain, options
+            )
 
 
 async def _save_custom_area(plan: PlanRun, client: TestClient) -> None:
@@ -200,8 +229,6 @@ async def test_seed(
 ) -> None:
     """Older release: save a plan with a room schedule, finish one run and
     leave a second one cleaning when Home Assistant stops."""
-    # The vacuum maps its Kitchen room to this Area in its floor catalog.
-    ar.async_get(hass).async_create("Kitchen")
     history = plan.entry.runtime_data.slam_history
     assert await history.async_add(
         _scene(),
@@ -256,7 +283,11 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
 
 
 async def test_downgrade(hass: HomeAssistant) -> None:
-    """The older history reader must refuse v2 without rewriting its file."""
+    """The older history reader must not read or rewrite the v2 file.
+
+    0.5.0 to 0.5.2 refuse it; 0.5.3 and later keep a temporary, empty
+    timeline in memory instead.
+    """
     from custom_components.matic_robot.slam_history import SlamHistoryStore
 
     path = (
@@ -266,8 +297,13 @@ async def test_downgrade(hass: HomeAssistant) -> None:
     )
     before = path.read_bytes()
     history = SlamHistoryStore(hass, ENTRY_ID)
-    with pytest.raises(UnsupportedStorageVersionError):
+    try:
         await history.async_load()
+    except UnsupportedStorageVersionError:
+        pass
+    else:
+        assert not history.catalog()
+        await history.async_shutdown()
     assert path.read_bytes() == before
 
 
