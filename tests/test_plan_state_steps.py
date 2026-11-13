@@ -694,3 +694,73 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     assert plans["corrupt"] == "not-a-plan"
     with pytest.raises(ValueError, match="minor version"):
         await manager.repository.store._async_migrate_func(1, 15, stored)
+
+
+def test_parser_keeps_what_needs_no_repair() -> None:
+    """Shared reconciliation, set opportunities and running runs stay as saved."""
+    assert plan_state_module.parse_plan_document(1, {"robots": []}) == {"robots": []}
+    pending = {
+        "plan_id": "quick_clean",
+        "room_id": "room-office",
+        "room": "Office",
+        "dispatched_at": "2026-09-28T17:00:00+00:00",
+        "expires_at": "2099-09-28T17:00:00+00:00",
+        "cleaning_mode": "vacuum",
+        "run_id": "manual-run",
+        "cadence_state": {
+            "scope": "shared",
+            "schedule_active": True,
+            "mop_every_n": 3,
+            "coverage_every_n": None,
+            "periodic_coverage_setting": None,
+            "effective_cleaning_mode": "vacuum",
+            "effective_coverage_setting": "quick",
+            "mop_due": False,
+            "coverage_due": False,
+            "identity": "a" * 64,
+        },
+    }
+    record = {"last_started": "2026-09-01T00:00:00+00:00", "last_opportunity": "x"}
+    robot: dict[str, Any] = {
+        "rotations": {
+            "bad": "not-a-rotation",
+            "empty": {"rooms": []},
+            "home": {
+                "rooms": {
+                    "room-office": {
+                        "last_result": "completed",
+                        "last_completed": "2026-09-02T00:00:00+00:00",
+                        "last_duration_seconds": 300,
+                    }
+                }
+            },
+        },
+        "rooms": {"room-hall": dict(record)},
+        "last_run": {
+            "run_id": "manual-run",
+            "plan_id": "quick_clean",
+            "service": "clean_room_sequence",
+            "outcome": "running",
+            "trigger": "user",
+            "recovery_checkpoint": {"data": {"plan_id": "other"}},
+        },
+        "pending_native_reconciliation": pending,
+        "native_completion_dedup": ["c" * 64],
+    }
+
+    plan_state_module.parse_plan_document(1, {"robots": {SERIAL: robot}})
+
+    manual_id = plan_model_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    assert robot["last_run"]["plan_id"] == manual_id
+    assert robot["last_run"]["outcome"] == "running"
+    assert robot["last_run"]["recovery_checkpoint"]["data"] == {"plan_id": "other"}
+    assert (
+        robot["pending_native_reconciliation"]["cadence_state"]
+        == (pending["cadence_state"])
+    )
+    assert robot["native_completion_dedup"] == ["c" * 64]
+    assert robot["rooms"]["room-hall"] == record
+    assert robot["rooms"]["room-office"] == {
+        "last_completed": "2026-09-02T00:00:00+00:00",
+        "last_duration_seconds": 300,
+    }
