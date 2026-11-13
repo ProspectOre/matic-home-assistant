@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import (
     Mapping,
@@ -345,6 +346,22 @@ class PlanRecovery:
             await self.repository.async_mutate_and_save(
                 serial_number, write, finish_during_unload=True
             )
+        except asyncio.CancelledError:
+            # The owned commit outlives this waiter. When it saves the intent,
+            # keep the fence so the caller's rollback undoes both.
+            pending = self.repository.metadata_persistence_tasks.get(serial_number, ())
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(pending)),
+                return_exceptions=True,
+            )
+            run = self.repository.robot(serial_number).get("last_run") or {}
+            checkpoint = run.get("recovery_checkpoint") or {}
+            if (
+                run.get("run_id") != run_id
+                or checkpoint.get("stop_intent") != "immediate"
+            ):
+                self.control.clear_stop_pending(serial_number)
+            raise
         except BaseException:
             # The intent was not saved, so this STOP is not prepared.
             self.control.clear_stop_pending(serial_number)

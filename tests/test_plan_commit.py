@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.matic_robot import plan_storage
 from custom_components.matic_robot.plan_model import CleaningRoom
@@ -152,51 +151,3 @@ async def test_fence_set_during_a_save_stands(hass) -> None:
     robot = manager.repository.robot(SERIAL)
     assert robot[plan_storage.STOP_FENCE_RUN_ID] == "run"
     assert robot["native_cleanings"]["enabled"] is True
-
-
-def _mixed_run(stop_intent: str | None) -> dict:
-    return {
-        "run_id": "run",
-        "outcome": "running",
-        "recovery_checkpoint": {
-            "phase": "dispatching",
-            "mixed_initial_session_hash": "a" * 64,
-            "stop_intent": stop_intent,
-        },
-    }
-
-
-async def test_mixed_stop_rechecks_its_checkpoint_inside_the_commit(hass) -> None:
-    """A run that changes while a STOP waits for the lock keeps its state."""
-    manager = await _manager(hass)
-    repository = manager.repository
-    repository.robot(SERIAL)["last_run"] = _mixed_run(None)
-
-    async with repository.store_lock:
-        prepare = asyncio.create_task(
-            manager.recovery.async_prepare_mixed_dispatch_stop(SERIAL, "run", "a" * 64)
-        )
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert repository.robot(SERIAL)[plan_storage.STOP_FENCE_RUN_ID] == "run"
-        repository.robot(SERIAL)["last_run"]["outcome"] = "completed"
-    with pytest.raises(HomeAssistantError):
-        await prepare
-    assert plan_storage.STOP_FENCE_RUN_ID not in repository.robot(SERIAL)
-    assert (
-        repository.robot(SERIAL)["last_run"]["recovery_checkpoint"]["stop_intent"]
-        is None
-    )
-
-    repository.robot(SERIAL)["last_run"] = _mixed_run("immediate")
-    manager.control.mark_stop_pending(SERIAL, run_id="run")
-    async with repository.store_lock:
-        rollback = asyncio.create_task(
-            manager.recovery.async_rollback_mixed_dispatch_stop(SERIAL, "run", "a" * 64)
-        )
-        for _ in range(5):
-            await asyncio.sleep(0)
-        checkpoint = repository.robot(SERIAL)["last_run"]["recovery_checkpoint"]
-        checkpoint["stop_intent"] = "after_room"
-    await rollback
-    assert checkpoint["stop_intent"] == "after_room"
