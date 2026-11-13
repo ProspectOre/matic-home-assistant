@@ -17,6 +17,7 @@ from tests.test_config_flow_paths import (
     TEST_CREDENTIAL,
     TEST_GRANT,
     _flow,
+    _local_bluetooth_adapter,  # noqa: F401 - autouse: no real adapter lookup
 )
 
 
