@@ -771,7 +771,7 @@
     "v4_queue_catalog_failed": "The rooms for this clean couldn't be read. Check the map and reload to try again.",
     "v4_queue_catalog_held": "Queue changes are unavailable until the current map and room list are ready.",
     "v4_queue_room": "Room",
-      "v4_queue_room_scope": "All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.",
+    "v4_queue_room_scope": "All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.",
     "v4_queue_actions": "Change {room}",
     "v4_queue_skip": "Skip",
     "v4_queue_next": "Clean next",
@@ -2052,6 +2052,10 @@
           }
         }
       }
+    },
+    "upgrade_through_0_5_4": {
+      "title": "Install Matic (Unofficial) {version} before this update",
+      "description": "This update reads data saved by Matic (Unofficial) {version}, and this installation's data is older, so the integration did not start. Nothing was changed or deleted.\n\nInstall {version} from HACS and restart Home Assistant. Once the robot is connected, save any cleaning plan or custom area once, so that {version} rewrites your plans in its format. Then install this update again."
     }
   },
   "services": {

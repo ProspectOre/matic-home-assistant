@@ -7,6 +7,7 @@ What changed in 0.5 is summarized in the
 and told in full in the
 [notes kept with that release's source](https://github.com/ProspectOre/matic-home-assistant/blob/v0.5.0/docs/release-notes-0.5.0.md).
 This page keeps the steps for coming from 0.4, and the entities 0.5 removed.
+From 0.4, follow them to 0.5.4 before updating to 0.6.
 
 ## Before you update
 

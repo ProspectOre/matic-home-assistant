@@ -1,4 +1,8 @@
-"""Pre-1.0 migrations to the integration's canonical data model."""
+"""Pre-1.0 migrations to the integration's canonical data model.
+
+0.6 migrates from what 0.5.4 stores. An older install steps through 0.5.4
+first; 0.6 refuses its data with a Repair instead of guessing at it.
+"""
 
 from __future__ import annotations
 
@@ -6,22 +10,19 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.util import slugify
 
 from .const import CONF_SERIAL_NUMBER, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+MINIMUM_UPGRADE_VERSION = "0.5.4"
+# The config entry minor version 0.5.4 writes.
+MINIMUM_ENTRY_MINOR_VERSION = 3
+UPGRADE_ISSUE_ID = "upgrade_through_0_5_4"
+
 # Entities removed as duplicates; each release's notes name the replacements.
-REMOVED_IN_0_5 = (
-    ("binary_sensor", "active_cleaning_session"),
-    ("binary_sensor", "update_available"),
-    ("sensor", "software_version"),
-    ("sensor", "hardware_revision"),
-)
 REMOVED_IN_0_6 = (
     ("binary_sensor", "paused"),
     ("binary_sensor", "returning"),
@@ -41,19 +42,12 @@ REMOVED_IN_0_6 = (
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate one config entry to the current schema exactly once.
-
-    Running under the entry's minor version means a user rename applied
-    after this migration is never touched again on later restarts.
-    """
+    """Migrate one config entry from what 0.5.4 stored, exactly once."""
     if entry.version > 1:
         return False
-    if entry.minor_version < 2:
-        _async_migrate_entity_ids(hass, entry)
-        hass.config_entries.async_update_entry(entry, minor_version=2)
-    if entry.minor_version < 3:
-        _async_remove_retired_entities(hass, entry, REMOVED_IN_0_5)
-        hass.config_entries.async_update_entry(entry, minor_version=3)
+    if entry.minor_version < MINIMUM_ENTRY_MINOR_VERSION:
+        async_create_upgrade_issue(hass)
+        return False
     if entry.minor_version < 4:
         _async_delete_maintenance_repairs(hass, entry)
         hass.config_entries.async_update_entry(entry, minor_version=4)
@@ -61,6 +55,19 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _async_remove_retired_entities(hass, entry, REMOVED_IN_0_6)
         hass.config_entries.async_update_entry(entry, minor_version=5)
     return True
+
+
+def async_create_upgrade_issue(hass: HomeAssistant) -> None:
+    """Ask the user to install 0.5.4 first; their data stays as it was."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        UPGRADE_ISSUE_ID,
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=UPGRADE_ISSUE_ID,
+        translation_placeholders={"version": MINIMUM_UPGRADE_VERSION},
+    )
 
 
 def _async_remove_retired_entities(
@@ -77,42 +84,6 @@ def _async_remove_retired_entities(
         ):
             _LOGGER.info("Removing retired entity %s", entity_id)
             registry.async_remove(entity_id)
-
-
-def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Move pre-0.2.0 registry entries to descriptive canonical entity IDs."""
-    serial_number = entry.data.get(CONF_SERIAL_NUMBER)
-    if serial_number is None:
-        return
-    registry_devices = dr.async_get(hass)
-    if lookup := getattr(registry_devices, "async_get_device_by_identifier", None):
-        device = lookup((DOMAIN, serial_number), entry.entry_id)
-    else:
-        device = registry_devices.async_get_device(
-            identifiers={(DOMAIN, serial_number)}
-        )
-        if device is not None and entry.entry_id not in device.config_entries:
-            device = None
-    device_name = (device.name if device is not None else None) or "Matic"
-    registry = er.async_get(hass)
-    prefix = f"{serial_number}_"
-    for registry_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if not registry_entry.unique_id.startswith(prefix):
-            continue
-        key = registry_entry.unique_id.removeprefix(prefix)
-        object_id = slugify(device_name if key == "vacuum" else f"{device_name}_{key}")
-        desired = f"{registry_entry.domain}.{object_id}"
-        if desired == registry_entry.entity_id:
-            continue
-        if registry.async_get(desired) is not None:
-            _LOGGER.info(
-                "Keeping entity id %s: the canonical id %s is already in use",
-                registry_entry.entity_id,
-                desired,
-            )
-            continue
-        _LOGGER.info("Migrating entity id %s to %s", registry_entry.entity_id, desired)
-        registry.async_update_entity(registry_entry.entity_id, new_entity_id=desired)
 
 
 def _async_delete_maintenance_repairs(hass: HomeAssistant, entry: ConfigEntry) -> None:

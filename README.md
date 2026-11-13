@@ -70,7 +70,8 @@ what to do when a code is rejected.
 
 Read the [release notes](https://github.com/ProspectOre/matic-home-assistant/releases)
 first. Back up Home Assistant, let the robot dock, update through HACS and
-restart. Plans, custom areas and the pairing are kept. Then open Matic Map and
+restart. Plans, custom areas and the pairing are kept. 0.6 updates from
+0.5.4; from 0.4 or older, update to 0.5.4 first. Then open Matic Map and
 check that the live map loads; a custom area on a changed map may ask you to
 confirm it. To go back to the release you had, restore that backup: an older
 release can't always read newer data.

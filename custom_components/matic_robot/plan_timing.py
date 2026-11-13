@@ -26,18 +26,6 @@ DURATION_PROFILE_KEYS = tuple(
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 
 
-def _valid_duration_seconds(value: object) -> int | float | None:
-    """Return positive finite duration evidence in seconds."""
-    if (
-        isinstance(value, int | float)
-        and not isinstance(value, bool)
-        and (isinstance(value, int) or math.isfinite(value))
-        and value > 0
-    ):
-        return value
-    return None
-
-
 def _elapsed_seconds(started: object, now: datetime) -> int | None:
     """Return positive elapsed wall-clock seconds from a stored ISO timestamp."""
     if not isinstance(started, str):

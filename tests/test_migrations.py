@@ -1,16 +1,21 @@
-"""Pre-1.0 entity identity migration tests."""
+"""Config entry migration tests."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
+import pytest
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.migrations import async_migrate_entry
+from custom_components.matic_robot.migrations import (
+    MINIMUM_UPGRADE_VERSION,
+    UPGRADE_ISSUE_ID,
+    async_migrate_entry,
+)
 
 
 def _entry(*, version: int = 1, minor_version: int = 1) -> SimpleNamespace:
@@ -22,81 +27,8 @@ def _entry(*, version: int = 1, minor_version: int = 1) -> SimpleNamespace:
     )
 
 
-def _registry(**overrides: object) -> SimpleNamespace:
-    values: dict[str, object] = {
-        "async_get": MagicMock(return_value=None),
-        "async_update_entity": MagicMock(),
-        "async_get_entity_id": MagicMock(return_value=None),
-        "async_remove": MagicMock(),
-    }
-    return SimpleNamespace(**{**values, **overrides})
-
-
 def _hass() -> MagicMock:
     return MagicMock(data={ir.DATA_REGISTRY: SimpleNamespace(issues={})})
-
-
-async def test_entity_ids_migrate_once_to_descriptive_canonical_names() -> None:
-    registry = _registry(async_get=MagicMock())
-    entries = [
-        SimpleNamespace(
-            unique_id="other_battery",
-            domain="sensor",
-            entity_id="sensor.ignore",
-        ),
-        SimpleNamespace(
-            unique_id="serial_battery",
-            domain="sensor",
-            entity_id="sensor.matic_battery",
-        ),
-        SimpleNamespace(
-            unique_id="serial_activity",
-            domain="sensor",
-            entity_id="sensor.matic_2",
-        ),
-        SimpleNamespace(
-            unique_id="serial_vacuum",
-            domain="vacuum",
-            entity_id="vacuum.matic_3",
-        ),
-    ]
-    registry.async_get.side_effect = [object(), None]
-    device_registry = SimpleNamespace(
-        async_get_device_by_identifier=MagicMock(
-            return_value=SimpleNamespace(name="Matic")
-        )
-    )
-    hass = _hass()
-    entry = _entry()
-
-    with (
-        patch(
-            "custom_components.matic_robot.migrations.er.async_get",
-            return_value=registry,
-        ),
-        patch(
-            "custom_components.matic_robot.migrations.er.async_entries_for_config_entry",
-            return_value=entries,
-        ),
-        patch(
-            "custom_components.matic_robot.migrations.dr.async_get",
-            return_value=device_registry,
-        ),
-    ):
-        assert await async_migrate_entry(hass, entry) is True  # type: ignore[arg-type]
-
-    registry.async_update_entity.assert_called_once_with(
-        "vacuum.matic_3", new_entity_id="vacuum.matic"
-    )
-    device_registry.async_get_device_by_identifier.assert_called_once_with(
-        ("matic_robot", "serial"), "entry"
-    )
-    assert hass.config_entries.async_update_entry.call_args_list == [
-        call(entry, minor_version=2),
-        call(entry, minor_version=3),
-        call(entry, minor_version=4),
-        call(entry, minor_version=5),
-    ]
 
 
 async def test_future_major_versions_refuse_to_downgrade() -> None:
@@ -113,125 +45,33 @@ async def test_current_minor_version_is_left_untouched() -> None:
     hass.config_entries.async_update_entry.assert_not_called()
 
 
-async def test_missing_serial_and_device_fall_back_safely() -> None:
-    registry = _registry()
-    device_registry = SimpleNamespace(
-        async_get_device_by_identifier=MagicMock(return_value=None)
-    )
-    hass = _hass()
-    entry = _entry()
-    entry.data = {}
-
-    with patch(
-        "custom_components.matic_robot.migrations.er.async_get",
-        return_value=registry,
-    ):
-        assert await async_migrate_entry(hass, entry) is True  # type: ignore[arg-type]
-    registry.async_update_entity.assert_not_called()
-
-    entries = [
-        SimpleNamespace(
-            unique_id="serial_battery",
-            domain="sensor",
-            entity_id="sensor.matic_2",
-        ),
-    ]
-    entry = _entry()
-    hass = _hass()
-    with (
-        patch(
-            "custom_components.matic_robot.migrations.er.async_get",
-            return_value=registry,
-        ),
-        patch(
-            "custom_components.matic_robot.migrations.er.async_entries_for_config_entry",
-            return_value=entries,
-        ),
-        patch(
-            "custom_components.matic_robot.migrations.dr.async_get",
-            return_value=device_registry,
-        ),
-    ):
-        assert await async_migrate_entry(hass, entry) is True  # type: ignore[arg-type]
-    registry.async_update_entity.assert_called_once_with(
-        "sensor.matic_2", new_entity_id="sensor.matic_battery"
-    )
-
-
-async def test_minimum_ha_device_lookup_preserves_entry_ownership() -> None:
-    """HA 2026.7 has only the unscoped registry lookup."""
-    hass = _hass()
-    for device in (
-        None,
-        SimpleNamespace(name="Other", config_entries={"other"}),
-        SimpleNamespace(name="My Matic", config_entries={"entry"}),
-    ):
-        devices = SimpleNamespace(async_get_device=MagicMock(return_value=device))
-        registry = _registry()
-        entities = [
-            SimpleNamespace(
-                unique_id="serial_battery", domain="sensor", entity_id="sensor.old"
-            )
-        ]
-        with (
-            patch(
-                "custom_components.matic_robot.migrations.dr.async_get",
-                return_value=devices,
-            ),
-            patch(
-                "custom_components.matic_robot.migrations.er.async_get",
-                return_value=registry,
-            ),
-            patch(
-                "custom_components.matic_robot.migrations.er.async_entries_for_config_entry",
-                return_value=entities,
-            ),
-        ):
-            assert await async_migrate_entry(hass, _entry()) is True
-        devices.async_get_device.assert_called_once_with(
-            identifiers={("matic_robot", "serial")}
-        )
-        expected = (
-            "my_matic_battery"
-            if device and "entry" in device.config_entries
-            else "matic_battery"
-        )
-        registry.async_update_entity.assert_called_once_with(
-            "sensor.old", new_entity_id=f"sensor.{expected}"
-        )
-
-
-async def test_retired_entities_are_removed_once(hass) -> None:
-    """0.5 deletes the four duplicate entities on first load only."""
+@pytest.mark.parametrize("minor_version", [1, 2])
+async def test_pre_0_5_entries_are_refused_untouched_with_a_repair(
+    hass, minor_version: int
+) -> None:
+    """0.6 reads what 0.5.4 stored; older entries step through 0.5.4 first."""
     entry = MockConfigEntry(
-        domain=DOMAIN, data={"serial_number": "serial"}, version=1, minor_version=2
+        domain=DOMAIN,
+        data={"serial_number": "serial"},
+        version=1,
+        minor_version=minor_version,
     )
     entry.add_to_hass(hass)
     registry = er.async_get(hass)
-    retired = {
-        ("binary_sensor", "active_cleaning_session"),
-        ("binary_sensor", "update_available"),
-        ("sensor", "software_version"),
-        ("sensor", "hardware_revision"),
-    }
-    for domain, key in (*sorted(retired), ("sensor", "battery")):
-        registry.async_get_or_create(
-            domain, DOMAIN, f"serial_{key}", config_entry=entry
-        )
-
-    assert await async_migrate_entry(hass, entry) is True
-    assert entry.minor_version == 5
-    assert [
-        item.unique_id
-        for item in er.async_entries_for_config_entry(registry, entry.entry_id)
-    ] == ["serial_battery"]
-
-    # A later start never deletes again, even an entity with a retired key.
-    registry.async_get_or_create(
+    # 0.5 removed this entity; an older entry still has it.
+    retired = registry.async_get_or_create(
         "sensor", DOMAIN, "serial_software_version", config_entry=entry
     )
-    assert await async_migrate_entry(hass, entry) is True
-    assert registry.async_get_entity_id("sensor", DOMAIN, "serial_software_version")
+
+    assert await async_migrate_entry(hass, entry) is False
+
+    assert entry.minor_version == minor_version
+    assert registry.async_get(retired.entity_id) == retired
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, UPGRADE_ISSUE_ID)
+    assert issue is not None
+    assert issue.severity is ir.IssueSeverity.ERROR
+    assert not issue.is_fixable
+    assert issue.translation_placeholders == {"version": MINIMUM_UPGRADE_VERSION}
 
 
 async def test_upgrade_to_0_6_leaves_no_removed_entity_behind(hass) -> None:
@@ -295,7 +135,7 @@ async def test_upgrade_to_0_6_leaves_no_removed_entity_behind(hass) -> None:
 
 
 async def test_retired_entity_cleanup_needs_a_serial(hass) -> None:
-    entry = MockConfigEntry(domain=DOMAIN, data={}, version=1, minor_version=2)
+    entry = MockConfigEntry(domain=DOMAIN, data={}, version=1, minor_version=3)
     entry.add_to_hass(hass)
     assert await async_migrate_entry(hass, entry) is True
     assert entry.minor_version == 5
