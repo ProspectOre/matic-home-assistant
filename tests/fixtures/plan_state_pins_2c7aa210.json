@@ -1,0 +1,4943 @@
+{
+ "0.4.8": {
+  "credited": {
+   "history": {
+    "active_plan": null,
+    "cancelled_runs": 0,
+    "completed_runs": 7,
+    "failed_runs": 0,
+    "interrupted_runs": 0,
+    "last_completed": "2026-10-20T12:10:00+00:00",
+    "last_completed_by_room": {
+     "den": {
+      "at": null,
+      "duration_seconds": null,
+      "name": "Den",
+      "runs": 0
+     },
+     "hall": {
+      "at": "2026-10-20T12:10:00+00:00",
+      "duration_seconds": 600,
+      "name": "Hall",
+      "runs": 1
+     },
+     "kitchen": {
+      "at": "2026-10-10T08:00:00+00:00",
+      "duration_seconds": 480,
+      "name": "Kitchen",
+      "runs": 4
+     }
+    },
+    "last_interrupted_plan": {
+     "plan_id": "__matic_manual_room_sequence___1",
+     "plan_name": "Map Studio room clean",
+     "room_id": "den",
+     "run_id": "older-run"
+    },
+    "last_run": {
+     "cause": "unknown",
+     "completed_room_count": 1,
+     "ended_at": "2026-10-20T12:10:00+00:00",
+     "finish_current_room": false,
+     "finish_current_room_threshold": 50,
+     "outcome": "completed",
+     "plan_id": "home",
+     "plan_name": "Home",
+     "provenance": "user",
+     "reason_code": "all_rooms_verified",
+     "room_count": 1,
+     "run_id": "pin-run",
+     "service": "test",
+     "started_at": "2026-10-20T12:00:00+00:00",
+     "trigger": "user"
+    },
+    "native_reconciliation_pending": false,
+    "plan_history": {
+     "__matic_manual_room_sequence__": {
+      "rooms": {
+       "hall": {
+        "last_completed": "2026-10-12T08:20:00+00:00",
+        "last_duration_seconds": 1200,
+        "last_opportunity": "2026-10-12T08:00:00+00:00",
+        "last_result": "completed",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "legacy-run"
+       }
+      }
+     },
+     "broken": {
+      "rooms": {}
+     },
+     "home": {
+      "rooms": {
+       "hall": {
+        "average_duration_seconds": 600,
+        "cleaning_mode": "vacuum_and_mop",
+        "completed_runs": 1,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         600
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           300,
+           300,
+           300
+          ],
+          "duration_samples": 3
+         },
+         "vacuum_and_mop:standard": {
+          "duration_history_seconds": [
+           600
+          ],
+          "duration_samples": 1,
+          "last_completed": "2026-10-20T12:10:00+00:00"
+         }
+        },
+        "duration_samples": 1,
+        "last_completed": "2026-10-20T12:10:00+00:00",
+        "last_duration_seconds": 600,
+        "last_result": "completed",
+        "last_started": "2026-10-20T12:00:00+00:00",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "pin-run"
+       },
+       "kitchen": {
+        "average_duration_seconds": 500,
+        "cleaning_mode": "vacuum",
+        "completed_runs": 6,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         500,
+         520,
+         480
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           500,
+           520,
+           480
+          ],
+          "duration_samples": 6,
+          "last_completed": "2026-10-10T08:00:00+00:00"
+         }
+        },
+        "duration_samples": 6,
+        "last_completed": "2026-10-10T08:00:00+00:00",
+        "last_duration_seconds": 480,
+        "last_result": "completed",
+        "name": "Kitchen",
+        "room_id": "kitchen"
+       }
+      }
+     },
+     "quick_clean": {
+      "rooms": {}
+     }
+    },
+    "plans": {
+     "home": {
+      "enabled": true,
+      "name": "Home",
+      "room_count": 3
+     },
+     "quick_clean": {
+      "enabled": true,
+      "name": "Quick",
+      "room_count": 1
+     }
+    },
+    "robot_reported_completed_by_room": {},
+    "selected_area": "nook",
+    "selected_area_name": "Nook",
+    "selected_plan": "home",
+    "selected_plan_name": "Home",
+    "skipped_runs": 0,
+    "suspended_runs": 0,
+    "unverified_runs": 0
+   },
+   "preview": {
+    "completion_timeout": 21600,
+    "entries": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "intelligent": true,
+    "plan_id": "home",
+    "plan_name": "Home",
+    "return_to_base": true,
+    "room_count": 3,
+    "rooms": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "rotation": [
+     {
+      "last_completion": null,
+      "last_opportunity": null,
+      "last_opportunity_source": null,
+      "last_result": null,
+      "rank": 1,
+      "room": "Den",
+      "room_id": "den",
+      "selection_reason": "no_prior_opportunity"
+     },
+     {
+      "last_completion": "2026-10-10T08:00:00+00:00",
+      "last_opportunity": "2026-10-10T08:00:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 2,
+      "room": "Kitchen",
+      "room_id": "kitchen",
+      "selection_reason": "least_recent_opportunity"
+     },
+     {
+      "last_completion": "2026-10-20T12:10:00+00:00",
+      "last_opportunity": "2026-10-20T12:10:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 3,
+      "room": "Hall",
+      "room_id": "hall",
+      "selection_reason": "least_recent_opportunity"
+     }
+    ],
+    "rotation_basis": "least_recent_opportunity",
+    "run_behavior": "intelligent",
+    "start_timeout": 120,
+    "valid": true
+   },
+   "progress": {
+    "home": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 1
+     }
+    },
+    "quick_clean": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 1
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 0
+     }
+    }
+   },
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "daily_room_completions": {
+      "hall": {
+       "receipts": [
+        {
+         "at": "2026-10-20T12:10:00+00:00",
+         "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "proof": "87dd60a970fb931b7ba1a5a9afd4e3cc8bd4525781a6e622c6d35dded29eae23"
+        }
+       ]
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "cause": "unknown",
+      "completed_room_count": 1,
+      "ended_at": "2026-10-20T12:10:00+00:00",
+      "finish_current_room": false,
+      "finish_current_room_threshold": 50,
+      "outcome": "completed",
+      "plan_id": "home",
+      "plan_name": "Home",
+      "provenance": "user",
+      "reason_code": "all_rooms_verified",
+      "room_count": 1,
+      "run_id": "pin-run",
+      "service": "test",
+      "started_at": "2026-10-20T12:00:00+00:00",
+      "trigger": "user"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+        "progress": {
+         "coverage": 0,
+         "mop": 0
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        },
+        "unverified_modes": [
+         "mop"
+        ]
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "kitchen"
+        },
+        {
+         "kind": "room",
+         "room_id": "hall"
+        },
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "do_mop_next": false,
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "hall"
+        }
+       ],
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "completed_runs": 1,
+       "last_completed": "2026-10-20T12:10:00+00:00",
+       "last_duration_seconds": 600,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "__matic_manual_room_sequence__": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      },
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 600,
+         "cleaning_mode": "vacuum_and_mop",
+         "completed_runs": 1,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          600
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          },
+          "vacuum_and_mop:standard": {
+           "duration_history_seconds": [
+            600
+           ],
+           "duration_samples": 1,
+           "last_completed": "2026-10-20T12:10:00+00:00"
+          }
+         },
+         "duration_samples": 1,
+         "last_completed": "2026-10-20T12:10:00+00:00",
+         "last_duration_seconds": 600,
+         "last_result": "completed",
+         "last_started": "2026-10-20T12:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "pin-run"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {}
+      }
+     },
+     "run_history": [
+      {
+       "areas": [],
+       "cause": "unknown",
+       "completed_room_count": 1,
+       "ended_at": "2026-10-20T12:10:00+00:00",
+       "finish_current_room": false,
+       "outcome": "completed",
+       "plan_id": "home",
+       "plan_name": "Home",
+       "provenance": "user",
+       "reason_code": "all_rooms_verified",
+       "room_count": 1,
+       "rooms": [
+        {
+         "name": "Hall",
+         "result": "completed"
+        }
+       ],
+       "run_id": "pin-run",
+       "started_at": "2026-10-20T12:00:00+00:00"
+      }
+     ],
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   },
+   "rotation": [
+    {
+     "last_completion": null,
+     "last_opportunity": null,
+     "last_opportunity_source": null,
+     "last_result": null,
+     "rank": 1,
+     "room": "Den",
+     "room_id": "den",
+     "selection_reason": "no_prior_opportunity"
+    },
+    {
+     "last_completion": "2026-10-10T08:00:00+00:00",
+     "last_opportunity": "2026-10-10T08:00:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 2,
+     "room": "Kitchen",
+     "room_id": "kitchen",
+     "selection_reason": "least_recent_opportunity"
+    },
+    {
+     "last_completion": "2026-10-20T12:10:00+00:00",
+     "last_opportunity": "2026-10-20T12:10:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 3,
+     "room": "Hall",
+     "room_id": "hall",
+     "selection_reason": "least_recent_opportunity"
+    }
+   ]
+  },
+  "loaded": {
+   "history": {
+    "active_plan": null,
+    "cancelled_runs": 0,
+    "completed_runs": 6,
+    "failed_runs": 0,
+    "interrupted_runs": 0,
+    "last_completed": "2026-10-12T08:20:00+00:00",
+    "last_completed_by_room": {
+     "den": {
+      "at": null,
+      "duration_seconds": null,
+      "name": "Den",
+      "runs": 0
+     },
+     "hall": {
+      "at": "2026-10-12T08:20:00+00:00",
+      "duration_seconds": 1200,
+      "name": "Hall",
+      "runs": 0
+     },
+     "kitchen": {
+      "at": "2026-10-10T08:00:00+00:00",
+      "duration_seconds": 480,
+      "name": "Kitchen",
+      "runs": 4
+     }
+    },
+    "last_interrupted_plan": {
+     "plan_id": "__matic_manual_room_sequence___1",
+     "plan_name": "Map Studio room clean",
+     "room_id": "den",
+     "run_id": "older-run"
+    },
+    "last_run": {
+     "completed_room_count": 1,
+     "ended_at": "2026-10-12T08:30:00+00:00",
+     "outcome": "cancelled",
+     "plan_id": "__matic_manual_room_sequence__",
+     "plan_name": "One-time room clean",
+     "provenance": "automation",
+     "room_count": 1,
+     "run_id": "legacy-run",
+     "service": "clean_room_sequence",
+     "started_at": "2026-10-12T08:00:00+00:00",
+     "trigger": "automation"
+    },
+    "native_reconciliation_pending": false,
+    "plan_history": {
+     "__matic_manual_room_sequence__": {
+      "rooms": {
+       "hall": {
+        "last_completed": "2026-10-12T08:20:00+00:00",
+        "last_duration_seconds": 1200,
+        "last_opportunity": "2026-10-12T08:00:00+00:00",
+        "last_result": "completed",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "legacy-run"
+       }
+      }
+     },
+     "broken": {
+      "rooms": {}
+     },
+     "home": {
+      "rooms": {
+       "hall": {
+        "average_duration_seconds": 300,
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           300,
+           300,
+           300
+          ],
+          "duration_samples": 3
+         }
+        },
+        "duration_samples": 3,
+        "last_result": "interrupted",
+        "last_started": "2026-10-11T08:00:00+00:00",
+        "name": "Hall",
+        "room_id": "hall"
+       },
+       "kitchen": {
+        "average_duration_seconds": 500,
+        "cleaning_mode": "vacuum",
+        "completed_runs": 6,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         500,
+         520,
+         480
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           500,
+           520,
+           480
+          ],
+          "duration_samples": 6,
+          "last_completed": "2026-10-10T08:00:00+00:00"
+         }
+        },
+        "duration_samples": 6,
+        "last_completed": "2026-10-10T08:00:00+00:00",
+        "last_duration_seconds": 480,
+        "last_result": "completed",
+        "name": "Kitchen",
+        "room_id": "kitchen"
+       }
+      }
+     },
+     "quick_clean": {
+      "rooms": {}
+     }
+    },
+    "plans": {
+     "home": {
+      "enabled": true,
+      "name": "Home",
+      "room_count": 3
+     },
+     "quick_clean": {
+      "enabled": true,
+      "name": "Quick",
+      "room_count": 1
+     }
+    },
+    "robot_reported_completed_by_room": {},
+    "selected_area": "nook",
+    "selected_area_name": "Nook",
+    "selected_plan": "home",
+    "selected_plan_name": "Home",
+    "skipped_runs": 0,
+    "suspended_runs": 0,
+    "unverified_runs": 0
+   },
+   "preview": {
+    "completion_timeout": 21600,
+    "entries": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 3,
+       "mop_progress": 2,
+       "next_coverage_in": null,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "intelligent": true,
+    "plan_id": "home",
+    "plan_name": "Home",
+    "return_to_base": true,
+    "room_count": 3,
+    "rooms": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 3,
+       "mop_progress": 2,
+       "next_coverage_in": null,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "rotation": [
+     {
+      "last_completion": null,
+      "last_opportunity": null,
+      "last_opportunity_source": null,
+      "last_result": null,
+      "rank": 1,
+      "room": "Den",
+      "room_id": "den",
+      "selection_reason": "no_prior_opportunity"
+     },
+     {
+      "last_completion": "2026-10-10T08:00:00+00:00",
+      "last_opportunity": "2026-10-10T08:00:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 2,
+      "room": "Kitchen",
+      "room_id": "kitchen",
+      "selection_reason": "least_recent_opportunity"
+     },
+     {
+      "last_completion": "2026-10-12T08:20:00+00:00",
+      "last_opportunity": "2026-10-12T08:20:00+00:00",
+      "last_opportunity_source": "global",
+      "last_result": "interrupted",
+      "rank": 3,
+      "room": "Hall",
+      "room_id": "hall",
+      "selection_reason": "least_recent_opportunity"
+     }
+    ],
+    "rotation_basis": "least_recent_opportunity",
+    "run_behavior": "intelligent",
+    "start_timeout": 120,
+    "valid": true
+   },
+   "progress": {
+    "home": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 2
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 1
+     }
+    },
+    "quick_clean": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 1
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 0
+     }
+    }
+   },
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "completed_room_count": 1,
+      "ended_at": "2026-10-12T08:30:00+00:00",
+      "outcome": "cancelled",
+      "plan_id": "__matic_manual_room_sequence__",
+      "plan_name": "One-time room clean",
+      "provenance": "automation",
+      "room_count": 1,
+      "run_id": "legacy-run",
+      "service": "clean_room_sequence",
+      "started_at": "2026-10-12T08:00:00+00:00",
+      "trigger": "automation"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 2
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        },
+        "unverified_modes": [
+         "mop"
+        ]
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "kitchen"
+        },
+        {
+         "kind": "room",
+         "room_id": "hall"
+        },
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "hall"
+        }
+       ],
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "last_completed": "2026-10-12T08:20:00+00:00",
+       "last_duration_seconds": 1200,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "__matic_manual_room_sequence__": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      },
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 300,
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          }
+         },
+         "duration_samples": 3,
+         "last_result": "interrupted",
+         "last_started": "2026-10-11T08:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {}
+      }
+     },
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   },
+   "rotation": [
+    {
+     "last_completion": null,
+     "last_opportunity": null,
+     "last_opportunity_source": null,
+     "last_result": null,
+     "rank": 1,
+     "room": "Den",
+     "room_id": "den",
+     "selection_reason": "no_prior_opportunity"
+    },
+    {
+     "last_completion": "2026-10-10T08:00:00+00:00",
+     "last_opportunity": "2026-10-10T08:00:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 2,
+     "room": "Kitchen",
+     "room_id": "kitchen",
+     "selection_reason": "least_recent_opportunity"
+    },
+    {
+     "last_completion": "2026-10-12T08:20:00+00:00",
+     "last_opportunity": "2026-10-12T08:20:00+00:00",
+     "last_opportunity_source": "global",
+     "last_result": "interrupted",
+     "rank": 3,
+     "room": "Hall",
+     "room_id": "hall",
+     "selection_reason": "least_recent_opportunity"
+    }
+   ]
+  },
+  "reloaded": {
+   "history": {
+    "active_plan": null,
+    "cancelled_runs": 0,
+    "completed_runs": 7,
+    "failed_runs": 0,
+    "interrupted_runs": 0,
+    "last_completed": "2026-10-20T12:10:00+00:00",
+    "last_completed_by_room": {
+     "den": {
+      "at": null,
+      "duration_seconds": null,
+      "name": "Den",
+      "runs": 0
+     },
+     "hall": {
+      "at": "2026-10-20T12:10:00+00:00",
+      "duration_seconds": 600,
+      "name": "Hall",
+      "runs": 1
+     },
+     "kitchen": {
+      "at": "2026-10-10T08:00:00+00:00",
+      "duration_seconds": 480,
+      "name": "Kitchen",
+      "runs": 4
+     }
+    },
+    "last_interrupted_plan": {
+     "plan_id": "__matic_manual_room_sequence___1",
+     "plan_name": "Map Studio room clean",
+     "room_id": "den",
+     "run_id": "older-run"
+    },
+    "last_run": {
+     "cause": "unknown",
+     "completed_room_count": 1,
+     "ended_at": "2026-10-20T12:10:00+00:00",
+     "finish_current_room": false,
+     "finish_current_room_threshold": 50,
+     "outcome": "completed",
+     "plan_id": "home",
+     "plan_name": "Home",
+     "provenance": "user",
+     "reason_code": "all_rooms_verified",
+     "room_count": 1,
+     "run_id": "pin-run",
+     "service": "test",
+     "started_at": "2026-10-20T12:00:00+00:00",
+     "trigger": "user"
+    },
+    "native_reconciliation_pending": false,
+    "plan_history": {
+     "__matic_manual_room_sequence__": {
+      "rooms": {
+       "hall": {
+        "last_completed": "2026-10-12T08:20:00+00:00",
+        "last_duration_seconds": 1200,
+        "last_opportunity": "2026-10-12T08:00:00+00:00",
+        "last_result": "completed",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "legacy-run"
+       }
+      }
+     },
+     "broken": {
+      "rooms": {}
+     },
+     "home": {
+      "rooms": {
+       "hall": {
+        "average_duration_seconds": 600,
+        "cleaning_mode": "vacuum_and_mop",
+        "completed_runs": 1,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         600
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           300,
+           300,
+           300
+          ],
+          "duration_samples": 3
+         },
+         "vacuum_and_mop:standard": {
+          "duration_history_seconds": [
+           600
+          ],
+          "duration_samples": 1,
+          "last_completed": "2026-10-20T12:10:00+00:00"
+         }
+        },
+        "duration_samples": 1,
+        "last_completed": "2026-10-20T12:10:00+00:00",
+        "last_duration_seconds": 600,
+        "last_result": "completed",
+        "last_started": "2026-10-20T12:00:00+00:00",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "pin-run"
+       },
+       "kitchen": {
+        "average_duration_seconds": 500,
+        "cleaning_mode": "vacuum",
+        "completed_runs": 6,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         500,
+         520,
+         480
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           500,
+           520,
+           480
+          ],
+          "duration_samples": 6,
+          "last_completed": "2026-10-10T08:00:00+00:00"
+         }
+        },
+        "duration_samples": 6,
+        "last_completed": "2026-10-10T08:00:00+00:00",
+        "last_duration_seconds": 480,
+        "last_result": "completed",
+        "name": "Kitchen",
+        "room_id": "kitchen"
+       }
+      }
+     },
+     "quick_clean": {
+      "rooms": {}
+     }
+    },
+    "plans": {
+     "home": {
+      "enabled": true,
+      "name": "Home",
+      "room_count": 3
+     },
+     "quick_clean": {
+      "enabled": true,
+      "name": "Quick",
+      "room_count": 1
+     }
+    },
+    "robot_reported_completed_by_room": {},
+    "selected_area": "nook",
+    "selected_area_name": "Nook",
+    "selected_plan": "home",
+    "selected_plan_name": "Home",
+    "skipped_runs": 0,
+    "suspended_runs": 0,
+    "unverified_runs": 0
+   },
+   "preview": {
+    "completion_timeout": 21600,
+    "entries": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "intelligent": true,
+    "plan_id": "home",
+    "plan_name": "Home",
+    "return_to_base": true,
+    "room_count": 3,
+    "rooms": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "rotation": [
+     {
+      "last_completion": null,
+      "last_opportunity": null,
+      "last_opportunity_source": null,
+      "last_result": null,
+      "rank": 1,
+      "room": "Den",
+      "room_id": "den",
+      "selection_reason": "no_prior_opportunity"
+     },
+     {
+      "last_completion": "2026-10-10T08:00:00+00:00",
+      "last_opportunity": "2026-10-10T08:00:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 2,
+      "room": "Kitchen",
+      "room_id": "kitchen",
+      "selection_reason": "least_recent_opportunity"
+     },
+     {
+      "last_completion": "2026-10-20T12:10:00+00:00",
+      "last_opportunity": "2026-10-20T12:10:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 3,
+      "room": "Hall",
+      "room_id": "hall",
+      "selection_reason": "least_recent_opportunity"
+     }
+    ],
+    "rotation_basis": "least_recent_opportunity",
+    "run_behavior": "intelligent",
+    "start_timeout": 120,
+    "valid": true
+   },
+   "progress": {
+    "home": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 1
+     }
+    },
+    "quick_clean": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 1
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 0
+     }
+    }
+   },
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "daily_room_completions": {
+      "hall": {
+       "receipts": [
+        {
+         "at": "2026-10-20T12:10:00+00:00",
+         "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "proof": "87dd60a970fb931b7ba1a5a9afd4e3cc8bd4525781a6e622c6d35dded29eae23"
+        }
+       ]
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "cause": "unknown",
+      "completed_room_count": 1,
+      "ended_at": "2026-10-20T12:10:00+00:00",
+      "finish_current_room": false,
+      "finish_current_room_threshold": 50,
+      "outcome": "completed",
+      "plan_id": "home",
+      "plan_name": "Home",
+      "provenance": "user",
+      "reason_code": "all_rooms_verified",
+      "room_count": 1,
+      "run_id": "pin-run",
+      "service": "test",
+      "started_at": "2026-10-20T12:00:00+00:00",
+      "trigger": "user"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+        "progress": {
+         "coverage": 0,
+         "mop": 0
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        },
+        "unverified_modes": [
+         "mop"
+        ]
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "kitchen"
+        },
+        {
+         "kind": "room",
+         "room_id": "hall"
+        },
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "do_mop_next": false,
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "hall"
+        }
+       ],
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "completed_runs": 1,
+       "last_completed": "2026-10-20T12:10:00+00:00",
+       "last_duration_seconds": 600,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "__matic_manual_room_sequence__": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      },
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 600,
+         "cleaning_mode": "vacuum_and_mop",
+         "completed_runs": 1,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          600
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          },
+          "vacuum_and_mop:standard": {
+           "duration_history_seconds": [
+            600
+           ],
+           "duration_samples": 1,
+           "last_completed": "2026-10-20T12:10:00+00:00"
+          }
+         },
+         "duration_samples": 1,
+         "last_completed": "2026-10-20T12:10:00+00:00",
+         "last_duration_seconds": 600,
+         "last_result": "completed",
+         "last_started": "2026-10-20T12:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "pin-run"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {}
+      }
+     },
+     "run_history": [
+      {
+       "areas": [],
+       "cause": "unknown",
+       "completed_room_count": 1,
+       "ended_at": "2026-10-20T12:10:00+00:00",
+       "finish_current_room": false,
+       "outcome": "completed",
+       "plan_id": "home",
+       "plan_name": "Home",
+       "provenance": "user",
+       "reason_code": "all_rooms_verified",
+       "room_count": 1,
+       "rooms": [
+        {
+         "name": "Hall",
+         "result": "completed"
+        }
+       ],
+       "run_id": "pin-run",
+       "started_at": "2026-10-20T12:00:00+00:00"
+      }
+     ],
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   },
+   "rotation": [
+    {
+     "last_completion": null,
+     "last_opportunity": null,
+     "last_opportunity_source": null,
+     "last_result": null,
+     "rank": 1,
+     "room": "Den",
+     "room_id": "den",
+     "selection_reason": "no_prior_opportunity"
+    },
+    {
+     "last_completion": "2026-10-10T08:00:00+00:00",
+     "last_opportunity": "2026-10-10T08:00:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 2,
+     "room": "Kitchen",
+     "room_id": "kitchen",
+     "selection_reason": "least_recent_opportunity"
+    },
+    {
+     "last_completion": "2026-10-20T12:10:00+00:00",
+     "last_opportunity": "2026-10-20T12:10:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 3,
+     "room": "Hall",
+     "room_id": "hall",
+     "selection_reason": "least_recent_opportunity"
+    }
+   ]
+  },
+  "saved": {
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "daily_room_completions": {
+      "hall": {
+       "receipts": [
+        {
+         "at": "2026-10-20T12:10:00+00:00",
+         "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "proof": "87dd60a970fb931b7ba1a5a9afd4e3cc8bd4525781a6e622c6d35dded29eae23"
+        }
+       ]
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "cause": "unknown",
+      "completed_room_count": 1,
+      "ended_at": "2026-10-20T12:10:00+00:00",
+      "finish_current_room": false,
+      "finish_current_room_threshold": 50,
+      "outcome": "completed",
+      "plan_id": "home",
+      "plan_name": "Home",
+      "provenance": "user",
+      "reason_code": "all_rooms_verified",
+      "room_count": 1,
+      "run_id": "pin-run",
+      "service": "test",
+      "started_at": "2026-10-20T12:00:00+00:00",
+      "trigger": "user"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+        "progress": {
+         "coverage": 0,
+         "mop": 0
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        },
+        "unverified_modes": [
+         "mop"
+        ]
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "kitchen"
+        },
+        {
+         "kind": "room",
+         "room_id": "hall"
+        },
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "do_mop_next": false,
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "hall"
+        }
+       ],
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "completed_runs": 1,
+       "last_completed": "2026-10-20T12:10:00+00:00",
+       "last_duration_seconds": 600,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "__matic_manual_room_sequence__": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      },
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 600,
+         "cleaning_mode": "vacuum_and_mop",
+         "completed_runs": 1,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          600
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          },
+          "vacuum_and_mop:standard": {
+           "duration_history_seconds": [
+            600
+           ],
+           "duration_samples": 1,
+           "last_completed": "2026-10-20T12:10:00+00:00"
+          }
+         },
+         "duration_samples": 1,
+         "last_completed": "2026-10-20T12:10:00+00:00",
+         "last_duration_seconds": 600,
+         "last_result": "completed",
+         "last_started": "2026-10-20T12:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "pin-run"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {}
+      }
+     },
+     "run_history": [
+      {
+       "areas": [],
+       "cause": "unknown",
+       "completed_room_count": 1,
+       "ended_at": "2026-10-20T12:10:00+00:00",
+       "finish_current_room": false,
+       "outcome": "completed",
+       "plan_id": "home",
+       "plan_name": "Home",
+       "provenance": "user",
+       "reason_code": "all_rooms_verified",
+       "room_count": 1,
+       "rooms": [
+        {
+         "name": "Hall",
+         "result": "completed"
+        }
+       ],
+       "run_id": "pin-run",
+       "started_at": "2026-10-20T12:00:00+00:00"
+      }
+     ],
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "entries": [
+        {
+         "kind": "room",
+         "room_id": "den"
+        }
+       ],
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   }
+  }
+ },
+ "0.5": {
+  "credited": {
+   "history": {
+    "active_plan": null,
+    "cancelled_runs": 0,
+    "completed_runs": 7,
+    "failed_runs": 0,
+    "interrupted_runs": 0,
+    "last_completed": "2026-10-20T12:10:00+00:00",
+    "last_completed_by_room": {
+     "den": {
+      "at": null,
+      "duration_seconds": null,
+      "name": "Den",
+      "runs": 0
+     },
+     "hall": {
+      "at": "2026-10-20T12:10:00+00:00",
+      "duration_seconds": 600,
+      "name": "Hall",
+      "runs": 1
+     },
+     "kitchen": {
+      "at": "2026-10-10T08:00:00+00:00",
+      "duration_seconds": 480,
+      "name": "Kitchen",
+      "runs": 4
+     }
+    },
+    "last_interrupted_plan": {
+     "plan_id": "__matic_manual_room_sequence___1",
+     "plan_name": "Map Studio room clean",
+     "room_id": "den",
+     "run_id": "older-run"
+    },
+    "last_run": {
+     "cause": "unknown",
+     "completed_room_count": 1,
+     "ended_at": "2026-10-20T12:10:00+00:00",
+     "finish_current_room": false,
+     "finish_current_room_threshold": 50,
+     "outcome": "completed",
+     "plan_id": "home",
+     "plan_name": "Home",
+     "provenance": "user",
+     "reason_code": "all_rooms_verified",
+     "room_count": 1,
+     "run_id": "pin-run",
+     "service": "test",
+     "started_at": "2026-10-20T12:00:00+00:00",
+     "trigger": "user"
+    },
+    "native_reconciliation_pending": false,
+    "plan_history": {
+     "broken": {
+      "rooms": {}
+     },
+     "home": {
+      "rooms": {
+       "hall": {
+        "average_duration_seconds": 600,
+        "cleaning_mode": "vacuum_and_mop",
+        "completed_runs": 1,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         600
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           300,
+           300,
+           300
+          ],
+          "duration_samples": 3
+         },
+         "vacuum_and_mop:standard": {
+          "duration_history_seconds": [
+           600
+          ],
+          "duration_samples": 1,
+          "last_completed": "2026-10-20T12:10:00+00:00"
+         }
+        },
+        "duration_samples": 1,
+        "last_completed": "2026-10-20T12:10:00+00:00",
+        "last_duration_seconds": 600,
+        "last_result": "completed",
+        "last_started": "2026-10-20T12:00:00+00:00",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "pin-run"
+       },
+       "kitchen": {
+        "average_duration_seconds": 500,
+        "cleaning_mode": "vacuum",
+        "completed_runs": 6,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         500,
+         520,
+         480
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           500,
+           520,
+           480
+          ],
+          "duration_samples": 6,
+          "last_completed": "2026-10-10T08:00:00+00:00"
+         }
+        },
+        "duration_samples": 6,
+        "last_completed": "2026-10-10T08:00:00+00:00",
+        "last_duration_seconds": 480,
+        "last_result": "completed",
+        "name": "Kitchen",
+        "room_id": "kitchen"
+       }
+      }
+     },
+     "quick_clean": {
+      "rooms": {
+       "hall": {
+        "last_completed": "2026-10-12T08:20:00+00:00",
+        "last_duration_seconds": 1200,
+        "last_opportunity": "2026-10-12T08:00:00+00:00",
+        "last_result": "completed",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "legacy-run"
+       }
+      }
+     }
+    },
+    "plans": {
+     "home": {
+      "enabled": true,
+      "name": "Home",
+      "room_count": 3
+     },
+     "quick_clean": {
+      "enabled": true,
+      "name": "Quick",
+      "room_count": 1
+     }
+    },
+    "robot_reported_completed_by_room": {},
+    "selected_area": "nook",
+    "selected_area_name": "Nook",
+    "selected_plan": "home",
+    "selected_plan_name": "Home",
+    "skipped_runs": 0,
+    "suspended_runs": 0,
+    "unverified_runs": 0
+   },
+   "preview": {
+    "completion_timeout": 21600,
+    "entries": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "intelligent": true,
+    "plan_id": "home",
+    "plan_name": "Home",
+    "return_to_base": true,
+    "room_count": 3,
+    "rooms": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "rotation": [
+     {
+      "last_completion": null,
+      "last_opportunity": null,
+      "last_opportunity_source": null,
+      "last_result": null,
+      "rank": 1,
+      "room": "Den",
+      "room_id": "den",
+      "selection_reason": "no_prior_opportunity"
+     },
+     {
+      "last_completion": "2026-10-10T08:00:00+00:00",
+      "last_opportunity": "2026-10-10T08:00:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 2,
+      "room": "Kitchen",
+      "room_id": "kitchen",
+      "selection_reason": "least_recent_opportunity"
+     },
+     {
+      "last_completion": "2026-10-20T12:10:00+00:00",
+      "last_opportunity": "2026-10-20T12:10:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 3,
+      "room": "Hall",
+      "room_id": "hall",
+      "selection_reason": "least_recent_opportunity"
+     }
+    ],
+    "rotation_basis": "least_recent_opportunity",
+    "run_behavior": "intelligent",
+    "start_timeout": 120,
+    "valid": true
+   },
+   "progress": {
+    "home": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 1
+     }
+    },
+    "quick_clean": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 1
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 0
+     }
+    }
+   },
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "daily_room_completions": {
+      "hall": {
+       "receipts": [
+        {
+         "at": "2026-10-20T12:10:00+00:00",
+         "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "proof": "87dd60a970fb931b7ba1a5a9afd4e3cc8bd4525781a6e622c6d35dded29eae23"
+        }
+       ]
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "cause": "unknown",
+      "completed_room_count": 1,
+      "ended_at": "2026-10-20T12:10:00+00:00",
+      "finish_current_room": false,
+      "finish_current_room_threshold": 50,
+      "outcome": "completed",
+      "plan_id": "home",
+      "plan_name": "Home",
+      "provenance": "user",
+      "reason_code": "all_rooms_verified",
+      "room_count": 1,
+      "run_id": "pin-run",
+      "service": "test",
+      "started_at": "2026-10-20T12:00:00+00:00",
+      "trigger": "user"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+        "progress": {
+         "coverage": 0,
+         "mop": 0
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        }
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "do_mop_next": false,
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "completed_runs": 1,
+       "last_completed": "2026-10-20T12:10:00+00:00",
+       "last_duration_seconds": 600,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 600,
+         "cleaning_mode": "vacuum_and_mop",
+         "completed_runs": 1,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          600
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          },
+          "vacuum_and_mop:standard": {
+           "duration_history_seconds": [
+            600
+           ],
+           "duration_samples": 1,
+           "last_completed": "2026-10-20T12:10:00+00:00"
+          }
+         },
+         "duration_samples": 1,
+         "last_completed": "2026-10-20T12:10:00+00:00",
+         "last_duration_seconds": 600,
+         "last_result": "completed",
+         "last_started": "2026-10-20T12:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "pin-run"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      }
+     },
+     "run_history": [
+      {
+       "areas": [],
+       "cause": "unknown",
+       "completed_room_count": 1,
+       "ended_at": "2026-10-20T12:10:00+00:00",
+       "finish_current_room": false,
+       "outcome": "completed",
+       "plan_id": "home",
+       "plan_name": "Home",
+       "provenance": "user",
+       "reason_code": "all_rooms_verified",
+       "room_count": 1,
+       "rooms": [
+        {
+         "name": "Hall",
+         "result": "completed"
+        }
+       ],
+       "run_id": "pin-run",
+       "started_at": "2026-10-20T12:00:00+00:00"
+      }
+     ],
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   },
+   "rotation": [
+    {
+     "last_completion": null,
+     "last_opportunity": null,
+     "last_opportunity_source": null,
+     "last_result": null,
+     "rank": 1,
+     "room": "Den",
+     "room_id": "den",
+     "selection_reason": "no_prior_opportunity"
+    },
+    {
+     "last_completion": "2026-10-10T08:00:00+00:00",
+     "last_opportunity": "2026-10-10T08:00:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 2,
+     "room": "Kitchen",
+     "room_id": "kitchen",
+     "selection_reason": "least_recent_opportunity"
+    },
+    {
+     "last_completion": "2026-10-20T12:10:00+00:00",
+     "last_opportunity": "2026-10-20T12:10:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 3,
+     "room": "Hall",
+     "room_id": "hall",
+     "selection_reason": "least_recent_opportunity"
+    }
+   ]
+  },
+  "loaded": {
+   "history": {
+    "active_plan": null,
+    "cancelled_runs": 0,
+    "completed_runs": 6,
+    "failed_runs": 0,
+    "interrupted_runs": 0,
+    "last_completed": "2026-10-12T08:20:00+00:00",
+    "last_completed_by_room": {
+     "den": {
+      "at": null,
+      "duration_seconds": null,
+      "name": "Den",
+      "runs": 0
+     },
+     "hall": {
+      "at": "2026-10-12T08:20:00+00:00",
+      "duration_seconds": 1200,
+      "name": "Hall",
+      "runs": 0
+     },
+     "kitchen": {
+      "at": "2026-10-10T08:00:00+00:00",
+      "duration_seconds": 480,
+      "name": "Kitchen",
+      "runs": 4
+     }
+    },
+    "last_interrupted_plan": {
+     "plan_id": "__matic_manual_room_sequence___1",
+     "plan_name": "Map Studio room clean",
+     "room_id": "den",
+     "run_id": "older-run"
+    },
+    "last_run": {
+     "completed_room_count": 1,
+     "ended_at": "2026-10-12T08:30:00+00:00",
+     "outcome": "cancelled",
+     "plan_id": "quick_clean",
+     "plan_name": "Quick",
+     "provenance": "automation",
+     "room_count": 1,
+     "run_id": "legacy-run",
+     "service": "clean_room_sequence",
+     "started_at": "2026-10-12T08:00:00+00:00",
+     "trigger": "automation"
+    },
+    "native_reconciliation_pending": false,
+    "plan_history": {
+     "broken": {
+      "rooms": {}
+     },
+     "home": {
+      "rooms": {
+       "hall": {
+        "average_duration_seconds": 300,
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           300,
+           300,
+           300
+          ],
+          "duration_samples": 3
+         }
+        },
+        "duration_samples": 3,
+        "last_result": "interrupted",
+        "last_started": "2026-10-11T08:00:00+00:00",
+        "name": "Hall",
+        "room_id": "hall"
+       },
+       "kitchen": {
+        "average_duration_seconds": 500,
+        "cleaning_mode": "vacuum",
+        "completed_runs": 6,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         500,
+         520,
+         480
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           500,
+           520,
+           480
+          ],
+          "duration_samples": 6,
+          "last_completed": "2026-10-10T08:00:00+00:00"
+         }
+        },
+        "duration_samples": 6,
+        "last_completed": "2026-10-10T08:00:00+00:00",
+        "last_duration_seconds": 480,
+        "last_result": "completed",
+        "name": "Kitchen",
+        "room_id": "kitchen"
+       }
+      }
+     },
+     "quick_clean": {
+      "rooms": {
+       "hall": {
+        "last_completed": "2026-10-12T08:20:00+00:00",
+        "last_duration_seconds": 1200,
+        "last_opportunity": "2026-10-12T08:00:00+00:00",
+        "last_result": "completed",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "legacy-run"
+       }
+      }
+     }
+    },
+    "plans": {
+     "home": {
+      "enabled": true,
+      "name": "Home",
+      "room_count": 3
+     },
+     "quick_clean": {
+      "enabled": true,
+      "name": "Quick",
+      "room_count": 1
+     }
+    },
+    "robot_reported_completed_by_room": {},
+    "selected_area": "nook",
+    "selected_area_name": "Nook",
+    "selected_plan": "home",
+    "selected_plan_name": "Home",
+    "skipped_runs": 0,
+    "suspended_runs": 0,
+    "unverified_runs": 0
+   },
+   "preview": {
+    "completion_timeout": 21600,
+    "entries": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 3,
+       "mop_progress": 2,
+       "next_coverage_in": null,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "intelligent": true,
+    "plan_id": "home",
+    "plan_name": "Home",
+    "return_to_base": true,
+    "room_count": 3,
+    "rooms": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 3,
+       "mop_progress": 2,
+       "next_coverage_in": null,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "rotation": [
+     {
+      "last_completion": null,
+      "last_opportunity": null,
+      "last_opportunity_source": null,
+      "last_result": null,
+      "rank": 1,
+      "room": "Den",
+      "room_id": "den",
+      "selection_reason": "no_prior_opportunity"
+     },
+     {
+      "last_completion": "2026-10-10T08:00:00+00:00",
+      "last_opportunity": "2026-10-10T08:00:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 2,
+      "room": "Kitchen",
+      "room_id": "kitchen",
+      "selection_reason": "least_recent_opportunity"
+     },
+     {
+      "last_completion": "2026-10-12T08:20:00+00:00",
+      "last_opportunity": "2026-10-12T08:20:00+00:00",
+      "last_opportunity_source": "global",
+      "last_result": "interrupted",
+      "rank": 3,
+      "room": "Hall",
+      "room_id": "hall",
+      "selection_reason": "least_recent_opportunity"
+     }
+    ],
+    "rotation_basis": "least_recent_opportunity",
+    "run_behavior": "intelligent",
+    "start_timeout": 120,
+    "valid": true
+   },
+   "progress": {
+    "home": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 2
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 1
+     }
+    },
+    "quick_clean": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 1
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 0
+     }
+    }
+   },
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "completed_room_count": 1,
+      "ended_at": "2026-10-12T08:30:00+00:00",
+      "outcome": "cancelled",
+      "plan_id": "quick_clean",
+      "plan_name": "Quick",
+      "provenance": "automation",
+      "room_count": 1,
+      "run_id": "legacy-run",
+      "service": "clean_room_sequence",
+      "started_at": "2026-10-12T08:00:00+00:00",
+      "trigger": "automation"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 2
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        }
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "last_completed": "2026-10-12T08:20:00+00:00",
+       "last_duration_seconds": 1200,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 300,
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          }
+         },
+         "duration_samples": 3,
+         "last_result": "interrupted",
+         "last_started": "2026-10-11T08:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      }
+     },
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   },
+   "rotation": [
+    {
+     "last_completion": null,
+     "last_opportunity": null,
+     "last_opportunity_source": null,
+     "last_result": null,
+     "rank": 1,
+     "room": "Den",
+     "room_id": "den",
+     "selection_reason": "no_prior_opportunity"
+    },
+    {
+     "last_completion": "2026-10-10T08:00:00+00:00",
+     "last_opportunity": "2026-10-10T08:00:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 2,
+     "room": "Kitchen",
+     "room_id": "kitchen",
+     "selection_reason": "least_recent_opportunity"
+    },
+    {
+     "last_completion": "2026-10-12T08:20:00+00:00",
+     "last_opportunity": "2026-10-12T08:20:00+00:00",
+     "last_opportunity_source": "global",
+     "last_result": "interrupted",
+     "rank": 3,
+     "room": "Hall",
+     "room_id": "hall",
+     "selection_reason": "least_recent_opportunity"
+    }
+   ]
+  },
+  "reloaded": {
+   "history": {
+    "active_plan": null,
+    "cancelled_runs": 0,
+    "completed_runs": 7,
+    "failed_runs": 0,
+    "interrupted_runs": 0,
+    "last_completed": "2026-10-20T12:10:00+00:00",
+    "last_completed_by_room": {
+     "den": {
+      "at": null,
+      "duration_seconds": null,
+      "name": "Den",
+      "runs": 0
+     },
+     "hall": {
+      "at": "2026-10-20T12:10:00+00:00",
+      "duration_seconds": 600,
+      "name": "Hall",
+      "runs": 1
+     },
+     "kitchen": {
+      "at": "2026-10-10T08:00:00+00:00",
+      "duration_seconds": 480,
+      "name": "Kitchen",
+      "runs": 4
+     }
+    },
+    "last_interrupted_plan": {
+     "plan_id": "__matic_manual_room_sequence___1",
+     "plan_name": "Map Studio room clean",
+     "room_id": "den",
+     "run_id": "older-run"
+    },
+    "last_run": {
+     "cause": "unknown",
+     "completed_room_count": 1,
+     "ended_at": "2026-10-20T12:10:00+00:00",
+     "finish_current_room": false,
+     "finish_current_room_threshold": 50,
+     "outcome": "completed",
+     "plan_id": "home",
+     "plan_name": "Home",
+     "provenance": "user",
+     "reason_code": "all_rooms_verified",
+     "room_count": 1,
+     "run_id": "pin-run",
+     "service": "test",
+     "started_at": "2026-10-20T12:00:00+00:00",
+     "trigger": "user"
+    },
+    "native_reconciliation_pending": false,
+    "plan_history": {
+     "broken": {
+      "rooms": {}
+     },
+     "home": {
+      "rooms": {
+       "hall": {
+        "average_duration_seconds": 600,
+        "cleaning_mode": "vacuum_and_mop",
+        "completed_runs": 1,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         600
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           300,
+           300,
+           300
+          ],
+          "duration_samples": 3
+         },
+         "vacuum_and_mop:standard": {
+          "duration_history_seconds": [
+           600
+          ],
+          "duration_samples": 1,
+          "last_completed": "2026-10-20T12:10:00+00:00"
+         }
+        },
+        "duration_samples": 1,
+        "last_completed": "2026-10-20T12:10:00+00:00",
+        "last_duration_seconds": 600,
+        "last_result": "completed",
+        "last_started": "2026-10-20T12:00:00+00:00",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "pin-run"
+       },
+       "kitchen": {
+        "average_duration_seconds": 500,
+        "cleaning_mode": "vacuum",
+        "completed_runs": 6,
+        "coverage_setting": "standard",
+        "duration_history_seconds": [
+         500,
+         520,
+         480
+        ],
+        "duration_profiles": {
+         "vacuum:standard": {
+          "duration_history_seconds": [
+           500,
+           520,
+           480
+          ],
+          "duration_samples": 6,
+          "last_completed": "2026-10-10T08:00:00+00:00"
+         }
+        },
+        "duration_samples": 6,
+        "last_completed": "2026-10-10T08:00:00+00:00",
+        "last_duration_seconds": 480,
+        "last_result": "completed",
+        "name": "Kitchen",
+        "room_id": "kitchen"
+       }
+      }
+     },
+     "quick_clean": {
+      "rooms": {
+       "hall": {
+        "last_completed": "2026-10-12T08:20:00+00:00",
+        "last_duration_seconds": 1200,
+        "last_opportunity": "2026-10-12T08:00:00+00:00",
+        "last_result": "completed",
+        "name": "Hall",
+        "room_id": "hall",
+        "run_id": "legacy-run"
+       }
+      }
+     }
+    },
+    "plans": {
+     "home": {
+      "enabled": true,
+      "name": "Home",
+      "room_count": 3
+     },
+     "quick_clean": {
+      "enabled": true,
+      "name": "Quick",
+      "room_count": 1
+     }
+    },
+    "robot_reported_completed_by_room": {},
+    "selected_area": "nook",
+    "selected_area_name": "Nook",
+    "selected_plan": "home",
+    "selected_plan_name": "Home",
+    "skipped_runs": 0,
+    "suspended_runs": 0,
+    "unverified_runs": 0
+   },
+   "preview": {
+    "completion_timeout": 21600,
+    "entries": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "kind": "room",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "intelligent": true,
+    "plan_id": "home",
+    "plan_name": "Home",
+    "return_to_base": true,
+    "room_count": 3,
+    "rooms": [
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "effective_cleaning_mode": "mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": null,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": null,
+       "periodic_coverage_setting": null,
+       "schedule_active": false,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "mop",
+      "coverage_setting": "standard",
+      "name": "Den",
+      "room_id": "den"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": 3,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum_and_mop",
+       "effective_coverage_setting": "standard",
+       "mop_due": true,
+       "mop_every_n": 2,
+       "mop_progress": 1,
+       "next_coverage_in": 3,
+       "next_mop_in": 1,
+       "periodic_coverage_setting": "heavy_duty",
+       "schedule_active": true,
+       "scope": "shared",
+       "shared_schedule_participating": true
+      },
+      "cleaning_mode": "vacuum_and_mop",
+      "coverage_setting": "standard",
+      "name": "Kitchen",
+      "room_id": "kitchen"
+     },
+     {
+      "cadence": {
+       "coverage_due": false,
+       "coverage_every_n": null,
+       "coverage_progress": 0,
+       "do_coverage_next": false,
+       "do_mop_next": false,
+       "effective_cleaning_mode": "vacuum",
+       "effective_coverage_setting": "standard",
+       "mop_due": false,
+       "mop_every_n": 3,
+       "mop_progress": 0,
+       "next_coverage_in": null,
+       "next_mop_in": 3,
+       "periodic_coverage_setting": null,
+       "schedule_active": true,
+       "scope": "plan",
+       "shared_schedule_participating": false
+      },
+      "cleaning_mode": "vacuum",
+      "coverage_setting": "standard",
+      "name": "Hall",
+      "room_id": "hall"
+     }
+    ],
+    "rotation": [
+     {
+      "last_completion": null,
+      "last_opportunity": null,
+      "last_opportunity_source": null,
+      "last_result": null,
+      "rank": 1,
+      "room": "Den",
+      "room_id": "den",
+      "selection_reason": "no_prior_opportunity"
+     },
+     {
+      "last_completion": "2026-10-10T08:00:00+00:00",
+      "last_opportunity": "2026-10-10T08:00:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 2,
+      "room": "Kitchen",
+      "room_id": "kitchen",
+      "selection_reason": "least_recent_opportunity"
+     },
+     {
+      "last_completion": "2026-10-20T12:10:00+00:00",
+      "last_opportunity": "2026-10-20T12:10:00+00:00",
+      "last_opportunity_source": "plan",
+      "last_result": "completed",
+      "rank": 3,
+      "room": "Hall",
+      "room_id": "hall",
+      "selection_reason": "least_recent_opportunity"
+     }
+    ],
+    "rotation_basis": "least_recent_opportunity",
+    "run_behavior": "intelligent",
+    "start_timeout": 120,
+    "valid": true
+   },
+   "progress": {
+    "home": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 1
+     }
+    },
+    "quick_clean": {
+     "den": {
+      "coverage": 0,
+      "mop": 0
+     },
+     "hall": {
+      "coverage": 0,
+      "mop": 1
+     },
+     "kitchen": {
+      "coverage": 0,
+      "mop": 0
+     }
+    }
+   },
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "daily_room_completions": {
+      "hall": {
+       "receipts": [
+        {
+         "at": "2026-10-20T12:10:00+00:00",
+         "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "proof": "87dd60a970fb931b7ba1a5a9afd4e3cc8bd4525781a6e622c6d35dded29eae23"
+        }
+       ]
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "cause": "unknown",
+      "completed_room_count": 1,
+      "ended_at": "2026-10-20T12:10:00+00:00",
+      "finish_current_room": false,
+      "finish_current_room_threshold": 50,
+      "outcome": "completed",
+      "plan_id": "home",
+      "plan_name": "Home",
+      "provenance": "user",
+      "reason_code": "all_rooms_verified",
+      "room_count": 1,
+      "run_id": "pin-run",
+      "service": "test",
+      "started_at": "2026-10-20T12:00:00+00:00",
+      "trigger": "user"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+        "progress": {
+         "coverage": 0,
+         "mop": 0
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        }
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "do_mop_next": false,
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "completed_runs": 1,
+       "last_completed": "2026-10-20T12:10:00+00:00",
+       "last_duration_seconds": 600,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 600,
+         "cleaning_mode": "vacuum_and_mop",
+         "completed_runs": 1,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          600
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          },
+          "vacuum_and_mop:standard": {
+           "duration_history_seconds": [
+            600
+           ],
+           "duration_samples": 1,
+           "last_completed": "2026-10-20T12:10:00+00:00"
+          }
+         },
+         "duration_samples": 1,
+         "last_completed": "2026-10-20T12:10:00+00:00",
+         "last_duration_seconds": 600,
+         "last_result": "completed",
+         "last_started": "2026-10-20T12:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "pin-run"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      }
+     },
+     "run_history": [
+      {
+       "areas": [],
+       "cause": "unknown",
+       "completed_room_count": 1,
+       "ended_at": "2026-10-20T12:10:00+00:00",
+       "finish_current_room": false,
+       "outcome": "completed",
+       "plan_id": "home",
+       "plan_name": "Home",
+       "provenance": "user",
+       "reason_code": "all_rooms_verified",
+       "room_count": 1,
+       "rooms": [
+        {
+         "name": "Hall",
+         "result": "completed"
+        }
+       ],
+       "run_id": "pin-run",
+       "started_at": "2026-10-20T12:00:00+00:00"
+      }
+     ],
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   },
+   "rotation": [
+    {
+     "last_completion": null,
+     "last_opportunity": null,
+     "last_opportunity_source": null,
+     "last_result": null,
+     "rank": 1,
+     "room": "Den",
+     "room_id": "den",
+     "selection_reason": "no_prior_opportunity"
+    },
+    {
+     "last_completion": "2026-10-10T08:00:00+00:00",
+     "last_opportunity": "2026-10-10T08:00:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 2,
+     "room": "Kitchen",
+     "room_id": "kitchen",
+     "selection_reason": "least_recent_opportunity"
+    },
+    {
+     "last_completion": "2026-10-20T12:10:00+00:00",
+     "last_opportunity": "2026-10-20T12:10:00+00:00",
+     "last_opportunity_source": "plan",
+     "last_result": "completed",
+     "rank": 3,
+     "room": "Hall",
+     "room_id": "hall",
+     "selection_reason": "least_recent_opportunity"
+    }
+   ]
+  },
+  "saved": {
+   "robots": {
+    "pin-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {
+      "nook": {
+       "name": "Nook",
+       "schema_version": 1
+      }
+     },
+     "daily_room_completions": {
+      "hall": {
+       "receipts": [
+        {
+         "at": "2026-10-20T12:10:00+00:00",
+         "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "proof": "87dd60a970fb931b7ba1a5a9afd4e3cc8bd4525781a6e622c6d35dded29eae23"
+        }
+       ]
+      }
+     },
+     "last_interrupted_plan": {
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "Map Studio room clean",
+      "room_id": "den",
+      "run_id": "older-run"
+     },
+     "last_run": {
+      "cause": "unknown",
+      "completed_room_count": 1,
+      "ended_at": "2026-10-20T12:10:00+00:00",
+      "finish_current_room": false,
+      "finish_current_room_threshold": 50,
+      "outcome": "completed",
+      "plan_id": "home",
+      "plan_name": "Home",
+      "provenance": "user",
+      "reason_code": "all_rooms_verified",
+      "room_count": 1,
+      "run_id": "pin-run",
+      "service": "test",
+      "started_at": "2026-10-20T12:00:00+00:00",
+      "trigger": "user"
+     },
+     "managed_native_sessions": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+       "run_id": "legacy-run"
+      }
+     },
+     "native_completion_dedup": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "plan_room_cadence": {
+      "home": {
+       "hall": {
+        "identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+        "progress": {
+         "coverage": 0,
+         "mop": 0
+        },
+        "unverified_modes": [
+         "coverage"
+        ]
+       }
+      },
+      "quick_clean": {
+       "hall": {
+        "progress": {
+         "coverage": 0,
+         "mop": 1
+        }
+       }
+      }
+     },
+     "plans": {
+      "home": {
+       "name": "Home",
+       "rooms": [
+        {
+         "cadence": {
+          "coverage_every_n": 3,
+          "mop_every_n": 2,
+          "periodic_coverage_setting": "heavy_duty",
+          "scope": "shared"
+         },
+         "cadence_identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "kitchen"
+        },
+        {
+         "cadence": {
+          "do_mop_next": false,
+          "mop_every_n": 3,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        },
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ],
+       "run_behavior": "intelligent"
+      },
+      "quick_clean": {
+       "name": "Quick",
+       "rooms": [
+        {
+         "cadence": {
+          "mop_every_n": 2,
+          "scope": "plan"
+         },
+         "cadence_identity": "3e8fb4f1344d4b8e9075f460363697fe071488a59743dd88a92fadbc50d22d83",
+         "cleaning_mode": "vacuum",
+         "coverage_setting": "standard",
+         "room_id": "hall"
+        }
+       ],
+       "run_behavior": "ordered"
+      }
+     },
+     "rooms": {
+      "den": {
+       "last_started": "2026-10-02T08:00:00+00:00",
+       "name": "Den"
+      },
+      "hall": {
+       "completed_runs": 1,
+       "last_completed": "2026-10-20T12:10:00+00:00",
+       "last_duration_seconds": 600,
+       "name": "Hall"
+      },
+      "kitchen": {
+       "completed_runs": 4,
+       "last_completed": "2026-10-10T08:00:00+00:00",
+       "last_duration_seconds": 480,
+       "name": "Kitchen"
+      }
+     },
+     "rotation_resets": {
+      "home": "2026-09-01T00:00:00+00:00"
+     },
+     "rotations": {
+      "broken": {
+       "rooms": {}
+      },
+      "home": {
+       "rooms": {
+        "hall": {
+         "average_duration_seconds": 600,
+         "cleaning_mode": "vacuum_and_mop",
+         "completed_runs": 1,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          600
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            300,
+            300,
+            300
+           ],
+           "duration_samples": 3
+          },
+          "vacuum_and_mop:standard": {
+           "duration_history_seconds": [
+            600
+           ],
+           "duration_samples": 1,
+           "last_completed": "2026-10-20T12:10:00+00:00"
+          }
+         },
+         "duration_samples": 1,
+         "last_completed": "2026-10-20T12:10:00+00:00",
+         "last_duration_seconds": 600,
+         "last_result": "completed",
+         "last_started": "2026-10-20T12:00:00+00:00",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "pin-run"
+        },
+        "kitchen": {
+         "average_duration_seconds": 500,
+         "cleaning_mode": "vacuum",
+         "completed_runs": 6,
+         "coverage_setting": "standard",
+         "duration_history_seconds": [
+          500,
+          520,
+          480
+         ],
+         "duration_profiles": {
+          "vacuum:standard": {
+           "duration_history_seconds": [
+            500,
+            520,
+            480
+           ],
+           "duration_samples": 6,
+           "last_completed": "2026-10-10T08:00:00+00:00"
+          }
+         },
+         "duration_samples": 6,
+         "last_completed": "2026-10-10T08:00:00+00:00",
+         "last_duration_seconds": 480,
+         "last_result": "completed",
+         "name": "Kitchen",
+         "room_id": "kitchen"
+        }
+       }
+      },
+      "quick_clean": {
+       "rooms": {
+        "hall": {
+         "last_completed": "2026-10-12T08:20:00+00:00",
+         "last_duration_seconds": 1200,
+         "last_opportunity": "2026-10-12T08:00:00+00:00",
+         "last_result": "completed",
+         "name": "Hall",
+         "room_id": "hall",
+         "run_id": "legacy-run"
+        }
+       }
+      }
+     },
+     "run_history": [
+      {
+       "areas": [],
+       "cause": "unknown",
+       "completed_room_count": 1,
+       "ended_at": "2026-10-20T12:10:00+00:00",
+       "finish_current_room": false,
+       "outcome": "completed",
+       "plan_id": "home",
+       "plan_name": "Home",
+       "provenance": "user",
+       "reason_code": "all_rooms_verified",
+       "room_count": 1,
+       "rooms": [
+        {
+         "name": "Hall",
+         "result": "completed"
+        }
+       ],
+       "run_id": "pin-run",
+       "started_at": "2026-10-20T12:00:00+00:00"
+      }
+     ],
+     "selected_area": "nook",
+     "selected_plan": "home",
+     "shared_room_cadence": {
+      "kitchen": {
+       "identity": "7df5076fe034ec0d69769c557347f63f84b2d1613deada8684dd56219027b09b",
+       "policy": {
+        "coverage_every_n": 3,
+        "mop_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty"
+       },
+       "progress": {
+        "coverage": 0,
+        "mop": 1
+       }
+      }
+     }
+    },
+    "second-robot": {
+     "active_plan": null,
+     "area_history": {},
+     "areas": {},
+     "last_run": {
+      "outcome": "unverified",
+      "plan_id": "__matic_manual_room_sequence___1",
+      "plan_name": "One-time room clean",
+      "provenance": "external_unknown",
+      "run_id": "r2",
+      "trigger": "external_unknown"
+     },
+     "managed_native_sessions": {},
+     "native_completion_dedup": [],
+     "plan_room_cadence": {},
+     "plans": {
+      "p": {
+       "name": "P",
+       "rooms": [
+        {
+         "cadence_identity": "cf86439c026e43d5addad17e3b143b2c130439b559200f98646d7c6232a05210",
+         "cleaning_mode": "mop",
+         "coverage_setting": "standard",
+         "room_id": "den"
+        }
+       ]
+      }
+     },
+     "rooms": {},
+     "rotation_resets": {},
+     "rotations": {},
+     "selected_area": null,
+     "selected_plan": "p",
+     "shared_room_cadence": {}
+    }
+   }
+  }
+ }
+}
