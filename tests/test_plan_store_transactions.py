@@ -105,7 +105,9 @@ async def test_failed_plan_write_is_not_persisted_by_queued_peer_write(
     assert len(payloads) == 2
     assert TARGET not in payloads[0]
     assert payloads[1][TARGET]["plans"]["rejected-plan"]["name"] == "Rejected"
-    assert "rejected-plan" not in manager.repository.data["robots"][TARGET]["plans"]
+    assert "rejected-plan" not in manager.repository.data["robots"].get(TARGET, {}).get(
+        "plans", {}
+    )
     assert (
         manager.repository.data["robots"][PEER]["plans"]["peer-plan"]["name"] == "Peer"
     )

@@ -1,4 +1,4 @@
-"""Private plan storage, its version check and save rollback."""
+"""Private plan storage and its version check."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
 
     @override
     async def _async_write_data(self, data: dict[str, Any]) -> None:
-        """Make failed writes visible to the caller's accounting rollback."""
+        """Make a failed write fail the commit that asked for it."""
         try:
             await super()._async_write_data(data)
         except SerializationError, WriteError:
@@ -56,23 +56,3 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
                 f"unsupported plan storage minor version {old_minor_version}"
             )
         return migrate_plan_document(old_minor_version, old_data)
-
-
-def _restore_unsaved_changes(
-    current: dict[str, Any], before: dict[str, Any], applied: dict[str, Any]
-) -> None:
-    """Undo failed changes while preserving mutations after the snapshot."""
-    missing = object()
-    for key, value in applied.items():
-        previous = before.get(key, missing)
-        present = current.get(key, missing)
-        if all(isinstance(item, dict) for item in (previous, value, present)):
-            _restore_unsaved_changes(present, previous, value)
-        elif present == value:
-            if previous is missing:
-                current.pop(key)
-            else:
-                current[key] = previous
-    for key in before.keys() - applied.keys():
-        if key not in current:
-            current[key] = before[key]

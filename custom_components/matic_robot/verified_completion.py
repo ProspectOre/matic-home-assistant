@@ -4,8 +4,8 @@ A room counts as cleaned only when the robot's own history confirms it, during
 the run or reconciled afterwards. Each such confirmation becomes one
 `VerifiedCompletion`, and `record_verified_completion` is the only code that
 turns it into stored state: the daily-limit receipt, the plan's rotation row,
-the room's statistics and the room schedule's cadence credit. The caller saves
-the result in its own store transaction.
+the room's statistics and the room schedule's cadence credit. The caller runs
+it inside the repository commit that saves the result.
 """
 
 from __future__ import annotations

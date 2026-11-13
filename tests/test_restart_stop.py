@@ -7,13 +7,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot import plan_storage
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 
-from .test_restart import _operational_state
+from .test_restart import _operational_state, _set_interrupted_mixed_dispatch
 from .test_restart import recovery_state as recovery_fixture
 
 
@@ -142,3 +144,100 @@ async def test_second_shutdown_retains_settlement_owner(hass, recovery_state):
         UserCommand.DOCK
     )
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+
+
+@pytest.mark.parametrize("removed", [False, True])
+async def test_cancelled_mixed_stop_prepare_settles_before_rollback(
+    recovery_state, removed
+):
+    """A STOP intent save that outlives its waiter is still rolled back."""
+    manager, entry, checkpoint, _ = recovery_state
+    _, session_hash = await _set_interrupted_mixed_dispatch(manager, entry, checkpoint)
+    repository = manager.repository
+    save = repository.store.async_save
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def held_save(data) -> None:
+        started.set()
+        await release.wait()
+        await save(data)
+
+    repository.store.async_save = held_save
+
+    async def prepare_then_roll_back() -> None:
+        # restart.py rolls back whatever a failed prepare left.
+        try:
+            await manager.recovery.async_prepare_mixed_dispatch_stop(
+                "serial", "run", session_hash
+            )
+        except BaseException:
+            await manager.recovery.async_rollback_mixed_dispatch_stop(
+                "serial", "run", session_hash
+            )
+            raise
+
+    async with repository.store_lock:
+        stop = asyncio.create_task(prepare_then_roll_back())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        if removed:
+            # The commit finds the robot removed and saves nothing.
+            stop.cancel()
+            repository.removed_robots.add("serial")
+            release.set()
+    if not removed:
+        await asyncio.wait_for(started.wait(), 1)
+        stop.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stop
+    pending = tuple(repository.metadata_persistence_tasks.get("serial", ()))
+    await asyncio.gather(*pending, return_exceptions=True)
+
+    saved = save.await_args.args[0]["robots"]["serial"]
+    for robot in (repository.robot("serial"), saved):
+        assert "stop_intent" not in robot["last_run"]["recovery_checkpoint"]
+        assert plan_storage.STOP_FENCE_RUN_ID not in robot
+
+
+async def test_mixed_stop_rechecks_its_checkpoint_inside_the_commit(recovery_state):
+    """A run that changes while a STOP waits for the lock keeps its state."""
+    manager, entry, checkpoint, _ = recovery_state
+    _, session_hash = await _set_interrupted_mixed_dispatch(manager, entry, checkpoint)
+    repository = manager.repository
+
+    def stored_checkpoint() -> dict:
+        return repository.robot("serial")["last_run"]["recovery_checkpoint"]
+
+    async with repository.store_lock:
+        prepare = asyncio.create_task(
+            manager.recovery.async_prepare_mixed_dispatch_stop(
+                "serial", "run", session_hash
+            )
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert repository.robot("serial")[plan_storage.STOP_FENCE_RUN_ID] == "run"
+        stored_checkpoint()["phase"] = "accepted"
+    with pytest.raises(HomeAssistantError, match="no longer owns"):
+        await prepare
+    assert plan_storage.STOP_FENCE_RUN_ID not in repository.robot("serial")
+    assert "stop_intent" not in stored_checkpoint()
+
+    stored_checkpoint()["phase"] = "dispatching"
+    await manager.recovery.async_prepare_mixed_dispatch_stop(
+        "serial", "run", session_hash
+    )
+    async with repository.store_lock:
+        rollback = asyncio.create_task(
+            manager.recovery.async_rollback_mixed_dispatch_stop(
+                "serial", "run", session_hash
+            )
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        stored_checkpoint()["stop_intent"] = "after_room"
+    await rollback
+    assert stored_checkpoint()["stop_intent"] == "after_room"

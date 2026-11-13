@@ -293,9 +293,8 @@ async def test_after_commit_callback_failure_preserves_durable_owner_result(
     await manager.async_load()
 
     async def commit(_lease) -> None:
-        await manager.repository.async_persist_area_metadata(
-            SERIAL, lambda robot: robot["areas"].update({"committed": AREA})
-        )
+        async with manager.repository.commit(SERIAL, user=True) as robot:
+            robot["areas"]["committed"] = AREA
 
     def broken_callback(_result: None) -> None:
         raise RuntimeError("synthetic post-commit callback failure")
@@ -574,7 +573,7 @@ async def test_removal_skips_queued_dock_mutation_and_callback(hass, monkeypatch
     manager.control.mark_stop_pending(SERIAL, run_id="cancelled-run")
     token = manager.control.stop_fence_token(SERIAL)
     assert token is not None
-    await manager.repository.async_save_and_notify(SERIAL)
+    await manager.repository.async_save_fences(SERIAL)
     before_run = deepcopy(manager.repository.robot(SERIAL)["last_run"])
     events: list[object] = []
     manager.repository.async_add_listener(SERIAL, lambda: events.append("listener"))

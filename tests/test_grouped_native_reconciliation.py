@@ -12,6 +12,7 @@ from uuid import uuid4
 import pytest
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.client.commands import _wrapped_uuid
 from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.models import (
@@ -442,6 +443,7 @@ async def test_single_room_completion_api_refuses_grouped_marker(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.data = {"robots": {"serial": _robot(pending)}}
+    plan_state.parse_robot(manager.repository.robot("serial"))
     dispatched_at = dt_util.parse_datetime(pending["dispatched_at"])
     assert dispatched_at is not None
 

@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
+from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
@@ -195,6 +196,7 @@ def _saved_plan(manager: CleaningPlanManager) -> None:
         ],
         "return_to_base": True,
     }
+    plan_state.parse_robot(robot)
 
 
 @pytest.mark.asyncio

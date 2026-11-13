@@ -13,6 +13,7 @@ from custom_components.matic_robot import area_binding as binding
 from custom_components.matic_robot import area_binding_formats as binding_formats
 from custom_components.matic_robot import area_binding_geometry as binding_geometry
 from custom_components.matic_robot import area_binding_records as binding_records
+from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.area_geometry import RoomGeometryIndex
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.plan_model import (
@@ -234,6 +235,7 @@ async def test_moved_room_blocks_saved_plan_preview(hass):
     )
     manager = CleaningPlanManager(hass)
     manager.repository.robot("serial")["areas"]["area"] = area
+    plan_state.parse_robot(manager.repository.robot("serial"))
     with pytest.raises(PlanAreaMapChangedError):
         manager.planning.preview_area(
             "serial",
@@ -371,6 +373,7 @@ async def test_legacy_frame_shift_does_not_enrich_but_snapshot_survives_reload(h
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     changed = _floor(((0.015, 0), (10, 0), (10, 10), (0.015, 10)))
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
@@ -428,6 +431,7 @@ async def test_legacy_upgrade_grafts_exact_room_snapshot_across_remote_map_chang
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     binding_before = deepcopy(area["map_binding"])
     with patch(
         "custom_components.matic_robot.plan_catalog.binding_for_area",
@@ -510,6 +514,7 @@ async def test_legacy_graft_normalizes_exact_last_vertex_bounds_bug(hass):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     before = deepcopy(area["map_binding"])
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
@@ -579,6 +584,7 @@ async def test_legacy_graft_fails_closed_without_exact_room_frame(hass, change):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     before = manager.catalog.areas("serial")
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
@@ -649,6 +655,7 @@ async def test_legacy_graft_rejects_changed_target_circle_association(hass):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     before = manager.catalog.areas("serial")
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
@@ -712,6 +719,7 @@ async def test_legacy_graft_rejects_duplicate_saved_room_key(hass):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     before = manager.catalog.areas("serial")
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
@@ -770,6 +778,7 @@ async def test_legacy_graft_preserves_existing_snapshot_in_mixed_anchors(hass):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(1, False)
@@ -802,6 +811,7 @@ async def test_legacy_graft_fails_closed_when_shared_query_budget_exhausts(hass)
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     before = manager.catalog.areas("serial")
     with patch.object(RoomGeometryIndex, "_MAX_QUERY_WORK", 300):
         assert await manager.catalog.async_upgrade_area_bindings(
@@ -832,6 +842,7 @@ async def test_legacy_enrichment_respects_aggregate_frame_point_limit(hass):
         "legacy": deepcopy(legacy),
         "existing": _area(changed),
     }
+    plan_state.parse_robot(manager.repository.robot("serial"))
     before = deepcopy(manager.catalog.areas("serial"))
     with patch(
         "custom_components.matic_robot.plan_catalog._MAX_PERSISTED_ROOM_FRAME_POINTS_PER_ROBOT",
@@ -863,6 +874,7 @@ async def test_legacy_enrichment_rolls_back_when_store_write_fails(hass):
         async_save=AsyncMock(side_effect=OSError("disk"))
     )
     manager.repository.robot("serial")["areas"]["legacy"] = deepcopy(legacy)
+    plan_state.parse_robot(manager.repository.robot("serial"))
     before = manager.catalog.areas("serial")
     with pytest.raises(OSError, match="disk"):
         await manager.catalog.async_upgrade_area_bindings("serial", changed)

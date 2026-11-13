@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import (
     Mapping,
@@ -96,13 +97,9 @@ class PlanRecovery:
         checkpoint: dict[str, Any],
     ) -> None:
         """Persist the resolved queue required for safe restart recovery."""
-        changed = False
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            nonlocal changed
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
-                before = deepcopy(robot)
+            async with self.repository.commit(serial_number) as robot:
                 last_run = robot.get("last_run")
                 if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
                     return False
@@ -157,12 +154,10 @@ class PlanRecovery:
                         else {}
                     ),
                 }
-                changed = True
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return True
+            return True
 
         def notify_if_changed(committed: bool) -> None:
-            if committed and changed:
+            if committed:
                 self.repository.notify_listeners(serial_number)
 
         await self.repository.async_run_owned_metadata(
@@ -184,8 +179,7 @@ class PlanRecovery:
         """Persist a verified dispatch only within its exact owned queue leg."""
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
+            async with self.repository.commit(serial_number) as robot:
                 run = robot.get("last_run")
                 checkpoint = (
                     run.get("recovery_checkpoint") if isinstance(run, dict) else None
@@ -242,10 +236,8 @@ class PlanRecovery:
                 evidence = CoverageEvidence(receipt, tuple(sorted(bindings)))
                 if coverage_evidence_from_storage(evidence.as_storage()) is None:
                     return False
-                before = deepcopy(robot)
                 checkpoint["coverage_evidence"] = evidence.as_storage()
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return True
+            return True
 
         return bool(
             await self.repository.async_run_owned_metadata(
@@ -279,7 +271,7 @@ class PlanRecovery:
         """Persist the generated native identity before mixed START is sent."""
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.store_lock:
+            async with self.repository.commit(serial_number):
                 if len(session_identity_hash) != 64 or any(
                     char not in "0123456789abcdef" for char in session_identity_hash
                 ):
@@ -305,7 +297,6 @@ class PlanRecovery:
                         translation_key="run_changed",
                     )
                 checkpoint["mixed_initial_session_hash"] = session_identity_hash
-                await self.repository.store.async_save(self.repository.data)
 
         await self.repository.async_run_owned_metadata(
             serial_number, commit, notify=True
@@ -317,25 +308,64 @@ class PlanRecovery:
         """Persist an at-most-once STOP intent for an exact partial mission."""
         if serial_number in self.repository.metadata_admission_closed:
             return
-        run = self.repository.robot(serial_number).get("last_run")
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
-        if (
-            not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or run.get("outcome") != "running"
-            or not isinstance(checkpoint, dict)
-            or checkpoint.get("phase") != RunPhase.DISPATCHING
-            or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
-            or checkpoint.get("stop_intent") not in {None, "after_room"}
-        ):
-            raise HomeAssistantError(
-                "Mixed mission STOP no longer owns its checkpoint",
-                translation_domain=DOMAIN,
-                translation_key="run_changed",
+
+        def owned_checkpoint() -> dict[str, Any] | None:
+            run = self.repository.robot(serial_number).get("last_run")
+            checkpoint = (
+                run.get("recovery_checkpoint") if isinstance(run, dict) else None
             )
-        checkpoint["stop_intent"] = "immediate"
+            if (
+                not isinstance(run, dict)
+                or run.get("run_id") != run_id
+                or run.get("outcome") != "running"
+                or not isinstance(checkpoint, dict)
+                or checkpoint.get("phase") != RunPhase.DISPATCHING
+                or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
+                or checkpoint.get("stop_intent") not in {None, "after_room"}
+            ):
+                return None
+            return checkpoint
+
+        def owned() -> dict[str, Any]:
+            if (checkpoint := owned_checkpoint()) is None:
+                raise HomeAssistantError(
+                    "Mixed mission STOP no longer owns its checkpoint",
+                    translation_domain=DOMAIN,
+                    translation_key="run_changed",
+                )
+            return checkpoint
+
+        owned()
         self.control.mark_stop_pending(serial_number, run_id=run_id)
-        await self.repository.async_save_and_notify(serial_number)
+
+        def write() -> bool:
+            owned()["stop_intent"] = "immediate"
+            return True
+
+        try:
+            await self.repository.async_mutate_and_save(
+                serial_number, write, finish_during_unload=True
+            )
+        except asyncio.CancelledError:
+            # The owned commit outlives this waiter. When it saves the intent,
+            # keep the fence so the caller's rollback undoes both.
+            pending = self.repository.metadata_persistence_tasks.get(serial_number, ())
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(pending)),
+                return_exceptions=True,
+            )
+            run = self.repository.robot(serial_number).get("last_run") or {}
+            checkpoint = run.get("recovery_checkpoint") or {}
+            if (
+                run.get("run_id") != run_id
+                or checkpoint.get("stop_intent") != "immediate"
+            ):
+                self.control.clear_stop_pending(serial_number)
+            raise
+        except BaseException:
+            # The intent was not saved, so this STOP is not prepared.
+            self.control.clear_stop_pending(serial_number)
+            raise
 
     async def async_rollback_mixed_dispatch_stop(
         self, serial_number: str, run_id: str, session_identity_hash: str
@@ -343,21 +373,38 @@ class PlanRecovery:
         """Roll back a STOP fence only when transport proves no bytes were sent."""
         if serial_number in self.repository.metadata_admission_closed:
             return
-        run = self.repository.robot(serial_number).get("last_run")
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+
+        def owned_checkpoint() -> dict[str, Any] | None:
+            run = self.repository.robot(serial_number).get("last_run")
+            checkpoint = (
+                run.get("recovery_checkpoint") if isinstance(run, dict) else None
+            )
+            if (
+                not isinstance(run, dict)
+                or run.get("run_id") != run_id
+                or not isinstance(checkpoint, dict)
+                or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
+                or checkpoint.get("stop_intent") != "immediate"
+            ):
+                return None
+            return checkpoint
+
         if (
-            not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or not isinstance(checkpoint, dict)
-            or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
-            or checkpoint.get("stop_intent") != "immediate"
+            owned_checkpoint() is None
             or self.repository.robot(serial_number).get(plan_storage.STOP_FENCE_RUN_ID)
             != run_id
         ):
             return
-        checkpoint.pop("stop_intent", None)
         self.control.clear_stop_pending(serial_number)
-        await self.repository.async_save_and_notify(serial_number)
+
+        def write() -> bool:
+            if (checkpoint := owned_checkpoint()) is not None:
+                checkpoint.pop("stop_intent", None)
+            return True
+
+        await self.repository.async_mutate_and_save(
+            serial_number, write, finish_during_unload=True
+        )
 
     async def async_checkpoint_stop_intent(
         self, serial_number: str, behavior: str, *, run_id: str | None
@@ -365,8 +412,8 @@ class PlanRecovery:
         """Do not lose a user's stop request if HA restarts before completion."""
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                run = self.repository.robot(serial_number).get("last_run")
+            async with self.repository.commit(serial_number, user=True) as robot:
+                run = robot.get("last_run")
                 checkpoint = (
                     run.get("recovery_checkpoint") if isinstance(run, dict) else None
                 )
@@ -382,8 +429,7 @@ class PlanRecovery:
                     self.control.finish_room_event(serial_number).set()
                 elif behavior == "immediate":
                     self.control.finish_room_event(serial_number).clear()
-                await self.repository.store.async_save(self.repository.data)
-                return True
+            return True
 
         def notify_if_changed(committed: bool) -> None:
             if committed:
@@ -414,8 +460,8 @@ class PlanRecovery:
         """Publish reconnection state without inventing a robot outcome."""
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                last_run = self.repository.robot(serial_number).get("last_run")
+            async with self.repository.commit(serial_number) as robot:
+                last_run = robot.get("last_run")
                 if (
                     not isinstance(last_run, dict)
                     or last_run.get("outcome") != "running"
@@ -423,11 +469,10 @@ class PlanRecovery:
                     return False
                 last_run["recovery_status"] = status[:32]
                 last_run["recovery_reason"] = reason[:64]
-                active = self.repository.robot(serial_number).get("active_plan")
+                active = robot.get("active_plan")
                 if isinstance(active, dict):
                     active["status"] = status
-                await self.repository.store.async_save(self.repository.data)
-                return True
+            return True
 
         def notify_if_changed(committed: bool) -> None:
             if committed:

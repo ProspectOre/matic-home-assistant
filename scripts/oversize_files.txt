@@ -3,8 +3,8 @@ custom_components/matic_robot/client/hermes_commands.py 1053
 custom_components/matic_robot/config_flow.py 1634
 custom_components/matic_robot/managed_observation.py 1110
 custom_components/matic_robot/native_history.py 1215
-custom_components/matic_robot/plan_cadence.py 1178
-custom_components/matic_robot/plan_ledger.py 1783
+custom_components/matic_robot/plan_cadence.py 1176
+custom_components/matic_robot/plan_ledger.py 1736
 custom_components/matic_robot/sensor.py 1229
 custom_components/matic_robot/slam_map_store.py 1329
 frontend/map-studio-v4/effects.ts 1190
@@ -39,7 +39,7 @@ tests/test_photo_patrol.py 1622
 tests/test_plan_entries.py 1074
 tests/test_plans.py 10136
 tests/test_restart.py 1550
-tests/test_services.py 6392
+tests/test_services.py 6389
 tests/test_session_ownership.py 2634
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1822

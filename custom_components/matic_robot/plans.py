@@ -65,16 +65,14 @@ class CleaningPlanManager:
     async def async_load(self) -> None:
         """Load current room-native state and recover interrupted work."""
         stored = await self.repository.store.async_load()
-        self.repository.data = (
-            stored if isinstance(stored, dict) else self.repository.empty_data()
-        )
-
+        data = stored if isinstance(stored, dict) else self.repository.empty_data()
         recovered = stored is not None and not isinstance(stored, dict)
-        robots = self.repository.data.get("robots")
+        robots = data.get("robots")
         if not isinstance(robots, dict):
             robots = {}
-            self.repository.data["robots"] = robots
+            data["robots"] = robots
             recovered = True
+        self.repository.data = data
         for serial_number, robot in tuple(robots.items()):
             if not isinstance(robot, dict):
                 robots.pop(serial_number)
@@ -208,8 +206,7 @@ class CleaningPlanManager:
             ):
                 recovered = True
         if recovered:
-            async with self.repository.store_lock:
-                await self.repository.store.async_save(self.repository.data)
+            await self.repository.async_save_loaded()
 
     async def async_remove_robot(self, serial_number: str) -> None:
         """Cancel work and erase one robot's private persisted planning data."""
@@ -221,18 +218,7 @@ class CleaningPlanManager:
             await done.wait()
 
         async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                robots = self.repository.data.get("robots")
-                if isinstance(robots, dict):
-                    removed = robots.pop(serial_number, None)
-                    if removed is not None:
-                        try:
-                            await self.repository.store.async_save(self.repository.data)
-                        except BaseException:
-                            robots[serial_number] = removed
-                            raise
-                        return True
-                return False
+            return await self.repository.async_remove(serial_number)
 
         def forget_runtime_state(_removed: bool) -> None:
             self.repository.listeners.pop(serial_number, None)

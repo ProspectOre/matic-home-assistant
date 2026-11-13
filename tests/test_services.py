@@ -2616,20 +2616,17 @@ async def test_reset_room_cadence_service_returns_no_receipt_on_save_failure(
     manager = CleaningPlanManager(hass)
     save = AsyncMock()
     manager.repository.store = SimpleNamespace(async_save=save)
+    room = {
+        "room_id": "room-office",
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "quick",
+    }
     await manager.catalog.async_save_plan(
-        "serial",
-        "home",
-        {
-            "name": "Home",
-            "rooms": [
-                {
-                    "room_id": "room-office",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
-                }
-            ],
-        },
+        "serial", "home", {"name": "Home", "rooms": [room]}
     )
+    manager.repository.robot("serial")["plan_room_cadence"]["home"] = {
+        "room-office": {"progress": {"mop": 1, "coverage": 0}}
+    }
     save.side_effect = OSError("disk unavailable")
     services = await _registered_services(hass, manager)
     call = ServiceCall(

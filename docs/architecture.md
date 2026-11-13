@@ -39,7 +39,7 @@ the connection itself replaces it. Bounded telemetry decoders handle robot
 state and native cleaning summaries.
 [Discovery](../custom_components/matic_robot/config_flow_discovery.py) selects
 a certificate-bound address; [vacuum catalogs](../custom_components/matic_robot/vacuum_catalog.py)
-keep each floor's Area mapping in the integration's store and give core only the active floor's. [Migrations](../custom_components/matic_robot/migrations.py) upgrade config entries from what 0.5.4 saved and refuse older ones, untouched, with a Repair that asks for 0.5.4 first; the [plan storage](../custom_components/matic_robot/plan_storage.py) still migrates any older plan file to 1.13, which 0.5.4 also reads, and the [plan parser](../custom_components/matic_robot/plan_state.py) repairs what older releases saved once per start.
+keep each floor's Area mapping in the integration's store and give core only the active floor's. [Migrations](../custom_components/matic_robot/migrations.py) upgrade config entries from what 0.5.4 saved and refuse older ones, untouched, with a Repair that asks for 0.5.4 first; the [plan storage](../custom_components/matic_robot/plan_storage.py) still migrates any older plan file to 1.13, which 0.5.4 also reads, and the [plan parser](../custom_components/matic_robot/plan_state.py) repairs what older releases saved once per start, and each commit repairs the containers of what it saves.
 
 Each config entry has one [robot session](../custom_components/matic_robot/session.py).
 It reads identity and state once at setup; after that a `kabuki_state` watch,
@@ -66,7 +66,7 @@ these owners around one repository:
 
 | Owner | Responsibility |
 | --- | --- |
-| [Repository](../custom_components/matic_robot/plan_repository.py) | Durable state and admitted metadata transactions. |
+| [Repository](../custom_components/matic_robot/plan_repository.py) | Durable state and its one commit: a writer edits a copy of one robot, the copy is saved, and memory takes it only after the save succeeds. Stop fences take effect in memory at once and are saved with the next commit. |
 | [Cadence](../custom_components/matic_robot/plan_cadence.py) | Room schedule policy, progress and reservations. |
 | [Catalog](../custom_components/matic_robot/plan_catalog.py) | Saved plans and areas, rotation and previews. |
 | [Run control](../custom_components/matic_robot/run_control.py) | One actor per robot for its run, motion ownership, cancellation and stop fences; background start. |
