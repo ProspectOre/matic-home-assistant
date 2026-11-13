@@ -105,8 +105,8 @@ def native_room_statistics_by_session(
         if not math.isfinite(timestamp) or timestamp > future_limit:
             continue
 
-        session_mission = getattr(session, "mission_id", None)
-        session_partition = getattr(session, "partition_id", None)
+        session_mission = session.mission_id
+        session_partition = session.partition_id
         canonical = session_mission is not None or session_partition is not None
         canonical_ok = bool(
             floor_plan is not None

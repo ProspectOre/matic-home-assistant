@@ -306,15 +306,24 @@ class MaticPhotoMediaSource(MediaSource):
             raise PhotoAttachmentUnavailable("Matic photo attachments are unavailable")
 
 
+def existing_photo_attachment_source(
+    hass: HomeAssistant,
+) -> MaticPhotoMediaSource | None:
+    """Return the photo source if anything has started it yet."""
+    return cast(
+        "MaticPhotoMediaSource | None",
+        hass.data.get(DOMAIN, {}).get(DATA_PHOTO_ATTACHMENT_SOURCE),
+    )
+
+
 def photo_attachment_source(hass: HomeAssistant) -> MaticPhotoMediaSource:
     """Return the process-local media source used for private photo snapshots."""
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    source = domain_data.get(DATA_PHOTO_ATTACHMENT_SOURCE)
+    source = existing_photo_attachment_source(hass)
     if source is None:
         source = MaticPhotoMediaSource()
-        domain_data[DATA_PHOTO_ATTACHMENT_SOURCE] = source
+        hass.data.setdefault(DOMAIN, {})[DATA_PHOTO_ATTACHMENT_SOURCE] = source
         hass.bus.async_listen_once("homeassistant_stop", source.async_close)
-    return cast(MaticPhotoMediaSource, source)
+    return source
 
 
 async def async_get_media_source(hass: HomeAssistant) -> MediaSource:

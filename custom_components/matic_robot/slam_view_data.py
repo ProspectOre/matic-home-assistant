@@ -20,7 +20,6 @@ from .http import (
     scene_api_url,
 )
 from .map_schema import CatalogEntry, MapBlockReason
-from .run_history import RunTrails
 from .workspace_schema import PoseUpdate
 
 if TYPE_CHECKING:
@@ -51,9 +50,7 @@ def _map_session_key(runtime: MaticRuntimeData) -> str | None:
 
 def observe_trail(runtime: MaticRuntimeData) -> None:
     """Record the newest pose on the current map, and close a finished run."""
-    trails: RunTrails | None = getattr(runtime, "run_trails", None)
-    if trails is None:
-        return
+    trails = runtime.run_trails
     session = runtime.session
     floor_plan = (
         session.floor.value
@@ -156,9 +153,7 @@ def catalog_entry_projection(
         None,
     )
     floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
-    session_verified = getattr(
-        runtime.slam_map, "live_session_verified", floor_plan_coherent
-    )
+    session_verified = runtime.slam_map.live_session_verified
     map_block_reason: MapBlockReason | None
     if floor_plan_coherent and session_verified:
         map_block_reason = None
@@ -167,8 +162,7 @@ def catalog_entry_projection(
     elif (
         health.photo_tiles == 0
         and health.structure_tiles == 0
-        and getattr(health, "bootstrap_state", "not_started")
-        in {"complete", "partial", "failed"}
+        and health.bootstrap_state in {"complete", "partial", "failed"}
     ):
         map_block_reason = "bootstrap_empty"
     elif map_identity is None or not session_verified:
@@ -230,8 +224,8 @@ def catalog_entry_projection(
         "map_complete": health.complete,
         "map_truncated": health.truncated,
         "stream_failures": health.stream_failures,
-        "bootstrap_state": getattr(health, "bootstrap_state", "not_started"),
-        "bootstrap_photo_seen": getattr(health, "bootstrap_photo_seen", False),
-        "bootstrap_structure_seen": getattr(health, "bootstrap_structure_seen", False),
-        "bootstrap_failures": getattr(health, "bootstrap_failures", 0),
+        "bootstrap_state": health.bootstrap_state,
+        "bootstrap_photo_seen": health.bootstrap_photo_seen,
+        "bootstrap_structure_seen": health.bootstrap_structure_seen,
+        "bootstrap_failures": health.bootstrap_failures,
     }

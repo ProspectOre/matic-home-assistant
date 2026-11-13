@@ -12,7 +12,6 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
@@ -24,6 +23,7 @@ from .plan_model import plan_floor_token
 from .session import RobotSession
 
 if TYPE_CHECKING:
+    from . import MaticConfigEntry
     from .plans import CleaningPlanManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class NativeHistorySync:
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: MaticConfigEntry,
         session: RobotSession,
         plans: CleaningPlanManager,
         serial_number: str,
@@ -50,11 +50,7 @@ class NativeHistorySync:
         self._session = session
         self._plans = plans
         self._serial_number = serial_number
-        self._generation = (
-            plans.control.robot_generation(serial_number)
-            if hasattr(plans.control, "robot_generation")
-            else None
-        )
+        self._generation = plans.control.robot_generation(serial_number)
         self.acknowledged: str | None = None
         self._active = True
         self._importing = False
@@ -77,11 +73,9 @@ class NativeHistorySync:
             self._serial_number,
             floor_plan,
             records,
-            coverage_verifier=getattr(
-                self._session.client, "async_confirm_coverage_receipt", None
-            ),
+            coverage_verifier=self._session.client.async_confirm_coverage_receipt,
             current_floor_plan=lambda: self._session.floor.value,
-            **self._generation_kwargs(),
+            generation=self._generation,
         )
         current = self._session.floor.value
         if (
@@ -131,15 +125,9 @@ class NativeHistorySync:
         return (
             self._active
             and revision == self._session.history.value.revision
-            and (
-                self._generation is None
-                or self._plans.control.robot_generation(self._serial_number)
-                == self._generation
-            )
+            and self._plans.control.robot_generation(self._serial_number)
+            == self._generation
         )
-
-    def _generation_kwargs(self) -> dict[str, int]:
-        return {} if self._generation is None else {"generation": self._generation}
 
     async def _async_import_while_pending(self) -> None:
         try:
@@ -188,9 +176,9 @@ class NativeHistorySync:
             self._serial_number,
             floor_plan,
             records,
-            coverage_verifier=getattr(client, "async_confirm_coverage_receipt", None),
+            coverage_verifier=client.async_confirm_coverage_receipt,
             current_floor_plan=lambda: self._session.floor.value,
-            **self._generation_kwargs(),
+            generation=self._generation,
         )
         current = self._session.floor.value
         if (
@@ -206,7 +194,7 @@ class NativeHistorySync:
 @callback
 def async_resume_native_reconciliation(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: MaticConfigEntry,
     session: RobotSession,
     plans: CleaningPlanManager,
     serial_number: str,
@@ -222,11 +210,7 @@ def async_resume_native_reconciliation(
             plans,
             serial_number,
             pending,
-            generation=(
-                plans.control.robot_generation(serial_number)
-                if hasattr(plans.control, "robot_generation")
-                else None
-            ),
+            generation=plans.control.robot_generation(serial_number),
         ),
         f"{DOMAIN} native stop recovery",
     )
@@ -268,14 +252,11 @@ async def async_watch_native_reconciliation(
                 )
             else:
                 if plans.ledger.pending_native_reconciliation(serial_number) == pending:
-                    kwargs = {} if generation is None else {"generation": generation}
                     await plans.ledger.async_import_native_history(
                         serial_number,
                         session.floor.value,
                         native_history,
-                        coverage_verifier=getattr(
-                            session.client, "async_confirm_coverage_receipt", None
-                        ),
+                        coverage_verifier=session.client.async_confirm_coverage_receipt,
                         current_floor_plan=lambda: session.floor.value,
-                        **kwargs,
+                        generation=generation,
                     )

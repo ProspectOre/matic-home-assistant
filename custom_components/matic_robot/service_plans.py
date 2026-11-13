@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 
@@ -35,6 +34,9 @@ from .plan_model import (
 from .plans import CleaningPlanManager
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_sequence import saved_plan_preview_token
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 
 def _validated_area_command(
@@ -84,7 +86,7 @@ def _room_cadence_identities(floor_plan: FloorPlan) -> dict[str, str]:
 
 
 def _plan_cadence_bindings(
-    entry: ConfigEntry[Any],
+    entry: MaticConfigEntry,
 ) -> tuple[str | None, dict[str, str]]:
     """Read current map bindings when the typed config entry is available."""
     try:
@@ -99,7 +101,7 @@ def _plan_cadence_bindings(
 def _saved_plan_preview(
     manager: CleaningPlanManager,
     serial_number: str,
-    entry: ConfigEntry[Any],
+    entry: MaticConfigEntry,
     room_map: Mapping[str, str],
     plan_reference: str | None,
     *,
@@ -124,7 +126,7 @@ def _saved_plan_preview(
     )
     token = saved_plan_preview_token(
         preview,
-        entry_id=str(getattr(entry, "entry_id", "")),
+        entry_id=entry.entry_id,
         floor_token=floor_token,
         room_identities=room_identities,
     )
@@ -269,7 +271,7 @@ def _normalize_saved_room(
 def _normalize_saved_area(
     manager: CleaningPlanManager,
     serial_number: str,
-    entry: ConfigEntry[Any],
+    entry: MaticConfigEntry,
     item: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Resolve one saved custom area that is bound to the current map."""

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import CoreState, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -100,9 +101,7 @@ async def recovery_state(hass):
         "data": data,
         "native_identity_hash": hashlib.sha256(identity).hexdigest(),
         "dispatched_at": dt_util.utcnow().isoformat(),
-        "completion_deadline": (
-            dt_util.utcnow() + timedelta(seconds=21600)
-        ).isoformat(),
+        "completion_deadline": (dt_util.utcnow() + timedelta(hours=6)).isoformat(),
         "history_baseline": [],
         "completed_room_ids": [],
         "started_room_ids": [room.room_id],
@@ -120,13 +119,14 @@ async def recovery_state(hass):
     )
     session = SimpleNamespace(floor=SimpleNamespace(value=floor), heartbeat=heartbeat)
     session.state, session.error = robot.state, robot.error
+    slam_map = SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True))
     runtime = SimpleNamespace(
-        client=client,
-        cleaning_plans=manager,
-        session=session,
-        slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
+        client=client, cleaning_plans=manager, session=session, slam_map=slam_map
     )
-    return manager, SimpleNamespace(runtime_data=runtime, robot=robot), checkpoint, room
+    entry = SimpleNamespace(
+        runtime_data=runtime, robot=robot, state=ConfigEntryState.LOADED
+    )
+    return manager, entry, checkpoint, room
 
 
 async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery_state):

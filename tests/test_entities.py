@@ -78,6 +78,7 @@ from custom_components.matic_robot.slam_map_store import (
     SlamMapStore,
 )
 from custom_components.matic_robot.stores import CleaningHistory
+from tests import runtime_fakes
 from tests.frontend_sources import common_strings
 from tests.session_fakes import fake_session, managed_clean_rooms, set_operational
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
@@ -234,6 +235,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             async_set_binary_setting=AsyncMock(),
             async_set_deep_mop=AsyncMock(),
             async_set_water_flow=AsyncMock(),
+            activity_journal=runtime_fakes.activity_journal(),
         ),
     )
     history = SimpleNamespace(
@@ -281,6 +283,8 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             external_motion=MagicMock(side_effect=_motion_context),
             managed_stop_dispatch=MagicMock(side_effect=_managed_stop_dispatch_context),
             managed_command=MagicMock(side_effect=_managed_motion_context),
+            managed_stop_dispatch_generations=MagicMock(return_value=None),
+            stop_dispatch_pending=MagicMock(return_value=False),
         ),
         history=SimpleNamespace(
             snapshot=MagicMock(
@@ -332,18 +336,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         ),
         async_add_listener=MagicMock(return_value=MagicMock()),
     )
-    slam_map = SimpleNamespace(
-        async_add=AsyncMock(),
-        decoded_tiles=MagicMock(return_value=()),
-        async_decoded_map=AsyncMock(return_value=DecodedMap(0, None, (), ())),
-        tile_count=0,
-        structure_tile_count=0,
-        map_complete=False,
-        revision=0,
-        mission_identity=None,
-        floor_plan_is_current=MagicMock(return_value=True),
-        async_add_listener=MagicMock(return_value=MagicMock()),
-    )
+    slam_map = runtime_fakes.entity_slam_map()
     return SimpleNamespace(
         runtime_data=SimpleNamespace(
             session=session,
@@ -1761,6 +1754,7 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
 
     entry = _entry()
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    entry.runtime_data.slam_map.live_session_verified = False
     entity = camera.MaticMapCamera(entry)
     entity.hass = hass
     with patch(

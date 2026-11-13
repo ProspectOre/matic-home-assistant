@@ -34,6 +34,7 @@ from custom_components.matic_robot.client.slam_tiles import (
 from custom_components.matic_robot.floor_layers import MaticFloorLayersView
 from custom_components.matic_robot.run_history import history_entries
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
+from custom_components.matic_robot.slam_history_format import SlamHistorySnapshot
 from custom_components.matic_robot.slam_history_view import MaticSlamHistoryView
 from custom_components.matic_robot.slam_run_history_view import MaticRunHistoryView
 from custom_components.matic_robot.slam_view_data import (
@@ -85,7 +86,8 @@ async def test_history_bytes() -> None:
         },
         "diff_eligible": True,
     }
-    snapshot = SimpleNamespace(
+    snapshot = SlamHistorySnapshot(
+        compressed=b"",
         record_id="f" * 32,
         snapshot_id="0123456789abcdef01234567",
         created_at=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
@@ -97,14 +99,17 @@ async def test_history_bytes() -> None:
         comparison_group="b" * 64,
         frame=frame,
     )
-    saved = SimpleNamespace(
+    saved = SlamHistorySnapshot(
+        compressed=b"",
+        record_id="89abcdef0123456701234567",
         snapshot_id="89abcdef0123456701234567",
         created_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
         revision=3,
         point_count=512,
         mission_token="1" * 64,
     )
-    imported = SimpleNamespace(
+    imported = SlamHistorySnapshot(
+        compressed=b"",
         record_id="a" * 32,
         snapshot_id="c" * 64,
         created_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),

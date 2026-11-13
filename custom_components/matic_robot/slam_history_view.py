@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import datetime
 from functools import partial
 from hashlib import sha256
 from http import HTTPStatus
@@ -29,13 +28,14 @@ from .map_schema import (
     HistoryError,
     HistoryExport,
     HistoryFloor,
+    HistoryFrame,
     HistoryImport,
     HistoryManagement,
     HistoryMutation,
     HistoryRecord,
     HistorySnapshot,
 )
-from .slam_history import HistoryReadCapacityError
+from .slam_history import HistoryReadCapacityError, SlamHistoryStore
 from .slam_history_format import MAX_ARCHIVE_BYTES, SlamHistorySnapshot
 
 MAX_HISTORY_IMPORT_REQUEST_BYTES = MAX_ARCHIVE_BYTES + 16 * 1024
@@ -120,8 +120,7 @@ class MaticSlamHistoryView(HomeAssistantView):
         imported_snapshots = tuple(
             snapshot
             for snapshot in runtime.slam_history.catalog()
-            if getattr(snapshot, "imported", False)
-            and getattr(snapshot, "retention", "automatic") != "trash"
+            if snapshot.imported and snapshot.retention != "trash"
         )
         if imported_snapshots:
             floors.append(
@@ -165,8 +164,7 @@ class MaticSlamHistorySceneView(HomeAssistantView):
             (
                 candidate
                 for candidate in runtime.slam_history.catalog()
-                if getattr(candidate, "record_id", candidate.snapshot_id) == snapshot_id
-                and getattr(candidate, "retention", "automatic") != "trash"
+                if candidate.record_id == snapshot_id and candidate.retention != "trash"
             ),
             None,
         )
@@ -175,7 +173,7 @@ class MaticSlamHistorySceneView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         history = runtime.slam_history
-        record_id = getattr(snapshot, "record_id", snapshot.snapshot_id)
+        record_id = snapshot.record_id
         try:
             scene = await history.async_scene(record_id)
         except HistoryReadCapacityError:
@@ -409,23 +407,21 @@ def _history_metadata(
     """Return bounded, content-free history metadata for the admin UI."""
     return [
         {
-            "id": getattr(snapshot, "record_id", snapshot.snapshot_id),
+            "id": snapshot.record_id,
             "content_id": snapshot.snapshot_id,
             "created_at": snapshot.created_at.isoformat(),
             "revision": snapshot.revision,
             "point_count": snapshot.point_count,
-            "scene_url": history_scene_api_url(
-                entry_id, getattr(snapshot, "record_id", snapshot.snapshot_id)
-            ),
-            "name": getattr(snapshot, "name", None),
-            "retention": getattr(snapshot, "retention", "automatic"),
+            "scene_url": history_scene_api_url(entry_id, snapshot.record_id),
+            "name": snapshot.name,
+            "retention": snapshot.retention,
             "deleted_until": _deleted_until(snapshot),
-            "imported": getattr(snapshot, "imported", False),
-            "comparison_group": getattr(snapshot, "comparison_group", None),
-            "frame": getattr(snapshot, "frame", None),
+            "imported": snapshot.imported,
+            "comparison_group": snapshot.comparison_group,
+            "frame": cast("HistoryFrame | None", snapshot.frame),
         }
         for snapshot in snapshots
-        if getattr(snapshot, "retention", "automatic") != "trash"
+        if snapshot.retention != "trash"
     ]
 
 
@@ -437,30 +433,29 @@ def _history_record_metadata(
     if record:
         return {**record[0], "compressed_bytes": len(snapshot.compressed)}
     return {
-        "id": getattr(snapshot, "record_id", snapshot.snapshot_id),
+        "id": snapshot.record_id,
         "content_id": snapshot.snapshot_id,
         "created_at": snapshot.created_at.isoformat(),
         "revision": snapshot.revision,
         "point_count": snapshot.point_count,
         "scene_url": None,
-        "name": getattr(snapshot, "name", None),
-        "retention": getattr(snapshot, "retention", "automatic"),
+        "name": snapshot.name,
+        "retention": snapshot.retention,
         "deleted_until": _deleted_until(snapshot),
-        "imported": getattr(snapshot, "imported", False),
-        "comparison_group": getattr(snapshot, "comparison_group", None),
-        "frame": getattr(snapshot, "frame", None),
+        "imported": snapshot.imported,
+        "comparison_group": snapshot.comparison_group,
+        "frame": cast("HistoryFrame | None", snapshot.frame),
         "compressed_bytes": len(snapshot.compressed),
     }
 
 
 def _deleted_until(snapshot: SlamHistorySnapshot) -> str | None:
-    value = getattr(snapshot, "deleted_until", None)
-    return value.isoformat() if isinstance(value, datetime) else None
+    value = snapshot.deleted_until
+    return value.isoformat() if value is not None else None
 
 
-def _stable_mission_floor_id(history: Any, mission_token: str) -> str:
-    group_reader = getattr(history, "public_group", None)
-    comparison_group = group_reader(mission_token) if callable(group_reader) else None
+def _stable_mission_floor_id(history: SlamHistoryStore, mission_token: str) -> str:
+    comparison_group = history.public_group(mission_token)
     stable_group = (
         comparison_group
         if isinstance(comparison_group, str) and len(comparison_group) == 64

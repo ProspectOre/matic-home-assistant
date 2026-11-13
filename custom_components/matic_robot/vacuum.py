@@ -168,8 +168,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         serial_number = self.session.info.serial_number
         run_id: str | None = None
         async with self._plans.control.external_command(serial_number):
-            active_run_id = getattr(self._plans.ledger, "active_run_id", None)
-            run_id = active_run_id(serial_number) if callable(active_run_id) else None
+            run_id = self._plans.ledger.active_run_id(serial_number)
             decision = self._plans.control.request_stop(serial_number)
             expected_generation = self._plans.control.motion_generation(serial_number)
             expected_stop_generation = self._plans.control.stop_request_generation(
@@ -202,8 +201,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
         serial_number = self.session.info.serial_number
-        active_run_id = getattr(self._plans.ledger, "active_run_id", None)
-        run_id = active_run_id(serial_number) if callable(active_run_id) else None
+        run_id = self._plans.ledger.active_run_id(serial_number)
         operational = self.session.state.value.operational
         # Display activity gives charging precedence; native task flags still
         # require STOP so DOCK cannot resume retained cleaning or paused work.
@@ -215,13 +213,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             or (bool(operational.error_codes) and not operational.is_charging)
             or (operational.low_charge and operational.is_charging)
         )
-        managed_stop_generations = getattr(
-            self._plans.control, "managed_stop_dispatch_generations", None
-        )
-        expected_generations = (
-            managed_stop_generations(serial_number)
-            if callable(managed_stop_generations)
-            else None
+        expected_generations = self._plans.control.managed_stop_dispatch_generations(
+            serial_number
         )
         expected_generation = (
             expected_generations[0]

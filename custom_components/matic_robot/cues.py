@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
 from .client.models import CuesVoiceStatus, RobotOperationalState
 from .const import CUES_EVENT_TYPES, DOMAIN, EVENT_CUES
 from .stores import LiveState, Store
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +107,7 @@ class CuesTransitions:
 
 @callback
 def async_fire_cues_events(
-    hass: HomeAssistant, entry: ConfigEntry, state: Store[LiveState], serial: str
+    hass: HomeAssistant, entry: MaticConfigEntry, state: Store[LiveState], serial: str
 ) -> CALLBACK_TYPE:
     """Put each Cues transition on the event bus; return the removal."""
 

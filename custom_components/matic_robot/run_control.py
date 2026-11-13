@@ -76,9 +76,9 @@ class RobotActor:
     managed_motion: int | None = None
     stop_dispatch_reservation: tuple[int, int] | None = None
     run_task: asyncio.Task[Any] | None = None
-    reconciliation_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    reconciliation_tasks: set[asyncio.Task[object]] = field(default_factory=set)
     # Dock watchers, a subset of reconciliation_tasks, with each one's run.
-    dock_watchers: dict[asyncio.Task[None], str | None] = field(default_factory=dict)
+    dock_watchers: dict[asyncio.Task[object], str | None] = field(default_factory=dict)
     dock_scope_cleanups: dict[str, _ScopeCleanup] = field(default_factory=dict)
     command_admission: _CommandAdmission = _OPEN_COMMAND_ADMISSION
     generation: int = 0
@@ -469,7 +469,7 @@ class RunControl:
     def register_reconciliation_task(
         self,
         serial_number: str,
-        task: asyncio.Task[None],
+        task: asyncio.Task[object],
         *,
         dock: bool = False,
         run_id: str | None = None,
@@ -480,7 +480,7 @@ class RunControl:
         if dock:
             actor.dock_watchers[task] = run_id
 
-        def _discard(done: asyncio.Task[None]) -> None:
+        def _discard(done: asyncio.Task[object]) -> None:
             # Cancelling the watchers already forgot them.
             if not actor.reconciliation_tasks:
                 return
@@ -522,7 +522,7 @@ class RunControl:
 
         remaining = set(tasks)
 
-        def _release(done: asyncio.Task[None]) -> None:
+        def _release(done: asyncio.Task[object]) -> None:
             remaining.discard(done)
             if not remaining and (get_run_id is None or get_run_id() == run_id):
                 set_run_id(None)

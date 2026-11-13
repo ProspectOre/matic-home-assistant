@@ -64,12 +64,10 @@ async def async_native_stop_is_settled(
     native_active: Callable[[], Awaitable[bool | None]],
     entity_id: str,
     *,
-    fresh_state: Callable[[], Awaitable[object]] | None = None,
+    fresh_state: Callable[[], Awaitable[object]],
     allowed_states: frozenset[str] = DOCKED_STATES,
 ) -> bool:
     """Require native inactivity followed by a direct, fresh robot snapshot."""
-    if fresh_state is None:
-        return False
     try:
         active = await native_active()
     except MaticError as err:
@@ -121,14 +119,14 @@ async def async_clear_ownerless_stop_if_settled(
     hass: HomeAssistant,
     *,
     native_active: Callable[[], Awaitable[bool | None]],
-    fresh_state: Callable[[], Awaitable[object]] | None = None,
+    fresh_state: Callable[[], Awaitable[object]],
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
 ) -> bool:
     """Clear only the captured ownerless fence after native dock settlement."""
     stop_fence_token = manager.control.stop_fence_token(serial_number)
-    if stop_fence_token is None or fresh_state is None:
+    if stop_fence_token is None:
         return False
     if not await async_native_stop_is_settled(
         hass,
@@ -165,18 +163,13 @@ async def async_dock_when_stop_settles(
     )
     settled_state_observed = False
     settlement_callback = on_docked
-    clear_stop_fence = getattr(
-        manager.control, "async_clear_stop_pending_if_token", None
-    )
 
     def owns_stop_fence() -> bool:
         if not manager.control.stop_pending(serial_number):
             return False
-        current_token = getattr(manager.control, "stop_fence_token", None)
         return (
             stop_fence_token is None
-            or not callable(current_token)
-            or current_token(serial_number) == stop_fence_token
+            or manager.control.stop_fence_token(serial_number) == stop_fence_token
         )
 
     if stop_fence_token is not None:
@@ -192,9 +185,11 @@ async def async_dock_when_stop_settles(
                 return False
             if on_docked is not None:
                 return (await on_docked()) is not False
-            elif run_id is None and callable(clear_stop_fence):
+            elif run_id is None:
                 return bool(
-                    await clear_stop_fence(serial_number, stop_fence_token, run_id=None)
+                    await manager.control.async_clear_stop_pending_if_token(
+                        serial_number, stop_fence_token, run_id=None
+                    )
                 )
             return False
 
@@ -351,16 +346,8 @@ def schedule_dock_after_stop(
     on_docked: Callable[[], Awaitable[bool | None]] | None = None,
 ) -> None:
     """Start a lifecycle-bound watcher that docks a settled stop."""
-    create_background_task = getattr(hass, "async_create_background_task", None)
-    if not callable(create_background_task):
-        return
-    stop_fence_token_reader = getattr(manager.control, "stop_fence_token", None)
-    stop_fence_token = (
-        stop_fence_token_reader(serial_number)
-        if callable(stop_fence_token_reader)
-        else None
-    )
-    task = create_background_task(
+    stop_fence_token = manager.control.stop_fence_token(serial_number)
+    task = hass.async_create_background_task(
         async_dock_when_stop_settles(
             hass,
             client=client,
@@ -376,9 +363,9 @@ def schedule_dock_after_stop(
         ),
         f"{DOMAIN} dock after stop",
     )
-    register_task = getattr(manager.control, "register_reconciliation_task", None)
-    if isinstance(task, asyncio.Task) and callable(register_task):
-        register_task(serial_number, task, dock=True, run_id=run_id)
+    manager.control.register_reconciliation_task(
+        serial_number, task, dock=True, run_id=run_id
+    )
 
 
 async def async_confirm_docked(
@@ -446,12 +433,9 @@ def schedule_dock_confirmation(
     on_docked: Callable[[], Awaitable[bool | None]],
     set_run_id: Callable[[str | None], None] | None = None,
     get_run_id: Callable[[], str | None] | None = None,
-) -> bool:
+) -> None:
     """Start a lifecycle-bound watcher for an already-sent DOCK command."""
-    create_background_task = getattr(hass, "async_create_background_task", None)
-    if not callable(create_background_task):
-        return False
-    task = create_background_task(
+    task = hass.async_create_background_task(
         async_confirm_docked(
             hass,
             refresh=refresh,
@@ -463,7 +447,6 @@ def schedule_dock_confirmation(
         ),
         f"{DOMAIN} confirm managed dock {run_id}",
     )
-    register_task = getattr(manager.control, "register_reconciliation_task", None)
-    if isinstance(task, asyncio.Task) and callable(register_task):
-        register_task(serial_number, task, dock=True, run_id=run_id)
-    return isinstance(task, asyncio.Task)
+    manager.control.register_reconciliation_task(
+        serial_number, task, dock=True, run_id=run_id
+    )

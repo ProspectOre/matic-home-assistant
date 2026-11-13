@@ -43,8 +43,7 @@ class RobotControls(RobotCommands):
 
     def _require_no_pending_stop_dispatch(self, serial_number: str) -> None:
         """Keep RESUME out of the gap between Stop acceptance and dispatch."""
-        pending = getattr(self._plans.control, "stop_dispatch_pending", None)
-        if callable(pending) and pending(serial_number) is True:
+        if self._plans.control.stop_dispatch_pending(serial_number):
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="robot_stop_pending",

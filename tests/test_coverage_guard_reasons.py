@@ -90,7 +90,7 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
     error = CoverageGuardError(reason)
     robot.on_start = AsyncMock(side_effect=error)
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(return_value=True),
@@ -156,7 +156,7 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
 
     robot.on_start = reject_before_write
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(return_value=True),

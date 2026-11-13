@@ -37,6 +37,8 @@ def _manager(pending: bool = True) -> SimpleNamespace:
     manager = SimpleNamespace(
         control=SimpleNamespace(
             stop_pending=MagicMock(return_value=pending),
+            stop_fence_token=MagicMock(return_value=None),
+            async_clear_stop_pending_if_token=AsyncMock(return_value=True),
             register_reconciliation_task=MagicMock(),
             command_admission_open=MagicMock(return_value=True),
             command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
@@ -149,15 +151,11 @@ async def test_cached_docked_but_fresh_ready_does_not_clear_stop_fence(hass) -> 
     manager.control.async_clear_stop_pending_if_token.assert_not_awaited()
 
 
-async def test_missing_or_unreadable_direct_state_never_proves_docking(hass) -> None:
+async def test_unreadable_direct_state_never_proves_docking(hass) -> None:
     hass.states.async_set(ENTITY, "docked", {})
-    native_active = AsyncMock(return_value=False)
-    assert not await stop_return.async_native_stop_is_settled(
-        hass, native_active, ENTITY
-    )
     assert not await stop_return.async_native_stop_is_settled(
         hass,
-        native_active,
+        AsyncMock(return_value=False),
         ENTITY,
         fresh_state=AsyncMock(side_effect=MaticError("unavailable")),
     )
@@ -272,10 +270,13 @@ async def test_fresh_replacement_state_never_dispatches_dock(hass) -> None:
     client.async_send_user_command.assert_not_awaited()
 
 
-async def test_stop_callback_without_finalizer_keeps_fence(hass) -> None:
+@pytest.mark.parametrize("run_id", [None, "run"])
+async def test_stop_callback_without_finalizer_keeps_fence(hass, run_id) -> None:
     hass.states.async_set(ENTITY, "docked", {})
     manager = _manager()
     manager.control.stop_fence_token = MagicMock(return_value=4)
+    # The run control refuses: the fence now belongs to a run.
+    manager.control.async_clear_stop_pending_if_token = AsyncMock(return_value=False)
     client = _client(session=False)
     client.async_get_state = AsyncMock(return_value=_operational(charging_idle=True))
 
@@ -286,8 +287,15 @@ async def test_stop_callback_without_finalizer_keeps_fence(hass) -> None:
         manager=manager,
         serial_number="serial",
         entity_id=ENTITY,
+        run_id=run_id,
         stop_fence_token=4,
     )
+    clear = manager.control.async_clear_stop_pending_if_token
+    if run_id is None:
+        clear.assert_awaited_with("serial", 4, run_id=None)
+    else:
+        # A run's fence settles only through that run's finalizer.
+        clear.assert_not_awaited()
 
 
 async def test_transient_fresh_state_failure_retries_until_ready(
@@ -1321,40 +1329,6 @@ async def test_confirmation_does_not_claim_a_newer_run_scope(hass) -> None:
     )
     set_run_id.assert_not_called()
     on_docked.assert_not_awaited()
-
-
-async def test_schedule_is_a_no_op_without_background_task_support() -> None:
-    manager = _manager()
-    fake_hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock()))
-
-    schedule_dock_after_stop(
-        fake_hass,
-        client=_client(),
-        refresh=AsyncMock(),
-        manager=manager,
-        serial_number="serial",
-        entity_id=ENTITY,
-    )
-
-    manager.control.register_reconciliation_task.assert_not_called()
-
-
-async def test_confirmation_schedule_is_a_no_op_without_background_task_support() -> (
-    None
-):
-    manager = _manager()
-    fake_hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock()))
-
-    assert not schedule_dock_confirmation(
-        fake_hass,
-        refresh=AsyncMock(),
-        manager=manager,
-        serial_number="serial",
-        entity_id=ENTITY,
-        run_id="run-1",
-        on_docked=AsyncMock(),
-    )
-    manager.control.register_reconciliation_task.assert_not_called()
 
 
 async def test_timeout_failure_can_finalize_while_dock_confirmation_waits(

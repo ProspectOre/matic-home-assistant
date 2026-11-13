@@ -64,12 +64,6 @@ def _floor_render_identity(
     )
 
 
-def _map_session_verified(store: SlamMapStore, floor_plan_coherent: bool) -> bool:
-    """Return this process's live-map proof with a test-double fallback."""
-    verified = getattr(store, "live_session_verified", None)
-    return verified if isinstance(verified, bool) else floor_plan_coherent
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
@@ -95,9 +89,7 @@ class MaticMapCamera(MaticEntity, Camera):
             self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
-        self._published_session_verified = _map_session_verified(
-            self._store, floor_plan_coherent
-        )
+        self._published_session_verified = self._store.live_session_verified
         self._cached_image_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
 
@@ -118,9 +110,7 @@ class MaticMapCamera(MaticEntity, Camera):
             self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
-        self._published_session_verified = _map_session_verified(
-            self._store, floor_plan_coherent
-        )
+        self._published_session_verified = self._store.live_session_verified
         super()._handle_store_update()
 
     @callback
@@ -129,7 +119,7 @@ class MaticMapCamera(MaticEntity, Camera):
         floor_plan_coherent = self._store.floor_plan_is_current(
             self.session.floor.value
         )
-        session_verified = _map_session_verified(self._store, floor_plan_coherent)
+        session_verified = self._store.live_session_verified
         if (
             floor_plan_coherent == self._published_floor_coherent
             and session_verified == self._published_session_verified
@@ -223,9 +213,7 @@ class MaticMapCamera(MaticEntity, Camera):
         return {
             "matic_entry_id": self._config_entry.entry_id,
             "map_floor_coherent": floor_plan_coherent,
-            "map_session_verified": _map_session_verified(
-                self._store, floor_plan_coherent
-            ),
+            "map_session_verified": self._store.live_session_verified,
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
                 data.pose,
@@ -255,9 +243,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
-        self._published_session_verified = _map_session_verified(
-            self._store, floor_plan_coherent
-        )
+        self._published_session_verified = self._store.live_session_verified
         self._cached_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
         self._render_lock = asyncio.Lock()
@@ -279,9 +265,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
-        self._published_session_verified = _map_session_verified(
-            self._store, floor_plan_coherent
-        )
+        self._published_session_verified = self._store.live_session_verified
         super()._handle_store_update()
 
     @callback
@@ -290,7 +274,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         floor_plan_coherent = self._store.floor_plan_is_current(
             self.session.floor.value
         )
-        session_verified = _map_session_verified(self._store, floor_plan_coherent)
+        session_verified = self._store.live_session_verified
         if (
             floor_plan_coherent == self._published_floor_coherent
             and session_verified == self._published_session_verified
@@ -442,9 +426,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             "map_complete": self._store.map_complete,
             "map_revision": self._store.revision,
             "map_floor_coherent": floor_plan_coherent,
-            "map_session_verified": _map_session_verified(
-                self._store, floor_plan_coherent
-            ),
+            "map_session_verified": self._store.live_session_verified,
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
                 data.pose,

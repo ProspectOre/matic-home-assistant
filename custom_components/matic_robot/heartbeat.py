@@ -10,7 +10,6 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 
 from google.protobuf.message import DecodeError
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.debounce import Debouncer
@@ -37,6 +36,7 @@ from .session_tracking import CleaningSessionTracker
 from .stores import CleaningHistory, Store
 
 if TYPE_CHECKING:
+    from . import MaticConfigEntry
     from .session import RobotSession
 
 _LOGGER = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ class Heartbeat:
     """
 
     def __init__(
-        self, hass: HomeAssistant, entry: ConfigEntry, session: RobotSession
+        self, hass: HomeAssistant, entry: MaticConfigEntry, session: RobotSession
     ) -> None:
         self.hass = hass
         self.interval = timedelta(seconds=SLOW_UPDATE_INTERVAL_SECONDS)

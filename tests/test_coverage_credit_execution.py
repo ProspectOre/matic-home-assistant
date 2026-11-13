@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import ServiceCall
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -755,6 +756,7 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         async_get_cleaning_session_identity=AsyncMock(return_value=b""),
         async_get_cleaning_session_records=AsyncMock(return_value=(_record((room,)),)),
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
+        async_get_state=AsyncMock(return_value=None),
         async_confirm_coverage_receipt=AsyncMock(return_value=True),
         async_send_user_command=AsyncMock(),
         activity_journal=SimpleNamespace(
@@ -775,7 +777,13 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         ),
         slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
     )
-    return manager, SimpleNamespace(runtime_data=runtime), checkpoint, room, receipt
+    return (
+        manager,
+        SimpleNamespace(runtime_data=runtime, state=ConfigEntryState.LOADED),
+        checkpoint,
+        room,
+        receipt,
+    )
 
 
 async def test_restart_verifying_uses_canonical_history_and_fresh_coverage_verifier(

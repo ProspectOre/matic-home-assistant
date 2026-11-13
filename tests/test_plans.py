@@ -6451,9 +6451,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
     """A new, overlapping, single-room native success is positive evidence."""
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     order: list[str] = []
     manager = SimpleNamespace(
         control=SimpleNamespace(
@@ -6779,7 +6777,7 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
     robot = FakeRobot()
     robot.show("cleaning")
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     outcomes = 0
 
     async def leg_outcome(*_args, **_kwargs):
@@ -8116,9 +8114,7 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
 ) -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -8191,9 +8187,7 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
 async def test_room_starting_paused_is_suspended_until_resume() -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -8256,9 +8250,7 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
 async def test_room_pause_and_resume_outcome() -> None:
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(
-        bus=bus,
-    )
+    hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         control=SimpleNamespace(
             managed_reconciliation=lambda *_args: nullcontext(True),
@@ -8332,7 +8324,11 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
     for interrupted in (True, False):
         robot = FakeRobot()
         bus = SimpleNamespace(async_fire=MagicMock())
-        hass = SimpleNamespace(bus=bus)
+        hass = SimpleNamespace(
+            bus=bus,
+            is_stopping=False,
+            async_create_background_task=lambda watcher, _name: watcher.close(),
+        )
         manager = SimpleNamespace(
             ledger=SimpleNamespace(
                 async_mark_started=AsyncMock(),
@@ -8407,7 +8403,11 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     """Config-entry unload stops accepted motion and never credits the room."""
     robot = FakeRobot()
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(bus=bus)
+    hass = SimpleNamespace(
+        bus=bus,
+        is_stopping=False,
+        async_create_background_task=lambda watcher, _name: watcher.close(),
+    )
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),

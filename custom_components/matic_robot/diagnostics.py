@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from . import MaticConfigEntry
+from . import MaticConfigEntry, MaticRuntimeData
 from .const import (
     CONF_HERMES_CREDENTIAL,
     CONF_PAIRING_METHOD,
@@ -16,20 +16,24 @@ from .const import (
 from .runtime_code import capture_runtime_code
 
 
+def _bindings(runtime: MaticRuntimeData) -> tuple[object, ...]:
+    """Return the runtime objects whose code the report describes."""
+    return (
+        runtime.client,
+        runtime.session,
+        runtime.cleaning_plans,
+        runtime.firmware_tracker,
+        runtime.slam_map,
+        runtime.slam_history,
+    )
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: MaticConfigEntry
 ) -> dict[str, Any]:
     """Return redacted diagnostics."""
     runtime = entry.runtime_data
-    binding_names = (
-        "client",
-        "session",
-        "cleaning_plans",
-        "firmware_tracker",
-        "slam_map",
-        "slam_history",
-    )
-    bindings = tuple(getattr(runtime, name, None) for name in binding_names)
+    bindings = _bindings(runtime)
     snapshot = await hass.async_add_executor_job(
         capture_runtime_code,
         Path(__file__).parent,
@@ -41,8 +45,8 @@ async def async_get_config_entry_diagnostics(
     if code["bindings_changed_during_capture"]:
         code["observed_code_matches_installed_source"] = False
     code["runtime_changed_during_capture"] = entry.runtime_data is not runtime or any(
-        getattr(runtime, name, None) is not value
-        for name, value in zip(binding_names, bindings, strict=True)
+        current is not value
+        for current, value in zip(_bindings(runtime), bindings, strict=True)
     )
     if code["runtime_changed_during_capture"]:
         code["observed_code_matches_installed_source"] = False

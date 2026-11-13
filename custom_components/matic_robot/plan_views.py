@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from http import HTTPStatus
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
@@ -120,13 +120,6 @@ class MaticPlansView(HomeAssistantView):
                     "mission_boundaries": [],
                     "blocker": "cadence_identity_unavailable",
                 }
-            previewer = getattr(runtime.cleaning_plans.planning, "preview", None)
-            if not callable(previewer):
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": "preview_unavailable",
-                }
             try:
                 vacuum_entity_id = (
                     entry_vacuum_entity_id(hass, entry_id)
@@ -138,14 +131,15 @@ class MaticPlansView(HomeAssistantView):
                     if vacuum_entity_id is not None
                     else {}
                 )
-                preview = previewer(
+                holds: dict[str, Any] = {"held_rooms": held_rooms} if held_rooms else {}
+                preview = runtime.cleaning_plans.planning.preview(
                     serial_number,
                     room_map,
                     plan_id,
                     floor_token=floor_token,
                     room_identities=room_identities,
                     floor_plan=floor_plan,
-                    **({"held_rooms": held_rooms} if held_rooms else {}),
+                    **holds,
                 )
                 preview_entries = preview.get("entries")
                 if not isinstance(preview_entries, list):
@@ -279,28 +273,18 @@ class MaticPlansView(HomeAssistantView):
 
         def next_run_estimate(preview: NextRunPreview) -> int | None:
             """Estimate the previewed run from the stored per-room durations."""
-            estimator = getattr(
-                runtime.cleaning_plans.history, "next_run_estimate_seconds", None
-            )
-            if preview["blocker"] is not None or not callable(estimator):
+            if preview["blocker"] is not None:
                 return None
             if any(entry["kind"] == "area" for entry in preview["entries"]):
                 # The robot keeps no duration history for a custom area.
                 return None
             rooms = preview["rooms"]
-            return cast(
-                int | None,
-                estimator(
-                    serial_number,
-                    [
-                        (
-                            room["room_id"],
-                            room["cleaning_mode"],
-                            room["coverage_setting"],
-                        )
-                        for room in rooms
-                    ],
-                ),
+            return runtime.cleaning_plans.history.next_run_estimate_seconds(
+                serial_number,
+                [
+                    (room["room_id"], room["cleaning_mode"], room["coverage_setting"])
+                    for room in rooms
+                ],
             )
 
         def cadence_state(
@@ -312,11 +296,6 @@ class MaticPlansView(HomeAssistantView):
             *,
             use_shared_schedule: bool = False,
         ) -> _CadenceState:
-            project = getattr(
-                runtime.cleaning_plans.cadence, "cadence_editor_state", None
-            )
-            if not callable(project):
-                return {"cadence": None}
             try:
                 identity = room_cadence_identity(floor_plan, room_id)
             except ValueError:
@@ -327,7 +306,7 @@ class MaticPlansView(HomeAssistantView):
                 }
             return cast(
                 _CadenceState,
-                project(
+                runtime.cleaning_plans.cadence.cadence_editor_state(
                     serial_number,
                     plan_id,
                     CleaningRoom(room_id, name, cleaning_mode, coverage_setting),
@@ -337,16 +316,15 @@ class MaticPlansView(HomeAssistantView):
                 ),
             )
 
-        def daily_limit_state(room_id: str) -> DailyLimit | None:
+        def daily_limit_state(room_id: str) -> DailyLimit:
             """Project a room's global daily cap against the current map."""
-            project = getattr(runtime.cleaning_plans.cadence, "daily_limit_state", None)
-            if not callable(project):
-                return None
             try:
                 identity = room_cadence_identity(floor_plan, room_id)
             except ValueError:
                 identity = None
-            return cast(DailyLimit, project(serial_number, room_id, identity))
+            return runtime.cleaning_plans.cadence.daily_limit_state(
+                serial_number, room_id, identity
+            )
 
         saved_areas: Mapping[str, object] | None = None
 
@@ -381,7 +359,7 @@ class MaticPlansView(HomeAssistantView):
                     "coverage_setting": coverage_setting,
                 }
                 daily_limit = daily_limit_state(room_id)
-                if daily_limit is not None and (
+                if (
                     daily_limit.get("limit") is not None
                     or daily_limit.get("reached") is True
                 ):
@@ -450,22 +428,20 @@ class MaticPlansView(HomeAssistantView):
                 "name": room.name,
             }
             daily_limit = daily_limit_state(room.id)
-            if daily_limit is not None and (
+            if (
                 daily_limit.get("limit") is not None
                 or daily_limit.get("reached") is True
             ):
                 workspace_room_projection["daily_limit"] = daily_limit
-            delete_token = getattr(
-                runtime.cleaning_plans.cadence, "shared_cadence_delete_token", None
+            token = runtime.cleaning_plans.cadence.shared_cadence_delete_token(
+                serial_number, room.id
             )
-            if callable(delete_token):
-                token = delete_token(serial_number, room.id)
-                if (
-                    isinstance(token, str)
-                    and len(token) == 64
-                    and all(char in "0123456789abcdef" for char in token)
-                ):
-                    workspace_room_projection["shared_cadence_delete_token"] = token
+            if (
+                isinstance(token, str)
+                and len(token) == 64
+                and all(char in "0123456789abcdef" for char in token)
+            ):
+                workspace_room_projection["shared_cadence_delete_token"] = token
             cadence = cadence_state(
                 "quick_clean",
                 room.id,

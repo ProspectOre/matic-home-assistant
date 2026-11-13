@@ -157,9 +157,6 @@ def _schedule_native_reconciliation(
     """Start a lifecycle-bound watcher for a native session finishing after STOP."""
     if reconciliation is None:
         return
-    create_background_task = getattr(hass, "async_create_background_task", None)
-    if not callable(create_background_task):
-        return
     if history_baseline is not None:
         watcher = _async_reconcile_native_stop(
             hass,
@@ -181,13 +178,10 @@ def _schedule_native_reconciliation(
             room,
             reconciliation,
         )
-    task = create_background_task(
-        watcher,
-        f"{DOMAIN} native stop reconciliation",
+    task = hass.async_create_background_task(
+        watcher, f"{DOMAIN} native stop reconciliation"
     )
-    register_task = manager.control.register_reconciliation_task
-    if isinstance(task, asyncio.Task):
-        register_task(serial_number, task)
+    manager.control.register_reconciliation_task(serial_number, task)
 
 
 async def _async_reconcile_native_stop(

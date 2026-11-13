@@ -188,6 +188,7 @@ async def _async_execute_rooms_reserved(
                 serial_number,
                 entity_id,
                 robot.active_session,
+                robot.fresh_state,
             )
             if recovery is None and validate_prepared_run is not None:
                 validate_prepared_run()
@@ -565,7 +566,7 @@ async def _async_execute_rooms_reserved(
                     if current.activity not in home_or_returning:
                         await outer_command(motion_token, UserCommand.DOCK)
                     if needs_dock_confirmation:
-                        dock_confirmation_scheduled = schedule_dock_confirmation(
+                        schedule_dock_confirmation(
                             hass,
                             refresh=robot.refresh,
                             manager=manager,
@@ -583,6 +584,7 @@ async def _async_execute_rooms_reserved(
                                 call.context,
                             ),
                         )
+                        dock_confirmation_scheduled = True
                 except ManagedMotionReplacedError as err:
                     raise PlanCancelledError from err
                 except MaticError as err:

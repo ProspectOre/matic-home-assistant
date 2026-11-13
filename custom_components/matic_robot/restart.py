@@ -227,7 +227,7 @@ async def async_recover_managed_run(
     # A queued background recovery may first run after unload has begun.
     # Leave its checkpoint for the next setup instead of acquiring ownership
     # after the unload handler already checked for a registered task.
-    if getattr(entry, "state", None) is ConfigEntryState.UNLOAD_IN_PROGRESS:
+    if entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
         return
     runtime = entry.runtime_data
     manager = runtime.cleaning_plans
@@ -518,7 +518,7 @@ async def async_recover_managed_run(
         verified_coverage = await async_confirm_completed_coverage(
             manager.recovery.coverage_receipt(serial_number, run["run_id"]),
             completion_sessions[-1] if completion_sessions else None,
-            getattr(runtime.client, "async_confirm_coverage_receipt", None),
+            runtime.client.async_confirm_coverage_receipt,
         )
         if (
             cancel.is_set()

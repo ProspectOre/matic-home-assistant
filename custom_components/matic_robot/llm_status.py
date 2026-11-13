@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import probatio
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
@@ -24,6 +23,9 @@ from .llm_common import (
     _MaticTool,
 )
 from .native_schedules import schedule_occurrences
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 MAX_SCHEDULE_RESULTS = 64
 MAX_SCHEDULE_DAYS = 14
@@ -208,7 +210,7 @@ class MaticGetZonesTool(_MaticTool):
 
 
 def _sampled_room_timing(
-    hass: HomeAssistant, entry: ConfigEntry[Any], snapshot: dict[str, Any]
+    hass: HomeAssistant, entry: MaticConfigEntry, snapshot: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Read the registered active-time entity's shared sample, without a clock tick."""
     session = entry.runtime_data.session
@@ -279,7 +281,7 @@ def _sampled_room_timing(
     }
 
 
-def _robot_summary(hass: HomeAssistant, entry: ConfigEntry[Any]) -> JsonObjectType:
+def _robot_summary(hass: HomeAssistant, entry: MaticConfigEntry) -> JsonObjectType:
     """Build one bounded robot and plan-run snapshot."""
     runtime = entry.runtime_data
     session = runtime.session

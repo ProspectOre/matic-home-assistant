@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .area_binding import binding_for_floor_plan
@@ -16,6 +15,7 @@ from .session import RobotSession
 from .slam_map_store import SlamMapIdentity, SlamMapStore
 
 if TYPE_CHECKING:
+    from . import MaticConfigEntry
     from .plans import CleaningPlanManager
 
 FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS = 2
@@ -40,7 +40,7 @@ def floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
 @callback
 def async_follow_slam_mission(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: MaticConfigEntry,
     slam_map: SlamMapStore,
     session: RobotSession,
 ) -> None:
@@ -74,8 +74,8 @@ def async_follow_slam_mission(
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def _identity_lost(identity: SlamMapIdentity) -> bool:
-        return slam_map.mission_identity != identity or not getattr(
-            slam_map, "live_session_verified", True
+        return (
+            slam_map.mission_identity != identity or not slam_map.live_session_verified
         )
 
     def _floor_is_current() -> bool:
@@ -161,7 +161,7 @@ def async_follow_slam_mission(
         # both collection streams have supplied new pages. It is not a floor
         # transition, so do not spend the bounded refresh budget or mark this
         # identity attempted before live collection makes it actionable.
-        if not getattr(slam_map, "live_session_verified", True):
+        if not slam_map.live_session_verified:
             last_attempted_identity = None
             return
         if _floor_is_current():
@@ -198,7 +198,7 @@ class AreaBindingSync:
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: MaticConfigEntry,
         session: RobotSession,
         slam_map: SlamMapStore,
         plans: CleaningPlanManager,

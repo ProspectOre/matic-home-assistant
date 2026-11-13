@@ -87,6 +87,7 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
         return remove_listener
 
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         async_add_listener=add_listener,
         mission_identity=SlamMapIdentity("00" * 32, 43),
@@ -126,6 +127,7 @@ async def test_slam_map_transition_recovers_after_fast_retry_budget(hass) -> Non
     )
     floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         mission_identity=SlamMapIdentity("00" * 32, 43),
         async_add_listener=MagicMock(return_value=remove_listener),
@@ -167,6 +169,7 @@ async def test_slam_map_transition_drops_changed_identity_during_recovery_wait(
     first_identity = SlamMapIdentity("00" * 32, 43)
     second_identity = SlamMapIdentity("11" * 32, 44)
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         mission_identity=first_identity,
         async_add_listener=MagicMock(return_value=MagicMock()),
@@ -211,6 +214,7 @@ async def test_slam_map_transition_cancelled_recovery_suppresses_duplicate_sync(
     started = asyncio.Event()
     blocked = asyncio.Event()
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         mission_identity=SlamMapIdentity("00" * 32, 43),
         async_add_listener=MagicMock(return_value=MagicMock()),
@@ -246,6 +250,7 @@ async def test_slam_map_transition_drops_identity_changed_without_wake(hass) -> 
     )
     first_identity = SlamMapIdentity("00" * 32, 43)
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         mission_identity=first_identity,
         async_add_listener=MagicMock(return_value=MagicMock()),
@@ -278,6 +283,7 @@ async def test_slam_map_transition_observes_coherence_during_recovery_wait(
         scheduled.append(target)
     )
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         mission_identity=SlamMapIdentity("00" * 32, 43),
         async_add_listener=MagicMock(return_value=MagicMock()),
@@ -311,6 +317,7 @@ async def test_slam_map_transition_drops_changed_identity_during_recovery_read(
     first_identity = SlamMapIdentity("00" * 32, 43)
     second_identity = SlamMapIdentity("11" * 32, 44)
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         mission_identity=first_identity,
         async_add_listener=MagicMock(return_value=MagicMock()),
@@ -404,6 +411,7 @@ async def test_slam_map_transition_rechecks_a_newer_mission_after_refresh(hass) 
         return remove_listener
 
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         async_add_listener=add_listener,
         mission_identity=first_identity,
@@ -529,6 +537,7 @@ async def test_slam_map_transition_retries_a_delayed_floor_plan_once(hass) -> No
     )
     floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         mission_identity=SlamMapIdentity("00" * 32, 43),
     )
@@ -580,6 +589,7 @@ async def test_slam_map_transition_refreshes_a_missing_cached_floor_plan(hass) -
         return remove_listener
 
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=True),
         async_add_listener=add_listener,
         mission_identity=SlamMapIdentity("00" * 32, 43),
@@ -611,6 +621,7 @@ async def test_slam_map_transition_ignores_an_opaque_mission_identity(hass) -> N
     session = _session(floor_plan, refresh)
 
     slam_map = SimpleNamespace(
+        live_session_verified=True,
         floor_plan_is_current=MagicMock(return_value=False),
         async_add_listener=lambda _candidate: remove_listener,
         mission_identity=SlamMapIdentity("00" * 32, None),

@@ -13,7 +13,7 @@ from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
 from .http import PRIVATE_NO_STORE_HEADERS, RUNS_API_URL, runtime_for_entry
 from .map_schema import RunHistory, RunRecord, RunTrail
-from .run_history import RUN_HISTORY_LIMIT, RunTrails
+from .run_history import RUN_HISTORY_LIMIT
 from .slam_view_data import _map_session_key
 
 RUNS_NATIVE_READ_SECONDS = 15
@@ -29,11 +29,11 @@ class MaticRunHistoryView(HomeAssistantView):
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return the run list, or one trail when ``trail`` names it."""
         runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
-        trails: RunTrails | None = getattr(runtime, "run_trails", None)
-        if runtime is None or trails is None:
+        if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
+        trails = runtime.run_trails
         map_key = _map_session_key(runtime)
         trail_id = request.query.get("trail")
         if trail_id is not None:

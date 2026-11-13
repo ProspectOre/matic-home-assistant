@@ -8,10 +8,10 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from functools import partial
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from google.protobuf.message import DecodeError
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -41,6 +41,9 @@ from .stop_return import (
     schedule_dock_after_stop,
 )
 
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
+
 _LOGGER = logging.getLogger(__name__)
 
 DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS = 10
@@ -54,14 +57,12 @@ def _shutdown_suspends_run(
     reason = reader(serial_number)
     if reason in {"managed_stop", "motion_replaced", "config_entry_unload"}:
         return False
-    return reason == "home_assistant_shutdown" or (
-        getattr(hass, "is_stopping", False) is True
-    )
+    return reason == "home_assistant_shutdown" or hass.is_stopping
 
 
 async def _async_managed_user_command(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: MaticConfigEntry,
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
@@ -93,7 +94,7 @@ async def _async_managed_user_command(
 
 def _schedule_managed_dock_after_stop(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: MaticConfigEntry,
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
@@ -102,7 +103,7 @@ def _schedule_managed_dock_after_stop(
 ) -> None:
     """Bind fresh or restored settlement to the same run and native guards."""
     runtime = entry.runtime_data
-    journal = getattr(runtime.client, "activity_journal", None)
+    journal = runtime.client.activity_journal
     stop_fence_token_reader = manager.control.stop_fence_token
     stop_fence_token = stop_fence_token_reader(serial_number)
     schedule_dock_after_stop(
@@ -113,8 +114,8 @@ def _schedule_managed_dock_after_stop(
         serial_number=serial_number,
         entity_id=entity_id,
         run_id=run_id,
-        set_run_id=getattr(journal, "set_run_id", None),
-        get_run_id=getattr(journal, "current_run_id", None),
+        set_run_id=journal.set_run_id,
+        get_run_id=journal.current_run_id,
         on_docked=partial(
             _async_mark_run_docked,
             manager,
@@ -464,19 +465,16 @@ async def _ensure_stop_settled(
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
-    native_active: Callable[[], Awaitable[bool | None]] | None = None,
-    fresh_state: Callable[[], Awaitable[object]] | None = None,
+    native_active: Callable[[], Awaitable[bool | None]],
+    fresh_state: Callable[[], Awaitable[object]],
 ) -> None:
     """Reject replacement plans while the OEM stop countdown is still active."""
     if not manager.control.stop_pending(serial_number):
         return
-    direct_state = fresh_state or getattr(
-        getattr(native_active, "__self__", None), "async_get_state", None
-    )
-    if native_active is not None and await async_clear_ownerless_stop_if_settled(
+    if await async_clear_ownerless_stop_if_settled(
         hass,
         native_active=native_active,
-        fresh_state=direct_state,
+        fresh_state=fresh_state,
         manager=manager,
         serial_number=serial_number,
         entity_id=entity_id,

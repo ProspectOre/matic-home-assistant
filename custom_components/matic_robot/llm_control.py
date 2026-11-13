@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import probatio
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -22,6 +21,9 @@ from .llm_common import _ROBOT_FIELD, _error, _MaticTool, _resolve_plan_id
 from .plan_model import resolve_room_reference
 from .robot_controls import RobotControls
 from .slam_view_data import catalog_entry_projection
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 
 class MaticRunPlanTool(_MaticTool):
@@ -270,7 +272,11 @@ class MaticResetScheduleTool(_MaticTool):
         room_name: str | None = None
         if args["scope"] == "room":
             floor_plan = robot.entry.runtime_data.session.floor.value
-            room_map = {room.id: room.name for room in floor_plan.rooms}
+            room_map = (
+                {room.id: room.name for room in floor_plan.rooms}
+                if floor_plan is not None
+                else {}
+            )
             try:
                 data["room_id"], room_name = resolve_room_reference(
                     args["room"], room_map
@@ -400,7 +406,7 @@ async def _async_navigation_refusal(
 class _PanelRobot:
     """The robot facts Matic Map's action strip decides from (`state.ts`)."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry[Any]) -> None:
+    def __init__(self, hass: HomeAssistant, entry: MaticConfigEntry) -> None:
         self.entry = entry
         self.serial_number = str(entry.runtime_data.session.info.serial_number)
         entity_id = er.async_get(hass).async_get_entity_id(
