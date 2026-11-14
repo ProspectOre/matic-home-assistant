@@ -9,7 +9,14 @@ from functools import partial
 from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
 
-from .client import FloorPlan, SlamStructureTile, SlamTile, encode_slam_scene
+from .client import (
+    FloorPlan,
+    SlamStructureTile,
+    SlamTile,
+)
+from .scene_encoding import (
+    encode_slam_scene,
+)
 from .slam_history import SlamHistoryStore
 from .slam_map_store import MAP_SETTLE_SECONDS, SlamMapIdentity, SlamMapStore
 

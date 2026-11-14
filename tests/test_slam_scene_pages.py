@@ -19,19 +19,19 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import Unauthorized
 
 from custom_components.matic_robot import slam_scene as scene_module
-from custom_components.matic_robot.client.slam_scene import (
-    MAX_SCENE_POINTS,
-    encode_slam_scene,
-    parse_slam_scene_header,
-    scene_point_count,
-    scene_sample_step,
-)
 from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.http import SCENE_API_URL, SCENE_PAGES_API_URL
+from custom_components.matic_robot.scene_encoding import (
+    MAX_SCENE_POINTS,
+    encode_slam_scene,
+    parse_slam_scene_header,
+    scene_point_count,
+    scene_sample_step,
+)
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_scene import (
     MaticSlamScenePagesView,

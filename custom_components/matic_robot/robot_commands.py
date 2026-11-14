@@ -21,6 +21,7 @@ from .client import (
     Room,
 )
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
+from .managed_run import coverage_guard_message
 from .plan_model import (
     plan_area_fingerprint,
     plan_floor_token,
@@ -430,7 +431,7 @@ class RobotCommands:
                     )
                 except CoverageGuardError as err:
                     raise ServiceValidationError(
-                        err.safe_message,
+                        coverage_guard_message(err),
                         translation_domain=DOMAIN,
                         translation_key=err.reason_code,
                     ) from err
@@ -565,7 +566,7 @@ class RobotCommands:
                 )
             except CoverageGuardError as err:
                 raise ServiceValidationError(
-                    err.safe_message,
+                    coverage_guard_message(err),
                     translation_domain=DOMAIN,
                     translation_key=err.reason_code,
                 ) from err

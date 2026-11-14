@@ -8,8 +8,6 @@ pages of the same shape; a nonzero override cell replaces the robot's own.
 
 from __future__ import annotations
 
-import hashlib
-import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import IntEnum
@@ -17,14 +15,14 @@ from enum import IntEnum
 import numpy as np
 from google.protobuf.message import DecodeError
 
-from .slam_geometry import mask_contours
-from .slam_scene import MAX_SCENE_RASTER_CELLS
-from .slam_tiles import (
+from .client import (
     MAX_SLAM_TILES,
     TILE_SIDE,
     VOXEL_SCALE_METERS,
     SlamSemanticTile,
 )
+from .scene_encoding import MAX_SCENE_RASTER_CELLS
+from .slam_geometry import mask_contours
 
 # Two by two cells (3 cm) keep rug and vent edges while cutting the staircase
 # vertices a 1.5 cm outline has on every diagonal.
@@ -69,12 +67,6 @@ class FloorTypeLayer:
     layers: dict[str, tuple[Outline, ...]]
     page_count: int
     truncated: bool
-
-
-def mission_token(mission_id: int) -> str:
-    """Return the token a semantic page keyed by this mission carries."""
-    key = bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id)
-    return hashlib.sha256(key).hexdigest()
 
 
 def floor_type_layer(

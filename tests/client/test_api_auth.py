@@ -5,110 +5,20 @@ from __future__ import annotations
 import asyncio
 import socket
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError
-from h2.exceptions import H2Error
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.client.commands import encode_user_data
 from custom_components.matic_robot.client.exceptions import (
     ProtocolError,
-    TransportError,
 )
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
 from tests.hermes_fakes import FakeChannel
-
-
-async def test_request_credential_uses_user_id_and_enables_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests = []
-    handshakes = []
-    channels = []
-    channel_metadata = []
-
-    class FakeMethod:
-        async def __call__(self, request):
-            requests.append(request)
-            return SimpleNamespace(
-                hashed_token=b"synthetic-token",
-                user=TokenRequest(user_id=request.user_id).SerializeToString(),
-            )
-
-    class FakeStub:
-        def __init__(self, channel) -> None:
-            self.AuthToken = FakeMethod()
-
-    class FakeHandshake:
-        async def __call__(self, request, *, metadata):
-            handshakes.append((request, metadata))
-
-    class FakeHermesStub:
-        def __init__(self, channel) -> None:
-            self.Handshake = FakeHandshake()
-            self.SendToChannel = FakeSendToChannel(channels, channel_metadata)
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.HermesAuthStub",
-        FakeStub,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.HermesStub",
-        FakeHermesStub,
-    )
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._connection.async_channel = AsyncMock(return_value=object())
-
-    credential = await client.async_request_credential(
-        "40dd38c5-0492-49de-b333-41f16f67471e"
-    )
-
-    assert requests[0].user_id == "40dd38c5-0492-49de-b333-41f16f67471e"
-    assert credential == HermesCredential(
-        b"synthetic-token",
-        TokenRequest(
-            user_id="40dd38c5-0492-49de-b333-41f16f67471e"
-        ).SerializeToString(),
-    )
-    assert client._connection._metadata == credential.metadata()
-    assert len(handshakes) == 1
-    assert handshakes[0][0].SerializeToString() == b""
-    assert handshakes[0][1] == credential.metadata()
-    assert channels[0].channel_name == "user_data"
-    assert channel_metadata[0] == {
-        **credential.metadata(),
-        "hermes-target": "user_data",
-    }
-    assert channels[0].value == encode_user_data(
-        app_id=credential.app_id,
-        timezone_identifier="UTC",
-        seconds_from_gmt=0,
-    )
-
-
-async def test_request_credential_maps_h2_transport_error() -> None:
-    class FailingAuthStub:
-        def __init__(self, channel) -> None:
-            pass
-
-        async def AuthToken(self, request):
-            raise H2Error("synthetic auth transport failure")
-
-    client = MaticHermesClient("192.0.2.1", 16320)
-    client._connection.async_channel = AsyncMock(return_value=object())
-
-    with (
-        patch(
-            "custom_components.matic_robot.client.hermes_connection.HermesAuthStub",
-            FailingAuthStub,
-        ),
-        pytest.raises(TransportError, match="credential request connection failed"),
-    ):
-        await client.async_request_credential("synthetic-user")
 
 
 async def test_authenticated_connect_handshakes_on_the_created_channel(

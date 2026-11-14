@@ -15,19 +15,19 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot.client.exceptions import CannotConnectError
-from custom_components.matic_robot.client.floor_types import (
-    MAX_FLOOR_TYPE_POINTS,
-    SemanticKind,
-    floor_type_layer,
-    mission_token,
-)
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.client.slam_tiles import (
     SlamSemanticTile,
     decode_slam_semantic_tile,
+    mission_token,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.floor_layers import MaticFloorLayersView
+from custom_components.matic_robot.floor_types import (
+    MAX_FLOOR_TYPE_POINTS,
+    SemanticKind,
+    floor_type_layer,
+)
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 
 from .test_slam_map import synthetic_semantic_entry
@@ -140,9 +140,7 @@ def test_outlines_stop_at_the_point_budget_largest_first() -> None:
     cells = _blank()
     cells[0:20, 0:20] = SemanticKind.CARPET
     cells[24:28, 24:28] = SemanticKind.CARPET
-    with patch(
-        "custom_components.matic_robot.client.floor_types.MAX_FLOOR_TYPE_POINTS", 5
-    ):
+    with patch("custom_components.matic_robot.floor_types.MAX_FLOOR_TYPE_POINTS", 5):
         layer = floor_type_layer([_page(cells)], mission=MISSION)
     assert layer.truncated
     assert len(layer.layers["carpet"]) == 1
@@ -153,9 +151,7 @@ def test_a_class_with_too_many_edges_is_skipped() -> None:
     cells = _blank()
     cells[::4, ::4] = SemanticKind.CARPET
     cells[0:8, 0:8] = SemanticKind.VENT
-    with patch(
-        "custom_components.matic_robot.client.floor_types.MAX_FLOOR_TYPE_EDGES", 100
-    ):
+    with patch("custom_components.matic_robot.floor_types.MAX_FLOOR_TYPE_EDGES", 100):
         layer = floor_type_layer([_page(cells)], mission=MISSION)
     assert layer.truncated
     assert layer.layers["carpet"] == ()
@@ -165,7 +161,7 @@ def test_a_class_with_too_many_edges_is_skipped() -> None:
 def test_page_and_raster_bounds_are_enforced() -> None:
     cells = _blank()
     with (
-        patch("custom_components.matic_robot.client.floor_types.MAX_SLAM_TILES", 1),
+        patch("custom_components.matic_robot.floor_types.MAX_SLAM_TILES", 1),
         pytest.raises(DecodeError, match="too many"),
     ):
         floor_type_layer([_page(cells), _page(cells, page_x=1)], mission=MISSION)

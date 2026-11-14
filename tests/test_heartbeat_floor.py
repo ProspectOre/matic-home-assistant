@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from google.protobuf.message import DecodeError
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.mission import MissionClientState
 from custom_components.matic_robot.client.models import (

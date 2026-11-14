@@ -20,13 +20,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from . import slam_history_format as _history_format
-from .client import MAX_SCENE_BYTES
 from .const import DOMAIN
 from .map_schema import (
     HistoryAcknowledgement,
     HistoryArchive,
     HistoryArchiveRecord,
     HistoryUsage,
+)
+from .scene_encoding import (
+    MAX_SCENE_BYTES,
 )
 
 STORAGE_VERSION = 2

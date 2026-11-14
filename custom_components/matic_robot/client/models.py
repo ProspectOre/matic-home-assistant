@@ -494,11 +494,3 @@ class RobotPose:
     # Yaw in radians, counter-clockwise from the map's +x axis. None when the
     # pose carried no unambiguous rotation.
     heading: float | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RobotTrajectory:
-    """Mission-scoped approximate route reported by the robot."""
-
-    mission_id: int
-    points: tuple[tuple[float, float], ...]

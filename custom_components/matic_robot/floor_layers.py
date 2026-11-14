@@ -22,13 +22,15 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .client import (
     MAX_SLAM_TILES,
-    FloorTypeLayer,
     HermesCollectionEntry,
     MaticError,
     SlamSemanticTile,
     decode_slam_semantic_tile,
-    floor_type_layer,
     mission_token,
+)
+from .floor_types import (
+    FloorTypeLayer,
+    floor_type_layer,
 )
 from .http import (
     FLOOR_LAYERS_API_URL,

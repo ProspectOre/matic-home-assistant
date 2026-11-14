@@ -14,11 +14,11 @@ import pytest
 from homeassistant.exceptions import UnsupportedStorageVersionError
 from homeassistant.helpers.storage import Store
 
-from custom_components.matic_robot.client.slam_scene import (
+from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
+from custom_components.matic_robot.scene_encoding import (
     encode_slam_scene,
     parse_slam_scene_header,
 )
-from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
 from custom_components.matic_robot.slam_history import (
     STORAGE_VERSION,
     SlamHistoryStore,

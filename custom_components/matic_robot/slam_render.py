@@ -11,8 +11,6 @@ from google.protobuf.message import DecodeError
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .client import (
-    MAX_SCENE_RASTER_CELLS,
-    MAX_SCENE_SPAN,
     MAX_SLAM_TILES,
     TILE_HEIGHT,
     TILE_SIDE,
@@ -20,6 +18,10 @@ from .client import (
     FloorPlan,
     SlamStructureTile,
     SlamTile,
+)
+from .scene_encoding import (
+    MAX_SCENE_RASTER_CELLS,
+    MAX_SCENE_SPAN,
 )
 
 MAX_RENDER_PIXELS = 16 * 1024 * 1024

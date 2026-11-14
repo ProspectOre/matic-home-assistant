@@ -24,15 +24,15 @@ from custom_components.matic_robot.client.models import (
     MappedFloor,
     MapZone,
 )
-from custom_components.matic_robot.client.slam_scene import (
-    encode_slam_scene,
-)
 from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
 from custom_components.matic_robot.floor_layers import MaticFloorLayersView
 from custom_components.matic_robot.run_history import history_entries
+from custom_components.matic_robot.scene_encoding import (
+    encode_slam_scene,
+)
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_history_format import SlamHistorySnapshot
 from custom_components.matic_robot.slam_history_view import MaticSlamHistoryView

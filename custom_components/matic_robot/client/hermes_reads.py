@@ -27,14 +27,11 @@ from .exceptions import (
     TransportError,
 )
 from .floor_plan import decode_floor_plans, decode_pose
-from .flythrough import Flythrough, decode_flythrough
 from .hermes_collections import HermesCollections
 from .hermes_connection import HermesConnection
 from .history import (
     CleaningSessionImage,
-    MonthlyCleaningRecap,
     decode_cleaning_session_image,
-    decode_monthly_cleaning_recap,
 )
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
@@ -45,7 +42,6 @@ from .models import (
     RobotOperationalState,
     RobotPose,
     RobotTelemetry,
-    RobotTrajectory,
     RunProgress,
 )
 from .operational_state import decode_operational_state, decode_pose_observation_time
@@ -67,7 +63,6 @@ from .telemetry import (
     decode_water_flow_factor,
 )
 from .telemetry_fields import TELEMETRY_NESTED_MAX_BYTES, decode_text_field
-from .trajectory import decode_approximate_trajectory
 from .wifi_status import WIFI_STATUS_MAX_BYTES, decode_wifi_status
 from .wire import (
     decode_fields,
@@ -102,14 +97,11 @@ def decode_latest_pose(entry: HermesCollectionEntry) -> RobotPose:
     )
 
 
-class HermesReads:
-    """Own reads behavior for one robot session."""
+class HermesReads(HermesCollections):
+    """Decoded reads and endpoint health for one robot session."""
 
-    def __init__(
-        self, connection: HermesConnection, collections: HermesCollections
-    ) -> None:
-        self._connection = connection
-        self._collections = collections
+    def __init__(self, connection: HermesConnection) -> None:
+        super().__init__(connection)
         self._endpoint_health: dict[str, str] = {}
 
     async def async_get_info(self) -> RobotInfo:
@@ -144,10 +136,10 @@ class HermesReads:
         # A dial that fails is not such a read, so it is not repeated.
         await self._connection.async_channel()
         try:
-            payload = await self._collections.async_get_property("kabuki_state")
+            payload = await self.async_get_property("kabuki_state")
         except TransportError:
             _LOGGER.debug("Retrying Hermes state read after a transport failure")
-            payload = await self._collections.async_get_property("kabuki_state")
+            payload = await self.async_get_property("kabuki_state")
 
         try:
             state = decode_operational_state(payload)
@@ -158,17 +150,13 @@ class HermesReads:
 
     async def async_get_run_progress(self) -> RunProgress | None:
         """Read elapsed and remaining time for the clean under way, if any."""
-        return decode_run_progress(
-            await self._collections.async_get_property("coverage_time")
-        )
+        return decode_run_progress(await self.async_get_property("coverage_time"))
 
     async def async_subscribe_state(self) -> AsyncGenerator[RobotOperationalState]:
         """Yield live snapshots from the local ``kabuki_state`` property."""
         self._connection.activity_journal.record("state_stream_started", source="push")
         try:
-            async for entry in self._collections.async_subscribe_collection_entries(
-                "kabuki_state"
-            ):
+            async for entry in self.async_subscribe_collection_entries("kabuki_state"):
                 try:
                     state = decode_operational_state(entry.value)
                     self._connection.activity_journal.observe_state(state, "push")
@@ -187,15 +175,13 @@ class HermesReads:
     ) -> FloorPlan:
         """Read and decode the active local coverage plan."""
         try:
-            payload = await self._collections.async_get_property("coverage_plan")
+            payload = await self.async_get_property("coverage_plan")
             floor_plans = decode_floor_plans(payload)
             if len(floor_plans) == 1:
                 return floor_plans[0]
 
-            mission_entries = (
-                await self._collections.async_get_tracked_collection_entries(
-                    "displayed_mission", limit=_DISPLAYED_MISSION_LIMIT
-                )
+            mission_entries = await self.async_get_tracked_collection_entries(
+                "displayed_mission", limit=_DISPLAYED_MISSION_LIMIT
             )
             if len(mission_entries) >= _DISPLAYED_MISSION_LIMIT:
                 raise DecodeError(
@@ -252,55 +238,17 @@ class HermesReads:
         except DecodeError as err:
             raise ProtocolError("Hermes returned a malformed floor plan") from err
 
-    async def async_get_slam_tile_entry(self) -> HermesCollectionEntry:
-        """Read the current local photorealistic SLAM tile."""
-        entries = await self._collections.async_get_collection_entries(
-            "map_compressed_rgb", limit=1
-        )
-        if not entries or not entries[0].key or not entries[0].value:
-            raise ProtocolError("Hermes returned no photorealistic SLAM tile")
-        return entries[0]
-
     async def async_subscribe_poses(self) -> AsyncGenerator[RobotPose]:
         """Yield each mission's latest pose as the robot publishes it.
 
         An entry that does not decode is skipped, so it cannot hold back the
         poses of other missions.
         """
-        async for entry in self._collections.async_subscribe_collection_entries(
-            "latest_pose"
-        ):
+        async for entry in self.async_subscribe_collection_entries("latest_pose"):
             try:
                 yield decode_latest_pose(entry)
             except DecodeError as err:
                 _LOGGER.debug("Skipped a malformed latest pose: %s", err)
-
-    async def async_get_flythrough(self, *, expected_mission_token: str) -> Flythrough:
-        """Read the native map tour correlated to the active SLAM mission."""
-        try:
-            return decode_flythrough(
-                await self._collections.async_get_property("flythrough"),
-                expected_mission_token=expected_mission_token,
-            )
-        except DecodeError as err:
-            raise ProtocolError("Hermes returned a malformed map flythrough") from err
-
-    async def async_subscribe_approximate_trajectory(
-        self, floor_plan: FloorPlan
-    ) -> AsyncGenerator[RobotTrajectory]:
-        """Yield bounded route updates for the active floor-plan mission."""
-        async for entry in self._collections.async_subscribe_collection_entries(
-            "approximate_trajectory"
-        ):
-            try:
-                yield decode_approximate_trajectory(
-                    entry.value,
-                    expected_mission_id=floor_plan.mission_id,
-                )
-            except DecodeError as err:
-                raise ProtocolError(
-                    "Hermes returned a malformed approximate trajectory"
-                ) from err
 
     async def async_get_cleaning_session_identity(self) -> bytes | None:
         """Keep the vetted session property opaque and in memory for ownership.
@@ -308,7 +256,7 @@ class HermesReads:
         Empty bytes mean the native task ended; ``None`` means unknown. Never
         expose this private identifier through entities, logs, or storage.
         """
-        payload = await self._collections.async_get_property("active_session_key")
+        payload = await self.async_get_property("active_session_key")
         present = decode_presence_state(payload)
         if present is None:
             return None
@@ -360,7 +308,7 @@ class HermesReads:
         strict: bool = False,
     ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
         """Return decoded records and their revision from one collection read."""
-        entries = await self._collections.async_get_tracked_collection_entries(
+        entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
         records = decode_cleaning_session_records(entries, strict=strict)
@@ -370,7 +318,7 @@ class HermesReads:
         self,
     ) -> tuple[CleaningSessionImage, ...]:
         """Read valid private session maps from the retained history window."""
-        entries = await self._collections.async_get_tracked_collection_entries(
+        entries = await self.async_get_tracked_collection_entries(
             "coverage_session_thumbnails", limit=64
         )
         images: list[CleaningSessionImage] = []
@@ -380,21 +328,6 @@ class HermesReads:
             except DecodeError:
                 continue
         return tuple(images)
-
-    async def async_get_monthly_cleaning_recaps(
-        self,
-    ) -> tuple[MonthlyCleaningRecap, ...]:
-        """Read valid private monthly cleaning totals in protocol-native units."""
-        entries = await self._collections.async_get_tracked_collection_entries(
-            "recap_history", limit=120
-        )
-        recaps: list[MonthlyCleaningRecap] = []
-        for entry in entries:
-            try:
-                recaps.append(decode_monthly_cleaning_recap(entry))
-            except DecodeError:
-                continue
-        return tuple(recaps)
 
     async def async_get_telemetry(self) -> RobotTelemetry:
         """Read the complete decoded local telemetry surface."""
@@ -515,7 +448,7 @@ class HermesReads:
                 if name == "wifi_status"
                 else TELEMETRY_NESTED_MAX_BYTES
             )
-            value = await self._collections.async_get_property(name)
+            value = await self.async_get_property(name)
             if len(value) > max_bytes:
                 raise ProtocolError("Hermes property exceeds its value byte limit")
             self._endpoint_health[name] = "ok"
@@ -531,7 +464,7 @@ class HermesReads:
     async def _async_optional_collection_count(self, name: str) -> int | None:
         """Return one optional collection count."""
         try:
-            value = await self._collections.async_get_collection_count(name)
+            value = await self.async_get_collection_count(name)
             self._endpoint_health[name] = "ok"
             return value
         except (
@@ -549,13 +482,11 @@ class HermesReads:
         try:
             endpoint = HERMES_ENDPOINT_MAP.get(name)
             if endpoint is not None and endpoint.tracked:
-                value = await self._collections.async_get_tracked_collection_entries(
+                value = await self.async_get_tracked_collection_entries(
                     name, limit=limit
                 )
             else:
-                value = await self._collections.async_get_collection_entries(
-                    name, limit=limit
-                )
+                value = await self.async_get_collection_entries(name, limit=limit)
             self._endpoint_health[name] = "ok"
             return value
         except (
@@ -577,14 +508,14 @@ class HermesReads:
         result: tuple[HermesCollectionEntry, ...]
         try:
             if endpoint.kind is HermesEndpointKind.PROPERTY:
-                value = await self._collections.async_get_property(endpoint_name)
+                value = await self.async_get_property(endpoint_name)
                 result = (HermesCollectionEntry(b"", value),)
             elif endpoint.tracked:
-                result = await self._collections.async_get_tracked_collection_entries(
+                result = await self.async_get_tracked_collection_entries(
                     endpoint_name, limit=limit
                 )
             else:
-                result = await self._collections.async_get_collection_entries(
+                result = await self.async_get_collection_entries(
                     endpoint_name, limit=limit
                 )
         except (AuthenticationRequiredError, CannotConnectError) as err:

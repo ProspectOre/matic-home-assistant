@@ -13,7 +13,6 @@ from custom_components.matic_robot.client.exceptions import (
     CertificateMismatchError,
     EndpointUnsupportedError,
     InvalidRobotCertificateError,
-    PairingModeRequiredError,
 )
 from custom_components.matic_robot.client.models import RobotActivity
 
@@ -43,21 +42,6 @@ async def test_paired_client_reads_identity_state_and_sends_user_data(
     assert command.channel == "user_data"
     assert command.target == "user_data"
     assert command.authorized
-
-
-async def test_pairing_window_issues_a_credential_the_robot_accepts(
-    simulator: RunningSimulator, robot: SimulatedRobot
-) -> None:
-    async with hermes_client(simulator, None) as client:
-        with pytest.raises(PairingModeRequiredError):
-            await client.async_request_credential(str(uuid4()))
-        robot.pairing_open = True
-        credential = await client.async_request_credential(str(uuid4()))
-        robot.pairing_open = False
-        state = await client.async_get_state()
-
-    assert credential.bearer_header() in robot.credentials
-    assert state.activity is RobotActivity.DOCKED
 
 
 async def test_unknown_credential_is_rejected(simulator: RunningSimulator) -> None:

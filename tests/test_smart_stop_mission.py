@@ -81,7 +81,7 @@ def test_ending_after_the_current_room_keeps_only_its_goals():
 
 async def test_the_client_ends_its_own_mission_after_the_current_room(monkeypatch):
     client = _client(monkeypatch, _readback(LIVE), _readback(LIVE[:4]))
-    identity = await client._reads.async_get_cleaning_session_identity()
+    identity = await client.async_get_cleaning_session_identity()
 
     await client.async_end_after_current_room(FLOOR, identity)
 
@@ -101,7 +101,7 @@ async def test_the_client_leaves_another_mission_alone(monkeypatch):
 
 async def test_a_mission_replaced_before_sending_keeps_its_rooms(monkeypatch):
     client = _client(monkeypatch, _readback(LIVE))
-    reads = client._reads.async_get_cleaning_session_identity
+    reads = client.async_get_cleaning_session_identity
     ours = await reads()
     reads.side_effect = [ours, b"another mission"]
 

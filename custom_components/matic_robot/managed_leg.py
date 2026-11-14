@@ -652,7 +652,7 @@ async def _async_run_leg(
         elif isinstance(err, TimeoutError):
             failure_reason = "The managed room exceeded its completion timeout"
         elif isinstance(err, CoverageGuardError):
-            failure_reason = err.safe_message
+            failure_reason = managed_run.coverage_guard_message(err)
         elif isinstance(err, MaticError):
             failure_reason = "The robot could not complete the managed room"
         else:
@@ -683,7 +683,7 @@ async def _async_run_leg(
             ) from err
         if isinstance(err, CoverageGuardError):
             raise managed_run._validation_error(
-                err.safe_message, err.reason_code
+                managed_run.coverage_guard_message(err), err.reason_code
             ) from err
         if isinstance(err, MaticError):
             raise managed_run._validation_error(

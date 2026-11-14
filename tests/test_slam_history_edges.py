@@ -17,15 +17,15 @@ from google.protobuf.message import DecodeError
 
 from custom_components.matic_robot import slam_history_format as history_format
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.client.slam_scene import (
+from custom_components.matic_robot.client.slam_tiles import (
+    SlamStructureTile,
+    decode_slam_tile,
+)
+from custom_components.matic_robot.scene_encoding import (
     _coverage_metadata,
     _room_floor_geometry,
     encode_slam_scene,
     parse_slam_scene_header,
-)
-from custom_components.matic_robot.client.slam_tiles import (
-    SlamStructureTile,
-    decode_slam_tile,
 )
 from custom_components.matic_robot.slam_history import (
     SlamHistoryStore,
@@ -690,7 +690,7 @@ def test_structure_coverage_encoding_marks_unavailable_invalid_and_large(
     assert _coverage_metadata((structure,), 0, 0, 32, 32)["status"] == "invalid"
     valid = SlamStructureTile(0, 0, tile.mission_token, bytes(1024), b"")
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.slam_scene.MAX_COVERAGE_MASK_BYTES", 0
+        "custom_components.matic_robot.scene_encoding.MAX_COVERAGE_MASK_BYTES", 0
     )
     assert _coverage_metadata((valid,), 0, 0, 32, 32)["status"] == "too_large"
 
@@ -877,12 +877,12 @@ def test_scene_encoder_error_limits_and_metadata_fallback(monkeypatch):
     with pytest.raises(DecodeError, match="bounds"):
         encode_slam_scene((tile,), max_points=0)
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.slam_scene.MAX_SCENE_SPAN", 1
+        "custom_components.matic_robot.scene_encoding.MAX_SCENE_SPAN", 1
     )
     with pytest.raises(DecodeError, match="too wide"):
         encode_slam_scene((tile,))
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.slam_scene.MAX_SCENE_SPAN", 65_536
+        "custom_components.matic_robot.scene_encoding.MAX_SCENE_SPAN", 65_536
     )
 
     blank = replace(
@@ -910,22 +910,22 @@ def test_scene_encoder_error_limits_and_metadata_fallback(monkeypatch):
 
     structure = SlamStructureTile(0, 0, "a" * 64, bytes(1024), b"")
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.slam_scene._coverage_metadata",
+        "custom_components.matic_robot.scene_encoding._coverage_metadata",
         lambda *_: {"oversize": "x" * 600},
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.slam_scene.MAX_SCENE_METADATA_BYTES", 500
+        "custom_components.matic_robot.scene_encoding.MAX_SCENE_METADATA_BYTES", 500
     )
     fallback = encode_slam_scene((tile,), structure_tiles=(structure,))
     header = parse_slam_scene_header(fallback)
-    from custom_components.matic_robot.client.slam_scene import _SCENE_HEADER
+    from custom_components.matic_robot.scene_encoding import _SCENE_HEADER
 
     metadata = json.loads(
         fallback[_SCENE_HEADER.size : _SCENE_HEADER.size + header.metadata_bytes]
     )
     assert metadata["coverage"]["status"] == "too_large"
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.slam_scene.MAX_SCENE_METADATA_BYTES", 50
+        "custom_components.matic_robot.scene_encoding.MAX_SCENE_METADATA_BYTES", 50
     )
     with pytest.raises(DecodeError, match="metadata exceeds"):
         encode_slam_scene((tile,), structure_tiles=(structure,))

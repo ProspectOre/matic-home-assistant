@@ -25,11 +25,11 @@ from custom_components.matic_robot.client.models import (
     MappedFloor,
     Room,
 )
-from custom_components.matic_robot.client.slam_scene import encode_slam_scene
 from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )
+from custom_components.matic_robot.scene_encoding import encode_slam_scene
 from custom_components.matic_robot.slam_decoded_map import decode_photo_page
 from custom_components.matic_robot.slam_history_collector import (
     _encode_history_scene,

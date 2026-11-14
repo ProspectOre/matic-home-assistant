@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
@@ -32,21 +32,19 @@ async def test_mixed_dispatch_interrupted_after_start_contains_only_first_room()
     client = MaticHermesClient("robot.invalid", 16320)
     floor = FloorPlan(42, PARTITION, b"partition", ())
     writes: list[tuple[bytes, str]] = []
-    client._commands._async_require_idle_native_session = AsyncMock(
-        return_value=b"baseline"
-    )
+    client._async_require_idle_native_session = AsyncMock(return_value=b"baseline")
     client._connection._async_send_user_payload = AsyncMock(
         side_effect=lambda payload, *, command_name: writes.append(
             (payload, command_name)
         )
     )
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=[
             _wrapped_uuid(REPLACEMENT_SESSION),
             _wrapped_uuid(REPLACEMENT_SESSION),
         ]
     )
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_state = AsyncMock(
         return_value=RobotOperationalState(
             battery_percentage=None,
             state_codes=(119,),
@@ -60,7 +58,7 @@ async def test_mixed_dispatch_interrupted_after_start_contains_only_first_room()
             current_area="First",
         )
     )
-    client._commands.async_send_user_command = AsyncMock()
+    client.async_send_user_command = AsyncMock()
 
     commands = encode_mixed_coverage_commands(
         mission_id=42,
@@ -97,4 +95,4 @@ async def test_mixed_dispatch_interrupted_after_start_contains_only_first_room()
     assert {
         signature[0] for signature in coverage_command_goal_signatures(commands.update)
     } == set(ROOMS)
-    client._commands.async_send_user_command.assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()

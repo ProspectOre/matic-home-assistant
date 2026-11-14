@@ -386,7 +386,8 @@ def test_main_fails_when_any_check_fails(
 
     assert check.main(arguments) == status
     pytest_runs = [command[3:] for command in commands if "pytest" in command]
-    assert pytest_runs == ([] if tests is None else [tests])
+    # The client's tests run with Home Assistant blocked on every check.
+    assert pytest_runs == [check.CLIENT_SUITE, *([] if tests is None else [tests])]
     # Tests read the built Matic Map, so every test run follows a build.
     assert (BUILD in commands) == (tests is not None or failing in BUILD)
 

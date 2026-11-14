@@ -9,8 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from h2.exceptions import H2Error
 
-from custom_components.matic_robot.client import hermes_connection
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient, hermes_connection
 from custom_components.matic_robot.client.exceptions import TransportError
 from custom_components.matic_robot.client.supervisor import KEEPALIVE_SECONDS
 from tests.hermes_fakes import FakeChannel

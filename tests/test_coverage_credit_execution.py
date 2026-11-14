@@ -46,8 +46,8 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.client.test_coverage_receipts import history_key
 from tests.session_fakes import FakeRobot, run_step, verifying_write
-from tests.test_coverage_receipts import history_key
 
 SESSION = UUID(int=772)
 SESSION_KEY = history_key(SESSION)

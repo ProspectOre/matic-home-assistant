@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client import hermes_commands as api_module
-from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.commands import CoverageSetting as Setting
 from custom_components.matic_robot.client.exceptions import MaticError
 from tests.test_deep_mop_readback import _mixed_goals, _override, _plan_for_signatures
@@ -23,7 +23,7 @@ async def test_fresh_plan_no_longer_needing_override_skips_redundant_state_read(
         (region, 3 if heavy and mode == 0 else value, floor, mode, behavior)
         for region, value, floor, mode, behavior in expected.elements()
     )
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=[
             first,
             b"\x12\x00",
@@ -32,11 +32,11 @@ async def test_fresh_plan_no_longer_needing_override_skips_redundant_state_read(
         ]
     )
     stages = []
-    observed, accepted = await client._commands._async_read_coverage_readback(
+    observed, accepted = await client._async_read_coverage_readback(
         expected, note_stage=stages.append
     )
     assert accepted and observed == fresh
-    assert client._collections.async_get_property.await_count == 3
+    assert client.async_get_property.await_count == 3
     assert stages == ["coverage_plan", "deep_mop_state_before", "coverage_plan_confirm"]
 
 
@@ -55,13 +55,13 @@ async def test_stalled_preference_read_reports_its_own_timeout_stage(
             return sample
         await asyncio.Event().wait()
 
-    client._collections.async_get_property = AsyncMock(side_effect=read)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(return_value=b"owned")
+    client.async_get_property = AsyncMock(side_effect=read)
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"owned")
     monkeypatch.setattr(api_module, "_MIXED_COVERAGE_READBACK_TIMEOUT", 0.01)
     with caplog.at_level(logging.DEBUG, logger=api_module.__name__):
         with pytest.raises(MaticError, match="readback verification timed out"):
-            await client._commands._async_wait_for_mixed_coverage_readback(
+            await client._async_wait_for_mixed_coverage_readback(
                 expected, require_current=Mock(), expected_identity=b"owned"
             )
     assert f"stage=deep_mop_state_{which}" in caplog.text
-    client._reads.async_get_cleaning_session_identity.assert_not_awaited()
+    client.async_get_cleaning_session_identity.assert_not_awaited()

@@ -48,7 +48,6 @@ from custom_components.matic_robot.client.exceptions import (
     CoverageGuardError,
     CoverageGuardReason,
     EndpointUnsupportedError,
-    PairingModeRequiredError,
     ProtocolError,
     RequestTimeoutError,
     SinkLocationUnavailableError,
@@ -61,7 +60,6 @@ from custom_components.matic_robot.client.models import (
     MappedFloor,
     RobotActivity,
     RobotOperationalState,
-    RobotTrajectory,
     Room,
 )
 from custom_components.matic_robot.client.operational_state import (
@@ -83,9 +81,9 @@ from custom_components.matic_robot.client.wire import (
     first_bytes,
     uuid_string,
 )
+from tests.client.test_mission import _labeled as _labeled_floor
+from tests.client.test_mission import _state as _mission_client_state
 from tests.hermes_fakes import FakeChannel, keep_subscribed
-from tests.test_mission import _labeled as _labeled_floor
-from tests.test_mission import _state as _mission_client_state
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -374,10 +372,8 @@ async def test_property_rejects_oversized_value_within_envelope_allowance(
 
 async def test_optional_property_drops_oversized_value_before_retention() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(
-        return_value=b"x" * (64 * 1024 + 1)
-    )
-    assert await client._reads._async_optional_property("current_version") is None
+    client.async_get_property = AsyncMock(return_value=b"x" * (64 * 1024 + 1))
+    assert await client._async_optional_property("current_version") is None
     assert client.endpoint_health["current_version"] == "ProtocolError"
 
 
@@ -437,7 +433,6 @@ async def test_every_rpc_entry_point_raises_the_failed_dial() -> None:
 
     calls = (
         client.async_get_info(),
-        client.async_request_credential("40dd38c5-0492-49de-b333-41f16f67471e"),
         client.async_get_state(),
         client.async_get_property("state"),
         client.async_get_collection_count("history"),
@@ -488,45 +483,6 @@ async def test_get_info_maps_response_and_grpc_errors(monkeypatch) -> None:
             await client.async_get_info()
 
 
-async def test_request_credential_rejects_invalid_and_closed_pairing(
-    monkeypatch,
-) -> None:
-    class Stub:
-        def __init__(self, channel):
-            self.AuthToken = AsyncMock(
-                return_value=SimpleNamespace(hashed_token=b"", user=b"")
-            )
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_connection.HermesAuthStub", Stub
-    )
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._connection.async_channel = AsyncMock(return_value=object())
-    with pytest.raises(CannotConnectError, match="incomplete credential"):
-        await client.async_request_credential("user")
-
-    for status, error_type in (
-        (Status.PERMISSION_DENIED, PairingModeRequiredError),
-        (Status.INTERNAL, CannotConnectError),
-    ):
-        Stub.__init__ = lambda self, channel, status=status: setattr(
-            self, "AuthToken", AsyncMock(side_effect=GRPCError(status, "failed"))
-        )
-        with pytest.raises(error_type):
-            await client.async_request_credential("user")
-
-    for exc, match in (
-        (TimeoutError(), "timed out"),
-        (OSError("reset"), "connection failed"),
-        (StreamTerminatedError("dropped"), "connection failed"),
-    ):
-        Stub.__init__ = lambda self, channel, exc=exc: setattr(
-            self, "AuthToken", AsyncMock(side_effect=exc)
-        )
-        with pytest.raises(CannotConnectError, match=match):
-            await client.async_request_credential("user")
-
-
 async def test_handshake_needs_a_credential_and_maps_errors(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     channel = object()
@@ -558,14 +514,14 @@ async def test_state_read_is_repeated_once_after_a_transport_failure() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection.async_channel = AsyncMock(return_value=object())
     payload = KabukiOutputWire(states=[106]).SerializeToString()
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=[TransportError("stale stream"), payload]
     )
 
     state = await client.async_get_state()
 
     assert state.activity is RobotActivity.DOCKED
-    assert client._collections.async_get_property.await_args_list == [
+    assert client.async_get_property.await_args_list == [
         mock_call("kabuki_state"),
         mock_call("kabuki_state"),
     ]
@@ -583,12 +539,12 @@ async def test_state_read_is_repeated_once_after_a_transport_failure() -> None:
 async def test_state_read_raises_what_one_repeat_does_not_cure(failures) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection.async_channel = AsyncMock(return_value=object())
-    client._collections.async_get_property = AsyncMock(side_effect=failures)
+    client.async_get_property = AsyncMock(side_effect=failures)
 
     with pytest.raises(type(failures[-1]), match=str(failures[-1])):
         await client.async_get_state()
 
-    assert client._collections.async_get_property.await_count == len(failures)
+    assert client.async_get_property.await_count == len(failures)
 
 
 async def test_state_read_does_not_repeat_a_failed_dial() -> None:
@@ -609,7 +565,7 @@ async def test_state_subscription_decodes_updates_and_rejects_malformed() -> Non
         yield HermesCollectionEntry(b"", valid)
         yield HermesCollectionEntry(b"", b"\x0a\xff")
 
-    client._collections.async_subscribe_collection_entries = entries
+    client.async_subscribe_collection_entries = entries
     updates = client.async_subscribe_state()
 
     assert (await anext(updates)).activity is RobotActivity.DOCKED
@@ -968,9 +924,7 @@ async def test_get_tracked_collection_entries_enforces_bounds(monkeypatch) -> No
         assert name == "history"
         yield HermesCollectionEntry(b"key", b"oversized")
 
-    monkeypatch.setattr(
-        client._collections, "async_subscribe_collection_entries", entries
-    )
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_collections._COLLECTION_MAX_BYTES",
         1,
@@ -991,9 +945,7 @@ async def test_get_tracked_collection_entries_honors_overall_deadline(
         assert name == "history"
         yield HermesCollectionEntry(b"key", b"value")
 
-    monkeypatch.setattr(
-        client._collections, "async_subscribe_collection_entries", entries
-    )
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_collections.monotonic",
         MagicMock(side_effect=(0.0, 31.0)),
@@ -1002,143 +954,29 @@ async def test_get_tracked_collection_entries_honors_overall_deadline(
     assert await client.async_get_tracked_collection_entries("history") == ()
 
 
-async def test_subscribe_approximate_trajectory_decodes_active_mission(
-    monkeypatch,
-) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    floor_plan = FloorPlan(7, "partition", b"partition", ())
-
-    async def entries(name):
-        assert name == "approximate_trajectory"
-        yield HermesCollectionEntry(b"", b"first")
-        yield HermesCollectionEntry(b"", b"clear")
-
-    decoded = iter(
-        (
-            RobotTrajectory(7, ((1.0, 2.0),)),
-            RobotTrajectory(7, ()),
-        )
-    )
-    mission_ids: list[int] = []
-
-    def decode(payload, *, expected_mission_id):
-        assert payload in (b"first", b"clear")
-        mission_ids.append(expected_mission_id)
-        return next(decoded)
-
-    monkeypatch.setattr(
-        client._collections, "async_subscribe_collection_entries", entries
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_reads.decode_approximate_trajectory",
-        decode,
-    )
-
-    result = [
-        item async for item in client.async_subscribe_approximate_trajectory(floor_plan)
-    ]
-
-    assert result == [
-        RobotTrajectory(7, ((1.0, 2.0),)),
-        RobotTrajectory(7, ()),
-    ]
-    assert mission_ids == [7, 7]
-
-
-async def test_subscribe_approximate_trajectory_rejects_malformed_update(
-    monkeypatch,
-) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    floor_plan = FloorPlan(7, "partition", b"partition", ())
-
-    async def entries(name):
-        assert name == "approximate_trajectory"
-        yield HermesCollectionEntry(b"", b"malformed")
-
-    monkeypatch.setattr(
-        client._collections, "async_subscribe_collection_entries", entries
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_reads.decode_approximate_trajectory",
-        lambda payload, *, expected_mission_id: (_ for _ in ()).throw(DecodeError()),
-    )
-
-    with pytest.raises(CannotConnectError, match="malformed approximate trajectory"):
-        await anext(client.async_subscribe_approximate_trajectory(floor_plan))
-
-
 async def test_get_private_history_media_skips_malformed_records(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     entries = (
         HermesCollectionEntry(b"valid", b"valid"),
         HermesCollectionEntry(b"invalid", b"invalid"),
     )
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
-        return_value=entries
-    )
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=entries)
     image = object()
-    recap = object()
 
     def decode_image(entry):
         if entry.value == b"invalid":
             raise DecodeError()
         return image
 
-    def decode_recap(entry):
-        if entry.value == b"invalid":
-            raise DecodeError()
-        return recap
-
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_reads.decode_cleaning_session_image",
         decode_image,
     )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_reads.decode_monthly_cleaning_recap",
-        decode_recap,
-    )
 
     assert await client.async_get_cleaning_session_images() == (image,)
-    client._collections.async_get_tracked_collection_entries.assert_awaited_with(
+    client.async_get_tracked_collection_entries.assert_awaited_with(
         "coverage_session_thumbnails", limit=64
     )
-    assert await client.async_get_monthly_cleaning_recaps() == (recap,)
-    client._collections.async_get_tracked_collection_entries.assert_awaited_with(
-        "recap_history", limit=120
-    )
-
-
-async def test_get_flythrough_correlates_active_map_mission(monkeypatch) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"flythrough")
-    decoded = object()
-
-    def decode(payload, *, expected_mission_token):
-        assert payload == b"flythrough"
-        assert expected_mission_token == "mission-token"
-        return decoded
-
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_reads.decode_flythrough", decode
-    )
-
-    assert (
-        await client.async_get_flythrough(expected_mission_token="mission-token")
-        is decoded
-    )
-    client._collections.async_get_property.assert_awaited_once_with("flythrough")
-
-
-async def test_get_flythrough_rejects_malformed_payload(monkeypatch) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"malformed")
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.hermes_reads.decode_flythrough",
-        lambda payload, *, expected_mission_token: (_ for _ in ()).throw(DecodeError()),
-    )
-
-    with pytest.raises(CannotConnectError, match="malformed map flythrough"):
-        await client.async_get_flythrough(expected_mission_token="mission-token")
 
 
 async def test_get_collection_entries_stop_at_stream_end_without_cancel(
@@ -1160,11 +998,11 @@ async def test_get_collection_entries_stop_at_stream_end_without_cancel(
 
 async def test_endpoint_inspection_routes_properties_collections_and_health() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"version")
-    client._collections.async_get_collection_entries = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"version")
+    client.async_get_collection_entries = AsyncMock(
         return_value=(SimpleNamespace(key=b"key", value=b"path"),)
     )
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(SimpleNamespace(key=b"history", value=b"session"),)
     )
 
@@ -1176,11 +1014,11 @@ async def test_endpoint_inspection_routes_properties_collections_and_health() ->
     assert current[0].value == b"version"
     assert paths[0].value == b"path"
     assert history[0].value == b"session"
-    client._collections.async_get_property.assert_awaited_once_with("current_version")
-    client._collections.async_get_collection_entries.assert_awaited_once_with(
+    client.async_get_property.assert_awaited_once_with("current_version")
+    client.async_get_collection_entries.assert_awaited_once_with(
         "planned_path", limit=2
     )
-    client._collections.async_get_tracked_collection_entries.assert_awaited_once_with(
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=3
     )
     assert client.endpoint_health == {
@@ -1189,7 +1027,7 @@ async def test_endpoint_inspection_routes_properties_collections_and_health() ->
         "coverage_session_history": "ok",
     }
 
-    client._collections.async_get_property.side_effect = CannotConnectError("offline")
+    client.async_get_property.side_effect = CannotConnectError("offline")
     with pytest.raises(CannotConnectError):
         await client.async_inspect_endpoint("current_version")
     assert client.endpoint_health["current_version"] == "CannotConnectError"
@@ -1286,25 +1124,23 @@ async def test_collection_reads_are_wall_clock_bounded(monkeypatch) -> None:
 
 async def test_optional_telemetry_reads_fail_closed() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(
-        side_effect=CannotConnectError("offline")
-    )
-    client._collections.async_get_collection_count = AsyncMock(
+    client.async_get_property = AsyncMock(side_effect=CannotConnectError("offline"))
+    client.async_get_collection_count = AsyncMock(
         side_effect=AuthenticationRequiredError("expired")
     )
-    client._collections.async_get_collection_entries = AsyncMock(
+    client.async_get_collection_entries = AsyncMock(
         side_effect=CannotConnectError("offline")
     )
 
-    assert await client._reads._async_optional_property("optional") is None
-    assert await client._reads._async_optional_collection_count("optional") is None
-    assert await client._reads._async_optional_collection("optional", limit=1) is None
+    assert await client._async_optional_property("optional") is None
+    assert await client._async_optional_collection_count("optional") is None
+    assert await client._async_optional_collection("optional", limit=1) is None
 
 
 async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection.async_channel = AsyncMock(return_value=object())
-    client._collections.async_get_property = AsyncMock(return_value=b"bad")
+    client.async_get_property = AsyncMock(return_value=b"bad")
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_reads.decode_operational_state",
         lambda payload: (_ for _ in ()).throw(DecodeError()),
@@ -1342,7 +1178,7 @@ async def test_pose_watch_delivers_every_mission_and_update() -> None:
         yield HermesCollectionEntry(_pose_key(42), _pose_payload(1_800_000_000, 10))
         yield HermesCollectionEntry(_pose_key(42), _pose_payload(1_800_000_001))
 
-    client._collections.async_subscribe_collection_entries = entries
+    client.async_subscribe_collection_entries = entries
     poses = []
 
     async def on_pose(pose) -> None:
@@ -1387,7 +1223,7 @@ async def test_pose_subscription_acknowledges_each_entry(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
     client._connection.async_channel = AsyncMock(return_value=object())
 
-    poses = [pose async for pose in client._reads.async_subscribe_poses()]
+    poses = [pose async for pose in client.async_subscribe_poses()]
 
     assert [pose.mission_id for pose in poses] == [84, 42]
     assert [request.sequence_id for request in stream.requests[1:]] == [
@@ -1430,9 +1266,9 @@ async def test_pose_subscription_skips_a_malformed_entry(entry) -> None:
         yield entry
         yield HermesCollectionEntry(_pose_key(42), _pose_payload())
 
-    client._collections.async_subscribe_collection_entries = entries
+    client.async_subscribe_collection_entries = entries
 
-    poses = [pose async for pose in client._reads.async_subscribe_poses()]
+    poses = [pose async for pose in client.async_subscribe_poses()]
 
     assert [(pose.mission_id, pose.observed_at) for pose in poses] == [
         (42, 1_800_000_000)
@@ -1445,7 +1281,7 @@ async def test_multi_floor_read_keeps_numeric_labels_and_current_mission(
 ) -> None:
     """The new label must not discard the current state in favor of an old one."""
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_property = AsyncMock(return_value=b"coverage")
     plans = (
         FloorPlan(42, "first", b"first", ()),
         FloorPlan(84, "second", b"second", ()),
@@ -1456,7 +1292,7 @@ async def test_multi_floor_read_keeps_numeric_labels_and_current_mission(
     )
     old_floors = (_labeled_floor(42, b"Main"), _labeled_floor(84, b"Study"))
     floors = (_labeled_floor(42, 5), _labeled_floor(84, 5))
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(
                 b"old",
@@ -1481,7 +1317,7 @@ async def test_multi_floor_read_keeps_numeric_labels_and_current_mission(
 @pytest.mark.parametrize("mismatch", ["coverage", "verified_map", "label_variant"])
 async def test_numeric_floor_labels_preserve_identity_rejections(monkeypatch, mismatch):
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_property = AsyncMock(return_value=b"coverage")
     plans = (
         FloorPlan(42, "first", b"first", ()),
         FloorPlan(84, "second", b"second", ()),
@@ -1498,7 +1334,7 @@ async def test_numeric_floor_labels_preserve_identity_rejections(monkeypatch, mi
         _labeled_floor(126 if mismatch == "coverage" else 42, 5),
         _labeled_floor(84, 5),
     )
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(
                 b"current", _mission_client_state(active=active, canonical=canonical)
@@ -1520,8 +1356,8 @@ async def test_multi_floor_read_selects_the_verified_active_mission(
     second = FloorPlan(84, "second", b"second", ())
     first_floor = MappedFloor(42, "Main", "1" * 64)
     second_floor = MappedFloor(84, "Workshop", "2" * 64)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(b"unrelated", b"unrelated-record"),
             HermesCollectionEntry(b"historical", b"first-state"),
@@ -1549,7 +1385,7 @@ async def test_multi_floor_read_selects_the_verified_active_mission(
     assert selected.mission_id == 84
     assert selected.floor_label == "Workshop"
     assert selected.mapped_floors == (first_floor, second_floor)
-    client._collections.async_get_tracked_collection_entries.assert_awaited_once_with(
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "displayed_mission", limit=256
     )
 
@@ -1561,8 +1397,8 @@ async def test_multi_floor_read_ignores_unreferenced_coverage_partitions(
     stale = FloorPlan(21, "stale", b"stale", ())
     active = FloorPlan(42, "active", b"active", ())
     active_floor = MappedFloor(42, "Main", "1" * 64)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(HermesCollectionEntry(b"state", b"state"),)
     )
     monkeypatch.setattr(
@@ -1586,13 +1422,13 @@ async def test_multi_floor_read_scopes_missing_coverage_to_selected_floor(
     monkeypatch, expected_mission_id
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_property = AsyncMock(return_value=b"coverage")
     plans = (
         FloorPlan(42, "first", b"first", ()),
         FloorPlan(84, "second", b"second", ()),
     )
     floors = tuple(_labeled_floor(mission, 5) for mission in (42, 84, 126))
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(
                 b"current", _mission_client_state(active=floors[0], canonical=floors)
@@ -1632,8 +1468,8 @@ async def test_multi_floor_read_prefers_verified_live_map_mission(
         MappedFloor(42, "Main", "1" * 64),
         MappedFloor(84, "Workshop", "2" * 64),
     )
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(HermesCollectionEntry(b"state", b"stale-state"),)
     )
     monkeypatch.setattr(
@@ -1659,8 +1495,8 @@ async def test_multi_floor_read_rejects_unknown_verified_map_mission(
         MappedFloor(42, "Main", "1" * 64),
         MappedFloor(84, "Workshop", "2" * 64),
     )
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(HermesCollectionEntry(b"state", b"state"),)
     )
     monkeypatch.setattr(
@@ -1684,15 +1520,15 @@ async def test_multi_floor_read_rejects_unknown_verified_map_mission(
 async def test_single_floor_read_needs_no_mission_catalog(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     floor_plan = FloorPlan(42, "only", b"only", ())
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock()
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock()
     monkeypatch.setattr(
         "custom_components.matic_robot.client.hermes_reads.decode_floor_plans",
         lambda _payload: (floor_plan,),
     )
 
     assert await client.async_get_floor_plan() is floor_plan
-    client._collections.async_get_tracked_collection_entries.assert_not_awaited()
+    client.async_get_tracked_collection_entries.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1738,10 +1574,8 @@ async def test_multi_floor_read_fails_closed_on_ambiguous_mission_state(
     monkeypatch, entries, state, message
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
-        return_value=entries
-    )
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=entries)
     plans = (
         FloorPlan(42, "first", b"first", ()),
         FloorPlan(84, "second", b"second", ()),
@@ -1766,8 +1600,8 @@ async def test_multi_floor_read_rejects_unknown_newest_mission_state(
     monkeypatch,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(b"old", b"old-state"),
             HermesCollectionEntry(b"new", b"new-state"),
@@ -1802,8 +1636,8 @@ async def test_multi_floor_read_rejects_truncated_mission_snapshot(
     monkeypatch,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"coverage")
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=tuple(
             HermesCollectionEntry(str(index).encode(), b"state") for index in range(256)
         )
@@ -1990,11 +1824,9 @@ def test_decode_cleaning_session_skips_unusable_room_entries() -> None:
 async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection._async_send_channel_payload = AsyncMock()
-    client._reads.async_get_cleaning_session_identity = AsyncMock(return_value=b"")
-    client._reads.async_get_state = AsyncMock(
-        return_value=_operational_state_for_codes(107)
-    )
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"")
+    client.async_get_state = AsyncMock(return_value=_operational_state_for_codes(107))
+    client._async_wait_for_coverage_readback = AsyncMock()
     with caplog.at_level("DEBUG"):
         await client.async_send_user_command(UserCommand.STOP)
     assert "Requesting Matic user command STOP" in caplog.text
@@ -2031,9 +1863,7 @@ async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
 
 async def test_start_coverage_rechecks_owner_after_native_preflight() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._commands._async_require_idle_native_session = AsyncMock(
-        return_value=b"identity"
-    )
+    client._async_require_idle_native_session = AsyncMock(return_value=b"identity")
     client._connection._async_send_user_payload = AsyncMock()
     order: list[str] = []
 
@@ -2041,7 +1871,7 @@ async def test_start_coverage_rechecks_owner_after_native_preflight() -> None:
         order.append("preflight")
         return b"identity"
 
-    client._commands._async_require_idle_native_session.side_effect = preflight
+    client._async_require_idle_native_session.side_effect = preflight
 
     def require_current() -> None:
         order.append("admission")
@@ -2080,9 +1910,7 @@ async def test_custom_coverage_preflights_a_managed_session_before_sending(
     async def send(payload, *, command_name) -> None:
         order.append(command_name)
 
-    client._commands._async_require_idle_native_session = AsyncMock(
-        side_effect=preflight
-    )
+    client._async_require_idle_native_session = AsyncMock(side_effect=preflight)
     client._connection._async_send_user_payload = AsyncMock(side_effect=send)
     session = UUID("44444444-4444-4444-8444-444444444444")
 
@@ -2107,11 +1935,11 @@ async def test_custom_coverage_preflights_a_managed_session_before_sending(
 
 async def test_custom_coverage_rechecks_owner_after_native_preflight() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._commands._async_require_idle_native_session = AsyncMock(return_value=b"")
+    client._async_require_idle_native_session = AsyncMock(return_value=b"")
     client._connection._async_send_user_payload = AsyncMock()
 
     def require_current() -> None:
-        assert client._commands._async_require_idle_native_session.await_count == 1
+        assert client._async_require_idle_native_session.await_count == 1
         raise RuntimeError("command admission closed")
 
     with pytest.raises(RuntimeError, match="command admission closed"):
@@ -2154,14 +1982,14 @@ async def test_tracked_coverage_allows_retained_identity_when_settled(
 ):
     client = MaticHermesClient("robot.invalid", 16320)
     session_id = UUID("11111111-1111-4111-8111-111111111111")
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         return_value=b"retained-native-session"
     )
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_state = AsyncMock(
         return_value=_operational_state_for_codes(*codes, error_codes=error_codes)
     )
     client._connection._async_send_user_payload = AsyncMock()
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
 
     await client.async_start_coverage(
         FloorPlan(
@@ -2178,14 +2006,14 @@ async def test_tracked_coverage_allows_retained_identity_when_settled(
     )
 
     client._connection._async_send_user_payload.assert_awaited_once()
-    client._commands._async_wait_for_coverage_readback.assert_awaited_once()
+    client._async_wait_for_coverage_readback.assert_awaited_once()
     assert (
-        client._commands._async_wait_for_coverage_readback.await_args.kwargs[
+        client._async_wait_for_coverage_readback.await_args.kwargs[
             "pre_dispatch_identity"
         ]
         == b"retained-native-session"
     )
-    assert client._commands._async_wait_for_coverage_readback.await_args.kwargs[
+    assert client._async_wait_for_coverage_readback.await_args.kwargs[
         "expected_session_id"
     ] == str(session_id)
 
@@ -2198,14 +2026,14 @@ async def test_managed_warning_requires_cleared_native_task(
 ):
     """Opaque codes never decide safety; explicit task identity does."""
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
+    client.async_get_state = AsyncMock(
         return_value=_operational_state_for_codes(
             charging_code, error_codes=error_codes
         )
     )
     client._connection._async_send_user_payload = AsyncMock()
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
     context = pytest.raises(CoverageGuardError) if identity else nullcontext()
     with context as caught:
         await client.async_start_coverage(
@@ -2218,14 +2046,14 @@ async def test_managed_warning_requires_cleared_native_task(
     if identity:
         assert caught.value.reason is CoverageGuardReason.ACTIVITY_UNAVAILABLE
         client._connection._async_send_user_payload.assert_not_awaited()
-        client._commands._async_wait_for_coverage_readback.assert_not_awaited()
+        client._async_wait_for_coverage_readback.assert_not_awaited()
     else:
         client._connection._async_send_user_payload.assert_awaited_once()
-        client._commands._async_wait_for_coverage_readback.assert_awaited_once()
-        assert client._reads.async_get_state.await_count == 2
+        client._async_wait_for_coverage_readback.assert_awaited_once()
+        assert client.async_get_state.await_count == 2
         # Unknown charging warnings need a bounded identity recheck around
         # the refreshed operational snapshot before clearance is accepted.
-        assert client._reads.async_get_cleaning_session_identity.await_count == 4
+        assert client.async_get_cleaning_session_identity.await_count == 4
 
 
 @pytest.mark.parametrize(
@@ -2242,12 +2070,12 @@ async def test_managed_warning_rechecks_state_and_identity_after_clearance(
     latest_codes, latest_identity, reason
 ):
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         # Baseline, first in-method identity, final in-method identity, then
         # the outer managed-dispatch identity comparison.
         side_effect=[b"", b"", b"", latest_identity]
     )
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_state = AsyncMock(
         side_effect=[
             _operational_state_for_codes(107, error_codes=(326,)),
             _operational_state_for_codes(*latest_codes, error_codes=(326,)),
@@ -2271,15 +2099,13 @@ async def test_unknown_kabuki_codes_need_stable_cleared_identity(codes):
     """Opaque status codes do not acquire meaning from an empty task key."""
     client = MaticHermesClient("robot.invalid", 16320)
     state = _operational_state_for_codes(*codes)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", b""]
-    )
-    client._reads.async_get_state = AsyncMock(side_effect=[state, state])
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(side_effect=[state, state])
 
     assert await client.async_get_active_cleaning_session_state() is False
 
-    assert client._reads.async_get_state.await_count == 2
-    assert client._reads.async_get_cleaning_session_identity.await_count == 2
+    assert client.async_get_state.await_count == 2
+    assert client.async_get_cleaning_session_identity.await_count == 2
 
 
 @pytest.mark.parametrize(
@@ -2294,10 +2120,8 @@ async def test_unknown_kabuki_codes_need_stable_cleared_identity(codes):
 async def test_unknown_kabuki_clearance_rechecks_fresh_state(latest_codes, expected):
     """A changed fresh snapshot keeps the known activity or unknown result."""
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", b""]
-    )
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(
         side_effect=[
             _operational_state_for_codes(999),
             _operational_state_for_codes(*latest_codes),
@@ -2317,12 +2141,8 @@ async def test_unknown_kabuki_clearance_rechecks_fresh_state(latest_codes, expec
 )
 async def test_unknown_kabuki_clearance_rejects_unstable_identity(identities):
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=identities
-    )
-    client._reads.async_get_state = AsyncMock(
-        return_value=_operational_state_for_codes(999)
-    )
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=identities)
+    client.async_get_state = AsyncMock(return_value=_operational_state_for_codes(999))
 
     assert await client.async_get_active_cleaning_session_state() is None
 
@@ -2331,10 +2151,8 @@ async def test_unknown_noncharging_fault_keeps_activity_unavailable():
     """An empty identity does not erase ownership uncertainty from faults."""
     client = MaticHermesClient("robot.invalid", 16320)
     state = _operational_state_for_codes(999, error_codes=(900,))
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", b""]
-    )
-    client._reads.async_get_state = AsyncMock(side_effect=[state, state])
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(side_effect=[state, state])
 
     assert await client.async_get_active_cleaning_session_state() is None
 
@@ -2342,10 +2160,10 @@ async def test_unknown_noncharging_fault_keeps_activity_unavailable():
 async def test_native_vacuum_keeps_robot_warning_checks():
     """The explicit native route does not acquire managed task ownership."""
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_state = AsyncMock(
         return_value=_operational_state_for_codes(106, error_codes=(326,))
     )
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         return_value=b"retained-native-session"
     )
     client._connection._async_send_user_payload = AsyncMock()
@@ -2356,15 +2174,15 @@ async def test_native_vacuum_keeps_robot_warning_checks():
         coverage_setting=CoverageSetting.STANDARD,
     )
     client._connection._async_send_user_payload.assert_awaited_once()
-    client._reads.async_get_state.assert_not_awaited()
-    client._reads.async_get_cleaning_session_identity.assert_not_awaited()
+    client.async_get_state.assert_not_awaited()
+    client.async_get_cleaning_session_identity.assert_not_awaited()
 
 
 async def test_direct_coverage_preserves_reserved_id_without_setting_proof():
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection._async_send_user_payload = AsyncMock()
-    client._reads.async_get_state = AsyncMock()
-    client._reads.async_get_cleaning_session_identity = AsyncMock()
+    client.async_get_state = AsyncMock()
+    client.async_get_cleaning_session_identity = AsyncMock()
     session_id = UUID("11111111-1111-4111-8111-111111111111")
     await client.async_start_coverage(
         FloorPlan(
@@ -2386,8 +2204,8 @@ async def test_direct_coverage_preserves_reserved_id_without_setting_proof():
         native_session_hash(first_bytes(coverage, 6))
         == hashlib.sha256(str(session_id).encode("ascii")).hexdigest()
     )
-    client._reads.async_get_state.assert_not_awaited()
-    client._reads.async_get_cleaning_session_identity.assert_not_awaited()
+    client.async_get_state.assert_not_awaited()
+    client.async_get_cleaning_session_identity.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -2437,12 +2255,12 @@ async def test_direct_coverage_preserves_reserved_id_without_setting_proof():
 )
 async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, reason):
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         return_value=b"retained-native-session"
     )
-    client._reads.async_get_state = AsyncMock(return_value=state)
+    client.async_get_state = AsyncMock(return_value=state)
     client._connection._async_send_user_payload = AsyncMock()
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
 
     with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
@@ -2459,7 +2277,7 @@ async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, re
         )
 
     client._connection._async_send_user_payload.assert_not_awaited()
-    client._commands._async_wait_for_coverage_readback.assert_not_awaited()
+    client._async_wait_for_coverage_readback.assert_not_awaited()
     assert caught.value.reason is reason
 
 
@@ -2474,14 +2292,12 @@ async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, re
 async def test_tracked_coverage_accepts_settled_state_with_supplemental_codes(codes):
     client = MaticHermesClient("robot.invalid", 16320)
     session_id = UUID("11111111-1111-4111-8111-111111111111")
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", b""]
-    )
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(
         return_value=_operational_state_for_codes(*codes)
     )
     client._connection._async_send_user_payload = AsyncMock()
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
 
     await client.async_start_coverage(
         FloorPlan(
@@ -2498,7 +2314,7 @@ async def test_tracked_coverage_accepts_settled_state_with_supplemental_codes(co
     )
 
     client._connection._async_send_user_payload.assert_awaited_once()
-    client._commands._async_wait_for_coverage_readback.assert_awaited_once()
+    client._async_wait_for_coverage_readback.assert_awaited_once()
 
 
 @pytest.mark.parametrize("charging_code", [106, 107])
@@ -2507,16 +2323,16 @@ async def test_tracked_coverage_rejects_recharge_and_resume_state(
     charging_code, error_codes
 ):
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=[b"retained-native-session", b"retained-native-session"]
     )
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_state = AsyncMock(
         return_value=_operational_state_for_codes(
             charging_code, 119, 206, error_codes=error_codes
         )
     )
     client._connection._async_send_user_payload = AsyncMock()
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
 
     with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
@@ -2538,10 +2354,10 @@ async def test_tracked_coverage_rejects_recharge_and_resume_state(
 
 async def test_tracked_coverage_rejects_unavailable_identity_before_state_read():
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(return_value=None)
-    client._reads.async_get_state = AsyncMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=None)
+    client.async_get_state = AsyncMock()
     client._connection._async_send_user_payload = AsyncMock()
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
 
     with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
@@ -2557,22 +2373,20 @@ async def test_tracked_coverage_rejects_unavailable_identity_before_state_read()
             require_settings_readback=True,
         )
 
-    client._reads.async_get_state.assert_not_awaited()
+    client.async_get_state.assert_not_awaited()
     client._connection._async_send_user_payload.assert_not_awaited()
-    client._commands._async_wait_for_coverage_readback.assert_not_awaited()
+    client._async_wait_for_coverage_readback.assert_not_awaited()
     assert caught.value.reason is CoverageGuardReason.IDENTITY_UNAVAILABLE
 
 
 async def test_tracked_coverage_rejects_identity_change_before_dispatch():
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=[b"prior-session", b"external-session"]
     )
-    client._reads.async_get_state = AsyncMock(
-        return_value=_operational_state_for_codes(107)
-    )
+    client.async_get_state = AsyncMock(return_value=_operational_state_for_codes(107))
     client._connection._async_send_user_payload = AsyncMock()
-    client._commands._async_wait_for_coverage_readback = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
 
     with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
@@ -2589,7 +2403,7 @@ async def test_tracked_coverage_rejects_identity_change_before_dispatch():
         )
 
     client._connection._async_send_user_payload.assert_not_awaited()
-    client._commands._async_wait_for_coverage_readback.assert_not_awaited()
+    client._async_wait_for_coverage_readback.assert_not_awaited()
     assert caught.value.reason is CoverageGuardReason.IDENTITY_CHANGED
 
 
@@ -2610,32 +2424,6 @@ async def test_untracked_coverage_skips_managed_identity_and_readback_guards():
     )
 
     client._connection._async_send_user_payload.assert_awaited_once()
-
-
-async def test_get_slam_tile_entry_reads_one_rgb_map_entry() -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_collection_entries = AsyncMock(
-        return_value=(HermesCollectionEntry(b"key", b"synthetic-image"),)
-    )
-
-    assert await client.async_get_slam_tile_entry() == HermesCollectionEntry(
-        b"key", b"synthetic-image"
-    )
-    client._collections.async_get_collection_entries.assert_awaited_once_with(
-        "map_compressed_rgb", limit=1
-    )
-
-
-@pytest.mark.parametrize(
-    "entries",
-    [(), (HermesCollectionEntry(b"key", b""),)],
-)
-async def test_get_slam_tile_entry_rejects_empty_maps(entries) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_collection_entries = AsyncMock(return_value=entries)
-
-    with pytest.raises(CannotConnectError):
-        await client.async_get_slam_tile_entry()
 
 
 async def test_send_channel_payload_translates_stream_errors(monkeypatch) -> None:
@@ -2784,12 +2572,10 @@ async def test_unsupported_optional_endpoints_preserve_other_telemetry() -> None
             raise EndpointUnsupportedError("synthetic unsupported")
         return b""
 
-    client._collections.async_get_property = AsyncMock(side_effect=property_value)
-    client._collections.async_get_collection_count = AsyncMock(return_value=7)
-    client._collections.async_get_collection_entries = AsyncMock(return_value=())
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
-        return_value=()
-    )
+    client.async_get_property = AsyncMock(side_effect=property_value)
+    client.async_get_collection_count = AsyncMock(return_value=7)
+    client.async_get_collection_entries = AsyncMock(return_value=())
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
     telemetry = await client.async_get_telemetry()
     assert telemetry.wifi_state is None
     assert telemetry.dock_detections == 7
@@ -2799,14 +2585,14 @@ async def test_unsupported_optional_endpoints_preserve_other_telemetry() -> None
 
 async def test_optional_unsupported_collection_readers_are_isolated() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_collection_count = AsyncMock(
+    client.async_get_collection_count = AsyncMock(
         side_effect=EndpointUnsupportedError("synthetic unsupported")
     )
-    client._collections.async_get_collection_entries = AsyncMock(
+    client.async_get_collection_entries = AsyncMock(
         side_effect=EndpointUnsupportedError("synthetic unsupported")
     )
-    assert await client._reads._async_optional_collection_count("optional") is None
-    assert await client._reads._async_optional_collection("optional", limit=1) is None
+    assert await client._async_optional_collection_count("optional") is None
+    assert await client._async_optional_collection("optional", limit=1) is None
     assert client.endpoint_health["optional"] == "EndpointUnsupportedError"
 
 
@@ -2816,7 +2602,7 @@ _SYNTHETIC_SINK_POSTURE = bytes.fromhex("0d0000c03f15000000c0220515000080bf")
 async def test_sink_posture_is_the_last_saved_for_the_floor() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     floor_key = bytes.fromhex("1504030201")
-    client._collections.async_get_collection_entries = AsyncMock(
+    client.async_get_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(floor_key, bytes.fromhex("0d0000803f")),
             HermesCollectionEntry(bytes.fromhex("1508070605"), bytes.fromhex("0d00")),
@@ -2830,7 +2616,7 @@ async def test_sink_posture_is_the_last_saved_for_the_floor() -> None:
     )
 
     assert posture == _SYNTHETIC_SINK_POSTURE
-    client._collections.async_get_collection_entries.assert_awaited_once_with(
+    client.async_get_collection_entries.assert_awaited_once_with(
         "sink_summon_locations"
     )
 
@@ -2854,7 +2640,7 @@ async def test_sink_summon_sends_the_posture_and_refill_wait() -> None:
 
 async def test_sink_posture_requires_a_location_for_the_current_floor() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._collections.async_get_collection_entries = AsyncMock(
+    client.async_get_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(bytes.fromhex("1508070605"), _SYNTHETIC_SINK_POSTURE),
         )
@@ -2884,16 +2670,14 @@ async def test_telemetry_reads_zones_through_the_tracked_stream() -> None:
     async def tracked(name, *, limit):
         return (zone,) if name == "zones" else ()
 
-    client._collections.async_get_property = AsyncMock(return_value=b"")
-    client._collections.async_get_collection_count = AsyncMock(return_value=0)
-    client._collections.async_get_collection_entries = AsyncMock(return_value=())
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
-        side_effect=tracked
-    )
+    client.async_get_property = AsyncMock(return_value=b"")
+    client.async_get_collection_count = AsyncMock(return_value=0)
+    client.async_get_collection_entries = AsyncMock(return_value=())
+    client.async_get_tracked_collection_entries = AsyncMock(side_effect=tracked)
     telemetry = await client.async_get_telemetry()
     assert [(item.mission_id, item.kind) for item in telemetry.zones] == [(42, "no_go")]
 
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         side_effect=CannotConnectError("synthetic")
     )
     assert (await client.async_get_telemetry()).zones == ()

@@ -39,10 +39,10 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import CleanPlanArea, RobotCommands
 from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
+from tests.client.test_mission import _labeled as _labeled_floor
+from tests.client.test_mission import _state as _mission_client_state
 from tests.session_fakes import managed_clean_rooms
 from tests.test_entities import _entry
-from tests.test_mission import _labeled as _labeled_floor
-from tests.test_mission import _state as _mission_client_state
 
 
 async def test_queued_return_cannot_dock_newer_motion(hass) -> None:
@@ -1425,12 +1425,12 @@ async def test_direct_ha_start_claims_exact_session_before_transmission():
 async def test_direct_start_reaches_real_client_with_the_reserved_wire_identity():
     import hashlib
 
-    from custom_components.matic_robot.client.api import MaticHermesClient
+    from custom_components.matic_robot.client import MaticHermesClient
     from custom_components.matic_robot.client.coverage_receipts import (
         native_session_hash,
     )
     from custom_components.matic_robot.client.wire import first_bytes
-    from tests.test_coverage_receipt_api import FLOOR
+    from tests.client.test_coverage_receipt_api import FLOOR
 
     entry = _entry()
     entry.runtime_data.session.floor.set(FLOOR)

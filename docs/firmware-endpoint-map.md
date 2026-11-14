@@ -45,12 +45,13 @@ Hermes is Matic's local gRPC protocol. The registry in
 | `recap_history` | Maintenance suggestions from the newest monthly recap |
 | `bag_pass_status` | Bag pass end date while a pass is active |
 
-Client-only decoders also handle `approximate_trajectory`, `flythrough`,
-and `coverage_session_thumbnails`. These do not add entities or browser overlays.
+`coverage_session_thumbnails` is decoded for run thumbnails; it adds no
+entities or browser overlays.
 
 ## Other inspection endpoints
 
-The registry includes `planned_path`, `coverage_corridor`, `coverage_marker`,
+The registry includes `approximate_trajectory`, `planned_path`,
+`coverage_corridor`, `coverage_marker`,
 `displayed_mission`, `labeled_missions`, `jukebox_state`,
 `map_combined_coverage`, `map_compressed_rgb_higher`, `semantics_override`,
 `zones`, `schedule_event_previews`, `sink_summons`, and `map_vents`. Inspection returns
