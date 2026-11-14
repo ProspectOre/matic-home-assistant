@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from custom_components.matic_robot import area_binding_geometry as abg
+from custom_components.matic_robot import area_binding_legacy as legacy
 from custom_components.matic_robot.area_binding import (
     AreaBindingStatus,
     area_binding_status,
@@ -209,3 +210,48 @@ def test_v7_room_frames_must_keep_each_circle_in_its_room() -> None:
     area = {"schema_version": AREA_SCHEMA_VERSION, "circles": circles}
     changed = replace(floor, rooms=(*floor.rooms, _floor(remote=True).rooms[1]))
     assert area_binding_status({**area, "map_binding": binding}, changed) is CHANGED
+
+
+def test_v3_conversion_keeps_saved_room_snapshots() -> None:
+    def floor(dx: float) -> FloorPlan:
+        # dx moves one corner of room A, an edit its saved frame tolerates.
+        return FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                Room(
+                    "a",
+                    "A",
+                    "protocol-a",
+                    b"a",
+                    ((0.0, 0.0), (4.0, 0.0), (4.0 + dx, 3.0), (0.0, 3.0)),
+                ),
+                Room(
+                    "b",
+                    "B",
+                    "protocol-b",
+                    b"b",
+                    ((10.0, 0.0), (14.0, 0.0), (14.0, 3.0), (10.0, 3.0)),
+                ),
+            ),
+        )
+
+    circles = [
+        {"x": 2.0, "y": 1.5, "radius": 0.1},
+        {"x": 12.0, "y": 1.5, "radius": 0.1},
+    ]
+    binding = legacy_bindings.v3(floor(0.0), circles)
+    anchors = binding["translation_room_anchors"]
+    snapshot = next(anchor for anchor in anchors if anchor["boundary_mm"][0][0] == 0)
+    saved = [list(point) for point in snapshot["boundary_mm"]]
+    for anchor in anchors:
+        if anchor is not snapshot:
+            del anchor["boundary_mm"]
+    area = _area(binding, circles)
+    moved = floor(0.005)
+
+    assert area_binding_status(area, moved) is CURRENT
+    converted = legacy.drifted_binding(area, moved, abg._room_geometry_index(moved))
+    assert converted is not None
+    assert saved in [room["boundary_mm"] for room in converted["frame"]["rooms"]]

@@ -110,8 +110,9 @@ def drifted_binding(
 ) -> dict[str, Any] | None:
     """Convert a binding verified CURRENT on a changed map, keeping its evidence.
 
-    A version 3 binding without room snapshots takes them from the current
-    rooms, which its status check proved exactly unchanged.
+    A version 3 anchor without a room snapshot takes it from the current room,
+    which its status check proved exactly unchanged. A saved snapshot is kept:
+    status tolerated its room's edits, and replacing it would rebase the frame.
     """
     binding = area["map_binding"]
     if binding["version"] != _SCOPED or _has_snapshots(binding):
@@ -124,6 +125,9 @@ def drifted_binding(
     }
     anchors = []
     for anchor in binding[_ANCHORS]:
+        if "boundary_mm" in anchor:
+            anchors.append(anchor)
+            continue
         boundary = current[anchor["room_key"].casefold()]["boundary_mm"]
         # Writers before 0.5 could store a wrong maximum x; the status check
         # matched it exactly, so the snapshot takes the true bounds.
