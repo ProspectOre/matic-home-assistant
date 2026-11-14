@@ -12,14 +12,11 @@ from homeassistant.helpers import issue_registry as ir
 from .area_binding import (
     AreaBindingStatus,
     area_binding_allows_review,
-    area_binding_status,
-    binding_for_floor_plan,
-)
-from .area_binding_geometry import _room_geometry_index
-from .area_binding_records import (
-    _valid_saved_binding,
     area_binding_needs_geometry_index,
+    area_binding_status,
+    binding_mission,
 )
+from .area_binding_geometry import _room_geometry_index, floor_identity
 from .client import FloorPlan
 from .const import DOMAIN
 from .repairs import repair_placeholders
@@ -48,7 +45,7 @@ def async_sync_custom_area_issue(
     if floor_plan is None:
         return None
     try:
-        binding_for_floor_plan(floor_plan)
+        floor_identity(floor_plan)
     except OverflowError, TypeError, ValueError:
         return None
 
@@ -132,14 +129,10 @@ def _area_repair_mission(
     area: object, mapped_missions: tuple[int, ...], primary_mission: int
 ) -> int:
     """Assign malformed, retired, and valid areas to one stable repair floor."""
-    if isinstance(area, Mapping):
-        binding = area.get("map_binding")
-        if isinstance(binding, Mapping) and _valid_saved_binding(binding):
-            mission_id = binding["mission_id"]
-            assert isinstance(mission_id, int) and not isinstance(mission_id, bool)
-            if mission_id in mapped_missions:
-                return mission_id
-    return primary_mission
+    mission_id = (
+        binding_mission(area.get("map_binding")) if isinstance(area, Mapping) else None
+    )
+    return mission_id if mission_id in mapped_missions else primary_mission
 
 
 def _custom_area_issue_id_for_mission(entry_id: str, mission_id: int) -> str:

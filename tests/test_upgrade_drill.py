@@ -370,7 +370,7 @@ def test_floor_catalogs_move_to_the_store_and_stay_in_the_options() -> None:
         default = {
             "seed": {"options": seed, "store": None},
             "upgrade": {"options": left, "store": catalog},
-            "downgrade": {"options": left, "store": catalog},
+            "downgrade": {"options": seed, "store": catalog},
             "restore": {"options": seed, "store": None},
         }
         return {
@@ -383,7 +383,7 @@ def test_floor_catalogs_move_to_the_store_and_stay_in_the_options() -> None:
         ({"seed": {"options": left, "store": None}}, "seed did not map"),
         ({"upgrade": {"options": left, "store": None}}, "did not move"),
         ({"upgrade": {"options": seed, "store": catalog}}, "upgrade changed"),
-        ({"downgrade": {"options": seed, "store": None}}, "downgrade changed"),
+        ({"downgrade": {"options": left, "store": catalog}}, "did not restore"),
         ({"restore": {"options": left, "store": None}}, "restored backup lost"),
     ):
         with pytest.raises(DrillFailed, match=message):

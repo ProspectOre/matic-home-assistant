@@ -19,16 +19,17 @@ git fetch origin tag v0.5.4
 | Phase | Code | What it does |
 | --- | --- | --- |
 | seed | older | Saves plans and a version-1 map-history sample, finishes a run, then stops Home Assistant mid-clean. It adds a second area with the whole-floor v1 binding 0.3 wrote to the stored file. The stores are copied as the pre-upgrade backup. |
-| upgrade | this checkout | Upgrades the v1 area binding to v3, migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
-| downgrade | older | Checks the version-1 map-history reader leaves v2 unread and its bytes unchanged (0.5.4 keeps a temporary, empty history; 0.5.2 and older refuse it); loads the newer plan store with the older plan manager without starting a run, and requires both areas, including the binding 0.6 upgraded, to be current on the floor. |
+| upgrade | this checkout | Converts both area bindings to v7, migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
+| downgrade | older | Starts the integration on the newer stores without starting a run. Requires no error, Matic Map listing both converted areas as invalid without circles, and the version-1 map-history reader leaving v2 unread with its bytes unchanged (0.5.4 keeps a temporary, empty history). |
 | restore | older | Runs the plan on the matching pre-upgrade version-1 backup. |
 
 The drill also saves and executes a separate custom-area plan. It checks area identity,
 geometry and binding, saved plans and completion history across phases, plus the map-history
-migration, refusal and restored backup. No run starts during the refused downgrade phase.
+migration, refusal and restored backup. No run starts during the downgrade phase.
 The seed maps a Home Assistant Area to a room, and the drill checks that the upgrade moves
 the floor catalogs into `matic_robot.floor_catalogs.<entry>` while leaving 0.5's copy, less
-its floor scope, in the vacuum's entity options, and that the restored backup still has them.
+its floor scope, in the vacuum's entity options. 0.5.4 restores its floor scope when it starts
+in the downgrade phase, and the restored backup still has the catalogs.
 
 ## What 0.5.4 to 0.6 does
 
@@ -39,9 +40,11 @@ its floor scope, in the vacuum's entity options, and that the restored backup st
   such as `run_history` and the per-run `skipped_room_ids` and `held_rooms`.
   It repairs fields older releases saved, such as duration scalars and run
   `trigger`, in memory once per start and saves them with its next write.
-- Custom-area bindings keep their format. Both releases write v3, v4 and v6
-  and read v1 to v6. At startup each upgrades an older binding it can verify
-  on the current floor to what both write, so 0.5.4 reads it as current.
+- At startup 0.6 converts every custom-area binding it can verify on the
+  current floor to v7, the only format it writes. 0.5.4 does not read v7: it
+  starts normally but hides a converted area and refuses plans that use it
+  until the area is redrawn. A binding 0.6 cannot verify keeps its old format
+  and its Repair.
 - 0.6 settles the run that 0.5.4 left cleaning as unverified
   (`restart_native_mission_changed_or_ended`) and then runs the plan normally.
 - 0.5.4 runs on a plan store 0.6 wrote. It keeps `run_history` but does not add
@@ -50,7 +53,7 @@ its floor scope, in the vacuum's entity options, and that the restored backup st
 - Restoring the pre-upgrade backup brings back the 0.5.4 state exactly,
   including the interrupted run, which 0.5.4 settles the same way.
 
-The last recorded run, from v0.5.4, passed all four phases on November 13,
+The last recorded run, from v0.5.4, passed all four phases on November 14,
 2026. Run the drill again before a 0.6 release.
 
 ## Not covered

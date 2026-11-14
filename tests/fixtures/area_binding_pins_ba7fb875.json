@@ -112,7 +112,7 @@
        "version": 1
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -134,7 +134,7 @@
        "version": 1
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -152,8 +152,8 @@
     "same": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
@@ -274,7 +274,7 @@
        "version": 2
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -296,7 +296,7 @@
        "version": 2
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -314,8 +314,8 @@
     "same": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
@@ -443,7 +443,7 @@
        "version": 3
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -454,31 +454,31 @@
        "version": 3
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
     "remote_room_added": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
-     "saves": 0,
-     "upgraded": 0
+     "saves": 1,
+     "upgraded": 1
     },
     "remote_room_added_new_partition": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
-     "saves": 0,
-     "upgraded": 0
+     "saves": 1,
+     "upgraded": 1
     },
     "rooms_edited": {
      "bindings": {
@@ -487,20 +487,20 @@
        "version": 3
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
-     "saves": 0,
-     "upgraded": 0
+     "saves": 1,
+     "upgraded": 1
     }
    }
   },
@@ -622,7 +622,7 @@
        "version": 3
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -662,8 +662,8 @@
     "same": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
@@ -796,15 +796,15 @@
        "version": 3
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
     "remote_room_added": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
@@ -836,8 +836,8 @@
     "same": {
      "bindings": {
       "area": {
-       "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-       "version": 3
+       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+       "version": 7
       }
      },
      "pending": false,
@@ -958,7 +958,7 @@
        "version": 4
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -980,7 +980,7 @@
        "version": 4
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -998,8 +998,8 @@
     "same": {
      "bindings": {
       "area": {
-       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-       "version": 6
+       "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+       "version": 7
       }
      },
      "pending": false,
@@ -1127,7 +1127,7 @@
        "version": 5
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -1138,7 +1138,7 @@
        "version": 5
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -1149,7 +1149,7 @@
        "version": 5
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -1160,7 +1160,7 @@
        "version": 5
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -1171,20 +1171,20 @@
        "version": 5
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
-       "version": 5
+       "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+       "version": 7
       }
      },
      "pending": false,
-     "saves": 0,
-     "upgraded": 0
+     "saves": 1,
+     "upgraded": 1
     }
    }
   },
@@ -1307,7 +1307,7 @@
        "version": 6
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
@@ -1318,31 +1318,31 @@
        "version": 6
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
     "remote_room_added": {
      "bindings": {
       "area": {
-       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-       "version": 6
+       "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+       "version": 7
       }
      },
      "pending": false,
-     "saves": 0,
-     "upgraded": 0
+     "saves": 1,
+     "upgraded": 1
     },
     "remote_room_added_new_partition": {
      "bindings": {
       "area": {
-       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-       "version": 6
+       "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+       "version": 7
       }
      },
      "pending": false,
-     "saves": 0,
-     "upgraded": 0
+     "saves": 1,
+     "upgraded": 1
     },
     "rooms_edited": {
      "bindings": {
@@ -1351,20 +1351,20 @@
        "version": 6
       }
      },
-     "pending": false,
+     "pending": true,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-       "version": 6
+       "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+       "version": 7
       }
      },
      "pending": false,
-     "saves": 0,
-     "upgraded": 0
+     "saves": 1,
+     "upgraded": 1
     }
    }
   }
@@ -4015,7 +4015,7 @@
      "version": 6
     }
    },
-   "pending": false,
+   "pending": true,
    "saves": 0,
    "upgraded": 0
   },
@@ -4030,16 +4030,16 @@
      "version": 2
     },
     "v3": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v3_unanchored": {
      "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
      "version": 3
     },
     "v3_without_boundaries": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v4": {
      "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
@@ -4050,13 +4050,13 @@
      "version": 5
     },
     "v6": {
-     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-     "version": 6
+     "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+     "version": 7
     }
    },
    "pending": true,
    "saves": 1,
-   "upgraded": 1
+   "upgraded": 3
   },
   "remote_room_added_new_partition": {
    "bindings": {
@@ -4069,8 +4069,8 @@
      "version": 2
     },
     "v3": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v3_unanchored": {
      "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
@@ -4089,13 +4089,13 @@
      "version": 5
     },
     "v6": {
-     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-     "version": 6
+     "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+     "version": 7
     }
    },
    "pending": true,
-   "saves": 0,
-   "upgraded": 0
+   "saves": 1,
+   "upgraded": 2
   },
   "rooms_edited": {
    "bindings": {
@@ -4139,41 +4139,41 @@
   "same": {
    "bindings": {
     "v1": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v2": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v3": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v3_unanchored": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v3_without_boundaries": {
-     "sha256": "8a807ee9705cc226cad8b3ca2bc35f89f5f2f20f9c8cdd35839d77a01e4d925e",
-     "version": 3
+     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
+     "version": 7
     },
     "v4": {
-     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-     "version": 6
+     "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+     "version": 7
     },
     "v5": {
-     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
-     "version": 5
+     "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+     "version": 7
     },
     "v6": {
-     "sha256": "6d45edba264b9efd867b31c45c5d322b36b1d5b522c17d11a506373454116004",
-     "version": 6
+     "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
+     "version": 7
     }
    },
    "pending": false,
    "saves": 1,
-   "upgraded": 5
+   "upgraded": 8
   }
  }
 }

@@ -22,13 +22,11 @@ from custom_components.matic_robot import (
 )
 from custom_components.matic_robot.activity_events import ActivityEvents
 from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
-    SCOPED_MAP_BINDING_VERSION,
-    SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
     area_binding_status,
     binding_for_area,
 )
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -55,6 +53,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_view_data import observe_trail
 from custom_components.matic_robot.stores import CleaningHistory
 from custom_components.matic_robot.workspace_socket import DATA_WORKSPACE_SOCKET
+from tests import legacy_bindings
 from tests.session_fakes import fake_session
 
 
@@ -418,24 +417,15 @@ async def test_setup_starts_the_session_before_forwarding_platforms(
     sync_area_issue.assert_called_once_with(hass, "entry", {}, floor_plan)
 
 
-@pytest.mark.parametrize(
-    ("binding_version", "expected_version"),
-    [
-        (SCOPED_MAP_BINDING_VERSION, SCOPED_MAP_BINDING_VERSION),
-        (
-            SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-            SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-        ),
-    ],
-)
+@pytest.mark.parametrize("walls", [True, False], ids=["walls", "neighbourhood"])
 async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
-    hass, robot_session: SimpleNamespace, binding_version: int, expected_version: int
+    hass, robot_session: SimpleNamespace, walls: bool
 ) -> None:
     """The real setup listener must not alert/rebind current areas on safe churn."""
     serial = "synthetic-serial"
     room_boundary = (
         ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
-        if binding_version == SCOPED_MAP_BINDING_VERSION
+        if walls
         else tuple(
             (
                 0.5 + 0.45 * math.cos(2 * math.pi * index / 320),
@@ -459,11 +449,8 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         "coverage_setting": "standard",
         "map_binding": binding_for_area(original, circles),
     }
-    assert current_area["map_binding"]["version"] == expected_version
-    if binding_version == SCOPED_MAP_BINDING_VERSION:
-        anchors = current_area["map_binding"]["translation_room_anchors"]
-        assert anchors
-        assert all("boundary_mm" in anchor for anchor in anchors)
+    assert ("segments_mm" in current_area["map_binding"]["local"]) is walls
+    assert current_area["map_binding"]["frame"]["rooms"]
 
     # This separately retained reviewable legacy area keeps the
     # binding-upgrade work pending, so the actual setup callback schedules the
@@ -485,14 +472,8 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         "circles": legacy_circles,
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": {
-            key: value
-            for key, value in binding_for_area(old_frame, legacy_circles).items()
-            if key
-            not in {"translation_invariant_geometry_sha256", "translation_room_anchors"}
-        },
+        "map_binding": legacy_bindings.v4(old_frame, legacy_circles),
     }
-    legacy_area["map_binding"]["version"] = 4
 
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())

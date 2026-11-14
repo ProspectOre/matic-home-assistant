@@ -23,12 +23,10 @@ from homeassistant.helpers import llm
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
-    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
     binding_for_area,
-    binding_for_floor_plan,
 )
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
@@ -96,6 +94,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_controls import RobotControls
+from tests import legacy_bindings
 from tests.session_fakes import fake_session
 
 _INTERNAL_TERMS = re.compile(
@@ -1213,7 +1212,7 @@ def _saved_area(floor_plan: FloorPlan, name: str) -> dict[str, Any]:
         "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": binding_for_floor_plan(floor_plan),
+        "map_binding": legacy_bindings.v1(floor_plan),
     }
 
 
@@ -1549,10 +1548,7 @@ async def test_plan_readiness_recognizes_reviewable_stale_v4_area(hass) -> None:
             "circles": circles,
             "map_binding": binding_for_area(original, circles),
         }
-    assert (
-        saved_area["map_binding"]["version"]
-        == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
+    assert "frame" not in saved_area["map_binding"]
     entry = _entry(floor_plan=changed)
     manager = entry.runtime_data.cleaning_plans
     manager.catalog.plans.return_value = {
@@ -1728,7 +1724,7 @@ async def test_plan_tool_previews_custom_areas_in_run_order(hass) -> None:
 
     # A redrawn map or a deleted area stops the preview with its reason.
     areas = manager.repository.robot(serial)["areas"]
-    areas["mat"]["map_binding"] = binding_for_floor_plan(
+    areas["mat"]["map_binding"] = legacy_bindings.v1(
         FloorPlan(5, "partition", b"partition", floor_plan.rooms)
     )
     for plan in ("mixed", "spots"):

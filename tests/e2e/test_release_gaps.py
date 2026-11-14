@@ -19,9 +19,9 @@ import custom_components.matic_robot.managed_observation as managed_observation_
 import custom_components.matic_robot.managed_reconciliation as managed_reconciliation
 from custom_components.matic_robot import wifi_survey as wifi_survey_module
 from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
     binding_for_area,
 )
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.wifi_survey import survey_frame
 

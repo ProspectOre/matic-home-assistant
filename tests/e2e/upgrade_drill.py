@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,6 @@ from typing import Any
 import pytest
 from aiohttp.test_utils import TestClient
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import UnsupportedStorageVersionError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
@@ -307,55 +307,50 @@ async def test_seed(
 
 async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
     """Newer release on the older stores: settle the interrupted run, then
-    run the saved plan again. Setup upgrades the legacy area's v1 binding."""
-    assert _stored_binding_version(LEGACY_AREA_ID) == 3
+    run the saved plan again. Setup converts both areas' bindings to v7."""
+    assert _stored_binding_version(AREA_ID) == 7
+    assert _stored_binding_version(LEGACY_AREA_ID) == 7
     await _settle(plan)
     await _run_plan(plan, robot)
     await _run_area_plan(plan, robot)
+    # The seed's completed area run still counts after conversion.
+    stored = plan.entry.runtime_data.cleaning_plans.repository.robot(
+        plan.entry.unique_id
+    )
+    assert stored["area_history"][AREA_ID]["completed_runs"] == 2
+    assert stored["rotations"][AREA_PLAN]["areas"][AREA_ID]["completed_runs"] == 2
     history = plan.entry.runtime_data.slam_history
     assert any(item.snapshot_id == _legacy_snapshot_id() for item in history.catalog())
     await _write_retention_examples(history)
     await history.async_shutdown()
 
 
-async def test_downgrade(hass: HomeAssistant) -> None:
-    """The older release loads 0.6's plan store but not the v2 history file.
+async def test_downgrade(
+    plan: PlanRun, hass_client: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """0.5.4 starts on 0.6's stores and hides the areas 0.6 converted.
 
-    Both areas, including the binding 0.6 upgraded, are current on the floor.
-    0.5.0 to 0.5.2 refuse the history file; 0.5.3 and later keep a temporary,
-    empty timeline in memory instead.
+    It reads 0.6's plan store but not the v7 bindings, so Matic Map lists both
+    areas as invalid without their circles. It keeps a temporary, empty
+    timeline instead of reading the v2 history file; the script checks that
+    the file is unchanged.
     """
-    from custom_components.matic_robot.area_binding import (
-        AreaBindingStatus,
-        area_binding_status,
+    response = await (await hass_client()).get(
+        f"/api/matic_robot/areas/{plan.entry.entry_id}"
     )
-    from custom_components.matic_robot.plans import CleaningPlanManager
-    from custom_components.matic_robot.slam_history import SlamHistoryStore
-
-    (serial,) = json.loads(_plan_store().read_text())["data"]["robots"]
-    plans = CleaningPlanManager(hass)
-    await plans.async_load()
-    assert PLAN in plans.plans(serial)
-    areas = plans.areas(serial)
+    assert response.status == 200, await response.text()
+    areas = {area["id"]: area for area in (await response.json())["areas"]}
     for area_id in (AREA_ID, LEGACY_AREA_ID):
-        status = area_binding_status(areas[area_id], _floor_plan())
-        assert status is AreaBindingStatus.CURRENT
-
-    path = (
-        Path(os.environ["MATIC_DRILL_CONFIG"])
-        / ".storage"
-        / f"matic_robot.slam_history.{ENTRY_ID}"
-    )
-    before = path.read_bytes()
-    history = SlamHistoryStore(hass, ENTRY_ID)
-    try:
-        await history.async_load()
-    except UnsupportedStorageVersionError:
-        pass
-    else:
-        assert not history.catalog()
-        await history.async_shutdown()
-    assert path.read_bytes() == before
+        assert areas[area_id]["status"] == "invalid"
+        assert areas[area_id]["circles"] == []
+        assert _stored_binding_version(area_id) == 7
+    assert PLAN in plan.entry.runtime_data.cleaning_plans.plans(plan.entry.unique_id)
+    assert not plan.entry.runtime_data.slam_history.catalog()
+    assert not [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.ERROR and DOMAIN in record.name
+    ]
 
 
 async def test_restore(plan: PlanRun, robot: SimulatedRobot) -> None:

@@ -17,14 +17,11 @@ from homeassistant.helpers import llm
 
 from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
-    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-    SCOPED_MAP_BINDING_VERSION,
-    SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
     area_binding_status,
     binding_for_area,
 )
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_views import (
     MaticAreasView,
 )
@@ -42,6 +39,7 @@ from custom_components.matic_robot.service_plans import (
     _saved_plan_preview,
     _validated_area_command,
 )
+from tests import legacy_bindings
 from tests.test_area_frame_witnesses import (
     _area as _witness_area,
 )
@@ -88,18 +86,6 @@ def _map_with_unrelated_room(floor_plan: FloorPlan) -> FloorPlan:
         ((3.0, 0.0), (4.0, 0.0), (4.0, 1.0), (3.0, 1.0)),
     )
     return replace(floor_plan, rooms=(*floor_plan.rooms, remote))
-
-
-def _legacy_v4_binding(floor_plan: FloorPlan, circles: list[dict]) -> dict:
-    current = binding_for_area(floor_plan, circles)
-    assert current["version"] == SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    return {
-        "version": BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-        "mission_id": current["mission_id"],
-        "partition_id": current["partition_id"],
-        "geometry_sha256": current["geometry_sha256"],
-        "local_geometry_sha256": current["local_geometry_sha256"],
-    }
 
 
 def _simple_floor_plan() -> FloorPlan:
@@ -215,7 +201,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
         "circles": circles,
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": _legacy_v4_binding(original_map, circles),
+        "map_binding": legacy_bindings.v4(original_map, circles),
     }
     manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
     _saved_plan(manager)
@@ -236,10 +222,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
         "synthetic-serial", current_map
     )
     assert migration == AreaBindingUpgradeResult(0, True)
-    assert (
-        saved_area["map_binding"]["version"]
-        == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
+    assert saved_area["map_binding"]["version"] == 4
     assert (
         area_binding_status(saved_area, current_map)
         is AreaBindingStatus.GEOMETRY_CHANGED
@@ -306,9 +289,10 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     stale_commit = await rebind_task
     assert stale_commit.status == 409
     assert manager.repository.store.async_save.await_count == 0
-    assert manager.catalog.area("synthetic-serial", "saved-zone")["map_binding"][
-        "version"
-    ] == (BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION)
+    assert (
+        manager.catalog.area("synthetic-serial", "saved-zone")["map_binding"]["version"]
+        == 4
+    )
     still_stale = await readiness.async_call(
         tool_hass,
         llm.ToolInput(readiness.name, {"plan": "area-plan"}),
@@ -324,10 +308,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     assert json.loads(response.body) == {"id": "saved-zone"}
     rebound = manager.catalog.area("synthetic-serial", "saved-zone")
     assert rebound is not None
-    assert (
-        rebound["map_binding"]["version"]
-        == SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
+    assert rebound["map_binding"]["frame"]
     assert area_binding_status(rebound, current_map) is AreaBindingStatus.CURRENT
 
     _floor, preview, _token = _saved_plan_preview(
@@ -397,12 +378,9 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
             "coverage_setting": "standard",
             "map_binding": binding_for_area(original_map, circles),
         }
-    assert saved_area["map_binding"]["version"] == (
-        SCOPED_MAP_BINDING_VERSION
-        if binding_kind != "v6"
-        else SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
+    assert ("sha256" in saved_area["map_binding"]["local"]) is (binding_kind == "v6")
     if binding_kind == "v3_without_invariant_digest":
+        saved_area["map_binding"] = legacy_bindings.v3(original_map, circles)
         del saved_area["map_binding"]["translation_invariant_geometry_sha256"]
     manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
     _mixed_saved_plan(manager)
@@ -442,9 +420,16 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
     unsafe_drift = refresh in {"translated", "partition_overlapping_room"} or (
         refresh == "local_refinement" and binding_kind == "v3_without_invariant_digest"
     )
-    assert upgrade == AreaBindingUpgradeResult(0, False)
-    assert saved_area == original_record
-    manager.repository.store.async_save.assert_not_awaited()
+    # An old record without the floor digest has no exact version 7 form: it
+    # is bound afresh on an unchanged map and otherwise stays as saved.
+    old_record = binding_kind == "v3_without_invariant_digest"
+    converted = old_record and refresh == "map_revision_only"
+    assert upgrade == AreaBindingUpgradeResult(int(converted), old_record != converted)
+    if converted:
+        assert saved_area["map_binding"] == binding_for_area(refreshed_map, circles)
+    else:
+        assert saved_area == original_record
+        manager.repository.store.async_save.assert_not_awaited()
 
     # Simulate HA Store reload after that automatic refresh, then run the same
     # read-only readiness, plan preview, and service-side area validation used
@@ -528,7 +513,11 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
         )
 
     loaded_area = reloaded.catalog.areas("synthetic-serial")["saved-zone"]
-    assert loaded_area == original_record
+    assert loaded_area == (
+        {**original_record, "map_binding": binding_for_area(refreshed_map, circles)}
+        if converted
+        else original_record
+    )
     assert set(reloaded.catalog.areas("synthetic-serial")) == {"saved-zone"}
     assert loaded_area["circles"] == circles
     assert loaded_area["cleaning_mode"] == "vacuum"
@@ -768,10 +757,7 @@ async def test_v5_area_survives_unrelated_room_addition_but_not_room_translation
         "coverage_setting": "standard",
         "map_binding": binding_for_area(original_map, circles),
     }
-    assert (
-        area["map_binding"]["version"]
-        == SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
+    assert area["map_binding"]["frame"]
     manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = area
     _saved_plan(manager)
 

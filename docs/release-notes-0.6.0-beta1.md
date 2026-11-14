@@ -240,6 +240,10 @@ and the first use of each logs a warning. Matic 0.7 removes them.
   the Wi-Fi survey in a new format that 0.5 can't read, so going back means
   restoring that backup, which also returns both to what the backup held. The
   survey keeps its older one-metre readings when it upgrades.
+- 0.6 converts saved custom areas to a new format when it starts. After that,
+  going back to 0.5.4 hides those areas until they are redrawn, and plans that
+  use them won't run there. Restoring the backup brings them back. An area 0.6
+  can't match to the current map keeps its old format and its Repair.
 - Restoring a backup on a real Home Assistant host has not been tried yet. The
   [upgrade and rollback drill](upgrade-drill.md) covers it on test data only.
 - HACS installs `matic_robot.zip` from the release. For a manual install,

@@ -13,10 +13,7 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot import robot_commands, vacuum
-from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
-    binding_for_floor_plan,
-)
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
@@ -39,6 +36,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import CleanPlanArea, RobotCommands
 from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
+from tests import legacy_bindings
 from tests.client.test_mission import _labeled as _labeled_floor
 from tests.client.test_mission import _state as _mission_client_state
 from tests.session_fakes import managed_clean_rooms
@@ -1288,7 +1286,7 @@ def _plan_area_vacuum(hass, area: dict | None = None):
         "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": binding_for_floor_plan(floor),
+        "map_binding": legacy_bindings.v1(floor),
     }
     manager.repository.robot("synthetic-serial")["areas"]["rug"] = saved
     token = manager.control.begin_managed_motion("synthetic-serial")
@@ -1354,7 +1352,7 @@ async def test_plan_area_command_rechecks_the_area_before_starting(
     elif change == "redrawn":
         areas["rug"]["circles"][0]["x"] = 1.5
     elif change == "other_map":
-        areas["rug"]["map_binding"] = binding_for_floor_plan(
+        areas["rug"]["map_binding"] = legacy_bindings.v1(
             replace(floor, mission_id=floor.mission_id + 1)
         )
         command = replace(command, fingerprint=plan_area_fingerprint(areas["rug"]))

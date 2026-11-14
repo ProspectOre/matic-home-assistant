@@ -14,9 +14,9 @@ from homeassistant.util.json import JsonObjectType
 from .area_binding import (
     AreaBindingStatus,
     area_binding_allows_review,
+    area_binding_needs_geometry_index,
     area_binding_status,
 )
-from .area_binding_records import area_binding_needs_geometry_index
 from .area_geometry import RoomGeometryIndex
 from .client import FloorPlan
 from .llm_common import (

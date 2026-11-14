@@ -136,10 +136,10 @@ serve authorized projections, built through one [schema](../custom_components/ma
 and [SLAM](../custom_components/matic_robot/slam_render.py) renderers produce local PNG projections; they do not authorize commands.
 
 [Area binding](../custom_components/matic_robot/area_binding.py) relates saved
-areas to a verified floor. Separate modules handle bounded
-[geometry](../custom_components/matic_robot/area_binding_geometry.py), persisted
-[record validation](../custom_components/matic_robot/area_binding_records.py)
-and floor-scoped [Repairs](../custom_components/matic_robot/area_binding_repairs.py).
+areas to a verified floor through the v7 binding, the only one it writes. Separate modules handle bounded
+[geometry](../custom_components/matic_robot/area_binding_geometry.py), floor-scoped [Repairs](../custom_components/matic_robot/area_binding_repairs.py)
+and [older bindings](../custom_components/matic_robot/area_binding_legacy.py), read only to convert them
+at startup or, until they verify, to keep their status.
 
 ## Tests and delivery
 
