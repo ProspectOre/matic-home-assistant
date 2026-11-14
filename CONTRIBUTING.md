@@ -98,13 +98,13 @@ so no real home appears.
 Before a pull request merges:
 
 - CI passes: Test, Browser UI and Validate.
-- Every pull request gets an automated code review of its whole diff. A
-  maintainer requests it, so you need no account with any AI service. Answer
-  each finding with a fix or a reason.
+- Every pull request gets an automated code review of its whole diff. You need
+  no account with an AI service. Wait for a successful `review` status on the
+  current head and answer each finding with a fix or a reason.
 - A maintainer merges by hand. Auto-merge and force pushes stay off.
 
-Maintainers request the review by commenting `@codex review` on each pushed
-head, unless a request for that head is already pending.
+The reviewer starts automatically. When a fresh pass is needed after findings
+or an eligible hold, a maintainer can comment `/review`; avoid duplicate requests.
 
 ## Install a branch build
 
