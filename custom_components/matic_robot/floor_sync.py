@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant, callback
 
-from .area_binding import binding_for_floor_plan
+from .area_binding_geometry import floor_identity
 from .area_binding_repairs import async_sync_custom_area_issue
 from .client import FloorPlan
 from .const import DOMAIN
@@ -31,7 +31,7 @@ def floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
     if floor_plan is None:
         return False
     try:
-        binding_for_floor_plan(floor_plan)
+        floor_identity(floor_plan)
     except OverflowError, TypeError, ValueError:
         return False
     return True

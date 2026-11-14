@@ -25,17 +25,10 @@ import custom_components.matic_robot.plans as plans_module
 from custom_components.matic_robot.area_binding import (
     area_binding_status,
     binding_for_area,
-    binding_for_floor_plan,
 )
 from custom_components.matic_robot.area_binding_formats import (
     AREA_SCHEMA_VERSION,
-    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-    SCOPED_MAP_BINDING_VERSION,
-    SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-)
-from custom_components.matic_robot.area_binding_geometry import (
-    _hash_only_area_geometry_fingerprint,
+    MAP_BINDING_VERSION,
 )
 from custom_components.matic_robot.cadence_accounting import (
     validated_cadence_snapshot as _validated_cadence_snapshot,
@@ -92,6 +85,7 @@ from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     PlanStopDecision,
     leg_groups,
+    plan_area_fingerprint,
     resolve_room_reference,
     resolve_rooms,
 )
@@ -111,6 +105,7 @@ from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from custom_components.matic_robot.service_context import (
     _entry_for_entity,
 )
+from tests import legacy_bindings
 from tests.session_fakes import FakeRobot, one_room_missions, robot_port, run_step
 from tests.wire_builders import _session_identity
 
@@ -1527,7 +1522,7 @@ async def test_custom_areas_round_trip_by_id_and_name_without_snapshot(hass) -> 
         "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": binding_for_floor_plan(floor_plan),
+        "map_binding": legacy_bindings.v1(floor_plan),
     }
 
     await manager.catalog.async_save_area("serial", "litter_box", saved)
@@ -1608,7 +1603,7 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
         "current": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": circles,
-            "map_binding": binding_for_floor_plan(floor_plan),
+            "map_binding": legacy_bindings.v1(floor_plan),
         },
         "already_scoped": {
             "schema_version": AREA_SCHEMA_VERSION,
@@ -1618,18 +1613,12 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
         "hash_only_scoped": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": circles,
-            "map_binding": {
-                **binding_for_floor_plan(floor_plan),
-                "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
-                    floor_plan, circles
-                ),
-            },
+            "map_binding": legacy_bindings.v2(floor_plan, circles),
         },
         "different_mission": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": circles,
-            "map_binding": binding_for_floor_plan(
+            "map_binding": legacy_bindings.v1(
                 FloorPlan(
                     43,
                     floor_plan.partition_protocol_id,
@@ -1640,12 +1629,12 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
         },
         "missing_circles": {
             "schema_version": AREA_SCHEMA_VERSION,
-            "map_binding": binding_for_floor_plan(floor_plan),
+            "map_binding": legacy_bindings.v1(floor_plan),
         },
         "invalid_circles": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": [{}],
-            "map_binding": binding_for_floor_plan(floor_plan),
+            "map_binding": legacy_bindings.v1(floor_plan),
         },
         "unbound": {"schema_version": 0, "circles": circles},
         "list_version": {
@@ -1660,16 +1649,30 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
         },
         "corrupt": "not-an-area",
     }
+    current = {"fingerprint": plan_area_fingerprint(robot["areas"]["current"])}
+    robot["area_history"] = {"current": dict(current)}
+    robot["rotations"] = {
+        "plan": {"areas": {"current": dict(current), "hash_only_scoped": {}}},
+        "rooms_only": {},
+    }
 
+    # The other floor's area stays as saved, so a later floor retries it.
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", floor_plan
-    ) == AreaBindingUpgradeResult(2, False)
-    assert robot["areas"]["current"]["map_binding"]["version"] == (
-        SCOPED_MAP_BINDING_VERSION
-    )
+    ) == AreaBindingUpgradeResult(2, True)
+    # Conversion keeps the geometry, so the area's run history follows it.
+    converted = plan_area_fingerprint(robot["areas"]["current"])
+    assert converted != current["fingerprint"]
+    assert robot["area_history"]["current"]["fingerprint"] == converted
+    assert robot["rotations"]["plan"]["areas"] == {
+        "current": {"fingerprint": converted},
+        "hash_only_scoped": {},
+    }
+    assert robot["areas"]["current"]["map_binding"]["version"] == MAP_BINDING_VERSION
     assert robot["areas"]["hash_only_scoped"]["map_binding"]["version"] == (
-        SCOPED_MAP_BINDING_VERSION
+        MAP_BINDING_VERSION
     )
+    assert robot["areas"]["different_mission"]["map_binding"]["version"] == 1
     assert robot["areas"]["list_version"]["map_binding"]["version"] == []
     assert robot["areas"]["object_version"]["map_binding"]["version"] == {}
     manager.repository.store.async_save.assert_awaited_once()
@@ -1679,7 +1682,7 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
     listener.reset_mock()
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", floor_plan
-    ) == AreaBindingUpgradeResult(0, False)
+    ) == AreaBindingUpgradeResult(0, True)
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", None
     ) == AreaBindingUpgradeResult(0, True)
@@ -1709,13 +1712,7 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
         robot["areas"][area_id] = {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": circles,
-            "map_binding": {
-                **binding_for_floor_plan(floor_plan),
-                "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
-                    floor_plan, circles
-                ),
-            },
+            "map_binding": legacy_bindings.v2(floor_plan, circles),
         }
 
     original_index_factory = plan_catalog_module.binding_geometry._room_geometry_index
@@ -1767,13 +1764,7 @@ async def test_area_binding_upgrade_stays_pending_on_rebuild_budget_exhaustion(
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
-        "map_binding": {
-            **binding_for_floor_plan(floor_plan),
-            "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-            "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
-                floor_plan, circles
-            ),
-        },
+        "map_binding": legacy_bindings.v2(floor_plan, circles),
     }
     manager.repository.robot("serial")["areas"] = {"legacy": area}
     plan_state_module.parse_robot(manager.repository.robot("serial"))
@@ -1788,7 +1779,7 @@ async def test_area_binding_upgrade_stays_pending_on_rebuild_budget_exhaustion(
         result = await manager.catalog.async_upgrade_area_bindings("serial", floor_plan)
 
     assert result == AreaBindingUpgradeResult(0, True)
-    assert area["map_binding"]["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    assert area["map_binding"]["version"] == 2
     rebuild.assert_called_once()
     manager.repository.store.async_save.assert_not_awaited()
 
@@ -1805,7 +1796,7 @@ async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> N
         "old": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": [{"x": 0.5, "y": 0.5, "radius": 0.2}],
-            "map_binding": binding_for_floor_plan(replace(floor_plan, mission_id=42)),
+            "map_binding": legacy_bindings.v1(replace(floor_plan, mission_id=42)),
         }
     }
 
@@ -1816,7 +1807,8 @@ async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> N
     ):
         result = await manager.catalog.async_upgrade_area_bindings("serial", floor_plan)
 
-    assert result == AreaBindingUpgradeResult(0, False)
+    # Pending: the area converts once the robot is on its own floor.
+    assert result == AreaBindingUpgradeResult(0, True)
 
 
 async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
@@ -1848,7 +1840,7 @@ async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
         "partial": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": circles,
-            "map_binding": binding_for_floor_plan(complete),
+            "map_binding": legacy_bindings.v1(complete),
         }
     }
     plan_state_module.parse_robot(manager.repository.robot("serial"))
@@ -1895,8 +1887,7 @@ async def test_area_binding_upgrade_ignores_unknown_binding_version(hass) -> Non
     manager.repository.store.async_save.assert_not_awaited()
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_dense_hash_only_area_upgrade_is_a_noop(hass, legacy) -> None:
+async def test_dense_room_anchored_area_upgrade_is_a_noop(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     base = FloorPlan(
@@ -1917,10 +1908,8 @@ async def test_dense_hash_only_area_upgrade_is_a_noop(hass, legacy) -> None:
     )
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.5}]
     binding = binding_for_area(floor_plan, circles)
-    assert binding["version"] == SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    if legacy:
-        binding["version"] = 5
-        binding.pop("area_shape_sha256")
+    assert "sha256" in binding["local"]
+    assert "frame" in binding
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
@@ -1939,7 +1928,10 @@ async def test_dense_hash_only_area_upgrade_is_a_noop(hass, legacy) -> None:
     manager.repository.store.async_save.assert_not_awaited()
 
 
-async def test_current_v4_bounded_area_binding_upgrades_to_room_anchored(hass) -> None:
+@pytest.mark.parametrize("version", ["v4", "v5", "v7"])
+async def test_current_area_binding_without_frames_upgrades_to_room_anchored(
+    hass, version
+) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     base = FloorPlan(
@@ -1960,17 +1952,11 @@ async def test_current_v4_bounded_area_binding_upgrades_to_room_anchored(hass) -
     )
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.5}]
     anchored_binding = binding_for_area(floor_plan, circles)
-    assert (
-        anchored_binding["version"]
-        == SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
     binding = {
-        "version": BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-        "mission_id": anchored_binding["mission_id"],
-        "partition_id": anchored_binding["partition_id"],
-        "geometry_sha256": anchored_binding["geometry_sha256"],
-        "local_geometry_sha256": anchored_binding["local_geometry_sha256"],
-    }
+        "v4": legacy_bindings.v4(floor_plan, circles),
+        "v5": legacy_bindings.v5(floor_plan, circles),
+        "v7": {key: value for key, value in anchored_binding.items() if key != "frame"},
+    }[version]
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
@@ -1981,11 +1967,20 @@ async def test_current_v4_bounded_area_binding_upgrades_to_room_anchored(hass) -
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", floor_plan
     ) == AreaBindingUpgradeResult(1, False)
-    assert (
-        area["map_binding"]["version"]
-        == SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
+    assert area["map_binding"] == anchored_binding
     manager.repository.store.async_save.assert_awaited_once()
+
+    # Where room frames still don't fit, rebinding gives the same record.
+    area["map_binding"] = binding = binding_for_area(floor_plan, circles)
+    del binding["frame"]
+    with patch(
+        "custom_components.matic_robot.area_binding_geometry._translation_room_anchors",
+        return_value=[],
+    ):
+        assert await manager.catalog.async_upgrade_area_bindings(
+            "serial", floor_plan
+        ) == AreaBindingUpgradeResult(0, False)
+    assert area["map_binding"] == binding
 
 
 async def test_native_history_import_records_activity_not_completion(

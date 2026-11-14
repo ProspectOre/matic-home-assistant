@@ -8,9 +8,8 @@ this checkout's simulator harness copied in. Phases share real store files:
    second one cleaning when Home Assistant stops. The stores are copied as
    the pre-upgrade backup.
 2. upgrade (this checkout): settle the interrupted run and run the plan.
-3. downgrade (older): require its version-1 history reader to leave the
-   version-2 history file unread and unchanged; the newer plan store is read
-   for comparison only.
+3. downgrade (older): start on the newer stores, list the converted areas as
+   invalid, and leave the version-2 history file unread and unchanged.
 4. restore (older): run the plan on the pre-upgrade version-1 backup.
 
 Afterwards the saved plan and room/area history must survive. The SLAM history
@@ -124,9 +123,8 @@ def plan_state(config: Path) -> dict[str, Any]:
     (robot,) = store["data"]["robots"].values()
     rotation = robot.get("rotations", {}).get(AREA_PLAN, {})
     area_records = rotation.get("areas", {})
-    history_path = config / ".storage" / f"matic_robot.slam_history.{ENTRY_ID}"
     try:
-        history_store = json.loads(history_path.read_text())
+        history_store = json.loads(history_path(config).read_text())
         history_data = history_store["data"]
         history_records = history_data["snapshots"]
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as err:
@@ -185,6 +183,17 @@ def plan_state(config: Path) -> dict[str, Any]:
     }
 
 
+def history_path(config: Path) -> Path:
+    """Return the SLAM history store file under ``config``."""
+    return config / ".storage" / f"matic_robot.slam_history.{ENTRY_ID}"
+
+
+def require_unchanged_history(before: bytes, config: Path) -> None:
+    """Raise unless the old release left the v2 history file byte for byte."""
+    if history_path(config).read_bytes() != before:
+        raise DrillFailed("old SLAM history reader rewrote the v2 store file")
+
+
 def floor_catalogs(config: Path) -> dict[str, Any]:
     """Return the vacuum's entity options and the floor catalog store."""
     storage = config / ".storage"
@@ -205,7 +214,8 @@ def floor_catalogs(config: Path) -> dict[str, Any]:
 
 
 def compare_floor_catalogs(states: dict[str, dict[str, Any]]) -> None:
-    """Raise unless the floor catalogs move to the store and stay for 0.5."""
+    """Raise unless the floor catalogs move to the store and stay for 0.5,
+    which restores its floor scope when it starts again."""
     seed = states["seed"]["floor_catalogs"]["options"]
     if not seed.get("area_mapping") or SCOPE not in seed:
         raise DrillFailed("seed did not map an Area in a floor catalog")
@@ -216,8 +226,8 @@ def compare_floor_catalogs(states: dict[str, dict[str, Any]]) -> None:
         raise DrillFailed("upgrade did not move the floor catalogs to its store")
     if upgraded["options"] != left:
         raise DrillFailed("upgrade changed the floor catalogs left for 0.5")
-    if states["downgrade"]["floor_catalogs"]["options"] != left:
-        raise DrillFailed("downgrade changed the vacuum's entity options")
+    if states["downgrade"]["floor_catalogs"]["options"] != seed:
+        raise DrillFailed("downgrade did not restore 0.5's floor catalogs")
     if states["restore"]["floor_catalogs"]["options"] != seed:
         raise DrillFailed("restored backup lost the floor catalogs")
 
@@ -342,7 +352,9 @@ def drill(tag: str, work: Path) -> dict[str, dict[str, Any]]:
         shutil.copytree(live, backup)
         run_phase(ROOT, "upgrade", live)
         states["upgrade"] = plan_state(live)
+        history = history_path(live).read_bytes()
         run_phase(older, "downgrade", live)
+        require_unchanged_history(history, live)
         states["downgrade"] = plan_state(live)
         run_phase(older, "restore", backup)
         states["restore"] = plan_state(backup)

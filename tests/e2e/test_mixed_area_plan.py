@@ -10,9 +10,9 @@ import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
     binding_for_area,
 )
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import Phase, SimulatedRobot

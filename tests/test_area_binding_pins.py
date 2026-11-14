@@ -7,7 +7,12 @@ binding status, whether the area could be reviewed, the area as Matic Map
 received it, the circles a clean would send to the robot, and what the
 startup upgrade saved. v3 appears with room anchors that carry boundaries
 (written since 0.5), anchors without boundaries and no anchors (0.3 and 0.4).
-v1, v2 and v5 are no longer written; v3, v4 and v6 are.
+v1, v2 and v5 are no longer written; 0.5.4 wrote v3, v4 and v6.
+
+0.6 writes only v7 and converts the others once they verify. The resolved
+pins are as ba7fb875 recorded them. The upgrade pins were re-recorded for v7:
+the saved version and bytes, `upgraded` and `saves` where v3 and v6 now
+convert, and `pending`, which stays true while an old record is unconverted.
 """
 
 from __future__ import annotations
@@ -25,22 +30,19 @@ import pytest
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot import area_binding_geometry as geometry
-from custom_components.matic_robot import plan_state
+from custom_components.matic_robot import area_binding_legacy, plan_state
 from custom_components.matic_robot.area_binding import (
     area_binding_allows_review,
     area_binding_status,
     binding_for_area,
-    binding_for_floor_plan,
+    valid_binding,
 )
-from custom_components.matic_robot.area_binding_formats import (
-    ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-    AREA_SCHEMA_VERSION,
-    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-)
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_views import _project_areas
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.service_plans import _validated_area_command
+from tests import legacy_bindings
 
 GOLDEN = Path(__file__).parent / "fixtures" / "area_binding_pins_ba7fb875.json"
 SERIAL = "pin-robot"
@@ -113,56 +115,15 @@ FLOORS = {
 }
 
 
-def _without_boundaries(binding: dict[str, Any]) -> dict[str, Any]:
-    stored = deepcopy(binding)
-    for anchor in stored["translation_room_anchors"]:
-        del anchor["boundary_mm"]
-    return stored
-
-
-def _stored_bindings() -> dict[str, dict[str, Any]]:
-    """Every binding version, from today's writers or what older ones saved."""
-    v3 = binding_for_area(BASE, RUG)
-    v6 = binding_for_area(BASE, DEN)
-    with patch.object(
-        geometry,
-        "_translation_room_anchors",
-        side_effect=geometry.GeometryTooComplex("synthetic anchor work exhausted"),
-    ):
-        v4 = binding_for_area(BASE, DEN)
-    v5 = {key: value for key, value in v6.items() if key != "area_shape_sha256"}
-    return {
-        "v1": binding_for_floor_plan(BASE),
-        "v2": {
-            **binding_for_floor_plan(BASE),
-            "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-            "local_geometry_sha256": geometry._hash_only_area_geometry_fingerprint(
-                BASE, RUG
-            ),
-        },
-        "v3_unanchored": {
-            key: value
-            for key, value in v3.items()
-            if key
-            not in {
-                "translation_invariant_geometry_sha256",
-                "translation_frame_bounds",
-                "translation_room_anchors",
-            }
-        },
-        "v3_without_boundaries": _without_boundaries(v3),
-        "v3": v3,
-        "v4": v4,
-        "v5": {**v5, "version": ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION},
-        "v6": v6,
-    }
-
-
-def _area(binding: dict[str, Any]) -> dict[str, Any]:
+def _area(
+    binding: dict[str, Any], circles: list[dict[str, float]] | None = None
+) -> dict[str, Any]:
     return {
         "schema_version": AREA_SCHEMA_VERSION,
         "name": "Area",
-        "circles": deepcopy(DEN if binding["version"] in {4, 5, 6} else RUG),
+        "circles": deepcopy(
+            circles or (DEN if binding["version"] in {4, 5, 6} else RUG)
+        ),
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
         "map_binding": deepcopy(binding),
@@ -198,12 +159,27 @@ def _resolved(area: dict[str, Any], floor_plan: FloorPlan) -> dict[str, object]:
     }
 
 
-async def _upgraded(hass, areas: dict[str, Any], floor_plan: FloorPlan) -> object:
+def _frameless(circles: list[dict[str, float]]) -> dict[str, Any]:
+    """Bind as the writer does when the rooms cannot be snapshotted."""
+    with patch.object(
+        geometry,
+        "_translation_room_anchors",
+        side_effect=geometry.GeometryTooComplex("synthetic anchor work exhausted"),
+    ):
+        return binding_for_area(BASE, circles)
+
+
+async def _upgrade(hass, areas: dict[str, Any], floor_plan: FloorPlan):
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot(SERIAL)["areas"].update(deepcopy(areas))
     plan_state.parse_robot(manager.repository.robot(SERIAL))
     result = await manager.catalog.async_upgrade_area_bindings(SERIAL, floor_plan)
+    return manager, result
+
+
+async def _upgraded(hass, areas: dict[str, Any], floor_plan: FloorPlan) -> object:
+    manager, result = await _upgrade(hass, areas, floor_plan)
     saved = manager.repository.robot(SERIAL)["areas"]
     return {
         "upgraded": result.upgraded,
@@ -217,11 +193,6 @@ async def _upgraded(hass, areas: dict[str, Any], floor_plan: FloorPlan) -> objec
             for area_id, area in saved.items()
         },
     }
-
-
-def test_stored_bindings_match_what_the_writers_saved() -> None:
-    golden = json.loads(GOLDEN.read_text())
-    assert _stored_bindings() == golden["stored"]
 
 
 @pytest.mark.parametrize("version", VERSIONS)
@@ -250,3 +221,61 @@ async def test_all_versions_upgrade_together_as_before(hass) -> None:
         for name, floor_plan in FLOORS.items()
     }
     assert observed == golden["together"]
+
+
+def test_old_records_with_an_exact_v7_form_map_to_what_v7_writes() -> None:
+    stored = json.loads(GOLDEN.read_text())["stored"]
+    assert area_binding_legacy.exact_binding(stored["v3"]) == binding_for_area(
+        BASE, RUG
+    )
+    assert area_binding_legacy.exact_binding(stored["v6"]) == binding_for_area(
+        BASE, DEN
+    )
+    assert area_binding_legacy.exact_binding(stored["v4"]) == _frameless(DEN)
+    for version in ("v1", "v2", "v3_unanchored", "v3_without_boundaries", "v5"):
+        assert area_binding_legacy.exact_binding(stored[version]) is None
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+async def test_converted_bindings_resolve_as_the_v7_writer_kinds(
+    hass, version: str
+) -> None:
+    """Each conversion resolves on every floor as v3 or v6 always did."""
+    golden = json.loads(GOLDEN.read_text())
+    area = _area(golden["stored"][version])
+    expected = golden["pins"]["v6" if area["circles"] == DEN else "v3"]["resolved"]
+    for floor_plan in FLOORS.values():
+        manager, result = await _upgrade(hass, {"area": area}, floor_plan)
+        converted = manager.repository.robot(SERIAL)["areas"]["area"]
+        if not result.upgraded:
+            assert converted == area
+            continue
+        assert valid_binding(converted["map_binding"])
+        assert {
+            name: _resolved(converted, other) for name, other in FLOORS.items()
+        } == expected
+
+
+def test_v7_without_room_frames_resolves_as_v4() -> None:
+    golden = json.loads(GOLDEN.read_text())
+    area = _area(_frameless(DEN), DEN)
+    assert "frame" not in area["map_binding"]
+    assert {
+        name: _resolved(area, floor_plan) for name, floor_plan in FLOORS.items()
+    } == golden["pins"]["v4"]["resolved"]
+
+
+def test_legacy_builders_reproduce_the_stored_records() -> None:
+    stored = json.loads(GOLDEN.read_text())["stored"]
+    assert {
+        "v1": legacy_bindings.v1(BASE),
+        "v2": legacy_bindings.v2(BASE, RUG),
+        "v3_unanchored": legacy_bindings.unanchored(legacy_bindings.v3(BASE, RUG)),
+        "v3_without_boundaries": legacy_bindings.without_boundaries(
+            legacy_bindings.v3(BASE, RUG)
+        ),
+        "v3": legacy_bindings.v3(BASE, RUG),
+        "v4": legacy_bindings.v4(BASE, DEN),
+        "v5": legacy_bindings.v5(BASE, DEN),
+        "v6": legacy_bindings.v6(BASE, DEN),
+    } == stored

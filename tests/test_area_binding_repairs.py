@@ -13,7 +13,6 @@ from custom_components.matic_robot.area_binding import (
     area_binding_allows_review,
     area_binding_status,
     binding_for_area,
-    binding_for_floor_plan,
 )
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_binding_repairs import (
@@ -23,6 +22,7 @@ from custom_components.matic_robot.area_binding_repairs import (
 )
 from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
+from tests import legacy_bindings
 
 
 def _room(
@@ -59,7 +59,7 @@ def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
 
     return {
         "schema_version": AREA_SCHEMA_VERSION,
-        "map_binding": binding_for_floor_plan(floor_plan or _floor_plan()),
+        "map_binding": legacy_bindings.v1(floor_plan or _floor_plan()),
     }
 
 

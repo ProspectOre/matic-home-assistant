@@ -11,16 +11,17 @@ from typing import Any
 
 import probatio
 
-from .area_binding_formats import (
-    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-    MAP_BINDING_VERSION,
-    SCOPED_MAP_BINDING_VERSION,
-)
+from .area_binding_formats import MAX_SIGNED_64, MIN_SIGNED_64
 from .area_geometry import AreaGeometry, GeometryTooComplex, RoomGeometryIndex
 from .client import MAX_FLOOR_PLAN_BOUNDARY_POINTS, VOXEL_SCALE_METERS, FloorPlan
 
 _FINGERPRINT_DOMAIN = b"matic-area-geometry\0"
+
+# Layout tags inside the floor and neighbourhood digests. They are part of
+# every stored digest, so they never change.
+_FLOOR_DIGEST_TAG = 1
+
+_NEIGHBOURHOOD_DIGEST_TAG = 4
 
 _SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
 
@@ -28,7 +29,7 @@ _AREA_SHAPE_FINGERPRINT_DOMAIN = b"matic-area-shape\0"
 
 _MILLIMETERS_PER_METER = 1_000
 
-_LEGACY_LOCAL_UNITS_PER_METER = 100
+_NEIGHBOURHOOD_UNITS_PER_METER = 100
 
 _LOCAL_GEOMETRY_MARGIN_METERS = 0.25
 
@@ -93,10 +94,6 @@ _NEIGHBORHOOD_INDEX_CELL_METERS = 0.5
 
 _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 
-_MIN_SIGNED_64 = -(1 << 63)
-
-_MAX_SIGNED_64 = (1 << 63) - 1
-
 _MAX_TRANSLATION_ROOM_ANCHORS = 256
 
 _MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS = 8_192
@@ -150,13 +147,32 @@ def floor_plan_geometry_fingerprint(floor_plan: FloorPlan) -> str:
 
     digest = hashlib.sha256()
     digest.update(_FINGERPRINT_DOMAIN)
-    digest.update(struct.pack(">H", MAP_BINDING_VERSION))
+    digest.update(struct.pack(">H", _FLOOR_DIGEST_TAG))
     digest.update(struct.pack(">I", len(polygons)))
     for polygon in polygons:
         digest.update(struct.pack(">I", len(polygon)))
         for x, y in polygon:
             digest.update(struct.pack(">qq", x, y))
     return digest.hexdigest()
+
+
+def floor_identity(floor_plan: FloorPlan) -> dict[str, Any]:
+    """Return the validated floor identity every binding records."""
+    mission_id = floor_plan.mission_id
+    if (
+        isinstance(mission_id, bool)
+        or not isinstance(mission_id, int)
+        or not 0 <= mission_id <= 0xFFFFFFFF
+    ):
+        raise ValueError("floor plan mission id is invalid")
+    partition_id = floor_plan.partition_protocol_id
+    if not isinstance(partition_id, str) or not partition_id:
+        raise ValueError("floor plan partition id is invalid")
+    return {
+        "mission_id": mission_id,
+        "partition_id": partition_id,
+        "geometry_sha256": floor_plan_geometry_fingerprint(floor_plan),
+    }
 
 
 def translation_invariant_geometry_fingerprint(floor_plan: FloorPlan) -> str:
@@ -177,16 +193,6 @@ def translation_invariant_geometry_fingerprint(floor_plan: FloorPlan) -> str:
         for x, y in polygon:
             digest.update(struct.pack(">qq", x, y))
     return digest.hexdigest()
-
-
-def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
-    """Return quantized global bounds used to confirm rigid translation."""
-    points = [point for room in floor_plan.rooms for point in room.boundary]
-    if not points:
-        raise ValueError("floor plan has no room geometry")
-    xs = [round(x * 1000) for x, _ in points]
-    ys = [round(y * 1000) for _, y in points]
-    return [min(xs), min(ys), max(xs), max(ys)]
 
 
 def _translation_room_key(room: Any) -> str:
@@ -227,49 +233,6 @@ def _bounds_within_tolerance(
     )
 
 
-def _room_polygon_fingerprint(polygon: Sequence[Sequence[int]]) -> str:
-    """Hash a canonical room polygon independently of its absolute origin."""
-    origin_x = min(point[0] for point in polygon)
-    origin_y = min(point[1] for point in polygon)
-    digest = hashlib.sha256()
-    digest.update(b"matic-room-frame-anchor-v1\0")
-    digest.update(struct.pack(">I", len(polygon)))
-    for x, y in polygon:
-        digest.update(struct.pack(">qq", x - origin_x, y - origin_y))
-    return digest.hexdigest()
-
-
-def _legacy_room_frame_bounds_mode(
-    saved: Mapping[str, Any], current: Mapping[str, Any]
-) -> bool | None:
-    """Return whether legacy bounds match exactly, including the old x bug."""
-    current_bounds = current["bounds"]
-    saved_bounds = saved["bounds"]
-    new = current["boundary_mm"]
-    if saved_bounds == current_bounds:
-        return False
-    # Old writers used the final canonical vertex x instead of max(x). Accept
-    # only that exact representation here; the normal legacy comparison may
-    # tolerate small differences, which is insufficient to create a snapshot.
-    legacy_bounds = [*current_bounds]
-    legacy_bounds[2] = new[-1][0]
-    if saved_bounds == legacy_bounds:
-        return True
-    return None
-
-
-def _legacy_room_frame_matches_exactly(
-    saved: Mapping[str, Any], current: Mapping[str, Any]
-) -> bool:
-    """Prove the old translation-free anchor and its exact absolute origin."""
-    return (
-        bool(current.get("boundary_mm"))
-        and str(saved.get("fingerprint", "")).casefold()
-        == str(current.get("fingerprint", "")).casefold()
-        and _legacy_room_frame_bounds_mode(saved, current) is not None
-    )
-
-
 def _room_frame_matches(
     saved: Mapping[str, Any],
     current: Mapping[str, Any],
@@ -283,15 +246,8 @@ def _room_frame_matches(
     local walls and occupancy must still pass the independent area checks.
     Never replace the saved reference with a tolerated intermediate map.
     """
-    old: list[list[int]] | None = saved.get("boundary_mm")
-    new: list[list[int]] | None = current.get("boundary_mm")
-    if not old:
-        # Legacy V3 anchors lack the immutable polygon snapshot. They can
-        # establish an unchanged frame only when both their translation-free
-        # shape fingerprint and absolute bounds are exactly unchanged.
-        return _legacy_room_frame_matches_exactly(saved, current)
-    if not new:
-        return False
+    old: list[list[int]] = saved["boundary_mm"]
+    new: list[list[int]] = current["boundary_mm"]
     room_geometry.charge_query_work(len(old) + len(new))
     if old == new:
         return True
@@ -533,54 +489,25 @@ def _room_has_strong_frame_witnesses(
     return False
 
 
-def room_frame_point_count(area: Mapping[str, Any]) -> int:
-    """Count persisted room-frame boundary vertices in one saved area."""
-    binding = area.get("map_binding")
-    anchors = (
-        binding.get("translation_room_anchors")
-        if isinstance(binding, Mapping)
-        else None
-    )
-    if not isinstance(anchors, list):
-        return 0
-    return sum(
-        len(points)
-        for anchor in anchors
-        if isinstance(anchor, Mapping)
-        and isinstance((points := anchor.get("boundary_mm")), list)
-    )
-
-
-def total_room_frame_point_count(areas: Mapping[str, Any]) -> int:
-    """Count all persisted room-frame boundary vertices for one robot."""
-    return sum(
-        room_frame_point_count(area)
-        for area in areas.values()
-        if isinstance(area, Mapping)
-    )
+def room_bounds(boundary: Sequence[Sequence[int]]) -> list[int]:
+    """Return a millimeter room boundary's axis-aligned bounds."""
+    return [
+        min(point[0] for point in boundary),
+        min(point[1] for point in boundary),
+        max(point[0] for point in boundary),
+        max(point[1] for point in boundary),
+    ]
 
 
 def _room_anchor_bounds_match(
     saved: Mapping[str, Any], current: Mapping[str, Any]
 ) -> bool:
-    """Compare bounds, including the old last-vertex-as-max-x storage bug."""
-    tolerance = (
-        _ROOM_FRAME_TOLERANCE_MILLIMETERS
-        if "boundary_mm" in saved
-        else _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+    """Return whether two room snapshots keep their bounds within a voxel."""
+    return _bounds_within_tolerance(
+        room_bounds(saved["boundary_mm"]),
+        room_bounds(current["boundary_mm"]),
+        tolerance=_ROOM_FRAME_TOLERANCE_MILLIMETERS,
     )
-    if _bounds_within_tolerance(
-        saved["bounds"], current["bounds"], tolerance=tolerance
-    ):
-        return True
-    if "boundary_mm" in saved or not current.get("boundary_mm"):
-        return False
-    # Legacy writers accidentally captured the final loop x instead of max(x).
-    # Reproduce that representation for comparison only. The unchanged room
-    # fingerprint is still mandatory for an anchor without a boundary snapshot.
-    legacy_bounds = [*current["bounds"]]
-    legacy_bounds[2] = current["boundary_mm"][-1][0]
-    return _bounds_within_tolerance(saved["bounds"], legacy_bounds, tolerance=tolerance)
 
 
 def _translation_room_anchors(
@@ -589,7 +516,7 @@ def _translation_room_anchors(
     *,
     room_geometry: RoomGeometryIndex | None = None,
 ) -> list[dict[str, Any]]:
-    """Persist frame anchors only for rooms containing saved circle centers."""
+    """Snapshot each room that contains a saved circle center."""
     if len(floor_plan.rooms) > _MAX_TRANSLATION_ROOM_ANCHORS:
         raise ValueError("too many rooms for scoped area frame anchors")
     if room_geometry is None:
@@ -632,193 +559,26 @@ def _translation_room_anchors(
             raise ValueError("too many room frame boundary points")
         anchors.append(
             {
-                "fingerprint": _room_polygon_fingerprint(polygon),
-                "boundary_mm": [list(point) for point in polygon],
                 "room_key": _translation_room_key(room),
                 "circle_keys": sorted(circle_keys),
-                "bounds": [
-                    min(x for x, _y in polygon),
-                    min(y for _x, y in polygon),
-                    max(x for x, _y in polygon),
-                    max(y for _x, y in polygon),
-                ],
+                "boundary_mm": [list(point) for point in polygon],
             }
         )
     return anchors
 
 
-def _graft_legacy_room_frame_boundaries(
-    binding: Mapping[str, Any],
-    current_anchors: Sequence[Mapping[str, Any]],
-    *,
-    room_geometry: RoomGeometryIndex,
-) -> dict[str, Any] | None:
-    """Graft snapshots onto a status-validated legacy V3 binding.
-
-    Caller must have verified CURRENT status after a changed whole-map digest
-    and supplied anchors generated from the current floor plan. Thus saved
-    fields, circle coverage, current anchor fields, boundaries, and bounds have
-    already passed their respective validators. Keep the extra uniqueness and
-    exact per-room association checks here as independent defensive checks
-    for this migration helper.
-    """
-    saved_anchors = binding["translation_room_anchors"]
-    room_geometry.charge_query_work(len(saved_anchors) + len(current_anchors))
-    current_by_room_key = {
-        anchor["room_key"].casefold(): anchor for anchor in current_anchors
-    }
-    saved_room_keys: set[str] = set()
-    for anchor in saved_anchors:
-        room_geometry.charge_query_work(len(anchor["circle_keys"]))
-        room_key = anchor["room_key"].casefold()
-        if room_key in saved_room_keys:
-            return None
-        saved_room_keys.add(room_key)
-    updated_anchors = [dict(anchor) for anchor in saved_anchors]
-    for saved_anchor, updated_anchor in zip(
-        saved_anchors, updated_anchors, strict=True
-    ):
-        room_key = saved_anchor["room_key"].casefold()
-        # CURRENT status proved that every saved room key resolves to a
-        # generated current anchor with the same saved circle association.
-        current_anchor = current_by_room_key[room_key]
-        saved_keys = {str(key).casefold() for key in saved_anchor["circle_keys"]}
-        current_keys = current_anchor["circle_keys"]
-        room_geometry.charge_query_work(len(current_keys))
-        normalized_current_keys = {str(key).casefold() for key in current_keys}
-        if "boundary_mm" in saved_anchor:
-            # Mixed legacy and snapshot anchors are valid during staged
-            # migrations; CURRENT status verified this existing snapshot.
-            continue
-        # A snapshot may only be added when this room still has the exact old
-        # canonical shape, absolute origin, and circle association. The normal
-        # status check is also strict; retain equality as an independent guard.
-        if (
-            saved_keys != normalized_current_keys
-            or not _legacy_room_frame_matches_exactly(saved_anchor, current_anchor)
-        ):
-            return None
-        boundary = current_anchor["boundary_mm"]
-        room_geometry.charge_query_work(len(boundary))
-        updated_anchor["boundary_mm"] = [list(point) for point in boundary]
-        if _legacy_room_frame_bounds_mode(saved_anchor, current_anchor):
-            # The exact frame proof above established the historical bugged
-            # bounds; normalize them because a v3 snapshot requires true bounds.
-            updated_anchor["bounds"] = list(current_anchor["bounds"])
-    updated_binding = dict(binding)
-    updated_binding["translation_room_anchors"] = updated_anchors
-    return updated_binding
+class NeighbourhoodWorkExhausted(GeometryTooComplex):
+    """The neighbourhood digest ran out of work after the circles validated."""
 
 
-def area_geometry_fingerprint(
-    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
-) -> str:
-    """Fingerprint map geometry only near one painted cleaning area.
-
-    The fingerprint includes the immutable saved circles, mapped-floor
-    occupancy probes, and room-boundary segments within a small safety margin
-    plus a tolerance guard band. Geometry elsewhere on the floor cannot
-    invalidate the area. Binding status compares the private millimeter
-    components with an explicit tolerance when the exact digest changes.
-    """
-    return _local_geometry_fingerprint(*_area_geometry_components(floor_plan, circles))
-
-
-def _legacy_hash_only_area_geometry_fingerprint(
-    floor_plan: FloorPlan,
-    circles: Sequence[Mapping[str, Any]],
-    *,
-    room_geometry: RoomGeometryIndex | None = None,
-) -> str:
-    """Reproduce the persisted hash-only v2 signature for safe migration."""
-    room_geometry = room_geometry or _room_geometry_index(floor_plan)
-    normalized = _validate_area_circles(
-        floor_plan, circles, room_geometry=room_geometry
-    )
-    ordered = sorted(
-        (
-            float(circle["x"]),
-            float(circle["y"]),
-            float(circle["radius"]),
-        )
-        for circle in normalized
-    )
-    neighborhood = (
-        min(x - radius for x, _y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
-        min(y - radius for _x, y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
-    )
-    segments: set[_LocalSegment] = set()
-    for room in floor_plan.rooms:
-        boundary = room.boundary
-        for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
-            room_geometry.charge_query_work()
-            clipped = _clip_segment(start, end, neighborhood)
-            if clipped is None:
-                continue
-            first = (
-                _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
-            )
-            second = (
-                _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
-            )
-            if second < first:
-                first, second = second, first
-            segments.add((*first, *second))
-    room_geometry.charge_query_work(len(segments))
-
-    digest = hashlib.sha256()
-    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
-    digest.update(struct.pack(">H", HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
-    digest.update(struct.pack(">I", len(ordered)))
-    for x, y, radius in ordered:
-        digest.update(
-            struct.pack(
-                ">qqq",
-                _quantize_coordinate(x),
-                _quantize_coordinate(y),
-                _quantize_coordinate(radius),
-            )
-        )
-        probes = _occupancy_probes(x, y, radius)
-        occupancy = sum(
-            int(room_geometry.contains(probe_x, probe_y)) << index
-            for index, (probe_x, probe_y) in enumerate(probes)
-        )
-        digest.update(struct.pack(">H", occupancy))
-    digest.update(struct.pack(">I", len(segments)))
-    for segment in sorted(segments):
-        digest.update(struct.pack(">qqqq", *segment))
-    return digest.hexdigest()
-
-
-def _hash_only_area_geometry_fingerprint(
-    floor_plan: FloorPlan,
-    circles: Sequence[Mapping[str, Any]],
-    *,
-    room_geometry: RoomGeometryIndex | None = None,
-) -> str:
-    """Keep the v2 helper name bound to its original serialization."""
-    return _legacy_hash_only_area_geometry_fingerprint(
-        floor_plan, circles, room_geometry=room_geometry
-    )
-
-
-class _BoundedFingerprintWorkExhausted(GeometryTooComplex):
-    """Signal exhausted post-validation fingerprint work for v4 bindings."""
-
-
-def _bounded_hash_only_area_geometry_fingerprint(
+def neighbourhood_fingerprint(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
     center_tolerance: float = 0.0,
     room_geometry: RoomGeometryIndex | None = None,
 ) -> str:
-    """Return the per-circle union-scoped v4 hash-only geometry signature."""
+    """Digest each circle with its occupancy and the walls around it."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
     normalized = _validate_area_circles(
         floor_plan,
@@ -833,7 +593,7 @@ def _bounded_hash_only_area_geometry_fingerprint(
         )
         digest = hashlib.sha256()
         digest.update(_SCOPED_FINGERPRINT_DOMAIN)
-        digest.update(struct.pack(">H", BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
+        digest.update(struct.pack(">H", _NEIGHBOURHOOD_DIGEST_TAG))
         digest.update(struct.pack(">I", len(ordered)))
         for x, y, radius in ordered:
             digest.update(
@@ -867,12 +627,12 @@ def _bounded_hash_only_area_geometry_fingerprint(
                     if clipped is None:
                         continue
                     first = (
-                        _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                        _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                        _quantize(clipped[0][0], _NEIGHBOURHOOD_UNITS_PER_METER),
+                        _quantize(clipped[0][1], _NEIGHBOURHOOD_UNITS_PER_METER),
                     )
                     second = (
-                        _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                        _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                        _quantize(clipped[1][0], _NEIGHBOURHOOD_UNITS_PER_METER),
+                        _quantize(clipped[1][1], _NEIGHBOURHOOD_UNITS_PER_METER),
                     )
                     if second < first:
                         first, second = second, first
@@ -883,8 +643,8 @@ def _bounded_hash_only_area_geometry_fingerprint(
                 digest.update(struct.pack(">qqqqI", *segment, multiplicity))
         return digest.hexdigest()
     except GeometryTooComplex as error:
-        raise _BoundedFingerprintWorkExhausted(
-            "bounded area fingerprint work budget exhausted after circle validation"
+        raise NeighbourhoodWorkExhausted(
+            "area neighbourhood digest work budget exhausted after circle validation"
         ) from error
 
 
@@ -1042,27 +802,48 @@ def _area_shape_fingerprint(shape: _AreaShape) -> str:
     return digest.hexdigest()
 
 
-def _local_geometry_fingerprint(
-    shape: _AreaShape,
-    occupancy: Sequence[int],
-    segments: Sequence[_LocalSegment],
-) -> str:
-    """Fingerprint exact private components while retaining tolerant evidence."""
-    digest = hashlib.sha256()
-    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
-    digest.update(struct.pack(">H", SCOPED_MAP_BINDING_VERSION))
-    digest.update(bytes.fromhex(_area_shape_fingerprint(shape)))
-    digest.update(struct.pack(">I", len(occupancy)))
-    for value in occupancy:
-        digest.update(struct.pack(">H", value))
-    digest.update(struct.pack(">I", len(segments)))
-    for segment in segments:
-        digest.update(struct.pack(">qqqq", *segment))
-    return digest.hexdigest()
+def _rooms_by_key(
+    rooms: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]] | None:
+    """Index room snapshots by room key, or None when a key repeats."""
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for room in rooms:
+        if room["room_key"] in indexed:
+            return None
+        indexed[room["room_key"]] = room
+    return indexed
+
+
+def _matched_rooms(
+    saved_rooms: Sequence[Mapping[str, Any]],
+    circles: Sequence[Mapping[str, Any]],
+    floor_plan: FloorPlan,
+    room_geometry: RoomGeometryIndex,
+) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]] | None:
+    """Pair saved and current room snapshots that hold the same circles.
+
+    None means the saved rooms do not cover the circles exactly, a room key
+    repeats, or a room now holds other circles.
+    """
+    expected = {_translation_circle_key(circle) for circle in circles}
+    if {key for room in saved_rooms for key in room["circle_keys"]} != expected:
+        return None
+    saved = _rooms_by_key(saved_rooms)
+    if saved is None:
+        return None
+    current = _rooms_by_key(
+        _translation_room_anchors(floor_plan, circles, room_geometry=room_geometry)
+    )
+    if current is None or set(saved) != set(current):
+        return None
+    pairs = [(room, current[key]) for key, room in saved.items()]
+    if any(set(room["circle_keys"]) != set(now["circle_keys"]) for room, now in pairs):
+        return None
+    return pairs
 
 
 def _saved_room_frames_match(
-    saved_anchors: Any,
+    saved_rooms: Sequence[Mapping[str, Any]],
     circles: Sequence[Mapping[str, Any]],
     floor_plan: FloorPlan,
     room_geometry: RoomGeometryIndex,
@@ -1070,139 +851,72 @@ def _saved_room_frames_match(
     failed_room_keys: set[str] | None = None,
     associations_valid: list[bool] | None = None,
 ) -> bool:
-    """Check every legacy room frame and collect those needing stronger proof.
+    """Check every room frame and collect those needing stronger proof.
 
-    ``associations_valid`` distinguishes malformed or incomplete evidence from
-    a complete association set whose legacy frame checks failed. Callers may
-    combine legacy and strong evidence only for the latter.
+    ``associations_valid`` distinguishes incomplete evidence from a complete
+    association set whose frame checks failed. Callers may combine frame and
+    strong evidence only for the latter.
     """
     if failed_room_keys is not None:
         failed_room_keys.clear()
     if associations_valid is not None:
         associations_valid[:] = [False]
-    if not isinstance(saved_anchors, list) or not saved_anchors:
+    pairs = _matched_rooms(saved_rooms, circles, floor_plan, room_geometry)
+    if pairs is None:
         return False
-    if any(
-        not isinstance(anchor, Mapping)
-        or "room_key" not in anchor
-        or "circle_keys" not in anchor
-        or "boundary_mm" not in anchor
-        or not isinstance(anchor.get("room_key"), str)
-        or not isinstance(anchor.get("circle_keys"), list)
-        or not anchor.get("circle_keys")
-        or any(not isinstance(key, str) for key in anchor.get("circle_keys", ()))
-        or len(set(anchor.get("circle_keys", ()))) != len(anchor.get("circle_keys", ()))
-        or not isinstance(anchor.get("boundary_mm"), list)
-        for anchor in saved_anchors
-    ):
-        return False
-    saved_circle_keys = {
-        str(key).casefold() for anchor in saved_anchors for key in anchor["circle_keys"]
-    }
-    saved_by_room_key: dict[str, set[str]] = {}
-    for anchor in saved_anchors:
-        room_key = str(anchor["room_key"]).casefold()
-        circle_keys = {str(key).casefold() for key in anchor["circle_keys"]}
-        if room_key in saved_by_room_key:
-            return False
-        saved_by_room_key[room_key] = circle_keys
-    expected_circle_keys = {
-        _translation_circle_key(circle).casefold() for circle in circles
-    }
-    if saved_circle_keys != expected_circle_keys:
-        return False
-    current_anchors = _translation_room_anchors(
-        floor_plan, circles, room_geometry=room_geometry
-    )
-    current_by_room_key: dict[str, Mapping[str, Any]] = {}
-    for anchor in current_anchors:
-        room_key = str(anchor["room_key"]).casefold()
-        if room_key in current_by_room_key:
-            return False
-        current_by_room_key[room_key] = anchor
-    if set(saved_by_room_key) != set(current_by_room_key):
-        return False
-    for room_key, saved_circle_keys_for_room in saved_by_room_key.items():
-        if saved_circle_keys_for_room != {
-            str(key).casefold() for key in current_by_room_key[room_key]["circle_keys"]
-        }:
-            return False
     if associations_valid is not None:
         associations_valid[0] = True
     all_frames_match = True
-    for anchor in saved_anchors:
-        room_key = str(anchor["room_key"]).casefold()
-        current_anchor = current_by_room_key.get(room_key)
-        if (
-            current_anchor is None
-            or not _room_anchor_bounds_match(anchor, current_anchor)
-            or not _room_frame_matches(anchor, current_anchor, room_geometry)
+    for saved, current in pairs:
+        if not _room_anchor_bounds_match(saved, current) or not _room_frame_matches(
+            saved, current, room_geometry
         ):
             all_frames_match = False
             if failed_room_keys is not None:
-                failed_room_keys.add(room_key)
+                failed_room_keys.add(saved["room_key"])
     return all_frames_match
 
 
 def _saved_room_frames_have_strong_witnesses(
-    saved_anchors: Any,
+    saved_rooms: Sequence[Mapping[str, Any]],
     circles: Sequence[Mapping[str, Any]],
     floor_plan: FloorPlan,
     room_geometry: RoomGeometryIndex,
 ) -> bool:
-    """Require exact circle-room associations and strong immutable frame proof."""
-    if not isinstance(saved_anchors, list) or not saved_anchors:
-        return False
-    if any(
-        not isinstance(anchor, Mapping)
-        or not {"room_key", "circle_keys", "boundary_mm"}.issubset(anchor)
-        for anchor in saved_anchors
-    ):
-        return False
-    expected_circle_keys = {
-        _translation_circle_key(circle).casefold() for circle in circles
-    }
-    saved_by_room_key: dict[str, Mapping[str, Any]] = {}
-    for anchor in saved_anchors:
-        room_key = str(anchor["room_key"]).casefold()
-        if room_key in saved_by_room_key:
-            return False
-        saved_by_room_key[room_key] = anchor
-    saved_circle_keys = {
-        str(key).casefold() for anchor in saved_anchors for key in anchor["circle_keys"]
-    }
-    if saved_circle_keys != expected_circle_keys:
-        return False
-
-    current_anchors = _translation_room_anchors(
-        floor_plan, circles, room_geometry=room_geometry
+    """Require exact circle-room associations and strong frame proof."""
+    pairs = _matched_rooms(saved_rooms, circles, floor_plan, room_geometry)
+    return pairs is not None and all(
+        _room_has_strong_frame_witnesses(saved, current, room_geometry)
+        for saved, current in pairs
     )
-    current_by_room_key: dict[str, Mapping[str, Any]] = {}
-    for anchor in current_anchors:
-        room_key = str(anchor["room_key"]).casefold()
-        if room_key in current_by_room_key:
-            return False
-        current_by_room_key[room_key] = anchor
-    if set(saved_by_room_key) != set(current_by_room_key):
-        return False
-    for room_key, saved_anchor in saved_by_room_key.items():
-        current_anchor = current_by_room_key[room_key]
-        if {str(key).casefold() for key in saved_anchor["circle_keys"]} != {
-            str(key).casefold() for key in current_anchor["circle_keys"]
-        } or not _room_has_strong_frame_witnesses(
-            saved_anchor, current_anchor, room_geometry
-        ):
-            return False
-    return True
 
 
-def _local_segments_match(
-    saved: Sequence[_LocalSegment],
-    current: Sequence[_LocalSegment],
+def walls_match(
+    saved_occupancy: Sequence[int],
+    saved_segments: Sequence[_LocalSegment],
     shape: _AreaShape,
+    occupancy: Sequence[int],
+    segments: Sequence[_LocalSegment],
+    circles: Sequence[Mapping[str, Any]],
+    room_geometry: RoomGeometryIndex,
 ) -> bool:
-    """Return whether all semantically local walls have a correspondence."""
-    return _local_segment_correspondence(saved, current, shape) is not None
+    """Return whether the walls near an area moved only within tolerance."""
+    matches = _local_segment_correspondence(
+        saved_segments, segments, shape, room_geometry=room_geometry
+    )
+    return matches is not None and (
+        tuple(saved_occupancy) == tuple(occupancy)
+        or _occupancy_changes_are_explained(
+            saved_occupancy,
+            occupancy,
+            saved_segments,
+            segments,
+            shape,
+            circles,
+            matches,
+            room_geometry=room_geometry,
+        )
+    )
 
 
 def _local_segment_correspondence(
@@ -1923,6 +1637,6 @@ def _quantize(value: float, units_per_meter: int) -> int:
     if not math.isfinite(scaled):
         raise ValueError("room boundary coordinate is out of range")
     quantized = math.floor(scaled + 0.5) if scaled >= 0 else math.ceil(scaled - 0.5)
-    if not _MIN_SIGNED_64 <= quantized <= _MAX_SIGNED_64:
+    if not MIN_SIGNED_64 <= quantized <= MAX_SIGNED_64:
         raise ValueError("room boundary coordinate is out of range")
     return quantized

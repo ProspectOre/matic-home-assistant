@@ -20,11 +20,10 @@ from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
     area_binding_status,
     binding_for_area,
-    binding_for_floor_plan,
 )
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_geometry import RoomGeometryIndex
 from custom_components.matic_robot.area_views import (
     MaticAreasView,
@@ -95,7 +94,7 @@ from custom_components.matic_robot.slam_view_data import (
     pose_projection,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
-from tests import runtime_fakes
+from tests import legacy_bindings, runtime_fakes
 from tests.test_slam_map import synthetic_slam_entry
 
 
@@ -1097,7 +1096,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
             "circles": [review_circle],
             "cleaning_mode": "vacuum_and_mop",
             "coverage_setting": "standard",
-            "map_binding": binding_for_floor_plan(
+            "map_binding": legacy_bindings.v1(
                 replace(
                     runtime.session.floor.value,
                     rooms=(
@@ -1232,7 +1231,7 @@ async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
             "circles": [circle],
             "cleaning_mode": "vacuum",
             "coverage_setting": "quick",
-            "map_binding": binding_for_floor_plan(changed_floor),
+            "map_binding": legacy_bindings.v1(changed_floor),
             "schema_version": AREA_SCHEMA_VERSION,
         }
     }
@@ -2761,7 +2760,7 @@ def _saved_area(floor_plan: FloorPlan, name: str) -> dict[str, object]:
         "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": binding_for_floor_plan(floor_plan),
+        "map_binding": legacy_bindings.v1(floor_plan),
     }
 
 
@@ -2932,9 +2931,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
 
     # A redrawn map or a missing area blocks the plan before anything runs.
     manager.repository.robot(serial)["areas"]["mat"]["map_binding"] = (
-        binding_for_floor_plan(
-            replace(floor_plan, mission_id=floor_plan.mission_id + 1)
-        )
+        legacy_bindings.v1(replace(floor_plan, mission_id=floor_plan.mission_id + 1))
     )
     manager.repository.robot(serial)["areas"].pop("rug")
     manager.repository.robot(serial)["areas"]["mat"]["name"] = None

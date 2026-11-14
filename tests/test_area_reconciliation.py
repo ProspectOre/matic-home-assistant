@@ -12,7 +12,6 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.matic_robot import area_binding as binding
 from custom_components.matic_robot import area_binding_formats as binding_formats
 from custom_components.matic_robot import area_binding_geometry as binding_geometry
-from custom_components.matic_robot import area_binding_records as binding_records
 from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.area_geometry import RoomGeometryIndex
 from custom_components.matic_robot.client.models import FloorPlan, Room
@@ -24,6 +23,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.service_plans import (
     _validated_area_command,
 )
+from tests import legacy_bindings
 
 
 def _floor(boundary=((0, 0), (10, 0), (10, 10), (0, 10))):
@@ -45,6 +45,12 @@ def _area(floor):
         "coverage_setting": "standard",
         "map_binding": binding.binding_for_area(floor, circles),
     }
+
+
+def _old_anchors(area):
+    """Store the area's binding as version 3 and return its room anchors."""
+    area["map_binding"] = legacy_bindings.old_record(area["map_binding"], 3)
+    return area["map_binding"]["translation_room_anchors"]
 
 
 @pytest.mark.parametrize("offset", [0.001, 0.005, 0.010])
@@ -148,7 +154,7 @@ def test_small_single_room_translation_does_not_keep_stale_area_frame(offset):
     )
     assert (
         binding_geometry.translation_invariant_geometry_fingerprint(moved)
-        != area["map_binding"]["translation_invariant_geometry_sha256"]
+        != area["map_binding"]["frame"]["floor_sha256"]
     )
     assert (
         binding.area_binding_status(area, moved)
@@ -199,7 +205,7 @@ def test_legacy_room_anchor_without_absolute_boundary_blocks_small_translation()
     )
     original = replace(original, rooms=(*original.rooms, remote))
     area = _area(original)
-    area["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(area)[0].pop("boundary_mm")
     moved = replace(
         original,
         rooms=(
@@ -255,7 +261,7 @@ def test_legacy_bounds_bug_does_not_invalidate_unchanged_room_after_remote_edit(
     )
     original = replace(original, rooms=(*original.rooms, remote))
     area = _area(original)
-    anchor = area["map_binding"]["translation_room_anchors"][0]
+    anchor = _old_anchors(area)[0]
     assert anchor["bounds"][2] == 10000
     anchor["bounds"][2] = anchor.pop("boundary_mm")[-1][0]
     assert anchor["bounds"][2] == 1000
@@ -277,14 +283,22 @@ def test_legacy_bounds_bug_does_not_invalidate_unchanged_room_after_remote_edit(
 def test_corrupt_frame_snapshot_stays_blocked(polygon):
     floor = _floor()
     area = _area(floor)
-    area["map_binding"]["translation_room_anchors"][0]["boundary_mm"] = polygon
+    area["map_binding"]["frame"]["rooms"][0]["boundary_mm"] = polygon
     assert binding.area_binding_status(area, floor) is binding.AreaBindingStatus.INVALID
+    _old_anchors(_area(floor))
+    old = _area(floor)
+    _old_anchors(old)[0]["boundary_mm"] = polygon
+    assert binding.area_binding_status(old, floor) is binding.AreaBindingStatus.INVALID
 
 
 def test_overflowing_frame_snapshot_and_malformed_legacy_bounds_stay_blocked():
     floor = _floor()
     area = _area(floor)
-    anchor = area["map_binding"]["translation_room_anchors"][0]
+    room = area["map_binding"]["frame"]["rooms"][0]
+    room["boundary_mm"] = [[-(1 << 63) - 1, 0], [0, 0], [(1 << 63) - 1, 1]]
+    assert binding.area_binding_status(area, floor) is binding.AreaBindingStatus.INVALID
+    area = _area(floor)
+    anchor = _old_anchors(area)[0]
     anchor["boundary_mm"] = [[-(1 << 63), 0], [0, 0], [(1 << 63) - 1, 1]]
     assert binding.area_binding_status(area, floor) is binding.AreaBindingStatus.INVALID
     anchor.pop("boundary_mm")
@@ -297,7 +311,6 @@ def test_frame_snapshot_and_matching_are_bounded():
     area = _area(floor)
     with (
         patch.object(binding_geometry, "_MAX_ROOM_FRAME_POINTS", 3),
-        patch.object(binding_records, "_MAX_ROOM_FRAME_POINTS", 3),
     ):
         assert (
             binding.area_binding_status(area, floor)
@@ -318,23 +331,18 @@ def test_frame_snapshot_and_matching_are_bounded():
 
 
 def test_degenerate_landmarks_do_not_establish_a_frame():
-    saved = {"fingerprint": "a" * 64, "boundary_mm": [[0, 0], [1, 0], [2, 0]]}
-    current = {"fingerprint": "b" * 64, "boundary_mm": [[0, 0], [1, 1], [2, 0]]}
+    saved = {"boundary_mm": [[0, 0], [1, 0], [2, 0]]}
+    current = {"boundary_mm": [[0, 0], [1, 1], [2, 0]]}
     assert not binding_geometry._room_frame_matches(
         saved, current, RoomGeometryIndex([])
-    )
-    assert not binding_geometry._room_frame_matches(
-        saved, {"fingerprint": "a" * 64, "boundary_mm": []}, RoomGeometryIndex([])
     )
 
 
 def test_room_frame_landmark_work_is_charged_before_scan():
     saved = {
-        "fingerprint": "a" * 64,
         "boundary_mm": [[0, 0], [100, 0], [100, 100], [0, 100]],
     }
     current = {
-        "fingerprint": "b" * 64,
         "boundary_mm": [[1, 0], [101, 0], [101, 100], [1, 100]],
     }
     room_geometry = RoomGeometryIndex([])
@@ -345,11 +353,9 @@ def test_room_frame_landmark_work_is_charged_before_scan():
 
 def test_room_frame_area_scan_exhausts_budget_before_integer_geometry():
     saved = {
-        "fingerprint": "a" * 64,
         "boundary_mm": [[0, 0], [100, 0], [100, 100], [0, 100]],
     }
     current = {
-        "fingerprint": "b" * 64,
         "boundary_mm": [[1, 0], [100, 0], [100, 100], [0, 100]],
     }
     room_geometry = RoomGeometryIndex([])
@@ -369,7 +375,7 @@ def test_room_frame_area_scan_exhausts_budget_before_integer_geometry():
 async def test_legacy_frame_shift_does_not_enrich_but_snapshot_survives_reload(hass):
     floor = _floor()
     area = _area(floor)
-    area["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(area)[0].pop("boundary_mm")
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
@@ -401,7 +407,7 @@ async def test_legacy_frame_shift_does_not_enrich_but_snapshot_survives_reload(h
 def test_legacy_anchor_without_boundary_rejects_small_whole_room_translation():
     original = _floor()
     area = _area(original)
-    area["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(area)[0].pop("boundary_mm")
     translated = _floor(tuple((x + 0.005, y) for x, y in original.rooms[0].boundary))
 
     assert (
@@ -417,7 +423,7 @@ async def test_legacy_upgrade_grafts_exact_room_snapshot_across_remote_map_chang
     )
     floor = replace(floor, rooms=(*floor.rooms, remote))
     area = _area(floor)
-    area["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(area)[0].pop("boundary_mm")
     changed = replace(
         floor,
         rooms=(
@@ -442,28 +448,13 @@ async def test_legacy_upgrade_grafts_exact_room_snapshot_across_remote_map_chang
         ) == AreaBindingUpgradeResult(1, False)
     manager.repository.store.async_save.assert_awaited_once()
     saved = manager.catalog.area("serial", "area")
-    saved_binding = saved["map_binding"]
-    assert saved_binding["geometry_sha256"] == binding_before["geometry_sha256"]
-    assert saved_binding[
+    # The conversion keeps the original map's evidence and adds the room
+    # snapshot the unchanged room proved.
+    assert binding_before["version"] == 3
+    assert saved["map_binding"] == binding.binding_for_area(floor, saved["circles"])
+    assert saved["map_binding"][
         "geometry_sha256"
     ] != binding_geometry.floor_plan_geometry_fingerprint(changed)
-    assert {
-        key: value
-        for key, value in saved_binding.items()
-        if key != "translation_room_anchors"
-    } == {
-        key: value
-        for key, value in binding_before.items()
-        if key != "translation_room_anchors"
-    }
-    old_anchor = binding_before["translation_room_anchors"][0]
-    saved_anchor = saved_binding["translation_room_anchors"][0]
-    assert saved_anchor == {
-        **old_anchor,
-        "boundary_mm": binding_geometry._translation_room_anchors(
-            changed, saved["circles"]
-        )[0]["boundary_mm"],
-    }
 
     reloaded = CleaningPlanManager(hass)
     reloaded.repository.data = deepcopy(manager.repository.data)
@@ -495,7 +486,8 @@ async def test_legacy_graft_normalizes_exact_last_vertex_bounds_bug(hass):
     )
     floor = replace(floor, rooms=(*floor.rooms, remote))
     area = _area(floor)
-    anchor = area["map_binding"]["translation_room_anchors"][0]
+    written = deepcopy(area["map_binding"])
+    anchor = _old_anchors(area)[0]
     boundary = anchor.pop("boundary_mm")
     correct_bounds = list(anchor["bounds"])
     anchor["bounds"][2] = boundary[-1][0]
@@ -515,20 +507,13 @@ async def test_legacy_graft_normalizes_exact_last_vertex_bounds_bug(hass):
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
     plan_state.parse_robot(manager.repository.robot("serial"))
-    before = deepcopy(area["map_binding"])
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(1, False)
     manager.repository.store.async_save.assert_awaited_once()
     saved = manager.catalog.area("serial", "area")["map_binding"]
-    saved_anchor = saved["translation_room_anchors"][0]
-    assert saved_anchor["bounds"] == correct_bounds
-    assert saved_anchor["boundary_mm"] == boundary
-    assert {
-        key: value for key, value in saved.items() if key != "translation_room_anchors"
-    } == {
-        key: value for key, value in before.items() if key != "translation_room_anchors"
-    }
+    assert saved == written
+    assert binding_geometry.room_bounds(boundary) == correct_bounds
     assert (
         binding.area_binding_status(manager.catalog.area("serial", "area"), changed)
         is binding.AreaBindingStatus.CURRENT
@@ -543,7 +528,7 @@ async def test_legacy_graft_fails_closed_without_exact_room_frame(hass, change):
     )
     floor = replace(floor, rooms=(*floor.rooms, remote))
     area = _area(floor)
-    area["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(area)[0].pop("boundary_mm")
     if change == "room_shape":
         room = replace(
             floor.rooms[0],
@@ -593,18 +578,6 @@ async def test_legacy_graft_fails_closed_without_exact_room_frame(hass, change):
     assert manager.catalog.areas("serial") == before
 
 
-def _admit_malformed_binding_for_graft(
-    area, floor_plan, *, room_geometry, _current_room_anchors
-):
-    """Isolate migration guards from the stricter normal status validator."""
-    _current_room_anchors.extend(
-        binding_geometry._translation_room_anchors(
-            floor_plan, area["circles"], room_geometry=room_geometry
-        )
-    )
-    return binding.AreaBindingStatus.CURRENT
-
-
 async def test_legacy_graft_rejects_changed_target_circle_association(hass):
     polygon = ((0, 0), (10, 0), (10, 10), (0, 10))
     floor = FloorPlan(
@@ -635,7 +608,7 @@ async def test_legacy_graft_rejects_changed_target_circle_association(hass):
         "coverage_setting": "standard",
         "map_binding": binding.binding_for_area(floor, circles),
     }
-    anchors = area["map_binding"]["translation_room_anchors"]
+    anchors = _old_anchors(area)
     assert len(anchors) == 2
     for anchor in anchors:
         anchor.pop("boundary_mm")
@@ -660,18 +633,6 @@ async def test_legacy_graft_rejects_changed_target_circle_association(hass):
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(0, True)
-    manager.repository.store.async_save.assert_not_awaited()
-    assert manager.catalog.areas("serial") == before
-
-    # Exercise the migration's independent defensive checks even if its caller
-    # were to admit this malformed association. Real status rejects it above.
-    with patch(
-        "custom_components.matic_robot.plan_catalog.area_binding_status",
-        side_effect=_admit_malformed_binding_for_graft,
-    ):
-        assert await manager.catalog.async_upgrade_area_bindings(
-            "serial", changed
-        ) == AreaBindingUpgradeResult(0, True)
     manager.repository.store.async_save.assert_not_awaited()
     assert manager.catalog.areas("serial") == before
 
@@ -700,7 +661,7 @@ async def test_legacy_graft_rejects_duplicate_saved_room_key(hass):
         "coverage_setting": "standard",
         "map_binding": binding.binding_for_area(floor, circles),
     }
-    anchors = area["map_binding"]["translation_room_anchors"]
+    anchors = _old_anchors(area)
     assert len(anchors) == 2
     anchors[1]["room_key"] = anchors[0]["room_key"]
     anchors[0].pop("boundary_mm")
@@ -724,18 +685,6 @@ async def test_legacy_graft_rejects_duplicate_saved_room_key(hass):
     assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(0, True)
-    manager.repository.store.async_save.assert_not_awaited()
-    assert manager.catalog.areas("serial") == before
-
-    # Exercise the migration's independent defensive checks even if its caller
-    # were to admit this malformed association. Real status rejects it above.
-    with patch(
-        "custom_components.matic_robot.plan_catalog.area_binding_status",
-        side_effect=_admit_malformed_binding_for_graft,
-    ):
-        assert await manager.catalog.async_upgrade_area_bindings(
-            "serial", changed
-        ) == AreaBindingUpgradeResult(0, True)
     manager.repository.store.async_save.assert_not_awaited()
     assert manager.catalog.areas("serial") == before
 
@@ -764,7 +713,7 @@ async def test_legacy_graft_preserves_existing_snapshot_in_mixed_anchors(hass):
         "coverage_setting": "standard",
         "map_binding": binding.binding_for_area(floor, circles),
     }
-    anchors = area["map_binding"]["translation_room_anchors"]
+    anchors = _old_anchors(area)
     assert len(anchors) == 2
     anchors[0].pop("boundary_mm")
     changed = replace(
@@ -783,10 +732,8 @@ async def test_legacy_graft_preserves_existing_snapshot_in_mixed_anchors(hass):
         "serial", changed
     ) == AreaBindingUpgradeResult(1, False)
     manager.repository.store.async_save.assert_awaited_once()
-    saved = manager.catalog.area("serial", "area")["map_binding"][
-        "translation_room_anchors"
-    ]
-    assert all("boundary_mm" in anchor for anchor in saved)
+    saved = manager.catalog.area("serial", "area")["map_binding"]
+    assert saved == binding.binding_for_area(floor, circles)
     assert (
         binding.area_binding_status(manager.catalog.area("serial", "area"), changed)
         is binding.AreaBindingStatus.CURRENT
@@ -800,7 +747,7 @@ async def test_legacy_graft_fails_closed_when_shared_query_budget_exhausts(hass)
     )
     floor = replace(floor, rooms=(*floor.rooms, remote))
     area = _area(floor)
-    area["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(area)[0].pop("boundary_mm")
     changed = replace(
         floor,
         rooms=(
@@ -828,7 +775,7 @@ async def test_legacy_enrichment_respects_aggregate_frame_point_limit(hass):
     )
     floor = replace(floor, rooms=(*floor.rooms, remote))
     legacy = _area(floor)
-    legacy["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(legacy)[0].pop("boundary_mm")
     changed = replace(
         floor,
         rooms=(
@@ -861,7 +808,7 @@ async def test_legacy_enrichment_rolls_back_when_store_write_fails(hass):
     )
     floor = replace(floor, rooms=(*floor.rooms, remote))
     legacy = _area(floor)
-    legacy["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
+    _old_anchors(legacy)[0].pop("boundary_mm")
     changed = replace(
         floor,
         rooms=(

@@ -9,10 +9,7 @@ import pytest
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
-    binding_for_floor_plan,
-)
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from custom_components.matic_robot.plan_model import (
@@ -43,6 +40,7 @@ from custom_components.matic_robot.service_plans import (
 from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
 )
+from tests import legacy_bindings
 from tests.test_services import _registered_handler, _registered_services
 
 SERIAL = "serial"
@@ -74,7 +72,7 @@ def _area(floor: FloorPlan, name: str = "Rug", x: float = 1.0) -> dict:
         "circles": [{"x": x, "y": 2.0, "radius": 0.35}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": binding_for_floor_plan(floor),
+        "map_binding": legacy_bindings.v1(floor),
     }
 
 

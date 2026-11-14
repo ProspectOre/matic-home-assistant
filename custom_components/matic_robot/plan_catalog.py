@@ -16,13 +16,18 @@ from typing import Any, cast
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from . import area_binding_formats as binding_formats
 from . import area_binding_geometry as binding_geometry
+from . import area_binding_legacy as legacy
 from . import native_history, plan_timing
 from .area_binding import (
     AreaBindingStatus,
+    area_binding_needs_geometry_index,
     area_binding_status,
     binding_for_area,
+    binding_mission,
+    room_frame_point_count,
+    total_room_frame_point_count,
+    valid_binding,
 )
 from .area_geometry import GeometryTooComplex
 from .cadence import (
@@ -51,6 +56,7 @@ from .plan_model import (
     _is_manual_room_sequence_plan_id,
     _next_manual_room_sequence_plan_id,
     _stored_entries,
+    plan_area_fingerprint,
     plan_entries,
 )
 from .plan_repository import (
@@ -143,127 +149,106 @@ class PlanCatalog:
     def upgrade_area_bindings_transaction(
         self, serial_number: str, floor_plan: FloorPlan | None
     ) -> AreaBindingUpgradeResult:
-        """Apply a verified Area binding migration inside its commit."""
-        upgraded = 0
+        """Convert bindings that verify on this floor, inside its commit.
+
+        A binding saved before version 7 converts once it is CURRENT here,
+        and stays as saved until then. On an unchanged map the area is bound
+        afresh; after a tolerated change its saved evidence is kept, so drift
+        is never rebased. A version 7 binding without room frames is bound
+        afresh whenever it is CURRENT, as room frames may now fit.
+        """
         pending = False
         room_geometry = None
-        areas = self.repository.robot(serial_number)["areas"]
-        staged: list[tuple[MutableMapping[str, Any], dict[str, Any]]] = []
-        for area in areas.values():
+        robot = self.repository.robot(serial_number)
+        areas = robot["areas"]
+        staged: list[tuple[str, MutableMapping[str, Any], dict[str, Any]]] = []
+        for area_id, area in areas.items():
             if not isinstance(area, MutableMapping):
                 continue
             binding = area.get("map_binding")
-            if not isinstance(binding, Mapping):
+            if not isinstance(binding, Mapping) or not isinstance(
+                area.get("circles"), list
+            ):
                 continue
-            version = binding.get("version")
-            if isinstance(version, bool) or not isinstance(version, int):
+            old = not valid_binding(binding)
+            if old and binding_mission(binding) is None:
                 continue
-            if version not in {
-                binding_formats.MAP_BINDING_VERSION,
-                binding_formats.HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                binding_formats.BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                binding_formats.ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                binding_formats.SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                binding_formats.SCOPED_MAP_BINDING_VERSION,
-            }:
-                continue
-            if version in {
-                binding_formats.ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                binding_formats.SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-            }:
-                continue
-            if version == binding_formats.SCOPED_MAP_BINDING_VERSION:
-                anchors = binding.get("translation_room_anchors")
-                if (
-                    isinstance(anchors, list)
-                    and anchors
-                    and all(
-                        isinstance(anchor, Mapping) and "boundary_mm" in anchor
-                        for anchor in anchors
-                    )
-                ):
-                    continue
-            circles = area.get("circles")
-            if not isinstance(circles, list):
+            if not old and "frame" in binding:
                 continue
             if floor_plan is None:
                 pending = True
                 continue
-            if version in {
-                binding_formats.HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                binding_formats.BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                binding_formats.SCOPED_MAP_BINDING_VERSION,
-            }:
-                if room_geometry is None:
-                    room_geometry = binding_geometry._room_geometry_index(floor_plan)
-                current_room_anchors: list[dict[str, Any]] = []
-                status = area_binding_status(
-                    area,
-                    floor_plan,
-                    room_geometry=room_geometry,
-                    _current_room_anchors=current_room_anchors,
-                )
-            else:
-                # Whole-map bindings can reject mission, partition, or map
-                # changes without constructing any polygon geometry index.
-                status = area_binding_status(area, floor_plan)
+            if room_geometry is None and area_binding_needs_geometry_index(area):
+                room_geometry = binding_geometry._room_geometry_index(floor_plan)
+            status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is not AreaBindingStatus.CURRENT:
-                pending = pending or status in {
-                    AreaBindingStatus.GEOMETRY_CHANGED,
-                    AreaBindingStatus.INVALID,
-                }
-                continue
-            if version == binding_formats.SCOPED_MAP_BINDING_VERSION and str(
-                binding.get("geometry_sha256", "")
-            ).casefold() != binding_geometry.floor_plan_geometry_fingerprint(
-                floor_plan
-            ):
-                try:
-                    # Keep the index and work budget already used by status.
-                    assert room_geometry is not None
-                    grafted_binding = (
-                        binding_geometry._graft_legacy_room_frame_boundaries(
-                            binding,
-                            current_room_anchors,
-                            room_geometry=room_geometry,
-                        )
-                    )
-                except GeometryTooComplex:
-                    # Exact anchor-only migration shares the status query's
-                    # request budget and fails closed when that budget ends.
-                    return AreaBindingUpgradeResult(0, True)
-                if grafted_binding is None:
-                    # Do not partially commit another migration if a candidate
-                    # legacy frame cannot be proven without rebasing.
-                    return AreaBindingUpgradeResult(0, True)
-                staged.append((area, grafted_binding))
+                pending = (
+                    pending
+                    or old
+                    or status
+                    in {
+                        AreaBindingStatus.GEOMETRY_CHANGED,
+                        AreaBindingStatus.INVALID,
+                    }
+                )
                 continue
             if room_geometry is None:
                 room_geometry = binding_geometry._room_geometry_index(floor_plan)
+            upgraded: dict[str, Any] | None
             try:
-                upgraded_binding = binding_for_area(
-                    floor_plan, circles, room_geometry=room_geometry
-                )
+                if str(binding["geometry_sha256"]).casefold() == (
+                    binding_geometry.floor_plan_geometry_fingerprint(floor_plan)
+                ):
+                    upgraded = binding_for_area(
+                        floor_plan, area["circles"], room_geometry=room_geometry
+                    )
+                else:
+                    upgraded = legacy.drifted_binding(area, floor_plan, room_geometry)
             except GeometryTooComplex:
-                # Status verification and replacement share one bounded index.
-                # If replacement exhausts it, keep the migration pending for a
-                # later map revision instead of silently treating it as done.
+                # Verification and conversion share one bounded index; retry
+                # on a later map revision when conversion runs out of work.
                 pending = True
                 continue
             except KeyError, TypeError, ValueError:
+                # The circles verified within the saved-center tolerance but
+                # no longer bind exactly; keep the area as saved.
                 continue
-            staged.append((area, upgraded_binding))
-        projected_points = binding_geometry.total_room_frame_point_count(areas)
-        for area, upgraded_binding in staged:
-            projected_points += binding_geometry.room_frame_point_count(
-                {"map_binding": upgraded_binding}
-            ) - binding_geometry.room_frame_point_count(area)
+            if upgraded is None:
+                pending = True
+                continue
+            if upgraded != binding:
+                staged.append((area_id, area, upgraded))
+        projected_points = total_room_frame_point_count(areas)
+        for _, area, upgraded in staged:
+            projected_points += room_frame_point_count(
+                {"map_binding": upgraded}
+            ) - room_frame_point_count(area)
         if projected_points > _MAX_PERSISTED_ROOM_FRAME_POINTS_PER_ROBOT:
             return AreaBindingUpgradeResult(0, True)
-        for area, upgraded_binding in staged:
-            area["map_binding"] = upgraded_binding
-            upgraded += 1
-        return AreaBindingUpgradeResult(upgraded, pending)
+        run = robot.get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        entries = checkpoint.get("entries") if isinstance(checkpoint, dict) else None
+        for area_id, area, upgraded in staged:
+            before = plan_area_fingerprint(area)
+            area["map_binding"] = upgraded
+            after = plan_area_fingerprint(area)
+            # The area's geometry is unchanged, so its run history and a run
+            # that restart recovery resumes keep the area's identity.
+            for record in (
+                robot["area_history"].get(area_id),
+                *(
+                    rotation.get("areas", {}).get(area_id)
+                    for rotation in robot["rotations"].values()
+                ),
+                *(
+                    entry
+                    for entry in (entries if isinstance(entries, list) else ())
+                    if isinstance(entry, dict) and entry.get("area_id") == area_id
+                ),
+            ):
+                if isinstance(record, dict) and record.get("fingerprint") == before:
+                    record["fingerprint"] = after
+        return AreaBindingUpgradeResult(len(staged), pending)
 
     def area(self, serial_number: str, reference: str | None = None) -> dict[str, Any]:
         """Return one locally saved area by stable ID or exact name."""
@@ -291,9 +276,9 @@ class PlanCatalog:
         def save(robot: dict[str, Any]) -> None:
             areas = robot["areas"]
             projected_points = (
-                binding_geometry.total_room_frame_point_count(areas)
-                - binding_geometry.room_frame_point_count(areas.get(area_id, {}))
-                + binding_geometry.room_frame_point_count(area)
+                total_room_frame_point_count(areas)
+                - room_frame_point_count(areas.get(area_id, {}))
+                + room_frame_point_count(area)
             )
             if projected_points > _MAX_PERSISTED_ROOM_FRAME_POINTS_PER_ROBOT:
                 raise AreaFramePointLimitError(
