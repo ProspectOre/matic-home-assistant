@@ -1,5 +1,5 @@
 custom_components/matic_robot/area_binding_geometry.py 1928
-custom_components/matic_robot/client/hermes_commands.py 1053
+custom_components/matic_robot/client/hermes_commands.py 1036
 custom_components/matic_robot/config_flow.py 1632
 custom_components/matic_robot/managed_observation.py 1096
 custom_components/matic_robot/native_history.py 1215
@@ -19,8 +19,8 @@ tests/browser/map_studio_v4_map_surfaces.spec.mjs 1934
 tests/browser/map_studio_v4_notices.spec.mjs 1006
 tests/browser/map_studio_v4_quality.spec.mjs 1181
 tests/browser/map_studio_v4_room_schedule.spec.mjs 1239
+tests/client/test_api_paths.py 2764
 tests/node/workspace_resource_ownership.test.mjs 1020
-tests/test_api_paths.py 2940
 tests/test_area_binding.py 3331
 tests/test_bluetooth_pairing.py 2334
 tests/test_cadence_manager.py 2982
@@ -34,7 +34,7 @@ tests/test_firmware.py 1246
 tests/test_firmware_reports.py 1387
 tests/test_init.py 1203
 tests/test_llm.py 3062
-tests/test_mixed_coverage.py 2115
+tests/test_mixed_coverage.py 2079
 tests/test_photo_patrol.py 1622
 tests/test_plan_entries.py 1074
 tests/test_plans.py 10136
@@ -44,6 +44,6 @@ tests/test_session_ownership.py 2634
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1822
 tests/test_slam_scene.py 3150
-tests/test_stop_return.py 1507
+tests/test_stop_return.py 1503
 tests/test_vacuum.py 1449
 tests/test_workspace_socket.py 1262

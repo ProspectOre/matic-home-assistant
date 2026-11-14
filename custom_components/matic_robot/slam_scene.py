@@ -18,22 +18,24 @@ from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .client import (
-    SCENE_PAGE_ID_BYTES,
     FloorPlan,
-    ScenePage,
     SlamTile,
-    encode_scene_manifest,
-    encode_scene_page,
-    scene_frame,
-    scene_metadata,
-    scene_point_count,
-    scene_sample_step,
 )
 from .http import (
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,
     SCENE_PAGES_API_URL,
     runtime_for_entry,
+)
+from .scene_encoding import (
+    SCENE_PAGE_ID_BYTES,
+    ScenePage,
+    encode_scene_manifest,
+    encode_scene_page,
+    scene_frame,
+    scene_metadata,
+    scene_point_count,
+    scene_sample_step,
 )
 from .slam_decoded_map import page_digest
 from .slam_map_store import SlamMapIdentity

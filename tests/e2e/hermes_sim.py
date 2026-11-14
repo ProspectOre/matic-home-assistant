@@ -1,10 +1,10 @@
 """A simulated Matic robot that serves the local Hermes protocol.
 
 The simulator speaks the same transport as the robot: TLS with a
-``robot_server`` certificate, HTTP/2 and gRPC, with the ``Hermes``,
-``HermesDiscoveryRPC`` and ``HermesAuth`` services. The integration's real
-client connects to it unchanged; the only test substitution is the trust
-anchor, which points at a CA generated for each simulator instead of Matic's.
+``robot_server`` certificate, HTTP/2 and gRPC, with the ``Hermes`` and
+``HermesDiscoveryRPC`` services. The integration's real client connects to
+it unchanged; the only test substitution is the trust anchor, which points at
+a CA generated for each simulator instead of Matic's.
 
 Every value it serves is synthetic. Command payloads are compared against the
 bytes captured from the official app, written out here rather than imported
@@ -44,7 +44,6 @@ from custom_components.matic_robot.client.auth import (
     AUTHORIZATION_KEY,
     HermesCredential,
 )
-from custom_components.matic_robot.client.proto.hermes_auth_grpc import HermesAuthBase
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import (
     BotToken,
     TokenRequest,
@@ -267,7 +266,6 @@ class SimulatedRobot:
         self.battery = battery
         self.errors: tuple[int, ...] = ()
         self.current_area: str | None = None
-        self.pairing_open = False
         self.faults = Faults(self._bump)
         self.credentials: set[str] = set()
         self.commands: list[ReceivedCommand] = []
@@ -515,23 +513,15 @@ class SimulatedRobot:
             extra += _bytes_field(16, self.current_area.encode())
         return wire.SerializeToString() + extra
 
-    def issue_credential(self, user_id: str) -> BotToken:
-        if not self.pairing_open:
-            raise GRPCError(Status.PERMISSION_DENIED, "pairing mode is off")
+    def add_credential(self, user_id: str) -> HermesCredential:
+        """Issue a credential this robot accepts, as pairing does."""
         token = BotToken(
             user=TokenRequest(user_id=user_id).SerializeToString(),
             hashed_token=token_bytes(32),
         )
-        self.credentials.add(HermesCredential.from_message(token).bearer_header())
-        return token
-
-    def add_credential(self, user_id: str) -> HermesCredential:
-        """Pair a client without opening the pairing window."""
-        self.pairing_open = True
-        try:
-            return HermesCredential.from_message(self.issue_credential(user_id))
-        finally:
-            self.pairing_open = False
+        credential = HermesCredential.from_message(token)
+        self.credentials.add(credential.bearer_header())
+        return credential
 
     def authorized(self, metadata: Any) -> bool:
         return metadata.get(AUTHORIZATION_KEY) in self.credentials
@@ -855,16 +845,6 @@ class _Discovery(HermesDiscoveryRPCBase):
         raise GRPCError(Status.UNIMPLEMENTED, "remote access is not simulated")
 
 
-class _Auth(HermesAuthBase):
-    def __init__(self, robot: SimulatedRobot) -> None:
-        self._robot = robot
-
-    async def AuthToken(self, stream: Stream[TokenRequest, BotToken]) -> None:
-        request = await stream.recv_message()
-        assert request is not None
-        await stream.send_message(self._robot.issue_credential(request.user_id))
-
-
 @dataclass(slots=True)
 class RunningSimulator:
     """A started simulator and the values a config entry needs to reach it."""
@@ -900,7 +880,7 @@ async def start_simulator(robot: SimulatedRobot, directory: Path) -> RunningSimu
     context.load_cert_chain(chain_path)
     context.set_alpn_protocols(["h2"])
     discovery = _Discovery(robot, 0)
-    server = PingPolicedServer([_Hermes(robot), discovery, _Auth(robot)])
+    server = PingPolicedServer([_Hermes(robot), discovery])
     await server.start("127.0.0.1", 0, ssl=context)
     sockets = server._server.sockets if server._server is not None else ()
     link = Link()

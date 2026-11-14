@@ -10,9 +10,29 @@ from enum import StrEnum
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
-from .client import CoverageGuardError, MaticError
+from .client import CoverageGuardError, CoverageGuardReason, MaticError
 from .const import DOMAIN
 from .plan_model import CleaningRoom
+
+_COVERAGE_GUARD_MESSAGES = {
+    CoverageGuardReason.IDENTITY_UNAVAILABLE: (
+        "Home Assistant can't confirm the current clean, so check the robot first."
+    ),
+    CoverageGuardReason.ACTIVITY_UNAVAILABLE: (
+        "Home Assistant can't confirm whether the robot is cleaning, so check it first."
+    ),
+    CoverageGuardReason.NATIVE_SESSION_ACTIVE: (
+        "The robot is already cleaning, so wait for it to finish."
+    ),
+    CoverageGuardReason.IDENTITY_CHANGED: (
+        "The clean changed while starting, so check the robot first."
+    ),
+}
+
+
+def coverage_guard_message(error: CoverageGuardError) -> str:
+    """Return the fixed recovery guidance for a refused coverage start."""
+    return _COVERAGE_GUARD_MESSAGES[error.reason]
 
 
 class RoomRunOutcome(StrEnum):

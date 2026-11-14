@@ -6,7 +6,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.endpoints import HERMES_ENDPOINT_MAP
 from custom_components.matic_robot.client.proto.hermes_pb2 import SequenceId
 from tests.wire_builders import _bfield, _vfield
@@ -107,17 +107,17 @@ async def test_schedule_inspection_and_telemetry_ack_and_read_both_records(
 
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection.async_channel = AsyncMock(return_value=object())
-    client._reads._async_optional_property = AsyncMock(return_value=None)
-    client._collections.async_get_collection_entries = AsyncMock(return_value=())
-    client._collections.async_get_collection_count = AsyncMock(return_value=0)
-    tracked_reader = client._collections.async_get_tracked_collection_entries
+    client._async_optional_property = AsyncMock(return_value=None)
+    client.async_get_collection_entries = AsyncMock(return_value=())
+    client.async_get_collection_count = AsyncMock(return_value=0)
+    tracked_reader = client.async_get_tracked_collection_entries
 
     async def tracked_dispatch(name: str, *, limit: int = 256):
         if name == "schedule_events":
             return await tracked_reader(name, limit=limit)
         return ()
 
-    client._collections.async_get_tracked_collection_entries = tracked_dispatch
+    client.async_get_tracked_collection_entries = tracked_dispatch
 
     assert HERMES_ENDPOINT_MAP["schedule_events"].tracked
     inspected = await client.async_inspect_endpoint("schedule_events", limit=2)

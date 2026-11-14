@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 SCHEMAS = (
     "custom_components.matic_robot.map_schema",
-    "custom_components.matic_robot.client.scene_schema",
+    "custom_components.matic_robot.scene_schema",
     "custom_components.matic_robot.plan_schema",
     "custom_components.matic_robot.workspace_schema",
 )

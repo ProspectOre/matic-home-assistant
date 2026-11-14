@@ -62,12 +62,12 @@ async def test_completed_setting_late_refresh_cannot_redial_a_shut_down_client(
     hass,
 ) -> None:
     """The entity's refresh after a confirmed write cannot revive an unloaded client."""
-    from custom_components.matic_robot.client.api import MaticHermesClient
+    from custom_components.matic_robot.client import MaticHermesClient
 
     client = MaticHermesClient("robot.invalid", 16320)
     dial = client._connection.supervisor._open = AsyncMock()
     client._connection._async_send_channel_payload = AsyncMock()
-    client._commands._async_confirm_setting_readback = AsyncMock()
+    client._async_confirm_setting_readback = AsyncMock()
     client.async_get_info = _client().async_get_info
     client.async_get_state = _client().async_get_state
     client.async_watch_state = MagicMock()

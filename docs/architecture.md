@@ -27,9 +27,10 @@ all come from the same policy and accounting results.
 
 Home Assistant owns setup, entity and service lifecycles. The integration keeps
 robot traffic local, validates and pins the robot's identity, and cleans up its
-resources on unload. It imports only the protocol client's [public names](../custom_components/matic_robot/client/__init__.py), which import nothing back.
-The [Hermes client](../custom_components/matic_robot/client/api.py) composes the pinned [connection](../custom_components/matic_robot/client/hermes_connection.py),
-collection transport, decoded reads and validated commands. One
+resources on unload. It imports only the protocol client's [public names](../custom_components/matic_robot/client/__init__.py), which import nothing back. The client is protocol, transport and decoding only; its tests in `tests/client` run with Home Assistant blocked.
+The [Hermes client](../custom_components/matic_robot/client/api.py) owns the pinned [connection](../custom_components/matic_robot/client/hermes_connection.py)
+and extends the classes for collections, decoded reads and validated commands. The [transport](../custom_components/matic_robot/client/transport.py)
+patches grpclib internals that have no public hook and refuses any grpclib but the pinned one. One
 [supervisor](../custom_components/matic_robot/client/supervisor.py) task dials,
 pins the certificate, completes the handshake, pings the open connection and
 redials a lost one after a jittered, growing pause; nothing else opens, closes
@@ -127,11 +128,11 @@ owns map interaction. Workflow, history and drawing assets load on demand.
 The [map store](../custom_components/matic_robot/slam_map_store.py) owns live
 admission and recovery. It validates pages in the executor, and the scene, history
 and camera share [one decode per revision](../custom_components/matic_robot/slam_decoded_map.py). The [snapshot codec](../custom_components/matic_robot/slam_snapshot.py)
-validates persisted maps without proving a live session. Client modules decode
-[SLAM tiles](../custom_components/matic_robot/client/slam_tiles.py), encode
-[scenes](../custom_components/matic_robot/client/slam_scene.py), and trace
-[geometry](../custom_components/matic_robot/client/slam_geometry.py); HTTP views
-serve authorized projections, built through one [schema](../custom_components/matic_robot/map_schema.py) (the scene metadata's is the client's [scene schema](../custom_components/matic_robot/client/scene_schema.py); the plan and daily limit views have the [plan schema](../custom_components/matic_robot/plan_schema.py), the workspace socket its [own](../custom_components/matic_robot/workspace_schema.py)) from which `scripts/contract_types.py` generates Matic Map's [wire types](../frontend/map-studio-v4/backend-schema.ts); the browser still validates every value it reads. The [live scene view](../custom_components/matic_robot/slam_scene.py) serves a manifest of content-addressed pages, encoded in the executor; Matic Map fetches only the pages it lacks and assembles the scene in its [parser](../frontend/map-studio-v4/scene-parser.ts). The administrator-only [workspace socket](../custom_components/matic_robot/workspace_socket.py) announces each new scene revision, and its snapshot on every subscribe carries the current one; without a subscription, the five-second catalog poll does, and a lost Home Assistant connection shows Reconnecting over the last map until a fresh catalog reloads it. Saved-map scenes are served whole. Server-side [floor](../custom_components/matic_robot/floor_render.py)
+validates persisted maps without proving a live session. The client decodes
+[SLAM tiles](../custom_components/matic_robot/client/slam_tiles.py); the integration encodes
+[scenes](../custom_components/matic_robot/scene_encoding.py), outlines [floor types](../custom_components/matic_robot/floor_types.py) and traces
+[geometry](../custom_components/matic_robot/slam_geometry.py). HTTP views
+serve authorized projections, built through one [schema](../custom_components/matic_robot/map_schema.py) (the scene metadata's is the [scene schema](../custom_components/matic_robot/scene_schema.py); the plan and daily limit views have the [plan schema](../custom_components/matic_robot/plan_schema.py), the workspace socket its [own](../custom_components/matic_robot/workspace_schema.py)) from which `scripts/contract_types.py` generates Matic Map's [wire types](../frontend/map-studio-v4/backend-schema.ts); the browser still validates every value it reads. The [live scene view](../custom_components/matic_robot/slam_scene.py) serves a manifest of content-addressed pages, encoded in the executor; Matic Map fetches only the pages it lacks and assembles the scene in its [parser](../frontend/map-studio-v4/scene-parser.ts). The administrator-only [workspace socket](../custom_components/matic_robot/workspace_socket.py) announces each new scene revision, and its snapshot on every subscribe carries the current one; without a subscription, the five-second catalog poll does, and a lost Home Assistant connection shows Reconnecting over the last map until a fresh catalog reloads it. Saved-map scenes are served whole. Server-side [floor](../custom_components/matic_robot/floor_render.py)
 and [SLAM](../custom_components/matic_robot/slam_render.py) renderers produce local PNG projections; they do not authorize commands.
 
 [Area binding](../custom_components/matic_robot/area_binding.py) relates saved

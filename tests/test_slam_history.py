@@ -14,13 +14,13 @@ from google.protobuf.message import DecodeError
 
 from custom_components.matic_robot import slam_history_format as history_format
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.client.slam_scene import (
-    MAX_SCENE_BYTES,
-    encode_slam_scene,
-)
 from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
+)
+from custom_components.matic_robot.scene_encoding import (
+    MAX_SCENE_BYTES,
+    encode_slam_scene,
 )
 from custom_components.matic_robot.slam_history import (
     MAX_ACTIVE_HISTORY_READ_BYTES,

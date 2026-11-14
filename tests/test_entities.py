@@ -222,9 +222,6 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         idle=idle,
         floor_plan=floor_plan,
         client=SimpleNamespace(
-            async_get_slam_tile_entry=AsyncMock(
-                side_effect=CannotConnectError("synthetic unavailable")
-            ),
             async_send_user_command=AsyncMock(),
             async_start_coverage=AsyncMock(),
             async_get_sink_posture=AsyncMock(return_value=b"synthetic-posture"),

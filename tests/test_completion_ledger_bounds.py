@@ -24,8 +24,8 @@ from custom_components.matic_robot.completion_ledger import (
 )
 from custom_components.matic_robot.native_cadence import import_native_cadence
 from custom_components.matic_robot.room_identity import room_cadence_identity
+from tests.client.test_coverage_receipts import history_key
 from tests.test_cadence_manager import _floor
-from tests.test_coverage_receipts import history_key
 
 
 def _event_id(number: int) -> str:

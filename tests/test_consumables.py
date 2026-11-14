@@ -14,7 +14,7 @@ from custom_components.matic_robot.binary_sensor import (
     DESCRIPTIONS,
     MaticBinarySensor,
 )
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.consumables import (
     MAX_BAG_PASS_PAYLOAD_BYTES,
     MAX_MAINTENANCE_SUGGESTIONS,
@@ -160,24 +160,20 @@ async def test_telemetry_reads_the_newest_recap_and_bag_pass() -> None:
     async def entries(name: str, *, limit: int):
         return collections.get(name, ())
 
-    client._collections.async_get_property = AsyncMock(return_value=b"")
-    client._collections.async_get_collection_entries = AsyncMock(side_effect=entries)
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
-        side_effect=entries
-    )
-    client._collections.async_get_collection_count = AsyncMock(return_value=0)
+    client.async_get_property = AsyncMock(return_value=b"")
+    client.async_get_collection_entries = AsyncMock(side_effect=entries)
+    client.async_get_tracked_collection_entries = AsyncMock(side_effect=entries)
+    client.async_get_collection_count = AsyncMock(return_value=0)
 
     telemetry = await client.async_get_telemetry()
 
     assert telemetry.maintenance_recap_month == "2026-10"
     assert telemetry.maintenance_suggestions == (1, 2, 3)
     assert telemetry.bag_pass_expires_at == datetime.fromtimestamp(PASS_END, UTC)
-    client._collections.async_get_tracked_collection_entries.assert_any_await(
+    client.async_get_tracked_collection_entries.assert_any_await(
         "recap_history", limit=120
     )
-    client._collections.async_get_collection_entries.assert_any_await(
-        "bag_pass_status", limit=4
-    )
+    client.async_get_collection_entries.assert_any_await("bag_pass_status", limit=4)
 
     # An unreadable newest month must not fall back to an older one.
     collections["recap_history"] += (

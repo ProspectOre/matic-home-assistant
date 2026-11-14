@@ -16,7 +16,7 @@ from typing import Any
 
 from google.protobuf.message import DecodeError
 
-from .client import (
+from .scene_encoding import (
     MAX_COVERAGE_MASK_BYTES,
     MAX_SCENE_BYTES,
     SCENE_HEADER_BYTES,

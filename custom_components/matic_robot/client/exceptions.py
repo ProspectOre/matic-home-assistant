@@ -16,38 +16,17 @@ class CoverageGuardReason(StrEnum):
     IDENTITY_CHANGED = "coverage_identity_changed"
 
 
-_COVERAGE_GUARD_MESSAGES = {
-    CoverageGuardReason.IDENTITY_UNAVAILABLE: (
-        "Home Assistant can't confirm the current clean, so check the robot first."
-    ),
-    CoverageGuardReason.ACTIVITY_UNAVAILABLE: (
-        "Home Assistant can't confirm whether the robot is cleaning, so check it first."
-    ),
-    CoverageGuardReason.NATIVE_SESSION_ACTIVE: (
-        "The robot is already cleaning, so wait for it to finish."
-    ),
-    CoverageGuardReason.IDENTITY_CHANGED: (
-        "The clean changed while starting, so check the robot first."
-    ),
-}
-
-
 class CoverageGuardError(MaticError):
-    """A managed coverage preflight failed with a safe actionable reason."""
+    """A managed coverage preflight failed; ``reason`` says which guard."""
 
     def __init__(self, reason: CoverageGuardReason) -> None:
         self.reason = reason
-        super().__init__(_COVERAGE_GUARD_MESSAGES[reason])
+        super().__init__(reason.value)
 
     @property
     def reason_code(self) -> str:
         """Stable non-sensitive event/accounting reason code."""
         return self.reason.value
-
-    @property
-    def safe_message(self) -> str:
-        """Fixed user-safe recovery guidance."""
-        return _COVERAGE_GUARD_MESSAGES[self.reason]
 
 
 class CannotConnectError(MaticError):

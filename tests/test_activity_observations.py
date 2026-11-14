@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.core import Event
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import RobotOperationalState
@@ -21,7 +21,7 @@ from custom_components.matic_robot.client.observations import (
 )
 from custom_components.matic_robot.const import EVENT_ACTIVITY_OBSERVED
 from custom_components.matic_robot.llm import MaticRobotStatusAPI
-from tests.test_api_paths import _OpenMethod, _Stream
+from tests.client.test_api_paths import _OpenMethod, _Stream
 
 
 def test_raw_transitions_are_bounded_detached_and_payload_free() -> None:

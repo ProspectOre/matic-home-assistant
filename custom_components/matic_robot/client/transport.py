@@ -9,6 +9,7 @@ import struct
 from time import monotonic
 from typing import Any, cast
 
+import grpclib
 from grpclib.client import Channel, Handler, Stream
 from grpclib.config import Configuration
 from grpclib.exceptions import ProtocolError as GrpcProtocolError
@@ -27,6 +28,21 @@ MAX_HERMES_MESSAGE_BYTES = 16 * 1024 * 1024
 KEEPALIVE_TIMEOUT_SECONDS = 10.0
 
 TRANSPORT_ERRORS = (OSError, StreamTerminatedError, GrpcProtocolError, H2Error)
+# grpclib has no public hook for a message-size limit, a stream or connection
+# class, or a GOAWAY's error code. This module reaches into the internals of
+# exactly this version, so it refuses to load with another.
+_GRPCLIB_VERSION = "0.4.9"
+
+
+def _require_grpclib(version: str) -> None:
+    """Fail unless ``version`` is the grpclib whose internals this module uses."""
+    if version != _GRPCLIB_VERSION:
+        raise ImportError(
+            f"the Matic client needs grpclib {_GRPCLIB_VERSION}, found {version}"
+        )
+
+
+_require_grpclib(grpclib.__version__)
 
 
 async def async_cancel_stream(stream: object) -> None:
@@ -82,7 +98,10 @@ async def _async_recv_bounded_message(
 
 
 class BoundedStream(Stream[Any, Any]):
-    """grpclib client stream with a preallocation message-size guard."""
+    """grpclib client stream with a preallocation message-size guard.
+
+    It reads grpclib 0.4.9's private stream state; ``_patch_grpclib`` applies it.
+    """
 
     message_byte_limit: int | None = None
 
@@ -157,18 +176,31 @@ class _Protocol(H2Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         super().connection_made(transport)
-        # grpclib has no hook for its connection class, which has no slots.
-        cast(Any, self.connection).__class__ = _Connection
-        processors = cast(dict[type, Any], self.processor.processors)
-        close = processors[ConnectionTerminated]
+        _patch_grpclib(self)
 
-        def terminated(event: ConnectionTerminated) -> None:
-            cast(_Link, self.handler).too_many_pings = (
-                event.error_code == ErrorCodes.ENHANCE_YOUR_CALM
-            )
-            close(event)
 
-        processors[ConnectionTerminated] = terminated
+def _patch_grpclib(target: Stream[Any, Any] | _Protocol) -> None:
+    """Give a grpclib object the behaviour grpclib has no public hook for.
+
+    A stream becomes a ``BoundedStream``. A protocol's connection becomes a
+    ``_Connection``, and its GOAWAY handler records ENHANCE_YOUR_CALM first.
+    grpclib 0.4.9's Stream and Connection have no slots, so switching an
+    instance to a behaviour-only subclass keeps its state.
+    """
+    if isinstance(target, Stream):
+        cast(Any, target).__class__ = BoundedStream
+        return
+    cast(Any, target.connection).__class__ = _Connection
+    processors = cast(dict[type, Any], target.processor.processors)
+    close = processors[ConnectionTerminated]
+
+    def terminated(event: ConnectionTerminated) -> None:
+        cast(_Link, target.handler).too_many_pings = (
+            event.error_code == ErrorCodes.ENHANCE_YOUR_CALM
+        )
+        close(event)
+
+    processors[ConnectionTerminated] = terminated
 
 
 class PinnedChannel(Channel):
@@ -219,9 +251,7 @@ class PinnedChannel(Channel):
     def request(self, *args: Any, **kwargs: Any) -> Stream[Any, Any]:
         """Create the bounded stream used by every generated Hermes stub."""
         stream = super().request(*args, **kwargs)
-        # grpclib has no public stream-factory hook. Its Stream has no slots, so
-        # switching to this behavior-only subclass preserves initialized state.
-        cast(Any, stream).__class__ = BoundedStream
+        _patch_grpclib(stream)
         return stream
 
     def close(self) -> None:

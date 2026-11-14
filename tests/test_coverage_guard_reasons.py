@@ -10,7 +10,7 @@ import pytest
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
 from custom_components.matic_robot.client.exceptions import (
     CoverageGuardError,
@@ -20,7 +20,10 @@ from custom_components.matic_robot.client.models import FloorPlan
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
-from custom_components.matic_robot.managed_run import _failure_reason_code
+from custom_components.matic_robot.managed_run import (
+    _failure_reason_code,
+    coverage_guard_message,
+)
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.session_fakes import FakeRobot, run_step
@@ -50,12 +53,8 @@ async def test_coverage_preflight_guard_is_safe_and_sends_no_command(
     expected: CoverageGuardReason,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=identity_values
-    )
-    client._reads.async_get_active_cleaning_session_state = AsyncMock(
-        return_value=active
-    )
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=identity_values)
+    client.async_get_active_cleaning_session_state = AsyncMock(return_value=active)
     client._connection._async_send_user_payload = AsyncMock()
 
     with pytest.raises(CoverageGuardError) as caught:
@@ -75,10 +74,39 @@ async def test_coverage_preflight_guard_is_safe_and_sends_no_command(
     error = caught.value
     assert error.reason is expected
     assert error.reason_code == expected.value
-    assert error.safe_message == str(error)
-    assert "opaque-native-identity" not in error.safe_message
+    assert str(error) == expected.value
+    assert "opaque-native-identity" not in coverage_guard_message(error)
     assert _failure_reason_code(error) == expected.value
     client._connection._async_send_user_payload.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("reason", "message"),
+    [
+        (
+            CoverageGuardReason.IDENTITY_UNAVAILABLE,
+            "Home Assistant can't confirm the current clean, so check the robot first.",
+        ),
+        (
+            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
+            "Home Assistant can't confirm whether the robot is cleaning, "
+            "so check it first.",
+        ),
+        (
+            CoverageGuardReason.NATIVE_SESSION_ACTIVE,
+            "The robot is already cleaning, so wait for it to finish.",
+        ),
+        (
+            CoverageGuardReason.IDENTITY_CHANGED,
+            "The clean changed while starting, so check the robot first.",
+        ),
+    ],
+)
+def test_guard_guidance_is_the_saved_text(
+    reason: CoverageGuardReason, message: str
+) -> None:
+    """The ledger saves this text, so it must not drift."""
+    assert coverage_guard_message(CoverageGuardError(reason)) == message
 
 
 @pytest.mark.parametrize("reason", list(CoverageGuardReason))
@@ -130,11 +158,13 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
     assert caught.value.translation_domain == "matic_robot"
     assert caught.value.translation_key == reason.value
     manager.ledger.async_mark_failed.assert_awaited_once()
-    assert manager.ledger.async_mark_failed.await_args.args[3] == error.safe_message
+    assert manager.ledger.async_mark_failed.await_args.args[
+        3
+    ] == coverage_guard_message(error)
     assert bus.async_fire.call_args.args[0] == "matic_robot_room_failed"
     event = bus.async_fire.call_args.args[1]
     assert event["reason_code"] == reason.value
-    assert event["error"] == error.safe_message
+    assert event["error"] == coverage_guard_message(error)
     stop_sender.assert_not_awaited()
     manager.control.replace_managed_motion.assert_not_called()
 
@@ -149,7 +179,7 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
 
     async def reject_before_write(*_args: object, **_kwargs: object) -> None:
         raise ServiceValidationError(
-            error.safe_message,
+            coverage_guard_message(error),
             translation_domain="matic_robot",
             translation_key=error.reason_code,
         ) from error
@@ -199,7 +229,9 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
 
     assert caught.value.translation_key == reason.value
     manager.ledger.async_mark_failed.assert_awaited_once()
-    assert manager.ledger.async_mark_failed.await_args.args[3] == error.safe_message
+    assert manager.ledger.async_mark_failed.await_args.args[
+        3
+    ] == coverage_guard_message(error)
     room_event = next(
         args.args[1]
         for args in bus.async_fire.call_args_list
@@ -243,7 +275,9 @@ async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
 
     assert caught.value.translation_key == reason.value
     assert isinstance(caught.value.__cause__, CoverageGuardError)
-    assert caught.value.__cause__.safe_message == error.safe_message
+    assert coverage_guard_message(caught.value.__cause__) == coverage_guard_message(
+        error
+    )
     assert not manager.control.stop_pending("synthetic-serial")
     client.async_start_mixed_coverage.assert_awaited_once()
     client.async_start_coverage.assert_not_awaited()
@@ -263,7 +297,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
 
     async def reject_dispatch(_call) -> None:
         raise ServiceValidationError(
-            error.safe_message,
+            coverage_guard_message(error),
             translation_domain=DOMAIN,
             translation_key=error.reason_code,
         ) from error

@@ -25,9 +25,9 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     room_cadence_identity,
 )
+from tests.client.test_coverage_receipts import history_key
 from tests.session_fakes import FakeRobot
 from tests.test_cadence_manager import _floor
-from tests.test_coverage_receipts import history_key
 
 
 def scenario():

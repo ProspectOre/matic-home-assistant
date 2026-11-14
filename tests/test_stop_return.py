@@ -10,7 +10,7 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.matic_robot import stop_return
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.plans import CleaningPlanManager
@@ -364,16 +364,16 @@ async def test_unknown_native_status_with_cleared_identity_docks_and_confirms(
     assert token is not None
 
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._collections.async_get_property = AsyncMock(side_effect=[b""] * 12)
+    client.async_get_property = AsyncMock(side_effect=[b""] * 12)
     unknown_state = replace(
         _state(idle=True).state.value.operational,
         state_codes=(108, 109, 110),
     )
     docked_state = replace(unknown_state, charging_idle=True)
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_state = AsyncMock(
         side_effect=[unknown_state] * 3 + [docked_state] * 9
     )
-    client._commands.async_send_user_command = AsyncMock()
+    client.async_send_user_command = AsyncMock()
 
     async def refresh() -> None:
         hass.states.async_set(ENTITY, "docked", {})
@@ -389,11 +389,9 @@ async def test_unknown_native_status_with_cleared_identity_docks_and_confirms(
     )
 
     assert sent
-    client._commands.async_send_user_command.assert_awaited_once_with(
-        UserCommand.DOCK, on_transmitted=None
-    )
-    assert client._reads.async_get_state.await_count == 5
-    assert client._collections.async_get_property.await_count == 2
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    assert client.async_get_state.await_count == 5
+    assert client.async_get_property.await_count == 2
     assert manager.control.stop_fence_token("serial") is None
 
 
@@ -415,22 +413,20 @@ async def test_final_dock_uses_task_state_under_retained_identity(
     monkeypatch.setattr(stop_return, "DOCK_SETTLE_TIMEOUT_SECONDS", 0)
     hass.states.async_set(ENTITY, "idle", {})
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"\x0a\x03key")
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"\x0a\x03key")
+    client.async_get_state = AsyncMock(
         return_value=replace(_state(idle=True).state.value.operational, **changes)
     )
-    client._commands.async_send_user_command = AsyncMock()
+    client.async_send_user_command = AsyncMock()
     assert await client.async_get_cleaning_session_identity() == b"\x0a\x03key"
 
     assert await _run(hass, client, _manager()) is expected_dock
 
-    assert client._reads.async_get_state.await_count == (2 if expected_dock else 1)
+    assert client.async_get_state.await_count == (2 if expected_dock else 1)
     if expected_dock and not changes.get("charging"):
-        client._commands.async_send_user_command.assert_awaited_once_with(
-            UserCommand.DOCK, on_transmitted=None
-        )
+        client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
     else:
-        client._commands.async_send_user_command.assert_not_awaited()
+        client.async_send_user_command.assert_not_awaited()
 
 
 async def test_retained_inactive_identity_allows_exact_ownerless_fence_clear(
@@ -439,8 +435,8 @@ async def test_retained_inactive_identity_allows_exact_ownerless_fence_clear(
     """Native inactivity clears only the captured stop token after dock readback."""
     hass.states.async_set(ENTITY, "charging", {})
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"\x0a\x03key")
-    client._reads.async_get_state = AsyncMock(
+    client.async_get_property = AsyncMock(return_value=b"\x0a\x03key")
+    client.async_get_state = AsyncMock(
         return_value=replace(_state(idle=True).state.value.operational, charging=True)
     )
     manager = SimpleNamespace(

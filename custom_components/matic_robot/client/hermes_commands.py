@@ -62,8 +62,6 @@ from .exceptions import (
     TransportError,
 )
 from .floor_plan import room_name_key
-from .hermes_collections import HermesCollections
-from .hermes_connection import HermesConnection
 from .hermes_reads import HermesReads
 from .models import (
     FloorPlan,
@@ -220,18 +218,8 @@ def _floor_command_identity(floor: FloorPlan) -> tuple[object, ...]:
     )
 
 
-class HermesCommands:
-    """Own commands behavior for one robot session."""
-
-    def __init__(
-        self,
-        connection: HermesConnection,
-        collections: HermesCollections,
-        reads: HermesReads,
-    ) -> None:
-        self._connection = connection
-        self._collections = collections
-        self._reads = reads
+class HermesCommands(HermesReads):
+    """Validated commands for one robot session, on top of its reads."""
 
     async def async_send_user_command(
         self,
@@ -248,15 +236,15 @@ class HermesCommands:
 
     async def _async_require_idle_native_session(self) -> bytes:
         """Require stable, observable idle native state before managed coverage."""
-        baseline_identity = await self._reads.async_get_cleaning_session_identity()
+        baseline_identity = await self.async_get_cleaning_session_identity()
         if baseline_identity is None:
             raise CoverageGuardError(CoverageGuardReason.IDENTITY_UNAVAILABLE)
-        active = await self._reads.async_get_active_cleaning_session_state()
+        active = await self.async_get_active_cleaning_session_state()
         if active is None:
             raise CoverageGuardError(CoverageGuardReason.ACTIVITY_UNAVAILABLE)
         if active:
             raise CoverageGuardError(CoverageGuardReason.NATIVE_SESSION_ACTIVE)
-        if await self._reads.async_get_cleaning_session_identity() != baseline_identity:
+        if await self.async_get_cleaning_session_identity() != baseline_identity:
             raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
         return baseline_identity
 
@@ -265,7 +253,7 @@ class HermesCommands:
         mission_key = encode_mission_id(floor_plan.mission_id)
         postures = [
             entry.value
-            for entry in await self._collections.async_get_collection_entries(
+            for entry in await self.async_get_collection_entries(
                 "sink_summon_locations"
             )
             if entry.key == mission_key and entry.value
@@ -318,15 +306,15 @@ class HermesCommands:
         Like the app's queue sheet, resend the goals from the current room on under
         the task's session ID; wait until the plan holds them and no dropped goal.
         """
-        identity = await self._reads.async_get_cleaning_session_identity()
-        active = await self._reads.async_get_active_cleaning_session_state()
+        identity = await self.async_get_cleaning_session_identity()
+        active = await self.async_get_active_cleaning_session_state()
         if not identity or active is not True or expected not in (None, identity):
             raise QueueChangeError("no_clean_running")
         try:
             session_id = uuid_string(identity)
         except DecodeError as err:
             raise MaticError("Native task identity cannot be read") from err
-        state = await self._reads.async_get_state()
+        state = await self.async_get_state()
         area = room_name_key(state.current_area)
         current = [
             candidate.protocol_id
@@ -336,9 +324,7 @@ class HermesCommands:
         if len(current) != 1:
             raise QueueChangeError("current_room_unknown")
         try:
-            plan = coverage_plan_goals(
-                await self._collections.async_get_property("coverage_plan")
-            )
+            plan = coverage_plan_goals(await self.async_get_property("coverage_plan"))
         except DecodeError as err:
             raise QueueChangeError("plan_unreadable") from err
         goals = requeue_coverage_goals(
@@ -359,7 +345,7 @@ class HermesCommands:
         sent = {goal.round_id for goal in goals}
         dropped = {goal.round_id for goal in plan[start:]} - sent
         expected_order = _region_order(goals)
-        if await self._reads.async_get_cleaning_session_identity() != identity:
+        if await self.async_get_cleaning_session_identity() != identity:
             raise MaticError("Native mission changed before the queue change")
         await self._connection._async_send_user_payload(
             payload, command_name="UPDATE_QUEUE"
@@ -368,16 +354,13 @@ class HermesCommands:
             async with asyncio.timeout(_QUEUE_READBACK_TIMEOUT):
                 while True:
                     await asyncio.sleep(_QUEUE_READBACK_INTERVAL)
-                    if (
-                        await self._reads.async_get_cleaning_session_identity()
-                        != identity
-                    ):
+                    if await self.async_get_cleaning_session_identity() != identity:
                         raise MaticError(
                             "Native mission changed during the queue change"
                         )
                     try:
                         held = coverage_plan_goals(
-                            await self._collections.async_get_property("coverage_plan")
+                            await self.async_get_property("coverage_plan")
                         )
                     except DecodeError:
                         continue
@@ -387,6 +370,19 @@ class HermesCommands:
                         return
         except TimeoutError as err:
             raise MaticError("Robot did not confirm the queue change") from err
+
+    async def async_end_after_current_room(
+        self, floor_plan: FloorPlan, identity: bytes
+    ) -> None:
+        """Skip every room still waiting in mission ``identity``.
+
+        The robot finishes the room it is cleaning and ends the mission. Raises
+        QueueChangeError ``last_room`` when no room is waiting, and
+        ``no_clean_running`` when ``identity`` is not the running mission.
+        """
+        await self.async_change_queue(
+            floor_plan, QueueAction.END_AFTER_CURRENT, None, expected=identity
+        )
 
     async def async_start_coverage(
         self,
@@ -484,8 +480,8 @@ class HermesCommands:
             async with asyncio.timeout(180):
                 while True:
                     require_current()
-                    identity = await self._reads.async_get_cleaning_session_identity()
-                    state = await self._reads.async_get_state()
+                    identity = await self.async_get_cleaning_session_identity()
+                    state = await self.async_get_state()
                     if identity and identity != baseline_identity:
                         if uuid_string(identity) != commands.session_id:
                             raise MaticError(
@@ -507,16 +503,16 @@ class HermesCommands:
                     ):
                         break
                     await asyncio.sleep(2)
-                latest = await self._reads.async_get_floor_plan()
+                latest = await self.async_get_floor_plan()
 
                 if _floor_command_identity(latest) != _floor_command_identity(
                     floor_plan
                 ):
                     raise MaticError("Room map changed before coverage update")
-                if await self._reads.async_get_cleaning_session_identity() != identity:
+                if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed before coverage update")
-                state = await self._reads.async_get_state()
-                if await self._reads.async_get_cleaning_session_identity() != identity:
+                state = await self.async_get_state()
+                if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed before coverage update")
                 if state.activity.value != "cleaning" or room_name_key(
                     state.current_area
@@ -526,7 +522,7 @@ class HermesCommands:
                 await self._connection._async_send_user_payload(
                     commands.update, command_name="UPDATE_COVERAGE"
                 )
-                if await self._reads.async_get_cleaning_session_identity() != identity:
+                if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed after coverage update")
                 return await self._async_wait_for_mixed_coverage_readback(
                     expected_goals,
@@ -540,7 +536,7 @@ class HermesCommands:
             # Reconnection/read failure must not turn into an unowned STOP.
             try:
                 require_owned()
-                current = await self._reads.async_get_cleaning_session_identity()
+                current = await self.async_get_cleaning_session_identity()
                 require_owned()
                 if current and uuid_string(current) == commands.session_id:
                     stop_fence_prepared = False
@@ -551,10 +547,7 @@ class HermesCommands:
                         stop_fence_prepared = True
                         await prepare_stop()
                         require_owned()
-                        if (
-                            await self._reads.async_get_cleaning_session_identity()
-                            != current
-                        ):
+                        if await self.async_get_cleaning_session_identity() != current:
                             raise MaticError(
                                 "Native mission changed before recovery STOP"
                             )
@@ -643,7 +636,7 @@ class HermesCommands:
                         matched = False
                     stage = "session_identity"
                     if (
-                        await self._reads.async_get_cleaning_session_identity()
+                        await self.async_get_cleaning_session_identity()
                         != expected_identity
                     ):
                         raise MaticError(
@@ -684,7 +677,7 @@ class HermesCommands:
         async def read(name: str, stage: str) -> bytes:
             if note_stage is not None:
                 note_stage(stage)
-            return await self._collections.async_get_property(name)
+            return await self.async_get_property(name)
 
         plan = await read("coverage_plan", "coverage_plan")
         actual_goals = Counter(coverage_plan_goal_signatures(plan))
@@ -758,7 +751,7 @@ class HermesCommands:
 
         async with asyncio.timeout(_COVERAGE_START_READBACK_TIMEOUT):
             while True:
-                identity = await self._reads.async_get_cleaning_session_identity()
+                identity = await self.async_get_cleaning_session_identity()
                 if identity is None:
                     raise MaticError("Native task identity became unavailable")
                 if identity and identity != pre_dispatch_identity:
@@ -778,7 +771,7 @@ class HermesCommands:
                         raise MaticError(
                             "Native mission changed during coverage readback"
                         )
-                    active = await self._reads.async_get_active_cleaning_session_state()
+                    active = await self.async_get_active_cleaning_session_state()
                     if active is True:
                         try:
                             _, matched = await self._async_read_coverage_readback(
@@ -788,21 +781,21 @@ class HermesCommands:
                             matched = False
                         if matched:
                             if (
-                                await self._reads.async_get_cleaning_session_identity()
+                                await self.async_get_cleaning_session_identity()
                                 != identity
                             ):
                                 raise MaticError(
                                     "Native mission changed during coverage readback"
                                 )
                             active = await (
-                                self._reads.async_get_active_cleaning_session_state()
+                                self.async_get_active_cleaning_session_state()
                             )
                             if active is not True:
                                 raise MaticError(
                                     "Native mission became inactive during "
                                     "coverage readback"
                                 )
-                            latest_floor = await self._reads.async_get_floor_plan()
+                            latest_floor = await self.async_get_floor_plan()
                             if _floor_command_identity(
                                 latest_floor
                             ) != _floor_command_identity(floor_plan):
@@ -813,7 +806,7 @@ class HermesCommands:
                             # leave identity last so ownership is freshest at
                             # the point we accept readback.
                             active = await (
-                                self._reads.async_get_active_cleaning_session_state()
+                                self.async_get_active_cleaning_session_state()
                             )
                             if active is not True:
                                 raise MaticError(
@@ -821,7 +814,7 @@ class HermesCommands:
                                     "coverage readback"
                                 )
                             if (
-                                await self._reads.async_get_cleaning_session_identity()
+                                await self.async_get_cleaning_session_identity()
                                 != identity
                             ):
                                 raise MaticError(
@@ -855,24 +848,21 @@ class HermesCommands:
             return False
         try:
             async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
-                identity = await self._reads.async_get_cleaning_session_identity()
+                identity = await self.async_get_cleaning_session_identity()
                 if identity is None or (
                     identity
                     and native_session_hash(identity, active=True)
                     != receipt.session_hash
                 ):
                     return False
-                if (
-                    await self._reads.async_get_active_cleaning_session_state()
-                    is not False
-                ):
+                if await self.async_get_active_cleaning_session_state() is not False:
                     return False
                 if (
-                    coverage_floor_hash(await self._reads.async_get_floor_plan())
+                    coverage_floor_hash(await self.async_get_floor_plan())
                     != receipt.floor_hash
                 ):
                     return False
-                plan = await self._collections.async_get_property("coverage_plan")
+                plan = await self.async_get_property("coverage_plan")
                 history_fingerprint = None
                 if not receipt_matches_plan(receipt, plan):
                     if not coverage_plan_lacks_active_goals(plan):
@@ -883,21 +873,18 @@ class HermesCommands:
                     if history_fingerprint is None:
                         return False
                 if (
-                    coverage_floor_hash(await self._reads.async_get_floor_plan())
+                    coverage_floor_hash(await self.async_get_floor_plan())
                     != receipt.floor_hash
                 ):
                     return False
-                if (
-                    await self._reads.async_get_active_cleaning_session_state()
-                    is not False
-                ):
+                if await self.async_get_active_cleaning_session_state() is not False:
                     return False
-                if await self._reads.async_get_cleaning_session_identity() != identity:
+                if await self.async_get_cleaning_session_identity() != identity:
                     return False
                 # A second fresh sample catches same-session edits during the
                 # floor/activity checks. The protocol has no atomic generation
                 # marker, so this establishes observed consistency only.
-                final_plan = await self._collections.async_get_property("coverage_plan")
+                final_plan = await self.async_get_property("coverage_plan")
                 if history_fingerprint is None:
                     return receipt_matches_plan(receipt, final_plan)
                 if not coverage_plan_lacks_active_goals(final_plan):
@@ -912,7 +899,7 @@ class HermesCommands:
         self, receipt: CoverageReceipt
     ) -> str | None:
         """Bind one complete retained goal set to its unique native history key."""
-        entries = await self._collections.async_get_tracked_collection_entries(
+        entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
         matches = [
@@ -1004,16 +991,14 @@ class HermesCommands:
         identical scan left it unchanged. ``None`` means no scan block
         appeared in time or the connected network was not listed.
         """
-        baseline = wifi_scan_block(
-            await self._collections.async_get_property("wifi_status")
-        )
+        baseline = wifi_scan_block(await self.async_get_property("wifi_status"))
         await self._connection._async_send_channel_payload("wifi_scan_command", b"")
         reads = 0
         try:
             async with asyncio.timeout(_WIFI_SCAN_RESULT_TIMEOUT_SECONDS):
                 while True:
                     await asyncio.sleep(_WIFI_SCAN_RESULT_INTERVAL_SECONDS)
-                    payload = await self._collections.async_get_property("wifi_status")
+                    payload = await self.async_get_property("wifi_status")
                     scan = wifi_scan_block(payload)
                     reads += 1
                     if scan is not None and (
@@ -1035,9 +1020,7 @@ class HermesCommands:
             async with asyncio.timeout(_SETTING_READBACK_TIMEOUT_SECONDS):
                 while True:
                     try:
-                        observed = decode(
-                            await self._collections.async_get_property(property_name)
-                        )
+                        observed = decode(await self.async_get_property(property_name))
                     except TransportError:
                         # One read may land on a connection that just ended.
                         if retried:

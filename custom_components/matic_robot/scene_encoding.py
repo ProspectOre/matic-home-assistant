@@ -15,17 +15,17 @@ import numpy as np
 from google.protobuf.message import DecodeError
 from PIL import Image, ImageDraw
 
-from .models import FloorPlan
-from .scene_schema import SceneCoverage, SceneMetadata, SceneRoom
-from .slam_geometry import mask_contours
-from .slam_tiles import (
+from .client import (
     MAX_SLAM_TILES,
     TILE_HEIGHT,
     TILE_SIDE,
     VOXEL_SCALE_METERS,
+    FloorPlan,
     SlamStructureTile,
     SlamTile,
 )
+from .scene_schema import SceneCoverage, SceneMetadata, SceneRoom
+from .slam_geometry import mask_contours
 
 SCENE_MAGIC = b"MATIC3D\x00"
 SCENE_VERSION = 1

@@ -610,7 +610,7 @@ def test_every_exception_key_is_raised() -> None:
 
 
 def test_coverage_guard_text_matches_everywhere() -> None:
-    from custom_components.matic_robot.client.exceptions import _COVERAGE_GUARD_MESSAGES
+    from custom_components.matic_robot.managed_run import _COVERAGE_GUARD_MESSAGES
 
     catalog = (ROOT / "frontend/map-studio-v4/catalog-writes.ts").read_text()
     for reason, text in _COVERAGE_GUARD_MESSAGES.items():

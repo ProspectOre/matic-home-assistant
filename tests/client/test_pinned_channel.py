@@ -188,7 +188,7 @@ async def test_dial_checks_the_pin_and_closes_a_connection_that_fails_it(
         protocol.processor.close.assert_called_once_with()
 
 
-def test_peer_without_a_certificate_is_rejected() -> None:
+async def test_peer_without_a_certificate_is_rejected() -> None:
     channel = _channel()
 
     with pytest.raises(InvalidRobotCertificateError, match="did not present"):
@@ -197,10 +197,17 @@ def test_peer_without_a_certificate_is_rejected() -> None:
         channel._validate_peer(SimpleNamespace(getpeercert=lambda binary_form: None))  # type: ignore[arg-type]
 
 
-def test_every_rpc_reads_through_the_bounded_stream() -> None:
+async def test_every_rpc_reads_through_the_bounded_stream() -> None:
     channel = _channel()
 
     stream = channel.request("/hermes.Test/Read", Cardinality.UNARY_UNARY, bytes, bytes)
 
     assert isinstance(stream, BoundedStream)
     channel.close()
+
+
+def test_another_grpclib_version_fails_to_load() -> None:
+    transport_module._require_grpclib("0.4.9")
+
+    with pytest.raises(ImportError, match=r"needs grpclib 0\.4\.9, found 0\.5\.0"):
+        transport_module._require_grpclib("0.5.0")

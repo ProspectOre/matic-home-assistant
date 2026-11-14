@@ -60,6 +60,12 @@ class SlamSemanticTile:
     cells: bytes
 
 
+def mission_token(mission_id: int) -> str:
+    """Return the token a map page keyed by this mission carries."""
+    key = bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id)
+    return hashlib.sha256(key).hexdigest()
+
+
 def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
     """Decode one verified ``map_compressed_rgb`` collection entry.
 

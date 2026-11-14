@@ -28,7 +28,8 @@ and review.
 - `custom_components/matic_robot/client/` is the robot protocol client. It
   imports nothing from Home Assistant or from the rest of the integration.
   The rest of the integration imports only the names `client/__init__.py`
-  exports, never a module below it.
+  exports, never a module below it. Its tests in `tests/client` also run
+  with Home Assistant blocked.
 - The plan core holds plan values and accounting rules; `PLAN_CORE` in
   `scripts/check.py` lists its modules. It imports the client and itself,
   never Home Assistant.

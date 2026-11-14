@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.commands import (
     CleaningMode as Mode,
 )
@@ -237,14 +237,14 @@ async def test_override_requires_enabled_state_around_a_fresh_plan(states, accep
     expected = _mixed_goals()
     actual = _override(expected, omit=True)
     plan = _plan_for_signatures(actual.elements())
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=[plan, states[0], *([plan, states[1]] if len(states) == 2 else [])]
     )
-    observed, matched = await client._commands._async_read_coverage_readback(expected)
+    observed, matched = await client._async_read_coverage_readback(expected)
     assert observed == actual
     assert matched is accepted
     names = ["coverage_plan", "deep_mop_override_setting_state"]
-    assert client._collections.async_get_property.await_args_list == [
+    assert client.async_get_property.await_args_list == [
         call(name) for name in names * len(states)
     ]
 
@@ -255,7 +255,7 @@ async def test_override_does_not_accept_a_stale_first_plan():
     actual = _override(expected, omit=True)
     changed = actual.copy()
     del changed[next(goal for goal in actual if goal[3] == 0)]
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=[
             _plan_for_signatures(actual.elements()),
             b"\x12\x00",
@@ -263,7 +263,7 @@ async def test_override_does_not_accept_a_stale_first_plan():
             b"\x12\x00",
         ]
     )
-    observed, matched = await client._commands._async_read_coverage_readback(expected)
+    observed, matched = await client._async_read_coverage_readback(expected)
     assert observed == changed
     assert not matched
 
@@ -276,27 +276,27 @@ async def test_override_acceptance_retains_native_identity_fences(kind, replaced
     expected = Counter(coverage_command_goal_signatures(payload))
     actual = _override(expected, omit=True)
     plan = _plan_for_signatures(actual.elements())
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=[plan, b"\x12\x00", plan, b"\x12\x00"]
     )
     session = UUID(int=100)
     identity = _session_identity(session)
     latest = _session_identity(UUID(int=101)) if replaced else identity
-    client._reads.async_get_cleaning_session_identity = AsyncMock(
+    client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=[identity, latest, latest] if kind == "normal" else [latest]
     )
-    client._reads.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
-    client._reads.async_get_floor_plan = AsyncMock(return_value=floor)
+    client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
+    client.async_get_floor_plan = AsyncMock(return_value=floor)
 
     if kind == "normal":
-        run = client._commands._async_wait_for_coverage_readback(
+        run = client._async_wait_for_coverage_readback(
             expected,
             floor,
             pre_dispatch_identity=b"prior",
             expected_session_id=str(session),
         )
     else:
-        run = client._commands._async_wait_for_mixed_coverage_readback(
+        run = client._async_wait_for_mixed_coverage_readback(
             expected,
             require_current=Mock(),
             expected_identity=identity,
@@ -306,4 +306,4 @@ async def test_override_acceptance_retains_native_identity_fences(kind, replaced
             await run
     else:
         await run
-    assert client._collections.async_get_property.await_count == 4
+    assert client.async_get_property.await_count == 4

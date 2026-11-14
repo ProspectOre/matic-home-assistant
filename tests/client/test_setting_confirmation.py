@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client import hermes_commands as api_module
-from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     TransportError,
@@ -18,7 +18,7 @@ def _client() -> MaticHermesClient:
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection.async_channel = AsyncMock(return_value=object())
     client._connection._async_send_channel_payload = AsyncMock()
-    client._collections.async_get_property = AsyncMock()
+    client.async_get_property = AsyncMock()
     return client
 
 
@@ -58,13 +58,11 @@ async def test_binary_setting_waits_for_delayed_matching_state_once(
     setting, enabled, property_name, old_state, new_state, channel, payload
 ):
     client = _client()
-    client._collections.async_get_property = AsyncMock(
-        side_effect=[old_state, new_state]
-    )
+    client.async_get_property = AsyncMock(side_effect=[old_state, new_state])
 
     await client.async_set_binary_setting(setting, enabled)
 
-    assert client._collections.async_get_property.await_args_list == [
+    assert client.async_get_property.await_args_list == [
         call(property_name),
         call(property_name),
     ]
@@ -84,13 +82,11 @@ async def test_deep_mop_waits_for_enabled_or_disabled_state_once(
     enabled, old_state, new_state, payload
 ):
     client = _client()
-    client._collections.async_get_property = AsyncMock(
-        side_effect=[old_state, new_state]
-    )
+    client.async_get_property = AsyncMock(side_effect=[old_state, new_state])
 
     await client.async_set_deep_mop(enabled)
 
-    assert client._collections.async_get_property.await_args_list == [
+    assert client.async_get_property.await_args_list == [
         call("deep_mop_override_setting_state"),
         call("deep_mop_override_setting_state"),
     ]
@@ -103,13 +99,11 @@ async def test_water_flow_waits_for_matching_float_state_once():
     client = _client()
     old_state = b"\x0a\x05\x0d" + struct.pack("<f", 0.8)
     new_state = b"\x0a\x05\x0d" + struct.pack("<f", 1.4)
-    client._collections.async_get_property = AsyncMock(
-        side_effect=[old_state, new_state]
-    )
+    client.async_get_property = AsyncMock(side_effect=[old_state, new_state])
 
     await client.async_set_water_flow(1.4)
 
-    assert client._collections.async_get_property.await_args_list == [
+    assert client.async_get_property.await_args_list == [
         call("water_flow_override_state"),
         call("water_flow_override_state"),
     ]
@@ -158,13 +152,13 @@ async def test_setting_reads_again_after_one_transport_failure_without_resend(
     setter, property_name, confirmed, stale
 ):
     client = _client()
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=(TransportError("temporary read failure"), confirmed)
     )
 
     await setter(client)
 
-    assert client._collections.async_get_property.await_args_list == [
+    assert client.async_get_property.await_args_list == [
         call(property_name),
         call(property_name),
     ]
@@ -176,7 +170,7 @@ async def test_setting_stops_after_a_second_transport_failure_without_resend(
     setter, property_name, confirmed, stale
 ):
     client = _client()
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=(
             TransportError("temporary read failure"),
             TransportError("second read failure"),
@@ -186,7 +180,7 @@ async def test_setting_stops_after_a_second_transport_failure_without_resend(
     with pytest.raises(TransportError, match="second read failure"):
         await setter(client)
 
-    assert client._collections.async_get_property.await_count == 2
+    assert client.async_get_property.await_count == 2
     client._connection._async_send_channel_payload.assert_awaited_once()
 
 
@@ -201,15 +195,15 @@ async def test_setter_fails_when_state_never_confirms(
         lambda _duration: original_timeout(0.01),
     )
     client = _client()
-    client._collections.async_get_property = AsyncMock(return_value=stale)
+    client.async_get_property = AsyncMock(return_value=stale)
 
     with pytest.raises(CannotConnectError):
         await setter(client)
 
-    assert client._collections.async_get_property.await_args_list
+    assert client.async_get_property.await_args_list
     assert all(
         call.args == (property_name,)
-        for call in client._collections.async_get_property.await_args_list
+        for call in client.async_get_property.await_args_list
     )
     client._connection._async_send_channel_payload.assert_awaited_once()
 
@@ -225,9 +219,7 @@ async def test_setting_confirmation_propagates_cancellation_without_resend(
         read_started.set()
         await asyncio.Event().wait()
 
-    client._collections.async_get_property = AsyncMock(
-        side_effect=wait_for_confirmation
-    )
+    client.async_get_property = AsyncMock(side_effect=wait_for_confirmation)
     task = asyncio.create_task(setter(client))
     await asyncio.wait_for(read_started.wait(), timeout=0.2)
     task.cancel()

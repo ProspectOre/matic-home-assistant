@@ -14,15 +14,15 @@ from PIL import Image
 
 from custom_components.matic_robot import slam_map_store as storage
 from custom_components.matic_robot import slam_snapshot as snapshot_codec
-from custom_components.matic_robot.client.slam_scene import (
-    MAX_SCENE_POINTS,
-    encode_slam_scene,
-    parse_slam_scene_header,
-)
 from custom_components.matic_robot.client.slam_tiles import (
     MAX_SLAM_TILES,
     decode_slam_structure_tile,
     decode_slam_tile,
+)
+from custom_components.matic_robot.scene_encoding import (
+    MAX_SCENE_POINTS,
+    encode_slam_scene,
+    parse_slam_scene_header,
 )
 from custom_components.matic_robot.slam_decoded_map import page_digest
 from custom_components.matic_robot.slam_render import (

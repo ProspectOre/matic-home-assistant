@@ -24,14 +24,11 @@ from .exceptions import (
     AuthenticationRequiredError,
     EndpointUnsupportedError,
     MaticError,
-    PairingModeRequiredError,
     ProtocolError,
     RequestTimeoutError,
     TransportError,
 )
 from .observations import ActivityJournal, ObservationCallback
-from .proto.hermes_auth_grpc import HermesAuthStub
-from .proto.hermes_auth_pb2 import TokenRequest
 from .proto.hermes_grpc import HermesStub
 from .proto.hermes_pb2 import (
     ChannelRequest,
@@ -158,36 +155,6 @@ class HermesConnection:
                     f"Hermes {description} is not implemented by this firmware"
                 ) from err
             raise ProtocolError(err.message or err.status.name) from err
-
-    async def async_request_credential(self, user_id: str) -> HermesCredential:
-        """Request a scoped credential during the robot's pairing window."""
-        channel = await self.async_channel()
-        try:
-            async with asyncio.timeout(_RPC_TIMEOUT):
-                response = await HermesAuthStub(channel).AuthToken(
-                    TokenRequest(user_id=user_id)
-                )
-            credential = HermesCredential.from_message(response)
-        except ValueError as err:
-            raise ProtocolError("Robot returned an incomplete credential") from err
-        except TimeoutError as err:
-            raise RequestTimeoutError("Hermes credential request timed out") from err
-        except TRANSPORT_ERRORS as err:
-            raise TransportError("Hermes credential request connection failed") from err
-        except GRPCError as err:
-            if err.status in {
-                Status.UNAVAILABLE,
-                Status.PERMISSION_DENIED,
-                Status.UNAUTHENTICATED,
-            }:
-                raise PairingModeRequiredError(
-                    "Enable pairing mode in the Matic app"
-                ) from err
-            raise ProtocolError(err.message or err.status.name) from err
-        self._credential = credential
-        await self._async_handshake(channel)
-        await self._async_send_user_data(channel)
-        return credential
 
     async def _async_handshake(self, channel: PinnedChannel) -> None:
         """Bind authenticated Hermes context to ``channel``."""

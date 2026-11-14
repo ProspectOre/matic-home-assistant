@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.matic_robot.client.api import MaticHermesClient
+from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.cleaning_session import (
     _canonical_cleaning_session,
     _native_history_collection_revision,
@@ -16,8 +16,8 @@ from custom_components.matic_robot.client.history_semantics import (
     decode_history_semantics,
 )
 from custom_components.matic_robot.client.models import HermesCollectionEntry
-from tests.test_coverage_receipts import history_key
-from tests.test_history_semantics import _payload
+from tests.client.test_coverage_receipts import history_key
+from tests.client.test_history_semantics import _payload
 from tests.wire_builders import _bfield
 
 
@@ -66,7 +66,7 @@ def test_projection_handles_missing_outcomes_and_duplicate_display_names():
 
 async def test_corrupt_revision_keeps_exact_key_for_credit_retraction():
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(HermesCollectionEntry(history_key(), b"\xff"),)
     )
     records, revision = await client.async_get_cleaning_session_snapshot()
@@ -85,7 +85,7 @@ async def test_non_room_and_unknown_modern_records_keep_strict_baselines():
         _payload(start_payload=_bfield(1, b"") + _bfield(3, _bfield(2, b""))),
         _payload(start_child=7),
     ):
-        client._collections.async_get_tracked_collection_entries = AsyncMock(
+        client.async_get_tracked_collection_entries = AsyncMock(
             return_value=(HermesCollectionEntry(key, payload),)
         )
         records = await client.async_get_cleaning_session_records(strict=True)
@@ -110,7 +110,7 @@ async def test_managed_baseline_accepts_an_opaque_non_room_session():
     )
 
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(history_key(), _payload(modern_payload=b"")),
         )

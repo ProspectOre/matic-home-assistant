@@ -207,7 +207,7 @@ def test_double_pass_rejects_ambiguous_or_unobserved_state(payload) -> None:
 async def test_active_session_identity_distinguishes_tasks_end_and_unknown() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
     first, second = b"\x0a\x05first", b"\x0a\x06second"
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=(first, first, second, b"tombstone-value!", b"", b"\x0a\xff")
     )
     assert await client.async_get_cleaning_session_identity() == first
@@ -234,7 +234,7 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
         + _bfield(6, _bfield(1, _bfield(2, details)))
     )
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(b"opaque-synthetic-key", _bfield(5, summary)),
             HermesCollectionEntry(b"", _bfield(5, summary)),
@@ -248,13 +248,13 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     assert records[0].key == b"opaque-synthetic-key"
     assert records[0].session.completed is True
     assert records[0].session.completed_rooms == ("Kitchen",)
-    client._collections.async_get_tracked_collection_entries.assert_awaited_once_with(
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=64
     )
     with pytest.raises(MaticError, match="incomplete or undecodable"):
         await client.async_get_cleaning_session_records(strict=True)
-    client._collections.async_get_tracked_collection_entries.return_value = (
-        client._collections.async_get_tracked_collection_entries.return_value[0],
+    client.async_get_tracked_collection_entries.return_value = (
+        client.async_get_tracked_collection_entries.return_value[0],
     )
     assert await client.async_get_cleaning_session_records(strict=True) == records
 
@@ -278,14 +278,10 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
         "active_session_key": b"disabled-setting",
         "coverage_time": b"disabled-setting",
     }
-    client._collections.async_get_property = AsyncMock(
-        side_effect=lambda name: values[name]
-    )
-    client._collections.async_get_collection_entries = AsyncMock(return_value=())
-    client._collections.async_get_tracked_collection_entries = AsyncMock(
-        return_value=()
-    )
-    client._collections.async_get_collection_count = AsyncMock(side_effect=(4, 1))
+    client.async_get_property = AsyncMock(side_effect=lambda name: values[name])
+    client.async_get_collection_entries = AsyncMock(return_value=())
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
+    client.async_get_collection_count = AsyncMock(side_effect=(4, 1))
 
     telemetry = await client.async_get_telemetry()
 
@@ -308,7 +304,7 @@ async def test_verified_setting_payloads_and_bounds() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
     client._connection.async_channel = AsyncMock(return_value=object())
     client._connection._async_send_channel_payload = AsyncMock()
-    client._collections.async_get_property = AsyncMock(
+    client.async_get_property = AsyncMock(
         side_effect=(
             b"\x08\x01",
             b"\x08\x00",
@@ -331,7 +327,7 @@ async def test_verified_setting_payloads_and_bounds() -> None:
         call("deep_mop_override_setting_command", b"\x0a\x00"),
         call("water_flow_override_command", b"\x0a\x05\x0d" + struct.pack("<f", 1.4)),
     ]
-    assert client._collections.async_get_property.await_args_list == [
+    assert client.async_get_property.await_args_list == [
         call("child_lock_enabled_state"),
         call("petwaste_enabled_state"),
         call("deep_mop_override_setting_state"),
@@ -598,9 +594,9 @@ def test_decode_run_progress_from_a_running_clean() -> None:
 
 async def test_client_reads_run_progress_from_coverage_time() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._collections.async_get_property = AsyncMock(return_value=b"tombstone-value!")
+    client.async_get_property = AsyncMock(return_value=b"tombstone-value!")
     assert await client.async_get_run_progress() is None
-    client._collections.async_get_property.assert_awaited_once_with("coverage_time")
+    client.async_get_property.assert_awaited_once_with("coverage_time")
 
 
 @pytest.mark.parametrize(

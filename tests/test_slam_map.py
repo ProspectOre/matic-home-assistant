@@ -17,13 +17,6 @@ from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
     Room,
 )
-from custom_components.matic_robot.client.slam_scene import (
-    SCENE_MAGIC,
-    SCENE_POINT_STRIDE,
-    SCENE_VERSION,
-    encode_slam_scene,
-    parse_slam_scene_header,
-)
 from custom_components.matic_robot.client.slam_tiles import (
     FLOOR_RGBA_BYTES,
     MAX_SLAM_TILES,
@@ -36,6 +29,13 @@ from custom_components.matic_robot.client.slam_tiles import (
     decode_slam_tile,
 )
 from custom_components.matic_robot.client.wire import first_bytes
+from custom_components.matic_robot.scene_encoding import (
+    SCENE_MAGIC,
+    SCENE_POINT_STRIDE,
+    SCENE_VERSION,
+    encode_slam_scene,
+    parse_slam_scene_header,
+)
 from custom_components.matic_robot.slam_render import (
     render_slam_map,
 )
@@ -530,7 +530,7 @@ def test_scene_header_parser_rejects_incomplete_and_inconsistent_payloads() -> N
 
 
 def test_encode_slam_scene_near_limit_preserves_all_room_identities() -> None:
-    from custom_components.matic_robot.client import slam_scene as slam_scene_module
+    from custom_components.matic_robot import scene_encoding as slam_scene_module
 
     source = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
     # A 151-cell serpentine floor has a long, real clipped contour. Twenty-five
@@ -628,7 +628,7 @@ def test_encode_slam_scene_near_limit_preserves_all_room_identities() -> None:
 
 
 def test_scene_encoder_and_header_parser_share_the_metadata_limit(monkeypatch) -> None:
-    from custom_components.matic_robot.client import slam_scene as slam_scene_module
+    from custom_components.matic_robot import scene_encoding as slam_scene_module
 
     tile = decode_slam_tile(synthetic_slam_entry())
     scene = encode_slam_scene((tile,))

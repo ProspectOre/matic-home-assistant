@@ -38,7 +38,7 @@ from custom_components.matic_robot.plan_model import (
     room_cadence_identity,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.test_coverage_receipts import history_key
+from tests.client.test_coverage_receipts import history_key
 
 SESSION = UUID(int=72)
 ROOM_ID = "room-a"
