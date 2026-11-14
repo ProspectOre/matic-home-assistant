@@ -15,7 +15,9 @@ from scripts.upgrade_drill import (
     _phase_failure_output,
     compare,
     compare_floor_catalogs,
+    history_path,
     plan_state,
+    require_unchanged_history,
     run_phase,
 )
 
@@ -388,3 +390,15 @@ def test_floor_catalogs_move_to_the_store_and_stay_in_the_options() -> None:
     ):
         with pytest.raises(DrillFailed, match=message):
             compare_floor_catalogs(states(**phases))
+
+
+def test_downgrade_must_leave_the_history_file_byte_for_byte(tmp_path: Path) -> None:
+    path = history_path(tmp_path)
+    path.parent.mkdir()
+    stored = b'{"version": 2, "data": {"snapshots": [{"id": "a", "scene": "x"}]}}'
+    path.write_bytes(stored)
+    require_unchanged_history(stored, tmp_path)
+
+    path.write_bytes(b'{"version": 2, "data": {"snapshots": [{"id": "a"}]}}')
+    with pytest.raises(DrillFailed, match="rewrote the v2 store file"):
+        require_unchanged_history(stored, tmp_path)

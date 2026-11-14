@@ -123,9 +123,8 @@ def plan_state(config: Path) -> dict[str, Any]:
     (robot,) = store["data"]["robots"].values()
     rotation = robot.get("rotations", {}).get(AREA_PLAN, {})
     area_records = rotation.get("areas", {})
-    history_path = config / ".storage" / f"matic_robot.slam_history.{ENTRY_ID}"
     try:
-        history_store = json.loads(history_path.read_text())
+        history_store = json.loads(history_path(config).read_text())
         history_data = history_store["data"]
         history_records = history_data["snapshots"]
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as err:
@@ -182,6 +181,17 @@ def plan_state(config: Path) -> dict[str, Any]:
         },
         "slam_history": history,
     }
+
+
+def history_path(config: Path) -> Path:
+    """Return the SLAM history store file under ``config``."""
+    return config / ".storage" / f"matic_robot.slam_history.{ENTRY_ID}"
+
+
+def require_unchanged_history(before: bytes, config: Path) -> None:
+    """Raise unless the old release left the v2 history file byte for byte."""
+    if history_path(config).read_bytes() != before:
+        raise DrillFailed("old SLAM history reader rewrote the v2 store file")
 
 
 def floor_catalogs(config: Path) -> dict[str, Any]:
@@ -342,7 +352,9 @@ def drill(tag: str, work: Path) -> dict[str, dict[str, Any]]:
         shutil.copytree(live, backup)
         run_phase(ROOT, "upgrade", live)
         states["upgrade"] = plan_state(live)
+        history = history_path(live).read_bytes()
         run_phase(older, "downgrade", live)
+        require_unchanged_history(history, live)
         states["downgrade"] = plan_state(live)
         run_phase(older, "restore", backup)
         states["restore"] = plan_state(backup)
