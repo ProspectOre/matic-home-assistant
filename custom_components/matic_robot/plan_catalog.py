@@ -217,20 +217,29 @@ class PlanCatalog:
             ) - room_frame_point_count(area)
         if projected_points > _MAX_PERSISTED_ROOM_FRAME_POINTS_PER_ROBOT:
             return AreaBindingUpgradeResult(0, True)
+        run = robot.get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        entries = checkpoint.get("entries") if isinstance(checkpoint, dict) else None
         for area_id, area, upgraded in staged:
             before = plan_area_fingerprint(area)
             area["map_binding"] = upgraded
-            # The area's geometry is unchanged, so its run history carries over.
-            for records in (
-                robot["area_history"],
+            after = plan_area_fingerprint(area)
+            # The area's geometry is unchanged, so its run history and a run
+            # that restart recovery resumes keep the area's identity.
+            for record in (
+                robot["area_history"].get(area_id),
                 *(
-                    rotation.get("areas", {})
+                    rotation.get("areas", {}).get(area_id)
                     for rotation in robot["rotations"].values()
                 ),
+                *(
+                    entry
+                    for entry in (entries if isinstance(entries, list) else ())
+                    if isinstance(entry, dict) and entry.get("area_id") == area_id
+                ),
             ):
-                record = records.get(area_id)
                 if isinstance(record, dict) and record.get("fingerprint") == before:
-                    record["fingerprint"] = plan_area_fingerprint(area)
+                    record["fingerprint"] = after
         return AreaBindingUpgradeResult(len(staged), pending)
 
     def area(self, serial_number: str, reference: str | None = None) -> dict[str, Any]:
