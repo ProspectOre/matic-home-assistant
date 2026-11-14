@@ -18,9 +18,7 @@ from homeassistant.util import dt as dt_util
 
 from . import managed_observation as observation
 from . import managed_run
-from .client.commands import UserCommand
-from .client.exceptions import MaticError
-from .client.wire import uuid_string
+from .client import MaticError, UserCommand, uuid_string
 from .managed_run import (
     NativeHistoryBaselineUnavailableError,
     RoomTakenOverError,

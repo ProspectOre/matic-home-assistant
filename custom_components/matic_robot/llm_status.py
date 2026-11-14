@@ -12,7 +12,7 @@ from homeassistant.helpers import llm
 from homeassistant.util import dt as dt_util
 from homeassistant.util.json import JsonObjectType
 
-from .client.zones import zone_overlaps_polygon
+from .client import zone_overlaps_polygon
 from .const import (
     DOMAIN,
 )

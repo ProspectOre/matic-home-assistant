@@ -15,8 +15,7 @@ from homeassistant.core import (
 )
 
 from . import service_context as context
-from .client.commands import UserCommand
-from .client.models import FloorPlan
+from .client import FloorPlan, UserCommand
 from .const import (
     DOMAIN,
 )

@@ -17,7 +17,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from .client.models import CleaningSession
+from .client import CleaningSession
 from .const import DOMAIN, EVENT_CLEANING_FINISHED, SLOW_UPDATE_INTERVAL_SECONDS
 from .cues import async_fire_cues_events
 from .firmware import FirmwareTracker, async_build_firmware_snapshot

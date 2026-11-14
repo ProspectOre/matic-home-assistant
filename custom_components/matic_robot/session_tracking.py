@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from .client.models import SESSION_STOP_REASONS, CleaningSession
+from .client import SESSION_STOP_REASONS, CleaningSession
 
 MIN_CLEANED_ROOM_SECONDS = 60
 

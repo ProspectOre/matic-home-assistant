@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from .client.endpoints import HERMES_ENDPOINT_NAMES
+from .client import HERMES_ENDPOINT_NAMES
 
 MAX_FINDINGS = 128
 MAX_FIELD_FINDINGS = MAX_FINDINGS - len(HERMES_ENDPOINT_NAMES)

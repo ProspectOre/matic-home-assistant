@@ -24,12 +24,14 @@ from .area_binding_formats import AREA_SCHEMA_VERSION
 from .area_binding_records import area_binding_needs_geometry_index
 from .area_geometry import AreaGeometry, RoomGeometryIndex
 from .area_outline import validate_outline
-from .client.commands import CleaningMode, CoverageSetting
-from .client.models import (
+from .client import (
+    CleaningMode,
+    CoverageSetting,
     FloorPlan,
     MapZone,
+    zone_overlaps_circle,
+    zone_overlaps_polygon,
 )
-from .client.zones import zone_overlaps_circle, zone_overlaps_polygon
 from .http import (
     AREAS_API_URL,
     PRIVATE_NO_STORE_HEADERS,

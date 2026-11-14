@@ -9,8 +9,7 @@ from collections.abc import Awaitable, Callable
 from homeassistant.exceptions import HomeAssistantError
 
 from . import managed_observation as observation
-from .client.exceptions import MaticError
-from .client.models import RobotActivity
+from .client import MaticError, RobotActivity
 from .managed_run import PlanCancelledError, _PreparedRoomDispatch
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError

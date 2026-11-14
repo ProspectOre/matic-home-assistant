@@ -16,8 +16,12 @@ from typing import Any
 
 from google.protobuf.message import DecodeError
 
-from .client import slam_scene
-from .client.slam_scene import MAX_COVERAGE_MASK_BYTES, parse_slam_scene_header
+from .client import (
+    MAX_COVERAGE_MASK_BYTES,
+    MAX_SCENE_BYTES,
+    SCENE_HEADER_BYTES,
+    parse_slam_scene_header,
+)
 
 # Canonical record/archive limits. The state store imports these through this
 # module so persistence and quota checks cannot drift apart.
@@ -310,10 +314,8 @@ def _legacy_record_id(
 
 
 def _scene_frame(scene: bytes) -> dict[str, Any]:
-    from .client.slam_scene import _SCENE_HEADER
-
     header = parse_slam_scene_header(scene)
-    metadata_start = _SCENE_HEADER.size
+    metadata_start = SCENE_HEADER_BYTES
     metadata = json.loads(
         scene[metadata_start : metadata_start + header.metadata_bytes]
     )
@@ -446,9 +448,9 @@ def _valid_mission_token(value: object) -> bool:
 
 def _decompress_scene(compressed: bytes) -> bytes:
     decompressor = zlib.decompressobj()
-    scene = decompressor.decompress(compressed, slam_scene.MAX_SCENE_BYTES + 1)
+    scene = decompressor.decompress(compressed, MAX_SCENE_BYTES + 1)
     if (
-        len(scene) > slam_scene.MAX_SCENE_BYTES
+        len(scene) > MAX_SCENE_BYTES
         or decompressor.unconsumed_tail
         or decompressor.unused_data
         or not decompressor.eof

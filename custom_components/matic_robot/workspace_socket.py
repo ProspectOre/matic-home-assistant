@@ -17,7 +17,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 
-from .client.exceptions import AuthenticationRequiredError
+from .client import AuthenticationRequiredError
 from .const import DOMAIN, EVENT_ACTIVITY_OBSERVED, EVENT_CLEANING_FINISHED
 from .slam_scene import _scene_snapshot_key
 from .slam_view_data import catalog_entry_projection, pose_projection
@@ -36,7 +36,7 @@ from .workspace_schema import (
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry, MaticRuntimeData
-    from .client.models import RobotOperationalState
+    from .client import RobotOperationalState
     from .session import RobotSession
     from .slam_history import SlamHistoryStore
     from .slam_scene import MaticSlamSceneView

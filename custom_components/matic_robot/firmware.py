@@ -15,11 +15,14 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from . import firmware_reports as reports
-from .client.api import MaticHermesClient
-from .client.endpoints import HERMES_ENDPOINTS, HermesEndpoint
-from .client.exceptions import MaticError
-from .client.models import HermesCollectionEntry
-from .client.wire import wire_shape
+from .client import (
+    HERMES_ENDPOINTS,
+    HermesCollectionEntry,
+    HermesEndpoint,
+    MaticError,
+    MaticHermesClient,
+    wire_shape,
+)
 from .const import DOMAIN, EVENT_FIRMWARE_ANALYZED, EVENT_FIRMWARE_CHANGED
 from .repairs import repair_placeholders
 

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
-from .client.models import CuesVoiceStatus, RobotOperationalState
+from .client import CuesVoiceStatus, RobotOperationalState
 from .const import CUES_EVENT_TYPES, DOMAIN, EVENT_CUES
 from .stores import LiveState, Store
 

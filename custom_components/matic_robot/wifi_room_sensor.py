@@ -15,7 +15,7 @@ from homeassistant.const import SIGNAL_STRENGTH_DECIBELS_MILLIWATT, EntityCatego
 from homeassistant.util import slugify
 
 from . import MaticConfigEntry
-from .client.models import Room
+from .client import Room
 from .entity import MaticEntity
 from .stores import Store
 from .wifi_survey import RoomSignal

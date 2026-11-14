@@ -14,7 +14,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
-from .client.models import FloorPlan, Room
+from .client import FloorPlan, Room
 from .const import DOMAIN
 
 SegmentSignature = tuple[tuple[str, str, str | None], ...]

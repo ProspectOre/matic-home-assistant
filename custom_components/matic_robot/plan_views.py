@@ -11,7 +11,7 @@ from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .cadence import CoverageCadenceRequiresVacuumError
-from .client.commands import CleaningMode, CoverageSetting
+from .client import CleaningMode, CoverageSetting
 from .http import (
     PLANS_API_URL,
     PRIVATE_NO_STORE_HEADERS,

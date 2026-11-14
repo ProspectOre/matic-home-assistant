@@ -9,8 +9,7 @@ import probatio
 from homeassistant.helpers import config_validation as cv
 
 from .cadence import MAX_CADENCE_INTERVAL, validate_cadence_interval
-from .client.commands import CleaningMode, CoverageSetting
-from .client.endpoints import HERMES_ENDPOINT_NAMES
+from .client import HERMES_ENDPOINT_NAMES, CleaningMode, CoverageSetting
 from .const import MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE, MAX_ROOM_SEQUENCE_SIZE
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(

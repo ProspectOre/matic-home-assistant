@@ -12,8 +12,7 @@ from homeassistant.core import (
 from homeassistant.helpers import config_validation as cv
 
 from . import service_context as context
-from .client.endpoints import HERMES_ENDPOINT_MAP
-from .client.floor_plan import pose_vector_paths
+from .client import HERMES_ENDPOINT_MAP, pose_vector_paths
 from .const import (
     DOMAIN,
 )

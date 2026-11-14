@@ -13,13 +13,15 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.floor_plan import (
+from .client import (
+    FloorPlan,
+    RobotPose,
+    SlamStructureTile,
+    SlamTile,
     pose_observation_is_current,
     resolve_robot_map_position,
     robot_location_source,
 )
-from .client.models import FloorPlan, RobotPose
-from .client.slam_tiles import SlamStructureTile, SlamTile
 from .entity import MaticEntity
 from .floor_render import render_floor_plan
 from .http import (

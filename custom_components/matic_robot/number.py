@@ -12,7 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.exceptions import MaticError
+from .client import MaticError
 from .const import DOMAIN
 from .entity import MaticEntity
 from .stores import Store

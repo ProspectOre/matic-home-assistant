@@ -8,8 +8,7 @@ from collections.abc import Awaitable, Callable
 
 from homeassistant.exceptions import HomeAssistantError
 
-from .client.commands import QueueChangeError
-from .client.exceptions import MaticError
+from .client import MaticError, QueueChangeError
 from .plan_model import CleaningRoom
 
 _LOGGER = logging.getLogger(__name__)

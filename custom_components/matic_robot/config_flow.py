@@ -30,17 +30,20 @@ from .bluetooth_pairing import (
     async_has_local_bluetooth_adapter,
     async_request_bluetooth_credential,
 )
-from .client.api import MaticHermesClient
-from .client.auth import HermesCredential, new_hermes_user_id
-from .client.exceptions import (
+from .client import (
     AuthenticationRequiredError,
     CannotConnectError,
     CertificateMismatchError,
+    HermesCredential,
     InvalidRobotCertificateError,
     MaticError,
+    MaticHermesClient,
     PairingModeRequiredError,
+    PeerIdentity,
+    async_fetch_peer_certificate,
+    new_hermes_user_id,
+    validate_certificate,
 )
-from .client.tls import PeerIdentity, async_fetch_peer_certificate, validate_certificate
 from .config_flow_discovery import (
     _async_discover_robots,
     _async_select_discovery_host,
@@ -451,8 +454,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Let a multi-robot home choose which unconfigured robot to add."""
         if user_input is not None:
-            discovery = self._manual_discoveries.get(user_input["robot"])
-            if discovery is None:
+            if (discovery := self._manual_discoveries.get(user_input["robot"])) is None:
                 return self.async_abort(reason="pairing_session_expired")
             return await self.async_step_zeroconf(discovery)
         if not self._manual_discoveries:
@@ -975,8 +977,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def _async_note_code_outcome(self) -> None:
         """Remember why the last displayed code stopped working."""
-        exchange = self._passkey_exchange
-        if exchange is None or not exchange.requested:
+        if (exchange := self._passkey_exchange) is None or not exchange.requested:
             return
         self._pairing_retry_note = (
             "pairing_code_rejected" if exchange.submitted else "pairing_code_expired"
@@ -1552,14 +1553,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 step_id=error_step_id, errors={"base": "cannot_connect"}
             )
 
-        if info.serial_number != identity.serial_number or info.hostname.rstrip(
-            "."
-        ) != identity.hostname.rstrip("."):
-            return self.async_show_form(
-                step_id=error_step_id, errors={"base": "invalid_certificate"}
-            )
-
-        if self._discovered_serial and info.serial_number != self._discovered_serial:
+        if (
+            info.serial_number != identity.serial_number
+            or info.hostname.rstrip(".") != identity.hostname.rstrip(".")
+            or (self._discovered_serial or info.serial_number) != info.serial_number
+        ):
             return self.async_show_form(
                 step_id=error_step_id, errors={"base": "invalid_certificate"}
             )

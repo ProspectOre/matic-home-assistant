@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
 
-from .client.models import HermesCollectionEntry
-from .client.slam_tiles import (
+from .client import (
+    HermesCollectionEntry,
     SlamStructureTile,
     SlamTile,
     decode_slam_structure_tile,

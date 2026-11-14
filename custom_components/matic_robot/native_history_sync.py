@@ -16,7 +16,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
-from .client.exceptions import MaticError
+from .client import MaticError
 from .const import DOMAIN
 from .managed_reconciliation import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .plan_model import plan_floor_token

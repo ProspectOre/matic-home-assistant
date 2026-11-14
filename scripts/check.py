@@ -107,6 +107,12 @@ def layer_violations(root: Path = ROOT) -> list[str]:
     ]
     for name, targets in imports.items():
         client = _inside(name, CLIENT)
+        if not client:
+            found.extend(
+                f"{name} imports {target}: import the client package, not its modules"
+                for target in sorted(targets)
+                if target != CLIENT and _inside(target, CLIENT)
+            )
         if client or name in PLAN_CORE:
             banned = {
                 target

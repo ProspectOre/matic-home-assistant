@@ -3,7 +3,7 @@
 import hashlib
 import struct
 
-from .client.models import FloorPlan
+from .client import FloorPlan
 
 
 def room_cadence_identity(floor_plan: FloorPlan, room_id: str) -> str:

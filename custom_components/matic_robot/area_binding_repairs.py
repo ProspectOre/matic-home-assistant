@@ -20,7 +20,7 @@ from .area_binding_records import (
     _valid_saved_binding,
     area_binding_needs_geometry_index,
 )
-from .client.models import FloorPlan
+from .client import FloorPlan
 from .const import DOMAIN
 from .repairs import repair_placeholders
 

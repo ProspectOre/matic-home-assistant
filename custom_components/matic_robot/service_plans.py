@@ -9,8 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 
 from .area_binding import AreaBindingStatus, area_binding_status
-from .client.commands import CleaningMode, CoverageSetting
-from .client.models import FloorPlan
+from .client import CleaningMode, CoverageSetting, FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
 from .managed_run import _validation_error
 from .occupancy import occupancy_holds

@@ -21,7 +21,7 @@ from .area_binding_records import (
     _valid_saved_binding,
 )
 from .area_geometry import GeometryTooComplex, RoomGeometryIndex
-from .client.models import FloorPlan
+from .client import FloorPlan
 
 MapBinding = dict[str, Any]
 

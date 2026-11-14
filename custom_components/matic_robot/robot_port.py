@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 
-from .client.coverage_receipts import CoverageVerifier
-from .client.models import CleaningSessionRecord, RobotOperationalState
+from .client import CleaningSessionRecord, CoverageVerifier, RobotOperationalState
 from .robot_commands import PlanStart, RobotCommands
 from .stores import LiveState, Store
 

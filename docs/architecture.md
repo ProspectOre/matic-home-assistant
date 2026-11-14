@@ -27,8 +27,8 @@ all come from the same policy and accounting results.
 
 Home Assistant owns setup, entity and service lifecycles. The integration keeps
 robot traffic local, validates and pins the robot's identity, and cleans up its
-resources on unload. The [Hermes client](../custom_components/matic_robot/client/api.py)
-composes the pinned [connection](../custom_components/matic_robot/client/hermes_connection.py),
+resources on unload. It imports only the protocol client's [public names](../custom_components/matic_robot/client/__init__.py), which import nothing back.
+The [Hermes client](../custom_components/matic_robot/client/api.py) composes the pinned [connection](../custom_components/matic_robot/client/hermes_connection.py),
 collection transport, decoded reads and validated commands. One
 [supervisor](../custom_components/matic_robot/client/supervisor.py) task dials,
 pins the certificate, completes the handshake, pings the open connection and

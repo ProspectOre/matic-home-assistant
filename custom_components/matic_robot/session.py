@@ -15,22 +15,20 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
-from .client.api import MaticHermesClient
-from .client.exceptions import (
+from .client import (
     AuthenticationRequiredError,
     CertificateMismatchError,
+    FloorPlan,
     InvalidRobotCertificateError,
     MaticError,
-)
-from .client.models import (
-    FloorPlan,
+    MaticHermesClient,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
     RobotTelemetry,
     RunProgress,
+    WatchStatus,
 )
-from .client.supervisor import WatchStatus
 from .const import DOMAIN
 from .heartbeat import Heartbeat
 from .repairs import repair_placeholders

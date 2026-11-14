@@ -11,8 +11,7 @@ from typing import Any
 from homeassistant.util import dt as dt_util
 
 from .cadence import cadence_snapshot
-from .client.coverage_receipts import native_session_hash
-from .client.models import CleaningSessionRecord, FloorPlan
+from .client import CleaningSessionRecord, FloorPlan, native_session_hash
 from .completion_ledger import (
     MAX_LEDGER_EVENTS,
     record_completion,

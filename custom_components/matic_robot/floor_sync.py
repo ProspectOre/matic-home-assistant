@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from .area_binding import binding_for_floor_plan
 from .area_binding_repairs import async_sync_custom_area_issue
-from .client.models import FloorPlan
+from .client import FloorPlan
 from .const import DOMAIN
 from .session import RobotSession
 from .slam_map_store import SlamMapIdentity, SlamMapStore

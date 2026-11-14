@@ -29,8 +29,7 @@ from .cadence import (
     CoverageCadenceRequiresVacuumError,
     normalize_cadence_policy,
 )
-from .client.floor_plan import MAX_FLOOR_PLAN_BOUNDARY_POINTS
-from .client.models import FloorPlan
+from .client import MAX_FLOOR_PLAN_BOUNDARY_POINTS, FloorPlan
 from .const import (
     MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
     MAX_ROOM_SEQUENCE_SIZE,

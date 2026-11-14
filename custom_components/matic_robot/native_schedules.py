@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from homeassistant.components.calendar import CalendarEvent
 from homeassistant.util import dt as dt_util
 
-from .client.models import CleaningSchedule, FloorPlan, RobotTelemetry
+from .client import CleaningSchedule, FloorPlan, RobotTelemetry
 
 # The robot stores only a start time. A run's real length depends on the
 # rooms and the floor, so each occurrence gets a nominal one-hour block.

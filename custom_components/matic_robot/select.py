@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.commands import CleaningMode, CoverageSetting
+from .client import CleaningMode, CoverageSetting
 from .const import CONF_CLEANING_MODE, CONF_COVERAGE_SETTING
 from .entity import MaticEntity
 from .stores import Store

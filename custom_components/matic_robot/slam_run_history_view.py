@@ -9,8 +9,7 @@ from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
-from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord
+from .client import CleaningSessionRecord, MaticError
 from .http import PRIVATE_NO_STORE_HEADERS, RUNS_API_URL, runtime_for_entry
 from .map_schema import RunHistory, RunRecord, RunTrail
 from .run_history import RUN_HISTORY_LIMIT

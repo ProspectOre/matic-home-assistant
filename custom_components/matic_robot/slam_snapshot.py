@@ -14,8 +14,8 @@ from typing import NamedTuple, NotRequired, TypedDict
 
 from google.protobuf.message import DecodeError
 
-from .client.models import HermesCollectionEntry
-from .client.slam_tiles import (
+from .client import (
+    HermesCollectionEntry,
     SlamStructureTile,
     SlamTile,
     decode_slam_structure_tile,

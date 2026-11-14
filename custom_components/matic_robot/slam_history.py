@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from . import slam_history_format as _history_format
-from .client.slam_scene import MAX_SCENE_BYTES
+from .client import MAX_SCENE_BYTES
 from .const import DOMAIN
 from .map_schema import (
     HistoryAcknowledgement,

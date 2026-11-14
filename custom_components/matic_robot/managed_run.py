@@ -10,7 +10,7 @@ from enum import StrEnum
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
-from .client.exceptions import CoverageGuardError, MaticError
+from .client import CoverageGuardError, MaticError
 from .const import DOMAIN
 from .plan_model import CleaningRoom
 

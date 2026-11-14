@@ -8,7 +8,7 @@ reads `NotRequired` from the class, which postponed annotations hide.
 from typing import Literal, NotRequired, TypedDict
 
 from .area_binding import AreaBindingStatus
-from .client.commands import CleaningMode, CoverageSetting
+from .client import CleaningMode, CoverageSetting
 
 type MapHealthState = Literal[
     "empty", "collecting", "incomplete", "ready", "truncated", "degraded"

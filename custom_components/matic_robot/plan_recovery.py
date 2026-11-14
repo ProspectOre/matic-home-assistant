@@ -19,12 +19,12 @@ from . import plan_storage
 from .cadence_accounting import (
     validated_cadence_snapshots as _validated_cadence_snapshots,
 )
-from .client.coverage_receipts import (
+from .client import (
     CoverageReceipt,
+    FloorPlan,
     coverage_floor_hash,
     coverage_region_hash,
 )
-from .client.models import FloorPlan
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .coverage_accounting import (
     CoverageEvidence,

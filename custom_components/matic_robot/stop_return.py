@@ -23,8 +23,7 @@ from typing import Protocol
 
 from homeassistant.core import HomeAssistant
 
-from .client.commands import UserCommand
-from .client.exceptions import MaticError
+from .client import MaticError, UserCommand
 from .const import DOMAIN
 from .native_history import OEM_STOP_FENCE_SECONDS
 from .plans import CleaningPlanManager
