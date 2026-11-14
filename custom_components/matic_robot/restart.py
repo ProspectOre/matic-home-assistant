@@ -14,10 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from .client.commands import UserCommand
-from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord
-from .client.wire import uuid_string
+from .client import CleaningSessionRecord, MaticError, UserCommand, uuid_string
 from .const import DOMAIN
 from .coverage_accounting import async_confirm_completed_coverage
 from .managed_dispatch import (

@@ -18,7 +18,7 @@ from .area_binding import (
 )
 from .area_binding_records import area_binding_needs_geometry_index
 from .area_geometry import RoomGeometryIndex
-from .client.models import FloorPlan
+from .client import FloorPlan
 from .llm_common import (
     _READ_ONLY,
     _ROBOT_FIELD,

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from homeassistant.core import CALLBACK_TYPE, callback
 
-from .client.models import CleaningSession, RobotOperationalState
+from .client import CleaningSession, RobotOperationalState
 
 
 class Store[T]:

@@ -14,13 +14,14 @@ from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
-from .client.discovery import decode_bot_information
-from .client.exceptions import (
+from .client import (
     CannotConnectError,
     CertificateMismatchError,
     InvalidRobotCertificateError,
+    async_fetch_peer_certificate,
+    decode_bot_information,
+    validate_certificate,
 )
-from .client.tls import async_fetch_peer_certificate, validate_certificate
 from .const import DEFAULT_PORT, SERVICE_TYPE
 from .entity import hostname_suffix
 

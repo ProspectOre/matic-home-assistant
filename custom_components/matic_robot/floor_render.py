@@ -10,8 +10,7 @@ from itertools import combinations
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
-from .client.floor_plan import resolve_robot_map_position
-from .client.models import FloorPlan, RobotPose
+from .client import FloorPlan, RobotPose, resolve_robot_map_position
 
 _COLORS = (
     "#5B8FF9",

@@ -24,17 +24,15 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from . import native_history, plan_state, plan_storage, plan_timing
-from .client.coverage_receipts import (
+from .client import (
+    CleaningSessionRecord,
     CoverageReceipt,
     CoverageVerifier,
+    FloorPlan,
     coverage_floor_hash,
     native_session_hash,
 )
-from .client.models import CleaningSessionRecord, FloorPlan
-from .const import (
-    DOMAIN,
-    EVENT_PLAN_DOCKED,
-)
+from .const import DOMAIN, EVENT_PLAN_DOCKED
 from .coverage_accounting import (
     async_confirm_completed_coverage,
     coverage_evidence_from_storage,

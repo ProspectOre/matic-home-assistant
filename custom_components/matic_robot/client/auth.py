@@ -35,6 +35,11 @@ class HermesCredential:
         return cls(hashed_token=bytes(token.hashed_token), user=bytes(token.user))
 
     @classmethod
+    def from_bytes(cls, payload: bytes) -> HermesCredential:
+        """Create a validated credential from a serialized protocol response."""
+        return cls.from_message(BotToken.FromString(payload))
+
+    @classmethod
     def from_storage(cls, value: str) -> HermesCredential:
         """Decode the config-entry representation."""
         try:
@@ -72,6 +77,11 @@ class HermesCredential:
 def new_hermes_user_id() -> str:
     """Return the UUID-v4 user identifier expected by Hermes pairing."""
     return str(uuid4())
+
+
+def token_request(user_id: str) -> bytes:
+    """Serialize the pairing request that asks the robot for a credential."""
+    return cast(bytes, TokenRequest(user_id=user_id).SerializeToString())
 
 
 def is_valid_hermes_user_id(value: str) -> bool:

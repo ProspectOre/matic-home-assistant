@@ -1,10 +1,10 @@
-custom_components/matic_robot/area_binding_geometry.py 1930
+custom_components/matic_robot/area_binding_geometry.py 1928
 custom_components/matic_robot/client/hermes_commands.py 1053
-custom_components/matic_robot/config_flow.py 1634
-custom_components/matic_robot/managed_observation.py 1110
+custom_components/matic_robot/config_flow.py 1632
+custom_components/matic_robot/managed_observation.py 1096
 custom_components/matic_robot/native_history.py 1215
 custom_components/matic_robot/plan_cadence.py 1170
-custom_components/matic_robot/plan_ledger.py 1736
+custom_components/matic_robot/plan_ledger.py 1734
 custom_components/matic_robot/sensor.py 1229
 custom_components/matic_robot/slam_map_store.py 1329
 frontend/map-studio-v4/effects.ts 1190

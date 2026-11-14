@@ -13,9 +13,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.commands import QueueAction, UserCommand
-from .client.exceptions import MaticError
-from .client.models import RobotActivity
+from .client import MaticError, QueueAction, RobotActivity, UserCommand
 from .const import DOMAIN
 from .entity import MaticEntity
 from .robot_commands import validation_error

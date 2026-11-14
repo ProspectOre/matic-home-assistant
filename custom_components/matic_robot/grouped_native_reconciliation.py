@@ -8,8 +8,7 @@ from typing import Any
 
 from homeassistant.util import dt as dt_util
 
-from .client.coverage_receipts import native_session_hash
-from .client.models import CleaningSessionRecord
+from .client import CleaningSessionRecord, native_session_hash
 from .native_completion import (
     NativeRoomCompletion,
     match_session_room_completions,

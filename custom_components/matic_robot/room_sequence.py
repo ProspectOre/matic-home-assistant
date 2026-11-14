@@ -9,7 +9,7 @@ from typing import Any
 
 from homeassistant.util import dt as dt_util
 
-from .client.models import FloorPlan
+from .client import FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
 from .plan_model import (
     CleaningRoom,

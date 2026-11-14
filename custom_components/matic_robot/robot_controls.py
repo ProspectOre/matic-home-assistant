@@ -13,15 +13,17 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from .client.commands import (
+from .client import (
     CleaningMode,
     CoverageSetting,
+    FloorPlan,
+    MaticError,
     QueueAction,
     QueueChangeError,
+    Room,
+    SinkLocationUnavailableError,
     UserCommand,
 )
-from .client.exceptions import MaticError, SinkLocationUnavailableError
-from .client.models import FloorPlan, Room
 from .const import CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, DOMAIN
 from .plan_model import plan_floor_token, resolve_room_reference
 from .robot_commands import RobotCommands, enum_option, validation_error

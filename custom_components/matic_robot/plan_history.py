@@ -12,7 +12,7 @@ from typing import Any
 from homeassistant.util import dt as dt_util
 
 from . import plan_timing
-from .client.models import CleaningSessionRecord
+from .client import CleaningSessionRecord
 from .map_schema import RunEntry
 from .plan_catalog import PlanCatalog
 from .plan_model import (

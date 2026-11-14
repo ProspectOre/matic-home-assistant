@@ -20,9 +20,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from homeassistant.helpers.storage import Store
 
-from .client.exceptions import MaticError
-from .client.floor_plan import MAX_MAP_COORDINATE, pose_observation_is_current
-from .client.models import FloorPlan, RobotPose
+from .client import (
+    MAX_MAP_COORDINATE,
+    FloorPlan,
+    MaticError,
+    RobotPose,
+    pose_observation_is_current,
+)
 from .const import DOMAIN
 from .http import (
     PRIVATE_NO_STORE_HEADERS,

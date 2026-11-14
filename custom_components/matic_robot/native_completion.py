@@ -9,8 +9,7 @@ from typing import Literal
 
 from homeassistant.util import dt as dt_util
 
-from .client.coverage_receipts import native_session_hash
-from .client.models import CleaningSession, CleaningSessionRecord
+from .client import CleaningSession, CleaningSessionRecord, native_session_hash
 from .plan_model import CleaningRoom
 
 LegacyCompletionPolicy = Literal["aggregate", "room_list"]

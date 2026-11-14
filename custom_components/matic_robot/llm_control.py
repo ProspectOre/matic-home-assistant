@@ -15,7 +15,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm, translation
 from homeassistant.util.json import JsonObjectType
 
-from .client.commands import CleaningMode
+from .client import CleaningMode
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .llm_common import _ROBOT_FIELD, _error, _MaticTool, _resolve_plan_id
 from .plan_model import resolve_room_reference

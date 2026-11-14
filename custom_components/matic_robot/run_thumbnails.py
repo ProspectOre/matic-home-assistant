@@ -16,7 +16,7 @@ from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
-from .client.exceptions import MaticError
+from .client import MaticError
 from .http import (
     PRIVATE_NO_STORE_HEADERS,
     runtime_for_entry,

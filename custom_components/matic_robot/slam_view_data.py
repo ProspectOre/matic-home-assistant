@@ -6,7 +6,7 @@ from hashlib import sha256
 from time import time
 from typing import TYPE_CHECKING
 
-from .client.floor_plan import (
+from .client import (
     pose_observation_age_seconds,
     resolve_robot_map_position,
     robot_location_source,

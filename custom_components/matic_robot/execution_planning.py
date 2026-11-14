@@ -16,7 +16,7 @@ from .area_binding import (
     AreaBindingStatus,
     area_binding_status,
 )
-from .client.models import FloorPlan
+from .client import FloorPlan
 from .plan_cadence import (
     PlanCadence,
 )

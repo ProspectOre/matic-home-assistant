@@ -13,7 +13,6 @@ import pytest
 from google.protobuf.message import DecodeError
 
 from custom_components.matic_robot import slam_history_format as history_format
-from custom_components.matic_robot.client import slam_scene
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.slam_scene import (
     MAX_SCENE_BYTES,
@@ -884,7 +883,7 @@ def test_history_decompression_is_bounded() -> None:
     scene = _scene()
     compressed = __import__("zlib").compress(scene)
     with patch.object(
-        slam_scene,
+        history_format,
         "MAX_SCENE_BYTES",
         len(scene) - 1,
     ):

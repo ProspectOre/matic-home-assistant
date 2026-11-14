@@ -17,10 +17,11 @@ from google.protobuf.message import DecodeError
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
-from .client.models import FloorPlan
-from .client.slam_scene import (
+from .client import (
     SCENE_PAGE_ID_BYTES,
+    FloorPlan,
     ScenePage,
+    SlamTile,
     encode_scene_manifest,
     encode_scene_page,
     scene_frame,
@@ -28,7 +29,6 @@ from .client.slam_scene import (
     scene_point_count,
     scene_sample_step,
 )
-from .client.slam_tiles import SlamTile
 from .http import (
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,

@@ -18,9 +18,7 @@ from .area_binding_formats import (
     SCOPED_MAP_BINDING_VERSION,
 )
 from .area_geometry import AreaGeometry, GeometryTooComplex, RoomGeometryIndex
-from .client.floor_plan import MAX_FLOOR_PLAN_BOUNDARY_POINTS
-from .client.models import FloorPlan
-from .client.slam_tiles import VOXEL_SCALE_METERS
+from .client import MAX_FLOOR_PLAN_BOUNDARY_POINTS, VOXEL_SCALE_METERS, FloorPlan
 
 _FINGERPRINT_DOMAIN = b"matic-area-geometry\0"
 

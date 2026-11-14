@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .client.models import CleaningSession, CleaningSessionRecord
+from .client import CleaningSession, CleaningSessionRecord
 from .const import DOMAIN
 from .map_schema import RunEntry, RunItem, RunOutcome, TrailPoint
 

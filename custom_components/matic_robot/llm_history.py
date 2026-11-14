@@ -11,9 +11,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
-from .client.exceptions import MaticError
-from .client.models import CleaningSession, CleaningSessionRecord
-from .client.observations import MAX_OBSERVATIONS
+from .client import MAX_OBSERVATIONS, CleaningSession, CleaningSessionRecord, MaticError
 from .llm_common import (
     _READ_ONLY,
     _ROBOT_FIELD,

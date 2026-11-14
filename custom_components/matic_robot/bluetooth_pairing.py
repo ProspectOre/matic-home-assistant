@@ -21,9 +21,12 @@ from bleak_retry_connector import (
 )
 from google.protobuf.message import DecodeError
 
-from .client.auth import HermesCredential
-from .client.exceptions import MaticError, PairingModeRequiredError
-from .client.proto.hermes_auth_pb2 import BotToken, TokenRequest
+from .client import (
+    HermesCredential,
+    MaticError,
+    PairingModeRequiredError,
+    token_request,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -536,7 +539,7 @@ async def async_request_bluetooth_credential(
         replace_existing_bond and bond_address is not None and reset_bond_path is None
     )
 
-    request = TokenRequest(user_id=user_id).SerializeToString()
+    request = token_request(user_id)
     adapter_access_error: BaseException | None = None
     last_failure = "no credential candidate completed"
     recovery_candidates: dict[str, str] = {}
@@ -754,9 +757,7 @@ async def async_request_bluetooth_credential(
                         await client.read_gatt_char(HERMES_TOKEN_CHARACTERISTIC)
                     )
                     failure_stage = "credential validation"
-                    credential = HermesCredential.from_message(
-                        BotToken.FromString(response)
-                    )
+                    credential = HermesCredential.from_bytes(response)
                     if credential.app_id != user_id:
                         raise ValueError("Robot returned a credential for another user")
                     if reset_bond_path is not None and (

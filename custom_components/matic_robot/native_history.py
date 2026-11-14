@@ -13,19 +13,21 @@ from typing import Any, cast
 from homeassistant.util import dt as dt_util
 
 from . import daily_room_limit
-from .cadence_accounting import (
-    validated_cadence_snapshot as _validated_cadence_snapshot,
+from .cadence_accounting import validated_cadence_snapshot
+from .client import (
+    CleaningSessionRecord,
+    CoverageReceipt,
+    FloorPlan,
+    Room,
+    native_session_hash,
 )
-from .client.coverage_receipts import CoverageReceipt, native_session_hash
-from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import MAX_ROOM_SEQUENCE_SIZE
 from .coverage_accounting import coverage_evidence_from_storage, verified_room_coverage
 from .grouped_native_reconciliation import (
     match_native_reconciliation_room,
     validated_grouped_rooms,
 )
-from .native_completion import NativeRoomCompletion
-from .native_completion import native_room_key as _native_room_key
+from .native_completion import NativeRoomCompletion, native_room_key
 from .plan_model import CleaningRoom, plan_floor_token, room_cadence_identity
 from .plan_timing import (
     _admit_room_settings,
@@ -65,7 +67,7 @@ def _import_daily_native_uncertainty(
     rooms_by_name: dict[str, list[Room]] = {}
     rooms_by_protocol_id = {room.protocol_id: room for room in floor_plan.rooms}
     for room in floor_plan.rooms:
-        rooms_by_name.setdefault(_native_room_key(room.name), []).append(room)
+        rooms_by_name.setdefault(native_room_key(room.name), []).append(room)
     for record in records:
         session = record.session
         canonical = session.mission_id is not None or session.partition_id is not None
@@ -98,7 +100,7 @@ def _import_daily_native_uncertainty(
             reported_rooms = {
                 room
                 for name in names
-                for room in rooms_by_name.get(_native_room_key(name), ())
+                for room in rooms_by_name.get(native_room_key(name), ())
             }
         for room in reported_rooms:
             if daily_room_limit._time(session.ended_at) is None:
@@ -210,7 +212,7 @@ def _validated_native_reconciliation(
             else {}
         ),
     }
-    cadence_state = _validated_cadence_snapshot(value.get("cadence_state"))
+    cadence_state = validated_cadence_snapshot(value.get("cadence_state"))
     if cadence_state is not None:
         result["cadence_state"] = cadence_state
     evidence = coverage_evidence_from_storage(value.get("coverage_evidence"))
@@ -255,8 +257,7 @@ def _native_completion_settings(
             coverage is not None and cadence_coverage != coverage
         ):
             return None
-        mode = cadence_mode
-        coverage = cadence_coverage
+        mode, coverage = cadence_mode, cadence_coverage
     if (
         isinstance(mode, str)
         and mode in ("vacuum", "mop", "vacuum_and_mop")
@@ -286,8 +287,7 @@ def _attach_cadence_state(robot: dict[str, Any], pending: dict[str, Any]) -> Non
     state = (
         by_room.get(pending.get("room_id")) if isinstance(by_room, Mapping) else None
     )
-    cadence_state = _validated_cadence_snapshot(state)
-    if cadence_state is not None:
+    if (cadence_state := validated_cadence_snapshot(state)) is not None:
         pending["cadence_state"] = cadence_state
     evidence = coverage_evidence_from_storage(
         checkpoint.get("coverage_evidence") if isinstance(checkpoint, dict) else None
@@ -431,7 +431,7 @@ def _reconcile_native_room_history(
             item
             for item in floor_plan.rooms
             if item.id == pending["room_id"]
-            and _native_room_key(item.name) == _native_room_key(pending["room"])
+            and native_room_key(item.name) == native_room_key(pending["room"])
         ),
         None,
     )
@@ -615,7 +615,7 @@ def _import_native_room_activity(
     records = tuple(records)
     room_lookup: dict[str, tuple[str, str] | None] = {}
     for room in floor_plan.rooms:
-        key = _native_room_key(room.name)
+        key = native_room_key(room.name)
         room_lookup[key] = None if key in room_lookup else (room.id, room.name)
 
     candidates: dict[str, tuple[float, str, str]] = {}
@@ -653,7 +653,7 @@ def _import_native_room_activity(
                 else session.completed_rooms
             )
             mapped_rooms = [
-                room_lookup.get(_native_room_key(name)) for name in worked_names
+                room_lookup.get(native_room_key(name)) for name in worked_names
             ]
         for mapped_room in mapped_rooms:
             if mapped_room is None:

@@ -14,9 +14,13 @@ from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from .client.coverage_receipts import native_session_hash
-from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord, RobotActivity, RobotOperationalState
+from .client import (
+    CleaningSessionRecord,
+    MaticError,
+    RobotActivity,
+    RobotOperationalState,
+    native_session_hash,
+)
 from .managed_run import (
     NativeTaskEndedError,
     PlanCancelledError,

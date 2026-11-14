@@ -36,7 +36,7 @@ def integration(tmp_path: Path) -> Path:
             f"{PACKAGE}/client/wire.py": "import struct\n",
             f"{PACKAGE}/client/proto/pb2.py": "",
             f"{PACKAGE}/plan_model.py": (
-                "from . import cadence\nfrom .client.api import Client\n"
+                "from . import cadence\nfrom .client import Client\n"
                 "from .const import DOMAIN\n"
             ),
             f"{PACKAGE}/entity.py": "from homeassistant.helpers import entity\n",
@@ -69,6 +69,24 @@ def test_imports_inside_their_layers_pass(integration: Path) -> None:
             "client/wire.py",
             "from .. import DOMAIN\n",
             "client.wire imports custom_components.matic_robot: the client must not",
+        ),
+        (
+            "entity.py",
+            "from .client.api import Client\n",
+            "entity imports custom_components.matic_robot.client.api: "
+            "import the client package, not its modules",
+        ),
+        (
+            "plan_model.py",
+            "from .client import wire\n",
+            "plan_model imports custom_components.matic_robot.client.wire: "
+            "import the client package, not its modules",
+        ),
+        (
+            "entity.py",
+            "from .client.proto.pb2 import Message\n",
+            "entity imports custom_components.matic_robot.client.proto.pb2: "
+            "import the client package, not its modules",
         ),
         (
             "cadence.py",

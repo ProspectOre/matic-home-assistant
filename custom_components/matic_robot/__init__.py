@@ -20,9 +20,7 @@ from . import session_listeners
 from .activity_events import ActivityEvents
 from .area_binding_repairs import async_delete_custom_area_issue
 from .blueprint_update import async_check_blueprints
-from .client.api import MaticHermesClient
-from .client.auth import HermesCredential
-from .client.commands import CleaningMode, CoverageSetting
+from .client import CleaningMode, CoverageSetting, HermesCredential, MaticHermesClient
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,

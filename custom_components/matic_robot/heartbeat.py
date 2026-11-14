@@ -16,15 +16,15 @@ from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
-from .client.exceptions import MaticError
-from .client.mission import decode_mission_client_state
-from .client.models import (
+from .client import (
     FloorPlan,
     HermesCollectionEntry,
     MappedFloor,
+    MaticError,
     RobotOperationalState,
     RobotTelemetry,
     RunProgress,
+    decode_mission_client_state,
 )
 from .const import (
     DOMAIN,

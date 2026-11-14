@@ -18,9 +18,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .camera_ai import async_answer_about_photo, validate_ai_task_entity
-from .client.exceptions import MaticError
-from .client.floor_plan import room_name_key
-from .client.models import RobotOperationalState
+from .client import MaticError, RobotOperationalState, room_name_key
 from .const import (
     CONF_PHOTO_PATROL_ALLOW_UNATTENDED,
     CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
@@ -34,7 +32,7 @@ from .robot_controls import RobotControls
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
-    from .client.snaps import RobotPhoto
+    from .client import RobotPhoto
 
 # The robot reports this code while it waits at a Go to room destination,
 # and starts a ten-minute countdown to dock on its own.

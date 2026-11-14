@@ -21,9 +21,7 @@ from . import managed_area as area_execution
 from . import managed_dispatch as dispatch_control
 from . import managed_leg as leg_execution
 from . import managed_observation as observation
-from .client.commands import UserCommand
-from .client.exceptions import MaticError
-from .client.models import RobotActivity
+from .client import MaticError, RobotActivity, UserCommand
 from .const import DOMAIN, EVENT_PLAN_FINISHED, EVENT_PLAN_STARTED
 from .managed_run import (
     PlanCancelledError,

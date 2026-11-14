@@ -15,8 +15,7 @@ from homeassistant.core import (
 from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
-from .client.commands import QueueAction
-from .client.exceptions import MaticError
+from .client import MaticError, QueueAction
 from .managed_dispatch import _ensure_stop_settled
 from .managed_run import (
     _validation_error,

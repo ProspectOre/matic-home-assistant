@@ -10,7 +10,7 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
-from .client.snaps import RobotPhoto
+from .client import RobotPhoto
 from .const import DOMAIN
 from .media_source import PhotoAttachmentUnavailable, photo_attachment_source
 

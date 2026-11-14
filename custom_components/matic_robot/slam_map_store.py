@@ -16,11 +16,12 @@ from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
-from .client.api import MaticHermesClient
-from .client.models import FloorPlan, HermesCollectionEntry
-from .client.slam_tiles import (
+from .client import (
     MAX_SLAM_TILES,
     MAX_TILE_ENTRY_BYTES,
+    FloorPlan,
+    HermesCollectionEntry,
+    MaticHermesClient,
     SlamStructureTile,
     SlamTile,
     decode_slam_structure_tile,
@@ -422,8 +423,7 @@ class SlamMapStore:
         mission_token = tile.mission_token
         if mission_token in self._retired_missions and not allow_retired:
             return
-        candidate = self._candidates.get(mission_token)
-        if candidate is None:
+        if (candidate := self._candidates.get(mission_token)) is None:
             if len(self._candidates) >= MAX_CANDIDATE_MISSIONS:
                 evicted_token, _candidate = self._candidates.popitem(last=False)
                 self._retire_mission(evicted_token)

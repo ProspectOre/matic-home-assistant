@@ -13,9 +13,12 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from .client.coverage_receipts import native_session_hash
-from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord, RobotActivity
+from .client import (
+    CleaningSessionRecord,
+    MaticError,
+    RobotActivity,
+    native_session_hash,
+)
 from .const import DOMAIN
 from .coverage_accounting import (
     async_confirm_completed_coverage,

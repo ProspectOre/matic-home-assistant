@@ -15,9 +15,12 @@ from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from PIL import Image, UnidentifiedImageError
 
-from .client.exceptions import MaticError
-from .client.models import HermesCollectionEntry
-from .client.snaps import RobotPhoto, decode_instamatic_snap
+from .client import (
+    HermesCollectionEntry,
+    MaticError,
+    RobotPhoto,
+    decode_instamatic_snap,
+)
 from .const import DOMAIN
 from .http import (
     PRIVATE_NO_STORE_HEADERS,
@@ -25,7 +28,7 @@ from .http import (
 )
 
 if TYPE_CHECKING:
-    from .client.api import MaticHermesClient
+    from .client import MaticHermesClient
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -3,12 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .client.coverage_receipts import (
-    CoverageReceipt,
-    CoverageVerifier,
-    receipt_from_storage,
-)
-from .client.exceptions import MaticError
+from .client import CoverageReceipt, CoverageVerifier, MaticError, receipt_from_storage
 
 
 @dataclass(frozen=True, slots=True)

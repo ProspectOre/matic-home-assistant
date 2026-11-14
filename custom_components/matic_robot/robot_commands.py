@@ -12,9 +12,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .area_binding import AreaBindingStatus, area_binding_status
-from .client.commands import CleaningMode, CoverageSetting
-from .client.exceptions import CoverageGuardError, MaticError
-from .client.models import FloorPlan, Room
+from .client import (
+    CleaningMode,
+    CoverageGuardError,
+    CoverageSetting,
+    FloorPlan,
+    MaticError,
+    Room,
+)
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .plan_model import (
     plan_area_fingerprint,

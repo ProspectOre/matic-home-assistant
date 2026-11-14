@@ -27,9 +27,7 @@ from . import managed_dispatch as dispatch_control
 from . import managed_observation as observation
 from . import managed_reconciliation as history_reconciliation
 from . import managed_run
-from .client.commands import UserCommand
-from .client.exceptions import CoverageGuardError, MaticError
-from .client.models import RobotActivity
+from .client import CoverageGuardError, MaticError, RobotActivity, UserCommand
 from .const import DOMAIN
 from .coverage_accounting import async_confirm_completed_coverage
 from .grouped_native_reconciliation import build_grouped_native_reconciliation

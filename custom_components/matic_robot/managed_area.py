@@ -13,9 +13,7 @@ from homeassistant.exceptions import ServiceValidationError
 from . import managed_dispatch as dispatch_control
 from . import managed_observation as observation
 from . import managed_run
-from .client.commands import UserCommand
-from .client.exceptions import MaticError
-from .client.models import CleaningSessionRecord, RobotActivity
+from .client import CleaningSessionRecord, MaticError, RobotActivity, UserCommand
 from .const import DOMAIN
 from .managed_run import (
     PlanCancelledError,

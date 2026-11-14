@@ -9,8 +9,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from .client.commands import CleaningMode, CoverageSetting
-from .client.models import FloorPlan
+from .client import CleaningMode, CoverageSetting, FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
 from .room_identity import room_cadence_identity as room_cadence_identity
 

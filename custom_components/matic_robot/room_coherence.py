@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
-from .client.models import FloorPlan
+from .client import FloorPlan
 from .const import DOMAIN
 from .native_completion import native_room_key
 from .plan_model import CleaningRoom, room_cadence_identity

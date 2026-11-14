@@ -9,9 +9,7 @@ from functools import partial
 from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
 
-from .client.models import FloorPlan
-from .client.slam_scene import encode_slam_scene
-from .client.slam_tiles import SlamStructureTile, SlamTile
+from .client import FloorPlan, SlamStructureTile, SlamTile, encode_slam_scene
 from .slam_history import SlamHistoryStore
 from .slam_map_store import MAP_SETTLE_SECONDS, SlamMapIdentity, SlamMapStore
 

@@ -11,7 +11,7 @@ from datetime import datetime
 
 from homeassistant.util import dt as dt_util
 
-from .client.models import CleaningModeResult, CleaningSessionRecord, FloorPlan, Room
+from .client import CleaningModeResult, CleaningSessionRecord, FloorPlan, Room
 
 
 def native_statistics_have_ambiguous_floor(floor_plan: FloorPlan) -> bool:

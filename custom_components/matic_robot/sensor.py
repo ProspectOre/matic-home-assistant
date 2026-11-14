@@ -29,7 +29,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from . import MaticConfigEntry
-from .client.models import (
+from .client import (
     ROBOT_ALERT_OPTIONS,
     CleaningPhase,
     CuesGestureStatus,

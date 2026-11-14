@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 
-from .client.models import ROBOT_ALERTS, RobotOperationalState
+from .client import ROBOT_ALERTS, RobotOperationalState
 from .const import DOMAIN
 from .repairs import repair_placeholders
 
