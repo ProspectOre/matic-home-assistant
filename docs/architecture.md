@@ -138,8 +138,8 @@ and [SLAM](../custom_components/matic_robot/slam_render.py) renderers produce lo
 [Area binding](../custom_components/matic_robot/area_binding.py) relates saved
 areas to a verified floor through the v7 binding, the only one it writes. Separate modules handle bounded
 [geometry](../custom_components/matic_robot/area_binding_geometry.py), floor-scoped [Repairs](../custom_components/matic_robot/area_binding_repairs.py)
-and [older bindings](../custom_components/matic_robot/area_binding_legacy.py), read only to convert them
-at startup or, until they verify, to keep their status.
+and the [bindings 0.5 saved](../custom_components/matic_robot/area_binding_legacy.py), read through their exact v7 form
+until the startup upgrade stores it. Any older binding is invalid and its area must be redrawn.
 
 ## Tests and delivery
 

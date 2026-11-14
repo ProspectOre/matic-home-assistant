@@ -292,21 +292,17 @@ class MaticGetPlanReadinessTool(_MaticTool):
                 has_unreviewable_area = True
                 continue
             name = str(area.get("name", area_id))
-            uses_indexed_binding = area_binding_needs_geometry_index(area)
-            if uses_indexed_binding and room_geometry is None:
+            if room_geometry is None and area_binding_needs_geometry_index(area):
                 room_geometry = _room_geometry_index(floor_plan)
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is AreaBindingStatus.CURRENT:
                 area_states.append({"name": name, "status": "ready"})
             elif status is AreaBindingStatus.GEOMETRY_CHANGED:
-                if room_geometry is None:
-                    room_geometry = _room_geometry_index(floor_plan)
                 can_rebind = area_binding_allows_review(
                     area,
                     floor_plan,
                     status=status,
                     room_geometry=room_geometry,
-                    circles_already_validated=uses_indexed_binding,
                 )
                 if can_rebind:
                     area_states.append({"name": name, "status": "needs_confirmation"})

@@ -24,7 +24,6 @@ from custom_components.matic_robot.area_binding import (
     binding_for_area,
 )
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
-from custom_components.matic_robot.area_geometry import RoomGeometryIndex
 from custom_components.matic_robot.area_views import (
     MaticAreasView,
 )
@@ -94,7 +93,7 @@ from custom_components.matic_robot.slam_view_data import (
     pose_projection,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
-from tests import legacy_bindings, runtime_fakes
+from tests import runtime_fakes
 from tests.test_slam_map import synthetic_slam_entry
 
 
@@ -1096,21 +1095,22 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
             "circles": [review_circle],
             "cleaning_mode": "vacuum_and_mop",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(
+            "map_binding": binding_for_area(
                 replace(
                     runtime.session.floor.value,
                     rooms=(
                         replace(
                             runtime.session.floor.value.rooms[0],
                             boundary=(
-                                (0.01, 0.0),
+                                (0.05, 0.0),
                                 (0.3, 0.0),
                                 (0.3, 0.3),
                                 (0.0, 0.3),
                             ),
                         ),
                     ),
-                )
+                ),
+                [review_circle],
             ),
             "schema_version": AREA_SCHEMA_VERSION,
         },
@@ -1211,42 +1211,6 @@ async def test_area_workspace_does_not_index_geometry_without_saved_areas() -> N
     assert response.status == HTTPStatus.OK
     assert json.loads(response.body)["areas"] == []
     index.assert_not_called()
-
-
-async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
-    runtime = _runtime()
-    circle = {"x": 0.1, "y": 0.1, "radius": 0.1}
-    changed_floor = replace(
-        runtime.session.floor.value,
-        rooms=(
-            replace(
-                runtime.session.floor.value.rooms[0],
-                boundary=((0.01, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)),
-            ),
-        ),
-    )
-    runtime.cleaning_plans.catalog.areas.return_value = {
-        "review": {
-            "name": "Review",
-            "circles": [circle],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "quick",
-            "map_binding": legacy_bindings.v1(changed_floor),
-            "schema_version": AREA_SCHEMA_VERSION,
-        }
-    }
-    hass = _hass(_entry(runtime))
-
-    with patch(
-        "custom_components.matic_robot.area_views.RoomGeometryIndex",
-        wraps=RoomGeometryIndex,
-    ) as index:
-        response = await MaticAreasView().get(_request(hass), "entry")
-
-    area = json.loads(response.body)["areas"][0]
-    assert area["status"] == "geometry_changed"
-    assert area["can_rebind"] is True
-    index.assert_called_once()
 
 
 async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
@@ -2760,7 +2724,9 @@ def _saved_area(floor_plan: FloorPlan, name: str) -> dict[str, object]:
         "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": legacy_bindings.v1(floor_plan),
+        "map_binding": binding_for_area(
+            floor_plan, [{"x": 0.1, "y": 0.1, "radius": 0.1}]
+        ),
     }
 
 
@@ -2930,8 +2896,9 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     assert plans["corrupt"]["next_run_preview"]["blocker"] == "invalid_plan"
 
     # A redrawn map or a missing area blocks the plan before anything runs.
-    manager.repository.robot(serial)["areas"]["mat"]["map_binding"] = (
-        legacy_bindings.v1(replace(floor_plan, mission_id=floor_plan.mission_id + 1))
+    manager.repository.robot(serial)["areas"]["mat"]["map_binding"] = binding_for_area(
+        replace(floor_plan, mission_id=floor_plan.mission_id + 1),
+        [{"x": 0.1, "y": 0.1, "radius": 0.1}],
     )
     manager.repository.robot(serial)["areas"].pop("rug")
     manager.repository.robot(serial)["areas"]["mat"]["name"] = None

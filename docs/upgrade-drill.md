@@ -19,8 +19,8 @@ git fetch origin tag v0.5.4
 | Phase | Code | What it does |
 | --- | --- | --- |
 | seed | older | Saves plans and a version-1 map-history sample, finishes a run, then stops Home Assistant mid-clean. It adds a second area with the whole-floor v1 binding 0.3 wrote to the stored file. The stores are copied as the pre-upgrade backup. |
-| upgrade | this checkout | Converts both area bindings to v7, migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
-| downgrade | older | Starts the integration on the newer stores without starting a run. Requires no error, Matic Map listing both converted areas as invalid without circles, and the version-1 map-history reader leaving v2 unread with its bytes unchanged (0.5.4 keeps a temporary, empty history). |
+| upgrade | this checkout | Converts the 0.5 area binding to v7 and leaves the v1 one as saved and invalid, migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
+| downgrade | older | Starts the integration on the newer stores without starting a run. Requires no error, Matic Map listing the converted area as invalid without circles and the v1 area as current after 0.5.4 converts it, and the version-1 map-history reader leaving v2 unread with its bytes unchanged (0.5.4 keeps a temporary, empty history). |
 | restore | older | Runs the plan on the matching pre-upgrade version-1 backup. |
 
 The drill also saves and executes a separate custom-area plan. It checks area identity,
@@ -40,11 +40,14 @@ in the downgrade phase, and the restored backup still has the catalogs.
   such as `run_history` and the per-run `skipped_room_ids` and `held_rooms`.
   It repairs fields older releases saved, such as duration scalars and run
   `trigger`, in memory once per start and saves them with its next write.
-- At startup 0.6 converts every custom-area binding it can verify on the
-  current floor to v7, the only format it writes. 0.5.4 does not read v7: it
-  starts normally but hides a converted area and refuses plans that use it
-  until the area is redrawn. A binding 0.6 cannot verify keeps its old format
-  and its Repair.
+- At startup 0.6 converts every custom-area binding 0.5 wrote (v3 with room
+  snapshots, v4 and v6) that it can verify on the current floor to v7, the
+  only format it writes. 0.5.4 does not read v7: it starts normally but hides
+  a converted area and refuses plans that use it until the area is redrawn. A
+  binding 0.6 cannot verify yet keeps its old format and its Repair.
+- An area saved before 0.5 that never re-verified (v1, v2, v5, or v3 without
+  room snapshots) reads as invalid in 0.6 and must be redrawn. 0.6 leaves its
+  record as saved.
 - 0.6 settles the run that 0.5.4 left cleaning as unverified
   (`restart_native_mission_changed_or_ended`) and then runs the plan normally.
 - 0.5.4 runs on a plan store 0.6 wrote. It keeps `run_history` but does not add

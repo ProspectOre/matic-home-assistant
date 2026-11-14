@@ -17,14 +17,13 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from . import area_binding_geometry as binding_geometry
-from . import area_binding_legacy as legacy
 from . import native_history, plan_timing
 from .area_binding import (
     AreaBindingStatus,
     area_binding_needs_geometry_index,
     area_binding_status,
     binding_for_area,
-    binding_mission,
+    current_binding,
     room_frame_point_count,
     total_room_frame_point_count,
     valid_binding,
@@ -151,11 +150,11 @@ class PlanCatalog:
     ) -> AreaBindingUpgradeResult:
         """Convert bindings that verify on this floor, inside its commit.
 
-        A binding saved before version 7 converts once it is CURRENT here,
-        and stays as saved until then. On an unchanged map the area is bound
-        afresh; after a tolerated change its saved evidence is kept, so drift
-        is never rebased. A version 7 binding without room frames is bound
-        afresh whenever it is CURRENT, as room frames may now fit.
+        A binding 0.5 saved converts once it is CURRENT here, and stays as
+        saved until then. On an unchanged map the area is bound afresh; after
+        a tolerated change it takes its exact version 7 form, so drift is
+        never rebased. A version 7 binding without room frames is bound afresh
+        whenever it is CURRENT, as room frames may now fit.
         """
         pending = False
         room_geometry = None
@@ -170,10 +169,9 @@ class PlanCatalog:
                 area.get("circles"), list
             ):
                 continue
+            saved = current_binding(binding)
             old = not valid_binding(binding)
-            if old and binding_mission(binding) is None:
-                continue
-            if not old and "frame" in binding:
+            if saved is None or (not old and "frame" in binding):
                 continue
             if floor_plan is None:
                 pending = True
@@ -192,18 +190,15 @@ class PlanCatalog:
                     }
                 )
                 continue
-            if room_geometry is None:
-                room_geometry = binding_geometry._room_geometry_index(floor_plan)
-            upgraded: dict[str, Any] | None
             try:
-                if str(binding["geometry_sha256"]).casefold() == (
-                    binding_geometry.floor_plan_geometry_fingerprint(floor_plan)
-                ):
-                    upgraded = binding_for_area(
+                upgraded = (
+                    binding_for_area(
                         floor_plan, area["circles"], room_geometry=room_geometry
                     )
-                else:
-                    upgraded = legacy.drifted_binding(area, floor_plan, room_geometry)
+                    if saved["geometry_sha256"]
+                    == binding_geometry.floor_plan_geometry_fingerprint(floor_plan)
+                    else saved
+                )
             except GeometryTooComplex:
                 # Verification and conversion share one bounded index; retry
                 # on a later map revision when conversion runs out of work.
@@ -212,9 +207,6 @@ class PlanCatalog:
             except KeyError, TypeError, ValueError:
                 # The circles verified within the saved-center tolerance but
                 # no longer bind exactly; keep the area as saved.
-                continue
-            if upgraded is None:
-                pending = True
                 continue
             if upgraded != binding:
                 staged.append((area_id, area, upgraded))

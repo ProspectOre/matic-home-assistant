@@ -23,6 +23,7 @@ from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.plan_model as plan_model_module
 from custom_components.matic_robot import daily_room_limit
+from custom_components.matic_robot.area_binding import binding_for_area
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
@@ -123,7 +124,6 @@ from custom_components.matic_robot.services import (
     async_register_services,
 )
 from custom_components.matic_robot.stores import LiveState, Store
-from tests import legacy_bindings
 from tests.session_fakes import FakeRobot, robot_client, robot_port, verifying_write
 
 
@@ -363,6 +363,10 @@ def _area_floor_plan(
     )
 
 
+def _area_binding(floor_plan: FloorPlan, y: float = 2.0) -> dict[str, object]:
+    return binding_for_area(floor_plan, [{"x": 1.0, "y": y, "radius": 0.35}])
+
+
 async def _registered_services(hass, manager=None, *, is_running=False):
     services = SimpleNamespace(async_register=MagicMock(), async_call=AsyncMock())
     hass.services = services
@@ -595,7 +599,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     services = await _registered_services(hass, manager)
@@ -705,7 +709,7 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     services = await _registered_services(hass, manager)
@@ -769,7 +773,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
             "circles": [{}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     await manager.catalog.async_save_area(
@@ -779,7 +783,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
             "schema_version": AREA_SCHEMA_VERSION,
             "name": "Invalid settings",
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     await manager.catalog.async_save_area(
@@ -791,7 +795,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
             "cleaning_mode": 5,
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     services = await _registered_services(hass, manager)
@@ -823,9 +827,10 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
         with pytest.raises(ServiceValidationError) as unknown:
             await invoke("Missing")
         assert unknown.value.translation_key == "unknown_area"
+        # The binding check reads the circles, so broken ones fail it.
         with pytest.raises(ServiceValidationError) as invalid:
             await invoke("Broken")
-        assert invalid.value.translation_key == "invalid_area"
+        assert invalid.value.translation_key == "area_map_changed"
         with pytest.raises(ServiceValidationError) as invalid_settings:
             await invoke("Invalid settings")
         assert invalid_settings.value.translation_key == "invalid_area"
@@ -853,7 +858,7 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
         "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": legacy_bindings.v1(saved_floor_plan),
+        "map_binding": _area_binding(saved_floor_plan),
     }
     if mismatch == "legacy":
         area.pop("schema_version")
@@ -874,20 +879,11 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
             rooms=(replace(room, boundary=((0.05, 0), *room.boundary[1:])),),
         )
     else:
-        room = saved_floor_plan.rooms[0]
-        live_floor_plan = FloorPlan(
-            saved_floor_plan.mission_id,
-            saved_floor_plan.partition_protocol_id,
-            saved_floor_plan.partition_id_wire,
-            (
-                Room(
-                    room.id,
-                    room.name,
-                    room.protocol_id,
-                    room.id_wire,
-                    ((0.01, 0), *room.boundary[1:]),
-                ),
-            ),
+        # The wall moves into the area's neighbourhood.
+        boundary = ((0.5, 0), (4, 0), (4, 4), (0.5, 4))
+        live_floor_plan = replace(
+            saved_floor_plan,
+            rooms=(replace(saved_floor_plan.rooms[0], boundary=boundary),),
         )
     await manager.catalog.async_save_area("serial", "litter_box", area)
     managed_token = manager.control.begin_managed_motion("serial")
@@ -942,7 +938,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     managed_token = manager.control.begin_managed_motion("serial")
@@ -1067,7 +1063,7 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     managed_token = manager.control.begin_managed_motion("serial")
@@ -1127,7 +1123,7 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor),
+            "map_binding": _area_binding(floor),
         },
     )
     room = CleaningRoom("room-2", "Study", "vacuum", "quick")
@@ -1693,7 +1689,7 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
             "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": _area_binding(floor_plan),
         },
     )
     client = robot_client(
@@ -5926,7 +5922,7 @@ async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> No
             "circles": [{"x": 1.0, "y": 1.0, "radius": 0.35}],
             "cleaning_mode": "vacuum",
             "coverage_setting": "quick",
-            "map_binding": legacy_bindings.v1(floor),
+            "map_binding": _area_binding(floor, y=1.0),
         },
     )
     services = await _registered_services(hass, manager)

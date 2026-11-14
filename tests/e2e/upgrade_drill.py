@@ -307,9 +307,15 @@ async def test_seed(
 
 async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
     """Newer release on the older stores: settle the interrupted run, then
-    run the saved plan again. Setup converts both areas' bindings to v7."""
+    run the saved plan again. Setup converts the 0.5 area's binding to v7 and
+    leaves the v1 area as saved, invalid until it is redrawn."""
+    from custom_components.matic_robot.area_binding import (
+        AreaBindingStatus,
+        area_binding_status,
+    )
+
     assert _stored_binding_version(AREA_ID) == 7
-    assert _stored_binding_version(LEGACY_AREA_ID) == 7
+    assert _stored_binding_version(LEGACY_AREA_ID) == 1
     await _settle(plan)
     await _run_plan(plan, robot)
     await _run_area_plan(plan, robot)
@@ -319,6 +325,11 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
     )
     assert stored["area_history"][AREA_ID]["completed_runs"] == 2
     assert stored["rotations"][AREA_PLAN]["areas"][AREA_ID]["completed_runs"] == 2
+    assert (
+        area_binding_status(stored["areas"][LEGACY_AREA_ID], _floor_plan())
+        is AreaBindingStatus.INVALID
+    )
+    assert _stored_binding_version(LEGACY_AREA_ID) == 1
     history = plan.entry.runtime_data.slam_history
     assert any(item.snapshot_id == _legacy_snapshot_id() for item in history.catalog())
     await _write_retention_examples(history)
@@ -328,22 +339,25 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
 async def test_downgrade(
     plan: PlanRun, hass_client: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """0.5.4 starts on 0.6's stores and hides the areas 0.6 converted.
+    """0.5.4 starts on 0.6's stores and hides the area 0.6 converted.
 
-    It reads 0.6's plan store but not the v7 bindings, so Matic Map lists both
-    areas as invalid without their circles. It keeps a temporary, empty
-    timeline instead of reading the v2 history file; the script checks that
-    the file is unchanged.
+    It reads 0.6's plan store but not the v7 binding, so Matic Map lists that
+    area as invalid without its circles. The v1 area 0.6 left as saved is
+    one 0.5.4 still converts, so it stays usable. 0.5.4 keeps a temporary,
+    empty timeline instead of reading the v2 history file; the script checks
+    that the file is unchanged.
     """
     response = await (await hass_client()).get(
         f"/api/matic_robot/areas/{plan.entry.entry_id}"
     )
     assert response.status == 200, await response.text()
     areas = {area["id"]: area for area in (await response.json())["areas"]}
-    for area_id in (AREA_ID, LEGACY_AREA_ID):
-        assert areas[area_id]["status"] == "invalid"
-        assert areas[area_id]["circles"] == []
-        assert _stored_binding_version(area_id) == 7
+    assert areas[AREA_ID]["status"] == "invalid"
+    assert areas[AREA_ID]["circles"] == []
+    assert _stored_binding_version(AREA_ID) == 7
+    assert areas[LEGACY_AREA_ID]["status"] == "current"
+    assert areas[LEGACY_AREA_ID]["circles"] == [{"x": 3.0, "y": 0.75, "radius": 0.25}]
+    assert _stored_binding_version(LEGACY_AREA_ID) == 3
     assert PLAN in plan.entry.runtime_data.cleaning_plans.plans(plan.entry.unique_id)
     assert not plan.entry.runtime_data.slam_history.catalog()
     assert not [

@@ -5,92 +5,62 @@
     "map_translated": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "other_floor": {
      "command": "area_map_changed",
      "map": {
       "can_rebind": false,
       "circles": [],
-      "status": "mission_changed"
+      "status": "invalid"
      },
      "review": false,
-     "status": "mission_changed"
+     "status": "invalid"
     },
     "remote_room_added": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "remote_room_added_new_partition": {
      "command": "area_map_changed",
      "map": {
       "can_rebind": false,
       "circles": [],
-      "status": "partition_changed"
+      "status": "invalid"
      },
      "review": false,
-     "status": "partition_changed"
+     "status": "invalid"
     },
     "rooms_edited": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
-     },
-     "review": true,
-     "status": "geometry_changed"
-    },
-    "same": {
-     "command": [
-      [
-       1.0,
-       0.75,
-       0.25
-      ]
-     ],
-     "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
+    },
+    "same": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
+     },
+     "review": false,
+     "status": "invalid"
     }
    },
    "upgrade": {
@@ -101,7 +71,7 @@
        "version": 1
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -112,7 +82,7 @@
        "version": 1
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -123,7 +93,7 @@
        "version": 1
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -134,7 +104,7 @@
        "version": 1
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -145,20 +115,20 @@
        "version": 1
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-       "version": 7
+       "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+       "version": 1
       }
      },
      "pending": false,
-     "saves": 1,
-     "upgraded": 1
+     "saves": 0,
+     "upgraded": 0
     }
    }
   },
@@ -167,92 +137,62 @@
     "map_translated": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "other_floor": {
      "command": "area_map_changed",
      "map": {
       "can_rebind": false,
       "circles": [],
-      "status": "mission_changed"
+      "status": "invalid"
      },
      "review": false,
-     "status": "mission_changed"
+     "status": "invalid"
     },
     "remote_room_added": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "remote_room_added_new_partition": {
      "command": "area_map_changed",
      "map": {
       "can_rebind": false,
       "circles": [],
-      "status": "partition_changed"
+      "status": "invalid"
      },
      "review": false,
-     "status": "partition_changed"
+     "status": "invalid"
     },
     "rooms_edited": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
-     },
-     "review": true,
-     "status": "geometry_changed"
-    },
-    "same": {
-     "command": [
-      [
-       1.0,
-       0.75,
-       0.25
-      ]
-     ],
-     "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
+    },
+    "same": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
+     },
+     "review": false,
+     "status": "invalid"
     }
    },
    "upgrade": {
@@ -263,7 +203,7 @@
        "version": 2
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -274,7 +214,7 @@
        "version": 2
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -285,7 +225,7 @@
        "version": 2
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -296,7 +236,7 @@
        "version": 2
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -307,20 +247,20 @@
        "version": 2
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-       "version": 7
+       "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+       "version": 2
       }
      },
      "pending": false,
-     "saves": 1,
-     "upgraded": 1
+     "saves": 0,
+     "upgraded": 0
     }
    }
   },
@@ -509,98 +449,62 @@
     "map_translated": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "other_floor": {
      "command": "area_map_changed",
      "map": {
       "can_rebind": false,
       "circles": [],
-      "status": "mission_changed"
+      "status": "invalid"
      },
      "review": false,
-     "status": "mission_changed"
+     "status": "invalid"
     },
     "remote_room_added": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "remote_room_added_new_partition": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "rooms_edited": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
-     },
-     "review": true,
-     "status": "geometry_changed"
-    },
-    "same": {
-     "command": [
-      [
-       1.0,
-       0.75,
-       0.25
-      ]
-     ],
-     "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
+    },
+    "same": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
+     },
+     "review": false,
+     "status": "invalid"
     }
    },
    "upgrade": {
@@ -611,7 +515,7 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -622,7 +526,7 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -633,7 +537,7 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -644,7 +548,7 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -655,20 +559,20 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-       "version": 7
+       "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+       "version": 3
       }
      },
      "pending": false,
-     "saves": 1,
-     "upgraded": 1
+     "saves": 0,
+     "upgraded": 0
     }
    }
   },
@@ -677,104 +581,62 @@
     "map_translated": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "other_floor": {
      "command": "area_map_changed",
      "map": {
       "can_rebind": false,
       "circles": [],
-      "status": "mission_changed"
+      "status": "invalid"
      },
      "review": false,
-     "status": "mission_changed"
+     "status": "invalid"
     },
     "remote_room_added": {
-     "command": [
-      [
-       1.0,
-       0.75,
-       0.25
-      ]
-     ],
+     "command": "area_map_changed",
      "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
     },
     "remote_room_added_new_partition": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "rooms_edited": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "geometry_changed"
-     },
-     "review": true,
-     "status": "geometry_changed"
-    },
-    "same": {
-     "command": [
-      [
-       1.0,
-       0.75,
-       0.25
-      ]
-     ],
-     "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.25,
-        "x": 1.0,
-        "y": 0.75
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
+    },
+    "same": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
+     },
+     "review": false,
+     "status": "invalid"
     }
    },
    "upgrade": {
@@ -785,7 +647,7 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -796,20 +658,20 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
     "remote_room_added": {
      "bindings": {
       "area": {
-       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-       "version": 7
+       "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+       "version": 3
       }
      },
      "pending": false,
-     "saves": 1,
-     "upgraded": 1
+     "saves": 0,
+     "upgraded": 0
     },
     "remote_room_added_new_partition": {
      "bindings": {
@@ -818,7 +680,7 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -829,20 +691,20 @@
        "version": 3
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-       "version": 7
+       "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+       "version": 3
       }
      },
      "pending": false,
-     "saves": 1,
-     "upgraded": 1
+     "saves": 0,
+     "upgraded": 0
     }
    }
   },
@@ -1013,110 +875,62 @@
     "map_translated": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.5,
-        "x": 3.5,
-        "y": 0.5
-       }
-      ],
-      "status": "geometry_changed"
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
      },
-     "review": true,
-     "status": "geometry_changed"
+     "review": false,
+     "status": "invalid"
     },
     "other_floor": {
      "command": "area_map_changed",
      "map": {
       "can_rebind": false,
       "circles": [],
-      "status": "mission_changed"
+      "status": "invalid"
      },
      "review": false,
-     "status": "mission_changed"
+     "status": "invalid"
     },
     "remote_room_added": {
-     "command": [
-      [
-       3.5,
-       0.5,
-       0.5
-      ]
-     ],
+     "command": "area_map_changed",
      "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.5,
-        "x": 3.5,
-        "y": 0.5
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
     },
     "remote_room_added_new_partition": {
-     "command": [
-      [
-       3.5,
-       0.5,
-       0.5
-      ]
-     ],
+     "command": "area_map_changed",
      "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.5,
-        "x": 3.5,
-        "y": 0.5
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
     },
     "rooms_edited": {
      "command": "area_map_changed",
      "map": {
-      "can_rebind": true,
-      "circles": [
-       {
-        "radius": 0.5,
-        "x": 3.5,
-        "y": 0.5
-       }
-      ],
-      "status": "geometry_changed"
-     },
-     "review": true,
-     "status": "geometry_changed"
-    },
-    "same": {
-     "command": [
-      [
-       3.5,
-       0.5,
-       0.5
-      ]
-     ],
-     "map": {
       "can_rebind": false,
-      "circles": [
-       {
-        "radius": 0.5,
-        "x": 3.5,
-        "y": 0.5
-       }
-      ],
-      "status": "current"
+      "circles": [],
+      "status": "invalid"
      },
      "review": false,
-     "status": "current"
+     "status": "invalid"
+    },
+    "same": {
+     "command": "area_map_changed",
+     "map": {
+      "can_rebind": false,
+      "circles": [],
+      "status": "invalid"
+     },
+     "review": false,
+     "status": "invalid"
     }
    },
    "upgrade": {
@@ -1127,7 +941,7 @@
        "version": 5
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -1138,7 +952,7 @@
        "version": 5
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -1149,7 +963,7 @@
        "version": 5
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -1160,7 +974,7 @@
        "version": 5
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
@@ -1171,20 +985,20 @@
        "version": 5
       }
      },
-     "pending": true,
+     "pending": false,
      "saves": 0,
      "upgraded": 0
     },
     "same": {
      "bindings": {
       "area": {
-       "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
-       "version": 7
+       "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+       "version": 5
       }
      },
      "pending": false,
-     "saves": 1,
-     "upgraded": 1
+     "saves": 0,
+     "upgraded": 0
     }
    }
   },
@@ -4038,8 +3852,8 @@
      "version": 3
     },
     "v3_without_boundaries": {
-     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-     "version": 7
+     "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+     "version": 3
     },
     "v4": {
      "sha256": "3df54097fe5a05c9a266a7e7d66f6100a1e50524ef04247e2bb008cb2aa828aa",
@@ -4056,7 +3870,7 @@
    },
    "pending": true,
    "saves": 1,
-   "upgraded": 3
+   "upgraded": 2
   },
   "remote_room_added_new_partition": {
    "bindings": {
@@ -4139,32 +3953,32 @@
   "same": {
    "bindings": {
     "v1": {
-     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-     "version": 7
+     "sha256": "96193ea2cd92d0a44e367d5658c1340ac4c4f2cb9a5e287b14c66d4eafb9a88f",
+     "version": 1
     },
     "v2": {
-     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-     "version": 7
+     "sha256": "4176a6450f255c96785a3e427c4295ff862e48390860c7fca0d2faf00b6fa059",
+     "version": 2
     },
     "v3": {
      "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
      "version": 7
     },
     "v3_unanchored": {
-     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-     "version": 7
+     "sha256": "cd8c3867c9654c99d39690f9ffbc08d1bd14b8a0470b99b8f0d7b19802c2de4d",
+     "version": 3
     },
     "v3_without_boundaries": {
-     "sha256": "1055b4cce93243359b77b153a604092025cd448947a2de2f8d07f43e473d3d25",
-     "version": 7
+     "sha256": "1916382b64ed637770ecb9bb08744915fba3eabbadc099872b9a8c546d2ccf33",
+     "version": 3
     },
     "v4": {
      "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
      "version": 7
     },
     "v5": {
-     "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
-     "version": 7
+     "sha256": "2739fc0eb71f966a79431977479e39ccf39ce11430d359bb0de0c712013251e1",
+     "version": 5
     },
     "v6": {
      "sha256": "501f471c78dcb89657d35afdd06f80324078cc5f9f5899577b9f064b6f05866c",
@@ -4173,7 +3987,7 @@
    },
    "pending": false,
    "saves": 1,
-   "upgraded": 8
+   "upgraded": 3
   }
  }
 }
