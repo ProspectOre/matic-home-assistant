@@ -94,7 +94,6 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_controls import RobotControls
-from tests import legacy_bindings
 from tests.session_fakes import fake_session
 
 _INTERNAL_TERMS = re.compile(
@@ -1212,7 +1211,9 @@ def _saved_area(floor_plan: FloorPlan, name: str) -> dict[str, Any]:
         "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": legacy_bindings.v1(floor_plan),
+        "map_binding": binding_for_area(
+            floor_plan, [{"x": 0.1, "y": 0.1, "radius": 0.1}]
+        ),
     }
 
 
@@ -1359,10 +1360,6 @@ async def test_plan_readiness_reuses_one_geometry_index_for_reviewable_areas() -
         geometry,
         geometry,
     ]
-    assert [
-        call.kwargs["circles_already_validated"]
-        for call in allows_review.call_args_list
-    ] == [True, True]
 
 
 async def test_plan_readiness_fails_closed_when_no_saved_plan_is_selected() -> None:
@@ -1724,8 +1721,9 @@ async def test_plan_tool_previews_custom_areas_in_run_order(hass) -> None:
 
     # A redrawn map or a deleted area stops the preview with its reason.
     areas = manager.repository.robot(serial)["areas"]
-    areas["mat"]["map_binding"] = legacy_bindings.v1(
-        FloorPlan(5, "partition", b"partition", floor_plan.rooms)
+    areas["mat"]["map_binding"] = binding_for_area(
+        FloorPlan(5, "partition", b"partition", floor_plan.rooms),
+        areas["mat"]["circles"],
     )
     for plan in ("mixed", "spots"):
         with pytest.raises(HomeAssistantError) as err:

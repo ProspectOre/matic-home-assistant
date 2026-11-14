@@ -32,7 +32,9 @@ async def test_conversion_moves_recovery_checkpoint_to_the_new_fingerprint(
         "rug": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": [{"x": 0.5, "y": 0.5, "radius": 0.2}],
-            "map_binding": legacy_bindings.v1(floor_plan),
+            "map_binding": legacy_bindings.v4(
+                floor_plan, [{"x": 0.5, "y": 0.5, "radius": 0.2}]
+            ),
         }
     }
     before = plan_area_fingerprint(robot["areas"]["rug"])

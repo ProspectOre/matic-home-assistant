@@ -10,7 +10,6 @@ from dataclasses import replace
 import pytest
 
 import custom_components.matic_robot.area_binding_geometry as abg
-from custom_components.matic_robot import area_binding_legacy
 from custom_components.matic_robot.area_binding import (
     AreaBindingStatus,
     area_binding_status,
@@ -25,7 +24,6 @@ from custom_components.matic_robot.area_binding_geometry import (
 )
 from custom_components.matic_robot.area_geometry import GeometryTooComplex
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from tests import legacy_bindings
 
 
 def _room(boundary: tuple[tuple[float, float], ...], *, room_id: str = "room") -> Room:
@@ -412,10 +410,9 @@ def test_sparse_unique_endcap_does_not_anchor_a_repeated_sliding_contour() -> No
     )
 
 
-@pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("mutation", ["append", "remove", "unchanged"])
 def test_bounded_shape_multiplicity_through_local_refinement(
-    legacy, mutation, monkeypatch
+    mutation, monkeypatch
 ) -> None:
     plan = _witness_plan()
     circles = [{"x": 1.0, "y": 3.0, "radius": 0.2}]
@@ -424,8 +421,6 @@ def test_bounded_shape_multiplicity_through_local_refinement(
     monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
     binding = binding_for_area(plan, circles)
     assert "sha256" in binding["local"]
-    if legacy:
-        binding = legacy_bindings.old_record(binding, 5)
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
@@ -435,10 +430,9 @@ def test_bounded_shape_multiplicity_through_local_refinement(
         circles.append(dict(circles[0]))
     elif mutation == "remove":
         circles.pop()
-    expected_current = not legacy and mutation == "unchanged"
     assert (
         area_binding_status(area, _locally_refined(plan)) is AreaBindingStatus.CURRENT
-    ) is expected_current
+    ) is (mutation == "unchanged")
 
 
 def test_v6_shape_validation_failure_cannot_use_matching_local_hash(
@@ -496,7 +490,7 @@ def test_large_unchanged_room_retains_fallback_after_remote_change(
     refreshed = replace(original, rooms=(containing, remote))
 
     def optional_proof_must_not_run(*args, **kwargs):
-        raise AssertionError("legacy proof must run before optional witnesses")
+        raise AssertionError("the frame proof must run before optional witnesses")
 
     monkeypatch.setattr(
         abg,
@@ -534,54 +528,6 @@ def test_late_witness_failure_preserves_geometry_changed(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("change_bounds", [False, True])
-def test_v3_optional_digest_is_required_only_for_strong_recovery(
-    change_bounds, monkeypatch
-):
-    plan = _witness_plan()
-    area = _area(plan)
-    refined = _locally_refined(plan)
-    if change_bounds:
-        boundary = list(refined.rooms[0].boundary)
-        index = min(range(len(boundary)), key=lambda i: boundary[i][0])
-        x, y = boundary[index]
-        boundary[index] = (x - 0.08, y)
-        refined = replace(
-            refined, rooms=(replace(refined.rooms[0], boundary=tuple(boundary)),)
-        )
-    assert area_binding_status(area, refined) is AreaBindingStatus.CURRENT
-
-    # A version 3 record saved without the floor digest stays an old record.
-    area["map_binding"] = legacy_bindings.old_record(area["map_binding"], 3)
-    del area["map_binding"]["translation_invariant_geometry_sha256"]
-    assert area_binding_legacy._valid_saved_binding(area["map_binding"])
-    unchanged = deepcopy(area)
-
-    def optional_proof_must_not_run(*args, **kwargs):
-        raise AssertionError("strong recovery requires the global-frame digest")
-
-    monkeypatch.setattr(
-        abg,
-        "_room_has_strong_frame_witnesses",
-        optional_proof_must_not_run,
-    )
-    monkeypatch.setattr(
-        abg,
-        "_saved_room_frames_have_strong_witnesses",
-        optional_proof_must_not_run,
-    )
-    assert area_binding_status(area, plan) is AreaBindingStatus.CURRENT
-    remote = _room(
-        ((30.0, 0.0), (31.0, 0.0), (31.0, 1.0), (30.0, 1.0)), room_id="remote"
-    )
-    assert (
-        area_binding_status(area, replace(plan, rooms=(*plan.rooms, remote)))
-        is AreaBindingStatus.CURRENT
-    )
-    assert area_binding_status(area, refined) is AreaBindingStatus.GEOMETRY_CHANGED
-    assert area == unchanged
-
-
 @pytest.mark.parametrize("refined_room_first", [False, True])
 def test_all_room_frames_are_checked_before_optional_witnesses(
     refined_room_first, monkeypatch
@@ -617,7 +563,7 @@ def test_all_room_frames_are_checked_before_optional_witnesses(
     index = min(range(len(points)), key=lambda i: points[i][0])
     x, y = points[index]
     points[index] = (x - 0.08, y)
-    # Retessellation makes the dense room use its full legacy frame proof.
+    # Retessellation makes the dense room use its full frame proof.
     left, right = boundary[700:702]
     midpoint = ((left[0] + right[0]) / 2, (left[1] + right[1]) / 2)
     refreshed = replace(
@@ -746,7 +692,7 @@ def test_v6_aggregate_local_mismatch_requires_strong_proof_for_every_room(
 
 
 @pytest.mark.parametrize("refined_room_first", [False, True])
-def test_v6_mixes_legacy_valid_dense_room_with_strong_refinement_proof(
+def test_frame_valid_dense_room_mixes_with_strong_refinement_proof(
     refined_room_first, monkeypatch
 ):
     source_witness = _witness_plan().rooms[0]
@@ -787,7 +733,7 @@ def test_v6_mixes_legacy_valid_dense_room_with_strong_refinement_proof(
     x, y = points[index]
     points[index] = (x - 0.8, y)
     # This midpoint is far from the dense room's circle and remains accepted by
-    # the full legacy frame matcher despite the room's repeated turns.
+    # the full frame matcher despite the room's repeated turns.
     midpoint_index = 700
     left, right = dense_boundary[midpoint_index : midpoint_index + 2]
     midpoint = ((left[0] + right[0]) / 2, (left[1] + right[1]) / 2)
@@ -872,11 +818,6 @@ def test_v6_mixes_legacy_valid_dense_room_with_strong_refinement_proof(
         assert (
             area_binding_status(area, refreshed) is AreaBindingStatus.GEOMETRY_CHANGED
         )
-    legacy_v5 = deepcopy(area)
-    legacy_v5["map_binding"] = legacy_bindings.old_record(legacy_v5["map_binding"], 5)
-    assert (
-        area_binding_status(legacy_v5, refreshed) is AreaBindingStatus.GEOMETRY_CHANGED
-    )
     broken_association = deepcopy(area)
     broken_association["map_binding"]["frame"]["rooms"][0]["circle_keys"] = []
     assert (

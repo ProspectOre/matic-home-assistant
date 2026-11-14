@@ -407,7 +407,7 @@ def _room_has_strong_frame_witnesses(
     if len(old) < 3 or len(new) < 3:
         return False
     # Cover feature extraction plus the bounded extreme/match comparisons up
-    # front. If this optional proof cannot fit, leave the legacy frame/local
+    # front. If this optional proof cannot fit, leave the room frame and local
     # validation budget intact instead of consuming it on a failed attempt.
     if not room_geometry.try_charge_query_work(
         (len(old) + len(new)) * 64, reserve=10_000
@@ -1312,19 +1312,6 @@ def _segment_spatial_cells(
                 )
             )
     return frozenset(cells)
-
-
-def _local_segment_geometries_match(
-    saved: _LocalSegment, current: _LocalSegment, shape: _AreaShape
-) -> bool:
-    """Compare source walls inside local guard boxes without clip artifacts."""
-    return _local_segment_contexts_match(
-        saved,
-        _segment_context(saved, shape),
-        current,
-        _segment_context(current, shape),
-        shape,
-    )
 
 
 def _local_segment_contexts_match(

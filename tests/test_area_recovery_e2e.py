@@ -60,7 +60,7 @@ from tests.test_slam_scene import _entry, _hass, _json_request, _request, _runti
 
 
 def _dense_floor_plan() -> FloorPlan:
-    """Build a complex saved room which uses the bounded legacy binding."""
+    """Build a complex saved room which uses the neighbourhood digest binding."""
     boundary = [
         (
             0.5 + 0.45 * math.cos(2 * math.pi * index / 320),
@@ -189,7 +189,7 @@ def _saved_plan(manager: CleaningPlanManager) -> None:
 async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     hass: HomeAssistant,
 ) -> None:
-    """A stale legacy binding stays blocked until explicit validated rebind."""
+    """A stale version 4 binding stays blocked until explicit validated rebind."""
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     original_map = _dense_floor_plan()
@@ -333,7 +333,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     runtime.client.async_send_command.assert_not_awaited()
 
 
-@pytest.mark.parametrize("binding_kind", ["v3", "v3_without_invariant_digest", "v6"])
+@pytest.mark.parametrize("neighbourhood", [False, True])
 @pytest.mark.parametrize(
     "refresh",
     [
@@ -347,7 +347,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
 )
 @pytest.mark.asyncio
 async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
-    hass: HomeAssistant, binding_kind: str, refresh: str
+    hass: HomeAssistant, neighbourhood: bool, refresh: str
 ) -> None:
     """Refresh continuity survives reload; an actually moved frame stays blocked."""
     manager = CleaningPlanManager(hass)
@@ -359,16 +359,14 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
             rooms=(replace(original_map.rooms[0], id="room-1"),),
         )
         saved_area = {
-            **_witness_area(original_map, anchored_bounded=binding_kind == "v6"),
+            **_witness_area(original_map, anchored_bounded=neighbourhood),
             "name": "Saved zone",
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
         }
         circles = saved_area["circles"]
     else:
-        original_map = (
-            _dense_floor_plan() if binding_kind == "v6" else _simple_floor_plan()
-        )
+        original_map = _dense_floor_plan() if neighbourhood else _simple_floor_plan()
         circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
         saved_area = {
             "schema_version": AREA_SCHEMA_VERSION,
@@ -378,10 +376,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
             "coverage_setting": "standard",
             "map_binding": binding_for_area(original_map, circles),
         }
-    assert ("sha256" in saved_area["map_binding"]["local"]) is (binding_kind == "v6")
-    if binding_kind == "v3_without_invariant_digest":
-        saved_area["map_binding"] = legacy_bindings.v3(original_map, circles)
-        del saved_area["map_binding"]["translation_invariant_geometry_sha256"]
+    assert ("sha256" in saved_area["map_binding"]["local"]) is neighbourhood
     manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
     _mixed_saved_plan(manager)
 
@@ -412,24 +407,15 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
     manager.repository.store.async_save = AsyncMock(wraps=store_save)
 
     # This is the manager operation scheduled by the session on a fresh
-    # supported floor-plan revision. It may upgrade legacy records, but must
-    # not rebind a current anchored area as a side effect of unrelated map churn.
+    # supported floor-plan revision. It must not rebind a current anchored area
+    # as a side effect of unrelated map churn.
     upgrade = await manager.catalog.async_upgrade_area_bindings(
         "synthetic-serial", refreshed_map
     )
-    unsafe_drift = refresh in {"translated", "partition_overlapping_room"} or (
-        refresh == "local_refinement" and binding_kind == "v3_without_invariant_digest"
-    )
-    # An old record without the floor digest has no exact version 7 form: it
-    # is bound afresh on an unchanged map and otherwise stays as saved.
-    old_record = binding_kind == "v3_without_invariant_digest"
-    converted = old_record and refresh == "map_revision_only"
-    assert upgrade == AreaBindingUpgradeResult(int(converted), old_record != converted)
-    if converted:
-        assert saved_area["map_binding"] == binding_for_area(refreshed_map, circles)
-    else:
-        assert saved_area == original_record
-        manager.repository.store.async_save.assert_not_awaited()
+    unsafe_drift = refresh in {"translated", "partition_overlapping_room"}
+    assert upgrade == AreaBindingUpgradeResult(0, False)
+    assert saved_area == original_record
+    manager.repository.store.async_save.assert_not_awaited()
 
     # Simulate HA Store reload after that automatic refresh, then run the same
     # read-only readiness, plan preview, and service-side area validation used
@@ -513,11 +499,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
         )
 
     loaded_area = reloaded.catalog.areas("synthetic-serial")["saved-zone"]
-    assert loaded_area == (
-        {**original_record, "map_binding": binding_for_area(refreshed_map, circles)}
-        if converted
-        else original_record
-    )
+    assert loaded_area == original_record
     assert set(reloaded.catalog.areas("synthetic-serial")) == {"saved-zone"}
     assert loaded_area["circles"] == circles
     assert loaded_area["cleaning_mode"] == "vacuum"

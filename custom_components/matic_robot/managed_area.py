@@ -138,7 +138,6 @@ def _area_refused_before_start(error: BaseException) -> bool:
     """Whether the robot commands refused an area leg before sending its start."""
     return isinstance(error, ServiceValidationError) and error.translation_key in {
         "area_map_changed",
-        "invalid_area",
         "plan_area_missing",
         "room_plan_unavailable",
     }

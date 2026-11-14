@@ -244,6 +244,9 @@ and the first use of each logs a warning. Matic 0.7 removes them.
   going back to 0.5.4 hides those areas until they are redrawn, and plans that
   use them won't run there. Restoring the backup brings them back. An area 0.6
   can't match to the current map keeps its old format and its Repair.
+- Custom areas saved before 0.5 that 0.5 never updated must be redrawn. 0.6
+  lists them as invalid, with a Repair, and plans that use them won't run
+  until they are.
 - Restoring a backup on a real Home Assistant host has not been tried yet. The
   [upgrade and rollback drill](upgrade-drill.md) covers it on test data only.
 - HACS installs `matic_robot.zip` from the release. For a manual install,

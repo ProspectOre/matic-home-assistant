@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import custom_components.matic_robot.area_binding_repairs as area_binding_repairs_module
+from custom_components.matic_robot import area_binding_geometry as geometry
 from custom_components.matic_robot.area_binding import (
     AreaBindingStatus,
     area_binding_allows_review,
@@ -22,7 +23,6 @@ from custom_components.matic_robot.area_binding_repairs import (
 )
 from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
-from tests import legacy_bindings
 
 
 def _room(
@@ -56,11 +56,12 @@ def _floor_plan() -> FloorPlan:
 
 
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
-
-    return {
-        "schema_version": AREA_SCHEMA_VERSION,
-        "map_binding": legacy_bindings.v1(floor_plan or _floor_plan()),
-    }
+    """An area without room frames, so any map change needs review."""
+    with (
+        patch.object(geometry, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1),
+        patch.object(geometry, "_translation_room_anchors", return_value=[]),
+    ):
+        return _scoped_area(floor_plan)
 
 
 def _scoped_area(
@@ -235,9 +236,11 @@ def test_reviewable_map_drift_does_not_raise_a_global_repair(blocked: bool) -> N
             original.rooms[1],
         ),
     )
+    expected = AreaBindingStatus.GEOMETRY_CHANGED
     if blocked:
         area["circles"] = [{"x": 20.0, "y": 20.0, "radius": 0.1}]
-    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+        expected = AreaBindingStatus.INVALID
+    assert area_binding_status(area, changed) is expected
     assert area_binding_allows_review(area, changed) is not blocked
     with (
         patch(
@@ -257,7 +260,7 @@ def test_reviewable_map_drift_does_not_raise_a_global_repair(blocked: bool) -> N
         create.assert_not_called()
         delete.assert_called_once_with(hass, DOMAIN, custom_area_issue_id("entry"))
     # Hiding a global notification never authorizes these saved coordinates.
-    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    assert area_binding_status(area, changed) is expected
 
 
 def test_area_issue_sync_ignores_areas_bound_to_other_mapped_floors() -> None:
@@ -424,6 +427,8 @@ def test_area_issue_sync_reuses_legacy_key_for_primary_floor_change() -> None:
             ),
             original.rooms[1],
         ),
+        partition_protocol_id="redrawn-partition",
+        partition_id_wire=b"redrawn-partition",
         mapped_floors=(
             MappedFloor(42, "Main", "1" * 64),
             MappedFloor(84, "Workshop", "2" * 64),
@@ -455,6 +460,8 @@ def test_area_issue_sync_scopes_secondary_floor_change() -> None:
             ),
             original.rooms[1],
         ),
+        partition_protocol_id="redrawn-partition",
+        partition_id_wire=b"redrawn-partition",
         mapped_floors=(
             MappedFloor(42, "Main", "1" * 64),
             MappedFloor(84, "Workshop", "2" * 64),
@@ -512,3 +519,30 @@ def test_delete_custom_area_issue_withdraws_floor_scoped_keys() -> None:
         (hass, DOMAIN, legacy_id),
         (hass, DOMAIN, scoped_id),
     }
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        {"version": 1},
+        {"version": 3, "local_geometry_sha256": "0" * 64},
+        {"version": 5, "local_geometry_sha256": "0" * 64},
+    ],
+)
+def test_bindings_older_than_0_5_ask_for_a_redraw(binding: dict) -> None:
+    floor_plan = _floor_plan()
+    area = {
+        **_scoped_area(floor_plan),
+        "map_binding": {**geometry.floor_identity(floor_plan), **binding},
+    }
+    assert area_binding_status(area, floor_plan) is AreaBindingStatus.INVALID
+    with patch(
+        "custom_components.matic_robot.area_binding_repairs.ir.async_create_issue"
+    ) as create:
+        assert (
+            async_sync_custom_area_issue(
+                MagicMock(), "entry", {"old": area}, floor_plan
+            )
+            == 1
+        )
+    create.assert_called_once()

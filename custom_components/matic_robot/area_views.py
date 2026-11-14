@@ -346,18 +346,14 @@ def _project_areas(
     areas: list[SavedArea] = []
     room_geometry = None
     for area_id, area in saved_areas.items():
-        uses_indexed_binding = area_binding_needs_geometry_index(area)
-        if uses_indexed_binding and room_geometry is None:
+        if room_geometry is None and area_binding_needs_geometry_index(area):
             room_geometry = RoomGeometryIndex(MaticAreasView._rooms(floor_plan))
         status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
-        if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-            room_geometry = RoomGeometryIndex(MaticAreasView._rooms(floor_plan))
         can_rebind = area_binding_allows_review(
             area,
             floor_plan,
             status=status,
             room_geometry=room_geometry,
-            circles_already_validated=uses_indexed_binding,
         )
         bound = status is AreaBindingStatus.CURRENT or can_rebind
         outline: _Outline = (

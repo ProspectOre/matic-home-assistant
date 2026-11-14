@@ -11,8 +11,8 @@ area survive later map refinements:
   always has one. A neighbourhood digest has one unless the rooms could not
   be snapshotted; such a binding cannot survive any map change.
 
-Records saved before version 7 are read and converted by
-``area_binding_legacy``.
+Records 0.5 saved are read through their exact version 7 form, from
+``area_binding_legacy``. Any other record is invalid.
 """
 
 from __future__ import annotations
@@ -179,8 +179,10 @@ def _valid_rooms(rooms: Any) -> bool:
     return True
 
 
-def current_binding(binding: Mapping[str, Any]) -> MapBinding | None:
-    """Return a stored binding as version 7, or None if only legacy reads it."""
+def current_binding(binding: object) -> MapBinding | None:
+    """Return a stored binding as version 7, or None if it is unusable."""
+    if not isinstance(binding, Mapping):
+        return None
     if valid_binding(binding):
         return dict(binding)
     converted = legacy.exact_binding(binding)
@@ -188,34 +190,25 @@ def current_binding(binding: Mapping[str, Any]) -> MapBinding | None:
 
 
 def binding_mission(binding: object) -> int | None:
-    """Return the floor a well-formed binding of any version names."""
-    if not isinstance(binding, Mapping):
-        return None
-    if valid_binding(binding):
-        return int(binding["mission_id"])
-    return legacy.binding_mission(binding)
+    """Return the floor a usable binding names."""
+    saved = current_binding(binding)
+    return None if saved is None else int(saved["mission_id"])
 
 
 def area_binding_needs_geometry_index(area: Mapping[str, Any]) -> bool:
-    """Return whether a well-formed binding performs indexed map queries."""
-    binding = area.get("map_binding")
+    """Return whether a usable binding performs indexed map queries."""
     return (
         type(area.get("schema_version")) is int
         and area["schema_version"] == AREA_SCHEMA_VERSION
-        and isinstance(binding, Mapping)
-        and (valid_binding(binding) or legacy.needs_geometry_index(binding))
+        and current_binding(area.get("map_binding")) is not None
     )
 
 
 def room_frame_point_count(area: Mapping[str, Any]) -> int:
     """Count the room boundary vertices one saved area stores."""
-    binding = area.get("map_binding")
-    if not isinstance(binding, Mapping):
-        return 0
-    if valid_binding(binding):
-        frame = binding.get("frame")
-        return sum(len(room["boundary_mm"]) for room in frame["rooms"]) if frame else 0
-    return legacy.room_frame_point_count(binding)
+    saved = current_binding(area.get("map_binding"))
+    frame = saved.get("frame") if saved else None
+    return sum(len(room["boundary_mm"]) for room in frame["rooms"]) if frame else 0
 
 
 def total_room_frame_point_count(areas: Mapping[str, Any]) -> int:
@@ -243,18 +236,13 @@ def area_binding_status(
         return AreaBindingStatus.LEGACY
     if not isinstance(schema_version, int) or schema_version != AREA_SCHEMA_VERSION:
         return AreaBindingStatus.INVALID
-    stored = area.get("map_binding")
-    if not isinstance(stored, Mapping):
+    saved = current_binding(area.get("map_binding"))
+    if saved is None:
         return AreaBindingStatus.INVALID
-    saved = current_binding(stored)
     try:
         current = geometry.floor_identity(floor_plan)
     except OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
-    if saved is None:
-        return legacy.legacy_status(
-            area, stored, floor_plan, current, room_geometry=room_geometry
-        )
     if saved["mission_id"] != current["mission_id"]:
         return AreaBindingStatus.MISSION_CHANGED
     geometry_changed = saved["geometry_sha256"] != current["geometry_sha256"]
@@ -518,22 +506,11 @@ def area_binding_allows_review(
     *,
     status: AreaBindingStatus | None = None,
     room_geometry: RoomGeometryIndex | None = None,
-    circles_already_validated: bool = False,
 ) -> bool:
-    """Return whether stale coordinates can be shown for local confirmation."""
-    binding_status = (
-        status
-        if status is not None
-        else area_binding_status(area, floor_plan, room_geometry=room_geometry)
-    )
-    if binding_status is not AreaBindingStatus.GEOMETRY_CHANGED:
-        return False
-    if circles_already_validated:
-        return True
-    try:
-        geometry._validate_area_circles(
-            floor_plan, area["circles"], room_geometry=room_geometry
-        )
-    except KeyError, TypeError, ValueError:
-        return False
-    return True
+    """Return whether stale coordinates can be shown for local confirmation.
+
+    Every GEOMETRY_CHANGED verdict has already placed the circles on this map.
+    """
+    if status is None:
+        status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
+    return status is AreaBindingStatus.GEOMETRY_CHANGED

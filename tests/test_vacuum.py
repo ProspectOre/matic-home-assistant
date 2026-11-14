@@ -13,6 +13,7 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot import robot_commands, vacuum
+from custom_components.matic_robot.area_binding import binding_for_area
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
@@ -36,7 +37,6 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import CleanPlanArea, RobotCommands
 from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
-from tests import legacy_bindings
 from tests.client.test_mission import _labeled as _labeled_floor
 from tests.client.test_mission import _state as _mission_client_state
 from tests.session_fakes import managed_clean_rooms
@@ -1286,7 +1286,7 @@ def _plan_area_vacuum(hass, area: dict | None = None):
         "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
-        "map_binding": legacy_bindings.v1(floor),
+        "map_binding": binding_for_area(floor, [{"x": 1.0, "y": 2.0, "radius": 0.35}]),
     }
     manager.repository.robot("synthetic-serial")["areas"]["rug"] = saved
     token = manager.control.begin_managed_motion("synthetic-serial")
@@ -1335,7 +1335,8 @@ async def test_plan_area_command_starts_its_owned_custom_coverage(hass) -> None:
         ("corrupt", "plan_area_missing"),
         ("redrawn", "area_map_changed"),
         ("other_map", "area_map_changed"),
-        ("bad_circle", "invalid_area"),
+        # The binding check reads the circles, so a broken one fails it.
+        ("bad_circle", "area_map_changed"),
         ("stale_floor", "room_plan_unavailable"),
     ],
 )
@@ -1352,8 +1353,8 @@ async def test_plan_area_command_rechecks_the_area_before_starting(
     elif change == "redrawn":
         areas["rug"]["circles"][0]["x"] = 1.5
     elif change == "other_map":
-        areas["rug"]["map_binding"] = legacy_bindings.v1(
-            replace(floor, mission_id=floor.mission_id + 1)
+        areas["rug"]["map_binding"] = binding_for_area(
+            replace(floor, mission_id=floor.mission_id + 1), areas["rug"]["circles"]
         )
         command = replace(command, fingerprint=plan_area_fingerprint(areas["rug"]))
     elif change == "bad_circle":

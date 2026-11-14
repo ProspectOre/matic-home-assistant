@@ -1,18 +1,19 @@
-"""Saved areas of every stored binding version resolve and upgrade as before.
+"""Saved areas of every stored binding version resolve and upgrade as pinned.
 
 `area_binding_pins_ba7fb875.json` holds one stored area per `map_binding`
 version, as release/0.6 at ba7fb875 wrote or derived it from the synthetic
-floor below, and what that release did with each one on six floors: the
-binding status, whether the area could be reviewed, the area as Matic Map
-received it, the circles a clean would send to the robot, and what the
-startup upgrade saved. v3 appears with room anchors that carry boundaries
-(written since 0.5), anchors without boundaries and no anchors (0.3 and 0.4).
-v1, v2 and v5 are no longer written; 0.5.4 wrote v3, v4 and v6.
+floor below, and what happens to each one on six floors: the binding status,
+whether the area can be reviewed, the area as Matic Map receives it, the
+circles a clean would send to the robot, and what the startup upgrade saves.
+v3 appears with room anchors that carry boundaries (written since 0.5),
+anchors without boundaries and no anchors (0.3 and 0.4). 0.5.4 wrote v3, v4
+and v6.
 
-0.6 writes only v7 and converts the others once they verify. The resolved
-pins are as ba7fb875 recorded them. The upgrade pins were re-recorded for v7:
-the saved version and bytes, `upgraded` and `saves` where v3 and v6 now
-convert, and `pending`, which stays true while an old record is unconverted.
+0.6 writes only v7. v3 with complete room snapshots, v4 and v6 convert once
+they verify; their resolved pins are as ba7fb875 recorded them. v1, v2, v5
+and v3 without complete snapshots have no exact v7 form: they read as
+invalid on every floor, so the area must be redrawn, and the upgrade leaves
+them as saved.
 """
 
 from __future__ import annotations
@@ -196,7 +197,7 @@ async def _upgraded(hass, areas: dict[str, Any], floor_plan: FloorPlan) -> objec
 
 
 @pytest.mark.parametrize("version", VERSIONS)
-async def test_stored_binding_resolves_and_upgrades_as_before(
+async def test_stored_binding_resolves_and_upgrades_as_pinned(
     hass, version: str
 ) -> None:
     golden = json.loads(GOLDEN.read_text())
@@ -213,7 +214,7 @@ async def test_stored_binding_resolves_and_upgrades_as_before(
     assert observed == golden["pins"][version]
 
 
-async def test_all_versions_upgrade_together_as_before(hass) -> None:
+async def test_all_versions_upgrade_together_as_pinned(hass) -> None:
     golden = json.loads(GOLDEN.read_text())
     areas = {version: _area(binding) for version, binding in golden["stored"].items()}
     observed = {
@@ -267,15 +268,6 @@ def test_v7_without_room_frames_resolves_as_v4() -> None:
 
 def test_legacy_builders_reproduce_the_stored_records() -> None:
     stored = json.loads(GOLDEN.read_text())["stored"]
-    assert {
-        "v1": legacy_bindings.v1(BASE),
-        "v2": legacy_bindings.v2(BASE, RUG),
-        "v3_unanchored": legacy_bindings.unanchored(legacy_bindings.v3(BASE, RUG)),
-        "v3_without_boundaries": legacy_bindings.without_boundaries(
-            legacy_bindings.v3(BASE, RUG)
-        ),
-        "v3": legacy_bindings.v3(BASE, RUG),
-        "v4": legacy_bindings.v4(BASE, DEN),
-        "v5": legacy_bindings.v5(BASE, DEN),
-        "v6": legacy_bindings.v6(BASE, DEN),
-    } == stored
+    assert legacy_bindings.v3(BASE, RUG) == stored["v3"]
+    assert legacy_bindings.v4(BASE, DEN) == stored["v4"]
+    assert legacy_bindings.v6(BASE, DEN) == stored["v6"]

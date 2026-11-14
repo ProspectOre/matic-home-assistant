@@ -8,7 +8,7 @@ this checkout's simulator harness copied in. Phases share real store files:
    second one cleaning when Home Assistant stops. The stores are copied as
    the pre-upgrade backup.
 2. upgrade (this checkout): settle the interrupted run and run the plan.
-3. downgrade (older): start on the newer stores, list the converted areas as
+3. downgrade (older): start on the newer stores, list the converted area as
    invalid, and leave the version-2 history file unread and unchanged.
 4. restore (older): run the plan on the pre-upgrade version-1 backup.
 

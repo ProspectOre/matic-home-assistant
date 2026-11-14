@@ -63,18 +63,14 @@ def async_sync_custom_area_issue(
         if not isinstance(area, Mapping):
             stale_count += 1
             continue
-        uses_query_index = area_binding_needs_geometry_index(area)
-        if uses_query_index and room_geometry is None:
+        if room_geometry is None and area_binding_needs_geometry_index(area):
             room_geometry = _room_geometry_index(floor_plan)
         status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
-        if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-            room_geometry = _room_geometry_index(floor_plan)
         can_review = area_binding_allows_review(
             area,
             floor_plan,
             status=status,
             room_geometry=room_geometry,
-            circles_already_validated=uses_query_index,
         )
         if status is not AreaBindingStatus.CURRENT and not can_review:
             stale_count += 1

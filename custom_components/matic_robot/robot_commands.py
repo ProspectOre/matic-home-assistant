@@ -535,15 +535,11 @@ class RobotCommands:
                     "A custom area in this plan changed or is not on this map",
                     "area_map_changed",
                 )
-            try:
-                circles = [
-                    (float(c["x"]), float(c["y"]), float(c["radius"]))
-                    for c in area["circles"]
-                ]
-            except (KeyError, TypeError, ValueError) as err:
-                raise validation_error(
-                    "The saved custom area is invalid", "invalid_area"
-                ) from err
+            # A CURRENT binding has validated every circle on this map.
+            circles = [
+                (float(c["x"]), float(c["y"]), float(c["radius"]))
+                for c in area["circles"]
+            ]
 
             def require_current_dispatch() -> None:
                 self.require_motion_generation(serial_number, request_generation)
