@@ -88,19 +88,42 @@ test.describe("status strip (MS-STATUS-01, MS-STATUS-05)", () => {
   });
 
   test("no status detail restates its title", async ({ page }) => {
-    // Every gallery scenario, twice: the walk grows with the scenario list.
-    test.setTimeout(90_000);
     const gallery = await stage(page, "ready", { width: 1440, height: 900 });
-    const scenarios = await page.evaluate(async () => (await import("/map_studio_v4-review/review.js")).GALLERY_SCENARIOS);
-    for (const battery of [92, null]) {
-      for (const scenario of scenarios) {
-        await gallery.evaluate((element, name) => element.setScenario(name), scenario);
-        await patch(gallery, { batteryPercent: battery });
-        const title = (await strip(gallery).title.allTextContents()).join("").trim();
-        const detail = (await strip(gallery).detail.allTextContents()).join("").trim();
-        if (!title) continue;
-        expect(detail.toLowerCase().includes(title.toLowerCase()), `${scenario} (${battery}): ${title} · ${detail}`).toBe(false);
+    // Every gallery scenario, with and without a battery reading, walked in the
+    // page: one round trip per scenario made this the suite's slowest test.
+    const strips = await gallery.evaluate(async (element) => {
+      const { GALLERY_SCENARIOS } = await import("/map_studio_v4-review/review.js");
+      // Lit renders in microtasks, so a task boundary is enough; waiting for
+      // frames would also wait for the map to draw each scenario.
+      const settle = () => new Promise((resolve) => setTimeout(resolve));
+      const find = (root, selector) => {
+        const match = root.querySelector(selector);
+        if (match) return match;
+        for (const host of root.querySelectorAll("*")) {
+          const found = host.shadowRoot && find(host.shadowRoot, selector);
+          if (found) return found;
+        }
+        return null;
+      };
+      const text = (selector) => (find(element.shadowRoot ?? element, selector)?.textContent ?? "").trim();
+      const seen = [];
+      for (const battery of [92, null]) {
+        for (const scenario of GALLERY_SCENARIOS) {
+          element.setScenario(scenario);
+          await settle();
+          element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), batteryPercent: battery });
+          await settle();
+          seen.push({ scenario, battery, title: text(".status-copy strong"), detail: text(".status-copy small") });
+        }
       }
+      return seen;
+    });
+    // The walk saw each scenario's own strip, not one left over from the last.
+    expect(new Set(strips.map(({ title }) => title)).size).toBeGreaterThan(5);
+    expect(strips.some(({ battery, detail }) => battery === 92 && detail.includes("92%"))).toBe(true);
+    for (const { scenario, battery, title, detail } of strips) {
+      if (!title) continue;
+      expect(detail.toLowerCase().includes(title.toLowerCase()), `${scenario} (${battery}): ${title} · ${detail}`).toBe(false);
     }
   });
 });

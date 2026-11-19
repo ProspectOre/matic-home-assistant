@@ -316,6 +316,9 @@ async def test_grouped_watcher_stops_when_marker_is_replaced(hass, monkeypatch) 
     )
     hass.states.async_set("vacuum.test", "cleaning")
     monkeypatch.setattr(reconciliation_module, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(
+        reconciliation_module, "OEM_STOP_RECONCILIATION_POLL_SECONDS", 0
+    )
 
     await _async_reconcile_grouped_history(
         hass, manager, "serial", "vacuum.test", marker, robot_port()

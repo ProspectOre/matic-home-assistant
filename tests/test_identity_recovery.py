@@ -474,6 +474,7 @@ async def test_recovery_needs_a_local_adapter_before_pairing(
         ),
         (None, CannotConnectError("unreachable"), "recover_cannot_connect", True),
     ],
+    ids=("other-serial", "other-hostname", "client-role", "unreachable"),
 )
 async def test_pre_flight_refuses_before_any_code_is_requested(
     hass, robot, certificate, error, expected, address_open
@@ -563,6 +564,16 @@ async def test_recovery_identity_compares_serial_before_hostname(monkeypatch) ->
         ),
         (None, _Client(error=MaticError("unexpected")), "recover_cannot_connect"),
     ],
+    ids=(
+        "other-serial",
+        "other-hostname",
+        "offline",
+        "credential-rejected",
+        "certificate-swapped",
+        "info-serial",
+        "unsupported",
+        "unexpected",
+    ),
 )
 async def test_final_check_failures_keep_the_old_pin(
     hass, robot, second_certificate, client, expected

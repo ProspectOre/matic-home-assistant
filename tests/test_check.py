@@ -358,7 +358,7 @@ def test_main_fails_when_any_check_fails(
 
     def run(command: list[str], **_: object) -> SimpleNamespace:
         commands.append(command)
-        return SimpleNamespace(returncode=int(failing in command))
+        return SimpleNamespace(returncode=int(failing in command), stdout="")
 
     untested = str(failing).removeprefix("untested: ")
     totals = {
@@ -386,8 +386,12 @@ def test_main_fails_when_any_check_fails(
 
     assert check.main(arguments) == status
     pytest_runs = [command[3:] for command in commands if "pytest" in command]
+    # Every test run spreads over one worker per CPU.
+    assert all(run[: len(check.PARALLEL)] == check.PARALLEL for run in pytest_runs)
+    pytest_runs = [run[len(check.PARALLEL) :] for run in pytest_runs]
     # The client's tests run with Home Assistant blocked on every check.
-    assert pytest_runs == [check.CLIENT_SUITE, *([] if tests is None else [tests])]
+    expected = [check.CLIENT_SUITE, *([] if tests is None else [tests])]
+    assert sorted(map(str, pytest_runs)) == sorted(map(str, expected))
     # Tests read the built Matic Map, so every test run follows a build.
     assert (BUILD in commands) == (tests is not None or failing in BUILD)
 

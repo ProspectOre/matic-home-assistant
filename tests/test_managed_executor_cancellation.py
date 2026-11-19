@@ -59,6 +59,8 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     monkeypatch.setattr(
         managed_observation_module, "_async_wait_for_room_outcome", observe_room_waiter
     )
+    # The room waiter refreshes status on this period; the test waits for one.
+    monkeypatch.setattr(managed_observation_module, "ROOM_STATUS_REFRESH_SECONDS", 0.01)
 
     original_timeout = asyncio.timeout
 
