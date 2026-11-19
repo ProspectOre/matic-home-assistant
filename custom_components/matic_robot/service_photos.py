@@ -24,6 +24,7 @@ from .service_schemas import (
     RUN_PHOTO_TOUR_SERVICE_SCHEMA,
     SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
 )
+from .viewpoints import readable_zones
 
 
 def register_photo_services(runtime: ServiceRuntime) -> None:
@@ -93,7 +94,7 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
             viewpoint = await entry.runtime_data.viewpoints.async_save(
                 call.data["name"],
                 floor_plan,
-                session.telemetry.value.zones,
+                readable_zones(entry),
                 set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ())),
                 x=x,
                 y=y,

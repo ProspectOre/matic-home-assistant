@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
@@ -17,6 +17,9 @@ from homeassistant.helpers.storage import Store
 
 from .client import FloorPlan, MapZone, room_at, room_name_key, zone_overlaps_circle
 from .const import DOMAIN
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 STORAGE_VERSION = 1
 MAX_VIEWPOINTS = 50
@@ -75,14 +78,18 @@ class Viewpoints:
         self,
         name: str,
         floor_plan: FloorPlan,
-        zones: tuple[MapZone, ...],
+        zones: tuple[MapZone, ...] | None,
         no_photo_rooms: set[str],
         *,
         x: float,
         y: float,
         heading: float,
     ) -> Viewpoint:
-        """Save a new viewpoint after checking it is a spot photos may be taken."""
+        """Save a new viewpoint after checking it is a spot photos may be taken.
+
+        ``zones`` is None while the robot's zones can't be read, and then no
+        spot can be shown to be clear of no-go zones.
+        """
         name = name.strip()
         if not name or len(name) > MAX_NAME_LENGTH:
             raise _error("viewpoint_name_invalid")
@@ -100,12 +107,9 @@ class Viewpoints:
             raise _error("viewpoint_outside_rooms")
         if room.id in no_photo_rooms:
             raise _error("viewpoint_room_no_photo", room=room.name)
-        if any(
-            zone.kind == "no_go"
-            and zone.mission_id == floor_plan.mission_id
-            and zone_overlaps_circle(zone, (x, y), NO_GO_MARGIN_METERS)
-            for zone in zones
-        ):
+        if zones is None:
+            raise _error("viewpoint_zones_unavailable")
+        if near_no_go_zone(zones, floor_plan.mission_id, (x, y)):
             raise _error("viewpoint_in_no_go_zone")
         viewpoint = Viewpoint(
             uuid4().hex,
@@ -131,6 +135,26 @@ class Viewpoints:
         await self._store.async_save(
             {"viewpoints": [asdict(viewpoint) for viewpoint in self.all]}
         )
+
+
+def readable_zones(entry: MaticConfigEntry) -> tuple[MapZone, ...] | None:
+    """Return the robot's zones, or None when the last read of them failed."""
+    runtime = entry.runtime_data
+    if runtime.client.endpoint_health.get("zones") != "ok":
+        return None
+    return runtime.session.telemetry.value.zones
+
+
+def near_no_go_zone(
+    zones: tuple[MapZone, ...], mission_id: int, point: tuple[float, float]
+) -> bool:
+    """Return whether the robot standing at ``point`` would reach a no-go zone."""
+    return any(
+        zone.kind == "no_go"
+        and zone.mission_id == mission_id
+        and zone_overlaps_circle(zone, point, NO_GO_MARGIN_METERS)
+        for zone in zones
+    )
 
 
 def _store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:

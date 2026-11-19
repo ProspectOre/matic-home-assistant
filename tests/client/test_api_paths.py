@@ -1268,7 +1268,7 @@ async def test_pose_reads_skip_a_malformed_entry(entry) -> None:
 
     client.async_subscribe_collection_entries = entries
 
-    client.async_get_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=[entry async for entry in entries("latest_pose")]
     )
 

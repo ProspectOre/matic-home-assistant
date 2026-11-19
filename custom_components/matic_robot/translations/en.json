@@ -2033,6 +2033,15 @@
     },
     "viewpoint_pose_unavailable": {
       "message": "The robot's position and direction are unknown right now. Give x, y and heading, or try again once the robot reports where it is."
+    },
+    "viewpoint_zones_unavailable": {
+      "message": "The robot's no-go zones can't be read right now, so the spot can't be checked. Try again shortly."
+    },
+    "photo_tour_zones_unavailable": {
+      "message": "The robot's no-go zones can't be read right now, so viewpoint stops can't be checked. Try again shortly."
+    },
+    "photo_tour_viewpoint_in_no_go_zone": {
+      "message": "{viewpoint} is now in or next to a no-go zone. Delete it and save it again at least 25 cm away."
     }
   },
   "issues": {

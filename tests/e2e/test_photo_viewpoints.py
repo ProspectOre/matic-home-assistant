@@ -32,6 +32,12 @@ def floor() -> SimFloor:
     return two_room_floor()
 
 
+@pytest.fixture(autouse=True)
+def zones(robot: SimulatedRobot) -> None:
+    """Serve the robot's zones, which viewpoints are checked against."""
+    robot.set_collection("zones", [])
+
+
 class _Actions:
     """Calls the integration's actions as an administrator."""
 
@@ -178,10 +184,16 @@ async def test_viewpoints_wait_for_the_map_and_the_viewpoints_floor(
     assert raised.value.translation_key == "viewpoint_other_floor"
     assert robot.received() == []
 
-    await poll(hass, loaded_entry, robot)
-    runtime = loaded_entry.runtime_data
-    floor_plan = runtime.session.floor.value
     saved = {"name": "Desk", "x": 3.0, "y": 0.5, "heading": 0}
+    # Without the robot's zones, no spot can be shown to be clear of no-go zones.
+    runtime = loaded_entry.runtime_data
+    robot.unsupported.add("zones")
+    await runtime.session.heartbeat.async_request_full_refresh()
+    refusal = await actions.refused("save_photo_viewpoint", **saved)
+    assert refusal == "viewpoint_zones_unavailable"
+    robot.unsupported.discard("zones")
+    await runtime.session.heartbeat.async_request_full_refresh()
+    floor_plan = runtime.session.floor.value
     # A map the robot has replaced is not one to save a spot on.
     with patch.object(runtime.slam_map, "floor_plan_is_current", return_value=False):
         refusal = await actions.refused("save_photo_viewpoint", **saved)

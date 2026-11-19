@@ -32,6 +32,7 @@ from .media_source import PhotoAttachmentUnavailable, photo_attachment_source
 from .native_schedules import schedule_occurrences
 from .plan_model import resolve_room_reference
 from .robot_controls import RobotControls
+from .viewpoints import near_no_go_zone, readable_zones
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -407,6 +408,12 @@ def _shots(entry: MaticConfigEntry, stops: list[TourStop]) -> list[_Shot]:
         viewpoint = entry.runtime_data.viewpoints.find(stop.viewpoint)
         if floor_plan is None or floor_plan.mission_id != viewpoint.mission_id:
             raise _error("viewpoint_other_floor", viewpoint=viewpoint.name)
+        # A no-go zone drawn in the app since the viewpoint was saved counts.
+        zones = readable_zones(entry)
+        if zones is None:
+            raise _error("photo_tour_zones_unavailable")
+        if near_no_go_zone(zones, viewpoint.mission_id, (viewpoint.x, viewpoint.y)):
+            raise _error("photo_tour_viewpoint_in_no_go_zone", viewpoint=viewpoint.name)
         shots.extend(
             _Shot(
                 stop,

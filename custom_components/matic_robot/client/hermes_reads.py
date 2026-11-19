@@ -250,7 +250,7 @@ class HermesReads(HermesCollections):
 
     async def async_get_poses(self) -> tuple[RobotPose, ...]:
         """Read each mission's latest pose once, skipping malformed entries."""
-        entries = await self.async_get_collection_entries("latest_pose")
+        entries = await self.async_get_tracked_collection_entries("latest_pose")
         return tuple(pose for entry in entries if (pose := _decode_pose(entry)))
 
     async def async_get_cleaning_session_identity(self) -> bytes | None:

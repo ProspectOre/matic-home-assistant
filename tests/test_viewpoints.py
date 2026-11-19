@@ -104,6 +104,7 @@ async def test_a_saved_viewpoint_is_found_by_id_or_name_and_survives_reload(
             {"zones": (MapZone(7, "no_go", 0, ((3.2, 0), (4, 0), (4, 2), (3.2, 2))),)},
             "viewpoint_in_no_go_zone",
         ),
+        ({"zones": None}, "viewpoint_zones_unavailable"),
     ],
 )
 async def test_a_viewpoint_must_be_a_named_spot_photos_may_be_taken(
@@ -202,20 +203,50 @@ async def test_the_pose_on_the_viewpoints_floor_is_read() -> None:
     assert raised.value.translation_key == "photo_tour_unreachable"
 
 
-def test_a_tour_refuses_a_viewpoint_on_another_floor() -> None:
+NO_GO_AT_DESK = MapZone(7, "no_go", 0, ((2.8, 0.8), (3.2, 0.8), (3.2, 1.2)))
+
+
+@pytest.mark.parametrize(
+    ("viewpoint", "health", "zones", "key"),
+    [
+        (
+            Viewpoint("v", "Attic", 8, 0, 0, 0, "attic"),
+            "ok",
+            (),
+            "viewpoint_other_floor",
+        ),
+        (
+            Viewpoint("v", "Desk", 7, 3, 1, 0, "study"),
+            "CannotConnectError",
+            (),
+            "photo_tour_zones_unavailable",
+        ),
+        (
+            Viewpoint("v", "Desk", 7, 3, 1, 0, "study"),
+            "ok",
+            (NO_GO_AT_DESK,),
+            "photo_tour_viewpoint_in_no_go_zone",
+        ),
+    ],
+)
+def test_a_tour_refuses_a_viewpoint_it_cannot_reach_safely(
+    viewpoint: Viewpoint, health: str, zones: tuple[MapZone, ...], key: str
+) -> None:
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            session=SimpleNamespace(floor=SimpleNamespace(value=FLOOR)),
-            viewpoints=SimpleNamespace(
-                find=lambda _name: Viewpoint("v", "Attic", 8, 0, 0, 0, "attic")
+            client=SimpleNamespace(endpoint_health={"zones": health}),
+            session=SimpleNamespace(
+                floor=SimpleNamespace(value=FLOOR),
+                telemetry=SimpleNamespace(value=SimpleNamespace(zones=zones)),
             ),
+            viewpoints=SimpleNamespace(find=lambda _name: viewpoint),
         )
     )
 
     with pytest.raises(HomeAssistantError) as raised:
-        photo_tours._shots(entry, [TourStop(viewpoint="Attic")])
+        photo_tours._shots(entry, [TourStop(viewpoint=viewpoint.name)])
 
-    assert raised.value.translation_key == "viewpoint_other_floor"
+    assert raised.value.translation_key == key
 
 
 @pytest.mark.parametrize("to_viewpoint", [False, True])
