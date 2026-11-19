@@ -35,18 +35,18 @@ with `curl -X POST http://127.0.0.1:8124/step/<name>` for a name in `STEPS`;
 | `HermesDiscoveryRPC` | `GetBotInfo` returns the simulated identity. |
 | `HermesAuth` | `AuthToken` issues a credential only while `pairing_open` is set. |
 | `Hermes` | `Handshake` and `FetchCollection` require a credential the robot issued. Properties answer snapshots; tracked subscriptions wait for each sequence acknowledgment and then push changes. Unserved names return `UNIMPLEMENTED`. |
-| `user_command` | STOP, PAUSE, RESUME and DOCK are matched against the captured official-app bytes, which the simulator holds separately from the integration's encoders, and move the robot between phases. A coverage START starts a native task; an UPDATE with the task's session ID keeps finished rooms and replaces the rest. A NavigateTo with a room goal or a sink posture moves the robot (see below). |
+| `user_command` | STOP, PAUSE, RESUME and DOCK are matched against the captured official-app bytes, which the simulator holds separately from the integration's encoders, and move the robot between phases. A coverage START starts a native task; an UPDATE with the task's session ID keeps finished rooms and replaces the rest. A NavigateTo with a room goal, a sink posture or a map-tap posture moves the robot (see below). |
 | Robot state | `kabuki_state` for docked, charging, cleaning, paused, returning, stopped, low-charge recharge and a blocking fault, using state-code sets seen on real robots, with battery, errors, software version and current area. |
 | Floor and task | `coverage_plan` serves the floor and retains the commanded goals as room visits, so a room cleaned again appears twice; `active_session_key` carries the task's session; `coverage_session_history` gets a record with per-room, per-mode results when the task ends. One live photographic and one structural map page confirm the floor. `sink_summon_locations` holds a sink posture once a test saves one. |
-| Navigation | The robot's state codes while driving somewhere are not recorded, so it arrives at once: ready in the room without a task, paused with one. A sink trip waits until the `refilled` step, then returns. |
+| Navigation | The robot's state codes while driving somewhere are not recorded, so it arrives at once: ready in the room without a task, paused with one. A sink trip waits until the `refilled` step, then returns. A map-tap posture parks at its point: `latest_pose` reports that point and the posture's heading as a quaternion, and the current area is the room containing it. `block_next_goal` makes the next posture unreachable; the robot then reports nothing, because how a real robot reports one is not recorded. |
 
-Tests move the robot with explicit scripted steps such
-as `start_cleaning`, `finish_room`, `finish_session`, `arrive_at_dock`,
-`low_charge_recharge`, `fault`, `app_takes_over` and `refilled`,
-then await the integration's accepted state before advancing. History timestamps use
-the wall clock because the integration binds a record to the dispatch time.
-A few tests shorten a wait constant (the dock-after-stop poll, the history
-window) rather than wait minutes; the logic is unchanged.
+Tests move the robot with explicit scripted steps such as `start_cleaning`,
+`finish_room`, `finish_session`, `arrive_at_dock`, `low_charge_recharge`,
+`fault`, `app_takes_over`, `refilled`, `hold_photos` and `release_photos`, then
+await the integration's accepted state before advancing. History timestamps use
+the wall clock because the integration binds a record to the dispatch time. A
+few tests shorten a wait constant (the dock-after-stop poll, the history window)
+rather than wait minutes; the logic is unchanged.
 
 ## Faults
 
@@ -98,8 +98,7 @@ replaced before it is committed.
   clean a finished room again, and refusing to skip the only room left.
 - Go to room from the dock and during a plan (the run keeps its task and
   finishes after Resume), and an unknown room refused before anything is sent.
-- A sink trip waits for the refill and docks; without a saved sink it is
-  refused.
+- A sink trip waits for the refill and docks; with no saved sink, it's refused.
 - An occupancy-aware saved plan holds a room whose sensor is on.
 - A full bag raises a Repair after a confirming sample and clears it when
   the error goes.
@@ -125,7 +124,8 @@ replaced before it is committed.
 - A lost or unacknowledged plan start fails the run and is not sent again.
 - A revoked credential starts reauthentication.
 - Client level: pairing window, unknown credentials, fingerprint and serial
-  pinning, snapshot, tracked and pushed collections, unsupported endpoints.
+  pinning, snapshot, tracked and pushed collections, unsupported endpoints,
+  map-tap postures and held photos.
 - In a browser against Home Assistant: choosing Kitchen and Study sends one
   coverage command, the panel follows the robot and returns to ready at the
   dock. Open history reflects delayed completion without a page reload.

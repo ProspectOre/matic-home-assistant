@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
+import math
 import ssl
 import struct
 import time
@@ -70,6 +71,7 @@ from .sim_mission import (
     CoverageSession,
     Navigation,
     SimFloor,
+    SimPosture,
     Visit,
     bytes_field,
     displayed_mission,
@@ -79,6 +81,7 @@ from .sim_mission import (
     map_pages,
     parse_coverage_command,
     parse_navigation,
+    read_posture,
     uuid_wire,
     varint_field,
     wifi_status,
@@ -274,6 +277,10 @@ class SimulatedRobot:
         self._mapped_floors: tuple[SimFloor, ...] = ()
         self.session: CoverageSession | None = None
         self.destination: UUID | None = None
+        # Where a posture goal parked the robot; None reports a room's centre.
+        self.position: SimPosture | None = None
+        self._area_before_tap: str | None = None
+        self._blocked_goals = 0
         self.waiting_at_sink = False
         self.unsupported: set[str] = set()
         self._properties: dict[str, bytes] = {}
@@ -287,6 +294,8 @@ class SimulatedRobot:
         self.hold_history_updates = False
         self._wifi_scan_results: deque[bytes | None] = deque()
         self._photos: deque[SimPhoto] = deque()
+        self.hold_photo_saves = False
+        self._held_photos: list[SimPhoto] = []
         self._navigation_results: deque[str | None] = deque()
         self.set_collection("instamatic_snaps", [])
         self.set_property("wifi_status", wifi_status(-60))
@@ -298,6 +307,7 @@ class SimulatedRobot:
     def start_cleaning(self, area: str | None = None) -> None:
         """Begin a task as if the app, a schedule or a voice cue started it."""
         self.current_area = area
+        self.position = None
         self._refresh_pose()
         self._set_phase(Phase.CLEANING)
 
@@ -334,6 +344,7 @@ class SimulatedRobot:
         assert self.session is not None
         self.session.finish_current(_now())
         upcoming = self.session.current_visit
+        self.position = None
         self.current_area = (
             self.floor.room(upcoming.room).name
             if self.floor is not None
@@ -350,6 +361,8 @@ class SimulatedRobot:
         """End the task after its last room, write history, head home."""
         self._end_session(completed=True)
         self.current_area = None
+        self.position = None
+        self._refresh_pose()
         self._set_phase(Phase.RETURNING)
 
     def app_takes_over(self) -> None:
@@ -400,6 +413,7 @@ class SimulatedRobot:
     def set_current_area(self, area: str | None) -> None:
         """Change the reported area in the next state snapshot."""
         self.current_area = area
+        self.position = None
         self._refresh_state()
         self._refresh_pose()
 
@@ -432,6 +446,30 @@ class SimulatedRobot:
         self._photos.append(SimPhoto(identifier, captured_at, image, preview))
         return identifier
 
+    def hold_photos(self) -> None:
+        """Keep snapped photos off ``instamatic_snaps`` until ``release_photos``.
+
+        This models the robot's few seconds between a snap and the saved photo.
+        """
+        self.hold_photo_saves = True
+
+    def release_photos(self) -> None:
+        """Save the photos held back since ``hold_photos``."""
+        self.hold_photo_saves = False
+        for photo in self._held_photos:
+            self._save_photo(photo)
+        self._held_photos.clear()
+
+    def block_next_goal(self) -> None:
+        """Make the next map-tap goal unreachable: the robot does not move.
+
+        A sink summon is not blocked and leaves this armed.
+
+        How the robot reports a goal it cannot reach is not recorded, so it
+        reports nothing and the integration has to time the goal out.
+        """
+        self._blocked_goals += 1
+
     def refilled(self) -> None:
         """Finish a sink refill; the robot heads back to the dock."""
         assert self.waiting_at_sink
@@ -441,6 +479,7 @@ class SimulatedRobot:
     def arrive_at_dock(self) -> None:
         """Finish a return trip and start charging, or idle when full."""
         self.current_area = None
+        self.position = None
         self._set_phase(Phase.DOCKED if self.battery >= 1.0 else Phase.CHARGING)
         self._refresh_pose()
 
@@ -452,6 +491,7 @@ class SimulatedRobot:
     def recharged(self) -> None:
         """Resume a recharge-suspended task."""
         self.battery = 0.8
+        self._leave_tap_point()
         self._set_phase(Phase.CLEANING)
 
     def schedule_takes_over(self) -> None:
@@ -548,18 +588,10 @@ class SimulatedRobot:
         if payload == EMOTE_SNAP_PAYLOAD:
             if self._photos:
                 photo = self._photos.popleft()
-                captured_at = photo.captured_at.astimezone(datetime.UTC)
-                timestamp = varint_field(1, int(captured_at.timestamp()))
-                timestamp += varint_field(2, captured_at.microsecond * 1000)
-                value = bytes_field(1, timestamp) + bytes_field(
-                    2, bytes_field(1, photo.image)
-                )
-                if photo.preview is not None:
-                    value += bytes_field(3, bytes_field(1, photo.preview))
-                existing = self._collections.get("instamatic_snaps", [])
-                self.set_collection(
-                    "instamatic_snaps", [*existing, (uuid_wire(photo.photo_id), value)]
-                )
+                if self.hold_photo_saves:
+                    self._held_photos.append(photo)
+                else:
+                    self._save_photo(photo)
             return
         coverage = parse_coverage_command(payload, _now())
         if coverage is not None:
@@ -572,6 +604,7 @@ class SimulatedRobot:
         if payload == PAUSE_PAYLOAD and self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
         elif payload == RESUME_PAYLOAD and self.phase is Phase.PAUSED:
+            self._leave_tap_point()
             self._set_phase(Phase.CLEANING)
         elif payload == STOP_PAYLOAD and self.phase in (
             Phase.CLEANING,
@@ -580,11 +613,25 @@ class SimulatedRobot:
         ):
             self._end_session(completed=False)
             self.current_area = None
+            self.position = None
+            self._refresh_pose()
             self._set_phase(Phase.STOPPED)
         elif payload == STOP_PAYLOAD and self.phase is Phase.RECHARGING:
             self._set_phase(Phase.CHARGING)
         elif payload == DOCK_PAYLOAD and self.phase in (Phase.STOPPED, Phase.PARKED):
             self._set_phase(Phase.RETURNING)
+
+    def _save_photo(self, photo: SimPhoto) -> None:
+        captured_at = photo.captured_at.astimezone(datetime.UTC)
+        timestamp = varint_field(1, int(captured_at.timestamp()))
+        timestamp += varint_field(2, captured_at.microsecond * 1000)
+        value = bytes_field(1, timestamp) + bytes_field(2, bytes_field(1, photo.image))
+        if photo.preview is not None:
+            value += bytes_field(3, bytes_field(1, photo.preview))
+        existing = self._collections.get("instamatic_snaps", [])
+        self.set_collection(
+            "instamatic_snaps", [*existing, (uuid_wire(photo.photo_id), value)]
+        )
 
     def next_sequence(self) -> SequenceId:
         self._sequence += 1
@@ -610,6 +657,7 @@ class SimulatedRobot:
             previous.update(coverage)
             coverage = previous
         self.session = coverage
+        self.position = None
         self.set_property("active_session_key", coverage.active_key)
         self._refresh_plan()
         current = coverage.current_room
@@ -623,6 +671,13 @@ class SimulatedRobot:
         self._refresh_pose()
         self._set_phase(Phase.CLEANING)
 
+    def _leave_tap_point(self) -> None:
+        """Go back to the held task's room from a map-tap point."""
+        if self.position is not None:
+            self.position = None
+            self.current_area = self._area_before_tap
+            self._refresh_pose()
+
     def _navigate(self, navigation: Navigation) -> None:
         # The robot's state codes while it drives somewhere are not recorded,
         # so it arrives at once. Without a task it stands ready there; a task
@@ -632,13 +687,26 @@ class SimulatedRobot:
             return
         if navigation.room is not None:
             self.destination = navigation.room
+            self.position = None
             self.current_area = (
                 self._navigation_results.popleft()
                 if self._navigation_results
                 else self.floor.room(navigation.room).name
             )
+        elif navigation.waits:
+            self.waiting_at_sink = True
+        elif self._blocked_goals:
+            self._blocked_goals -= 1
+            return
         else:
-            self.waiting_at_sink = navigation.waits
+            # A map-tap goal parks at the point, facing the given heading.
+            assert navigation.posture is not None
+            if self.position is None:
+                self._area_before_tap = self.current_area
+            self.waiting_at_sink = False
+            self.position = read_posture(navigation.posture)
+            room = self.floor.room_at(self.position.x, self.position.y)
+            self.current_area = room.name if room is not None else None
         if self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
         elif self.session is None:
@@ -688,18 +756,31 @@ class SimulatedRobot:
         """Serve a stable local pose tied to the current synthetic mission."""
         if self.floor is None or not self.floor.rooms:
             return
-        room = next(
-            (room for room in self.floor.rooms if room.name == self.current_area),
-            self.floor.rooms[0],
-        )
-        x = sum(point[0] for point in room.outline) / len(room.outline)
-        y = sum(point[1] for point in room.outline) / len(room.outline)
+        rotation = b""
+        if self.position is not None:
+            x, y = self.position.x, self.position.y
+            # Yaw as the quaternion (0, 0, sin(yaw/2), cos(yaw/2)) at 3 -> 2.
+            # The simulator reports a goal's heading in the frame it was sent
+            # in; whether a real robot does is one of the viewpoint robot checks.
+            half = self.position.heading / 2
+            quaternion = b"".join(
+                fixed32_float(1, value)
+                for value in (0.0, 0.0, math.sin(half), math.cos(half))
+            )
+            rotation = bytes_field(3, bytes_field(2, quaternion))
+        else:
+            room = next(
+                (room for room in self.floor.rooms if room.name == self.current_area),
+                self.floor.rooms[0],
+            )
+            x = sum(point[0] for point in room.outline) / len(room.outline)
+            y = sum(point[1] for point in room.outline) / len(room.outline)
         position = fixed32_float(1, x) + fixed32_float(1, y) + fixed32_float(1, 0.0)
         now = datetime.datetime.now(datetime.UTC)
         timestamp = varint_field(1, int(now.timestamp())) + varint_field(
             2, now.microsecond * 1000
         )
-        value = bytes_field(2, bytes_field(1, position)) + bytes_field(
+        value = bytes_field(2, bytes_field(1, position + rotation)) + bytes_field(
             5, bytes_field(1, timestamp)
         )
         self.set_collection(

@@ -225,7 +225,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             async_send_user_command=AsyncMock(),
             async_start_coverage=AsyncMock(),
             async_get_sink_posture=AsyncMock(return_value=b"synthetic-posture"),
-            async_sink_summon=AsyncMock(),
+            async_go_to_posture=AsyncMock(),
             async_go_to_room=AsyncMock(),
             async_get_cleaning_session_records=AsyncMock(return_value=()),
             async_redo_clean=AsyncMock(),
@@ -2436,8 +2436,8 @@ async def test_sink_summon_sends_the_current_floor_when_idle() -> None:
 
     await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
 
-    client.async_sink_summon.assert_awaited_once_with(
-        _floor_plan(), b"synthetic-posture"
+    client.async_go_to_posture.assert_awaited_once_with(
+        _floor_plan(), b"synthetic-posture", await_refill=True
     )
     entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once_with()
 
@@ -2459,9 +2459,9 @@ async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> No
     with pytest.raises(ServiceValidationError) as unavailable:
         await RobotControls(None, stale, None).async_sink_summon()
     assert unavailable.value.translation_key == "room_plan_unavailable"
-    stale.runtime_data.session.client.async_sink_summon.assert_not_awaited()
+    stale.runtime_data.session.client.async_go_to_posture.assert_not_awaited()
 
-    for method in ("async_get_sink_posture", "async_sink_summon"):
+    for method in ("async_get_sink_posture", "async_go_to_posture"):
         unsupported = _entry(idle=True)
         getattr(
             unsupported.runtime_data.session.client, method
