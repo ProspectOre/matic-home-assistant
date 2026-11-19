@@ -666,9 +666,9 @@ class MaticGetPlanTool(_MaticTool):
         "a settings change, Smart Stop room boundary, or custom area splits "
         "the run into separate cleaning passes. Each room also includes the "
         "last recorded completion and attempt for this saved plan only. The "
-        "most recent managed run also includes its selected room roster and "
-        "verified completions; compare those lists only when both completeness "
-        "flags are true. A missing or false flag means the evidence is unknown. "
+        "most recent run also includes its selected room list and completion "
+        "records; compare those lists only when both completeness flags are "
+        "true. A missing or false flag means the evidence is unknown. "
         "This history does not establish which rooms were due in an earlier run."
     )
     annotations = _READ_ONLY
