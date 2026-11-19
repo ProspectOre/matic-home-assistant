@@ -113,7 +113,7 @@ replaced before it is committed.
 - Grouped native history held past verification reconciles only the original
   session's observed rooms. Wrong-session evidence expires without credit or
   redispatch, and late credit preserves the original terminal run outcome.
-- Camera and mission calls cross the real service, client and image HTTP paths:
+- Camera and photo tour calls cross the real service, client and image HTTP paths:
   arrival and capture freshness, wrong or unknown rooms, takeover, opt-in,
   cooldown, blocked-room manual snapshots, preview bytes, authentication and
   photos kept on disk across a reload.
