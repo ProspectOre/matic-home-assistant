@@ -2,10 +2,10 @@
 
 Both are taken once setup and its firmware snapshot have finished. The entity
 snapshot holds every registry entry and state of a robot with no mapped rooms;
-the diagnostics snapshot holds the redacted report. Values that
-differ on every run, such as ports, tokens, ids, timestamps and source hashes,
-are recorded by type only. Update both with `pytest --snapshot-update` and
-review the diff like code.
+the diagnostics snapshot holds the redacted report. Values that differ on every
+run, such as ports, tokens, ids, timestamps and source hashes, are recorded by
+type only. Update both with `pytest --snapshot-update` and review the diff like
+code.
 """
 
 from __future__ import annotations
