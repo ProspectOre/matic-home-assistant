@@ -1,4 +1,4 @@
-"""Camera photos and patrol behavior through Home Assistant and Hermes."""
+"""Camera photos and photo tours through Home Assistant and Hermes."""
 
 from __future__ import annotations
 
@@ -17,13 +17,14 @@ from homeassistant.util import dt as dt_util
 from PIL import Image
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot import photo_patrol
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.photo_library import MANUAL_ALBUM, PhotoSource
 
 from .hermes_sim import DOCK_PAYLOAD, SimulatedRobot
 from .plan_run import poll
 from .sim_mission import SimFloor, two_room_floor
+
+pytestmark = pytest.mark.usefixtures("fast_tour_polls")
 
 VACUUM = "vacuum.simulated_matic"
 PHOTO_EVENT = f"{DOMAIN}_photo_taken"
@@ -33,15 +34,6 @@ SNAP_PAYLOAD = bytes.fromhex("12043a024200")
 @pytest.fixture
 def floor() -> SimFloor:
     return two_room_floor()
-
-
-@pytest.fixture(autouse=True)
-def fast_patrol_polls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep real integration polling deterministic without waiting minutes."""
-    monkeypatch.setattr(photo_patrol, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(photo_patrol, "LEAVE_TIMEOUT_SECONDS", 0.3)
-    monkeypatch.setattr(photo_patrol, "ARRIVAL_TIMEOUT_SECONDS", 0.3)
-    monkeypatch.setattr(photo_patrol, "PHOTO_TIMEOUT_SECONDS", 1.0)
 
 
 def _webp(color: tuple[int, int, int]) -> bytes:
@@ -63,7 +55,7 @@ def _checkerboard_webp() -> bytes:
     return output.getvalue()
 
 
-async def _patrol(
+async def _tour(
     hass: HomeAssistant,
     room: str,
     *,
@@ -71,13 +63,13 @@ async def _patrol(
 ) -> dict[str, object]:
     data: dict[str, object] = {
         "entity_id": VACUUM,
-        "rooms": [room],
+        "stops": [{"room": room}],
     }
     if full_resolution is not None:
         data["full_resolution"] = full_resolution
     result = await hass.services.async_call(
         DOMAIN,
-        "photo_patrol",
+        "run_photo_tour",
         data,
         blocking=True,
         return_response=True,
@@ -86,7 +78,7 @@ async def _patrol(
     return result
 
 
-async def _configure_patrol(
+async def _configure_tour(
     hass: HomeAssistant,
     entry: MockConfigEntry,
     *,
@@ -96,15 +88,15 @@ async def _configure_patrol(
     hass.config_entries.async_update_entry(
         entry,
         options={
-            "photo_patrol_allow_unattended": True,
-            "photo_patrol_no_photo_rooms": blocked_rooms or [],
-            "photo_patrol_cooldown_seconds": cooldown_seconds,
+            "photo_allow_unattended": True,
+            "photo_no_photo_rooms": blocked_rooms or [],
+            "photo_cooldown_seconds": cooldown_seconds,
         },
     )
     assert await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
+async def test_tour_photo_crosses_the_real_client_and_private_http_view(
     hass: HomeAssistant,
     hass_client,
     hass_client_no_auth,
@@ -114,7 +106,7 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
     """A snap creates a real collection entry, event, image state and URL."""
     robot.set_collection("instamatic_snaps", [])
     robot.set_native_schedules([])
-    await _configure_patrol(hass, loaded_entry, cooldown_seconds=900)
+    await _configure_tour(hass, loaded_entry, cooldown_seconds=900)
     robot.queue_photo(
         _webp((18, 120, 210)),
         preview=_checkerboard_webp(),
@@ -125,7 +117,7 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
     events: list[dict[str, object]] = []
     hass.bus.async_listen(PHOTO_EVENT, lambda event: events.append(dict(event.data)))
 
-    result = await _patrol(hass, "Study")
+    result = await _tour(hass, "Study")
     await hass.async_block_till_done()
 
     (robot_photo,) = result["robots"]
@@ -185,7 +177,7 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
     missing = await client.get(f"/api/{DOMAIN}/photo/{loaded_entry.entry_id}/{uuid4()}")
     assert missing.status == 404
 
-    # The patrol asked the robot to dock, but the simulator is still returning.
+    # The tour asked the robot to dock, but the simulator is still returning.
     # Let it arrive so this retry isolates the cooldown guard from the busy guard.
     robot.arrive_at_dock()
     await poll(hass, loaded_entry, robot)
@@ -193,35 +185,35 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
 
     previous_commands = robot.received()
     with pytest.raises(HomeAssistantError) as raised:
-        await _patrol(hass, "Study")
-    assert raised.value.translation_key == "photo_patrol_cooldown"
+        await _tour(hass, "Study")
+    assert raised.value.translation_key == "photo_tour_cooldown"
     assert robot.received() == previous_commands
 
 
-async def test_patrol_refuses_an_unknown_room_and_a_busy_robot_without_snapping(
+async def test_tour_refuses_an_unknown_room_and_a_busy_robot_without_snapping(
     hass: HomeAssistant,
     loaded_entry: MockConfigEntry,
     robot: SimulatedRobot,
 ) -> None:
     """An unresolved destination and a clean cannot result in a room label."""
     robot.set_collection("instamatic_snaps", [])
-    await _configure_patrol(hass, loaded_entry)
+    await _configure_tour(hass, loaded_entry)
     await poll(hass, loaded_entry, robot)
 
     with pytest.raises(HomeAssistantError) as raised:
-        await _patrol(hass, "Garage")
-    assert raised.value.translation_key == "photo_patrol_room_unknown"
+        await _tour(hass, "Garage")
+    assert raised.value.translation_key == "photo_tour_room_unknown"
     assert robot.received() == []
 
     robot.start_cleaning("Kitchen")
     await poll(hass, loaded_entry, robot)
     with pytest.raises(HomeAssistantError) as raised:
-        await _patrol(hass, "Study")
-    assert raised.value.translation_key == "photo_patrol_robot_busy"
+        await _tour(hass, "Study")
+    assert raised.value.translation_key == "photo_tour_robot_busy"
     assert robot.received() == []
 
 
-async def test_patrol_does_not_return_an_old_photo_and_docks_after_failure(
+async def test_tour_does_not_return_an_old_photo_and_docks_after_failure(
     hass: HomeAssistant,
     loaded_entry: MockConfigEntry,
     robot: SimulatedRobot,
@@ -229,7 +221,7 @@ async def test_patrol_does_not_return_an_old_photo_and_docks_after_failure(
     """A stale capture cannot be labeled as the requested room's new photo."""
     robot.set_collection("instamatic_snaps", [])
     robot.set_native_schedules([])
-    await _configure_patrol(hass, loaded_entry)
+    await _configure_tour(hass, loaded_entry)
     robot.queue_photo(
         _webp((190, 20, 20)),
         captured_at=dt_util.utcnow() - timedelta(minutes=2),
@@ -238,14 +230,14 @@ async def test_patrol_does_not_return_an_old_photo_and_docks_after_failure(
     await poll(hass, loaded_entry, robot)
 
     with pytest.raises(HomeAssistantError) as raised:
-        await _patrol(hass, "Study")
+        await _tour(hass, "Study")
 
-    assert raised.value.translation_key == "photo_patrol_no_photo"
+    assert raised.value.translation_key == "photo_tour_no_photo"
     assert SNAP_PAYLOAD in robot.received()
     assert robot.phase.value == "returning"
 
 
-async def test_unattended_patrol_requires_opt_in_and_respects_no_photo_rooms(
+async def test_unattended_tour_requires_opt_in_and_respects_no_photo_rooms(
     hass: HomeAssistant,
     loaded_entry: MockConfigEntry,
     robot: SimulatedRobot,
@@ -258,16 +250,16 @@ async def test_unattended_patrol_requires_opt_in_and_respects_no_photo_rooms(
     await poll(hass, loaded_entry, robot)
 
     with pytest.raises(HomeAssistantError) as raised:
-        await _patrol(hass, "Study")
-    assert raised.value.translation_key == "photo_patrol_not_opted_in"
+        await _tour(hass, "Study")
+    assert raised.value.translation_key == "photo_tour_not_opted_in"
     assert robot.received() == []
 
-    await _configure_patrol(
+    await _configure_tour(
         hass, loaded_entry, blocked_rooms=[study_id], cooldown_seconds=900
     )
     with pytest.raises(HomeAssistantError) as raised:
-        await _patrol(hass, "Study")
-    assert raised.value.translation_key == "photo_patrol_room_blocked"
+        await _tour(hass, "Study")
+    assert raised.value.translation_key == "photo_tour_room_blocked"
     assert robot.received() == []
 
 
@@ -280,7 +272,7 @@ async def test_manual_photo_button_refuses_a_blocked_or_unverifiable_room(
     floor_plan = loaded_entry.runtime_data.session.floor.value
     assert floor_plan is not None
     study_id = next(room.id for room in floor_plan.rooms if room.name == "Study")
-    await _configure_patrol(hass, loaded_entry, blocked_rooms=[study_id])
+    await _configure_tour(hass, loaded_entry, blocked_rooms=[study_id])
 
     # Move through the public navigation service so the current area comes
     # from the simulator's normal command and state collection path.
@@ -304,47 +296,47 @@ async def test_manual_photo_button_refuses_a_blocked_or_unverifiable_room(
         await hass.services.async_call(
             "button", "press", {"entity_id": button}, blocking=True
         )
-    assert raised.value.translation_key == "photo_patrol_room_blocked"
+    assert raised.value.translation_key == "photo_tour_room_blocked"
     assert robot.received() == commands_before
     assert SNAP_PAYLOAD not in robot.received()
 
     # A stale configured room ID cannot silently disable the privacy check.
-    await _configure_patrol(hass, loaded_entry, blocked_rooms=["removed-room"])
+    await _configure_tour(hass, loaded_entry, blocked_rooms=["removed-room"])
     with pytest.raises(HomeAssistantError) as raised:
         await hass.services.async_call(
             "button", "press", {"entity_id": button}, blocking=True
         )
-    assert raised.value.translation_key == "photo_patrol_rooms_unavailable"
+    assert raised.value.translation_key == "photo_tour_rooms_unavailable"
     assert SNAP_PAYLOAD not in robot.received()
 
     # A room label outside the current map also cannot authorize a snap.
-    await _configure_patrol(hass, loaded_entry, blocked_rooms=[study_id])
+    await _configure_tour(hass, loaded_entry, blocked_rooms=[study_id])
     robot.set_current_area("Garage")
     await poll(hass, loaded_entry, robot)
     with pytest.raises(HomeAssistantError) as raised:
         await hass.services.async_call(
             "button", "press", {"entity_id": button}, blocking=True
         )
-    assert raised.value.translation_key == "photo_patrol_rooms_unavailable"
+    assert raised.value.translation_key == "photo_tour_rooms_unavailable"
     assert SNAP_PAYLOAD not in robot.received()
 
 
 @pytest.mark.parametrize("reported_area", ["Kitchen", None])
-async def test_patrol_rejects_a_wrong_or_unknown_reported_arrival(
+async def test_tour_rejects_a_wrong_or_unknown_reported_arrival(
     hass: HomeAssistant,
     loaded_entry: MockConfigEntry,
     robot: SimulatedRobot,
     reported_area: str | None,
 ) -> None:
     """A Go to room response must name the requested room before a snap."""
-    await _configure_patrol(hass, loaded_entry)
+    await _configure_tour(hass, loaded_entry)
     robot.set_native_schedules([])
     robot.queue_navigation_result(reported_area)
 
     with pytest.raises(HomeAssistantError) as raised:
-        await _patrol(hass, "Study")
+        await _tour(hass, "Study")
 
-    assert raised.value.translation_key == "photo_patrol_no_arrival"
+    assert raised.value.translation_key == "photo_tour_no_arrival"
     assert SNAP_PAYLOAD not in robot.received()
     assert all(command != DOCK_PAYLOAD for command in robot.received())
 
@@ -356,7 +348,7 @@ async def test_takeover_during_photo_save_is_not_interrupted_or_docked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A new clean during photo readback keeps ownership of the robot."""
-    await _configure_patrol(hass, loaded_entry)
+    await _configure_tour(hass, loaded_entry)
     robot.set_native_schedules([])
     robot.queue_photo(
         _webp((18, 120, 210)),
@@ -375,16 +367,16 @@ async def test_takeover_during_photo_save_is_not_interrupted_or_docked(
         return await original_refresh()
 
     monkeypatch.setattr(photos, "async_refresh", pause_after_snap)
-    patrol = hass.async_create_task(_patrol(hass, "Study"))
+    tour = hass.async_create_task(_tour(hass, "Study"))
     async with asyncio.timeout(10):
         await readback_started.wait()
     robot.start_cleaning("Kitchen")
     release_readback.set()
 
     with pytest.raises(HomeAssistantError) as raised:
-        await patrol
+        await tour
 
-    assert raised.value.translation_key == "photo_patrol_robot_busy"
+    assert raised.value.translation_key == "photo_tour_robot_busy"
     assert SNAP_PAYLOAD in robot.received()
     assert DOCK_PAYLOAD not in robot.received()
     assert robot.phase.value == "cleaning"

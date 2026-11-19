@@ -48,8 +48,8 @@ and are never cached by the browser. Home Assistant backups may include
 credentials, plans, maps and saved photos—protect backups and screenshots
 accordingly. Removing the robot erases its saved photos.
 
-[Photo patrol](photo-patrol.md) needs explicit opt-in and defaults to pixelated
-notification previews. Configured no-photo rooms block patrols and manual
+[Photo tours](photo-tours.md) need explicit opt-in and defaults to pixelated
+notification previews. Configured no-photo rooms block photo tours, viewpoints and manual
 snapshots requested through Home Assistant. They do not control the Matic app
 or remove existing photos from the robot.
 

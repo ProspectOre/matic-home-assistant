@@ -15,7 +15,6 @@ from homeassistant.core import HomeAssistant
 from PIL import Image
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot import photo_patrol
 from custom_components.matic_robot.client import tls
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.const import (
@@ -32,13 +31,7 @@ from .hermes_sim import SimulatedRobot, start_simulator
 from .plan_run import poll
 from .sim_mission import SimFloor, SimRoom, two_room_floor
 
-
-@pytest.fixture(autouse=True)
-def fast_patrol_polls(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(photo_patrol, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(photo_patrol, "LEAVE_TIMEOUT_SECONDS", 0.3)
-    monkeypatch.setattr(photo_patrol, "ARRIVAL_TIMEOUT_SECONDS", 0.3)
-    monkeypatch.setattr(photo_patrol, "PHOTO_TIMEOUT_SECONDS", 1.0)
+pytestmark = pytest.mark.usefixtures("fast_tour_polls")
 
 
 def _webp(color: tuple[int, int, int]) -> bytes:
@@ -69,7 +62,7 @@ def _floor(index: int, label: str, *, room_count: int = 2) -> SimFloor:
     )
 
 
-async def test_three_robot_camera_patrols_stay_isolated_across_reload(
+async def test_three_robot_camera_tours_stay_isolated_across_reload(
     hass: HomeAssistant,
     hass_client,
     tmp_path: Path,
@@ -128,9 +121,9 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
                     CONF_PAIRING_METHOD: PAIRING_METHOD_BLUETOOTH,
                 },
                 options={
-                    "photo_patrol_allow_unattended": True,
-                    "photo_patrol_no_photo_rooms": [],
-                    "photo_patrol_cooldown_seconds": 0,
+                    "photo_allow_unattended": True,
+                    "photo_no_photo_rooms": [],
+                    "photo_cooldown_seconds": 0,
                 },
                 version=1,
                 minor_version=3,
@@ -178,15 +171,15 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
                 mapped.mission_id for mapped in robot_floors
             ]
 
-        async def patrol_one(index: int) -> tuple[str, dict[str, object]]:
+        async def tour_one(index: int) -> tuple[str, dict[str, object]]:
             entry, floor = entries[index], floors[index]
             room = floor.rooms[0]
             result = await hass.services.async_call(
                 DOMAIN,
-                "photo_patrol",
+                "run_photo_tour",
                 {
                     "entity_id": f"vacuum.matic_{labels[index].lower()}",
-                    "rooms": [room.name],
+                    "stops": [{"room": room.name}],
                 },
                 blocking=True,
                 return_response=True,
@@ -198,7 +191,7 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
             assert photo_result["room"] == room.name
             return entry.entry_id, photo_result
 
-        results = await asyncio.gather(*(patrol_one(index) for index in range(3)))
+        results = await asyncio.gather(*(tour_one(index) for index in range(3)))
         by_entry = dict(results)
         client = await hass_client()
         for entry, robot, floor, color, robot_floors in zip(
@@ -294,10 +287,10 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
         )
         reconnect_result = await hass.services.async_call(
             DOMAIN,
-            "photo_patrol",
+            "run_photo_tour",
             {
                 "entity_id": "vacuum.matic_west",
-                "rooms": [mapped_floors[1][1].rooms[1].name],
+                "stops": [{"room": mapped_floors[1][1].rooms[1].name}],
             },
             blocking=True,
             return_response=True,

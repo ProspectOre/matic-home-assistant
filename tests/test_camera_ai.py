@@ -20,7 +20,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
 
-from custom_components.matic_robot import camera_ai, llm_camera, photo_patrol
+from custom_components.matic_robot import camera_ai, llm_camera, photo_tours
 from custom_components.matic_robot import media_source as media_source_module
 from custom_components.matic_robot.llm_camera import (
     MaticInvestigateTool,
@@ -48,8 +48,9 @@ def _prepare_camera_tool(
 ) -> tuple[SimpleNamespace, AsyncMock]:
     service_call = AsyncMock()
     hass = SimpleNamespace(services=SimpleNamespace(async_call=service_call))
-    tool.resolve_entry = lambda *_args: SimpleNamespace(  # type: ignore[method-assign]
-        entry_id="entry-one"
+    tool.resolve_entry = lambda *_args: SimpleNamespace(entry_id="entry-one")  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        llm_camera, "_stop", lambda _entry, args: {"room": args["place"]}
     )
     monkeypatch.setattr(
         llm_camera,
@@ -643,7 +644,7 @@ async def test_ai_provider_failure_hides_details_and_releases_photo(
             Context(),
         )
 
-    assert raised.value.translation_key == "photo_patrol_ai_failed"
+    assert raised.value.translation_key == "photo_tour_ai_failed"
     assert "secret photo annotations" not in str(raised.value)
     assert source._staged == {}
 
@@ -651,13 +652,13 @@ async def test_ai_provider_failure_hides_details_and_releases_photo(
 @pytest.mark.parametrize(
     ("question", "ai_task_entity_id", "translation_key"),
     [
-        ("   ", "ai_task.selected", "photo_patrol_ai_question_invalid"),
+        ("   ", "ai_task.selected", "photo_tour_ai_question_invalid"),
         (
             "x" * (camera_ai.MAX_QUESTION_LENGTH + 1),
             "ai_task.selected",
-            "photo_patrol_ai_question_invalid",
+            "photo_tour_ai_question_invalid",
         ),
-        ("What is shown?", "sensor.camera", "photo_patrol_ai_unavailable"),
+        ("What is shown?", "sensor.camera", "photo_tour_ai_unavailable"),
     ],
 )
 async def test_ai_rejects_bad_questions_and_non_ai_task_entities(
@@ -705,7 +706,7 @@ async def test_ai_rejects_invalid_structured_answers(
             Context(),
         )
 
-    assert raised.value.translation_key == "photo_patrol_ai_failed"
+    assert raised.value.translation_key == "photo_tour_ai_failed"
     assert photo_attachment_source(hass)._staged == {}
 
 
@@ -729,7 +730,7 @@ async def test_ai_task_entity_must_generate_data_and_accept_attachments() -> Non
         )
         with pytest.raises(HomeAssistantError) as raised:
             camera_ai.validate_ai_task_entity(hass, "ai_task.selected")
-        assert raised.value.translation_key == "photo_patrol_ai_unavailable"
+        assert raised.value.translation_key == "photo_tour_ai_unavailable"
 
     component.get_entity = lambda _entity_id: None
     with pytest.raises(HomeAssistantError):
@@ -997,7 +998,7 @@ async def test_take_photo_assist_tool_returns_only_bounded_photo_fields(
         ]
     }
 
-    result = await tool.async_run(hass, {"room": "Kitchen"}, _llm_context())
+    result = await tool.async_run(hass, {"place": "Kitchen"}, _llm_context())
 
     assert result.data == {
         "taken": True,
@@ -1008,10 +1009,10 @@ async def test_take_photo_assist_tool_returns_only_bounded_photo_fields(
         },
         "preview_only": True,
     }
-    assert service_call.await_args.args[:2] == ("matic_robot", "photo_patrol")
+    assert service_call.await_args.args[:2] == ("matic_robot", "run_photo_tour")
     assert service_call.await_args.args[2] == {
         "entity_id": "vacuum.matic",
-        "rooms": ["Kitchen"],
+        "stops": [{"room": "Kitchen"}],
     }
 
 
@@ -1035,7 +1036,7 @@ async def test_take_photo_tool_reports_no_photo_for_malformed_response(
     hass, service_call = _prepare_camera_tool(monkeypatch, tool)
     service_call.return_value = response
 
-    result = await tool.async_run(hass, {"room": "Kitchen"}, _llm_context())
+    result = await tool.async_run(hass, {"place": "Kitchen"}, _llm_context())
 
     assert result.data == {"taken": False, "photo": None, "preview_only": True}
 
@@ -1063,7 +1064,7 @@ async def test_investigate_tool_returns_analysis_without_full_photo_url(
     result = await tool.async_run(
         hass,
         {
-            "room": "Kitchen",
+            "place": "Kitchen",
             "question": "Is water visible?",
             "ai_task_entity_id": "ai_task.selected",
         },
@@ -1078,7 +1079,7 @@ async def test_investigate_tool_returns_analysis_without_full_photo_url(
     }
     assert service_call.await_args.args[2] == {
         "entity_id": "vacuum.matic",
-        "rooms": ["Kitchen"],
+        "stops": [{"room": "Kitchen"}],
         "question": "Is water visible?",
         "ai_task_entity_id": "ai_task.selected",
     }
@@ -1094,7 +1095,7 @@ async def test_investigate_tool_fails_closed_without_photo_analysis(
     result = await tool.async_run(
         hass,
         {
-            "room": "Kitchen",
+            "place": "Kitchen",
             "question": "Is water visible?",
             "ai_task_entity_id": "ai_task.selected",
         },
@@ -1119,7 +1120,7 @@ async def test_camera_assist_tools_use_generic_service_refusal(
     refusal = llm.ToolResult(data={"reason": "Photo tool unavailable."}, error=True)
     refusal_handler = AsyncMock(return_value=refusal)
     monkeypatch.setattr(llm_camera, "_async_service_refusal", refusal_handler)
-    args = {"room": "Kitchen"}
+    args = {"place": "Kitchen"}
     if tool_type is MaticInvestigateTool:
         args.update(question="Is water visible?", ai_task_entity_id="ai_task.selected")
 
@@ -1129,21 +1130,19 @@ async def test_camera_assist_tools_use_generic_service_refusal(
     refusal_handler.assert_awaited_once()
 
 
-async def test_photo_analysis_requires_question_and_entity_before_robot_access() -> (
-    None
-):
+async def test_photo_analysis_needs_question_and_entity_first() -> None:
     hass = SimpleNamespace(services=SimpleNamespace(async_call=pytest.fail))
 
     with pytest.raises(HomeAssistantError) as raised:
-        await photo_patrol.async_photo_patrol(
+        await photo_tours.async_run_photo_tour(
             hass,
             SimpleNamespace(entry_id="entry-one"),
             "vacuum.matic",
-            ["Kitchen"],
+            [],
             question="Is water visible?",
         )
 
-    assert raised.value.translation_key == "photo_patrol_ai_question_required"
+    assert raised.value.translation_key == "photo_tour_ai_question_required"
 
 
 async def test_photo_assist_tool_refuses_non_admin_before_service_call() -> None:
@@ -1163,7 +1162,7 @@ async def test_photo_assist_tool_refuses_non_admin_before_service_call() -> None
     with pytest.raises(HomeAssistantError) as raised:
         await MaticTakePhotoTool().async_call(
             hass,
-            llm.ToolInput("MaticTakePhoto", {"room": "Kitchen"}),
+            llm.ToolInput("MaticTakePhoto", {"place": "Kitchen"}),
             context,
         )
 

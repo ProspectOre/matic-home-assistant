@@ -30,10 +30,10 @@ shown on your robot's device page.
 - Clean after pets leave runs at most once a day. Clean during quiet hours
   checks the battery only when you choose a sensor.
 - Send firmware alerts finds the robot from the Firmware check status sensor.
-- Photograph room on alert runs a [photo patrol](actions.md#photo-patrol) of one
+- Photograph room on alert runs a [photo tour](actions.md#photo-tours) to one
   room when any chosen sensor turns on and the robot is docked or idle, then
   sends the photo to your phone, or a message if the robot couldn't take it.
-  Enable patrols and set no-photo rooms in the integration's settings first.
+  Enable photo tours and set no-photo rooms in the integration's settings first.
   Notifications use pixelated previews unless full resolution is selected.
   Alerts during the cooldown are ignored.
 

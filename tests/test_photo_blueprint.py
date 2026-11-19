@@ -63,13 +63,13 @@ async def setup_blueprint(
             CONF_USE_BLUEPRINT: {"path": str(PATH), "input": inputs},
         },
     ).async_substitute()
-    patrols: list[ServiceCall] = []
+    tours: list[ServiceCall] = []
     notifications: list[ServiceCall] = []
 
-    async def photo_patrol(call: ServiceCall) -> ServiceResponse:
-        patrols.append(call)
+    async def run_photo_tour(call: ServiceCall) -> ServiceResponse:
+        tours.append(call)
         if fail:
-            raise HomeAssistantError("photo_patrol_low_battery")
+            raise HomeAssistantError("photo_tour_low_battery")
         return {
             "robots": [
                 {
@@ -94,8 +94,8 @@ async def setup_blueprint(
 
     hass.services.async_register(
         "matic_robot",
-        "photo_patrol",
-        photo_patrol,
+        "run_photo_tour",
+        run_photo_tour,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register("notify", "phone", notify)
@@ -108,18 +108,18 @@ async def setup_blueprint(
         hass, "automation", {"automation": [substituted]}
     )
     await hass.async_block_till_done()
-    return patrols, notifications
+    return tours, notifications
 
 
 async def test_sends_the_photo_with_the_sensor_name(hass: HomeAssistant) -> None:
-    patrols, notifications = await setup_blueprint(hass)
+    tours, notifications = await setup_blueprint(hass)
 
     hass.states.async_set(MOTION, "on", {"friendly_name": "Hall motion"})
     await hass.async_block_till_done()
 
-    assert patrols[0].data == {
+    assert tours[0].data == {
         "entity_id": [VACUUM],
-        "rooms": ["Kitchen"],
+        "stops": [{"room": "Kitchen"}],
         "full_resolution": False,
         "question": "Is there water on the floor?",
         "ai_task_entity_id": "ai_task.home_assistant",
@@ -129,24 +129,24 @@ async def test_sends_the_photo_with_the_sensor_name(hass: HomeAssistant) -> None
 
 
 async def test_does_not_notify_when_ai_reports_no_problem(hass: HomeAssistant) -> None:
-    patrols, notifications = await setup_blueprint(hass, problem=False)
+    tours, notifications = await setup_blueprint(hass, problem=False)
 
     hass.states.async_set(MOTION, "on", {"friendly_name": "Hall motion"})
     await hass.async_block_till_done()
 
-    assert len(patrols) == 1
+    assert len(tours) == 1
     assert notifications == []
 
 
 async def test_says_when_the_robot_could_not_take_the_photo(
     hass: HomeAssistant,
 ) -> None:
-    patrols, notifications = await setup_blueprint(hass, fail=True)
+    tours, notifications = await setup_blueprint(hass, fail=True)
 
     hass.states.async_set(LEAK, "on", {"friendly_name": "Sink leak"})
     await hass.async_block_till_done()
 
-    assert len(patrols) == 1
+    assert len(tours) == 1
     assert notifications[0].data["title"] == "Sink leak"
     assert "couldn't take a photo in Kitchen" in notifications[0].data["message"]
     assert "image" not in notifications[0].data["data"]
@@ -161,11 +161,11 @@ async def settle() -> None:
 async def test_waits_while_the_robot_is_busy_or_cooling_down(
     hass: HomeAssistant,
 ) -> None:
-    patrols, notifications = await setup_blueprint(hass, cooldown=3600)
+    tours, notifications = await setup_blueprint(hass, cooldown=3600)
     hass.states.async_set(VACUUM, "cleaning")
     hass.states.async_set(MOTION, "on", {"friendly_name": "Hall motion"})
     await settle()
-    assert patrols == []
+    assert tours == []
 
     hass.states.async_set(VACUUM, "idle")
     hass.states.async_set(LEAK, "on", {"friendly_name": "Sink leak"})
@@ -175,5 +175,5 @@ async def test_waits_while_the_robot_is_busy_or_cooling_down(
     await settle()
 
     # The second alert lands during the cooldown and is dropped silently.
-    assert len(patrols) == 1
+    assert len(tours) == 1
     assert len(notifications) == 1
