@@ -216,6 +216,16 @@ class SimRoom:
     name: str
     outline: tuple[tuple[float, float], ...]
 
+    def contains(self, x: float, y: float) -> bool:
+        """Whether a point lies inside the outline (even-odd rule)."""
+        inside = False
+        for (x1, y1), (x2, y2) in zip(
+            self.outline, self.outline[1:] + self.outline[:1], strict=True
+        ):
+            if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+        return inside
+
 
 @dataclass(frozen=True, slots=True)
 class SimFloor:
@@ -225,6 +235,9 @@ class SimFloor:
 
     def room(self, room_id: UUID) -> SimRoom:
         return next(room for room in self.rooms if room.id == room_id)
+
+    def room_at(self, x: float, y: float) -> SimRoom | None:
+        return next((room for room in self.rooms if room.contains(x, y)), None)
 
     def encode(self) -> bytes:
         """Encode the floor as it appears at ``coverage_plan`` field 10."""
@@ -495,6 +508,33 @@ def _read_drawn_circles(payload: bytes) -> tuple[tuple[float, float, float], ...
         radius = struct.unpack("<f", radius_value)[0]
         circles.append((x, y, radius))
     return tuple(circles)
+
+
+@dataclass(frozen=True, slots=True)
+class SimPosture:
+    """A NavigateTo Posture: metres and a heading in radians."""
+
+    x: float
+    y: float
+    heading: float
+
+
+def read_posture(payload: bytes) -> SimPosture:
+    """Read {1: x, 2: y, 4: {1: cos, 2: sin}}; an absent float is zero."""
+
+    def floats(message_bytes: bytes) -> dict[int, float]:
+        return {
+            number: struct.unpack("<f", value)[0]
+            for number, wire_type, value in read_fields(message_bytes)
+            if wire_type == 5 and isinstance(value, bytes)
+        }
+
+    position = floats(payload)
+    rotation = floats(message(payload, 4) or b"")
+    cos, sin = rotation.get(1, 0.0), rotation.get(2, 0.0)
+    if not math.isclose(math.hypot(cos, sin), 1.0, abs_tol=1e-3):
+        raise ValueError("a posture heading must be a unit complex")
+    return SimPosture(position.get(1, 0.0), position.get(2, 0.0), math.atan2(sin, cos))
 
 
 @dataclass(frozen=True, slots=True)
