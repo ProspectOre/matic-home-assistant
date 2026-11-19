@@ -665,8 +665,11 @@ class MaticGetPlanTool(_MaticTool):
         "saved plan: room and custom area order, each one's settings, and where "
         "a settings change, Smart Stop room boundary, or custom area splits "
         "the run into separate cleaning passes. Each room also includes the "
-        "last recorded completion and attempt for this saved plan only. This "
-        "history does not establish which rooms were due in an earlier run."
+        "last recorded completion and attempt for this saved plan only. The "
+        "most recent managed run also includes its selected room roster and "
+        "verified completions; compare those lists only when both completeness "
+        "flags are true. A missing or false flag means the evidence is unknown. "
+        "This history does not establish which rooms were due in an earlier run."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(

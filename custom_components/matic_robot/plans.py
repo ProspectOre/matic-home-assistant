@@ -213,6 +213,17 @@ def public_managed_run_summary(value: Any) -> dict[str, Any] | None:
     return summary
 
 
+def public_plan_history(value: Any) -> dict[str, Any]:
+    """Hide plan-scoped run evidence from the broad history sensor payload."""
+    if not isinstance(value, Mapping):
+        return {}
+    history = deepcopy(dict(value))
+    for rotation in history.values():
+        if isinstance(rotation, dict):
+            rotation.pop("last_managed_run", None)
+    return history
+
+
 class SavedPlanLimitError(HomeAssistantError):
     """Raised when a robot already has the maximum saved plans."""
 
