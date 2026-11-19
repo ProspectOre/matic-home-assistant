@@ -19,13 +19,13 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     # Unsharded, the suite took 24.5 minutes for 2334 tests on hosted runners in
-    # October 2026. A shard is a quarter of the tests, not of the time: one is
-    # all WebKit, so 30 leaves headroom.
+    # October 2026. A shard is an eighth of the tests, not of the time: some
+    # are all WebKit, so 30 leaves headroom.
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     # Match the npm lockfile; browsers and OS dependencies are already installed.
     container:
       image: mcr.microsoft.com/playwright:v1.62.0-noble@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07

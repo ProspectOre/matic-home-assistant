@@ -39,6 +39,12 @@ The tests read Matic Map, the sidebar panel, which is built from
 it runs tests. To run pytest yourself, build it first with `npm ci` and
 `npm run build:map-studio-v4`.
 
+The check runs its steps at the same time and the tests on one worker per CPU
+(`pytest -n auto`), so a test must not depend on another test or on running
+alone, and its name must be the same in every run: give random or generated
+parameters an explicit `ids=`. A test that waits on a timer should shorten it
+with `monkeypatch` rather than sleep through it.
+
 Without uv, install the `test` extra into a Python 3.14 environment and run
 `python scripts/check.py`.
 
