@@ -194,12 +194,12 @@ class PhotoLibrary:
         stored = await self._store.async_load() or {}
         records = (_decode_record(item) for item in stored.get("photos", ()))
         self._records = {record.photo_id: record for record in records if record}
-        if evicted := stored.get("evicted_through"):
-            self._evicted_through = datetime.fromisoformat(evicted)
+        self._evicted_through = _decode_time(stored.get("evicted_through"))
         # Without records, such as after a corrupt store was moved aside, the
         # files are all that is left of the library, so keep them.
         if stored:
-            await self._hass.async_add_executor_job(self._delete_unrecorded_files)
+            for photo_id in await self._hass.async_add_executor_job(self._sweep):
+                del self._records[photo_id]
         await self.async_prune()
         self._stop_pruning = async_track_time_interval(
             self._hass, self._async_prune_daily, PRUNE_INTERVAL
@@ -378,6 +378,8 @@ class PhotoLibrary:
                 )
                 with os.fdopen(descriptor, "wb") as file:
                     file.write(data)
+                    file.flush()
+                    os.fsync(file.fileno())
                 unfinished.replace(path)
             if files[0][0].read_bytes() != photo.image:
                 raise OSError(errno.EIO, "the saved photo does not match the robot's")
@@ -418,18 +420,40 @@ class PhotoLibrary:
             await self._hass.async_add_executor_job(self._delete_files, removed)
         return bool(removed)
 
-    def _delete_unrecorded_files(self) -> None:
-        """Delete files no record accounts for, such as an interrupted write."""
-        if not self._folder.is_dir():
-            return
-        recorded = {self._path(photo_id) for photo_id in self._records} | {
-            self._path(record.photo_id, preview=True)
+    def _sweep(self) -> list[str]:
+        """Return the records whose files are lost, and delete unrecorded files.
+
+        A power cut can leave a ``.part`` file, or a record whose image is
+        missing or short. Dropping that record lets the next read of the robot
+        save the photo again. A file that cannot be deleted is only logged.
+        """
+        files = {
+            record.photo_id: [self._path(record.photo_id)]
+            + (
+                [self._path(record.photo_id, preview=True)]
+                if record.has_preview
+                else []
+            )
             for record in self._records.values()
-            if record.has_preview
         }
-        for path in self._folder.iterdir():
-            if path not in recorded:
-                path.unlink(missing_ok=True)
+        lost = [
+            photo_id
+            for photo_id, paths in files.items()
+            if sum(_file_size(path) for path in paths) != self._records[photo_id].size
+        ]
+        kept = {path for photo_id in files.keys() - lost for path in files[photo_id]}
+        try:
+            paths = list(self._folder.iterdir()) if self._folder.is_dir() else []
+        except OSError as err:
+            _LOGGER.warning("Could not read the Matic photo folder: %s", err)
+            return lost
+        for path in paths:
+            if path not in kept:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as err:
+                    _LOGGER.warning("Could not delete a Matic photo: %s", err)
+        return lost
 
     def _delete_files(self, photo_ids: list[str]) -> None:
         """Delete files of removed records; a file that stays is only logged."""
@@ -513,6 +537,21 @@ def _encode_record(record: PhotoRecord) -> dict[str, Any]:
     data = asdict(record)
     data["captured_at"] = record.captured_at.isoformat()
     return data
+
+
+def _decode_time(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except TypeError, ValueError:
+        return None
+
+
+def _file_size(path: Path) -> int:
+    """Return a file's size, or -1 when it cannot be read."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
 
 
 def _decode_record(data: Any) -> PhotoRecord | None:
