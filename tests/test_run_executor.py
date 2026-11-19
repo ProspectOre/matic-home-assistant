@@ -14,10 +14,10 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_observation import _LegOutcomeObserver
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import plan_room, run_plan_call
 from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
-from .test_plans import _call, _room
 from .test_session_ownership import REPLACEMENT, ROOM
 
 
@@ -25,7 +25,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     """A managed run emits one bounded terminal record without user identity."""
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    room = _room("Kitchen", "room-kitchen")
+    room = plan_room("Kitchen", "room-kitchen")
     events = []
     hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
     set_run_id = MagicMock()
@@ -42,7 +42,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     ):
         await _async_execute_rooms(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
@@ -107,11 +107,11 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
     ):
         await _async_execute_rooms(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
-            [_room("Kitchen", "room-kitchen")],
+            [plan_room("Kitchen", "room-kitchen")],
             floor_token="floor",
             robot=robot_port(
                 set_activity_run_id=set_run_id,
@@ -154,11 +154,11 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
     ):
         await _async_execute_rooms(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
-            [_room("Kitchen", "room-kitchen")],
+            [plan_room("Kitchen", "room-kitchen")],
             floor_token="floor",
             robot=robot_port(
                 set_activity_run_id=lambda run_id: scope.__setitem__("run_id", run_id),
@@ -195,11 +195,11 @@ async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
     ):
         await _async_execute_rooms(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
-            [_room("Kitchen", "room-kitchen")],
+            [plan_room("Kitchen", "room-kitchen")],
             floor_token="floor",
             robot=robot_port(
                 set_activity_run_id=set_run_id, get_activity_run_id=lambda: "newer-run"
