@@ -30,7 +30,9 @@ room roster, verified completions, and end time when known. Compare those lists
 only when both `room_roster_complete` and `completed_room_ids_complete` are true.
 Older runs,
 truncated rosters, or missing completion records stay unknown; the next-run
-preview does not reconstruct what was due in a past run.
+preview does not reconstruct what was due in a past run. Completion IDs also
+stay unknown while native-history reconciliation is pending or a run is
+unverified.
 `MaticGetNativeHistory` returns 5 runs by default and up to 20, with at most 64
 room results per response. `MaticGetRecentEvents` returns up to 64 events kept
 since Home Assistant started, and `MaticGetActivity` pages through up to 128
