@@ -71,21 +71,37 @@ async def test_an_unreachable_goal_leaves_the_robot_where_it_was(
     assert (await _pose(client)).heading is None
 
 
-async def test_a_goal_off_every_room_reports_no_area_and_docking_clears_it(
+async def test_a_goal_off_every_room_reports_no_area(
     client: MaticHermesClient, robot: SimulatedRobot
 ) -> None:
     floor_plan = await client.async_get_floor_plan()
+    robot.set_current_area("Kitchen")
 
     await client.async_go_to_posture(
         floor_plan, encode_posture(x=9.0, y=9.0, heading=0.0)
     )
+
+    assert robot.phase is Phase.PARKED
+    assert robot.position is not None
     assert (await client.async_get_state()).current_area is None
 
-    await client.async_send_user_command(UserCommand.DOCK)
-    robot.arrive_at_dock()
-    pose = await _pose(client)
+
+async def test_resume_leaves_the_tap_point_for_the_task(
+    client: MaticHermesClient, robot: SimulatedRobot
+) -> None:
+    floor_plan = await client.async_get_floor_plan()
+    robot.start_cleaning("Kitchen")
+    await client.async_go_to_posture(
+        floor_plan, encode_posture(x=3.0, y=0.5, heading=0.0)
+    )
+    assert (await client.async_get_state()).current_area == "Study"
+
+    await client.async_send_user_command(UserCommand.RESUME)
+
+    assert robot.phase is Phase.CLEANING
     assert robot.position is None
-    assert pose.heading is None
+    assert (await _pose(client)).heading is None
+    assert (await client.async_get_state()).current_area == "Kitchen"
 
 
 async def test_a_scripted_task_forgets_the_parked_point(
