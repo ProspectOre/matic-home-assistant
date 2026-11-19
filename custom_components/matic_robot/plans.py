@@ -144,6 +144,7 @@ DURATION_PROFILE_KEYS = tuple(
 )
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = 64
 MAX_SAVED_PLANS_PER_ROBOT = 256
+MAX_LAST_MANAGED_RUN_ROOMS = 128
 MANUAL_ROOM_SEQUENCE_PLAN_ID = "__matic_manual_room_sequence__"
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 # Matic's native STOP is graceful: it can keep the current task alive for
@@ -4392,6 +4393,7 @@ class CleaningPlanManager:
         *,
         trigger: str,
         service: str,
+        room_roster: Sequence[tuple[str, str]] | None = None,
         provenance: str | None = None,
         finish_current_room: bool | None = None,
         finish_current_room_threshold: int | None = None,
@@ -4411,6 +4413,14 @@ class CleaningPlanManager:
                     stop_threshold = _bounded_stop_threshold(
                         finish_current_room_threshold
                     )
+                normalized_roster = [
+                    {"id": room_id[:128], "name": room_name[:80]}
+                    for room_id, room_name in (room_roster or [])
+                    if isinstance(room_id, str)
+                    and room_id
+                    and isinstance(room_name, str)
+                    and room_name
+                ][:MAX_LAST_MANAGED_RUN_ROOMS]
                 robot["last_run"] = {
                     "run_id": run_id,
                     "plan_id": plan_id,
@@ -4423,7 +4433,14 @@ class CleaningPlanManager:
                     "provenance": safe_provenance,
                     "service": service[:128],
                     "room_count": max(0, room_count),
+                    "room_roster": normalized_roster,
+                    "room_roster_complete": (
+                        room_roster is not None
+                        and len(normalized_roster) == len(room_roster)
+                        and len(room_roster) <= MAX_LAST_MANAGED_RUN_ROOMS
+                    ),
                     "completed_room_count": 0,
+                    "completed_room_ids": [],
                     "finish_current_room": stop_enabled,
                     "finish_current_room_threshold": stop_threshold,
                 }
@@ -4815,6 +4832,7 @@ class CleaningPlanManager:
         reason_code: str,
         completed_room_count: int,
         *,
+        completed_room_ids: Sequence[str] | None = None,
         terminal_activity: str | None = None,
         cause: str = "unknown",
         entity_id: str | None = None,
@@ -4832,6 +4850,7 @@ class CleaningPlanManager:
                     outcome,
                     reason_code,
                     completed_room_count,
+                    completed_room_ids=completed_room_ids,
                     terminal_activity=terminal_activity,
                     cause=cause,
                 )
@@ -4867,6 +4886,7 @@ class CleaningPlanManager:
         reason_code: str,
         completed_room_count: int,
         *,
+        completed_room_ids: Sequence[str] | None,
         terminal_activity: str | None,
         cause: str,
     ) -> tuple[bool, list[dict[str, Any]]]:
@@ -4875,6 +4895,12 @@ class CleaningPlanManager:
         last_run = robot.get("last_run")
         if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
             return False, []
+        if completed_room_ids is not None:
+            saved_completed_ids = last_run.setdefault("completed_room_ids", [])
+            if isinstance(saved_completed_ids, list):
+                for room_id in completed_room_ids:
+                    if isinstance(room_id, str) and room_id not in saved_completed_ids:
+                        saved_completed_ids.append(room_id)
         room_count = last_run.get("room_count")
         max_rooms = room_count if isinstance(room_count, int) and room_count >= 0 else 0
         ended_at = dt_util.utcnow().isoformat()
@@ -4936,6 +4962,36 @@ class CleaningPlanManager:
             robot["active_plan"] = None
         if terminal_activity is not None and not docked:
             last_run["terminal_activity"] = terminal_activity[:64]
+        rotations = robot.setdefault("rotations", {})
+        if isinstance(rotations, dict):
+            rotation = rotations.setdefault(last_run["plan_id"], {"rooms": {}})
+            if isinstance(rotation, dict):
+                roster = last_run.get("room_roster")
+                completed_ids = last_run.get("completed_room_ids")
+                roster = roster if isinstance(roster, list) else []
+                completed_ids = completed_ids if isinstance(completed_ids, list) else []
+                roster_ids = {
+                    room["id"]
+                    for room in roster
+                    if isinstance(room, dict) and isinstance(room.get("id"), str)
+                }
+                rotation["last_managed_run"] = {
+                    "run_id": run_id,
+                    "started_at": last_run.get("started_at"),
+                    "ended_at": ended_at,
+                    "outcome": last_run["outcome"],
+                    "room_roster": roster[:MAX_LAST_MANAGED_RUN_ROOMS],
+                    "room_roster_complete": (
+                        last_run.get("room_roster_complete") is True
+                        and len(roster) == room_count
+                        and room_count <= MAX_LAST_MANAGED_RUN_ROOMS
+                    ),
+                    "completed_room_ids": [
+                        room_id
+                        for room_id in completed_ids
+                        if isinstance(room_id, str) and room_id in roster_ids
+                    ][:MAX_LAST_MANAGED_RUN_ROOMS],
+                }
         try:
             await self._store.async_save(self._data)
         finally:
@@ -5462,6 +5518,7 @@ class CleaningPlanManager:
             isinstance(last_run, dict)
             and last_run.get("outcome") == "running"
             and last_run.get("plan_id") == plan_id
+            and (run_id is None or last_run.get("run_id") == run_id)
         ):
             # Checkpoint verified credit with room history, so a crash before
             # the plan finalizer cannot lose work already verified and saved.
@@ -5469,6 +5526,12 @@ class CleaningPlanManager:
                 _stored_count(last_run, "completed_room_count") + 1,
                 _stored_count(last_run, "room_count"),
             )
+            completed_room_ids = last_run.setdefault("completed_room_ids", [])
+            if (
+                isinstance(completed_room_ids, list)
+                and room.room_id not in completed_room_ids
+            ):
+                completed_room_ids.append(room.room_id)
         active = robot.get("active_plan")
         if run_id is None or (
             isinstance(active, Mapping)
@@ -7173,6 +7236,12 @@ def _repair_native_reconciled_run(
     if completed_count < room_count:
         completed_count += 1
         last_run["completed_room_count"] = completed_count
+        completed_room_ids = last_run.setdefault("completed_room_ids", [])
+        if (
+            isinstance(completed_room_ids, list)
+            and pending["room_id"] not in completed_room_ids
+        ):
+            completed_room_ids.append(pending["room_id"])
         if last_run.get("outcome") == "running":
             last_run["native_reconciled_completion"] = True
         checkpoint = last_run.get("recovery_checkpoint")

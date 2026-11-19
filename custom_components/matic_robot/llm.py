@@ -50,6 +50,7 @@ from .const import (
 )
 from .firmware_reports import ASSESSMENTS
 from .plans import (
+    MAX_LAST_MANAGED_RUN_ROOMS,
     CleaningPlanManager,
     CleaningRoom,
     leg_groups,
@@ -662,7 +663,9 @@ class MaticGetPlanTool(_MaticTool):
         "Returns a read-only preview of the next run of the selected or named "
         "saved plan: room and custom area order, each one's settings, and where "
         "a settings change, Smart Stop room boundary, or custom area splits "
-        "the run into separate cleaning passes."
+        "the run into separate cleaning passes. Each room also includes the "
+        "last recorded completion and attempt for this saved plan only. This "
+        "history does not establish which rooms were due in an earlier run."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(
@@ -747,6 +750,78 @@ class MaticGetPlanTool(_MaticTool):
         )
         rotation = preview["rotation"]
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
+        plan_history = snapshot.get("plan_history")
+        plan_history = (
+            plan_history.get(plan_id)
+            if isinstance(plan_history, dict) and isinstance(plan_id, str)
+            else None
+        )
+        room_history = (
+            plan_history.get("rooms") if isinstance(plan_history, dict) else None
+        )
+        last_managed_run = (
+            plan_history.get("last_managed_run")
+            if isinstance(plan_history, dict)
+            else None
+        )
+        if isinstance(last_managed_run, dict):
+            run_roster = last_managed_run.get("room_roster")
+            run_roster = run_roster if isinstance(run_roster, list) else []
+            completed_room_ids = last_managed_run.get("completed_room_ids")
+            completed_room_ids = (
+                completed_room_ids if isinstance(completed_room_ids, list) else []
+            )
+            last_managed_run = {
+                "available": True,
+                "run_id": last_managed_run.get("run_id"),
+                "started_at": last_managed_run.get("started_at"),
+                "ended_at": last_managed_run.get("ended_at"),
+                "outcome": last_managed_run.get("outcome"),
+                "room_roster": [
+                    {"id": room["id"], "name": room["name"]}
+                    for room in run_roster[:MAX_LAST_MANAGED_RUN_ROOMS]
+                    if isinstance(room, dict)
+                    and isinstance(room.get("id"), str)
+                    and isinstance(room.get("name"), str)
+                ],
+                "room_roster_complete": (
+                    last_managed_run.get("room_roster_complete") is True
+                ),
+                "completed_room_ids": [
+                    room_id
+                    for room_id in completed_room_ids[:MAX_LAST_MANAGED_RUN_ROOMS]
+                    if isinstance(room_id, str)
+                ],
+            }
+        else:
+            last_managed_run = {"available": False}
+
+        def completion_history(room_id: str) -> JsonObjectType:
+            record = (
+                room_history.get(room_id) if isinstance(room_history, dict) else None
+            )
+            record = record if isinstance(record, dict) else None
+            return {
+                "available": record is not None,
+                "last_completed_at": (
+                    record.get("last_completed")
+                    if record is not None
+                    and isinstance(record.get("last_completed"), str)
+                    else None
+                ),
+                "last_attempt_at": (
+                    record.get("last_started")
+                    if record is not None
+                    and isinstance(record.get("last_started"), str)
+                    else None
+                ),
+                "last_result": (
+                    record.get("last_result")
+                    if record is not None and isinstance(record.get("last_result"), str)
+                    else None
+                ),
+            }
+
         active = snapshot.get("active_plan")
         active_plan_id = active.get("plan_id") if isinstance(active, dict) else None
         active_run_for_plan = (
@@ -780,6 +855,7 @@ class MaticGetPlanTool(_MaticTool):
                     {
                         "id": room.room_id,
                         "name": room.name,
+                        "completion_history": completion_history(room.room_id),
                         "cleaning_mode": room.cleaning_mode,
                         "coverage_setting": room.coverage_setting,
                         "cadence": cadence_by_room.get(room.room_id),
@@ -814,6 +890,7 @@ class MaticGetPlanTool(_MaticTool):
                         "name": preview["plan_name"],
                         "run_behavior": preview["run_behavior"],
                         "return_to_base": preview["return_to_base"],
+                        "last_managed_run": last_managed_run,
                     },
                     "rotation": rotation,
                     "settings_boundary_count": max(0, len(groups) - 1),

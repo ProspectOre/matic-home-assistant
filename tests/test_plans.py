@@ -367,6 +367,31 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     assert last_run["reason_code"] == "all_rooms_verified"
     assert last_run["room_count"] == 1
     assert last_run["completed_room_count"] == 1
+    plan_run = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+    assert plan_run == {
+        "run_id": last_run["run_id"],
+        "started_at": last_run["started_at"],
+        "ended_at": last_run["ended_at"],
+        "outcome": "completed",
+        "room_roster": [{"id": "room-kitchen", "name": "Kitchen"}],
+        "room_roster_complete": True,
+        "completed_room_ids": ["room-kitchen"],
+    }
+    await manager.async_begin_run(
+        "serial",
+        "another-plan",
+        "run-2",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        room_roster=[("room-study", "Study")],
+    )
+    await manager.async_finish_run("serial", "run-2", "failed", "room_failed", 0)
+    snapshot = manager.snapshot("serial")
+    assert snapshot["plan_history"]["away"]["last_managed_run"] == plan_run
+    assert snapshot["plan_history"]["another-plan"]["last_managed_run"][
+        "room_roster"
+    ] == [{"id": "room-study", "name": "Study"}]
     confirmed.assert_called_once_with("Kitchen")
     assert last_run["trigger"] == "external_unknown"
     assert last_run["provenance"] == "external_unknown"
