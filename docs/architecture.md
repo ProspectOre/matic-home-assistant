@@ -100,12 +100,12 @@ authorized projections for [plans](../custom_components/matic_robot/plan_views.p
 and [areas](../custom_components/matic_robot/area_views.py). The [assistant APIs](../custom_components/matic_robot/llm.py)
 are read-only status, control (status plus control tools, under 0.5's id) and firmware research; Assist gets status and control.
 [Shared authorization](../custom_components/matic_robot/llm_common.py) admits current administrators and, on every path, only robots whose vacuum is exposed to the calling assistant.
-The run lifecycle is announced once, as `matic_robot_*` bus events from the executor, ledger and session (the list is `RUN_EVENT_TYPES` in [const](../custom_components/matic_robot/const.py)). The [Cleaning run event entity](../custom_components/matic_robot/event.py), the [device triggers](../custom_components/matic_robot/device_trigger.py) and the [logbook](../custom_components/matic_robot/logbook.py) read those events and fire none of their own; Home Assistant's `event.received` trigger works on the entity. Interface adapters do not establish independent cleaning or map truth. Actions, assistant tools, buttons and Photo patrol send direct commands through [robot controls](../custom_components/matic_robot/robot_controls.py), not `vacuum.send_command`, and like a vacuum action send nothing while the robot is unreachable; `vacuum.send_command` keeps the [documented commands](robot-command-actions.md), `resume` for Matic Map, and until 0.7 the deprecated clean and motion commands.
+The run lifecycle is announced once, as `matic_robot_*` bus events from the executor, ledger and session (the list is `RUN_EVENT_TYPES` in [const](../custom_components/matic_robot/const.py)). The [Cleaning run event entity](../custom_components/matic_robot/event.py), the [device triggers](../custom_components/matic_robot/device_trigger.py) and the [logbook](../custom_components/matic_robot/logbook.py) read those events and fire none of their own; Home Assistant's `event.received` trigger works on the entity. Interface adapters do not establish independent cleaning or map truth. Actions, assistant tools, buttons and photo tours send direct commands through [robot controls](../custom_components/matic_robot/robot_controls.py), not `vacuum.send_command`, and like a vacuum action send nothing while the robot is unreachable; `vacuum.send_command` keeps the [documented commands](robot-command-actions.md), `resume` for Matic Map, and until 0.7 the deprecated clean and motion commands.
 
-[Photo patrol](../custom_components/matic_robot/photo_patrol.py) checks privacy,
-room, schedule and robot ownership before capture. The [photo library](../custom_components/matic_robot/photo_library.py)
+[Photo tours](../custom_components/matic_robot/photo_tours.py) check privacy,
+room, schedule and robot ownership before capture, and [viewpoints](../custom_components/matic_robot/viewpoints.py) hold the saved spots. The [photo library](../custom_components/matic_robot/photo_library.py)
 saves each photo to disk in an album, the [views](../custom_components/matic_robot/photos.py)
-serve photos and previews, and the [photo guide](photo-patrol.md) has the limits.
+serve photos and previews, and the [photo guide](photo-tours.md) has the limits.
 
 ## Map Studio
 

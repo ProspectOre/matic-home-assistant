@@ -54,6 +54,7 @@ from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapStore
 from .slam_view_data import observe_trail
 from .vacuum_catalog import async_remove_floor_catalogs
+from .viewpoints import Viewpoints
 from .wifi_survey import WifiSurveyStore
 from .workspace_socket import workspace_socket
 
@@ -77,6 +78,7 @@ class MaticRuntimeData:
     run_trails: RunTrails
     wifi_survey: WifiSurveyStore
     photos: PhotoLibrary
+    viewpoints: Viewpoints
     cleaning_mode: CleaningMode = CleaningMode.BOTH
     coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL
 
@@ -202,6 +204,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             ),
         )
         await photos.async_load()
+        viewpoints = Viewpoints(hass, entry.entry_id)
+        await viewpoints.async_load()
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         runtime_data = MaticRuntimeData(
             client,
@@ -213,6 +217,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             run_trails,
             wifi_survey,
             photos,
+            viewpoints,
             cleaning_mode=CleaningMode(
                 entry.options.get(CONF_CLEANING_MODE, CleaningMode.BOTH)
             ),
@@ -358,4 +363,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await RunTrails(hass, entry.entry_id).async_remove()
     await WifiSurveyStore(hass, entry.entry_id).async_remove()
     await async_remove_photos(hass, entry.entry_id)
+    await Viewpoints(hass, entry.entry_id).async_remove()
     await async_remove_floor_catalogs(hass, entry.entry_id)

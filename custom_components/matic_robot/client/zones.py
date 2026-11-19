@@ -10,7 +10,7 @@ from itertools import pairwise
 from google.protobuf.message import DecodeError
 
 from .floor_plan import MAX_MAP_COORDINATE
-from .models import HermesCollectionEntry, MapZone
+from .models import FloorPlan, HermesCollectionEntry, MapZone, Room
 from .wire import decode_fields, point
 
 MAX_ZONES = 64
@@ -123,6 +123,18 @@ def _contains(polygon: tuple[_Point, ...], point: _Point) -> bool:
         if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
             inside = not inside
     return inside
+
+
+def room_at(floor_plan: FloorPlan, point: _Point) -> Room | None:
+    """Return the room whose outline holds ``point``, or None between rooms."""
+    return next(
+        (
+            room
+            for room in floor_plan.rooms
+            if len(room.boundary) >= 3 and _contains(room.boundary, point)
+        ),
+        None,
+    )
 
 
 def _segment_distance(point: _Point, start: _Point, end: _Point) -> float:
