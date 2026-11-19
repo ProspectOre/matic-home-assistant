@@ -178,7 +178,7 @@ def test_posture_commands_reject_bad_input() -> None:
         encode_go_to_posture_command(mission_id=1, posture=b"")
     with pytest.raises(ValueError, match="mission_id"):
         encode_go_to_posture_command(mission_id=1 << 32, posture=b"\x0d")
-    for value in (math.nan, math.inf):
+    for value in (math.nan, math.inf, 1e39):
         with pytest.raises(ValueError, match="finite"):
             encode_posture(x=value, y=0.0, heading=0.0)
 

@@ -306,6 +306,7 @@ class SimulatedRobot:
     def start_cleaning(self, area: str | None = None) -> None:
         """Begin a task as if the app, a schedule or a voice cue started it."""
         self.current_area = area
+        self.position = None
         self._refresh_pose()
         self._set_phase(Phase.CLEANING)
 
@@ -342,6 +343,7 @@ class SimulatedRobot:
         assert self.session is not None
         self.session.finish_current(_now())
         upcoming = self.session.current_visit
+        self.position = None
         self.current_area = (
             self.floor.room(upcoming.room).name
             if self.floor is not None
@@ -358,6 +360,7 @@ class SimulatedRobot:
         """End the task after its last room, write history, head home."""
         self._end_session(completed=True)
         self.current_area = None
+        self.position = None
         self._set_phase(Phase.RETURNING)
 
     def app_takes_over(self) -> None:
@@ -604,6 +607,7 @@ class SimulatedRobot:
         ):
             self._end_session(completed=False)
             self.current_area = None
+            self.position = None
             self._set_phase(Phase.STOPPED)
         elif payload == STOP_PAYLOAD and self.phase is Phase.RECHARGING:
             self._set_phase(Phase.CHARGING)

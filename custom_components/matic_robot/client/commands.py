@@ -75,6 +75,7 @@ _COMMAND_PAYLOADS = {
 }
 
 _SINK_REFILL_WAIT_SECONDS = 900
+_FLOAT32_MAX = 3.4028234663852886e38
 # {2: {2: {1: fixed64, 2: fixed64}}}: the history key around one session UUID.
 _SESSION_KEY_LENGTH = 22
 _SESSION_KEY_PREFIX = bytes.fromhex("1214121209")
@@ -99,8 +100,11 @@ def encode_posture(*, x: float, y: float, heading: float) -> bytes:
     The heading travels as a unit complex {1: cos, 2: sin}. Zero values are left
     off the wire, as the app's encoder leaves them.
     """
-    if not all(math.isfinite(value) for value in (x, y, heading)):
-        raise ValueError("a posture needs finite x, y and heading")
+    if (
+        not all(math.isfinite(value) for value in (x, y, heading))
+        or max(abs(x), abs(y)) > _FLOAT32_MAX
+    ):
+        raise ValueError("a posture needs finite float32 x, y and heading")
     rotation = _float_field(1, math.cos(heading)) + _float_field(2, math.sin(heading))
     return _float_field(1, x) + _float_field(2, y) + _field(4, rotation)
 

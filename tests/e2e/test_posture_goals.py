@@ -65,6 +65,7 @@ async def test_an_unreachable_goal_leaves_the_robot_where_it_was(
         floor_plan, encode_posture(x=3.0, y=0.5, heading=0.0)
     )
 
+    assert robot._blocked_goals == 0
     assert robot.phase is Phase.DOCKED
     assert robot.position is None
     assert (await _pose(client)).heading is None
@@ -85,6 +86,21 @@ async def test_a_goal_off_every_room_reports_no_area_and_docking_clears_it(
     pose = await _pose(client)
     assert robot.position is None
     assert pose.heading is None
+
+
+async def test_a_scripted_task_forgets_the_parked_point(
+    client: MaticHermesClient, robot: SimulatedRobot
+) -> None:
+    floor_plan = await client.async_get_floor_plan()
+    await client.async_go_to_posture(
+        floor_plan, encode_posture(x=3.0, y=0.5, heading=0.0)
+    )
+
+    robot.start_cleaning("Kitchen")
+
+    assert robot.position is None
+    assert (await _pose(client)).heading is None
+    assert (await client.async_get_state()).current_area == "Kitchen"
 
 
 async def test_a_held_photo_is_saved_only_when_released(
