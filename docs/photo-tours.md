@@ -42,7 +42,9 @@ Choose the rooms where Home Assistant must not take photos. The restriction
 applies to tours, viewpoints and manual snapshots. With no-photo rooms
 configured, an unknown room or an unavailable map stops a snapshot; a room
 removed by remapping must be reviewed in settings before photo commands resume.
-These settings do not control photos requested in the Matic app.
+The check is on the room the robot stands in, not what the camera sees: a photo
+from a permitted room can show a no-photo room through an open doorway, so aim
+viewpoints away from one. These settings do not control photos requested in the Matic app.
 
 The minimum time between tours defaults to 15 minutes. Only one tour may
 run per robot. It requires at least 20% battery, checks again between stops,
