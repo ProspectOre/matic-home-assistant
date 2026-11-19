@@ -1223,6 +1223,7 @@ class CleaningPlanManager:
                 remaining = _native_reconciliation_remaining_seconds(pending)
                 if remaining <= 0:
                     robot.pop("pending_native_reconciliation", None)
+                    _sync_projection_after_native_reconciliation(robot, pending)
                     recovered = True
                 else:
                     self._arm_stop_pending(str(serial_number), remaining)
@@ -5679,6 +5680,7 @@ class CleaningPlanManager:
             return False
         if _native_reconciliation_expired(pending):
             robot.pop("pending_native_reconciliation", None)
+            _sync_projection_after_native_reconciliation(robot, pending)
             if changed is not None:
                 changed()
             await self._async_save_native_history(serial_number, before)
@@ -5691,6 +5693,7 @@ class CleaningPlanManager:
             return False
         if _native_reconciliation_was_committed(robot, pending):
             robot.pop("pending_native_reconciliation", None)
+            _sync_projection_after_native_reconciliation(robot, pending)
             if changed is not None:
                 changed()
             await self._async_save_native_history(serial_number, before)
@@ -5739,6 +5742,7 @@ class CleaningPlanManager:
             )
         _repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
+        _sync_projection_after_native_reconciliation(robot, pending)
         if changed is not None:
             changed()
         await self._async_save_native_history(serial_number, before)
@@ -5768,6 +5772,7 @@ class CleaningPlanManager:
                     return False
                 before = deepcopy(robot)
                 robot.pop("pending_native_reconciliation", None)
+                _sync_projection_after_native_reconciliation(robot, pending)
                 applied = deepcopy(robot)
                 try:
                     await self._store.async_save(self._data)
@@ -7132,6 +7137,7 @@ def _reconcile_pending_native_history(
         return False
     if _native_reconciliation_expired(pending):
         robot.pop("pending_native_reconciliation", None)
+        _sync_projection_after_native_reconciliation(robot, pending)
         return True
     dispatched_at = cast(datetime, dt_util.parse_datetime(pending["dispatched_at"]))
     room = next(
@@ -7162,6 +7168,7 @@ def _reconcile_pending_native_history(
         # cadence credit a second time.
         _repair_native_reconciled_run(robot, pending, pending["plan_id"])
         robot.pop("pending_native_reconciliation", None)
+        _sync_projection_after_native_reconciliation(robot, pending)
         if on_reconciled is not None:
             on_reconciled(pending)
         return True
@@ -7211,6 +7218,7 @@ def _reconcile_pending_native_history(
         )
     _repair_native_reconciled_run(robot, pending, pending["plan_id"])
     robot.pop("pending_native_reconciliation", None)
+    _sync_projection_after_native_reconciliation(robot, pending)
     if on_reconciled is not None:
         on_reconciled(pending)
     return True
@@ -7269,6 +7277,7 @@ def _sync_last_managed_run(robot: dict[str, Any], last_run: Mapping[str, Any]) -
         room_roster_complete
         and completed_ids_available
         and last_run.get("outcome") != "unverified"
+        and not _pending_native_reconciliation_matches_run(robot, last_run)
         and len(valid_completed_ids) == len(raw_completed_ids)
         and all(room_id in roster_ids for room_id in valid_completed_ids)
         and len(completed_ids) == len(valid_completed_ids)
@@ -7283,6 +7292,31 @@ def _sync_last_managed_run(robot: dict[str, Any], last_run: Mapping[str, Any]) -
         "completed_room_ids": completed_ids,
         "completed_room_ids_complete": completed_room_ids_complete,
     }
+
+
+def _pending_native_reconciliation_matches_run(
+    robot: Mapping[str, Any], run: Mapping[str, Any]
+) -> bool:
+    pending = _validated_native_reconciliation(
+        robot.get("pending_native_reconciliation")
+    )
+    return pending is not None and (
+        pending.get("run_id") == run.get("run_id")
+        and pending.get("plan_id") == run.get("plan_id")
+    )
+
+
+def _sync_projection_after_native_reconciliation(
+    robot: dict[str, Any], pending: Mapping[str, Any]
+) -> None:
+    """Refresh a run projection after its last pending completion marker clears."""
+    last_run = robot.get("last_run")
+    if (
+        isinstance(last_run, dict)
+        and last_run.get("run_id") == pending.get("run_id")
+        and last_run.get("plan_id") == pending.get("plan_id")
+    ):
+        _sync_last_managed_run(robot, last_run)
 
 
 def _repair_native_reconciled_run(

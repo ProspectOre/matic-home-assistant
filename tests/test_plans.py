@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.core import ServiceCall, callback
@@ -336,14 +336,16 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = _room("Kitchen", "room-kitchen")
+    second_room = _room("Study", "room-study")
     events = []
     hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
     set_run_id = MagicMock()
     confirmed = MagicMock()
 
     async def fake_leg(*args, **kwargs):
-        args[11](args[5][0].name)
-        kwargs["record_room_completed"](args[5][0])
+        for selected_room in args[5]:
+            args[11](selected_room.name)
+            kwargs["record_room_completed"](selected_room)
         return True
 
     with patch(
@@ -356,7 +358,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
             manager,
             "vacuum.matic",
             "serial",
-            [room],
+            [room, second_room],
             confirm_room_completed=confirmed,
             set_activity_run_id=set_run_id,
         )
@@ -365,17 +367,20 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
-    assert last_run["room_count"] == 1
-    assert last_run["completed_room_count"] == 1
+    assert last_run["room_count"] == 2
+    assert last_run["completed_room_count"] == 2
     plan_run = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
     assert plan_run == {
         "run_id": last_run["run_id"],
         "started_at": last_run["started_at"],
         "ended_at": last_run["ended_at"],
         "outcome": "completed",
-        "room_roster": [{"id": "room-kitchen", "name": "Kitchen"}],
+        "room_roster": [
+            {"id": "room-kitchen", "name": "Kitchen"},
+            {"id": "room-study", "name": "Study"},
+        ],
         "room_roster_complete": True,
-        "completed_room_ids": ["room-kitchen"],
+        "completed_room_ids": ["room-kitchen", "room-study"],
         "completed_room_ids_complete": True,
     }
     await manager.async_begin_run(
@@ -393,7 +398,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     assert snapshot["plan_history"]["another-plan"]["last_managed_run"][
         "room_roster"
     ] == [{"id": "room-study", "name": "Study"}]
-    confirmed.assert_called_once_with("Kitchen")
+    confirmed.assert_has_calls([call("Kitchen"), call("Study")])
     assert last_run["trigger"] == "external_unknown"
     assert last_run["provenance"] == "external_unknown"
     assert last_run["service"] == "intelligent_clean"
@@ -411,6 +416,94 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     assert (
         await manager.async_finish_run("serial", "wrong-run", "failed", "x", 9) is False
     )
+
+
+async def test_executor_projects_selected_roster_and_partial_failure(hass) -> None:
+    """A failed multi-room executor run preserves its selected and credited rooms."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    kitchen = _room("Kitchen", "room-kitchen")
+    study = _room("Study", "room-study")
+
+    async def fail_after_first_room(*args, **kwargs):
+        first_room = args[5][0]
+        args[11](first_room.name)
+        kwargs["record_room_completed"](first_room)
+        raise RuntimeError("synthetic second-room failure")
+
+    with (
+        patch(
+            "custom_components.matic_robot.managed_executor._async_run_leg",
+            AsyncMock(side_effect=fail_after_first_room),
+        ),
+        pytest.raises(RuntimeError, match="synthetic second-room failure"),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [kitchen, study],
+            confirm_room_completed=MagicMock(),
+        )
+
+    run = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+    assert run["outcome"] == "failed"
+    assert run["room_roster"] == [
+        {"id": "room-kitchen", "name": "Kitchen"},
+        {"id": "room-study", "name": "Study"},
+    ]
+    assert run["room_roster_complete"] is True
+    assert run["completed_room_ids"] == ["room-kitchen"]
+    assert run["completed_room_ids_complete"] is True
+
+
+async def test_executor_keeps_completion_unknown_during_native_reconciliation(
+    hass,
+) -> None:
+    """A pending OEM completion window keeps negative evidence unavailable."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    run_id = "run-pending-native"
+    dispatched_at = dt_util.utcnow().isoformat()
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        run_id,
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[(room.room_id, room.name)],
+    )
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "synthetic stop",
+        native_reconciliation={
+            "plan_id": "away",
+            "run_id": run_id,
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dispatched_at,
+        },
+    )
+    await manager.async_finish_run(
+        "serial", run_id, "failed", "room_failed", 0, completed_room_ids=[]
+    )
+
+    pending_run = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+    assert pending_run["room_roster_complete"] is True
+    assert pending_run["completed_room_ids_complete"] is False
+
+    assert await manager.async_clear_native_reconciliation(
+        "serial", "away", room.room_id, dt_util.parse_datetime(dispatched_at)
+    )
+    cleared_run = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+    assert cleared_run["completed_room_ids_complete"] is True
 
 
 async def test_managed_run_completion_projection_marks_missing_and_capped_evidence(
