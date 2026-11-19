@@ -13,7 +13,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.matic_robot import photo_tours, viewpoints
+from custom_components.matic_robot import llm_camera, photo_tours, viewpoints
 from custom_components.matic_robot.client import (
     FloorPlan,
     MapZone,
@@ -321,7 +321,10 @@ async def test_take_photo_tool_sends_a_saved_viewpoint_by_name(
     tool = MaticTakePhotoTool()
     hass, service_call = _prepare_camera_tool(monkeypatch, tool)
     tool.resolve_entry = lambda *_args: SimpleNamespace(  # type: ignore[method-assign]
-        runtime_data=SimpleNamespace(viewpoints=SimpleNamespace(find=str))
+        runtime_data=SimpleNamespace(
+            viewpoints=SimpleNamespace(find=lambda name: replace(DESK, name=name)),
+            session=SimpleNamespace(floor=SimpleNamespace(value=FLOOR)),
+        )
     )
     service_call.return_value = {"robots": []}
 
@@ -352,3 +355,31 @@ def test_a_viewpoint_is_saved_from_all_coordinates_or_none() -> None:
     assert SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA(data)["name"] == "Desk"
     with pytest.raises(probatio.Invalid):
         SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA(data | {"x": 1, "y": 2})
+
+
+@pytest.mark.parametrize(
+    ("place", "mission_id", "floor_plan", "expected"),
+    [
+        ("Window", None, FLOOR, {"room": "Window"}),
+        ("Desk", 7, FLOOR, {"viewpoint": "Desk"}),
+        ("kitchen", 8, FLOOR, {"room": "kitchen"}),
+        ("Desk", 8, FLOOR, {"viewpoint": "Desk"}),
+        ("Desk", 8, None, {"viewpoint": "Desk"}),
+    ],
+)
+def test_an_assistant_place_is_a_viewpoint_unless_a_room_here_has_its_name(
+    place: str, mission_id: int | None, floor_plan: FloorPlan | None, expected: dict
+) -> None:
+    def find(name: str) -> Viewpoint:
+        if mission_id is None:
+            raise ServiceValidationError(translation_key="viewpoint_unknown")
+        return Viewpoint("v", name, mission_id, 3, 1, 0, "study")
+
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            viewpoints=SimpleNamespace(find=find),
+            session=SimpleNamespace(floor=SimpleNamespace(value=floor_plan)),
+        )
+    )
+
+    assert llm_camera._stop(entry, {"place": place}) == expected

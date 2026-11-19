@@ -145,6 +145,8 @@ async def async_run_photo_tour(
     else:
         attachment_generation = None
     async with lock:
+        # Opt-in and privacy come before any viewpoint or zone check.
+        _assert_photos_allowed(entry, [])
         shots = _shots(entry, stops)
         rooms = list(dict.fromkeys(shot.room for shot in shots))
         _assert_photos_allowed(entry, rooms)

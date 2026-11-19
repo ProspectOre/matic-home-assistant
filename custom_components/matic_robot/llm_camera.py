@@ -11,6 +11,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import llm
 
+from .client import room_name_key
 from .const import DOMAIN
 from .llm_common import _ROBOT_FIELD, _MaticTool
 from .llm_control import _async_service_refusal, _PanelRobot
@@ -140,12 +141,20 @@ class MaticInvestigateTool(_MaticTool):
 
 
 def _stop(entry: MaticConfigEntry, args: dict[str, Any]) -> dict[str, str]:
-    """Read a place as a saved viewpoint when one has that name, else a room."""
+    """Read a place as a saved viewpoint when one has that name, else a room.
+
+    A viewpoint on another floor gives way to a room of the same name here.
+    """
     place: str = args["place"]
     try:
-        entry.runtime_data.viewpoints.find(place)
+        viewpoint = entry.runtime_data.viewpoints.find(place)
     except ServiceValidationError:
         return {"room": place}
+    floor_plan = entry.runtime_data.session.floor.value
+    if floor_plan is not None and viewpoint.mission_id != floor_plan.mission_id:
+        key = room_name_key(place)
+        if any(room_name_key(room.name) == key for room in floor_plan.rooms):
+            return {"room": place}
     return {"viewpoint": place}
 
 
