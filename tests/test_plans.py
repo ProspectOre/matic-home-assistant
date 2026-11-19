@@ -485,6 +485,36 @@ def test_managed_run_projection_ignores_malformed_rotation_containers() -> None:
     assert robot["rotations"]["away"] == []
 
 
+def test_managed_run_projection_requires_verified_completion_ids() -> None:
+    """Missing or unverified completion evidence is never a complete empty list."""
+    base_run = {
+        "run_id": "run-1",
+        "plan_id": "away",
+        "outcome": "completed",
+        "room_count": 1,
+        "room_roster": [{"id": "kitchen", "name": "Kitchen"}],
+        "room_roster_complete": True,
+    }
+    robot = {"rotations": {"away": {"rooms": {}}}}
+    plans_module._sync_last_managed_run(robot, base_run)
+    missing_ids = robot["rotations"]["away"]["last_managed_run"]
+    assert missing_ids["completed_room_ids"] == []
+    assert missing_ids["completed_room_ids_complete"] is False
+
+    robot = {"rotations": {"away": {"rooms": {}}}}
+    plans_module._sync_last_managed_run(
+        robot,
+        {
+            **base_run,
+            "outcome": "unverified",
+            "completed_room_ids": [],
+        },
+    )
+    unverified = robot["rotations"]["away"]["last_managed_run"]
+    assert unverified["room_roster_complete"] is True
+    assert unverified["completed_room_ids_complete"] is False
+
+
 async def test_late_native_reconciliation_refreshes_plan_run_projection(hass) -> None:
     """Late verified history updates the saved plan summary for the same run."""
     robot = {
