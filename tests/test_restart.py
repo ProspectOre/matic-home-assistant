@@ -1228,6 +1228,8 @@ async def test_restart_after_final_credit_preserves_verified_completion(
     assert manager.snapshot("serial")["completed_runs"] == 1
     await hass.async_block_till_done()
     assert "room_outcomes" not in events[0].data
+    assert "room_roster" not in events[0].data
+    assert "completed_room_ids" not in events[0].data
 
 
 @pytest.mark.parametrize("paused", [False, True])

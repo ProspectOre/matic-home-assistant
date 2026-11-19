@@ -39,7 +39,12 @@ from .client.models import (
 )
 from .entity import MaticEntity
 from .native_completion import native_room_key
-from .plans import plan_floor_token, room_cadence_identity
+from .plans import (
+    plan_floor_token,
+    public_managed_run_summary,
+    public_plan_history,
+    room_cadence_identity,
+)
 from .room_statistics import native_statistics_have_ambiguous_floor
 
 PARALLEL_UPDATES = 0
@@ -631,9 +636,11 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
         snapshot = self._history.snapshot(self._serial_number)
         return {
             **snapshot,
+            "plan_history": public_plan_history(snapshot.get("plan_history")),
             "matic_entry_id": self._config_entry.entry_id,
             "plan_count": len(snapshot["plans"]),
             "plan_running": snapshot["active_plan"] is not None,
+            "last_run": public_managed_run_summary(snapshot.get("last_run")),
         }
 
 

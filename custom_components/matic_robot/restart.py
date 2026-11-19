@@ -38,7 +38,13 @@ from .native_completion import (
     read_handoff_history_keys,
     read_handoff_revision,
 )
-from .plans import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
+from .plans import (
+    AreaLeg,
+    CleaningRoom,
+    checkpoint_legs,
+    plan_floor_token,
+    public_managed_run_summary,
+)
 from .room_coherence import current_floor_plan, room_completion_names_are_current
 
 if TYPE_CHECKING:
@@ -771,7 +777,12 @@ async def async_recover_managed_run(
                 else "home_assistant",
             )
             if finished:
-                summary = manager.snapshot(serial_number)["last_run"]
+                summary = (
+                    public_managed_run_summary(
+                        manager.snapshot(serial_number).get("last_run")
+                    )
+                    or {}
+                )
                 hass.bus.async_fire(
                     EVENT_PLAN_FINISHED,
                     {

@@ -677,6 +677,9 @@ def _timing_hass():
             "run_id": sample["run_id"],
             "outcome": "running",
             "completed_room_count": 0,
+            "room_roster": [{"id": "room-kitchen", "name": "Kitchen"}],
+            "room_roster_complete": True,
+            "completed_room_ids": ["room-kitchen"],
         },
     }
     hass = _hass(entry)
@@ -704,6 +707,11 @@ async def test_operations_reads_shared_timing_without_sampling_or_motion() -> No
     assert (
         result["robots"][0]["managed_runner"]["last_run"]["completed_room_count"] == 0
     )
+    assert not {
+        "room_roster",
+        "room_roster_complete",
+        "completed_room_ids",
+    }.intersection(result["robots"][0]["managed_runner"]["last_run"])
 
     # The API forwards the published sample; it never calculates a newer clock.
     for value in (0, 100):
@@ -912,6 +920,7 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
     result = (
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
     ).data
+    assert result["plan"]["last_managed_run"] == {"available": False}
     expected = manager.preview(
         "synthetic-serial",
         room_map,
@@ -921,6 +930,78 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
             room.id: room_cadence_identity(floor_plan, room.id)
             for room in floor_plan.rooms
         },
+    )
+    manager._rotation("synthetic-serial", "whole-home")["rooms"]["kitchen"] = {
+        "name": "Kitchen",
+        "last_completed": "2026-08-20T04:16:13+00:00",
+        "last_started": "2026-08-20T05:16:13+00:00",
+        "last_result": "failed",
+    }
+    manager._rotation("synthetic-serial", "whole-home")["last_managed_run"] = {
+        "run_id": "night-run",
+        "started_at": "2026-08-20T04:00:00+00:00",
+        "ended_at": "2026-08-20T05:00:00+00:00",
+        "outcome": "failed",
+        "room_roster": [
+            {"id": "kitchen", "name": "Kitchen"},
+            {"id": "study", "name": "Study"},
+        ],
+        "room_roster_complete": True,
+        "completed_room_ids": ["kitchen"],
+        "completed_room_ids_complete": True,
+    }
+    manager._rotation("synthetic-serial", "another-plan")["rooms"]["study"] = {
+        "name": "Study",
+        "last_completed": "2026-08-20T04:16:13+00:00",
+        "last_result": "completed",
+    }
+    manager._global_room(
+        manager._robot("synthetic-serial"), Room("hall", "Hall", "hall", b"hall", ())
+    )["last_completed"] = "2026-08-20T04:16:13+00:00"
+    result_with_history = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    history_by_room = {
+        room["id"]: room["completion_history"]
+        for leg in result_with_history["legs"]
+        for room in leg.get("rooms", [])
+    }
+    assert history_by_room["kitchen"] == {
+        "available": True,
+        "last_completed_at": "2026-08-20T04:16:13+00:00",
+        "last_attempt_at": "2026-08-20T05:16:13+00:00",
+        "last_result": "failed",
+    }
+    assert history_by_room["study"] == {
+        "available": False,
+        "last_completed_at": None,
+        "last_attempt_at": None,
+        "last_result": None,
+    }
+    assert history_by_room["hall"]["available"] is False
+    assert result_with_history["plan"]["last_managed_run"] == {
+        "available": True,
+        "run_id": "night-run",
+        "started_at": "2026-08-20T04:00:00+00:00",
+        "ended_at": "2026-08-20T05:00:00+00:00",
+        "outcome": "failed",
+        "room_roster": [
+            {"id": "kitchen", "name": "Kitchen"},
+            {"id": "study", "name": "Study"},
+        ],
+        "room_roster_complete": True,
+        "completed_room_ids": ["kitchen"],
+        "completed_room_ids_complete": True,
+    }
+    manager._rotation("synthetic-serial", "whole-home")["last_managed_run"][
+        "completed_room_ids_complete"
+    ] = False
+    partial_history = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert (
+        partial_history["plan"]["last_managed_run"]["completed_room_ids_complete"]
+        is False
     )
     assert result["preview_scope"] == "next_run"
     assert result["active_run_for_plan"] is False
