@@ -21,7 +21,13 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .camera_ai import async_answer_about_photo, validate_ai_task_entity
-from .client import MaticError, RobotOperationalState, RobotPose, room_name_key
+from .client import (
+    MaticError,
+    RobotOperationalState,
+    RobotPose,
+    room_at,
+    room_name_key,
+)
 from .const import (
     CONF_PHOTO_ALLOW_UNATTENDED,
     CONF_PHOTO_COOLDOWN_SECONDS,
@@ -409,7 +415,9 @@ def _shots(entry: MaticConfigEntry, stops: list[TourStop]) -> list[_Shot]:
         viewpoint = entry.runtime_data.viewpoints.find(stop.viewpoint)
         if floor_plan is None or floor_plan.mission_id != viewpoint.mission_id:
             raise _error("viewpoint_other_floor", viewpoint=viewpoint.name)
-        if all(room.id != viewpoint.room_id for room in floor_plan.rooms):
+        # Rooms can be redrawn or removed after a viewpoint is saved.
+        room = room_at(floor_plan, (viewpoint.x, viewpoint.y))
+        if room is None or room.id != viewpoint.room_id:
             raise _error("photo_tour_viewpoint_room_gone", viewpoint=viewpoint.name)
         # A no-go zone drawn in the app since the viewpoint was saved counts.
         zones = readable_zones(entry)

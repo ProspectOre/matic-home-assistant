@@ -2047,7 +2047,7 @@
       "message": "{viewpoint} is now in or next to a no-go zone. Delete it and save it again at least 25 cm away."
     },
     "photo_tour_viewpoint_room_gone": {
-      "message": "The room that holds the {viewpoint} viewpoint is no longer on the map. Delete the viewpoint and save it again."
+      "message": "The {viewpoint} viewpoint is no longer inside the room it was saved in. Delete it and save it again."
     }
   },
   "issues": {

@@ -273,6 +273,12 @@ NO_GO_AT_DESK = MapZone(7, "no_go", 0, ((2.8, 0.8), (3.2, 0.8), (3.2, 1.2)))
             (),
             "photo_tour_viewpoint_room_gone",
         ),
+        (
+            Viewpoint("v", "Desk", 7, 1, 1, 0, "study"),
+            "ok",
+            (),
+            "photo_tour_viewpoint_room_gone",
+        ),
     ],
 )
 def test_a_tour_refuses_a_viewpoint_it_cannot_reach_safely(
