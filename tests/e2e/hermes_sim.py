@@ -362,6 +362,7 @@ class SimulatedRobot:
         self._end_session(completed=True)
         self.current_area = None
         self.position = None
+        self._refresh_pose()
         self._set_phase(Phase.RETURNING)
 
     def app_takes_over(self) -> None:
@@ -458,7 +459,9 @@ class SimulatedRobot:
         self._held_photos.clear()
 
     def block_next_goal(self) -> None:
-        """Make the next posture goal unreachable: the robot does not move.
+        """Make the next map-tap goal unreachable: the robot does not move.
+
+        A sink summon is not blocked and leaves this armed.
 
         How the robot reports a goal it cannot reach is not recorded, so it
         reports nothing and the integration has to time the goal out.
@@ -611,6 +614,7 @@ class SimulatedRobot:
             self._end_session(completed=False)
             self.current_area = None
             self.position = None
+            self._refresh_pose()
             self._set_phase(Phase.STOPPED)
         elif payload == STOP_PAYLOAD and self.phase is Phase.RECHARGING:
             self._set_phase(Phase.CHARGING)
@@ -691,6 +695,7 @@ class SimulatedRobot:
         else:
             # A map-tap goal parks at the point, facing the given heading.
             assert navigation.posture is not None
+            self.waiting_at_sink = False
             self.position = read_posture(navigation.posture)
             room = self.floor.room_at(self.position.x, self.position.y)
             self.current_area = room.name if room is not None else None
