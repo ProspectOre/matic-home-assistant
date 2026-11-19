@@ -390,6 +390,7 @@ def test_main_fails_when_any_check_fails(
     assert all(run[: len(check.PARALLEL)] == check.PARALLEL for run in pytest_runs)
     pytest_runs = [run[len(check.PARALLEL) :] for run in pytest_runs]
     # The client's tests run with Home Assistant blocked on every check.
+    # The suites run on separate threads, so they may start in either order.
     expected = [check.CLIENT_SUITE, *([] if tests is None else [tests])]
     assert sorted(map(str, pytest_runs)) == sorted(map(str, expected))
     # Tests read the built Matic Map, so every test run follows a build.
