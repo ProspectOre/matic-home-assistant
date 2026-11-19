@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 import { liveScene, pageId, sceneMetadata } from "./scene_manifest_fixture.mjs";
+import { pauseClockAt } from "./clock.mjs";
 
 const sessionB = "b".repeat(64);
 
@@ -51,8 +52,7 @@ async function routeMotionSelector(page) {
 
 test("@safety pose and scene update failures share one bounded recovery retry", async ({ page }) => {
   const anchor = new Date("2026-09-30T12:00:00Z");
-  await page.clock.install({ time: anchor });
-  await page.clock.pauseAt(anchor);
+  await pauseClockAt(page, anchor);
   await routeMotionSelector(page);
   const fixture = await installPanelFixture(page, {
     moduleSource: "packaged",
