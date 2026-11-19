@@ -7262,9 +7262,11 @@ def _sync_last_managed_run(robot: dict[str, Any], last_run: Mapping[str, Any]) -
         and len(room_roster) == len(raw_roster)
     )
     roster_ids = {room["id"] for room in room_roster}
-    raw_completed_ids = last_run.get("completed_room_ids")
-    completed_ids_available = isinstance(raw_completed_ids, list)
-    raw_completed_ids = raw_completed_ids if completed_ids_available else []
+    raw_completed_ids_value = last_run.get("completed_room_ids")
+    completed_ids_available = isinstance(raw_completed_ids_value, list)
+    raw_completed_ids: list[Any] = (
+        cast(list[Any], raw_completed_ids_value) if completed_ids_available else []
+    )
     valid_completed_ids = [
         room_id for room_id in raw_completed_ids if isinstance(room_id, str)
     ]
