@@ -33,11 +33,12 @@ expression = args[args.index("--jq") + 1]
 answers = json.loads((state / "answers.json").read_text())
 if path.endswith("/commits/abc123/check-runs"):
     name, expected = "check_runs", {"check_name=ci", "filter=all", "per_page=100"}
-elif path.endswith("/actions/runs"):
+elif path.endswith("/actions/workflows/7/runs"):
     name, expected = "runs", {"head_sha=abc123", "per_page=100"}
 else:
     name, expected = "run", set()
 assert fields == expected, (path, fields)
+assert name == "run" or "--paginate" in args, path
 calls = state / f"{name}_calls"
 count = int(calls.read_text()) if calls.exists() else 0
 calls.write_text(str(count + 1))
@@ -65,9 +66,8 @@ def _check_run(conclusion: str | None, suite: int = 1) -> dict[str, Any]:
 def _runs(earlier_status: str) -> dict[str, Any]:
     return {
         "workflow_runs": [
-            {"id": 1, "workflow_id": WORKFLOW, "status": earlier_status},
-            {"id": 2, "workflow_id": WORKFLOW + 1, "status": "queued"},
-            {"id": OWN_RUN, "workflow_id": WORKFLOW, "status": "queued"},
+            {"id": 1, "status": earlier_status},
+            {"id": OWN_RUN, "status": "queued"},
         ]
     }
 
