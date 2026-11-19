@@ -2625,8 +2625,10 @@ async def test_sink_summon_sends_the_posture_and_refill_wait() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection._async_send_user_payload = AsyncMock()
 
-    await client.async_sink_summon(
-        FloorPlan(0x01020304, "partition", b"partition", ()), _SYNTHETIC_SINK_POSTURE
+    await client.async_go_to_posture(
+        FloorPlan(0x01020304, "partition", b"partition", ()),
+        _SYNTHETIC_SINK_POSTURE,
+        await_refill=True,
     )
 
     client._connection._async_send_user_payload.assert_awaited_once_with(

@@ -93,22 +93,34 @@ def encode_mission_id(mission_id: int) -> bytes:
     return _fixed32(2, mission_id)
 
 
-def encode_sink_summon_command(*, mission_id: int, posture: bytes) -> bytes:
-    """Drive to this floor's sink posture and wait there for a water refill.
+def encode_posture(*, x: float, y: float, heading: float) -> bytes:
+    """Encode a NavigateTo Posture: wire-frame metres and a heading in radians.
 
-    The posture is sent exactly as read from ``sink_summon_locations``. Like the
-    official app, the robot waits up to 15 minutes, docking once refilled.
+    The heading travels as a unit complex {1: cos, 2: sin}. Zero values are left
+    off the wire, as the app's encoder leaves them.
+    """
+    if not all(math.isfinite(value) for value in (x, y, heading)):
+        raise ValueError("a posture needs finite x, y and heading")
+    rotation = _float_field(1, math.cos(heading)) + _float_field(2, math.sin(heading))
+    return _float_field(1, x) + _float_field(2, y) + _field(4, rotation)
+
+
+def encode_go_to_posture_command(
+    *, mission_id: int, posture: bytes, await_refill: bool = False
+) -> bytes:
+    """Drive to a posture on this floor, as a tap on the Matic app's map does.
+
+    Without a wait task the robot parks there and starts its auto-dock
+    countdown. ``await_refill`` adds the sink summon's wait: the robot waits up
+    to 15 minutes, docking once refilled. The sink posture is sent exactly as
+    read from ``sink_summon_locations``.
     """
     if not posture:
-        raise ValueError("a sink posture is required")
-    wait_for_refill = _field(
-        1, _field(1, _varint_field(1, _SINK_REFILL_WAIT_SECONDS)) + _varint_field(2, 0)
-    )
-    navigate_to = (
-        _field(1, posture)
-        + _field(2, encode_mission_id(mission_id))
-        + _field(4, wait_for_refill)
-    )
+        raise ValueError("a posture is required")
+    navigate_to = _field(1, posture) + _field(2, encode_mission_id(mission_id))
+    if await_refill:
+        wait = _varint_field(1, _SINK_REFILL_WAIT_SECONDS)
+        navigate_to += _field(4, _field(1, _field(1, wait) + _varint_field(2, 0)))
     return _field(2, _field(4, navigate_to))
 
 

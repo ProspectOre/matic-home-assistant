@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from custom_components.matic_robot.client.commands import (
     HermesConnectionKind,
     UserCommand,
     encode_coverage_command,
+    encode_go_to_posture_command,
     encode_go_to_room_command,
+    encode_posture,
     encode_redo_coverage_command,
-    encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
 )
@@ -130,9 +133,10 @@ def test_coverage_rejects_out_of_range_mission_id(mission_id: int) -> None:
 
 def test_sink_summon_waits_for_a_refill_at_the_saved_posture() -> None:
     """Lock the robot-validated NavigateTo + 900 s refill wait structure."""
-    payload = encode_sink_summon_command(
+    payload = encode_go_to_posture_command(
         mission_id=0x01020304,
         posture=bytes.fromhex("0d0000c03f15000000c0220515000080bf"),
+        await_refill=True,
     )
 
     assert payload == bytes.fromhex(
@@ -141,11 +145,42 @@ def test_sink_summon_waits_for_a_refill_at_the_saved_posture() -> None:
     )
 
 
-def test_sink_summon_rejects_missing_posture_and_out_of_range_mission() -> None:
+def test_go_to_posture_is_the_sink_summon_without_its_wait() -> None:
+    """The app's map tap: the same NavigateTo, with no wait task (field 4)."""
+    payload = encode_go_to_posture_command(
+        mission_id=0x01020304,
+        posture=bytes.fromhex("0d0000c03f15000000c0220515000080bf"),
+    )
+
+    assert payload == bytes.fromhex(
+        "121c221a0a110d0000c03f15000000c0220515000080bf12051504030201"
+    )
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "heading", "wire"),
+    [
+        (1.5, -2.0, 0.0, "0d0000c03f15000000c022050d0000803f"),
+        # At the origin, x, y and sin are zero and left off the wire.
+        (0.0, 0.0, 0.0, "22050d0000803f"),
+        (-0.25, 3.0, math.pi / 4, "0d000080be150000404022" + "0a0df304353f15f304353f"),
+    ],
+    ids=("facing-plus-x", "origin", "diagonal"),
+)
+def test_posture_carries_metres_and_a_unit_heading(
+    x: float, y: float, heading: float, wire: str
+) -> None:
+    assert encode_posture(x=x, y=y, heading=heading) == bytes.fromhex(wire)
+
+
+def test_posture_commands_reject_bad_input() -> None:
     with pytest.raises(ValueError, match="posture"):
-        encode_sink_summon_command(mission_id=1, posture=b"")
+        encode_go_to_posture_command(mission_id=1, posture=b"")
     with pytest.raises(ValueError, match="mission_id"):
-        encode_sink_summon_command(mission_id=1 << 32, posture=b"\x0d")
+        encode_go_to_posture_command(mission_id=1 << 32, posture=b"\x0d")
+    for value in (math.nan, math.inf):
+        with pytest.raises(ValueError, match="finite"):
+            encode_posture(x=value, y=0.0, heading=0.0)
 
 
 def test_go_to_room_navigates_to_the_room_without_a_wait() -> None:
