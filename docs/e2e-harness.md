@@ -15,10 +15,10 @@ covers them on hosted `ubuntu-latest`.
 `tests/live` puts Matic Map in front of the same simulator. `server.py` writes
 a throwaway, already onboarded Home Assistant configuration with the robot
 paired, runs Home Assistant Core and its frontend in-process on 127.0.0.1:8123,
-and serves a control endpoint on 8124 that moves the robot. The Test
-workflow's `live` job runs `npx playwright test --config
-playwright.live.config.mjs` against it; `ci` requires both jobs. Locally, run
-the same command after `npm ci` and `pip install -e '.[test]'`.
+and serves a control endpoint on 8124 that moves the robot. Test's `live` job
+runs `npx playwright test --config playwright.live.config.mjs` against it, and
+`ci` requires it, `test` and every browser shard. Locally, run the same
+command after `npm ci` and `pip install -e '.[test]'`.
 
 `python tests/live/server.py` is also the development server: open
 http://127.0.0.1:8123 (loopback is signed in as the owner) and move the robot

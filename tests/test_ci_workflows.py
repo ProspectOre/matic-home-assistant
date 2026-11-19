@@ -167,6 +167,18 @@ def test_ci_requires_every_lane_and_an_edit_run_reports_its_last_code_run() -> N
     for lane in ci["needs"]:
         assert f'"${lane.upper()}" = success' in gate["run"]
     assert replay["run"] == ".github/scripts/last-code-run.sh ci"
+    # Exactly one of the gate and the replay runs, whichever kind of run it is.
+    assert gate["if"] == "${{ !fromJSON(env.RECHECK) }}"
+    assert all(
+        step["if"] == "${{ fromJSON(env.RECHECK) }}"
+        for step in ci["steps"]
+        if step is not gate
+    )
+    assert ci["permissions"] == {
+        "actions": "read",
+        "checks": "read",
+        "contents": "read",
+    }
     # An edit run changes no code, so the shards skip and `ci` replays.
     assert jobs["browser"]["if"] == (
         "${{ !(github.event.action == 'edited' && !github.event.changes.base) }}"
