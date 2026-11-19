@@ -202,3 +202,12 @@ async def test_housekeeping_faults_at_load_are_only_logged(
     assert "Could not read the Matic photo folder" in caplog.text
     await reloaded.async_shutdown()
     await again.async_shutdown()
+
+
+async def test_a_photo_from_a_fast_robot_clock_ages_from_its_save(
+    hass: HomeAssistant, folder: Path
+) -> None:
+    library = _library(hass, _snap(1, age=-timedelta(days=365)))
+    await library.async_read()
+
+    assert library.photo(_id(1)).captured_at == NOW
