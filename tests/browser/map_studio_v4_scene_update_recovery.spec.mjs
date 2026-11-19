@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
+import { pauseClockAt } from "./clock.mjs";
 
 // A live manifest scene is updated when the workspace socket or the catalog
 // poll announces a newer revision. These tests pin how a failed update read
@@ -21,8 +22,7 @@ async function loadUpdateHarness(page) {
     body: bundle.outputFiles[0].text,
   }));
   const anchor = new Date("2026-09-30T12:00:00Z");
-  await page.clock.install({ time: anchor });
-  await page.clock.pauseAt(anchor);
+  await pauseClockAt(page, anchor);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.addScriptTag({ url: "/scene-update-recovery.js" });
 }
