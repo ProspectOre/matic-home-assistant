@@ -1163,6 +1163,111 @@ async def test_reset_all_fences_runs_started_before_reset(
     assert "away" not in manager.snapshot("serial")["plan_history"]
 
 
+async def test_reset_all_fences_unsaved_run_and_pending_plan_ids(hass) -> None:
+    """Reset-all timestamps cover IDs absent from the saved-plan roster."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial",
+        "map-studio-room-clean",
+        "manual-run",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        room_roster=[("room-kitchen", "Kitchen")],
+    )
+    await manager.async_reset_history("serial")
+    assert "map-studio-room-clean" in manager._robot("serial")["rotation_resets"]
+
+    pending_manager = CleaningPlanManager(hass)
+    pending_manager._store = SimpleNamespace(async_save=AsyncMock())
+    pending_manager._robot("serial")["pending_native_reconciliation"] = {
+        "plan_id": "retired-pending-plan",
+        "room_id": "room-kitchen",
+        "room": "Kitchen",
+        "dispatched_at": dt_util.utcnow().isoformat(),
+        "expires_at": (dt_util.utcnow() + timedelta(minutes=1)).isoformat(),
+    }
+    await pending_manager.async_reset_history("serial")
+    assert "retired-pending-plan" in pending_manager._robot("serial")["rotation_resets"]
+
+
+async def test_reset_all_ignores_old_global_room_ordering_evidence(hass) -> None:
+    """Older global room completions cannot influence rotation after reset-all."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    kitchen = _room("Kitchen", "room-kitchen")
+    study = _room("Study", "room-study")
+    await manager.async_save_plan(
+        "serial",
+        "away",
+        {
+            "name": "Away",
+            "enabled": True,
+            "rooms": [
+                {"room_id": kitchen.room_id, "name": kitchen.name},
+                {"room_id": study.room_id, "name": study.name},
+            ],
+        },
+    )
+    await manager.async_reset_history("serial")
+    old_completion = (dt_util.utcnow() - timedelta(hours=1)).isoformat()
+    manager._robot("serial")["rooms"][kitchen.room_id] = {
+        "name": kitchen.name,
+        "last_completed": old_completion,
+        "last_opportunity": old_completion,
+    }
+
+    rotation = manager.rotation_details("serial", "away", [kitchen, study])
+    assert [item["room"] for item in rotation] == ["Kitchen", "Study"]
+    assert all(item["last_completion"] is None for item in rotation)
+
+
+async def test_deleting_and_recreating_plan_drops_last_managed_run(hass) -> None:
+    """A reused plan ID cannot inherit the deleted plan's run roster."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "away",
+        {
+            "name": "Away",
+            "enabled": True,
+            "rooms": [{"room_id": "room-kitchen", "name": "Kitchen"}],
+        },
+    )
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "deleted-plan-run",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[("room-kitchen", "Kitchen")],
+    )
+    await manager.async_finish_run(
+        "serial",
+        "deleted-plan-run",
+        "completed",
+        "all_rooms_verified",
+        1,
+        completed_room_ids=["room-kitchen"],
+    )
+    assert "last_managed_run" in manager.snapshot("serial")["plan_history"]["away"]
+
+    await manager.async_delete_plan("serial", "away")
+    await manager.async_save_plan(
+        "serial",
+        "away",
+        {
+            "name": "Away",
+            "enabled": True,
+            "rooms": [{"room_id": "room-study", "name": "Study"}],
+        },
+    )
+    assert "last_managed_run" not in manager.snapshot("serial")["plan_history"]["away"]
+
+
 async def test_stale_dock_confirmation_preserves_newer_stop_fence(hass) -> None:
     """A prior dock watcher cannot clear a later STOP for the same run."""
     manager = CleaningPlanManager(hass)

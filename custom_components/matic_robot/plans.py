@@ -3283,6 +3283,9 @@ class CleaningPlanManager:
             if isinstance(room, Mapping) and room.get("room_id")
         )
         robot["plans"].pop(plan_id, None)
+        rotation = robot["rotations"].get(plan_id)
+        if isinstance(rotation, dict):
+            rotation.pop("last_managed_run", None)
         robot["rotation_resets"].pop(plan_id, None)
         robot["plan_room_cadence"].pop(plan_id, None)
         if robot.get("selected_plan") == plan_id:
