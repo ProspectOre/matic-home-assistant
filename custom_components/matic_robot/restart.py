@@ -771,7 +771,13 @@ async def async_recover_managed_run(
                 else "home_assistant",
             )
             if finished:
-                summary = manager.snapshot(serial_number)["last_run"]
+                summary = manager.snapshot(serial_number)["last_run"].copy()
+                for private_key in (
+                    "room_roster",
+                    "room_roster_complete",
+                    "completed_room_ids",
+                ):
+                    summary.pop(private_key, None)
                 hass.bus.async_fire(
                     EVENT_PLAN_FINISHED,
                     {

@@ -376,6 +376,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
         "room_roster": [{"id": "room-kitchen", "name": "Kitchen"}],
         "room_roster_complete": True,
         "completed_room_ids": ["room-kitchen"],
+        "completed_room_ids_complete": True,
     }
     await manager.async_begin_run(
         "serial",
@@ -402,12 +403,110 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     assert event["outcome"] == "completed"
     assert event["terminal_activity"] == "unknown"
     assert "room_outcomes" not in event
+    assert "room_roster" not in event
+    assert "completed_room_ids" not in event
     assert "@" not in str(event)
     assert set_run_id.call_args_list[0].args[0] == last_run["run_id"]
     assert set_run_id.call_args_list[-1].args[0] is None
     assert (
         await manager.async_finish_run("serial", "wrong-run", "failed", "x", 9) is False
     )
+
+
+async def test_managed_run_completion_projection_marks_missing_and_capped_evidence(
+    hass,
+) -> None:
+    """An incomplete roster never makes a partial completion list look complete."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial",
+        "legacy-plan",
+        "legacy-run",
+        2,
+        trigger="user",
+        service="run_selected_plan",
+    )
+    await manager.async_finish_run(
+        "serial",
+        "legacy-run",
+        "failed",
+        "legacy_completion",
+        1,
+        completed_room_ids=["known-room"],
+    )
+    legacy = manager.snapshot("serial")["plan_history"]["legacy-plan"][
+        "last_managed_run"
+    ]
+    assert legacy["room_roster"] == []
+    assert legacy["room_roster_complete"] is False
+    assert legacy["completed_room_ids"] == []
+    assert legacy["completed_room_ids_complete"] is False
+
+    roster = [(f"room-{index}", f"Room {index}") for index in range(129)]
+    await manager.async_begin_run(
+        "serial",
+        "large-plan",
+        "large-run",
+        len(roster),
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=roster,
+    )
+    await manager.async_finish_run(
+        "serial",
+        "large-run",
+        "failed",
+        "large_partial_run",
+        2,
+        completed_room_ids=[roster[0][0], roster[-1][0]],
+    )
+    large = manager.snapshot("serial")["plan_history"]["large-plan"]["last_managed_run"]
+    roster_ids = {room["id"] for room in large["room_roster"]}
+    assert large["room_roster_complete"] is False
+    assert large["completed_room_ids"] == [roster[0][0]]
+    assert set(large["completed_room_ids"]).issubset(roster_ids)
+    assert large["completed_room_ids_complete"] is False
+
+
+async def test_late_native_reconciliation_refreshes_plan_run_projection(hass) -> None:
+    """Late verified history updates the saved plan summary for the same run."""
+    robot = {
+        "last_run": {
+            "run_id": "run-1",
+            "plan_id": "away",
+            "started_at": "2026-11-18T17:00:00+00:00",
+            "ended_at": "2026-11-18T18:00:00+00:00",
+            "outcome": "unverified",
+            "room_count": 1,
+            "completed_room_count": 0,
+            "completed_room_ids": [],
+            "room_roster": [{"id": "kitchen", "name": "Kitchen"}],
+            "room_roster_complete": True,
+        },
+        "rotations": {
+            "away": {
+                "rooms": {},
+                "last_managed_run": {
+                    "run_id": "run-1",
+                    "started_at": "2026-11-18T17:00:00+00:00",
+                    "ended_at": "2026-11-18T18:00:00+00:00",
+                    "outcome": "unverified",
+                    "room_roster": [{"id": "kitchen", "name": "Kitchen"}],
+                    "room_roster_complete": True,
+                    "completed_room_ids": [],
+                    "completed_room_ids_complete": True,
+                },
+            }
+        },
+    }
+    plans_module._repair_native_reconciled_run(
+        robot, {"run_id": "run-1", "room_id": "kitchen"}, "away"
+    )
+    summary = robot["rotations"]["away"]["last_managed_run"]
+    assert summary["outcome"] == "completed"
+    assert summary["completed_room_ids"] == ["kitchen"]
+    assert summary["completed_room_ids_complete"] is True
 
 
 async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
@@ -603,7 +702,13 @@ async def test_docked_stop_upgrades_only_after_correlated_final_command(hass) ->
     await hass.async_block_till_done()
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "stopped_docked"
+    assert dt_util.parse_datetime(last_run["ended_at"]) is not None
     assert last_run["terminal_activity"] == "docked"
+    managed_run = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+    assert managed_run["outcome"] == "stopped_docked"
+    assert managed_run["ended_at"] == last_run["ended_at"]
+    assert managed_run["room_roster_complete"] is False
+    assert managed_run["completed_room_ids_complete"] is False
     assert events[0].data["run_id"] == "run-1"
     assert events[0].data["outcome"] == "stopped_docked"
     assert not await manager.async_mark_run_docked("serial", "run-1")
@@ -973,9 +1078,15 @@ async def test_restart_retires_persisted_running_outcome(
     assert last_run["outcome"] == "unverified"
     assert last_run["reason_code"] == "home_assistant_restart"
     assert last_run["cause"] == "home_assistant"
-    assert last_run["ended_at"] is None
+    assert dt_util.parse_datetime(last_run["ended_at"]) is not None
     assert dt_util.parse_datetime(last_run["recovered_at"]) is not None
     assert last_run["completed_room_count"] == int(verified_room)
+    managed_run = recovering.snapshot("serial")["plan_history"]["away"][
+        "last_managed_run"
+    ]
+    assert managed_run["outcome"] == "unverified"
+    assert managed_run["room_roster_complete"] is False
+    assert managed_run["completed_room_ids_complete"] is False
     assert recovering.snapshot("serial")["active_plan"] is None
     recovering._store.async_load.return_value = deepcopy(recovering._data)
     await recovering.async_load()
@@ -3187,6 +3298,8 @@ async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
     }
     await manager.async_save_plan("serial", "away", {"name": "Away"})
     await manager.async_save_plan("serial", "other", {"name": "Other"})
+    saved_run = {"run_id": "prior-away-run"}
+    manager._rotation("serial", "away")["last_managed_run"] = saved_run
 
     await manager.async_mark_started("serial", "away", kitchen)
     await manager.async_mark_failed(
@@ -3198,6 +3311,10 @@ async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
     await manager.async_reset_history("serial", "other")
     assert "pending_native_reconciliation" in manager._robot("serial")
     assert watcher.done() is False
+    assert (
+        manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+        == saved_run
+    )
 
     await manager.async_reset_history("serial", "away")
     await asyncio.gather(watcher, return_exceptions=True)
@@ -11542,7 +11659,13 @@ async def test_restart_keeps_an_active_area_without_inventing_a_room(
     else:
         assert robot["active_plan"] is None
         assert robot["last_interrupted_plan"]["area"] == "Rug"
-    assert robot["rotations"] == {}
+    if recoverable:
+        assert robot["rotations"] == {}
+    else:
+        summary = robot["rotations"]["away"]["last_managed_run"]
+        assert summary["outcome"] == "unverified"
+        assert summary["room_roster_complete"] is False
+        assert summary["completed_room_ids_complete"] is False
 
 
 @pytest.mark.parametrize("finish_current_room", [False, True])

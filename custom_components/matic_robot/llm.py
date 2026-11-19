@@ -792,6 +792,9 @@ class MaticGetPlanTool(_MaticTool):
                     for room_id in completed_room_ids[:MAX_LAST_MANAGED_RUN_ROOMS]
                     if isinstance(room_id, str)
                 ],
+                "completed_room_ids_complete": (
+                    last_managed_run.get("completed_room_ids_complete") is True
+                ),
             }
         else:
             last_managed_run = {"available": False}

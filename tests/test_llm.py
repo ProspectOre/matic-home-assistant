@@ -940,6 +940,7 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
         ],
         "room_roster_complete": True,
         "completed_room_ids": ["kitchen"],
+        "completed_room_ids_complete": True,
     }
     manager._rotation("synthetic-serial", "another-plan")["rooms"]["study"] = {
         "name": "Study",
@@ -982,7 +983,18 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
         ],
         "room_roster_complete": True,
         "completed_room_ids": ["kitchen"],
+        "completed_room_ids_complete": True,
     }
+    manager._rotation("synthetic-serial", "whole-home")["last_managed_run"][
+        "completed_room_ids_complete"
+    ] = False
+    partial_history = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert (
+        partial_history["plan"]["last_managed_run"]["completed_room_ids_complete"]
+        is False
+    )
     assert result["preview_scope"] == "next_run"
     assert result["active_run_for_plan"] is False
     assert result["settings_boundary_count"] == 0
