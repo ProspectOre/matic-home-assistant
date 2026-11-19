@@ -49,14 +49,14 @@ table above. Each one also:
 - updates the robot's **Cleaning run** event entity
   (`event.matic_cleaning_run`). Its event type is the event's type and its
   attributes are the event's fields, less `entity_id`, `device_id` and
-  `entry_id`. Like every Matic entity it is unavailable while the robot is
-  unreachable; a run event in that time still reaches the bus, the device
-  trigger and the logbook, but not an entity trigger.
+  `entry_id`. A run is Home Assistant's, so this entity stays available while
+  the robot is unreachable and records a run that ends then.
 - is a device trigger of the same type: on the robot's device page, select +
   on the Automations card. Room, area and plan triggers match the robot's
   vacuum entity; Cleaning finished matches the device.
-- shows in the logbook against the robot, for example "Matic finished cleaning
-  Kitchen".
+- shows once in the logbook, as the Cleaning run entity's event, for example
+  "Matic Cleaning run: Room finished". The room or area is in the entry's
+  details, as the entity's attributes.
 
 To trigger on the entity, use Home Assistant's event entity trigger. Room
 events can arrive milliseconds apart, so queue the automation's runs:

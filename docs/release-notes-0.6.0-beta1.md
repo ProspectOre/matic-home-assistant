@@ -126,8 +126,8 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
 - **Device triggers for every run event.** Plan started, each room and custom
   area event, Plan docked and the rest join Room finished, Plan finished and
   Cleaning finished, which keep their names.
-- **Logbook.** Run events show in the logbook against the robot, for example
-  "Matic finished cleaning Kitchen".
+- **Logbook.** Each run event shows once in the logbook, as the Cleaning run
+  entity's event, for example "Matic Cleaning run: Room finished".
 - Every existing event keeps its name and fields.
 
 ## Working with the Matic app

@@ -502,10 +502,11 @@ async def test_inflight_shared_write_blocks_a_run_in_another_plan(hass) -> None:
     )
     await entered.wait()
     try:
-        with pytest.raises(HomeAssistantError, match="shared cadence is being saved"):
+        with pytest.raises(ServiceValidationError) as refused:
             manager.cadence.reserve_prepared_run(
                 "serial", "home", "run-shared", ["room-b"]
             )
+        assert refused.value.translation_key == "room_schedule_saving"
     finally:
         release.set()
     await save_task
@@ -535,7 +536,7 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
             "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
             new=AsyncMock(),
         ) as stop_settlement,
-        pytest.raises(ServiceValidationError, match="already owns the robot"),
+        pytest.raises(ServiceValidationError) as refused,
     ):
         await _async_execute_rooms(
             hass,
@@ -548,6 +549,7 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
             robot=robot_port(),
         )
 
+    assert refused.value.translation_key == "plan_already_running"
     stop_settlement.assert_not_awaited()
     assert manager.cadence.prepared_runs["serial"].run_id == "restored-run"
 
@@ -571,10 +573,11 @@ async def test_inflight_failed_cadence_write_cannot_seed_a_run(hass) -> None:
     )
     await entered.wait()
     try:
-        with pytest.raises(HomeAssistantError, match="being saved"):
+        with pytest.raises(ServiceValidationError) as refused:
             manager.cadence.reserve_prepared_run(
                 "serial", "home", "run-one", ["room-a"]
             )
+        assert refused.value.translation_key == "room_schedule_saving"
     finally:
         release.set()
     with pytest.raises(OSError, match="synthetic persistence failure"):
@@ -680,8 +683,9 @@ def test_prepared_stop_policy_requires_the_owning_run(hass) -> None:
     manager = _manager(hass)
     manager.cadence.reserve_prepared_run("serial", "home", "run-one", ["room-a"])
 
-    with pytest.raises(HomeAssistantError, match="does not own"):
+    with pytest.raises(HomeAssistantError) as refused:
         manager.cadence.prepared_run_stop_policy("serial", "run-two")
+    assert refused.value.translation_key == "run_not_reserved"
 
     assert manager.cadence.prepared_run_stop_policy("serial", "run-one") == (False, 50)
 

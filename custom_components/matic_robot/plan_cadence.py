@@ -30,6 +30,8 @@ from .cadence import (
     normalize_cadence_policy,
 )
 from .completion_ledger import reset_progress as _reset_completion_progress
+from .const import DOMAIN
+from .managed_run import _validation_error
 from .plan_model import (
     CleaningRoom,
     SharedRoomScheduleLockedError,
@@ -38,10 +40,7 @@ from .plan_model import (
     _bounded_stop_threshold,
     _managed_stop_policy,
 )
-from .plan_repository import (
-    PlanRepository,
-    _MetadataLockLease,
-)
+from .plan_repository import PlanRepository, _MetadataLockLease
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -198,7 +197,7 @@ class PlanCadence:
         if existing is not None:
             if existing.run_id == run_id:
                 return
-            raise HomeAssistantError("A managed cadence run already owns the robot")
+            raise _validation_error("Run already reserved", "plan_already_running")
         plan = self.repository.robot(serial_number)["plans"].get(plan_id, {})
         stop_enabled, stop_threshold = _managed_stop_policy(plan)
         if finish_current_room is not None:
@@ -255,9 +254,9 @@ class PlanCadence:
                 mutation.deletes_plan
                 or set(reservations).intersection(mutation.plan_room_ids)
             ):
-                raise HomeAssistantError("Queued room cadence is being saved")
+                raise _validation_error("Plan cadence saving", "room_schedule_saving")
             if shared_schedule_rooms.intersection(mutation.shared_room_ids):
-                raise HomeAssistantError("Queued shared cadence is being saved")
+                raise _validation_error("Shared cadence saving", "room_schedule_saving")
         self.prepared_runs[serial_number] = _PreparedRunReservation(
             plan_id,
             run_id,
@@ -305,7 +304,9 @@ class PlanCadence:
         """Read the stop policy captured during prepared-run admission."""
         reservation = self.prepared_runs.get(serial_number)
         if reservation is None or reservation.run_id != run_id:
-            raise HomeAssistantError("Managed run does not own its prepared policy")
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="run_not_reserved"
+            )
         return (
             reservation.finish_current_room,
             reservation.finish_current_room_threshold,
@@ -358,14 +359,11 @@ class PlanCadence:
         reservation = self.prepared_runs.get(serial_number)
         if reservation is None:
             return
-        changed_plan_rooms = set(plan_room_ids)
-        changed_shared_rooms = set(shared_room_ids)
-        reserved_shared_rooms = reservation.shared_schedule_rooms
         if reservation.plan_id == plan_id and (
-            deletes_plan or changed_plan_rooms.intersection(reservation.rooms)
+            deletes_plan or set(plan_room_ids).intersection(reservation.rooms)
         ):
             raise ValueError("room cadence is reserved by the queued managed run")
-        if changed_shared_rooms.intersection(reserved_shared_rooms):
+        if reservation.shared_schedule_rooms.intersection(shared_room_ids):
             raise ValueError(
                 "shared room cadence is reserved by the queued managed run"
             )

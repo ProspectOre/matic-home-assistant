@@ -1725,6 +1725,12 @@
     "plan_already_running": {
       "message": "A cleaning plan is already running. Wait for it to finish or stop it, then try again."
     },
+    "room_schedule_saving": {
+      "message": "A room schedule change is still being saved. Try again in a moment."
+    },
+    "run_not_reserved": {
+      "message": "The plan run lost its hold on the robot before it started. Start it again."
+    },
     "invalid_plan": {
       "message": "This request can't run. Check the plan, then try again."
     },
