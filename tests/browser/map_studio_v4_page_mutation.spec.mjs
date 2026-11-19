@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
+import { pauseClockAt } from "./clock.mjs";
 
 async function loadMutationHarness(page) {
   const bundle = await build({
@@ -224,8 +225,7 @@ async function primaryAfterPageShow(page) {
 test.describe("page suspension preserves transmitted map mutations", () => {
   for (const outcome of ["success", "failure"]) {
     test(`held Area save remains owned through pagehide and settles once (${outcome}) @safety`, async ({ page }) => {
-      await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-      await page.clock.pauseAt(new Date("2026-09-30T12:00:00Z"));
+      await pauseClockAt(page, new Date("2026-09-30T12:00:00Z"));
       await createPendingMutation(page, "area");
       const suspended = await suspendPendingMutation(page);
       expect(suspended).toEqual({
@@ -271,8 +271,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
     });
 
     test(`held save_plan remains owned through pagehide and settles once (${outcome}) @safety`, async ({ page }) => {
-      await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-      await page.clock.pauseAt(new Date("2026-09-30T12:00:00Z"));
+      await pauseClockAt(page, new Date("2026-09-30T12:00:00Z"));
       await createPendingMutation(page, "plan");
       const suspended = await suspendPendingMutation(page);
       expect(suspended).toEqual({
@@ -324,8 +323,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
   }
 
   test("new plan acknowledgement owns the created ID while hidden", async ({ page }) => {
-    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-    await page.clock.pauseAt(new Date("2026-09-30T12:00:00Z"));
+    await pauseClockAt(page, new Date("2026-09-30T12:00:00Z"));
     await createPendingMutation(page, "plan", { planId: null, planName: "New plan draft" });
     const suspended = await suspendPendingMutation(page);
     expect(suspended).toEqual({
@@ -370,8 +368,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
   });
 
   test("hidden update-area acknowledgement keeps its saved name and geometry over stale catalog data @safety", async ({ page }) => {
-    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-    await page.clock.pauseAt(new Date("2026-09-30T12:00:00Z"));
+    await pauseClockAt(page, new Date("2026-09-30T12:00:00Z"));
     await createPendingMutation(page, "area-update");
     const suspended = await suspendPendingMutation(page);
     expect(suspended).toMatchObject({
@@ -420,8 +417,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
   });
 
   test("hidden reset cadence acknowledgement does not rehydrate its editor from a stale pre-write read @safety", async ({ page }) => {
-    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-    await page.clock.pauseAt(new Date("2026-09-30T12:00:00Z"));
+    await pauseClockAt(page, new Date("2026-09-30T12:00:00Z"));
     await createPendingMutation(page, "reset-cadence");
     await expect.poll(() => page.evaluate(() => Boolean(window.__pageMutation.planRead))).toBe(true);
     await expect.poll(() => page.evaluate(() => window.__pageMutation.writes.length)).toBe(1);
