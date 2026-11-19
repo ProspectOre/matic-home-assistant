@@ -19,8 +19,9 @@ WORKFLOW = 7
 HEAD = "abc123"
 
 # Answers each GitHub API path with canned JSON through the real jq filter,
-# after checking the query the script sent. A path's pages are served in turn,
-# the last one repeating.
+# after checking the query the script sent. A path's answers are served one
+# per call, the last one repeating; an answer that is a list is the pages of
+# one --paginate call.
 FAKE_GH = """\
 import json, subprocess, sys
 from pathlib import Path
@@ -42,13 +43,15 @@ assert name == "run" or "--paginate" in args, path
 calls = state / f"{name}_calls"
 count = int(calls.read_text()) if calls.exists() else 0
 calls.write_text(str(count + 1))
-pages = answers[name]
-body = pages[min(count, len(pages) - 1)]
-result = subprocess.run(
-    ["jq", "-r", expression], input=json.dumps(body), text=True, capture_output=True
-)
-sys.stdout.write(result.stdout)
-sys.exit(result.returncode)
+calls_answers = answers[name]
+answer = calls_answers[min(count, len(calls_answers) - 1)]
+for body in answer if isinstance(answer, list) else [answer]:
+    result = subprocess.run(
+        ["jq", "-r", expression], input=json.dumps(body), text=True, capture_output=True
+    )
+    sys.stdout.write(result.stdout)
+    if result.returncode:
+        sys.exit(result.returncode)
 """
 
 
@@ -68,6 +71,8 @@ def _runs(earlier_status: str) -> dict[str, Any]:
         "workflow_runs": [
             {"id": 1, "status": earlier_status},
             {"id": OWN_RUN, "status": "queued"},
+            # A later edit run waits on this one, so this one must not wait on it.
+            {"id": OWN_RUN + 1, "status": "in_progress"},
         ]
     }
 
@@ -76,6 +81,8 @@ def _run(
     tmp_path: Path,
     check_runs: list[list[dict[str, Any]]],
     earlier: tuple[str, ...] = ("completed",),
+    *,
+    one_call: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -83,7 +90,9 @@ def _run(
         json.dumps(
             {
                 "run": [{"check_suite_id": OWN_SUITE, "workflow_id": WORKFLOW}],
-                "check_runs": [{"check_runs": page} for page in check_runs],
+                "check_runs": [[{"check_runs": page} for page in check_runs]]
+                if one_call
+                else [{"check_runs": page} for page in check_runs],
                 "runs": [_runs(status) for status in earlier],
             }
         )
@@ -157,3 +166,14 @@ def test_reports_the_newest_earlier_result_and_ignores_its_own_suite(
 
     assert result.returncode == code
     assert f"Last code run of 'ci': {conclusion}" in result.stdout
+
+
+def test_takes_the_newest_result_across_pages(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        [[_check_run("success", 3)], [_check_run("failure", 2)]],
+        one_call=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Last code run of 'ci': success" in result.stdout
