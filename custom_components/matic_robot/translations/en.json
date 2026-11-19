@@ -2141,7 +2141,7 @@
     },
     "save_photo_viewpoint": {
       "name": "Save photo viewpoint",
-      "description": "Saves a named spot and direction for photo tours. Without x, y and heading it saves where the robot stands and the way it faces. Administrators only.",
+      "description": "Saves a named spot and direction on one robot's map for photo tours. Without x, y and heading it saves where the robot stands and the way it faces. Administrators only.",
       "fields": {
         "name": {
           "name": "Name",
@@ -2163,7 +2163,7 @@
     },
     "delete_photo_viewpoint": {
       "name": "Delete photo viewpoint",
-      "description": "Deletes a saved photo viewpoint. Administrators only.",
+      "description": "Deletes a saved photo viewpoint from one robot. Administrators only.",
       "fields": {
         "viewpoint": {
           "name": "Viewpoint",

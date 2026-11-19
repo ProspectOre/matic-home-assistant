@@ -64,54 +64,50 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
     async def async_save_viewpoint(
         call: ServiceCall, entity_ids: list[str]
     ) -> ServiceResponse:
-        """Save a viewpoint from the given spot, or where each robot stands."""
-        robots: list[JsonValueType] = []
-        for entity_id in entity_ids:
-            entry = context._entry_for_entity(hass, entity_id)
-            session = entry.runtime_data.session
-            floor_plan = session.floor.value
+        """Save a viewpoint from the given spot, or where the robot stands."""
+        entity_id = _one_robot(entity_ids)
+        entry = context._entry_for_entity(hass, entity_id)
+        session = entry.runtime_data.session
+        floor_plan = session.floor.value
+        if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
+            floor_plan
+        ):
+            raise validation_error(
+                "The robot's map is unavailable", "viewpoint_map_unavailable"
+            )
+        if "x" in call.data:
+            x, y = call.data["x"], call.data["y"]
+            heading = math.radians(call.data["heading"])
+        else:
+            pose = session.pose_on(floor_plan)
             if (
-                floor_plan is None
-                or not entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
+                not pose_observation_is_current(pose, floor_plan)
+                or pose.heading is None
             ):
                 raise validation_error(
-                    "The robot's map is unavailable", "viewpoint_map_unavailable"
+                    "The robot's position and direction are unknown",
+                    "viewpoint_pose_unavailable",
                 )
-            if "x" in call.data:
-                x, y = call.data["x"], call.data["y"]
-                heading = math.radians(call.data["heading"])
-            else:
-                pose = session.pose_on(floor_plan)
-                if (
-                    not pose_observation_is_current(pose, floor_plan)
-                    or pose.heading is None
-                ):
-                    raise validation_error(
-                        "The robot's position and direction are unknown",
-                        "viewpoint_pose_unavailable",
-                    )
-                x, y, heading = pose.x, pose.y, pose.heading
-            viewpoint = await entry.runtime_data.viewpoints.async_save(
-                call.data["name"],
-                floor_plan,
-                readable_zones(entry),
-                set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ())),
-                x=x,
-                y=y,
-                heading=heading,
-            )
-            room = next(
-                room.name for room in floor_plan.rooms if room.id == viewpoint.room_id
-            )
-            robots.append(
-                {
-                    "entity_id": entity_id,
-                    "viewpoint_id": viewpoint.viewpoint_id,
-                    "name": viewpoint.name,
-                    "room": room,
-                }
-            )
-        return {"robots": robots}
+            x, y, heading = pose.x, pose.y, pose.heading
+        viewpoint = await entry.runtime_data.viewpoints.async_save(
+            call.data["name"],
+            floor_plan,
+            readable_zones(entry),
+            set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ())),
+            x=x,
+            y=y,
+            heading=heading,
+        )
+        room = next(
+            room.name for room in floor_plan.rooms if room.id == viewpoint.room_id
+        )
+        robot: JsonValueType = {
+            "entity_id": entity_id,
+            "viewpoint_id": viewpoint.viewpoint_id,
+            "name": viewpoint.name,
+            "room": room,
+        }
+        return {"robots": [robot]}
 
     register_robot_action(
         hass,
@@ -123,10 +119,9 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
     )
 
     async def async_delete_viewpoint(call: ServiceCall, entity_ids: list[str]) -> None:
-        """Delete a viewpoint from each selected robot."""
-        for entity_id in entity_ids:
-            entry = context._entry_for_entity(hass, entity_id)
-            await entry.runtime_data.viewpoints.async_delete(call.data["viewpoint"])
+        """Delete a viewpoint from the selected robot."""
+        entry = context._entry_for_entity(hass, _one_robot(entity_ids))
+        await entry.runtime_data.viewpoints.async_delete(call.data["viewpoint"])
 
     register_robot_action(
         hass,
@@ -135,3 +130,12 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
         DELETE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
         admin_only=True,
     )
+
+
+def _one_robot(entity_ids: list[str]) -> str:
+    """A viewpoint is a spot on one robot's map, so its actions take one robot."""
+    if len(entity_ids) != 1:
+        raise validation_error(
+            "Viewpoints belong to exactly one Matic robot", "single_robot_required"
+        )
+    return entity_ids[0]

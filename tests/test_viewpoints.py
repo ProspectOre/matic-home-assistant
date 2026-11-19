@@ -13,7 +13,12 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.matic_robot import llm_camera, photo_tours, viewpoints
+from custom_components.matic_robot import (
+    llm_camera,
+    photo_tours,
+    service_photos,
+    viewpoints,
+)
 from custom_components.matic_robot.client import (
     FloorPlan,
     MapZone,
@@ -151,12 +156,14 @@ async def test_stored_viewpoints_that_do_not_decode_are_dropped(
         "room_id": "study",
     }
     store = Viewpoints(hass, "entry")
-    await store._store.async_save(
-        {
+    # A hand-edited file can hold a number no float can, which saving refuses.
+    store._store.async_load = AsyncMock(
+        return_value={
             "viewpoints": [
                 good,
                 {**good, "viewpoint_id": "b", "x": "inf"},
                 {**good, "viewpoint_id": "c", "mission_id": "seven"},
+                {**good, "viewpoint_id": "e", "y": 10**400},
                 {"viewpoint_id": "d"},
                 None,
             ]
@@ -166,6 +173,18 @@ async def test_stored_viewpoints_that_do_not_decode_are_dropped(
     await store.async_load()
 
     assert [viewpoint.viewpoint_id for viewpoint in store.all] == ["a"]
+
+
+@pytest.mark.parametrize("stored", [[], {"viewpoints": 5}, {"viewpoints": {"a": 1}}])
+async def test_a_stored_file_of_the_wrong_shape_loads_no_viewpoints(
+    hass: HomeAssistant, stored: object
+) -> None:
+    store = Viewpoints(hass, "entry")
+    await store._store.async_save(stored)
+
+    await store.async_load()
+
+    assert store.all == ()
 
 
 DESK = Viewpoint("desk", "Desk", 7, 3.0, 1.0, math.pi / 2, "study")
@@ -389,3 +408,11 @@ def test_an_assistant_place_is_a_viewpoint_unless_a_room_here_has_its_name(
     )
 
     assert llm_camera._stop(entry, {"place": place}) == expected
+
+
+@pytest.mark.parametrize("entity_ids", [[], ["vacuum.one", "vacuum.two"]])
+def test_viewpoint_actions_take_exactly_one_robot(entity_ids: list[str]) -> None:
+    with pytest.raises(ServiceValidationError) as raised:
+        service_photos._one_robot(entity_ids)
+
+    assert raised.value.translation_key == "single_robot_required"

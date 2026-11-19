@@ -59,7 +59,10 @@ class Viewpoints:
 
     async def async_load(self) -> None:
         stored = await self._store.async_load() or {}
-        loaded = (_decode(item) for item in stored.get("viewpoints", ()))
+        items = stored.get("viewpoints") if isinstance(stored, dict) else None
+        if not isinstance(items, list):
+            items = []
+        loaded = (_decode(item) for item in items)
         self._viewpoints = {
             viewpoint.viewpoint_id: viewpoint for viewpoint in loaded if viewpoint
         }
@@ -177,7 +180,7 @@ def _decode(data: Any) -> Viewpoint | None:
             float(data["heading"]),
             str(data["room_id"]),
         )
-    except KeyError, TypeError, ValueError:
+    except KeyError, OverflowError, TypeError, ValueError:
         return None
     if not all(
         math.isfinite(value) for value in (viewpoint.x, viewpoint.y, viewpoint.heading)

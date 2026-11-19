@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
@@ -92,6 +93,12 @@ async def test_a_viewpoint_saved_where_the_robot_stands_is_toured_facing_each_wa
         runtime.session.floor.value, encode_posture(x=3.0, y=0.5, heading=math.pi / 2)
     )
     await poll(hass, loaded_entry, robot)
+    # A pose the robot reported too long ago is not where it stands now.
+    stale = time.time() + 60
+    with patch("custom_components.matic_robot.client.floor_plan.time.time") as now:
+        now.return_value = stale
+        refusal = await actions.refused("save_photo_viewpoint", name="Desk")
+    assert refusal == "viewpoint_pose_unavailable"
     saved = await actions.call("save_photo_viewpoint", name="Desk")
     (desk,) = saved["robots"]
     assert (desk["name"], desk["room"]) == ("Desk", "Study")
@@ -148,9 +155,12 @@ async def test_a_viewpoint_saved_from_coordinates_must_be_a_photo_spot(
         == "viewpoint_outside_rooms"
     )
     saved = await actions.call(
-        "save_photo_viewpoint", name="Stove", x=1.0, y=0.5, heading=180
+        "save_photo_viewpoint", name="Stove", x=1.0, y=0.5, heading=270
     )
     assert saved["robots"][0]["room"] == "Kitchen"
+    # Degrees counter-clockwise from the map's x axis, stored in radians.
+    stove = loaded_entry.runtime_data.viewpoints.find("Stove")
+    assert stove.heading == pytest.approx(-math.pi / 2)
 
     kitchen = next(
         room.id
