@@ -279,6 +279,7 @@ class SimulatedRobot:
         self.destination: UUID | None = None
         # Where a posture goal parked the robot; None reports a room's centre.
         self.position: SimPosture | None = None
+        self._area_before_tap: str | None = None
         self._blocked_goals = 0
         self.waiting_at_sink = False
         self.unsupported: set[str] = set()
@@ -490,6 +491,7 @@ class SimulatedRobot:
     def recharged(self) -> None:
         """Resume a recharge-suspended task."""
         self.battery = 0.8
+        self._leave_tap_point()
         self._set_phase(Phase.CLEANING)
 
     def schedule_takes_over(self) -> None:
@@ -602,6 +604,7 @@ class SimulatedRobot:
         if payload == PAUSE_PAYLOAD and self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
         elif payload == RESUME_PAYLOAD and self.phase is Phase.PAUSED:
+            self._leave_tap_point()
             self._set_phase(Phase.CLEANING)
         elif payload == STOP_PAYLOAD and self.phase in (
             Phase.CLEANING,
@@ -668,6 +671,13 @@ class SimulatedRobot:
         self._refresh_pose()
         self._set_phase(Phase.CLEANING)
 
+    def _leave_tap_point(self) -> None:
+        """Go back to the held task's room from a map-tap point."""
+        if self.position is not None:
+            self.position = None
+            self.current_area = self._area_before_tap
+            self._refresh_pose()
+
     def _navigate(self, navigation: Navigation) -> None:
         # The robot's state codes while it drives somewhere are not recorded,
         # so it arrives at once. Without a task it stands ready there; a task
@@ -691,6 +701,8 @@ class SimulatedRobot:
         else:
             # A map-tap goal parks at the point, facing the given heading.
             assert navigation.posture is not None
+            if self.position is None:
+                self._area_before_tap = self.current_area
             self.waiting_at_sink = False
             self.position = read_posture(navigation.posture)
             room = self.floor.room_at(self.position.x, self.position.y)
