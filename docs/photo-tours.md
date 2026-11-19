@@ -26,7 +26,8 @@ Both are for administrators only. Viewpoints are kept in Home Assistant's
 private storage and erased when the robot is removed.
 
 The robot has reached a viewpoint once it parks within 40 cm of the spot,
-facing within 20 degrees of the heading, in the viewpoint's room. It waits two
+facing within 20 degrees of the heading, in the viewpoint's room. A robot that
+reports no heading, as on the dock, is taken to face the right way. It waits two
 seconds before the photo so it is not blurred. A viewpoint saved on another
 floor is refused until the robot is on that floor.
 

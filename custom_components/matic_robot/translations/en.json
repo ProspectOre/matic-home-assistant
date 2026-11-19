@@ -2010,6 +2010,9 @@
     "viewpoint_name_taken": {
       "message": "A viewpoint called {viewpoint} already exists. Delete it first or choose another name."
     },
+    "viewpoint_name_is_room": {
+      "message": "{viewpoint} is the name of a room. Choose a name that is not a room's, so a stop or a request for a photo there is not ambiguous."
+    },
     "viewpoint_limit": {
       "message": "This robot already has {limit} viewpoints. Delete one before saving another."
     },

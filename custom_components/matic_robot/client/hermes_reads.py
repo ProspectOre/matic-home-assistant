@@ -245,13 +245,10 @@ class HermesReads(HermesCollections):
         poses of other missions.
         """
         async for entry in self.async_subscribe_collection_entries("latest_pose"):
-            if (pose := _decode_pose(entry)) is not None:
-                yield pose
-
-    async def async_get_poses(self) -> tuple[RobotPose, ...]:
-        """Read each mission's latest pose once, skipping malformed entries."""
-        entries = await self.async_get_tracked_collection_entries("latest_pose")
-        return tuple(pose for entry in entries if (pose := _decode_pose(entry)))
+            try:
+                yield decode_latest_pose(entry)
+            except DecodeError as err:
+                _LOGGER.debug("Skipped a malformed latest pose: %s", err)
 
     async def async_get_cleaning_session_identity(self) -> bytes | None:
         """Keep the vetted session property opaque and in memory for ownership.
@@ -531,11 +528,3 @@ class HermesReads(HermesCollections):
     def endpoint_health(self) -> dict[str, str]:
         """Return non-sensitive read health for observed endpoints."""
         return dict(self._endpoint_health)
-
-
-def _decode_pose(entry: HermesCollectionEntry) -> RobotPose | None:
-    try:
-        return decode_latest_pose(entry)
-    except DecodeError as err:
-        _LOGGER.debug("Skipped a malformed latest pose: %s", err)
-        return None

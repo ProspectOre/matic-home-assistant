@@ -17,7 +17,6 @@ from custom_components.matic_robot import photo_tours, viewpoints
 from custom_components.matic_robot.client import (
     FloorPlan,
     MapZone,
-    MaticError,
     RobotPose,
     Room,
     room_at,
@@ -105,6 +104,7 @@ async def test_a_saved_viewpoint_is_found_by_id_or_name_and_survives_reload(
             "viewpoint_in_no_go_zone",
         ),
         ({"zones": None}, "viewpoint_zones_unavailable"),
+        ({"name": " kitchen "}, "viewpoint_name_is_room"),
     ],
 )
 async def test_a_viewpoint_must_be_a_named_spot_photos_may_be_taken(
@@ -189,18 +189,39 @@ def test_a_viewpoint_is_reached_on_its_spot_facing_the_shot(
     assert photo_tours._at_viewpoint(pose, shot) is arrived
 
 
-async def test_the_pose_on_the_viewpoints_floor_is_read() -> None:
-    here = RobotPose(1, 1, 0, 7)
-    client = SimpleNamespace(
-        async_get_poses=AsyncMock(return_value=(RobotPose(0, 0, 0, 8), here))
+def _tour_entry(
+    viewpoint: Viewpoint, health: str = "ok", zones: tuple[MapZone, ...] = ()
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            client=SimpleNamespace(endpoint_health={"zones": health}),
+            session=SimpleNamespace(
+                floor=SimpleNamespace(value=FLOOR),
+                telemetry=SimpleNamespace(value=SimpleNamespace(zones=zones)),
+            ),
+            viewpoints=SimpleNamespace(find=lambda _name: viewpoint),
+        )
     )
-    assert await photo_tours._async_pose(client, 7) is here
-    assert await photo_tours._async_pose(client, 9) is None
 
-    client.async_get_poses.side_effect = MaticError("lost")
-    with pytest.raises(HomeAssistantError) as raised:
-        await photo_tours._async_pose(client, 7)
-    assert raised.value.translation_key == "photo_tour_unreachable"
+
+@pytest.mark.parametrize(
+    ("heading", "turns", "expected"),
+    [
+        (0.0, 1, [0.0]),
+        (0.0, 3, [0.0, 120.0, -120.0]),
+        (170.0, 4, [170.0, -100.0, -10.0, 80.0]),
+    ],
+)
+def test_a_look_around_turns_evenly_from_the_viewpoints_heading(
+    heading: float, turns: int, expected: list[float]
+) -> None:
+    desk = Viewpoint("v", "Desk", 7, 3, 1, math.radians(heading), "study")
+    stop = TourStop(viewpoint="Desk", look_around=turns)
+
+    shots = photo_tours._shots(_tour_entry(desk), [stop, stop])
+
+    assert [math.degrees(shot.heading) for shot in shots] == pytest.approx(expected * 2)
+    assert {shot.room for shot in shots} == {"study"}
 
 
 NO_GO_AT_DESK = MapZone(7, "no_go", 0, ((2.8, 0.8), (3.2, 0.8), (3.2, 1.2)))
@@ -232,16 +253,7 @@ NO_GO_AT_DESK = MapZone(7, "no_go", 0, ((2.8, 0.8), (3.2, 0.8), (3.2, 1.2)))
 def test_a_tour_refuses_a_viewpoint_it_cannot_reach_safely(
     viewpoint: Viewpoint, health: str, zones: tuple[MapZone, ...], key: str
 ) -> None:
-    entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(
-            client=SimpleNamespace(endpoint_health={"zones": health}),
-            session=SimpleNamespace(
-                floor=SimpleNamespace(value=FLOOR),
-                telemetry=SimpleNamespace(value=SimpleNamespace(zones=zones)),
-            ),
-            viewpoints=SimpleNamespace(find=lambda _name: viewpoint),
-        )
-    )
+    entry = _tour_entry(viewpoint, health, zones)
 
     with pytest.raises(HomeAssistantError) as raised:
         photo_tours._shots(entry, [TourStop(viewpoint=viewpoint.name)])

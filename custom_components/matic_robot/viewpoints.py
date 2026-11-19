@@ -98,6 +98,11 @@ class Viewpoints:
             for viewpoint in self._viewpoints.values()
         ):
             raise _error("viewpoint_name_taken", viewpoint=name)
+        # A stop or an assistant place names a viewpoint or a room, not both.
+        if any(
+            room_name_key(room.name) == room_name_key(name) for room in floor_plan.rooms
+        ):
+            raise _error("viewpoint_name_is_room", viewpoint=name)
         if len(self._viewpoints) >= MAX_VIEWPOINTS:
             raise _error("viewpoint_limit", limit=str(MAX_VIEWPOINTS))
         if not all(math.isfinite(value) for value in (x, y, heading)):

@@ -300,8 +300,7 @@ async def _async_photograph(
     # A parked robot shows it has set off only by leaving the parked state,
     # unless it is away from the viewpoint's spot or heading before it is sent.
     must_leave = _parked(state) and (
-        shot.viewpoint is None
-        or _at_viewpoint(await _async_pose(client, shot.viewpoint.mission_id), shot)
+        shot.viewpoint is None or _at_viewpoint(_pose(entry, shot.viewpoint), shot)
     )
     if robot.reachable:
         if shot.viewpoint is None:
@@ -314,7 +313,7 @@ async def _async_photograph(
         if not _arrived_at(candidate, room_area):
             return False
         return shot.viewpoint is None or _at_viewpoint(
-            await _async_pose(client, shot.viewpoint.mission_id), shot
+            _pose(entry, shot.viewpoint), shot
         )
 
     async def left(candidate: RobotOperationalState) -> bool:
@@ -438,12 +437,9 @@ def _stop_fields(entry: MaticConfigEntry, shot: _Shot) -> dict[str, Any]:
     }
 
 
-async def _async_pose(client: Any, mission_id: int) -> RobotPose | None:
-    try:
-        poses: tuple[RobotPose, ...] = await client.async_get_poses()
-    except MaticError as err:
-        raise _error("photo_tour_unreachable") from err
-    return next((pose for pose in poses if pose.mission_id == mission_id), None)
+def _pose(entry: MaticConfigEntry, viewpoint: Viewpoint) -> RobotPose | None:
+    """Return the newest pose the robot pushed on the viewpoint's map."""
+    return entry.runtime_data.session.poses.value.get(viewpoint.mission_id)
 
 
 def _at_viewpoint(pose: RobotPose | None, shot: _Shot) -> bool:
