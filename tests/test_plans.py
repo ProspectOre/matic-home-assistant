@@ -469,6 +469,22 @@ async def test_managed_run_completion_projection_marks_missing_and_capped_eviden
     assert large["completed_room_ids_complete"] is False
 
 
+def test_managed_run_projection_ignores_malformed_rotation_containers() -> None:
+    """Malformed persisted history containers must not be overwritten."""
+    run = {
+        "run_id": "run-1",
+        "plan_id": "away",
+        "outcome": "completed",
+    }
+    robot = {"rotations": []}
+    plans_module._sync_last_managed_run(robot, run)
+    assert robot["rotations"] == []
+
+    robot = {"rotations": {"away": []}}
+    plans_module._sync_last_managed_run(robot, run)
+    assert robot["rotations"]["away"] == []
+
+
 async def test_late_native_reconciliation_refreshes_plan_run_projection(hass) -> None:
     """Late verified history updates the saved plan summary for the same run."""
     robot = {
