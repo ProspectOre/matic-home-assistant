@@ -48,8 +48,8 @@ reopened by the supervisor whenever it ends, is the only writer of its state
 store, at most one snapshot a second. [Robot health](../custom_components/matic_robot/robot_health.py)
 shows an error code or bag flag once two samples 30 seconds apart carry it. A
 failed dial, or 10 seconds with no live state subscription, makes the robot
-and every entity unavailable until the next snapshot; the keepalive ping ends
-a silent connection. A `latest_pose` watch feeds the map trail and Matic Map.
+and the entities that show its state unavailable until the next snapshot;
+the keepalive ping ends a silent connection. A `latest_pose` watch feeds the map trail and Matic Map.
 The session raises the identity Repair, starts reauthentication when a dial or
 subscription is refused, and closes on unload and when Home Assistant stops.
 
