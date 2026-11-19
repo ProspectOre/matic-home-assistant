@@ -1166,7 +1166,7 @@
         },
         "data_description": {
           "photo_allow_unattended": "Required before any photo tour can move or take photos. Manual Take photo remains available separately.",
-          "photo_no_photo_rooms": "Photos from Home Assistant photos and tours are refused in these rooms. Names are saved as room IDs on the current map. An unavailable room stays selected and blocks photos until you review it.",
+          "photo_no_photo_rooms": "Photos taken through Home Assistant, tours included, are refused in these rooms. Names are saved as room IDs on the current map. An unavailable room stays selected and blocks photos until you review it.",
           "photo_cooldown_seconds": "Minimum delay between photo tours, including tours an automation starts."
         }
       },
