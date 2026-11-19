@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -186,12 +187,7 @@ class PhotoLibrary:
         """
         expectation = _Expectation(dt_util.utcnow(), album)
         self._expected.append(expectation)
-
-        def withdraw() -> None:
-            if expectation in self._expected:
-                self._expected.remove(expectation)
-
-        return withdraw
+        return partial(self._withdraw, expectation)
 
     async def async_load(self) -> None:
         """Load the records, drop expired photos, and keep doing so daily."""
@@ -200,7 +196,10 @@ class PhotoLibrary:
         self._records = {record.photo_id: record for record in records if record}
         if evicted := stored.get("evicted_through"):
             self._evicted_through = datetime.fromisoformat(evicted)
-        await self._hass.async_add_executor_job(self._delete_unrecorded_files)
+        # Without records, such as after a corrupt store was moved aside, the
+        # files are all that is left of the library, so keep them.
+        if stored:
+            await self._hass.async_add_executor_job(self._delete_unrecorded_files)
         await self.async_prune()
         self._stop_pruning = async_track_time_interval(
             self._hass, self._async_prune_daily, PRUNE_INTERVAL
@@ -292,8 +291,9 @@ class PhotoLibrary:
                     self._async_storage_failed(err)
                     failed = True
                     break
+                # The request may have been withdrawn while the photo was written.
                 if expectation is not None:
-                    self._expected.remove(expectation)
+                    self._withdraw(expectation)
                 self._records[record.photo_id] = record
                 saved = True
             if saved and not failed:
@@ -315,6 +315,10 @@ class PhotoLibrary:
     def _saved_data(self) -> dict[str, Any]:
         self._unsaved = False
         return self._data()
+
+    def _withdraw(self, expectation: _Expectation) -> None:
+        if expectation in self._expected:
+            self._expected.remove(expectation)
 
     def _expectation_for(self, photo: RobotPhoto) -> _Expectation | None:
         """Return the open request ``photo`` answers, dropping expired ones."""

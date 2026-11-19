@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from homeassistant.core import HomeAssistant
@@ -68,13 +69,46 @@ async def test_loading_deletes_files_no_record_accounts_for(
     assert names == [f"{_id(1)}.preview.webp", f"{_id(1)}.webp"]
 
 
-async def test_a_robot_that_never_saved_a_photo_loads_without_a_folder(
+async def test_a_library_without_records_keeps_its_files(
+    hass: HomeAssistant, folder: Path, hass_storage: dict[str, Any]
+) -> None:
+    """A lost or corrupt record store must not erase the photos on disk."""
+    library = _library(hass, _snap(1))
+    await library.async_read()
+
+    reloaded = _library(hass)
+    await reloaded.async_load()
+    await reloaded.async_shutdown()
+    assert await hass.async_add_executor_job((folder / f"{_id(1)}.webp").exists)
+
+    # Records whose folder is gone load as they are.
+    hass_storage[f"{DOMAIN}.photos.fresh"] = {
+        "version": 1,
+        "key": f"{DOMAIN}.photos.fresh",
+        "data": {"photos": [], "evicted_through": None},
+    }
+    fresh = PhotoLibrary(hass, "fresh", reloaded._client, place=lambda: None)
+    await fresh.async_load()
+    await fresh.async_shutdown()
+    assert fresh.photo_count == 0
+
+
+async def test_withdrawing_a_request_while_its_photo_is_written(
     hass: HomeAssistant, folder: Path
 ) -> None:
-    library = PhotoLibrary(hass, "fresh", _library(hass)._client, place=lambda: None)
-    await library.async_load()
-    await library.async_shutdown()
-    assert library.photo_count == 0
+    library = _library(hass, _snap(1))
+    withdraw = library.async_expect_photo("mission")
+    real_write = PhotoLibrary._write
+
+    def write_then_withdraw(self: PhotoLibrary, photo: RobotPhoto) -> None:
+        real_write(self, photo)
+        hass.loop.call_soon_threadsafe(withdraw)
+
+    with patch.object(PhotoLibrary, "_write", write_then_withdraw):
+        assert await library.async_read() is True
+
+    assert library.photo(_id(1)).album == "mission"
+    assert not library._expected
 
 
 async def test_a_full_library_evicts_strictly_oldest_first(
