@@ -103,6 +103,38 @@ async def test_a_scripted_task_forgets_the_parked_point(
     assert (await client.async_get_state()).current_area == "Kitchen"
 
 
+async def test_stop_forgets_the_parked_point(
+    client: MaticHermesClient, robot: SimulatedRobot
+) -> None:
+    floor_plan = await client.async_get_floor_plan()
+    robot.start_cleaning("Kitchen")
+    await client.async_go_to_posture(
+        floor_plan, encode_posture(x=3.0, y=0.5, heading=0.0)
+    )
+    assert robot.phase is Phase.PAUSED
+    assert (await _pose(client)).heading is not None
+
+    await client.async_send_user_command(UserCommand.STOP)
+
+    assert robot.phase is Phase.STOPPED
+    assert robot.position is None
+    assert (await _pose(client)).heading is None
+
+
+async def test_a_map_tap_ends_a_wait_at_the_sink(
+    client: MaticHermesClient, robot: SimulatedRobot
+) -> None:
+    floor_plan = await client.async_get_floor_plan()
+    robot.waiting_at_sink = True
+
+    await client.async_go_to_posture(
+        floor_plan, encode_posture(x=3.0, y=0.5, heading=0.0)
+    )
+
+    assert robot.waiting_at_sink is False
+    assert robot.position is not None
+
+
 async def test_a_held_photo_is_saved_only_when_released(
     client: MaticHermesClient, robot: SimulatedRobot
 ) -> None:
