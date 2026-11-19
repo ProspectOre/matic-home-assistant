@@ -43,7 +43,7 @@ def test_browser_shards_keep_the_traces_of_retried_tests() -> None:
     commands = [step.get("run") for step in steps]
     upload = steps[commands.index(f"npm run test:browser -- {shard}") + 1]
 
-    assert browser["strategy"]["matrix"] == {"shard": [1, 2, 3, 4]}
+    assert browser["strategy"]["matrix"] == {"shard": [1, 2, 3, 4, 5, 6, 7, 8]}
     assert upload["if"] == "failure()"
     assert upload["uses"].startswith("actions/upload-artifact@")
     assert upload["with"] == {
