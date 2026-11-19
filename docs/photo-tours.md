@@ -44,7 +44,8 @@ configured, an unknown room or an unavailable map stops a snapshot; a room
 removed by remapping must be reviewed in settings before photo commands resume.
 The check is on the room the robot stands in, not what the camera sees: a photo
 from a permitted room can show a no-photo room through an open doorway, so aim
-viewpoints away from one. These settings do not control photos requested in the Matic app.
+viewpoints away from one. A stop with `look_around` above 1 faces every
+direction, so do not use it beside a doorway into a no-photo room. These settings do not control photos requested in the Matic app.
 
 The minimum time between tours defaults to 15 minutes. Only one tour may
 run per robot. It requires at least 20% battery, checks again between stops,
