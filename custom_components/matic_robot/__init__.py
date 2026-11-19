@@ -325,6 +325,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
             await photo_source.async_release_entry(entry.entry_id)
         await entry.runtime_data.run_trails.async_shutdown()
         await entry.runtime_data.wifi_survey.async_shutdown()
+        await entry.runtime_data.photos.async_shutdown()
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)

@@ -20,7 +20,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.matic_robot import image as image_platform
-from custom_components.matic_robot import photo_library
+from custom_components.matic_robot import llm_camera, photo_library
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
@@ -116,6 +116,7 @@ async def test_a_photo_is_written_to_disk_and_recorded(
     assert reloaded.photo(_id(1)) == record
     assert await reloaded.async_image(_id(1)) == WEBP
     assert await reloaded.async_image(_id(1), preview=True) == PREVIEW
+    await reloaded.async_shutdown()
 
     # A photo already saved is not saved again, so nothing is announced.
     assert await library.async_read() is False
@@ -189,6 +190,7 @@ async def test_a_failed_write_raises_a_repair_until_a_photo_saves(
     translation_key: str,
 ) -> None:
     library = _library(hass, _snap(1))
+    library.async_expect_photo("mission")
     with patch.object(PhotoLibrary, "_write", side_effect=error):
         assert await library.async_read() is False
 
@@ -197,9 +199,11 @@ async def test_a_failed_write_raises_a_repair_until_a_photo_saves(
     assert issue.translation_placeholders == {"folder": str(folder)}
     assert library.photo_count == 0
 
-    # The photo stayed on the robot, so the next read saves it.
+    # The photo stayed on the robot, so the next read saves it, still in the
+    # album that asked for it.
     assert await library.async_read() is True
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is None
+    assert library.photo(_id(1)).album == "mission"
 
 
 async def test_a_photo_that_reads_back_wrong_is_not_recorded(
@@ -308,10 +312,12 @@ async def test_load_skips_records_it_cannot_read(
     await library.async_load()
     assert list(library._records) == [_id(1)]
     assert library.photo(_id(1)).starred is False
+    await library.async_shutdown()
 
     empty = PhotoLibrary(hass, "other", None, place=lambda: HERE)
     await empty.async_load()
     assert empty.photo_count == 0
+    await empty.async_shutdown()
 
 
 async def test_removing_the_robot_erases_its_photos(
@@ -365,3 +371,67 @@ async def test_latest_photo_image_shows_the_newest_saved_photo(
     assert entity.state == NOW.isoformat()
     assert await entity.async_image() == WEBP
     assert entity.extra_state_attributes == {"photo_count": 1}
+
+
+async def test_photos_are_private_to_home_assistant(
+    hass: HomeAssistant, folder: Path
+) -> None:
+    library = _library(hass, _snap(1))
+    await library.async_read()
+
+    def modes() -> list[int]:
+        paths = [folder, *folder.iterdir()]
+        return [path.stat().st_mode & 0o777 for path in paths]
+
+    assert await hass.async_add_executor_job(modes) == [0o700, 0o600, 0o600]
+
+
+async def test_unloading_saves_records_at_once_and_a_reload_keeps_them(
+    hass: HomeAssistant, folder: Path, hass_storage: dict[str, Any]
+) -> None:
+    library = _library(hass, _snap(1))
+    library.async_expect_photo("mission")
+    await library.async_load()
+    await library.async_read()
+
+    await library.async_shutdown()
+    await library.async_shutdown()
+
+    assert hass_storage[STORAGE_KEY]["data"]["photos"][0]["album"] == "mission"
+    reloaded = _library(hass)
+    await reloaded.async_load()
+    assert reloaded.photo(_id(1)).album == "mission"
+    await reloaded.async_shutdown()
+
+
+async def test_expired_photos_are_removed_without_new_ones(
+    hass: HomeAssistant, folder: Path, freezer: FrozenDateTimeFactory
+) -> None:
+    library = _library(hass, _snap(1), _snap(2, age=timedelta(days=29)))
+    await library.async_read()
+    await library.async_shutdown()
+    listener = MagicMock()
+
+    # A day later, loading drops the photo now past 30 days.
+    freezer.tick(timedelta(days=1, seconds=1))
+    library = _library(hass)
+    library.async_add_listener(listener)
+    await library.async_load()
+    assert sorted(library._records) == [_id(1)]
+    assert not await hass.async_add_executor_job((folder / f"{_id(2)}.webp").exists)
+    listener.assert_called_once_with()
+
+    # With nothing new, the daily check drops the rest when they expire.
+    freezer.tick(photo_library.MAX_PHOTO_AGE)
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert library.photo_count == 0
+    await library.async_shutdown()
+    async_fire_time_changed(hass, dt_util.utcnow() + photo_library.PRUNE_INTERVAL)
+    await hass.async_block_till_done()
+
+
+def test_the_assist_tool_states_how_long_photos_are_kept() -> None:
+    description = llm_camera._PHOTO_ACTION_DESCRIPTION
+    assert f"{photo_library.MAX_PHOTO_AGE.days} days" in description
+    assert "disk" in description

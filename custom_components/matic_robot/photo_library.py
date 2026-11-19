@@ -13,6 +13,7 @@ import asyncio
 import errno
 import hashlib
 import logging
+import os
 import shutil
 from collections import deque
 from collections.abc import Callable, Iterable
@@ -27,6 +28,7 @@ from uuid import UUID
 from google.protobuf.message import DecodeError
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -53,6 +55,7 @@ MAX_PHOTO_ENTRIES = 64
 SNAP_READ_DELAYS_SECONDS = (12.0, 8.0)
 MAX_LIBRARY_BYTES = 500 * 1024 * 1024
 MAX_PHOTO_AGE = timedelta(days=30)
+PRUNE_INTERVAL = timedelta(days=1)
 # A photo up to this much older than the request that asked for it still
 # answers it: the robot's clock and Home Assistant's differ a little.
 CLOCK_TOLERANCE = timedelta(seconds=2)
@@ -135,6 +138,8 @@ class PhotoLibrary:
         self._expected: deque[_Expectation] = deque()
         self._listeners: set[Callable[[], None]] = set()
         self._lock = asyncio.Lock()
+        self._unsaved = False
+        self._stop_pruning: CALLBACK_TYPE | None = None
 
     @property
     def latest(self) -> PhotoRecord | None:
@@ -185,9 +190,29 @@ class PhotoLibrary:
         return withdraw
 
     async def async_load(self) -> None:
+        """Load the records, drop expired photos, and keep doing so daily."""
         stored = await self._store.async_load() or {}
         records = (_decode_record(item) for item in stored.get("photos", ()))
         self._records = {record.photo_id: record for record in records if record}
+        await self.async_prune()
+        self._stop_pruning = async_track_time_interval(
+            self._hass, self._async_prune_daily, PRUNE_INTERVAL
+        )
+
+    async def async_shutdown(self) -> None:
+        """Stop pruning and write any record not yet saved."""
+        if self._stop_pruning is not None:
+            self._stop_pruning()
+            self._stop_pruning = None
+        if self._unsaved:
+            self._unsaved = False
+            await self._store.async_save(self._data())
+
+    async def async_prune(self) -> None:
+        """Remove photos past the age and size limits."""
+        async with self._lock:
+            if await self._async_prune():
+                self._async_changed()
 
     async def async_image(
         self, photo_id: str, *, preview: bool = False
@@ -243,35 +268,60 @@ class PhotoLibrary:
                     continue
                 if dt_util.utcnow() - photo.captured_at > MAX_PHOTO_AGE:
                     continue
-                record = self._new_record(photo)
+                expectation = self._expectation_for(photo)
+                record = self._new_record(photo, expectation)
                 try:
                     await self._hass.async_add_executor_job(self._write, photo)
                 except OSError as err:
+                    # The photo stays on the robot and its request stays open
+                    # for the next read.
                     self._async_storage_failed(err)
                     break
+                if expectation is not None:
+                    self._expected.remove(expectation)
                 self._records[record.photo_id] = record
                 saved = True
             else:
                 ir.async_delete_issue(self._hass, DOMAIN, self._issue_id)
             if saved:
                 await self._async_prune()
-                self._store.async_delay_save(self._data, 1)
-                for listener in tuple(self._listeners):
-                    listener()
+                self._async_changed()
 
-    def _new_record(self, photo: RobotPhoto) -> PhotoRecord:
+    async def _async_prune_daily(self, _now: datetime) -> None:
+        await self.async_prune()
+
+    @callback
+    def _async_changed(self) -> None:
+        self._unsaved = True
+        self._store.async_delay_save(self._saved_data, 1)
+        for listener in tuple(self._listeners):
+            listener()
+
+    def _saved_data(self) -> dict[str, Any]:
+        self._unsaved = False
+        return self._data()
+
+    def _expectation_for(self, photo: RobotPhoto) -> _Expectation | None:
+        """Return the open request ``photo`` answers, dropping expired ones."""
         now = dt_util.utcnow()
         while self._expected and now - self._expected[0].requested_at > (
             EXPECTATION_LIFETIME
         ):
             self._expected.popleft()
-        album, source = MANUAL_ALBUM, PhotoSource.MATIC_APP
         if (
             self._expected
             and photo.captured_at >= self._expected[0].requested_at - CLOCK_TOLERANCE
         ):
-            album = self._expected.popleft().album
-            source = PhotoSource.HOME_ASSISTANT
+            return self._expected[0]
+        return None
+
+    def _new_record(
+        self, photo: RobotPhoto, expectation: _Expectation | None
+    ) -> PhotoRecord:
+        now = dt_util.utcnow()
+        album, source = MANUAL_ALBUM, PhotoSource.MATIC_APP
+        if expectation is not None:
+            album, source = expectation.album, PhotoSource.HOME_ASSISTANT
         # Where the robot is now says where a photo was taken only if it was
         # taken moments ago; an older one, such as from the app, has no place.
         place = (
@@ -292,19 +342,27 @@ class PhotoLibrary:
         )
 
     def _write(self, photo: RobotPhoto) -> None:
-        """Write the image and preview, each to a temporary name then renamed."""
-        self._folder.mkdir(parents=True, exist_ok=True)
+        """Write the image and preview, each to a temporary name then renamed.
+
+        Like the private records, the folder and files are the owner's only.
+        """
+        self._folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._folder.chmod(0o700)
         files = [(self._path(photo.photo_id), photo.image)]
         if photo.preview is not None:
             files.append((self._path(photo.photo_id, preview=True), photo.preview))
         for path, data in files:
             unfinished = path.with_suffix(".part")
-            unfinished.write_bytes(data)
+            descriptor = os.open(
+                unfinished, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+            )
+            with os.fdopen(descriptor, "wb") as file:
+                file.write(data)
             unfinished.replace(path)
         if files[0][0].read_bytes() != photo.image:
             raise OSError(errno.EIO, "the saved photo does not match the robot's")
 
-    async def _async_prune(self) -> None:
+    async def _async_prune(self) -> bool:
         cutoff = dt_util.utcnow() - MAX_PHOTO_AGE
         kept = sorted(
             self._records.values(), key=lambda record: record.captured_at, reverse=True
@@ -323,6 +381,7 @@ class PhotoLibrary:
             del self._records[photo_id]
         if removed:
             await self._hass.async_add_executor_job(self._delete_files, removed)
+        return bool(removed)
 
     def _delete_files(self, photo_ids: list[str]) -> None:
         for photo_id in photo_ids:

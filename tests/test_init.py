@@ -777,6 +777,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             slam_history=slam_history,
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
+            photos=SimpleNamespace(async_shutdown=AsyncMock()),
             cleaning_plans=plans,
         ),
     )
@@ -824,6 +825,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     else:
         plans.recovery.async_retire_recovery.assert_not_awaited()
     assert client.async_shutdown.called is unload_ok
+    assert entry.runtime_data.photos.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert floor_layers_view.clear_entry.called is unload_ok
     assert run_thumbnail_view.clear_entry.called is unload_ok
@@ -875,6 +877,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             slam_history=slam_history,
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
+            photos=SimpleNamespace(async_shutdown=AsyncMock()),
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())

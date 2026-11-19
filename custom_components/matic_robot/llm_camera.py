@@ -18,8 +18,8 @@ from .llm_control import _async_service_refusal, _PanelRobot
 _PHOTO_ACTION_DESCRIPTION = (
     "The robot travels to the named room, takes one photo and returns to its dock. "
     "The configured no-photo rooms and unattended photo opt-in apply. Photos are "
-    "kept only in Home Assistant's bounded in-memory cache; never put a photo or "
-    "photo URL in logs or persistent state."
+    "saved privately on Home Assistant's disk for up to 30 days; never put a photo "
+    "or photo URL in logs or other persistent state."
 )
 _AI_DISCLOSURE = (
     "When investigating, the full photo and question go to the explicitly selected "
