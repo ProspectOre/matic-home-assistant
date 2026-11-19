@@ -1209,6 +1209,25 @@ async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
     assert "matic_entry_id" in history._unrecorded_attributes
 
 
+def test_public_plan_history_hides_run_evidence_without_mutating_source() -> None:
+    """The broad sensor copy omits details that only the plan tool needs."""
+    assert sensor.public_plan_history(None) == {}
+    source = {
+        "daily": {
+            "rooms": {"room-kitchen": {"last_completed": "2026-11-19T10:00:00Z"}},
+            "last_managed_run": {
+                "room_roster": [{"id": "room-kitchen", "name": "Kitchen"}],
+                "completed_room_ids": ["room-kitchen"],
+            },
+        }
+    }
+
+    public = sensor.public_plan_history(source)
+    assert public["daily"]["rooms"] == source["daily"]["rooms"]
+    assert "last_managed_run" not in public["daily"]
+    assert "last_managed_run" in source["daily"]
+
+
 def test_sensor_and_binary_sensor_values() -> None:
     entry = _entry()
     assert MaticEntity(entry).suggested_object_id is None
