@@ -72,6 +72,7 @@ def diagnostic_entry(hass) -> SimpleNamespace:
             firmware_tracker=SimpleNamespace(
                 summary=lambda entry_id: {"observed_version": "test-version"}
             ),
+            photos=SimpleNamespace(photo_count=3, total_bytes=1234),
             session=SimpleNamespace(
                 info=info,
                 state=SimpleNamespace(
@@ -117,6 +118,7 @@ async def test_diagnostics_redact_access_material_but_keep_local_context(hass) -
     assert bag_observation["replacement_events_observed"] == 1
     assert bag_observation["last_full_at"]
     assert bag_observation["last_replaced_at"]
+    assert diagnostics["photos"] == {"saved": 3, "bytes": 1234}
     assert diagnostics["endpoint_health"] == {
         "observed": 2,
         "healthy": 1,

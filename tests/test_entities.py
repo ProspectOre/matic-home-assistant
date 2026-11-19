@@ -350,6 +350,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
                 photo_count=0,
                 async_add_listener=MagicMock(return_value=MagicMock()),
                 async_refresh_after_snap=AsyncMock(),
+                async_expect_photo=MagicMock(return_value=MagicMock()),
             ),
         ),
         options={},

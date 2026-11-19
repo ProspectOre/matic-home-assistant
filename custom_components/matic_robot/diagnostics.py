@@ -124,6 +124,10 @@ async def async_get_config_entry_diagnostics(
             "room_count": len(floor_plan.rooms) if floor_plan is not None else 0,
             "pose_available": session.pose_on(floor_plan) is not None,
         },
+        "photos": {
+            "saved": runtime.photos.photo_count,
+            "bytes": runtime.photos.total_bytes,
+        },
         "endpoint_health": {
             "observed": len(endpoint_health),
             "healthy": sum(status == "ok" for status in endpoint_health.values()),

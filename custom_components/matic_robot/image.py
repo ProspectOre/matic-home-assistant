@@ -55,13 +55,17 @@ class MaticLatestPhotoImage(MaticEntity, ImageEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, int]:
-        """Return how many photos have been seen on the robot."""
+        """Return how many photos are saved in Home Assistant."""
         return {"photo_count": self._photos.photo_count}
 
     async def async_image(self) -> bytes | None:
         """Return the newest photo as WebP."""
         photo = self._photos.latest
-        return photo.image if photo is not None else None
+        return (
+            await self._photos.async_image(photo.photo_id)
+            if photo is not None
+            else None
+        )
 
     @callback
     def _async_photos_updated(self) -> None:

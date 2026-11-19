@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from time import monotonic
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.components.vacuum.const import SERVICE_RETURN_TO_BASE
@@ -32,7 +33,7 @@ from .robot_controls import RobotControls
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
-    from .client import RobotPhoto
+    from .photo_library import PhotoRecord
 
 # The robot reports this code while it waits at a Go to room destination,
 # and starts a ten-minute countdown to dock on its own.
@@ -51,10 +52,6 @@ MAX_PATROL_SECONDS = 15 * 60
 CLEANUP_RESERVE_SECONDS = 60
 SCHEDULE_GUARD_BEFORE = timedelta(minutes=30)
 DEFAULT_PATROL_COOLDOWN_SECONDS = 15 * 60
-# A photo captured more than this before the snap command, by the robot's
-# clock, is an older one. Live snaps matched Home Assistant's clock to within
-# a few seconds.
-CLOCK_TOLERANCE = timedelta(minutes=1)
 PHOTO_TAKEN_EVENT = f"{DOMAIN}_photo_taken"
 
 _patrols: dict[str, asyncio.Lock] = {}
@@ -151,6 +148,7 @@ async def async_photo_patrol(
             raise _error("photo_patrol_timeout") from err
         _last_patrol_started[entry.entry_id] = monotonic()
         results: list[dict[str, Any]] = []
+        album = uuid4().hex
         # The area the robot reported at each room it reached.
         arrivals: list[str] = []
         try:
@@ -162,13 +160,14 @@ async def async_photo_patrol(
                     ):
                         await _async_check_schedule(entry)
                         photo = await _async_photograph(
-                            hass, entry, entity_id, room, arrivals
+                            hass, entry, entity_id, room, arrivals, album
                         )
                         analysis = (
                             await async_answer_about_photo(
                                 hass,
                                 entry,
-                                photo,
+                                photo.photo_id,
+                                await _async_image(entry, photo.photo_id, room),
                                 question,
                                 ai_task_entity_id,
                                 context,
@@ -245,7 +244,8 @@ async def _async_photograph(
     entity_id: str,
     room: str,
     arrivals: list[str],
-) -> RobotPhoto:
+    album: str,
+) -> PhotoRecord:
     client = entry.runtime_data.client
     robot = RobotControls(hass, entry, entity_id)
     photos = entry.runtime_data.photos
@@ -295,26 +295,27 @@ async def _async_photograph(
         )
     if not _left_parked(current, arrivals[-1]):
         raise _error("photo_patrol_robot_busy")
-    previous = photos.latest
-    earliest = dt_util.utcnow() - CLOCK_TOLERANCE
+    taken = len(photos.album(album))
     if robot.reachable:
-        await robot.async_take_photo()
+        await robot.async_take_photo(album)
     deadline = monotonic() + PHOTO_TIMEOUT_SECONDS
     while monotonic() < deadline:
         await asyncio.sleep(POLL_SECONDS)
         await photos.async_refresh()
-        latest = photos.latest
-        if (
-            latest is not None
-            and latest.captured_at >= earliest
-            and (previous is None or latest.captured_at > previous.captured_at)
-        ):
+        if len(shots := photos.album(album)) > taken:
             # The robot can be redirected while its photo is being saved.
             # Check the room again before returning a label for that image.
             if not _left_parked(await _async_state(client), arrivals[-1]):
                 raise _error("photo_patrol_robot_busy")
-            return latest
+            return shots[-1]
     raise _error("photo_patrol_no_photo", room=room)
+
+
+async def _async_image(entry: MaticConfigEntry, photo_id: str, room: str) -> bytes:
+    image = await entry.runtime_data.photos.async_image(photo_id)
+    if image is None:
+        raise _error("photo_patrol_no_photo", room=room)
+    return image
 
 
 async def _async_wait_for(

@@ -771,7 +771,7 @@
     "v4_queue_catalog_failed": "The rooms for this clean couldn't be read. Check the map and reload to try again.",
     "v4_queue_catalog_held": "Queue changes are unavailable until the current map and room list are ready.",
     "v4_queue_room": "Room",
-      "v4_queue_room_scope": "All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.",
+    "v4_queue_room_scope": "All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.",
     "v4_queue_actions": "Change {room}",
     "v4_queue_skip": "Skip",
     "v4_queue_next": "Clean next",
@@ -2056,6 +2056,14 @@
           }
         }
       }
+    },
+    "photo_disk_full": {
+      "title": "Robot photos can't be saved: the disk is full",
+      "description": "Home Assistant could not save a new photo from the robot because its disk is full. The photo stays on the robot and is saved on the next read once there is room. Photos are kept in {folder}; photos older than 30 days are removed on their own."
+    },
+    "photo_storage_failed": {
+      "title": "Robot photos can't be saved",
+      "description": "Home Assistant could not write a new photo from the robot to {folder}. The photo stays on the robot and is saved on the next read. Check that Home Assistant can write to that folder. This Repair clears when a photo is saved."
     }
   },
   "services": {

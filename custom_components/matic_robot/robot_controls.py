@@ -25,6 +25,7 @@ from .client import (
     UserCommand,
 )
 from .const import CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, DOMAIN
+from .photo_library import MANUAL_ALBUM
 from .plan_model import plan_floor_token, resolve_room_reference
 from .robot_commands import RobotCommands, enum_option, validation_error
 
@@ -38,10 +39,15 @@ type _Navigation = Callable[[FloorPlan], Awaitable[None]]
 class RobotControls(RobotCommands):
     """User commands, navigation, queue changes and the photo snap."""
 
-    async def async_take_photo(self) -> None:
-        """Snap a photo unless the robot's current room is a no-photo room."""
+    async def async_take_photo(self, album: str = MANUAL_ALBUM) -> None:
+        """Snap a photo into ``album`` unless the robot's room is a no-photo room."""
         ensure_current_room_allows_photo(self._entry)
-        await self.async_send_user_command(UserCommand.EMOTE_SNAP)
+        withdraw = self._entry.runtime_data.photos.async_expect_photo(album)
+        try:
+            await self.async_send_user_command(UserCommand.EMOTE_SNAP)
+        except BaseException:
+            withdraw()
+            raise
 
     def _require_no_pending_stop_dispatch(self, serial_number: str) -> None:
         """Keep RESUME out of the gap between Stop acceptance and dispatch."""
