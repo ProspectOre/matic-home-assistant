@@ -135,8 +135,14 @@ async def test_a_requested_photo_goes_to_its_album(
     withdrawn()
     withdrawn()
 
-    # A photo from before the request belongs to whoever took it then.
-    _entries(library, _snap(1, age=timedelta(minutes=2)), _snap(2))
+    # A photo from before the request belongs to whoever took it then; the
+    # robot's clock may run up to a minute behind.
+    tolerance = photo_library.CLOCK_TOLERANCE
+    _entries(
+        library,
+        _snap(1, age=tolerance + timedelta(seconds=1)),
+        _snap(2, age=tolerance - timedelta(seconds=1)),
+    )
     await library.async_read()
 
     assert library.photo(_id(1)).album == MANUAL_ALBUM
