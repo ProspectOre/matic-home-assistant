@@ -506,6 +506,69 @@ async def test_executor_keeps_completion_unknown_during_native_reconciliation(
     assert cleared_run["completed_room_ids_complete"] is True
 
 
+@pytest.mark.parametrize("clear_path", ["native_completed", "load"])
+async def test_expired_native_marker_refreshes_managed_run_projection(
+    hass, clear_path
+) -> None:
+    """Expired markers restore a complete negative result through real paths."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    run_id = "run-expired-native"
+    dispatched_at = dt_util.utcnow() - timedelta(seconds=5)
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        run_id,
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[(room.room_id, room.name)],
+    )
+    await manager.async_mark_started("serial", "away", room, run_id=run_id)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "synthetic stop",
+        native_reconciliation={
+            "plan_id": "away",
+            "run_id": run_id,
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dispatched_at.isoformat(),
+        },
+    )
+    await manager.async_finish_run(
+        "serial", run_id, "failed", "room_failed", 0, completed_room_ids=[]
+    )
+    manager._robot("serial")["pending_native_reconciliation"]["expires_at"] = (
+        dt_util.utcnow() - timedelta(seconds=1)
+    ).isoformat()
+    before = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+    assert before["completed_room_ids_complete"] is False
+
+    if clear_path == "load":
+        recovering = CleaningPlanManager(hass)
+        recovering._store = SimpleNamespace(
+            async_load=AsyncMock(return_value=deepcopy(manager._data)),
+            async_save=AsyncMock(),
+        )
+        await recovering.async_load()
+        manager = recovering
+    else:
+        assert not await manager.async_mark_native_completed(
+            "serial",
+            "away",
+            room,
+            dispatched_at=dispatched_at,
+        )
+
+    after = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+    assert after["completed_room_ids_complete"] is True
+
+
 async def test_managed_run_completion_projection_marks_missing_and_capped_evidence(
     hass,
 ) -> None:
@@ -4349,11 +4412,12 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
         trigger="user",
         service="clean_room_sequence",
         provenance="user",
+        room_roster=[(first.room_id, first.name), (second.room_id, second.name)],
     )
-    await manager.async_mark_started("serial", "away", first)
-    await manager.async_mark_completed("serial", "away", first)
+    await manager.async_mark_started("serial", "away", first, run_id="run-1")
+    await manager.async_mark_completed("serial", "away", first, run_id="run-1")
     now = dt_util.utcnow()
-    await manager.async_mark_started("serial", "away", second)
+    await manager.async_mark_started("serial", "away", second, run_id="run-1")
     await manager.async_mark_failed(
         "serial",
         "away",
@@ -4372,6 +4436,10 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
     await manager.async_finish_run(
         "serial", "run-1", "failed", "room_failed", 1, cause="native_result"
     )
+    before_reconciliation = manager.snapshot("serial")["plan_history"]["away"][
+        "last_managed_run"
+    ]
+    assert before_reconciliation["completed_room_ids_complete"] is False
     manager._robot("serial")["last_run"]["recovery_checkpoint"] = {
         "completed_room_ids": []
     }
@@ -4390,6 +4458,14 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
     assert reconciled_room["coverage_setting"] == second.coverage_setting
     assert last_run["completed_room_count"] == 2
     assert last_run["outcome"] == "completed"
+    after_reconciliation = manager.snapshot("serial")["plan_history"]["away"][
+        "last_managed_run"
+    ]
+    assert after_reconciliation["completed_room_ids"] == [
+        "room-kitchen",
+        "room-dining",
+    ]
+    assert after_reconciliation["completed_room_ids_complete"] is True
     assert last_run["reason_code"] == "all_rooms_verified"
     await manager.async_finish_run(
         "serial", "run-1", "failed", "partial_native_result", 1, cause="native_result"
@@ -4678,6 +4754,7 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
         "rooms": {},
         "pending_native_reconciliation": {
             "plan_id": "away",
+            "run_id": "reconcile-run",
             "room_id": room_id,
             "room": "Kitchen",
             "dispatched_at": dispatched_at.isoformat(),
@@ -4689,7 +4766,24 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
                 "effective_coverage_setting": "quick",
             },
         },
+        "last_run": {
+            "run_id": "reconcile-run",
+            "plan_id": "away",
+            "started_at": dispatched_at.isoformat(),
+            "ended_at": now.isoformat(),
+            "outcome": "failed",
+            "room_count": 1,
+            "completed_room_count": 0,
+            "room_roster": [{"id": room_id, "name": "Kitchen"}],
+            "room_roster_complete": True,
+            "completed_room_ids": [],
+        },
     }
+    plans_module._sync_last_managed_run(robot, robot["last_run"], create=True)
+    assert (
+        robot["rotations"]["away"]["last_managed_run"]["completed_room_ids_complete"]
+        is False
+    )
     native_record = CleaningSessionRecord(
         b"synthetic-native-session",
         CleaningSession(
@@ -4705,6 +4799,10 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
 
     original_pending = deepcopy(robot["pending_native_reconciliation"])
     assert _reconcile_pending_native_history(robot, floor_plan, [native_record])
+    assert (
+        robot["rotations"]["away"]["last_managed_run"]["completed_room_ids_complete"]
+        is True
+    )
 
     completed = robot["rotations"]["away"]["rooms"][room_id]
     assert completed["cleaning_mode"] == "vacuum"
