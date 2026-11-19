@@ -69,7 +69,10 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
             entry = context._entry_for_entity(hass, entity_id)
             session = entry.runtime_data.session
             floor_plan = session.floor.value
-            if floor_plan is None:
+            if (
+                floor_plan is None
+                or not entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
+            ):
                 raise validation_error(
                     "The robot's map is unavailable", "viewpoint_map_unavailable"
                 )

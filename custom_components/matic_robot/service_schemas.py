@@ -58,12 +58,23 @@ PHOTO_TOUR_STOP_SCHEMA = probatio.All(
     _one_place,
 )
 
+# A tour has to finish within its 15 minutes, about a minute a photo.
+MAX_TOUR_PHOTOS = 12
+
+
+def _photo_budget(stops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if sum(stop["look_around"] for stop in stops) > MAX_TOUR_PHOTOS:
+        raise probatio.Invalid(f"a tour takes at most {MAX_TOUR_PHOTOS} photos")
+    return stops
+
+
 RUN_PHOTO_TOUR_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
         probatio.Required("stops"): probatio.All(
             cv.ensure_list,
             [PHOTO_TOUR_STOP_SCHEMA],
-            probatio.Length(min=1, max=12),
+            probatio.Length(min=1, max=MAX_TOUR_PHOTOS),
+            _photo_budget,
         ),
         probatio.Optional("full_resolution", default=False): cv.boolean,
         probatio.Optional("question"): probatio.All(

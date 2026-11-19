@@ -2,8 +2,8 @@
 
 [Actions](actions.md#photo-tours) · [Privacy](privacy.md) · [Automation blueprints](automation.md)
 
-`matic_robot.run_photo_tour` visits up to 12 stops in order, photographs
-each one and returns the photos. A stop is either:
+`matic_robot.run_photo_tour` visits its stops in order, photographs each
+one and returns the photos, up to 12 photos in all. A stop is either:
 
 - a room, `room: Kitchen`. The robot stops where it chooses in that room and
   faces whichever way it ends up.

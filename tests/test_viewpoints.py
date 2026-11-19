@@ -28,6 +28,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.service_schemas import (
     PHOTO_TOUR_STOP_SCHEMA,
+    RUN_PHOTO_TOUR_SERVICE_SCHEMA,
     SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
 )
 from custom_components.matic_robot.viewpoints import Viewpoint, Viewpoints
@@ -293,6 +294,14 @@ async def test_take_photo_tool_sends_a_saved_viewpoint_by_name(
 def test_a_stop_is_one_room_or_one_viewpoint(stop: dict) -> None:
     with pytest.raises(probatio.Invalid):
         PHOTO_TOUR_STOP_SCHEMA(stop)
+
+
+def test_a_tour_takes_at_most_twelve_photos() -> None:
+    stops = [{"viewpoint": "Desk", "look_around": 4}] * 3
+    data = {"entity_id": "vacuum.matic", "stops": stops}
+    assert len(RUN_PHOTO_TOUR_SERVICE_SCHEMA(data)["stops"]) == 3
+    with pytest.raises(probatio.Invalid):
+        RUN_PHOTO_TOUR_SERVICE_SCHEMA(data | {"stops": [*stops, {"room": "Den"}]})
 
 
 def test_a_viewpoint_is_saved_from_all_coordinates_or_none() -> None:

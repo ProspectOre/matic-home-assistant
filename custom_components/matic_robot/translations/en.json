@@ -2116,7 +2116,7 @@
       "fields": {
         "stops": {
           "name": "Stops",
-          "description": "Up to 12 stops, visited in this order. Each stop is a room or a saved viewpoint, by name or ID. At a viewpoint, a look-around count of 2 to 4 turns the robot in place and takes that many photos."
+          "description": "Visited in this order, up to 12 photos in all. Each stop is a room or a saved viewpoint, by name or ID. At a viewpoint, a look-around count of 2 to 4 turns the robot in place and takes that many photos."
         },
         "full_resolution": {
           "name": "Send the full photo",

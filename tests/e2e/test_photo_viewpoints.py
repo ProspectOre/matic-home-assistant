@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -16,7 +17,7 @@ from custom_components.matic_robot.client import encode_posture
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.photo_library import MANUAL_ALBUM
 from custom_components.matic_robot.robot_controls import RobotControls
-from custom_components.matic_robot.viewpoints import Viewpoint
+from custom_components.matic_robot.viewpoints import Viewpoint, Viewpoints
 
 from .hermes_sim import SimulatedRobot
 from .plan_run import poll
@@ -177,8 +178,22 @@ async def test_viewpoints_wait_for_the_map_and_the_viewpoints_floor(
     assert raised.value.translation_key == "viewpoint_other_floor"
     assert robot.received() == []
 
-    loaded_entry.runtime_data.session.floor.set(None)
-    assert (
-        await actions.refused("save_photo_viewpoint", name="Desk")
-        == "viewpoint_map_unavailable"
-    )
+    await poll(hass, loaded_entry, robot)
+    runtime = loaded_entry.runtime_data
+    floor_plan = runtime.session.floor.value
+    saved = {"name": "Desk", "x": 3.0, "y": 0.5, "heading": 0}
+    # A map the robot has replaced is not one to save a spot on.
+    with patch.object(runtime.slam_map, "floor_plan_is_current", return_value=False):
+        refusal = await actions.refused("save_photo_viewpoint", **saved)
+    assert refusal == "viewpoint_map_unavailable"
+    runtime.session.floor.set(None)
+    refusal = await actions.refused("save_photo_viewpoint", **saved)
+    assert refusal == "viewpoint_map_unavailable"
+    runtime.session.floor.set(floor_plan)
+    await actions.call("save_photo_viewpoint", **saved)
+
+    # Removing the robot erases its viewpoints.
+    assert await hass.config_entries.async_remove(loaded_entry.entry_id)
+    viewpoints = Viewpoints(hass, loaded_entry.entry_id)
+    await viewpoints.async_load()
+    assert viewpoints.all == ()

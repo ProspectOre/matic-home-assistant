@@ -62,9 +62,6 @@ PRUNE_INTERVAL = timedelta(days=1)
 CLOCK_TOLERANCE = timedelta(minutes=1)
 # A request nobody's photo answered expires; later photos are the app's.
 EXPECTATION_LIFETIME = timedelta(minutes=2)
-# How far ahead of Home Assistant a robot's clock may run before its capture
-# times are not trusted.
-CLOCK_LEAD = timedelta(hours=1)
 # The robot saves a photo about 6 s after taking it and stays put meanwhile.
 PLACE_WINDOW = timedelta(minutes=1)
 MANUAL_ALBUM = "manual"
@@ -527,20 +524,13 @@ def _issue_id(entry_id: str) -> str:
 
 
 def _decode(entry: HermesCollectionEntry) -> RobotPhoto | None:
-    """Decode one photo; its id becomes a file name, so it must be a UUID.
-
-    A capture time more than an hour ahead, from a robot clock that runs
-    fast, is taken as now so the photo still ages out 30 days after it was
-    saved. A smaller lead keeps the photos in the order they were taken.
-    """
+    """Decode one photo; its id becomes a file name, so it must be a UUID."""
     try:
         photo = decode_instamatic_snap(entry)
         photo_id = str(UUID(photo.photo_id))
     except DecodeError, ValueError:
         return None
-    now = dt_util.utcnow()
-    captured_at = now if photo.captured_at > now + CLOCK_LEAD else photo.captured_at
-    return replace(photo, photo_id=photo_id, captured_at=captured_at)
+    return replace(photo, photo_id=photo_id)
 
 
 def _encode_record(record: PhotoRecord) -> dict[str, Any]:
