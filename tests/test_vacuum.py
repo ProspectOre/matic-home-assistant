@@ -897,7 +897,7 @@ async def test_stop_cancels_undispatched_direct_motion(
     client = entry.runtime_data.session.client
     client.async_start_coverage.assert_not_awaited()
     client.async_send_user_command.assert_not_awaited()
-    client.async_sink_summon.assert_not_awaited()
+    client.async_go_to_posture.assert_not_awaited()
     client.async_go_to_room.assert_not_awaited()
 
 
@@ -1027,7 +1027,7 @@ async def test_sink_summon_keeps_the_plan_driving_the_task_it_joins(
     finally:
         plan_lock.release()
 
-    entry.runtime_data.session.client.async_sink_summon.assert_awaited_once()
+    entry.runtime_data.session.client.async_go_to_posture.assert_awaited_once()
     assert manager.control.managed_motion_is_current(serial_number, token)
     assert not manager.control.cancellation_event(serial_number).is_set()
 
@@ -1073,7 +1073,7 @@ async def test_sink_summon_refuses_when_the_task_ends_while_queued(hass) -> None
             await asyncio.gather(task, return_exceptions=True)
 
     assert raised.value.translation_key == "robot_task_changed"
-    session.client.async_sink_summon.assert_not_awaited()
+    session.client.async_go_to_posture.assert_not_awaited()
     assert manager.control.managed_motion_is_current(serial_number, token)
 
 
@@ -1092,7 +1092,7 @@ async def test_sink_summon_without_a_task_replaces_a_docked_plan(hass) -> None:
     finally:
         plan_lock.release()
 
-    entry.runtime_data.session.client.async_sink_summon.assert_awaited_once()
+    entry.runtime_data.session.client.async_go_to_posture.assert_awaited_once()
     assert not manager.control.managed_motion_is_current(serial_number, token)
     assert manager.control.cancellation_event(serial_number).is_set()
 
@@ -1120,7 +1120,7 @@ async def test_sink_summon_decides_ownership_after_the_lookup(hass) -> None:
     session.client.async_get_sink_posture.side_effect = task_ends
     await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
 
-    session.client.async_sink_summon.assert_awaited_once()
+    session.client.async_go_to_posture.assert_awaited_once()
     assert not manager.control.managed_motion_is_current(serial_number, token)
 
 
@@ -1145,7 +1145,7 @@ async def test_sink_summon_that_cannot_go_keeps_a_docked_plan(
     with pytest.raises(ServiceValidationError):
         await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
 
-    entry.runtime_data.session.client.async_sink_summon.assert_not_awaited()
+    entry.runtime_data.session.client.async_go_to_posture.assert_not_awaited()
     assert manager.control.managed_motion_is_current(serial_number, token)
     assert not manager.control.cancellation_event(serial_number).is_set()
 
@@ -1167,7 +1167,7 @@ async def test_sink_summon_without_a_task_cancels_a_recovering_plan(hass) -> Non
 
     await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
 
-    entry.runtime_data.session.client.async_sink_summon.assert_awaited_once()
+    entry.runtime_data.session.client.async_go_to_posture.assert_awaited_once()
     assert manager.control.cancellation_event(serial_number).is_set()
     assert manager.control.motion_generation(serial_number) != generation
 

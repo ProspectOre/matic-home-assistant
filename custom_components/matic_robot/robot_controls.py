@@ -104,8 +104,8 @@ class RobotControls(RobotCommands):
                 ) from err
             except (MaticError, ValueError) as err:
                 raise _navigation_failed("sink") from err
-            return lambda current: self._session.client.async_sink_summon(
-                current, posture
+            return lambda current: self._session.client.async_go_to_posture(
+                current, posture, await_refill=True
             )
 
         await self._async_navigate(

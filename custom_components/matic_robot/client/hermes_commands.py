@@ -28,11 +28,11 @@ from .commands import (
     encode_coverage_command,
     encode_coverage_goal_update,
     encode_custom_coverage_command,
+    encode_go_to_posture_command,
     encode_go_to_room_command,
     encode_mission_id,
     encode_mixed_coverage_commands,
     encode_redo_coverage_command,
-    encode_sink_summon_command,
     encode_user_command,
     queue_start_visit,
     requeue_coverage_goals,
@@ -251,12 +251,9 @@ class HermesCommands(HermesReads):
     async def async_get_sink_posture(self, floor_plan: FloorPlan) -> bytes:
         """Return this floor's saved sink posture, as the app stored it."""
         mission_key = encode_mission_id(floor_plan.mission_id)
+        entries = await self.async_get_collection_entries("sink_summon_locations")
         postures = [
-            entry.value
-            for entry in await self.async_get_collection_entries(
-                "sink_summon_locations"
-            )
-            if entry.key == mission_key and entry.value
+            entry.value for entry in entries if entry.key == mission_key and entry.value
         ]
         if not postures:
             raise SinkLocationUnavailableError(
@@ -264,14 +261,15 @@ class HermesCommands(HermesReads):
             )
         return postures[-1]
 
-    async def async_sink_summon(self, floor_plan: FloorPlan, posture: bytes) -> None:
-        """Send the robot to a sink posture on this floor to await a refill."""
-        await self._connection._async_send_user_payload(
-            encode_sink_summon_command(
-                mission_id=floor_plan.mission_id, posture=posture
-            ),
-            command_name="SINK_SUMMON",
+    async def async_go_to_posture(
+        self, floor_plan: FloorPlan, posture: bytes, *, await_refill: bool = False
+    ) -> None:
+        """Send the robot to a posture on this floor; see the command encoder."""
+        command = encode_go_to_posture_command(
+            mission_id=floor_plan.mission_id, posture=posture, await_refill=await_refill
         )
+        name = "SINK_SUMMON" if await_refill else "GO_TO_POSTURE"
+        await self._connection._async_send_user_payload(command, command_name=name)
 
     async def async_go_to_room(self, floor_plan: FloorPlan, room: Room) -> None:
         """Send the robot to a room on this floor without cleaning it."""
