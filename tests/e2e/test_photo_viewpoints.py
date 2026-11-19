@@ -10,8 +10,8 @@ from uuid import uuid4
 import pytest
 from homeassistant.auth.models import User
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
+from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 
 from custom_components.matic_robot.client import encode_posture
 from custom_components.matic_robot.const import DOMAIN
@@ -209,3 +209,31 @@ async def test_viewpoints_wait_for_the_map_and_the_viewpoints_floor(
     viewpoints = Viewpoints(hass, loaded_entry.entry_id)
     await viewpoints.async_load()
     assert viewpoints.all == ()
+
+
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        ("save_photo_viewpoint", {"name": "Desk", "x": 3.0, "y": 0.5, "heading": 0}),
+        ("delete_photo_viewpoint", {"viewpoint": "Desk"}),
+    ],
+)
+async def test_only_an_administrator_saves_or_deletes_a_viewpoint(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    service: str,
+    data: dict[str, Any],
+) -> None:
+    # A user who may control every entity, but is no administrator.
+    user = MockUser().add_to_hass(hass)
+    user.mock_policy({"entities": True})
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            service,
+            {"entity_id": VACUUM, **data},
+            blocking=True,
+            context=Context(user_id=user.id),
+            return_response=service == "save_photo_viewpoint",
+        )
+    assert loaded_entry.runtime_data.viewpoints.all == ()

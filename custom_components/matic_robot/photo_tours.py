@@ -409,6 +409,8 @@ def _shots(entry: MaticConfigEntry, stops: list[TourStop]) -> list[_Shot]:
         viewpoint = entry.runtime_data.viewpoints.find(stop.viewpoint)
         if floor_plan is None or floor_plan.mission_id != viewpoint.mission_id:
             raise _error("viewpoint_other_floor", viewpoint=viewpoint.name)
+        if all(room.id != viewpoint.room_id for room in floor_plan.rooms):
+            raise _error("photo_tour_viewpoint_room_gone", viewpoint=viewpoint.name)
         # A no-go zone drawn in the app since the viewpoint was saved counts.
         zones = readable_zones(entry)
         if zones is None:
