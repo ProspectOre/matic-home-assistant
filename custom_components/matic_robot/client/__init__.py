@@ -18,6 +18,7 @@ from .coverage_receipts import (
     CoverageVerifier,
     coverage_floor_hash,
     coverage_region_hash,
+    is_sha256_hex,
     native_session_hash,
     receipt_from_storage,
 )
@@ -161,6 +162,7 @@ __all__ = [
     "decode_slam_semantic_tile",
     "decode_slam_structure_tile",
     "decode_slam_tile",
+    "is_sha256_hex",
     "mission_token",
     "native_session_hash",
     "new_hermes_user_id",

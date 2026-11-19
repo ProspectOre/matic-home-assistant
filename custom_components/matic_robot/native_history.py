@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import struct
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
@@ -19,6 +18,7 @@ from .client import (
     CoverageReceipt,
     FloorPlan,
     Room,
+    is_sha256_hex,
     native_session_hash,
 )
 from .const import MAX_ROOM_SEQUENCE_SIZE
@@ -28,8 +28,15 @@ from .grouped_native_reconciliation import (
     validated_grouped_rooms,
 )
 from .native_completion import NativeRoomCompletion, native_room_key
-from .plan_model import CleaningRoom, plan_floor_token, room_cadence_identity
+from .plan_model import (
+    CLEANING_MODES,
+    COVERAGE_SETTINGS,
+    CleaningRoom,
+    plan_floor_token,
+    room_cadence_identity,
+)
 from .plan_timing import (
+    ROTATION_FUTURE_TOLERANCE_SECONDS,
     _admit_room_settings,
     _duration_profile_key,
     _duration_profiles,
@@ -45,7 +52,6 @@ from .run_history import repair_run_history
 from .verified_completion import VerifiedCompletion, record_verified_completion
 
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = max(64, MAX_ROOM_SEQUENCE_SIZE)
-ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 
 
 def _daily_session_hash(key: bytes) -> str:
@@ -182,8 +188,7 @@ def _validated_native_reconciliation(
         return None
     cleaning_mode = value.get("cleaning_mode")
     if "cleaning_mode" in value and (
-        not isinstance(cleaning_mode, str)
-        or cleaning_mode not in ("vacuum", "mop", "vacuum_and_mop")
+        not isinstance(cleaning_mode, str) or cleaning_mode not in CLEANING_MODES
     ):
         return None
     coverage_setting = value.get("coverage_setting")
@@ -196,14 +201,13 @@ def _validated_native_reconciliation(
         "expires_at": expires_at,
         **(
             {"cleaning_mode": cleaning_mode}
-            if isinstance(cleaning_mode, str)
-            and cleaning_mode in ("vacuum", "mop", "vacuum_and_mop")
+            if isinstance(cleaning_mode, str) and cleaning_mode in CLEANING_MODES
             else {}
         ),
         **(
             {"coverage_setting": coverage_setting}
             if isinstance(coverage_setting, str)
-            and coverage_setting in ("quick", "standard", "heavy_duty")
+            and coverage_setting in COVERAGE_SETTINGS
             else {}
         ),
         **(
@@ -222,13 +226,9 @@ def _validated_native_reconciliation(
         # A grouped marker carries an observed native session and floor. Keep
         # its first-room fields so older stores can still load the envelope.
         for key in ("session_hash", "floor_token"):
-            identity = value.get(key)
-            if (
-                not isinstance(identity, str)
-                or re.fullmatch(r"[0-9a-f]{64}", identity) is None
-            ):
+            if not is_sha256_hex(value.get(key)):
                 return None
-            result[key] = identity
+            result[key] = value[key]
         if "run_id" not in result or "cleaning_mode" not in result:
             return None
         if "rooms" in value:
@@ -260,9 +260,9 @@ def _native_completion_settings(
         mode, coverage = cadence_mode, cadence_coverage
     if (
         isinstance(mode, str)
-        and mode in ("vacuum", "mop", "vacuum_and_mop")
+        and mode in CLEANING_MODES
         and isinstance(coverage, str)
-        and coverage in ("quick", "standard", "heavy_duty")
+        and coverage in COVERAGE_SETTINGS
     ):
         room_id = room.room_id if isinstance(room, CleaningRoom) else room.id
         return CleaningRoom(room_id, room.name, mode, coverage)

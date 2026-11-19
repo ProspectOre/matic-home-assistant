@@ -28,7 +28,7 @@ from .exceptions import (
 )
 from .floor_plan import decode_floor_plans, decode_pose
 from .hermes_collections import HermesCollections
-from .hermes_connection import HermesConnection
+from .hermes_connection import RPC_TIMEOUT, HermesConnection
 from .history import (
     CleaningSessionImage,
     decode_cleaning_session_image,
@@ -70,7 +70,6 @@ from .wire import (
 from .zones import MAX_ZONES, decode_zones
 
 _LOGGER = logging.getLogger(__name__)
-_RPC_TIMEOUT = 10.0
 _LATEST_POSE_VALUE_MAX_BYTES = 16 * 1024
 _DISPLAYED_MISSION_LIMIT = 256
 
@@ -109,7 +108,7 @@ class HermesReads(HermesCollections):
         channel = await self._connection.async_channel()
         async with (
             self._connection._map_stream_errors("info"),
-            asyncio.timeout(_RPC_TIMEOUT),
+            asyncio.timeout(RPC_TIMEOUT),
         ):
             response = await HermesDiscoveryRPCStub(channel).GetBotInfo(
                 DiscoveryUnit(), metadata=self._connection._metadata

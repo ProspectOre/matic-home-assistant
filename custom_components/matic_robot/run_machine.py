@@ -16,6 +16,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from .client import is_sha256_hex
 from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs
 
 # Reason codes of a run whose every room and area has a result.
@@ -269,15 +270,6 @@ def stored_instant(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def is_digest(value: object) -> bool:
-    """Return whether ``value`` is a stored SHA-256 fingerprint."""
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(char in "0123456789abcdef" for char in value)
-    )
-
-
 def _restarted(record: Mapping[str, Any]) -> Run:
     """Resume a stored run, or end it, checking in the order recovery always has.
 
@@ -294,7 +286,7 @@ def _restarted(record: Mapping[str, Any]) -> Run:
     mixed_dispatch = (
         phase == RunPhase.DISPATCHING
         and checkpoint.get("mixed_settings") is True
-        and is_digest(checkpoint.get("mixed_initial_session_hash"))
+        and is_sha256_hex(checkpoint.get("mixed_initial_session_hash"))
     )
     if checkpoint.get("version") != 1 or (
         phase not in {RunPhase.ACCEPTED, RunPhase.VERIFYING, RunPhase.HANDOFF}
@@ -355,7 +347,7 @@ def _restarted(record: Mapping[str, Any]) -> Run:
         # An area is its own mission: it is never verified from history and
         # never part of a mixed room dispatch.
         return unverified
-    if not is_digest(
+    if not is_sha256_hex(
         checkpoint.get(
             "mixed_initial_session_hash" if mixed_dispatch else "native_identity_hash"
         )

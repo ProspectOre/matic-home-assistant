@@ -174,12 +174,7 @@ def _schedule_native_reconciliation(
         )
     else:
         watcher = _async_expire_native_reconciliation(
-            hass,
-            manager,
-            serial_number,
-            entity_id,
-            room,
-            reconciliation,
+            manager, serial_number, room, reconciliation
         )
     task = hass.async_create_background_task(
         watcher, f"{DOMAIN} native stop reconciliation"
@@ -288,10 +283,8 @@ async def _async_reconcile_native_stop(
 
 
 async def _async_expire_native_reconciliation(
-    hass: HomeAssistant,
     manager: CleaningPlanManager,
     serial_number: str,
-    entity_id: str,
     room: CleaningRoom,
     reconciliation: _NativeReconciliation,
 ) -> None:

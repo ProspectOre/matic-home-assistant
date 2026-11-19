@@ -17,8 +17,8 @@ from .area_binding import (
     area_binding_needs_geometry_index,
     area_binding_status,
 )
+from .area_binding_geometry import _room_geometry_index
 from .area_geometry import RoomGeometryIndex
-from .client import FloorPlan
 from .llm_common import (
     _READ_ONLY,
     _ROBOT_FIELD,
@@ -383,18 +383,4 @@ def _plan_readiness_result(
                 "message": message,
             },
         )
-    )
-
-
-def _room_geometry_index(floor_plan: FloorPlan) -> RoomGeometryIndex:
-    """Build one bounded index for a single plan-readiness scan."""
-    return RoomGeometryIndex(
-        [
-            {
-                "room_id": room.id,
-                "name": room.name,
-                "boundary": [list(point) for point in room.boundary],
-            }
-            for room in floor_plan.rooms
-        ]
     )

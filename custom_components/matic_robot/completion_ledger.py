@@ -8,10 +8,9 @@ from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
 from .cadence import advance_cadence, cadence_snapshot
+from .client import is_sha256_hex
+from .plan_model import CLEANING_MODES, COVERAGE_SETTINGS
 
-_MODES = {"vacuum", "mop", "vacuum_and_mop"}
-_COVERAGES = {"quick", "standard", "heavy_duty"}
-_ID = re.compile(r"[0-9a-f]{64}\Z")
 _RESET_ID = re.compile(r"reset:[0-9]+\Z")
 # The event ledger is deliberately small: every accepted change replays the
 # complete retained history. Refuse growth past this bound instead of folding
@@ -74,13 +73,13 @@ def _snapshot(value: object) -> dict[str, Any] | None:
         result.setdefault(key, None)
     periodic = result.get("periodic_coverage_setting")
     if periodic is not None and (
-        not isinstance(periodic, str) or periodic not in _COVERAGES
+        not isinstance(periodic, str) or periodic not in COVERAGE_SETTINGS
     ):
         return None
     result.setdefault("periodic_coverage_setting", None)
     for key in ("effective_cleaning_mode", "cleaning_mode", "normal_cleaning_mode"):
         if key in result and (
-            not isinstance(result[key], str) or result[key] not in _MODES
+            not isinstance(result[key], str) or result[key] not in CLEANING_MODES
         ):
             return None
     for key in (
@@ -89,7 +88,7 @@ def _snapshot(value: object) -> dict[str, Any] | None:
         "normal_coverage_setting",
     ):
         if key in result and (
-            not isinstance(result[key], str) or result[key] not in _COVERAGES
+            not isinstance(result[key], str) or result[key] not in COVERAGE_SETTINGS
         ):
             return None
     for key in ("mop_due", "coverage_due", "do_mop_next", "do_coverage_next"):
@@ -168,7 +167,7 @@ def _ledger(schedule: dict[str, Any]) -> dict[str, Any] | None:
             continue
         if "kind" in event or not isinstance(event.get("id"), str):
             return None
-        if _ID.fullmatch(event["id"]) is None or event["id"] in seen_ids:
+        if not is_sha256_hex(event["id"]) or event["id"] in seen_ids:
             return None
         seen_ids.add(event["id"])
         snap = _snapshot(event.get("snapshot"))
@@ -178,13 +177,16 @@ def _ledger(schedule: dict[str, Any]) -> dict[str, Any] | None:
             or snap is None
             or (
                 event.get("mode") is not None
-                and (not isinstance(event["mode"], str) or event["mode"] not in _MODES)
+                and (
+                    not isinstance(event["mode"], str)
+                    or event["mode"] not in CLEANING_MODES
+                )
             )
             or (
                 event.get("coverage") is not None
                 and (
                     not isinstance(event["coverage"], str)
-                    or event["coverage"] not in _COVERAGES
+                    or event["coverage"] not in COVERAGE_SETTINGS
                 )
             )
             or (event["source"] == "managed" and event.get("mode") is None)
@@ -193,9 +195,9 @@ def _ledger(schedule: dict[str, Any]) -> dict[str, Any] | None:
                 and event.get("mode") is not None
                 and (
                     snap.get("normal_cleaning_mode", snap.get("cleaning_mode"))
-                    not in _MODES
+                    not in CLEANING_MODES
                     or snap.get("normal_coverage_setting", snap.get("coverage_setting"))
-                    not in _COVERAGES
+                    not in COVERAGE_SETTINGS
                 )
             )
         ):
@@ -286,16 +288,18 @@ def record_completion(
     timestamp = _timestamp(at)
     frozen = _snapshot(snapshot)
     if (
-        not isinstance(event_id, str)
-        or _ID.fullmatch(event_id) is None
+        not is_sha256_hex(event_id)
         or timestamp is None
         or not isinstance(source, str)
         or source not in {"managed", "native"}
         or frozen is None
-        or (mode is not None and (not isinstance(mode, str) or mode not in _MODES))
+        or (
+            mode is not None
+            and (not isinstance(mode, str) or mode not in CLEANING_MODES)
+        )
         or (
             coverage is not None
-            and (not isinstance(coverage, str) or coverage not in _COVERAGES)
+            and (not isinstance(coverage, str) or coverage not in COVERAGE_SETTINGS)
         )
     ):
         return False
@@ -306,9 +310,9 @@ def record_completion(
         and mode is not None
         and (
             frozen.get("normal_cleaning_mode", frozen.get("cleaning_mode"))
-            not in _MODES
+            not in CLEANING_MODES
             or frozen.get("normal_coverage_setting", frozen.get("coverage_setting"))
-            not in _COVERAGES
+            not in COVERAGE_SETTINGS
         )
     ):
         return False

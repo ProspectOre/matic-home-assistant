@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
-from typing import Any
+from collections.abc import Callable, Coroutine, Sequence
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.const import (
@@ -15,18 +16,16 @@ from homeassistant.core import (
 )
 
 from . import service_context as context
-from .client import FloorPlan, UserCommand
+from .client import FloorPlan
 from .const import (
     DOMAIN,
 )
 from .managed_dispatch import _async_managed_user_command
 from .managed_executor import _async_execute_rooms
 from .managed_run import (
-    _validation_error,
+    validation_error,
 )
-from .plan_model import (
-    plan_floor_token,
-)
+from .plan_model import CleaningRoom, plan_floor_token
 from .robot_port import RobotPort
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_coherence import room_completion_names_are_current
@@ -55,6 +54,22 @@ from .service_schemas import (
     SAVED_PLAN_SERVICE_SCHEMA,
 )
 
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
+
+
+def _floor_is_current(
+    entry: MaticConfigEntry, floor_token: str, rooms: Sequence[CleaningRoom]
+) -> bool:
+    """Keep every native room dispatch bound to the starting map."""
+    floor_plan: FloorPlan | None = entry.runtime_data.session.floor.value
+    return (
+        floor_plan is not None
+        and plan_floor_token(floor_plan) == floor_token
+        and room_completion_names_are_current(floor_plan, rooms)
+        and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
+    )
+
 
 def register_execution_services(runtime: ServiceRuntime) -> None:
     """Register this action domain against the shared integration runtime."""
@@ -75,16 +90,6 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         execution_floor_plan = _current_floor_plan(entry)
         execution_floor_token = plan_floor_token(execution_floor_plan)
 
-        def floor_is_current() -> bool:
-            """Keep every native room dispatch bound to the starting map."""
-            floor_plan: FloorPlan | None = entry.runtime_data.session.floor.value
-            return (
-                floor_plan is not None
-                and plan_floor_token(floor_plan) == execution_floor_token
-                and room_completion_names_are_current(floor_plan, rooms)
-                and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
-            )
-
         initial_preview_token: str | None = None
         # Occupancy is read once at admission. A sensor that changes while the
         # run waits for the robot does not invalidate the run.
@@ -102,7 +107,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 held_rooms=held_rooms,
             )
             if preview_token is not None and preview_token != initial_preview_token:
-                raise _validation_error(
+                raise validation_error(
                     "The saved-plan preview is stale; refresh it before starting",
                     "plan_preview_changed",
                 )
@@ -111,7 +116,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 and not preview.get("rooms")
                 and not _preview_has_area(preview)
             ):
-                raise _validation_error(
+                raise validation_error(
                     "Every selected room has reached its daily cleaning limit",
                     "daily_room_limit_reached",
                 )
@@ -119,7 +124,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 manager, serial_number, execution_floor_plan, preview
             )
         except KeyError as err:
-            raise _validation_error(
+            raise validation_error(
                 f"Unknown Matic cleaning plan: {err.args[0]}",
                 "unknown_plan",
                 {"plan": str(err.args[0])},
@@ -142,11 +147,11 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                     held_rooms=held_rooms,
                 )
             except (KeyError, TypeError, ValueError) as err:
-                raise _validation_error(
+                raise validation_error(
                     "The saved plan can no longer run", "invalid_plan"
                 ) from err
             if current_token != initial_preview_token:
-                raise _validation_error(
+                raise validation_error(
                     "The saved-plan resolution changed before starting",
                     "plan_preview_changed",
                 )
@@ -161,17 +166,15 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             hass, DOMAIN, call.service, data, context=call.context
         )
 
-        async def async_managed_command(token: int, command: UserCommand) -> None:
-            await _async_managed_user_command(
-                hass,
-                entry,
-                manager,
-                serial_number,
-                entity_id,
-                call.context,
-                token,
-                command,
-            )
+        async_managed_command = partial(
+            _async_managed_user_command,
+            hass,
+            entry,
+            manager,
+            serial_number,
+            entity_id,
+            call.context,
+        )
 
         async def run(on_started: Callable[[str], None]) -> str:
             return await _async_execute_rooms(
@@ -185,7 +188,9 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 cadence_by_room=cadence_by_room,
                 managed_user_command=async_managed_command,
                 mapped_room_names=tuple(room_map.values()),
-                floor_is_current=floor_is_current,
+                floor_is_current=partial(
+                    _floor_is_current, entry, execution_floor_token, rooms
+                ),
                 floor_token=execution_floor_token,
                 validate_prepared_run=validate_prepared_run,
                 # The run order of rooms and custom areas, when there is an area.
@@ -237,26 +242,17 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             raise _plan_request_error(err) from err
         preview_token = call.data.get("preview_token")
         if resolved.get("blocker") == "daily_limit_reached":
-            raise _validation_error(
+            raise validation_error(
                 "Every selected room has reached its daily cleaning limit",
                 "daily_room_limit_reached",
             )
         if preview_token is not None and preview_token != resolved["preview_token"]:
-            raise _validation_error(
+            raise validation_error(
                 "The room-sequence preview is stale; refresh it before starting",
                 "room_sequence_preview_changed",
             )
         rooms = resolved["effective_rooms"]
         cadence_by_room = resolved["cadence_by_room"]
-
-        def floor_is_current() -> bool:
-            floor_plan: FloorPlan | None = entry.runtime_data.session.floor.value
-            return (
-                floor_plan is not None
-                and plan_floor_token(floor_plan) == execution_floor_token
-                and room_completion_names_are_current(floor_plan, rooms)
-                and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
-            )
 
         manager.control.require_command_admission(serial_number)
         internal_plan_id = manager.catalog.reserve_manual_room_sequence_plan_id(
@@ -275,17 +271,15 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             context=call.context,
         )
 
-        async def async_managed_command(token: int, command: UserCommand) -> None:
-            await _async_managed_user_command(
-                hass,
-                entry,
-                manager,
-                serial_number,
-                entity_id,
-                call.context,
-                token,
-                command,
-            )
+        async_managed_command = partial(
+            _async_managed_user_command,
+            hass,
+            entry,
+            manager,
+            serial_number,
+            entity_id,
+            call.context,
+        )
 
         initial_sequence_token = resolved["preview_token"]
 
@@ -309,7 +303,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             except ValueError as err:
                 raise _plan_request_error(err) from err
             if current["preview_token"] != initial_sequence_token:
-                raise _validation_error(
+                raise validation_error(
                     "The room-sequence resolution changed before starting",
                     "room_sequence_preview_changed",
                 )
@@ -327,7 +321,9 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                     cadence_by_room=cadence_by_room,
                     managed_user_command=async_managed_command,
                     mapped_room_names=tuple(room_map.values()),
-                    floor_is_current=floor_is_current,
+                    floor_is_current=partial(
+                        _floor_is_current, entry, execution_floor_token, rooms
+                    ),
                     floor_token=execution_floor_token,
                     validate_prepared_run=validate_prepared_run,
                     on_started=on_started,
@@ -435,7 +431,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 ),
             )
         except KeyError as err:
-            raise _validation_error(
+            raise validation_error(
                 f"Unknown Matic cleaning plan: {err.args[0]}",
                 "unknown_plan",
                 {"plan": str(err.args[0])},
@@ -474,7 +470,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                 or manager.control.cancellation_reason(serial_number)
                 == "motion_replaced"
             ):
-                raise _validation_error(
+                raise validation_error(
                     "The managed cleaning run has changed; Stop was not sent",
                     "managed_run_changed",
                 )
@@ -490,7 +486,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                     or active_plan.get("smart_stop_phase")
                     not in {"finishing_room", "finishing_area"}
                 ):
-                    raise _validation_error(
+                    raise validation_error(
                         "The Smart Stop request is no longer active; "
                         "no new stop was sent",
                         "smart_stop_not_pending",

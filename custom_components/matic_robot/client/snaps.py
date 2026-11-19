@@ -10,7 +10,13 @@ from google.protobuf.message import DecodeError
 from PIL import Image, UnidentifiedImageError
 
 from .models import HermesCollectionEntry
-from .wire import WireField, decode_fields, uuid_string
+from .wire import (
+    WireField,
+    decode_fields,
+    field_bytes,
+    field_varints,
+    uuid_string,
+)
 
 MAX_PHOTO_BYTES = 4 * 1024 * 1024
 MAX_PHOTO_PIXELS = 16_000_000
@@ -53,7 +59,7 @@ def decode_instamatic_snap(entry: HermesCollectionEntry) -> RobotPhoto:
     fields = decode_fields(entry.value, max_fields=MAX_PHOTO_FIELDS)
     captured = _single_bytes(fields, 1)
     images = _single_bytes(fields, 2)
-    previews = _bytes_values(fields, 3)
+    previews = field_bytes(fields, 3)
     if captured is None or images is None or len(previews) > 1:
         raise DecodeError("photo entry is missing its time or image")
 
@@ -71,8 +77,8 @@ def _capture_time(payload: bytes) -> datetime:
     wrapped = _single_bytes(fields, 1)
     if wrapped is not None:
         fields = decode_fields(wrapped, max_fields=MAX_PHOTO_FIELDS)
-    seconds = _varint_values(fields, 1)
-    nanos = _varint_values(fields, 2)
+    seconds = field_varints(fields, 1)
+    nanos = field_varints(fields, 2)
     if (
         len(seconds) != 1
         or len(nanos) > 1
@@ -111,25 +117,5 @@ def _webp_size(image: bytes) -> tuple[int, int]:
 
 
 def _single_bytes(fields: tuple[WireField, ...], number: int) -> bytes | None:
-    values = _bytes_values(fields, number)
+    values = field_bytes(fields, number)
     return values[0] if len(values) == 1 else None
-
-
-def _bytes_values(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
-    return tuple(
-        field.value
-        for field in fields
-        if field.number == number
-        and field.wire_type == 2
-        and isinstance(field.value, bytes)
-    )
-
-
-def _varint_values(fields: tuple[WireField, ...], number: int) -> tuple[int, ...]:
-    return tuple(
-        field.value
-        for field in fields
-        if field.number == number
-        and field.wire_type == 0
-        and isinstance(field.value, int)
-    )

@@ -27,7 +27,7 @@ from .managed_run import (
     RoomInterruptedError,
     RoomRunOutcome,
     RoomTakenOverError,
-    _validation_error,
+    validation_error,
 )
 from .native_completion import (
     has_cancelled_single_room_record,
@@ -306,7 +306,7 @@ class _LegOutcomeObserver:
             return
         if activity is RobotActivity.ERROR:
             self._terminal_pending = True
-            self._fault = _validation_error(
+            self._fault = validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
             # A verified robot fault supersedes queued ordinary outcomes and
@@ -620,7 +620,7 @@ async def _async_wait_for_active_session_resolution(
             raise RoomTakenOverError("The returning native task was replaced")
         if state is not None:
             if state.activity is RobotActivity.ERROR:
-                raise _validation_error(
+                raise validation_error(
                     "The selected Matic robot reported an error", "robot_error"
                 )
             if (
@@ -687,7 +687,7 @@ async def _async_wait_for_settled_leg_handoff(
             )
         state = robot.observed()
         if state is not None and state.activity is RobotActivity.ERROR:
-            raise _validation_error(
+            raise validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
         identity = await _async_read_session_identity(robot.session_identity)
@@ -1049,7 +1049,7 @@ async def _async_wait_for_robot_activity(
 
     if (state := robot.observed()) is not None:
         if state.activity is RobotActivity.ERROR:
-            raise _validation_error(
+            raise validation_error(
                 "The selected Matic robot reported an error",
                 "robot_error",
             )
@@ -1065,7 +1065,7 @@ async def _async_wait_for_robot_activity(
             return
         if new_state.activity is RobotActivity.ERROR:
             future.set_exception(
-                _validation_error(
+                validation_error(
                     "The selected Matic robot reported an error",
                     "robot_error",
                 )

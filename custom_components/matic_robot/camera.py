@@ -75,24 +75,19 @@ async def async_setup_entry(
     async_add_entities([MaticMapCamera(entry), MaticPhotorealisticMapCamera(entry)])
 
 
-class MaticMapCamera(MaticEntity, Camera):
-    """Render the stable labeled room map."""
-
-    _attr_translation_key = "map"
-    _unrecorded_attributes = frozenset({"matic_entry_id"})
+class _MaticMapCamera(MaticEntity, Camera):
+    """Publish a map view when its floor coherence or session trust changes."""
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         Camera.__init__(self)
         self.content_type = "image/png"
         MaticEntity.__init__(self, entry)
-        self._attr_unique_id = f"{self.session.info.serial_number}_map"
         self._store = entry.runtime_data.slam_map
         floor_plan_coherent = self._store.floor_plan_is_current(
             self.session.floor.value
         )
         self._published_floor_coherent = floor_plan_coherent
         self._published_session_verified = self._store.live_session_verified
-        self._cached_image_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
 
     async def async_added_to_hass(self) -> None:
@@ -129,7 +124,23 @@ class MaticMapCamera(MaticEntity, Camera):
             return
         self._published_floor_coherent = floor_plan_coherent
         self._published_session_verified = session_verified
+        self._discard_render()
         self.async_write_ha_state()
+
+    def _discard_render(self) -> None:
+        """Drop a cached render whose key does not cover the change."""
+
+
+class MaticMapCamera(_MaticMapCamera):
+    """Render the stable labeled room map."""
+
+    _attr_translation_key = "map"
+    _unrecorded_attributes = frozenset({"matic_entry_id"})
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{self.session.info.serial_number}_map"
+        self._cached_image_key: tuple[object, ...] | None = None
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
@@ -225,7 +236,7 @@ class MaticMapCamera(MaticEntity, Camera):
         }
 
 
-class MaticPhotorealisticMapCamera(MaticEntity, Camera):
+class MaticPhotorealisticMapCamera(_MaticMapCamera):
     """Accumulate and render Matic's private local color SLAM tiles."""
 
     _attr_translation_key = "photorealistic_map"
@@ -236,57 +247,14 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
     _attr_entity_registry_enabled_default = False
 
     def __init__(self, entry: MaticConfigEntry) -> None:
-        Camera.__init__(self)
-        self.content_type = "image/png"
-        MaticEntity.__init__(self, entry)
+        super().__init__(entry)
         self._attr_unique_id = f"{self.session.info.serial_number}_photorealistic_map"
-        self._store = entry.runtime_data.slam_map
-        floor_plan_coherent = self._store.floor_plan_is_current(
-            self.session.floor.value
-        )
-        self._published_floor_coherent = floor_plan_coherent
-        self._published_session_verified = self._store.live_session_verified
         self._cached_key: tuple[object, ...] | None = None
-        self._cached_image: bytes | None = None
         self._render_lock = asyncio.Lock()
 
-    async def async_added_to_hass(self) -> None:
-        """Refresh the entity when map and floor identities become coherent."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._store.async_add_listener(self._async_handle_store_update)
-        )
-
-    def _stores(self) -> Iterable[Store[Any]]:
-        return (self.session.state, self.session.floor)
-
-    @callback
-    def _handle_store_update(self) -> None:
-        """Publish new state and remember its coherence classification."""
-        floor_plan_coherent = self._store.floor_plan_is_current(
-            self.session.floor.value
-        )
-        self._published_floor_coherent = floor_plan_coherent
-        self._published_session_verified = self._store.live_session_verified
-        super()._handle_store_update()
-
-    @callback
-    def _async_handle_store_update(self) -> None:
-        """Publish only store changes that cross the floor-coherence boundary."""
-        floor_plan_coherent = self._store.floor_plan_is_current(
-            self.session.floor.value
-        )
-        session_verified = self._store.live_session_verified
-        if (
-            floor_plan_coherent == self._published_floor_coherent
-            and session_verified == self._published_session_verified
-        ):
-            return
-        self._published_floor_coherent = floor_plan_coherent
-        self._published_session_verified = session_verified
+    def _discard_render(self) -> None:
         self._cached_key = None
         self._cached_image = None
-        self.async_write_ha_state()
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None

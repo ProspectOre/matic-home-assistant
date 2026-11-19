@@ -94,3 +94,25 @@ class MaticEntity(Entity):
         if key == "vacuum":
             return None
         return slugify(key)
+
+
+class MaticPlanDataEntity(MaticEntity):
+    """A Matic entity that also shows the robot's saved plans, areas or history.
+
+    Name it before any other Matic base, so it subscribes after them.
+    """
+
+    async def async_added_to_hass(self) -> None:
+        """Follow the robot's saved plan data as well."""
+        await super().async_added_to_hass()
+        plans = self._config_entry.runtime_data.cleaning_plans
+        self.async_on_remove(
+            plans.repository.async_add_listener(
+                self._matic_serial, self._handle_plan_data_update
+            )
+        )
+
+    @callback
+    def _handle_plan_data_update(self) -> None:
+        """Write the entity's state after the saved plan data changed."""
+        self.async_write_ha_state()

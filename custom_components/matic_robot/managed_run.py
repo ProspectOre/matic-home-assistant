@@ -189,11 +189,12 @@ class RoomTakenOverError(HomeAssistantError):
         self.suspend_reason = suspend_reason
 
 
-def _validation_error(
+def validation_error(
     message: str,
     translation_key: str,
     placeholders: dict[str, str] | None = None,
 ) -> ServiceValidationError:
+    """Create a user-facing and fully translatable action error."""
     return ServiceValidationError(
         message,
         translation_domain=DOMAIN,

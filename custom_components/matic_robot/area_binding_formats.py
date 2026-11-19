@@ -25,13 +25,12 @@ class AreaBindingStatus(StrEnum):
     GEOMETRY_CHANGED = "geometry_changed"
 
 
-def valid_digest(value: Any, *, lowercase: bool = False) -> bool:
-    """Return whether a stored value is a SHA-256 hex digest."""
-    digits = "0123456789abcdef" if lowercase else "0123456789abcdefABCDEF"
+def valid_digest(value: Any) -> bool:
+    """Return whether an older format's value is a SHA-256 hex digest in either case."""
     return (
         isinstance(value, str)
         and len(value) == 64
-        and all(character in digits for character in value)
+        and all(character in "0123456789abcdefABCDEF" for character in value)
     )
 
 

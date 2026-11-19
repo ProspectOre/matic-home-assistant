@@ -12,7 +12,7 @@ from homeassistant.util import slugify
 
 from . import service_context as context
 from .managed_run import (
-    _validation_error,
+    validation_error,
 )
 from .plan_catalog import SavedPlanLimitError
 from .plan_model import (
@@ -68,7 +68,7 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
                     "id"
                 ]
             except KeyError as err:
-                raise _validation_error(
+                raise validation_error(
                     f"Unknown Matic cleaning plan: {err.args[0]}",
                     "unknown_plan",
                     {"plan": str(err.args[0])},
@@ -92,7 +92,7 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         room_ids = [call.data["room_id"]] if call.data.get("room_id") else None
         if room_ids and room_ids[0] not in {room["room_id"] for room in plan["rooms"]}:
-            raise _validation_error(
+            raise validation_error(
                 "The room is not part of the selected plan",
                 "room_not_in_plan",
                 {"room": room_ids[0], "plan": plan["name"]},
@@ -103,7 +103,7 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
                 serial_number, plan["id"], room_ids=room_ids, modes=modes
             )
         except ValueError as err:
-            raise _validation_error(
+            raise validation_error(
                 "Room schedule progress is in use by a run", "cadence_reset_blocked"
             ) from err
         return {
@@ -129,7 +129,7 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
         room_id = call.data["room_id"]
         floor_plan = _current_floor_plan(entry)
         if floor_plan is None or room_id not in room_map:
-            raise _validation_error(
+            raise validation_error(
                 "The room is not present on the current map",
                 "cadence_delete_map_changed",
             )
@@ -144,22 +144,22 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
                 identity=identity,
             )
         except SharedRoomScheduleLockedError as err:
-            raise _validation_error(
+            raise validation_error(
                 "The shared room schedule is in use by a cleaning run",
                 "cadence_delete_blocked",
             ) from err
         except SharedRoomScheduleMapChangedError as err:
-            raise _validation_error(
+            raise validation_error(
                 "The shared room schedule belongs to a different map",
                 "cadence_delete_map_changed",
             ) from err
         except SharedRoomScheduleStaleError as err:
-            raise _validation_error(
+            raise validation_error(
                 "The shared room schedule changed; refresh before deleting",
                 "cadence_delete_stale",
             ) from err
         except ValueError as err:
-            raise _validation_error(
+            raise validation_error(
                 "The shared room schedule is not bound to the current map",
                 "cadence_delete_map_changed",
             ) from err
@@ -208,7 +208,7 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
         )
         plan_id = call.data.get("plan_id") or slugify(call.data["name"])
         if not plan_id or plan_id == "unknown":
-            raise _validation_error("Plan ID is empty", "plan_name_unusable")
+            raise validation_error("Plan ID is empty", "plan_name_unusable")
         rooms: list[dict[str, Any]] = []
         entries: list[dict[str, Any]] = []
         for item in call.data["rooms"]:
@@ -250,7 +250,7 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
                 room_identities=room_identities,
             )
         except SavedPlanLimitError as err:
-            raise _validation_error(
+            raise validation_error(
                 "The saved-plan limit is reached", "plan_limit_reached"
             ) from err
         except ValueError as err:
@@ -276,7 +276,7 @@ def register_editing_services(runtime: ServiceRuntime) -> None:
         try:
             await manager.catalog.async_delete_plan(serial_number, plan["id"])
         except ValueError as err:
-            raise _validation_error(
+            raise validation_error(
                 "The plan is in use by a run", "plan_locked"
             ) from err
         return {"deleted_plan_id": plan["id"]}

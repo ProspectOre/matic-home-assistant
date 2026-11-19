@@ -12,7 +12,13 @@ from PIL import Image, UnidentifiedImageError
 
 from .consumables import decode_maintenance_suggestions
 from .models import HermesCollectionEntry
-from .wire import WireField, decode_fields, uuid_string
+from .wire import (
+    WireField,
+    decode_fields,
+    field_bytes,
+    field_varints,
+    uuid_string,
+)
 
 MAX_SESSION_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SESSION_IMAGE_PIXELS = 16_000_000
@@ -55,11 +61,11 @@ def decode_cleaning_session_image(entry: HermesCollectionEntry) -> CleaningSessi
         raise DecodeError("cleaning-session image payload exceeds the size limit")
 
     fields = decode_fields(entry.value)
-    wrappers = _bytes_values(fields, 2)
+    wrappers = field_bytes(fields, 2)
     if len(fields) != 1 or len(wrappers) != 1:
         raise DecodeError("cleaning-session image envelope has an invalid shape")
     image_fields = decode_fields(wrappers[0])
-    images = _bytes_values(image_fields, 1)
+    images = field_bytes(image_fields, 1)
     if len(image_fields) != 1 or len(images) != 1:
         raise DecodeError("cleaning-session image wrapper has an invalid shape")
     image = images[0]
@@ -94,8 +100,8 @@ def decode_monthly_recap_key(entry: HermesCollectionEntry) -> tuple[int, int]:
     if not entry.key or len(entry.key) > 64:
         raise DecodeError("monthly recap key has an invalid shape")
     key_fields = decode_fields(entry.key)
-    months = _varint_values(key_fields, 1)
-    years = _varint_values(key_fields, 2)
+    months = field_varints(key_fields, 1)
+    years = field_varints(key_fields, 2)
     if (
         len(key_fields) != 2
         or len(months) != 1
@@ -117,10 +123,10 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
     month, year = decode_monthly_recap_key(entry)
 
     fields = decode_fields(entry.value)
-    areas = _bytes_values(fields, 1)
-    counts = _varint_values(fields, 2)
-    favorites = _bytes_values(fields, 6)
-    durations = _bytes_values(fields, 7)
+    areas = field_bytes(fields, 1)
+    counts = field_varints(fields, 2)
+    favorites = field_bytes(fields, 6)
+    durations = field_bytes(fields, 7)
     # Field 4 lists the parts the robot suggests servicing; a month with no
     # suggestion omits it.
     maintenance = tuple(field for field in fields if field.number == 4)
@@ -150,26 +156,6 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
     )
 
 
-def _bytes_values(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
-    return tuple(
-        field.value
-        for field in fields
-        if field.number == number
-        and field.wire_type == 2
-        and isinstance(field.value, bytes)
-    )
-
-
-def _varint_values(fields: tuple[WireField, ...], number: int) -> tuple[int, ...]:
-    return tuple(
-        field.value
-        for field in fields
-        if field.number == number
-        and field.wire_type == 0
-        and isinstance(field.value, int)
-    )
-
-
 def _fixed32_values(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
     return tuple(
         field.value
@@ -196,8 +182,8 @@ def _decode_area(payload: bytes) -> tuple[float, float]:
 
 def _decode_mode_durations(payload: bytes) -> tuple[float, float]:
     fields = decode_fields(payload)
-    sweep = _bytes_values(fields, 1)
-    mop = _bytes_values(fields, 2)
+    sweep = field_bytes(fields, 1)
+    mop = field_bytes(fields, 2)
     if len(fields) != 2 or len(sweep) != 1 or len(mop) != 1:
         raise DecodeError("monthly recap durations have an invalid shape")
     return _decode_duration(sweep[0]), _decode_duration(mop[0])
@@ -205,8 +191,8 @@ def _decode_mode_durations(payload: bytes) -> tuple[float, float]:
 
 def _decode_duration(payload: bytes) -> float:
     fields = decode_fields(payload)
-    seconds = _varint_values(fields, 1)
-    nanos = _varint_values(fields, 2)
+    seconds = field_varints(fields, 1)
+    nanos = field_varints(fields, 2)
     if len(seconds) > 1 or len(nanos) > 1 or len(fields) != len(seconds) + len(nanos):
         raise DecodeError("monthly recap duration has an invalid shape")
     second_value = seconds[0] if seconds else 0
@@ -218,8 +204,8 @@ def _decode_duration(payload: bytes) -> float:
 
 def _decode_favorite_room(payload: bytes) -> str | None:
     fields = decode_fields(payload)
-    identities = _bytes_values(fields, 1)
-    names = _bytes_values(fields, 2)
+    identities = field_bytes(fields, 1)
+    names = field_bytes(fields, 2)
     if len(fields) != 2 or len(identities) != 1 or len(names) != 1:
         raise DecodeError("monthly recap favorite room has an invalid shape")
     if len(identities[0]) > 128 or len(names[0]) > 256:

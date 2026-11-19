@@ -16,7 +16,7 @@ from . import MaticConfigEntry
 from .client import MaticError, QueueAction, RobotActivity, UserCommand
 from .const import DOMAIN
 from .entity import MaticEntity
-from .robot_commands import validation_error
+from .managed_run import validation_error
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .stores import Store
 from .vacuum_catalog import FloorSegmentCatalog

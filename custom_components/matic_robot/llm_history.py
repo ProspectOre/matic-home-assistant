@@ -11,7 +11,13 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
-from .client import MAX_OBSERVATIONS, CleaningSession, CleaningSessionRecord, MaticError
+from .client import (
+    MAX_OBSERVATIONS,
+    CleaningMode,
+    CleaningSession,
+    CleaningSessionRecord,
+    MaticError,
+)
 from .llm_common import (
     _READ_ONLY,
     _ROBOT_FIELD,
@@ -64,7 +70,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
                 probatio.Range(min=1, max=MAX_NATIVE_HISTORY_RESULTS),
             ),
             probatio.Optional("cleaning_mode"): probatio.In(
-                ("vacuum", "mop", "vacuum_and_mop")
+                tuple(mode.value for mode in CleaningMode)
             ),
         }
     )

@@ -26,13 +26,12 @@ from .area_binding_formats import (
     AREA_SCHEMA_VERSION,
     MAP_BINDING_VERSION,
     AreaBindingStatus,
-    valid_digest,
     valid_int64,
     valid_occupancy,
     valid_segments,
 )
 from .area_geometry import GeometryTooComplex, RoomGeometryIndex
-from .client import FloorPlan
+from .client import FloorPlan, is_sha256_hex
 
 __all__ = ["AreaBindingStatus"]
 
@@ -110,7 +109,7 @@ def valid_binding(binding: Mapping[str, Any]) -> bool:
         and 0 <= mission_id <= 0xFFFFFFFF
         and isinstance(partition_id, str)
         and bool(partition_id)
-        and valid_digest(binding["geometry_sha256"], lowercase=True)
+        and is_sha256_hex(binding["geometry_sha256"])
         and isinstance(local, Mapping)
     ):
         return False
@@ -119,17 +118,15 @@ def valid_binding(binding: Mapping[str, Any]) -> bool:
             local["segments_mm"]
         )
     else:
-        local_valid = set(local) == {"sha256"} and valid_digest(
-            local["sha256"], lowercase=True
-        )
+        local_valid = set(local) == {"sha256"} and is_sha256_hex(local["sha256"])
     if frame is None:
         return local_valid and "frame" not in binding and "sha256" in local
     return (
         local_valid
         and isinstance(frame, Mapping)
         and set(frame) == {"shape_sha256", "floor_sha256", "rooms"}
-        and valid_digest(frame["shape_sha256"], lowercase=True)
-        and valid_digest(frame["floor_sha256"], lowercase=True)
+        and is_sha256_hex(frame["shape_sha256"])
+        and is_sha256_hex(frame["floor_sha256"])
         and _valid_rooms(frame["rooms"])
     )
 
@@ -153,10 +150,10 @@ def _valid_rooms(rooms: Any) -> bool:
         keys = room["circle_keys"]
         boundary = room["boundary_mm"]
         if not (
-            valid_digest(room["room_key"], lowercase=True)
+            is_sha256_hex(room["room_key"])
             and isinstance(keys, list)
             and 0 < len(keys) <= 512
-            and all(valid_digest(key, lowercase=True) for key in keys)
+            and all(is_sha256_hex(key) for key in keys)
             and len(set(keys)) == len(keys)
             and isinstance(boundary, list)
             and len(boundary) >= 3

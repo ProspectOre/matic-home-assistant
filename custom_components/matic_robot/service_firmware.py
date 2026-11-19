@@ -22,7 +22,7 @@ from .firmware import (
 )
 from .firmware_reports import valid_investigator
 from .managed_run import (
-    _validation_error,
+    validation_error,
 )
 from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
@@ -47,7 +47,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
         """Change research routing without changing any robot behavior."""
         entry = firmware_entry(call)
         if not valid_investigator(call.data["provider"]):
-            raise _validation_error(
+            raise validation_error(
                 "Investigator names are lowercase slugs", "invalid_investigator"
             )
         try:
@@ -55,7 +55,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
                 entry.entry_id, call.data["provider"]
             )
         except ValueError as err:
-            raise _validation_error(
+            raise validation_error(
                 "Firmware evidence is not available yet",
                 "firmware_evidence_unavailable",
             ) from err
@@ -71,7 +71,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
                 call.data["action"],
             )
         except ValueError as err:
-            raise _validation_error(
+            raise validation_error(
                 "The firmware notification is no longer current",
                 "firmware_notification_stale",
             ) from err
@@ -81,7 +81,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
             hass, call.data, require_available=False
         )
         if len(entity_ids) != 1:
-            raise _validation_error(
+            raise validation_error(
                 "Firmware actions require exactly one Matic robot",
                 "single_robot_required",
             )
@@ -128,7 +128,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
     ) -> dict[str, Any]:
         """Return payload-free fingerprints from the Hermes allowlist."""
         if len(entity_ids) != 1:
-            raise _validation_error(
+            raise validation_error(
                 "Hermes endpoint inspection requires exactly one Matic robot",
                 "single_robot_required",
             )
@@ -170,7 +170,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
     ) -> dict[str, Any]:
         """Capture and persist one payload-free compatibility snapshot."""
         if len(entity_ids) != 1:
-            raise _validation_error(
+            raise validation_error(
                 "Firmware snapshots require exactly one Matic robot",
                 "single_robot_required",
             )

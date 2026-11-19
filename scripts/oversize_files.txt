@@ -5,7 +5,7 @@ custom_components/matic_robot/managed_observation.py 1096
 custom_components/matic_robot/native_history.py 1215
 custom_components/matic_robot/plan_cadence.py 1170
 custom_components/matic_robot/plan_ledger.py 1734
-custom_components/matic_robot/sensor.py 1229
+custom_components/matic_robot/sensor.py 1195
 custom_components/matic_robot/slam_map_store.py 1329
 frontend/map-studio-v4/effects.ts 1190
 frontend/map-studio-v4/shell.ts 1738
@@ -29,7 +29,7 @@ tests/test_config_flow.py 1709
 tests/test_config_flow_import.py 1037
 tests/test_config_flow_paths.py 1153
 tests/test_daily_room_limit.py 1430
-tests/test_entities.py 2886
+tests/test_entities.py 2883
 tests/test_firmware.py 1246
 tests/test_firmware_reports.py 1387
 tests/test_init.py 1203
@@ -39,7 +39,7 @@ tests/test_photo_patrol.py 1622
 tests/test_plan_entries.py 1072
 tests/test_plans.py 10107
 tests/test_restart.py 1550
-tests/test_services.py 6379
+tests/test_services.py 6374
 tests/test_session_ownership.py 2634
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1822

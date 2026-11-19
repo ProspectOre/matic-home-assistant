@@ -9,6 +9,7 @@ from aiohttp import ContentTypeError, web
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
+from .client import is_sha256_hex
 from .http import (
     DAILY_LIMIT_API_URL,
     PRIVATE_NO_STORE_HEADERS,
@@ -60,9 +61,7 @@ class MaticDailyLimitView(HomeAssistantView):
             not isinstance(room_id, str)
             or not room_id
             or len(room_id) > 256
-            or not isinstance(floor_token, str)
-            or len(floor_token) != 64
-            or any(char not in "0123456789abcdef" for char in floor_token)
+            or not is_sha256_hex(floor_token)
             or (
                 limit is not None
                 and (
