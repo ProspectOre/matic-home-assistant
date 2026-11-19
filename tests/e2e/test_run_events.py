@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from homeassistant.components import event as event_component
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import (
     Event,
@@ -16,7 +20,11 @@ from homeassistant.core import (
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    MockModule,
+    mock_integration,
+)
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
@@ -24,11 +32,15 @@ from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.matic_robot import session
 from custom_components.matic_robot.client import hermes_collections, hermes_connection
-from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_STARTED
+from custom_components.matic_robot.const import (
+    DOMAIN,
+    EVENT_PLAN_STARTED,
+    RUN_EVENT_TYPES,
+)
 
 from .hermes_sim import RunningSimulator, SimulatedRobot
 from .plan_run import VACUUM, PlanRun, expect_finished, state_becomes
-from .sim_mission import SimFloor, two_room_floor
+from .sim_mission import SimFloor, three_room_floor, two_room_floor
 
 RUN_ENTITY = "event.simulated_matic_cleaning_run"
 
@@ -122,15 +134,67 @@ async def test_a_plan_run_reaches_the_event_entity_in_order(
     assert len(triggered) == 2
 
 
+@pytest.fixture
+async def run_logbook(
+    recorder_mock: Any, hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> Callable[[], Awaitable[None]]:
+    """Load the logbook, record every run bus event, and check them against it.
+
+    The check asserts that the Cleaning run entity's state changes, which its
+    automation triggers follow, and the logbook each hold every recorded run
+    event once, in order, and that the logbook lists nothing from the bus.
+    """
+    # The logbook's frontend panel needs the frontend package, which the
+    # tests do not install; the logbook itself does not.
+    mock_integration(hass, MockModule("frontend"))
+    assert await async_setup_component(hass, "logbook", {})
+    since = dt_util.utcnow()
+    fired: list[str] = []
+    changed: list[str] = []
+
+    @callback
+    def record(event: Event[EventStateChangedData]) -> None:
+        state = event.data["new_state"]
+        if state is not None and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            changed.append(f"{DOMAIN}_{state.attributes['event_type']}")
+
+    async_track_state_change_event(hass, RUN_ENTITY, record)
+    for kind in RUN_EVENT_TYPES:
+        hass.bus.async_listen(
+            f"{DOMAIN}_{kind}", callback(lambda event: fired.append(event.event_type))
+        )
+
+    async def check() -> None:
+        await hass.async_block_till_done()
+        await async_wait_recording_done(hass)
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id(
+            {"type": "logbook/get_events", "start_time": since.isoformat()}
+        )
+        response = await client.receive_json()
+        assert response["success"], response
+        entries = response["result"]
+        assert [entry for entry in entries if entry.get("domain") == DOMAIN] == []
+        logged = [
+            f"{DOMAIN}_{entry['attributes']['event_type']}"
+            for entry in entries
+            if entry.get("entity_id") == RUN_ENTITY
+            and entry["state"] not in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+        ]
+        for seen in (changed, logged):
+            assert seen == fired, (
+                f"missing {sorted((Counter(fired) - Counter(seen)).elements())}, "
+                f"extra {sorted((Counter(seen) - Counter(fired)).elements())}"
+            )
+
+    return check
+
+
 async def test_each_run_event_shows_once_in_the_logbook(
-    recorder_mock: Any,
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
+    run_logbook: Callable[[], Awaitable[None]],
     plan: PlanRun,
     robot: SimulatedRobot,
 ) -> None:
-    assert await async_setup_component(hass, "logbook", {})
-    since = dt_util.utcnow()
     await plan.start()
     robot.finish_room()
     await plan.poll()
@@ -141,34 +205,54 @@ async def test_each_run_event_shows_once_in_the_logbook(
     expect_finished(
         await plan.outcome(), "completed", "all_rooms_verified", 2, "docked"
     )
-    await hass.async_block_till_done()
-    await async_wait_recording_done(hass)
+    await run_logbook()
 
-    client = await hass_ws_client(hass)
-    await client.send_json_auto_id(
-        {"type": "logbook/get_events", "start_time": since.isoformat()}
+
+@pytest.mark.parametrize("floor", [three_room_floor()], ids=["three_rooms"])
+async def test_a_burst_of_run_events_shows_once_each_in_the_logbook(
+    run_logbook: Callable[[], Awaitable[None]],
+    hass: HomeAssistant,
+    plan: PlanRun,
+    robot: SimulatedRobot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Plan started and both Room held fire in one loop step. The worst case is
+    # every event entity trigger at the same instant.
+    frozen = dt_util.utcnow()
+    monkeypatch.setattr(
+        event_component,
+        "dt_util",
+        SimpleNamespace(utcnow=lambda: frozen, parse_datetime=dt_util.parse_datetime),
     )
-    response = await client.receive_json()
-    assert response["success"]
-    entries = response["result"]
-    # The entity's state changes are the run's only entries: no bus event is
-    # described a second time.
-    assert [entry for entry in entries if entry.get("domain") == DOMAIN] == []
-    run_types = [
-        entry["attributes"]["event_type"]
-        for entry in entries
-        if entry.get("entity_id") == RUN_ENTITY
-        and entry["state"] not in (STATE_UNKNOWN, STATE_UNAVAILABLE)
-    ]
-    plan_types = [kind for kind in run_types if kind != "cleaning_finished"]
-    assert plan_types[0] == "plan_started"
-    assert plan_types[-1] == "plan_finished"
-    assert sorted(plan_types[1:-1]) == [
-        "room_completed",
-        "room_completed",
-        "room_started",
-        "room_started",
-    ]
+    sensors = {}
+    for name in ("Study", "Hall"):
+        sensor = f"binary_sensor.{name.lower()}_occupancy"
+        hass.states.async_set(sensor, "on", {"device_class": "occupancy"})
+        sensors[_room_id(plan, name)] = sensor
+    await plan.call(
+        DOMAIN,
+        "save_plan",
+        plan_id="evening",
+        name="Evening",
+        run_behavior="ordered",
+        rooms=[{"room": "Kitchen"}, {"room": "Study"}, {"room": "Hall"}],
+        occupancy_aware=True,
+        occupancy_sensors=sensors,
+    )
+    await plan.start_service("run_selected_plan", plan="evening")
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    expect_finished(
+        await plan.outcome(), "completed", "all_rooms_verified", 1, "docked", rooms=1
+    )
+    await run_logbook()
+
+
+def _room_id(plan: PlanRun, name: str) -> str:
+    floor_plan = plan.entry.runtime_data.session.floor.value
+    return next(room.id for room in floor_plan.rooms if room.name == name)
 
 
 @pytest.mark.usefixtures("fast_keepalive")
