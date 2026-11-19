@@ -20,7 +20,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -57,8 +56,9 @@ MAX_LIBRARY_BYTES = 500 * 1024 * 1024
 MAX_PHOTO_AGE = timedelta(days=30)
 PRUNE_INTERVAL = timedelta(days=1)
 # A photo up to this much older than the request that asked for it still
-# answers it: the robot's clock and Home Assistant's differ a little.
-CLOCK_TOLERANCE = timedelta(seconds=2)
+# answers it: live snaps matched Home Assistant's clock within a few seconds,
+# and this leaves room for a robot clock that drifts further.
+CLOCK_TOLERANCE = timedelta(minutes=1)
 # A request nobody's photo answered expires; later photos are the app's.
 EXPECTATION_LIFETIME = timedelta(minutes=2)
 # The robot saves a photo about 6 s after taking it and stays put meanwhile.
@@ -361,12 +361,16 @@ class PhotoLibrary:
             files.append((self._path(photo.photo_id, preview=True), photo.preview))
         for path, data in files:
             unfinished = path.with_suffix(".part")
-            descriptor = os.open(
-                unfinished, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
-            )
-            with os.fdopen(descriptor, "wb") as file:
-                file.write(data)
-            unfinished.replace(path)
+            try:
+                descriptor = os.open(
+                    unfinished, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+                )
+                with os.fdopen(descriptor, "wb") as file:
+                    file.write(data)
+                unfinished.replace(path)
+            except OSError:
+                unfinished.unlink(missing_ok=True)
+                raise
         if files[0][0].read_bytes() != photo.image:
             raise OSError(errno.EIO, "the saved photo does not match the robot's")
 
@@ -398,9 +402,13 @@ class PhotoLibrary:
         return bool(removed)
 
     def _delete_files(self, photo_ids: list[str]) -> None:
+        """Delete files of removed records; a file that stays is only logged."""
         for photo_id in photo_ids:
             for preview in (False, True):
-                self._path(photo_id, preview=preview).unlink(missing_ok=True)
+                try:
+                    self._path(photo_id, preview=preview).unlink(missing_ok=True)
+                except OSError as err:
+                    _LOGGER.warning("Could not delete a Matic photo: %s", err)
 
     @callback
     def _async_storage_failed(self, err: OSError) -> None:
@@ -436,10 +444,16 @@ class PhotoLibrary:
 async def async_remove_photos(hass: HomeAssistant, entry_id: str) -> None:
     """Erase every saved photo of a removed robot."""
     await _store(hass, entry_id).async_remove()
-    await hass.async_add_executor_job(
-        partial(shutil.rmtree, _folder(hass, entry_id), ignore_errors=True)
-    )
+    await hass.async_add_executor_job(_erase_folder, _folder(hass, entry_id))
     ir.async_delete_issue(hass, DOMAIN, _issue_id(entry_id))
+
+
+def _erase_folder(folder: Path) -> None:
+    def failed(_function: Any, path: str, err: BaseException) -> None:
+        _LOGGER.warning("Could not erase removed robot photo %s: %s", path, err)
+
+    if folder.exists():
+        shutil.rmtree(folder, onexc=failed)
 
 
 def _folder(hass: HomeAssistant, entry_id: str) -> Path:

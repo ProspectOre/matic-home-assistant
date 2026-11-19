@@ -136,7 +136,7 @@ async def test_a_requested_photo_goes_to_its_album(
     withdrawn()
 
     # A photo from before the request belongs to whoever took it then.
-    _entries(library, _snap(1, age=timedelta(seconds=3)), _snap(2))
+    _entries(library, _snap(1, age=timedelta(minutes=2)), _snap(2))
     await library.async_read()
 
     assert library.photo(_id(1)).album == MANUAL_ALBUM
@@ -445,3 +445,30 @@ def test_the_assist_tool_states_how_long_photos_are_kept() -> None:
     description = llm_camera._PHOTO_ACTION_DESCRIPTION
     assert f"{photo_library.MAX_PHOTO_AGE.days} days" in description
     assert "disk" in description
+
+
+async def test_failed_file_operations_leave_no_partial_files_and_are_logged(
+    hass: HomeAssistant, folder: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    library = _library(hass, _snap(1))
+    with patch.object(Path, "replace", side_effect=OSError(errno.EIO, "io")):
+        await library.async_read()
+    assert await hass.async_add_executor_job(lambda: [*folder.iterdir()]) == []
+
+    await library.async_read()
+    library._records[_id(1)] = photo_library.replace(
+        library.photo(_id(1)), captured_at=NOW - photo_library.MAX_PHOTO_AGE * 2
+    )
+    with patch.object(Path, "unlink", side_effect=OSError(errno.EBUSY, "busy")):
+        await library.async_prune()
+    assert library.photo_count == 0
+    assert "Could not delete a Matic photo" in caplog.text
+
+    def rmtree(_path: Path, *, onexc) -> None:
+        onexc(None, str(folder), OSError(errno.EACCES, "denied"))
+
+    with patch.object(photo_library.shutil, "rmtree", rmtree):
+        await async_remove_photos(hass, ENTRY_ID)
+    assert "Could not erase removed robot photo" in caplog.text
+    # A robot that never saved a photo has no folder to erase.
+    await async_remove_photos(hass, "never-saved")
