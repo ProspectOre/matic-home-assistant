@@ -16,27 +16,33 @@ SCRIPT = Path(__file__).parents[1] / ".github" / "scripts" / "last-code-run.sh"
 OWN_RUN = 900
 OWN_SUITE = 9000
 WORKFLOW = 7
+HEAD = "abc123"
 
-# Answers each GitHub API path with canned JSON through the real jq filter.
+# Answers each GitHub API path with canned JSON through the real jq filter,
+# after checking the query the script sent. A path's pages are served in turn,
+# the last one repeating.
 FAKE_GH = """\
 import json, subprocess, sys
 from pathlib import Path
 
 state = Path(sys.argv[1])
 args = sys.argv[2:]
-path = next(arg for arg in args if arg.startswith("repos/"))
+path = next(arg for arg in args if arg.startswith("repos/owner/repo/"))
+fields = {args[i + 1] for i, arg in enumerate(args) if arg == "-f"}
 expression = args[args.index("--jq") + 1]
 answers = json.loads((state / "answers.json").read_text())
-if path.endswith("/check-runs"):
-    calls = state / "check_run_calls"
-    count = int(calls.read_text()) if calls.exists() else 0
-    calls.write_text(str(count + 1))
-    pages = answers["check_runs"]
-    body = pages[min(count, len(pages) - 1)]
+if path.endswith("/commits/abc123/check-runs"):
+    name, expected = "check_runs", {"check_name=ci", "filter=all", "per_page=100"}
 elif path.endswith("/actions/runs"):
-    body = answers["runs"]
+    name, expected = "runs", {"head_sha=abc123", "per_page=100"}
 else:
-    body = answers["run"]
+    name, expected = "run", set()
+assert fields == expected, (path, fields)
+calls = state / f"{name}_calls"
+count = int(calls.read_text()) if calls.exists() else 0
+calls.write_text(str(count + 1))
+pages = answers[name]
+body = pages[min(count, len(pages) - 1)]
 result = subprocess.run(
     ["jq", "-r", expression], input=json.dumps(body), text=True, capture_output=True
 )
@@ -45,10 +51,10 @@ sys.exit(result.returncode)
 """
 
 
-def _check_run(status: str, conclusion: str | None, suite: int = 1) -> dict[str, Any]:
+def _check_run(conclusion: str | None, suite: int = 1) -> dict[str, Any]:
     return {
         "id": suite,
-        "status": status,
+        "status": "completed" if conclusion else "in_progress",
         "conclusion": conclusion,
         "html_url": f"https://example.invalid/run/{suite}",
         "app": {"slug": "github-actions"},
@@ -56,25 +62,29 @@ def _check_run(status: str, conclusion: str | None, suite: int = 1) -> dict[str,
     }
 
 
+def _runs(earlier_status: str) -> dict[str, Any]:
+    return {
+        "workflow_runs": [
+            {"id": 1, "workflow_id": WORKFLOW, "status": earlier_status},
+            {"id": 2, "workflow_id": WORKFLOW + 1, "status": "queued"},
+            {"id": OWN_RUN, "workflow_id": WORKFLOW, "status": "queued"},
+        ]
+    }
+
+
 def _run(
     tmp_path: Path,
     check_runs: list[list[dict[str, Any]]],
-    earlier_status: str = "completed",
+    earlier: tuple[str, ...] = ("completed",),
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (tmp_path / "answers.json").write_text(
         json.dumps(
             {
-                "run": {"check_suite_id": OWN_SUITE, "workflow_id": WORKFLOW},
+                "run": [{"check_suite_id": OWN_SUITE, "workflow_id": WORKFLOW}],
                 "check_runs": [{"check_runs": page} for page in check_runs],
-                "runs": {
-                    "workflow_runs": [
-                        {"id": 1, "workflow_id": WORKFLOW, "status": earlier_status},
-                        {"id": 2, "workflow_id": WORKFLOW + 1, "status": "queued"},
-                        {"id": OWN_RUN, "workflow_id": WORKFLOW, "status": "queued"},
-                    ]
-                },
+                "runs": [_runs(status) for status in earlier],
             }
         )
     )
@@ -93,7 +103,7 @@ def _run(
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "GITHUB_REPOSITORY": "owner/repo",
         "GITHUB_RUN_ID": str(OWN_RUN),
-        "HEAD_SHA": "abc123",
+        "HEAD_SHA": HEAD,
     }
     return subprocess.run(
         ["bash", str(SCRIPT), "ci"],
@@ -107,29 +117,22 @@ def _run(
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="needs jq")
 
 
-def test_waits_for_a_check_run_that_appears_once_its_needs_finish(
-    tmp_path: Path,
-) -> None:
-    """The code run's `ci` job is still waiting on browser shards at first."""
+def test_waits_while_an_earlier_run_is_unfinished(tmp_path: Path) -> None:
+    """A re-run's `ci` check run appears only once its needs finish; until
+    then the earlier attempt's result must not count."""
     result = _run(
         tmp_path,
-        [
-            [],
-            [],
-            [_check_run("in_progress", None)],
-            [_check_run("completed", "success")],
-        ],
-        earlier_status="in_progress",
+        [[_check_run("failure", 1), _check_run("success", 2)]],
+        earlier=("in_progress", "in_progress", "completed"),
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Last code run of 'ci': success" in result.stdout
-    assert (tmp_path / "check_run_calls").read_text() == "4"
+    assert (tmp_path / "runs_calls").read_text() == "3"
+    assert (tmp_path / "check_runs_calls").read_text() == "1"
 
 
-def test_fails_when_no_earlier_run_of_the_workflow_is_unfinished(
-    tmp_path: Path,
-) -> None:
+def test_fails_when_no_earlier_run_has_the_check(tmp_path: Path) -> None:
     result = _run(tmp_path, [[]])
 
     assert result.returncode == 1
@@ -144,10 +147,10 @@ def test_reports_the_newest_earlier_result_and_ignores_its_own_suite(
         tmp_path,
         [
             [
-                _check_run("completed", "failure" if code == 0 else "success", 1),
-                _check_run("completed", conclusion, 2),
-                _check_run("completed", "cancelled", 3),
-                _check_run("in_progress", None, OWN_SUITE),
+                _check_run("failure" if code == 0 else "success", 1),
+                _check_run(conclusion, 2),
+                _check_run("cancelled", 3),
+                _check_run(None, OWN_SUITE),
             ]
         ],
     )

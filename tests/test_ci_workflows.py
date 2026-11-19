@@ -169,11 +169,11 @@ def test_ci_requires_every_lane_and_an_edit_run_reports_its_last_code_run() -> N
     assert gate["env"] == {
         lane.upper(): f"${{{{ needs.{lane}.result }}}}" for lane in ci["needs"]
     }
-    # An edit run's replay polls for up to 55 minutes.
-    assert ci["timeout-minutes"] == (
-        "${{ github.event.action == 'edited' && !github.event.changes.base"
-        " && 60 || 5 }}"
-    )
+    # An edit run's replays wait for the whole code run, up to 55 minutes.
+    edit_run = "${{ github.event.action == 'edited' && !github.event.changes.base"
+    assert ci["timeout-minutes"] == f"{edit_run} && 60 || 5 }}}}"
+    for lane in ("test", "live"):
+        assert jobs[lane]["timeout-minutes"] == f"{edit_run} && 60 || 20 }}}}"
     assert replay["run"] == ".github/scripts/last-code-run.sh ci"
     # Exactly one of the gate and the replay runs, whichever kind of run it is.
     assert gate["if"] == "${{ !fromJSON(env.RECHECK) }}"

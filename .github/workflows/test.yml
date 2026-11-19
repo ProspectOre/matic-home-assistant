@@ -95,7 +95,7 @@ jobs:
   # Assistant installs its own dependencies' requirements at startup.
   live:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ github.event.action == 'edited' && !github.event.changes.base && 60 || 20 }}
     permissions:
       actions: read
       checks: read
