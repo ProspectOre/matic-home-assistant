@@ -19,8 +19,8 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     # Unsharded, the suite took 24.5 minutes for 2334 tests on hosted runners in
-    # October 2026. A shard is a quarter of the tests, not of the time: one is
-    # all WebKit, so 30 leaves headroom.
+    # October 2026. A shard is an eighth of the tests, not of the time: some
+    # are all WebKit, so 30 leaves headroom.
     timeout-minutes: 30
     strategy:
       fail-fast: false

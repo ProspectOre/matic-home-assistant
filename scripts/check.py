@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Container, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -302,11 +302,16 @@ def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
     ]
 
 
-def _run_steps(steps: list[list[str]]) -> tuple[bool, str]:
+def _run_steps(
+    steps: list[list[str]], after: Future[tuple[bool, str]] | None = None
+) -> tuple[bool, str]:
     """Run steps in order and return whether all passed, with their output.
 
-    A failed step skips the rest: a failed build leaves nothing to test.
+    A failed step skips the rest: a failed build leaves nothing to test. With
+    `after`, the steps start once that group has finished.
     """
+    if after is not None:
+        after.result()
     output = []
     for step in steps:
         result = subprocess.run(
@@ -374,9 +379,13 @@ def main(arguments: list[str] | None = None) -> int:
     else:
         commands["tests"] = [*build, [python, "-m", "pytest", *PARALLEL, *selected]]
     with ThreadPoolExecutor(len(commands)) as pool:
-        running = {
-            pool.submit(_run_steps, steps): name for name, steps in commands.items()
-        }
+        # The privacy scan reads the whole tree, which the build and the tests
+        # write to, so they wait for it.
+        scanned = pool.submit(_run_steps, commands.pop("privacy"))
+        running = {scanned: "privacy"}
+        for name, steps in commands.items():
+            after = scanned if name == "tests" else None
+            running[pool.submit(_run_steps, steps, after)] = name
         for done in as_completed(running):
             name = running[done]
             passed, output = done.result()

@@ -88,6 +88,8 @@ test.describe("status strip (MS-STATUS-01, MS-STATUS-05)", () => {
   });
 
   test("no status detail restates its title", async ({ page }) => {
+    // The walk takes about 22 seconds locally; leave room for a slow shard.
+    test.setTimeout(60_000);
     const gallery = await stage(page, "ready", { width: 1440, height: 900 });
     // Every gallery scenario, with and without a battery reading, walked in the
     // page: one round trip per scenario made this the suite's slowest test.
