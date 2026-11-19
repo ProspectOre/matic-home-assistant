@@ -589,7 +589,7 @@ def test_managed_run_projection_requires_verified_completion_ids() -> None:
         "room_roster_complete": True,
     }
     robot = {"rotations": {"away": {"rooms": {}}}}
-    plans_module._sync_last_managed_run(robot, base_run)
+    plans_module._sync_last_managed_run(robot, base_run, create=True)
     missing_ids = robot["rotations"]["away"]["last_managed_run"]
     assert missing_ids["completed_room_ids"] == []
     assert missing_ids["completed_room_ids_complete"] is False
@@ -602,6 +602,7 @@ def test_managed_run_projection_requires_verified_completion_ids() -> None:
             "outcome": "unverified",
             "completed_room_ids": [],
         },
+        create=True,
     )
     unverified = robot["rotations"]["away"]["last_managed_run"]
     assert unverified["room_roster_complete"] is True
@@ -973,6 +974,41 @@ async def test_correlated_dock_clears_its_owned_stop_fence(hass) -> None:
     )
 
     assert manager.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+
+
+async def test_dock_observation_does_not_recreate_reset_plan_history(hass) -> None:
+    """A late dock update cannot restore plan history after the user resets it."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["plans"]["away"] = {
+        "name": "Away",
+        "rooms": [{"room_id": "room-kitchen", "name": "Kitchen"}],
+    }
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-reset-after-stop",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[("room-kitchen", "Kitchen")],
+    )
+    await manager.async_finish_run(
+        "serial",
+        "run-reset-after-stop",
+        "cancelled",
+        "managed_stop",
+        0,
+        completed_room_ids=[],
+    )
+    assert "last_managed_run" in manager.snapshot("serial")["plan_history"]["away"]
+
+    await manager.async_reset_history("serial", "away")
+    assert "away" not in manager.snapshot("serial")["plan_history"]
+    assert await manager.async_mark_run_docked("serial", "run-reset-after-stop")
+    await hass.async_block_till_done()
+
+    assert "away" not in manager.snapshot("serial")["plan_history"]
     assert not manager.stop_pending("serial")
     assert "stop_fence_expires_at" not in manager._robot("serial")
 

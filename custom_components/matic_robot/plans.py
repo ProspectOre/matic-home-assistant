@@ -1205,7 +1205,7 @@ class CleaningPlanManager:
                             "recovered_at": recovered_at,
                         }
                     )
-                    _sync_last_managed_run(robot, last_run)
+                    _sync_last_managed_run(robot, last_run, create=True)
                     recovered = True
                 else:
                     last_run.update(
@@ -4992,7 +4992,7 @@ class CleaningPlanManager:
             robot["active_plan"] = None
         if terminal_activity is not None and not docked:
             last_run["terminal_activity"] = terminal_activity[:64]
-        _sync_last_managed_run(robot, last_run)
+        _sync_last_managed_run(robot, last_run, create=True)
         try:
             await self._store.async_save(self._data)
         finally:
@@ -7235,7 +7235,9 @@ def _reconcile_pending_native_history(
     return True
 
 
-def _sync_last_managed_run(robot: dict[str, Any], last_run: Mapping[str, Any]) -> None:
+def _sync_last_managed_run(
+    robot: dict[str, Any], last_run: Mapping[str, Any], *, create: bool = False
+) -> None:
     """Refresh the plan-scoped bounded projection for one terminal managed run."""
     run_id = last_run.get("run_id")
     plan_id = last_run.get("plan_id")
@@ -7248,8 +7250,28 @@ def _sync_last_managed_run(robot: dict[str, Any], last_run: Mapping[str, Any]) -
     rotations = robot.setdefault("rotations", {})
     if not isinstance(rotations, dict):
         return
-    rotation = rotations.setdefault(plan_id, {"rooms": {}})
+    reset_at = _rotation_reset_time(robot, plan_id)
+    started_at = last_run.get("started_at")
+    started_at_value = (
+        dt_util.parse_datetime(started_at) if isinstance(started_at, str) else None
+    )
+    if (
+        reset_at is not None
+        and started_at_value is not None
+        and started_at_value.tzinfo is not None
+        and started_at_value <= reset_at
+    ):
+        return
+    rotation = rotations.get(plan_id)
     if not isinstance(rotation, dict):
+        if not create:
+            return
+        rotation = {"rooms": {}}
+        rotations[plan_id] = rotation
+    existing = rotation.get("last_managed_run")
+    if not create and (
+        not isinstance(existing, Mapping) or existing.get("run_id") != run_id
+    ):
         return
 
     raw_roster = last_run.get("room_roster")
@@ -7305,6 +7327,13 @@ def _sync_last_managed_run(robot: dict[str, Any], last_run: Mapping[str, Any]) -
         "completed_room_ids": completed_ids,
         "completed_room_ids_complete": completed_room_ids_complete,
     }
+
+
+def _rotation_reset_time(robot: Mapping[str, Any], plan_id: str) -> datetime | None:
+    resets = robot.get("rotation_resets")
+    raw_reset = resets.get(plan_id) if isinstance(resets, Mapping) else None
+    reset_at = dt_util.parse_datetime(raw_reset) if isinstance(raw_reset, str) else None
+    return reset_at if reset_at is not None and reset_at.tzinfo is not None else None
 
 
 def _pending_native_reconciliation_matches_run(
