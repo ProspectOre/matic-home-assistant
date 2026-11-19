@@ -16,7 +16,7 @@ from homeassistant.components.media_player.browse_media import SearchMediaQuery
 from homeassistant.components.media_source import MediaSourceItem, Unresolvable
 from homeassistant.components.media_source.helper import async_resolve_media
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
 
@@ -48,9 +48,9 @@ def _prepare_camera_tool(
 ) -> tuple[SimpleNamespace, AsyncMock]:
     service_call = AsyncMock()
     hass = SimpleNamespace(services=SimpleNamespace(async_call=service_call))
-    rooms_only = SimpleNamespace(find=MagicMock(side_effect=ServiceValidationError()))
-    tool.resolve_entry = lambda *_args: SimpleNamespace(  # type: ignore[method-assign]
-        entry_id="entry-one", runtime_data=SimpleNamespace(viewpoints=rooms_only)
+    tool.resolve_entry = lambda *_args: SimpleNamespace(entry_id="entry-one")  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        llm_camera, "_stop", lambda _entry, args: {"room": args["place"]}
     )
     monkeypatch.setattr(
         llm_camera,

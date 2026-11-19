@@ -350,7 +350,9 @@ async def test_take_photo_tool_sends_a_saved_viewpoint_by_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tool = MaticTakePhotoTool()
+    stop = llm_camera._stop
     hass, service_call = _prepare_camera_tool(monkeypatch, tool)
+    monkeypatch.setattr(llm_camera, "_stop", stop)
     tool.resolve_entry = lambda *_args: SimpleNamespace(  # type: ignore[method-assign]
         runtime_data=SimpleNamespace(
             viewpoints=SimpleNamespace(find=lambda name: replace(DESK, name=name)),
@@ -394,11 +396,12 @@ def test_a_viewpoint_is_saved_from_all_coordinates_or_none() -> None:
         ("Window", None, FLOOR, {"room": "Window"}),
         ("Desk", 7, FLOOR, {"viewpoint": "Desk"}),
         ("kitchen", 8, FLOOR, {"room": "kitchen"}),
+        ("kitchen", 7, FLOOR, {"room": "kitchen"}),
         ("Desk", 8, FLOOR, {"viewpoint": "Desk"}),
         ("Desk", 8, None, {"viewpoint": "Desk"}),
     ],
 )
-def test_an_assistant_place_is_a_viewpoint_unless_a_room_here_has_its_name(
+def test_an_assistant_place_is_a_room_here_before_a_viewpoint(
     place: str, mission_id: int | None, floor_plan: FloorPlan | None, expected: dict
 ) -> None:
     def find(name: str) -> Viewpoint:

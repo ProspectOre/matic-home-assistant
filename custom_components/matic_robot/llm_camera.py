@@ -141,20 +141,21 @@ class MaticInvestigateTool(_MaticTool):
 
 
 def _stop(entry: MaticConfigEntry, args: dict[str, Any]) -> dict[str, str]:
-    """Read a place as a saved viewpoint when one has that name, else a room.
+    """Read a place as a room on this floor, else as a saved viewpoint.
 
-    A viewpoint on another floor gives way to a room of the same name here.
+    A room renamed in the app to a viewpoint's name wins over the viewpoint.
     """
     place: str = args["place"]
+    floor_plan = entry.runtime_data.session.floor.value
+    key = room_name_key(place)
+    if floor_plan is not None and any(
+        room_name_key(room.name) == key for room in floor_plan.rooms
+    ):
+        return {"room": place}
     try:
-        viewpoint = entry.runtime_data.viewpoints.find(place)
+        entry.runtime_data.viewpoints.find(place)
     except ServiceValidationError:
         return {"room": place}
-    floor_plan = entry.runtime_data.session.floor.value
-    if floor_plan is not None and viewpoint.mission_id != floor_plan.mission_id:
-        key = room_name_key(place)
-        if any(room_name_key(room.name) == key for room in floor_plan.rooms):
-            return {"room": place}
     return {"viewpoint": place}
 
 
