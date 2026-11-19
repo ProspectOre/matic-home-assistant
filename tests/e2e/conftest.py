@@ -32,6 +32,12 @@ from .sim_mission import SimFloor
 
 
 @pytest.fixture
+def hass_config_dir(hass_tmp_config_dir: str) -> str:
+    """Saved photos are files; keep them in a temporary config directory."""
+    return hass_tmp_config_dir
+
+
+@pytest.fixture
 def floor() -> SimFloor | None:
     """The floor the robot has mapped; a module overrides this to map one."""
     return None

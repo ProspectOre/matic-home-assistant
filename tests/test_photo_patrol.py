@@ -4,25 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from homeassistant.core import Context, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.http import KEY_HASS
-from PIL import Image
 
-from custom_components.matic_robot import camera_ai, photo_patrol, photos
+from custom_components.matic_robot import camera_ai, photo_patrol
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.snaps import RobotPhoto
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.photos import (
-    MaticRobotPhotoPreviewView,
-    MaticRobotPhotoView,
-    RobotPhotoStore,
-)
 from custom_components.matic_robot.robot_controls import (
     RobotControls,
 )
@@ -67,23 +59,52 @@ def _photo(number: int) -> RobotPhoto:
 class _Photos:
     """Reveal one queued photo per refresh, or nothing for ``None``.
 
-    The patrol refreshes once before each snap, then polls after it.
+    The patrol refreshes once before each snap, then polls after it. A photo
+    goes to the album the last snap asked for, once; any other is manual.
     """
 
-    def __init__(self, *arrivals: RobotPhoto | None, seen: bool = True) -> None:
-        self.latest: RobotPhoto | None = _photo(0) if seen else None
+    def __init__(self, *arrivals: RobotPhoto | None) -> None:
         self._arrivals = list(arrivals)
+        self._albums: dict[str, list[RobotPhoto]] = {}
+        self._saved: dict[str, RobotPhoto] = {}
+        self.expected: str | None = None
+        self.albums_asked: list[str] = []
+
+    def async_expect_photo(self, album: str):
+        self.expected = album
+        self.albums_asked.append(album)
+        return MagicMock()
+
+    def album(self, album: str) -> list[RobotPhoto]:
+        return list(self._albums.get(album, ()))
+
+    async def async_image(
+        self, photo_id: str, *, preview: bool = False
+    ) -> bytes | None:
+        photo = self._saved.get(photo_id)
+        if photo is None:
+            return None
+        return photo.preview or photo.image if preview else photo.image
 
     async def async_read(self) -> bool:
         arrival = self._arrivals.pop(0) if self._arrivals else None
         if isinstance(arrival, Exception):
             raise arrival
-        if arrival is not None:
-            self.latest = arrival
-            return True
-        return False
+        if arrival is None:
+            return False
+        album, self.expected = self.expected or "manual", None
+        self._albums.setdefault(album, []).append(arrival)
+        self._saved[arrival.photo_id] = arrival
+        return True
 
     async_refresh = async_read
+
+
+def _saved(*photos: RobotPhoto) -> _Photos:
+    """A library that already holds ``photos``."""
+    library = _Photos()
+    library._saved = {photo.photo_id: photo for photo in photos}
+    return library
 
 
 def _entry(
@@ -173,9 +194,14 @@ def robot_commands():
     _sent = Mock()
     _sent.attach_mock(AsyncMock(), "go_to_room")
     _sent.attach_mock(AsyncMock(), "take_photo")
+
+    async def take_photo(robot: RobotControls, album: str) -> None:
+        robot._entry.runtime_data.photos.async_expect_photo(album)
+        await _sent.take_photo()
+
     with (
         patch.object(RobotControls, "async_go_to_room", _sent.go_to_room),
-        patch.object(RobotControls, "async_take_photo", _sent.take_photo),
+        patch.object(RobotControls, "async_take_photo", take_photo),
     ):
         yield
 
@@ -380,11 +406,36 @@ async def test_analysis_summary_is_returned_but_not_fired_in_photo_event(
     assert "Private photo-derived answer." not in str(event_data)
 
 
+async def test_a_photo_gone_from_disk_is_not_sent_for_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _Photos(None, _photo(1), None)
+    store.async_image = AsyncMock(return_value=None)
+    entry = _entry([DOCKED, MOVING] + [_parked_in("Kitchen")] * 5, store)
+    answer = AsyncMock()
+    monkeypatch.setattr(photo_patrol, "validate_ai_task_entity", lambda *_: None)
+    monkeypatch.setattr(photo_patrol, "async_answer_about_photo", answer)
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await photo_patrol.async_photo_patrol(
+            _hass(),
+            entry,
+            "vacuum.matic",
+            ["Kitchen"],
+            question="Is there a problem?",
+            ai_task_entity_id="ai_task.selected",
+        )
+
+    assert raised.value.translation_key == "photo_patrol_no_photo"
+    store.async_image.assert_awaited_once_with("photo-1")
+    answer.assert_not_awaited()
+
+
 async def test_old_patrol_cannot_stage_photo_after_entry_unload_and_reload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _hass()
-    entry = _entry([DOCKED], _Photos(None), entry_id="entry-one")
+    entry = _entry([DOCKED], _saved(_photo(1)), entry_id="entry-one")
     source = photo_patrol.photo_attachment_source(hass)
     photo_started = asyncio.Event()
     allow_photo = asyncio.Event()
@@ -449,20 +500,12 @@ async def test_patrol_rejects_released_entry_before_robot_io(
     await source.async_close()
 
 
-@pytest.mark.parametrize(
-    "arrivals",
-    [
-        # The read before the snap finds an old photo the store hadn't seen.
-        (_photo(0), None, _photo(1)),
-        # An old photo the read before the snap missed arrives after it.
-        (None, _photo(0), _photo(1)),
-    ],
-)
-async def test_patrol_ignores_an_older_photo_the_store_had_not_seen(
-    arrivals,
-) -> None:
+async def test_patrol_ignores_an_older_photo_the_store_had_not_seen() -> None:
+    # The read before the snap finds an old photo, which is not the patrol's.
+    # An old one that lands after the snap is filed by its capture time; see
+    # test_photo_library.test_a_requested_photo_goes_to_its_album.
     hass = _hass()
-    store = _Photos(*arrivals, seen=False)
+    store = _Photos(_photo(0), None, _photo(1))
     entry = _entry([_parked_in("Kitchen")] * 30, store)
 
     result = await photo_patrol.async_photo_patrol(
@@ -733,7 +776,7 @@ async def test_a_clean_started_during_the_patrol_keeps_the_robot() -> None:
 
 async def test_patrol_stops_when_it_cannot_read_photos_before_the_snap() -> None:
     hass = _hass()
-    store = _Photos(CannotConnectError("offline"), seen=False)
+    store = _Photos(CannotConnectError("offline"))
     entry = _entry([DOCKED, _parked_in("Kitchen"), _parked_in("Kitchen")], store)
 
     with pytest.raises(HomeAssistantError) as raised:
@@ -837,7 +880,9 @@ async def test_patrol_rechecks_robot_after_schedule_refresh(
         patch.object(photo_patrol, "_async_check_schedule", refresh_schedule),
         pytest.raises(HomeAssistantError) as raised,
     ):
-        await photo_patrol._async_photograph(hass, entry, "vacuum.matic", "Kitchen", [])
+        await photo_patrol._async_photograph(
+            hass, entry, "vacuum.matic", "Kitchen", [], "album"
+        )
 
     assert raised.value.translation_key == expected
     assert [command for _, command, _ in _commands(hass)] == ["go_to_room"]
@@ -955,140 +1000,6 @@ async def test_only_one_patrol_runs_per_robot() -> None:
 
     assert raised.value.translation_key == "photo_patrol_running"
     assert _commands(hass) == []
-
-
-def test_store_keeps_only_the_newest_photos_by_id() -> None:
-    store = RobotPhotoStore(SimpleNamespace())
-    newest_first = [_photo(number) for number in range(20, 0, -1)]
-
-    assert store._async_add_photos(newest_first)
-
-    assert store.photo_count == 20
-    assert store.photo("photo-20") is newest_first[0]
-    assert store.photo("photo-5") is newest_first[15]
-    assert store.photo("photo-4") is None
-    assert store.photo("missing") is None
-
-
-async def test_photo_view_serves_recent_photos_privately() -> None:
-    store = RobotPhotoStore(SimpleNamespace())
-    store._async_add_photos([_photo(1)])
-    hass = object()
-    request = SimpleNamespace(app={KEY_HASS: hass})
-    view = MaticRobotPhotoView()
-
-    with patch.object(
-        photos, "runtime_for_entry", return_value=SimpleNamespace(photos=store)
-    ) as runtime:
-        found = await view.get(request, "e", "photo-1")
-        missing = await view.get(request, "e", "photo-2")
-    runtime.assert_called_with(hass, "e")
-    with patch.object(photos, "runtime_for_entry", return_value=None):
-        unloaded = await view.get(request, "e", "photo-1")
-
-    assert view.url == "/api/matic_robot/photo/{entry_id}/{photo_id}"
-    assert view.requires_auth is True
-    assert found.status == 200
-    assert found.body == b"image-1"
-    assert found.content_type == "image/webp"
-    assert found.headers["Cache-Control"] == "private, no-store, max-age=0"
-    assert (missing.status, unloaded.status) == (404, 404)
-    assert missing.headers["Cache-Control"] == "private, no-store, max-age=0"
-
-
-async def test_photo_view_routes_colliding_ids_to_the_requested_robot() -> None:
-    """A shared photo ID cannot make one robot's image visible through another."""
-    stores = {}
-    for entry_id, image in (
-        ("robot-east", b"east-image"),
-        ("robot-west", b"west-image"),
-        ("robot-upper", b"upper-image"),
-    ):
-        store = RobotPhotoStore(SimpleNamespace())
-        store._async_add_photos([RobotPhoto("same-photo-id", START, image, None, 4, 3)])
-        stores[entry_id] = SimpleNamespace(photos=store)
-
-    hass = object()
-    request = SimpleNamespace(app={KEY_HASS: hass})
-    view = MaticRobotPhotoView()
-    with patch.object(
-        photos,
-        "runtime_for_entry",
-        side_effect=lambda _hass, entry_id: stores.get(entry_id),
-    ):
-        responses = {
-            entry_id: await view.get(request, entry_id, "same-photo-id")
-            for entry_id in stores
-        }
-        unknown_entry = await view.get(request, "unloaded-robot", "same-photo-id")
-
-    assert {entry_id: response.body for entry_id, response in responses.items()} == {
-        "robot-east": b"east-image",
-        "robot-west": b"west-image",
-        "robot-upper": b"upper-image",
-    }
-    assert all(response.status == 200 for response in responses.values())
-    assert unknown_entry.status == 404
-
-
-async def test_photo_preview_is_pixelated_private_webp_without_full_fallback() -> None:
-    encoded = BytesIO()
-    image = Image.new("RGB", (96, 96))
-    pixels = image.load()
-    for y in range(96):
-        for x in range(96):
-            pixels[x, y] = (
-                (x * 31) % 256,
-                (y * 29) % 256,
-                ((x + y) * 23) % 256,
-            )
-    image.save(encoded, format="WEBP", quality=100)
-    original = encoded.getvalue()
-    photo = RobotPhoto("preview", START, original, original, 96, 96)
-    store = RobotPhotoStore(SimpleNamespace())
-    store._async_add_photos([photo])
-
-    async def run_in_executor(function, *args):
-        return function(*args)
-
-    hass = SimpleNamespace(
-        async_add_executor_job=AsyncMock(side_effect=run_in_executor)
-    )
-    request = SimpleNamespace(app={KEY_HASS: hass})
-    view = MaticRobotPhotoPreviewView()
-
-    with patch.object(
-        photos, "runtime_for_entry", return_value=SimpleNamespace(photos=store)
-    ):
-        found = await view.get(request, "e", "preview")
-        missing = await view.get(request, "e", "missing")
-    with patch.object(photos, "runtime_for_entry", return_value=None):
-        unloaded = await view.get(request, "e", "preview")
-
-    assert view.url == "/api/matic_robot/photo/{entry_id}/preview/{photo_id}"
-    assert view.requires_auth is True
-    assert found.status == 200
-    assert found.body != original
-    assert found.content_type == "image/webp"
-    with Image.open(BytesIO(found.body)) as preview:
-        assert preview.size == (96, 96)
-    assert len(preview.getcolors(maxcolors=100_000) or []) < 1000
-    assert (missing.status, unloaded.status) == (404, 404)
-    assert found.headers["Cache-Control"] == "private, no-store, max-age=0"
-
-    invalid_store = RobotPhotoStore(SimpleNamespace())
-    invalid_store._async_add_photos([_photo(1)])
-    with patch.object(
-        photos, "runtime_for_entry", return_value=SimpleNamespace(photos=invalid_store)
-    ):
-        invalid = await view.get(request, "e", "photo-1")
-    assert invalid.status == 422
-    assert invalid.body != b"image-1"
-    assert hass.async_add_executor_job.await_count == 2
-    assert [call.args for call in hass.async_add_executor_job.await_args_list] == [
-        (photos._pixelated_preview, original),
-        (photos._pixelated_preview, b"image-1"),
-    ]
 
 
 async def test_photo_patrol_action_returns_each_robots_photos() -> None:
@@ -1312,7 +1223,7 @@ async def test_dock_cleanup_errors_do_not_mask_patrol_failures(monkeypatch) -> N
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1329,7 +1240,7 @@ async def test_dock_cleanup_errors_do_not_mask_patrol_failures(monkeypatch) -> N
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def failed_photograph(_hass, _entry, _entity, _room, arrivals):
+    async def failed_photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         raise HomeAssistantError("original-photo-error")
 
@@ -1361,7 +1272,7 @@ async def test_dock_cleanup_verification_failure_is_bounded_and_safe(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1387,7 +1298,7 @@ async def test_dock_failure_is_suppressed_when_an_error_is_already_active(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1427,7 +1338,7 @@ async def test_full_resolution_patrol_uses_authenticated_photo_url(monkeypatch) 
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1470,7 +1381,7 @@ async def test_patrol_error_before_arrival_preserves_error_without_dock(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def fail_before_arrival(_hass, _entry, _entity, _room, arrivals):
+    async def fail_before_arrival(_hass, _entry, _entity, _room, arrivals, _album):
         assert not arrivals
         raise HomeAssistantError("before-arrival-error")
 
@@ -1536,7 +1447,7 @@ async def test_cleanup_deadline_expiry_skips_overdue_dock(monkeypatch, clock) ->
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         clock[0] = photo_patrol.MAX_PATROL_SECONDS
         return _photo(1)
@@ -1558,7 +1469,7 @@ async def test_dock_deadline_expiry_after_ownership_check_is_reported(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         return _photo(1)
 
@@ -1583,7 +1494,7 @@ async def test_cleanup_uses_remaining_absolute_patrol_deadline(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals):
+    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
         arrivals.append("Kitchen")
         return _photo(1)
 

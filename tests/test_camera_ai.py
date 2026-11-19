@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +22,6 @@ from homeassistant.setup import async_setup_component
 
 from custom_components.matic_robot import camera_ai, llm_camera, photo_patrol
 from custom_components.matic_robot import media_source as media_source_module
-from custom_components.matic_robot.client.snaps import RobotPhoto
 from custom_components.matic_robot.llm_camera import (
     MaticInvestigateTool,
     MaticTakePhotoTool,
@@ -61,10 +59,6 @@ def _prepare_camera_tool(
     return hass, service_call
 
 
-def _photo(photo_id: str, image: bytes) -> RobotPhoto:
-    return RobotPhoto(photo_id, datetime.now(UTC), image, None, 1, 1)
-
-
 async def test_ai_attachment_is_immutable_even_if_newer_photo_arrives(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -89,7 +83,8 @@ async def test_ai_attachment_is_immutable_even_if_newer_photo_arrives(
     result = await camera_ai.async_answer_about_photo(
         hass,
         entry,
-        _photo("photo-one", b"original full image"),
+        "photo-one",
+        b"original full image",
         "Is water visible?",
         "ai_task.selected_entity",
         Context(),
@@ -158,7 +153,8 @@ async def test_concurrent_ai_calls_keep_their_own_photo_snapshots(
         camera_ai.async_answer_about_photo(
             hass,
             entry,
-            _photo("one", b"first immutable photo"),
+            "one",
+            b"first immutable photo",
             "Question one",
             "ai_task.one",
             Context(),
@@ -166,7 +162,8 @@ async def test_concurrent_ai_calls_keep_their_own_photo_snapshots(
         camera_ai.async_answer_about_photo(
             hass,
             entry,
-            _photo("two", b"second immutable photo"),
+            "two",
+            b"second immutable photo",
             "Question two",
             "ai_task.two",
             Context(),
@@ -244,7 +241,8 @@ async def test_hung_ai_call_cannot_retain_the_attachment_past_expiry(
         camera_ai.async_answer_about_photo(
             hass,
             SimpleNamespace(entry_id="entry-one"),
-            _photo("photo", b"private image"),
+            "photo",
+            b"private image",
             "What is shown?",
             "ai_task.selected",
             Context(),
@@ -427,7 +425,8 @@ async def test_ai_photo_refuses_unavailable_entry_before_provider_call(
         await camera_ai.async_answer_about_photo(
             hass,
             SimpleNamespace(entry_id="entry-one"),
-            _photo("photo-one", b"private image"),
+            "photo-one",
+            b"private image",
             "What is shown?",
             "ai_task.selected",
             Context(),
@@ -637,7 +636,8 @@ async def test_ai_provider_failure_hides_details_and_releases_photo(
         await camera_ai.async_answer_about_photo(
             hass,
             SimpleNamespace(entry_id="entry-one"),
-            _photo("photo", b"private image"),
+            "photo",
+            b"private image",
             "What is shown?",
             "ai_task.selected",
             Context(),
@@ -648,35 +648,33 @@ async def test_ai_provider_failure_hides_details_and_releases_photo(
     assert source._staged == {}
 
 
-@pytest.mark.parametrize("question", ["   ", "x" * (camera_ai.MAX_QUESTION_LENGTH + 1)])
-async def test_ai_rejects_empty_and_overlong_questions(
-    hass: HomeAssistant, question: str
+@pytest.mark.parametrize(
+    ("question", "ai_task_entity_id", "translation_key"),
+    [
+        ("   ", "ai_task.selected", "photo_patrol_ai_question_invalid"),
+        (
+            "x" * (camera_ai.MAX_QUESTION_LENGTH + 1),
+            "ai_task.selected",
+            "photo_patrol_ai_question_invalid",
+        ),
+        ("What is shown?", "sensor.camera", "photo_patrol_ai_unavailable"),
+    ],
+)
+async def test_ai_rejects_bad_questions_and_non_ai_task_entities(
+    hass: HomeAssistant, question: str, ai_task_entity_id: str, translation_key: str
 ) -> None:
     with pytest.raises(HomeAssistantError) as raised:
         await camera_ai.async_answer_about_photo(
             hass,
             SimpleNamespace(entry_id="entry-one"),
-            _photo("photo", b"image"),
+            "photo",
+            b"image",
             question,
-            "ai_task.selected",
+            ai_task_entity_id,
             Context(),
         )
 
-    assert raised.value.translation_key == "photo_patrol_ai_question_invalid"
-
-
-async def test_ai_rejects_non_ai_task_entity_id(hass: HomeAssistant) -> None:
-    with pytest.raises(HomeAssistantError) as raised:
-        await camera_ai.async_answer_about_photo(
-            hass,
-            SimpleNamespace(entry_id="entry-one"),
-            _photo("photo", b"image"),
-            "What is shown?",
-            "sensor.camera",
-            Context(),
-        )
-
-    assert raised.value.translation_key == "photo_patrol_ai_unavailable"
+    assert raised.value.translation_key == translation_key
 
 
 @pytest.mark.parametrize(
@@ -700,7 +698,8 @@ async def test_ai_rejects_invalid_structured_answers(
         await camera_ai.async_answer_about_photo(
             hass,
             SimpleNamespace(entry_id="entry-one"),
-            _photo("photo", b"image"),
+            "photo",
+            b"image",
             "What is shown?",
             "ai_task.selected",
             Context(),

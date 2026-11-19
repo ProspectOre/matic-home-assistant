@@ -19,6 +19,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot import photo_patrol
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.photo_library import MANUAL_ALBUM, PhotoSource
 
 from .hermes_sim import DOCK_PAYLOAD, SimulatedRobot
 from .plan_run import poll
@@ -117,7 +118,6 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
     robot.queue_photo(
         _webp((18, 120, 210)),
         preview=_checkerboard_webp(),
-        captured_at=dt_util.utcnow(),
         photo_id=uuid4(),
     )
     await poll(hass, loaded_entry, robot)
@@ -360,7 +360,6 @@ async def test_takeover_during_photo_save_is_not_interrupted_or_docked(
     robot.set_native_schedules([])
     robot.queue_photo(
         _webp((18, 120, 210)),
-        captured_at=dt_util.utcnow(),
         photo_id=uuid4(),
     )
 
@@ -391,22 +390,17 @@ async def test_takeover_during_photo_save_is_not_interrupted_or_docked(
     assert robot.phase.value == "cleaning"
 
 
-async def test_photo_collection_and_image_entity_keep_a_bounded_ring(
+async def test_every_snap_is_saved_to_disk_in_the_manual_album(
     hass: HomeAssistant,
     loaded_entry: MockConfigEntry,
     robot: SimulatedRobot,
 ) -> None:
-    """The real snap command and collection reader retain only 16 images."""
-    base = dt_util.utcnow() - timedelta(minutes=1)
+    """Snaps from the vacuum action are kept on disk, newest shown."""
     photo_ids: list[str] = []
     for index in range(17):
         photo_id = uuid4()
         photo_ids.append(str(photo_id))
-        robot.queue_photo(
-            _webp((index, 80, 120)),
-            captured_at=base + timedelta(seconds=index),
-            photo_id=photo_id,
-        )
+        robot.queue_photo(_webp((index, 80, 120)), photo_id=photo_id)
         await hass.services.async_call(
             VACUUM_DOMAIN,
             SERVICE_SEND_COMMAND,
@@ -421,10 +415,11 @@ async def test_photo_collection_and_image_entity_keep_a_bounded_ring(
     photos = loaded_entry.runtime_data.photos
     await photos.async_read()
     await hass.async_block_till_done()
-    assert photos.photo_count == 17
-    assert photos.photo(photo_ids[0]) is None
-    assert photos.photo(photo_ids[1]) is not None
-    assert photos.photo(photo_ids[-1]) is photos.latest
+    album = photos.album(MANUAL_ALBUM)
+    assert [record.photo_id for record in album] == photo_ids
+    assert all(record.source is PhotoSource.HOME_ASSISTANT for record in album)
+    assert photos.latest == album[-1]
+    assert await photos.async_image(photo_ids[0]) == _webp((0, 80, 120))
 
     image_state = hass.states.get("image.simulated_matic_latest_photo")
     assert image_state is not None

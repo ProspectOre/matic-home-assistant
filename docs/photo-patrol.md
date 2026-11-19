@@ -35,9 +35,13 @@ refers to the preview. A missing preview does not fall back to a full photo.
 Each photo also fires `matic_robot_photo_taken` with the same fields.
 
 Both URLs require a signed-in Home Assistant user and disable browser caching.
-Home Assistant retains the 16 newest photos in memory for these links. A restart
-or newer photos can make a link unavailable. This limit does not delete images
-from the robot; manage those in the Matic app.
+Home Assistant saves every photo it reads from the robot to
+`matic_robot/photos/<entry id>` in its configuration folder, so links survive a
+restart. Each patrol files its photos in an album of its own; other snaps go to
+the Manual album. Photos older than 30 days are removed, and the oldest go
+first once the folder passes 500 MB. Home Assistant does not delete images
+from the robot; manage those in the Matic app. If a photo can't be written, a
+Repair names the folder and the photo is saved on the next read.
 
 ```yaml
 actions:

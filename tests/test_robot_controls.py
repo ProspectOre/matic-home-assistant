@@ -17,6 +17,7 @@ from custom_components.matic_robot.client.commands import (
     CoverageSetting,
     UserCommand,
 )
+from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.llm_control import MaticSendToSinkTool
 from custom_components.matic_robot.robot_controls import (
@@ -82,6 +83,19 @@ async def test_vacuum_snap_is_refused_in_a_no_photo_room() -> None:
         await entity.async_send_command("emote", {"kind": "snap"})
     assert refused.value.translation_key == "photo_patrol_room_blocked"
     send.assert_awaited_once()
+
+
+async def test_a_snap_that_fails_to_send_withdraws_its_album_request() -> None:
+    entry = _entry()
+    photos = entry.runtime_data.photos
+    send = entry.runtime_data.session.client.async_send_user_command
+    send.side_effect = CannotConnectError("offline")
+
+    with pytest.raises(CannotConnectError):
+        await RobotControls(None, entry, None).async_take_photo("mission")
+
+    photos.async_expect_photo.assert_called_once_with("mission")
+    photos.async_expect_photo.return_value.assert_called_once_with()
 
 
 async def test_take_photo_button_sends_nothing_to_an_unreachable_robot() -> None:
