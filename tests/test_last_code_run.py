@@ -83,6 +83,7 @@ def _run(
     earlier: tuple[str, ...] = ("completed",),
     *,
     one_call: bool = False,
+    gh_script: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -100,7 +101,8 @@ def _run(
     (tmp_path / "fake_gh.py").write_text(FAKE_GH)
     gh = bin_dir / "gh"
     gh.write_text(
-        f'#!/bin/sh\nexec "{sys.executable}" "{tmp_path / "fake_gh.py"}" '
+        gh_script
+        or f'#!/bin/sh\nexec "{sys.executable}" "{tmp_path / "fake_gh.py"}" '
         f'"{tmp_path}" "$@"\n'
     )
     sleep = bin_dir / "sleep"
@@ -180,3 +182,30 @@ def test_takes_the_newest_result_across_pages(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Last code run of 'ci': success" in result.stdout
+
+
+def test_gives_up_when_an_earlier_run_never_finishes(tmp_path: Path) -> None:
+    # A shell gh keeps 110 polls fast: it reports an earlier run as unfinished.
+    polls = tmp_path / "polls"
+    gh = (
+        f'#!/bin/sh\necho >> "{polls}"\ncase "$*" in\n'
+        f'  *"/actions/runs/{OWN_RUN}"*) echo "{OWN_SUITE} {WORKFLOW}" ;;\n'
+        '  *"/runs"*) echo 1 ;;\n  *) exit 9 ;;\nesac\n'
+    )
+
+    result = _run(tmp_path, [[]], gh_script=gh)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "The last code run of 'ci' did not finish in time." in result.stdout
+    assert len(polls.read_text().splitlines()) == 1 + 110
+
+
+def test_ignores_a_check_run_of_the_same_name_from_another_app(
+    tmp_path: Path,
+) -> None:
+    foreign = _check_run("success", 2) | {"app": {"slug": "another-app"}}
+
+    result = _run(tmp_path, [[_check_run("failure", 1), foreign]])
+
+    assert result.returncode == 1
+    assert "Last code run of 'ci': failure" in result.stdout
