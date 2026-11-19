@@ -35,7 +35,7 @@ import "./rooms-view";
 import "./precision-controls";
 // The plan heading's tools, which the shell renders once these views load,
 // and the shell's other plan-only pieces.
-export { actionReason, drawCancel, drawExit, focusPlanTarget, planCancel, planTitle, planTools } from "./plan-heading";
+export { actionReason, drawCancel, focusPlanTarget, planCancel, planTitle, planTools } from "./plan-heading";
 
 // Dialogs that only these views' controls open carry their copy, launcher and
 // confirm here.

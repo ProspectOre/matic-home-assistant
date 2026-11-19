@@ -13,7 +13,7 @@ const focusClose = (element: Element | undefined): void => {
   });
 };
 
-export interface MapHelpContext {
+interface MapHelpContext {
   readonly state: WorkspaceState;
   /** `(any-pointer: coarse)` matched when the popover opened. */
   readonly coarse: boolean;

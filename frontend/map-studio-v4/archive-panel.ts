@@ -7,10 +7,9 @@ import { archiveAction, confirmArchiveAction, prepareArchiveConfirmation, type A
 import { ARCHIVE_MAX_FILE_BYTES, type ArchiveAction, type ArchiveCatalog, type ArchiveMutation, type ArchiveRecord } from "./archive-contracts";
 import { ARCHIVE_PANEL_TAG } from "./element-tags";
 
-export { ARCHIVE_PANEL_TAG } from "./element-tags";
 
 /** Accessible archive presentation. All reads, writes and authoritative readbacks belong to the workspace. */
-export class MaticArchivePanelV4 extends LitElement {
+class MaticArchivePanelV4 extends LitElement {
   static override properties = {
     catalog: { attribute: false }, entryId: { attribute: false }, busy: { type: Boolean },
     authorized: { type: Boolean }, message: { type: String }, error: { type: String },

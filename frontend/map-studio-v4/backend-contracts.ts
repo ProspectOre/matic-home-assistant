@@ -18,9 +18,9 @@ export const PAGE_POINT_BYTES = 6;
 export const PAGES_PER_REQUEST = 256;
 
 export type LoadStatus = "idle" | "loading" | "ready" | "empty" | "error";
-export type MapHealth = "ready" | "building" | "limited" | "problem" | "unknown";
-export type MapBlockReason = wire.MapBlockReason | null;
-export type MapBootstrapState = wire.MapBootstrapState;
+type MapHealth = "ready" | "building" | "limited" | "problem" | "unknown";
+type MapBlockReason = wire.MapBlockReason | null;
+type MapBootstrapState = wire.MapBootstrapState;
 /** The browser's reading of the binding status the areas view sends. */
 export type AreaBindingStatus = "current" | "review" | "stale" | "unknown";
 
@@ -306,7 +306,7 @@ export interface NextRunPreviewRoom {
 export type NextRunPreviewBlocker = wire.PlanBlocker;
 
 /** A saved custom area in a preview; areas run every time, so it has no cadence reasons. */
-export interface NextRunPreviewArea extends Omit<NextRunPreviewRoom, "roomId"> {
+interface NextRunPreviewArea extends Omit<NextRunPreviewRoom, "roomId"> {
   readonly areaId: string;
 }
 

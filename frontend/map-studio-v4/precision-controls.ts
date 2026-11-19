@@ -22,17 +22,17 @@ const MAX_CM = Math.round(DRAW_BRUSH_MAX_METERS * 100);
 const STEP_CM = 5;
 
 /** The brush in whole centimetres, clamped to the range. */
-export const brushCentimeters = (meters: number): number => Math.min(MAX_CM, Math.max(MIN_CM, Math.round(meters * 100)));
+const brushCentimeters = (meters: number): number => Math.min(MAX_CM, Math.max(MIN_CM, Math.round(meters * 100)));
 
 /** − and + move to the next 5 cm multiple, so a brush off the grid lands on it. */
-export const stepBrush = (cm: number, delta: -1 | 1): number =>
+const stepBrush = (cm: number, delta: -1 | 1): number =>
   delta > 0 ? Math.min(MAX_CM, Math.floor(cm / STEP_CM) * STEP_CM + STEP_CM) : Math.max(MIN_CM, Math.ceil(cm / STEP_CM) * STEP_CM - STEP_CM);
 
 // Brush settings only, docked beside the Draw content (map-surfaces.md §5
 // Precision): the stepper in centimetres and a range for a quick sweep. Zoom
 // is served by pinch, the map's Fit button and the +/-/0 keys. Intents still
 // carry metres, as the outline does.
-export class MaticPrecisionControlsV4 extends LitElement {
+class MaticPrecisionControlsV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },

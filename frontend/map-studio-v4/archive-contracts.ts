@@ -2,10 +2,10 @@ import { parseHistoryComparisonFrame } from "./history-catalog";
 import { ContractError, isPrivatePath, type HistoryComparisonFrame, type Unchecked } from "./backend-contracts";
 import type * as wire from "./backend-schema";
 
-export const ARCHIVE_MAX_RECORDS = 12;
-export const ARCHIVE_MAX_COMPRESSED_BYTES = 48 * 1024 * 1024;
+const ARCHIVE_MAX_RECORDS = 12;
+const ARCHIVE_MAX_COMPRESSED_BYTES = 48 * 1024 * 1024;
 export const ARCHIVE_MAX_FILE_BYTES = 68 * 1024 * 1024;
-export type ArchiveRetention = "automatic" | "kept" | "trash";
+type ArchiveRetention = "automatic" | "kept" | "trash";
 export type ArchiveAction = wire.HistoryAction;
 
 export interface ArchiveRecord {
@@ -24,7 +24,7 @@ export interface ArchiveRecord {
   readonly compressedBytes: number;
 }
 
-export interface ArchiveUsage {
+interface ArchiveUsage {
   readonly recordCount: number;
   readonly automaticCount: number;
   readonly keptCount: number;

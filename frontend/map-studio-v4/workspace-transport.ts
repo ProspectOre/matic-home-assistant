@@ -16,7 +16,7 @@ import {
   type BackendRequestOutcome,
 } from "./request-diagnostics";
 
-export const WORKSPACE_PROTOCOL_VERSION = 1;
+const WORKSPACE_PROTOCOL_VERSION = 1;
 const MAX_SEQUENCE = Number.MAX_SAFE_INTEGER;
 const MAX_REVISION = Number.MAX_SAFE_INTEGER;
 const MAX_INVALIDATIONS = 64;
@@ -34,19 +34,17 @@ export interface WorkspaceConnection {
 }
 
 /** A validated snapshot; its catalog entry is parsed as the REST catalog's is. */
-export interface WorkspaceSnapshot extends Omit<wire.WorkspaceSnapshot, "status" | "payload"> {
+interface WorkspaceSnapshot extends Omit<wire.WorkspaceSnapshot, "status" | "payload"> {
   readonly status: WorkspaceStatus;
   readonly payload: WorkspaceSnapshotPayload;
 }
 
-export interface WorkspaceSnapshotPayload {
+interface WorkspaceSnapshotPayload {
   readonly available: boolean;
   readonly entry: MapEntry | null;
 }
 
-export type WorkspaceIdentity = wire.WorkspaceIdentity;
-
-export interface WorkspaceStatus {
+interface WorkspaceStatus {
   readonly state: wire.WorkspaceStatus["state"];
   readonly reason: WorkspaceResyncReason | null;
   readonly retryable: boolean;
@@ -54,23 +52,23 @@ export interface WorkspaceStatus {
 
 export type WorkspaceInvalidation = wire.WorkspaceInvalidation;
 
-export type WorkspaceTransportEvent =
+type WorkspaceTransportEvent =
   | { readonly type: "snapshot"; readonly snapshot: WorkspaceSnapshot }
   | { readonly type: "invalidation"; readonly invalidation: WorkspaceInvalidation }
   | { readonly type: "pose"; readonly pose: PoseModel }
   | { readonly type: "resync"; readonly reason: WorkspaceResyncReason; readonly accessDenied?: boolean };
 
 /** The server's recovery reasons, and the ones the transport raises itself. */
-export type WorkspaceResyncReason = wire.RecoveryReason | "reconnect" | "invalid_message" | "server_request";
+type WorkspaceResyncReason = wire.RecoveryReason | "reconnect" | "invalid_message" | "server_request";
 
-export interface WorkspaceTransportOptions {
+interface WorkspaceTransportOptions {
   readonly entryId: string;
   readonly onEvent: (event: WorkspaceTransportEvent) => void;
   readonly onError?: (error: Error) => void;
   readonly maxPendingInvalidations?: number;
 }
 
-export interface WorkspaceTransportDiagnostics {
+interface WorkspaceTransportDiagnostics {
   readonly snapshotAttempts: BackendRequestOperationDiagnostics;
   readonly recoveryEpisodes: Readonly<Record<WorkspaceResyncReason, BackendRequestOperationDiagnostics>>;
   readonly activeRecovery: Readonly<{ reason: WorkspaceResyncReason; durationMs: number }> | null;

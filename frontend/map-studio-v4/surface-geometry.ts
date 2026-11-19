@@ -8,9 +8,9 @@ const FLOOR_FACES = 1;
 const SURFACE_FACES = 3;
 const MIN_AUTO_VISIBLE_POINTS = 50_000;
 
-export type SurfaceDetail = "complete" | "limited" | "sampled";
+type SurfaceDetail = "complete" | "limited" | "sampled";
 
-export interface SurfaceFrame {
+interface SurfaceFrame {
   readonly scene: SceneModel;
   readonly matrix: Float32Array;
   readonly buffer: WebGLBuffer;

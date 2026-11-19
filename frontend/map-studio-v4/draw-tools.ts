@@ -14,9 +14,9 @@ import { heldReasonKey } from "./state";
 // Points · Paint · Erase · Move map | Undo · Redo · Clear | Brush
 // (map-surfaces.md §5). The primary ("Name and save" or "Done") is the
 // workflow's and lives in the action bar.
-export type DrawToolsLayout = "row" | "grid";
+type DrawToolsLayout = "row" | "grid";
 
-export interface DrawToolsHandlers {
+interface DrawToolsHandlers {
   readonly intent: (intent: WorkspaceIntent) => void;
   readonly openBrush: () => void;
   readonly t: (key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>) => string;

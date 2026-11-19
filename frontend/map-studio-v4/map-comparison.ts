@@ -66,7 +66,7 @@ export const enrichComparisonScene = (scene: SceneModel): SceneModel => {
   return { ...scene, metadata: { ...metadata, ...(coverage ? { coverage } : {}) } };
 };
 
-export type ComparisonDecision =
+type ComparisonDecision =
   | { readonly eligible: true }
   | { readonly eligible: false; readonly reason: "same-record" | "different-group" | "frame-unverified" | "coverage-unverified" };
 
@@ -185,8 +185,6 @@ export const decodeCoverageMask = async (
   if (remainder && (output.at(-1)! >>> remainder) !== 0) throw new Error("coverage-padding");
   return output;
 };
-
-export type CellClassification = "changed" | "unchanged" | "unknown";
 
 export interface ComparisonGrid {
   readonly minX: number;

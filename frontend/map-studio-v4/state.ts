@@ -11,7 +11,6 @@ import {
   MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
   type CoordinateEditCapture,
   type CoordinateEditTool,
-  type CommandState,
   type MapView,
   type NoButtonAction,
   type PlanOrigin,
@@ -1314,8 +1313,3 @@ export const mapScale = (
     label: meters < 1 ? `${Math.round(meters * 100)} cm` : `${meters} m`,
   };
 };
-
-export const commandState = (
-  state: WorkspaceState,
-  command: CommandState,
-): WorkspaceState => ({ ...state, command });

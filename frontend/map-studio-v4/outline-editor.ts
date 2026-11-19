@@ -11,7 +11,7 @@ import { captureCoordinateEdit, hasCoordinateEditAdmission } from "./state";
  * Outline checks loaded alongside the editor and passed in by the shell.
  * The backend's deferred area decoder shares the same geometry module.
  */
-export type OutlineGeometry = Pick<typeof import("./area-outline"), "edgeDistance" | "validOutline">;
+type OutlineGeometry = Pick<typeof import("./area-outline"), "edgeDistance" | "validOutline">;
 
 export const insideOutline = (p: AreaPoint, points: readonly AreaPoint[]): boolean => {
   let inside = false;

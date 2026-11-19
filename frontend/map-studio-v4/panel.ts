@@ -48,7 +48,7 @@ const forgetFailedPair = (owner: object, language: string): void => {
   if (commonTranslationsRequested.get(owner) === language) commonTranslationsRequested.delete(owner);
 };
 
-export class MaticMapPanelV4 extends LitElement {
+class MaticMapPanelV4 extends LitElement {
   static override styles = [tokens, base, css`
 :host { display: block; block-size: 100%; color-scheme: light dark; }
 `];

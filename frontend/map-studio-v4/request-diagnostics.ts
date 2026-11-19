@@ -1,6 +1,6 @@
 /** Bounded, process-local aggregates for private HTTP requests. */
 
-export const BACKEND_REQUEST_OPERATIONS = [
+const BACKEND_REQUEST_OPERATIONS = [
   "catalog",
   "scene",
   "scenePages",

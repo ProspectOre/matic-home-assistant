@@ -2,7 +2,7 @@
 // tests/browser/ux-audit-tools/ha_theme_axe.mjs measures against. The stage
 // sets these HA variables (never an --ms-* token) on the gallery element, the
 // way HA's theme sets them on <home-assistant>, with color-scheme beside them.
-export type ThemeName = "light" | "dark";
+type ThemeName = "light" | "dark";
 
 const SHARED = {
   "--primary-color": "#009ac7",

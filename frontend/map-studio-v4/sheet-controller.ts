@@ -2,7 +2,7 @@ import type { LitElement } from "lit";
 import type { WorkspaceState, Workflow } from "./contracts";
 import { hasFocusable } from "./shell-focus";
 
-export type SheetDetent = "peek" | "half" | "full";
+type SheetDetent = "peek" | "half" | "full";
 
 const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
 // A compact sheet (height < 480) has no half (design-system.md §7).

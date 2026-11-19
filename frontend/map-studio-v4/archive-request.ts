@@ -8,7 +8,7 @@ export type ArchiveBodyReader = (
   invalidCode?: string,
 ) => Promise<ArrayBuffer>;
 
-export type ArchiveErrorFactory = (code: string, status: number | null) => Error;
+type ArchiveErrorFactory = (code: string, status: number | null) => Error;
 
 /** Consume the bounded JSON response for the optional history archive API. */
 export async function decodeArchiveResponse(
