@@ -64,7 +64,7 @@ entity to act on each new photo, for example to send it in a phone
 notification with `image: /api/image_proxy/image.matic_latest_photo`, or save
 it with `image.snapshot`. The `photo_count` attribute counts the photos saved
 in Home Assistant, which keeps them on disk for up to 30 days and 500 MB (see
-[photo patrol](photo-patrol.md)). A photo deleted in the Matic app stays saved
+[photo tours](photo-tours.md)). A photo deleted in the Matic app stays saved
 here.
 
 ## Maintenance

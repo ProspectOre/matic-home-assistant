@@ -1,0 +1,302 @@
+"""Saved photo viewpoints and how a tour knows it has reached one."""
+
+from __future__ import annotations
+
+import asyncio
+import math
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import probatio
+import pytest
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+
+from custom_components.matic_robot import photo_tours, viewpoints
+from custom_components.matic_robot.client import (
+    FloorPlan,
+    MapZone,
+    MaticError,
+    RobotPose,
+    Room,
+    room_at,
+)
+from custom_components.matic_robot.llm_camera import MaticTakePhotoTool
+from custom_components.matic_robot.photo_tours import TourStop
+from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.robot_controls import RobotControls
+from custom_components.matic_robot.service_schemas import (
+    PHOTO_TOUR_STOP_SCHEMA,
+    SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
+)
+from custom_components.matic_robot.viewpoints import Viewpoint, Viewpoints
+from tests.test_camera_ai import _llm_context, _prepare_camera_tool
+from tests.test_entities import _entry as _vacuum_entry
+
+KITCHEN = Room("kitchen", "Kitchen", "kitchen", b"", ((0, 0), (2, 0), (2, 2), (0, 2)))
+STUDY = Room("study", "Study", "study", b"", ((2, 0), (4, 0), (4, 2), (2, 2)))
+# A room the map names but has no outline for.
+CLOSET = Room("closet", "Closet", "closet", b"", ((5, 5), (6, 6)))
+FLOOR = FloorPlan(7, "partition", b"", (CLOSET, KITCHEN, STUDY))
+
+
+async def _save(store: Viewpoints, name: str = "Desk", **kwargs) -> Viewpoint:
+    place = {"x": 3.0, "y": 1.0, "heading": 0.0} | kwargs.pop("place", {})
+    return await store.async_save(
+        name, FLOOR, kwargs.pop("zones", ()), kwargs.pop("blocked", set()), **place
+    )
+
+
+async def _refusal(store: Viewpoints, name: str = "Desk", **kwargs) -> str | None:
+    with pytest.raises(ServiceValidationError) as raised:
+        await _save(store, name, **kwargs)
+    return raised.value.translation_key
+
+
+def test_room_at_finds_the_outline_holding_a_point() -> None:
+    assert room_at(FLOOR, (1.0, 1.0)) is KITCHEN
+    assert room_at(FLOOR, (3.0, 1.0)) is STUDY
+    assert room_at(FLOOR, (5.5, 5.5)) is None
+    assert room_at(FLOOR, (9.0, 9.0)) is None
+
+
+async def test_a_saved_viewpoint_is_found_by_id_or_name_and_survives_reload(
+    hass: HomeAssistant,
+) -> None:
+    store = Viewpoints(hass, "entry")
+    await store.async_load()
+    other = await _save(store, "Stove", place={"x": 1.0})
+    desk = await _save(store, "  Desk ", place={"heading": 3 * math.pi / 2})
+
+    assert (desk.name, desk.room_id, desk.mission_id) == ("Desk", "study", 7)
+    assert desk.heading == pytest.approx(-math.pi / 2)
+    assert store.find(desk.viewpoint_id) is desk
+    assert store.find("desk") is desk
+    with pytest.raises(ServiceValidationError) as raised:
+        store.find("Window")
+    assert raised.value.translation_key == "viewpoint_unknown"
+
+    reloaded = Viewpoints(hass, "entry")
+    await reloaded.async_load()
+    assert reloaded.all == (other, desk)
+
+    await reloaded.async_delete("Stove")
+    assert reloaded.all == (desk,)
+    await reloaded.async_remove()
+    emptied = Viewpoints(hass, "entry")
+    await emptied.async_load()
+    assert emptied.all == ()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "key"),
+    [
+        ({"name": " "}, "viewpoint_name_invalid"),
+        ({"name": "x" * 65}, "viewpoint_name_invalid"),
+        ({"name": "STOVE"}, "viewpoint_name_taken"),
+        ({"place": {"heading": math.inf}}, "viewpoint_outside_rooms"),
+        ({"place": {"x": math.nan}}, "viewpoint_outside_rooms"),
+        ({"place": {"x": 9.0}}, "viewpoint_outside_rooms"),
+        ({"blocked": {"study"}}, "viewpoint_room_no_photo"),
+        (
+            {"zones": (MapZone(7, "no_go", 0, ((3.2, 0), (4, 0), (4, 2), (3.2, 2))),)},
+            "viewpoint_in_no_go_zone",
+        ),
+    ],
+)
+async def test_a_viewpoint_must_be_a_named_spot_photos_may_be_taken(
+    hass: HomeAssistant, kwargs: dict, key: str
+) -> None:
+    store = Viewpoints(hass, "entry")
+    await _save(store, "Stove", place={"x": 1.0})
+
+    assert await _refusal(store, kwargs.pop("name", "Desk"), **kwargs) == key
+
+
+async def test_zones_elsewhere_do_not_block_a_viewpoint(hass: HomeAssistant) -> None:
+    near = ((3.2, 0), (4, 0), (4, 2), (3.2, 2))
+    zones = (
+        MapZone(8, "no_go", 0, near),  # The same spot on another floor.
+        MapZone(7, "no_mop", 0, near),
+        MapZone(7, "no_go", 0, ((0, 0), (0.5, 0), (0.5, 0.5))),
+    )
+
+    assert (await _save(Viewpoints(hass, "entry"), zones=zones)).room_id == "study"
+
+
+async def test_one_robot_keeps_at_most_fifty_viewpoints(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewpoints, "MAX_VIEWPOINTS", 2)
+    store = Viewpoints(hass, "entry")
+    await _save(store, "One")
+    await _save(store, "Two")
+
+    assert await _refusal(store, "Three") == "viewpoint_limit"
+
+
+async def test_stored_viewpoints_that_do_not_decode_are_dropped(
+    hass: HomeAssistant,
+) -> None:
+    good = {
+        "viewpoint_id": "a",
+        "name": "Desk",
+        "mission_id": 7,
+        "x": 1,
+        "y": 2,
+        "heading": 0,
+        "room_id": "study",
+    }
+    store = Viewpoints(hass, "entry")
+    await store._store.async_save(
+        {
+            "viewpoints": [
+                good,
+                {**good, "viewpoint_id": "b", "x": "inf"},
+                {**good, "viewpoint_id": "c", "mission_id": "seven"},
+                {"viewpoint_id": "d"},
+                None,
+            ]
+        }
+    )
+
+    await store.async_load()
+
+    assert [viewpoint.viewpoint_id for viewpoint in store.all] == ["a"]
+
+
+DESK = Viewpoint("desk", "Desk", 7, 3.0, 1.0, math.pi / 2, "study")
+SHOT = photo_tours._Shot(TourStop(viewpoint="Desk"), "study", DESK, DESK.heading)
+
+
+@pytest.mark.parametrize(
+    ("pose", "shot", "arrived"),
+    [
+        (RobotPose(3.1, 1.1, 0, 7, heading=math.pi / 2 + 0.3), SHOT, True),
+        (RobotPose(3.0, 1.0, 0, 7), SHOT, True),
+        (RobotPose(3.0, 1.0, 0, 7, heading=-math.pi / 2), SHOT, False),
+        (RobotPose(3.5, 1.0, 0, 7, heading=math.pi / 2), SHOT, False),
+        (None, SHOT, False),
+        (RobotPose(3.0, 1.0, 0, 7), photo_tours._Shot(TourStop(room="x"), "x"), False),
+    ],
+)
+def test_a_viewpoint_is_reached_on_its_spot_facing_the_shot(
+    pose: RobotPose | None, shot: photo_tours._Shot, arrived: bool
+) -> None:
+    assert photo_tours._at_viewpoint(pose, shot) is arrived
+
+
+async def test_the_pose_on_the_viewpoints_floor_is_read() -> None:
+    here = RobotPose(1, 1, 0, 7)
+    client = SimpleNamespace(
+        async_get_poses=AsyncMock(return_value=(RobotPose(0, 0, 0, 8), here))
+    )
+    assert await photo_tours._async_pose(client, 7) is here
+    assert await photo_tours._async_pose(client, 9) is None
+
+    client.async_get_poses.side_effect = MaticError("lost")
+    with pytest.raises(HomeAssistantError) as raised:
+        await photo_tours._async_pose(client, 7)
+    assert raised.value.translation_key == "photo_tour_unreachable"
+
+
+def test_a_tour_refuses_a_viewpoint_on_another_floor() -> None:
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            session=SimpleNamespace(floor=SimpleNamespace(value=FLOOR)),
+            viewpoints=SimpleNamespace(
+                find=lambda _name: Viewpoint("v", "Attic", 8, 0, 0, 0, "attic")
+            ),
+        )
+    )
+
+    with pytest.raises(HomeAssistantError) as raised:
+        photo_tours._shots(entry, [TourStop(viewpoint="Attic")])
+
+    assert raised.value.translation_key == "viewpoint_other_floor"
+
+
+@pytest.mark.parametrize("to_viewpoint", [False, True])
+async def test_navigation_refuses_when_the_task_ends_while_queued(
+    hass: HomeAssistant, to_viewpoint: bool
+) -> None:
+    entry = _vacuum_entry()
+    floor_plan = entry.runtime_data.session.floor.value
+    viewpoint = replace(DESK, mission_id=floor_plan.mission_id)
+    controls = RobotControls(None, entry, None)
+    session = entry.runtime_data.session
+    state = session.state.value
+    session.state.set(
+        replace(
+            state, operational=replace(state.operational, paused=True, cleaning=False)
+        )
+    )
+    manager = CleaningPlanManager(hass)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    command_lock = manager.control.command_lock("synthetic-serial")
+    await command_lock.acquire()
+    task = asyncio.create_task(
+        controls.async_go_to_viewpoint(viewpoint)
+        if to_viewpoint
+        else controls.async_go_to_room("Kitchen")
+    )
+    try:
+        for _ in range(30):
+            waiters = getattr(command_lock, "_waiters", None)
+            if waiters is not None and any(not waiter.done() for waiter in waiters):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("Navigation never queued for the command lock")
+
+        session.state.set(
+            replace(state, operational=replace(state.operational, cleaning=False))
+        )
+        command_lock.release()
+        with pytest.raises(HomeAssistantError) as raised:
+            await task
+    finally:
+        if command_lock.locked():
+            command_lock.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert raised.value.translation_key == (
+        "viewpoint_task_changed" if to_viewpoint else "go_to_room_task_changed"
+    )
+    session.client.async_go_to_room.assert_not_awaited()
+    session.client.async_go_to_posture.assert_not_awaited()
+
+
+async def test_take_photo_tool_sends_a_saved_viewpoint_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = MaticTakePhotoTool()
+    hass, service_call = _prepare_camera_tool(monkeypatch, tool)
+    tool.resolve_entry = lambda *_args: SimpleNamespace(  # type: ignore[method-assign]
+        runtime_data=SimpleNamespace(viewpoints=SimpleNamespace(find=str))
+    )
+    service_call.return_value = {"robots": []}
+
+    await tool.async_run(hass, {"place": "Sofa"}, _llm_context())
+
+    assert service_call.await_args.args[2]["stops"] == [{"viewpoint": "Sofa"}]
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [{}, {"room": "Den", "viewpoint": "Desk"}, {"room": "Den", "look_around": 2}],
+)
+def test_a_stop_is_one_room_or_one_viewpoint(stop: dict) -> None:
+    with pytest.raises(probatio.Invalid):
+        PHOTO_TOUR_STOP_SCHEMA(stop)
+
+
+def test_a_viewpoint_is_saved_from_all_coordinates_or_none() -> None:
+    data = {"entity_id": "vacuum.matic", "name": "Desk"}
+    assert SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA(data)["name"] == "Desk"
+    with pytest.raises(probatio.Invalid):
+        SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA(data | {"x": 1, "y": 2})

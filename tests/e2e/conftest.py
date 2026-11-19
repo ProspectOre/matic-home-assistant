@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 from collections.abc import AsyncIterator
+from functools import partialmethod
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,9 +14,11 @@ from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot import photo_tours
 from custom_components.matic_robot.client import tls
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.auth import HermesCredential
+from custom_components.matic_robot.client.hermes_collections import HermesCollections
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
@@ -131,6 +134,25 @@ def config_entry(
         data=entry_data(simulator, credential),
         version=1,
         minor_version=3,
+    )
+
+
+@pytest.fixture
+def fast_tour_polls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep photo tour polling deterministic without waiting minutes."""
+    monkeypatch.setattr(photo_tours, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(photo_tours, "LEAVE_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(photo_tours, "ARRIVAL_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(photo_tours, "PHOTO_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(photo_tours, "SETTLE_SECONDS", 0)
+    # An empty photo collection sends nothing, so a read of it waits out the
+    # first-entry timeout. The simulator answers on loopback within milliseconds.
+    monkeypatch.setattr(
+        HermesCollections,
+        "async_get_tracked_collection_entries",
+        partialmethod(
+            HermesCollections.async_get_tracked_collection_entries, first_timeout=0.2
+        ),
     )
 
 

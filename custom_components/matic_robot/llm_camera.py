@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import probatio
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import llm
 
 from .const import DOMAIN
 from .llm_common import _ROBOT_FIELD, _MaticTool
 from .llm_control import _async_service_refusal, _PanelRobot
+from .service_names import SERVICE_RUN_PHOTO_TOUR
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 _PHOTO_ACTION_DESCRIPTION = (
-    "The robot travels to the named room, takes one photo and returns to its dock. "
+    "The robot travels to the named room or saved photo viewpoint, takes one "
+    "photo and returns to its dock. "
     "The configured no-photo rooms and unattended photo opt-in apply. Photos are "
     "saved privately on Home Assistant's disk for up to 30 days; never put a photo "
     "or photo URL in logs or other persistent state."
@@ -29,7 +34,7 @@ _AI_DISCLOSURE = (
 
 
 class MaticTakePhotoTool(_MaticTool):
-    """Take and return a pixelated preview from a named room."""
+    """Take and return a pixelated preview from a named room or viewpoint."""
 
     name = "MaticTakePhoto"
     title = "Take a photo"
@@ -38,7 +43,7 @@ class MaticTakePhotoTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            probatio.Required("room"): probatio.All(
+            probatio.Required("place"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
         }
@@ -51,14 +56,13 @@ class MaticTakePhotoTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(
-            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
-        )
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
+        robot = _PanelRobot(hass, entry)
         try:
             response = await hass.services.async_call(
                 DOMAIN,
-                "photo_patrol",
-                {ATTR_ENTITY_ID: robot.entity_id, "rooms": [args["room"]]},
+                SERVICE_RUN_PHOTO_TOUR,
+                {ATTR_ENTITY_ID: robot.entity_id, "stops": [_stop(entry, args)]},
                 blocking=True,
                 context=llm_context.context,
                 return_response=True,
@@ -81,7 +85,7 @@ class MaticInvestigateTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            probatio.Required("room"): probatio.All(
+            probatio.Required("place"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
             probatio.Required("question"): probatio.All(
@@ -98,16 +102,15 @@ class MaticInvestigateTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(
-            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
-        )
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
+        robot = _PanelRobot(hass, entry)
         try:
             response = await hass.services.async_call(
                 DOMAIN,
-                "photo_patrol",
+                SERVICE_RUN_PHOTO_TOUR,
                 {
                     ATTR_ENTITY_ID: robot.entity_id,
-                    "rooms": [args["room"]],
+                    "stops": [_stop(entry, args)],
                     "question": args["question"],
                     "ai_task_entity_id": args["ai_task_entity_id"],
                 },
@@ -136,8 +139,18 @@ class MaticInvestigateTool(_MaticTool):
         )
 
 
+def _stop(entry: MaticConfigEntry, args: dict[str, Any]) -> dict[str, str]:
+    """Read a place as a saved viewpoint when one has that name, else a room."""
+    place: str = args["place"]
+    try:
+        entry.runtime_data.viewpoints.find(place)
+    except ServiceValidationError:
+        return {"room": place}
+    return {"viewpoint": place}
+
+
 def _first_photo(response: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract the first bounded patrol photo without echoing full URLs."""
+    """Extract the first bounded tour photo without echoing full URLs."""
     robots = response.get("robots")
     if not isinstance(robots, list) or not robots or not isinstance(robots[0], dict):
         return None

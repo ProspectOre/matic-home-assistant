@@ -89,14 +89,13 @@ See [go to room](robot-command-actions.md#go-to-room).
 
 See [stay put and emotes](robot-command-actions.md#stay-put-and-emotes).
 
-## Photo patrol
+## Photo tours
 
-**Photo patrol** (`matic_robot.photo_patrol`) sends the robot to each of up to
-12 `rooms` and returns a photo from each confirmed arrival. Enable patrols and
-configure no-photo rooms in the integration's privacy and safety settings first.
-Notification URLs use pixelated previews by default; `full_resolution: true`
-selects full photos. See [Photo patrol](photo-patrol.md) for the fields, example,
-battery and schedule checks, cooldown, and ownership-safe return to dock.
+**Run photo tour** (`matic_robot.run_photo_tour`) photographs up to 12 rooms
+or saved viewpoints and returns each photo. **Save photo viewpoint** and
+**Delete photo viewpoint** manage the viewpoints. Photo tours are off until you
+enable them in the integration's privacy and safety settings. See
+[Photo tours](photo-tours.md) for the fields, an example and the safety checks.
 
 ## Repeat the last clean
 

@@ -110,10 +110,11 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
 - **Robot camera photos.** **Take photo** asks the robot to take a picture,
   and **Latest photo** shows the newest one, including photos taken in the
   Matic app. Use it on a dashboard or attach it to a phone notification.
-- **Photo patrol.** Opt in and set no-photo rooms, then request photos from
-  one or more rooms. Notifications use pixelated previews by default. The
-  **Matic: Photograph room on alert** blueprint uses the same privacy, battery,
-  schedule and cooldown checks. See [Photo patrol](photo-patrol.md).
+- **Photo tours.** Opt in and set no-photo rooms, then send the robot to
+  rooms and saved viewpoints to photograph each. Notifications use pixelated
+  previews by default. The **Matic: Photograph room on alert** blueprint uses
+  the same privacy, battery, schedule and cooldown checks. See
+  [Photo tours](photo-tours.md).
 
 ## Automations
 
@@ -256,6 +257,6 @@ and the first use of each logs a warning. Matic 0.7 removes them.
 ## Checks still needed
 
 Interior phase labels are inferred from one capture; follow/run-map pictures need hardware checks.
-The photo trial used equivalent manual commands; Photo patrol has not run installed.
+The photo trial used equivalent manual commands; photo tours have not run installed.
 Beta 1 is blocked pending live-stream/map-update reconnect, loss/order, authorization, polling, host and device qualification.
 Robot state now arrives only by push (no user toggle and no polling fallback); the map, position and settings are still read on a schedule, every 5 minutes while docked and every 30 seconds while the robot is out. A robot that never serves the state subscription would show as unavailable; no robot has been checked for this. The hoped-for 70% reduction in requests has not been shown.

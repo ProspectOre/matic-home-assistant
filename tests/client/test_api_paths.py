@@ -1259,7 +1259,7 @@ async def test_pose_subscription_acknowledges_each_entry(monkeypatch) -> None:
         "oversized-value",
     ),
 )
-async def test_pose_subscription_skips_a_malformed_entry(entry) -> None:
+async def test_pose_reads_skip_a_malformed_entry(entry) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
 
     async def entries(_name: str):
@@ -1268,11 +1268,16 @@ async def test_pose_subscription_skips_a_malformed_entry(entry) -> None:
 
     client.async_subscribe_collection_entries = entries
 
+    client.async_get_collection_entries = AsyncMock(
+        return_value=[entry async for entry in entries("latest_pose")]
+    )
+
     poses = [pose async for pose in client.async_subscribe_poses()]
 
     assert [(pose.mission_id, pose.observed_at) for pose in poses] == [
         (42, 1_800_000_000)
     ]
+    assert await client.async_get_poses() == tuple(poses)
 
 
 @pytest.mark.parametrize("expected_mission_id", [None, 42])

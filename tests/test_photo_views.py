@@ -15,7 +15,7 @@ from custom_components.matic_robot.photos import (
     MaticRobotPhotoPreviewView,
     MaticRobotPhotoView,
 )
-from tests.test_photo_patrol import START, _photo, _saved
+from tests.test_photo_tours import START, _photo, _saved
 
 
 async def test_photo_view_serves_recent_photos_privately() -> None:

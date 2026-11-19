@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
+
+import pytest
 
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -379,3 +381,13 @@ async def managed_clean_rooms(
         expected_floor_token=floor_token,
         managed_session_id=None if session_id is None else UUID(session_id),
     )
+
+
+@pytest.fixture(autouse=True)
+def stub_viewpoints() -> Iterator[None]:
+    """Keep viewpoint storage out of setup tests whose hass is a stand-in.
+
+    Autouse only in a module that imports it.
+    """
+    with patch("custom_components.matic_robot.Viewpoints", autospec=True):
+        yield

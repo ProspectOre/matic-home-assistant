@@ -35,11 +35,34 @@ GO_TO_ROOM_SERVICE_SCHEMA = cv.make_entity_service_schema(
     }
 )
 
-PHOTO_PATROL_SERVICE_SCHEMA = cv.make_entity_service_schema(
+_NAME = probatio.All(cv.string, probatio.Length(min=1, max=128))
+
+
+def _one_place(stop: dict[str, Any]) -> dict[str, Any]:
+    """Require a room or a viewpoint; only a viewpoint can look around."""
+    if ("room" in stop) == ("viewpoint" in stop):
+        raise probatio.Invalid("a stop names either a room or a viewpoint")
+    if "room" in stop and stop["look_around"] != 1:
+        raise probatio.Invalid("only a viewpoint stop can look around")
+    return stop
+
+
+PHOTO_TOUR_STOP_SCHEMA = probatio.All(
     {
-        probatio.Required("rooms"): probatio.All(
+        probatio.Optional("room"): _NAME,
+        probatio.Optional("viewpoint"): _NAME,
+        probatio.Optional("look_around", default=1): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=1, max=4)
+        ),
+    },
+    _one_place,
+)
+
+RUN_PHOTO_TOUR_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {
+        probatio.Required("stops"): probatio.All(
             cv.ensure_list,
-            [probatio.All(cv.string, probatio.Length(min=1, max=128))],
+            [PHOTO_TOUR_STOP_SCHEMA],
             probatio.Length(min=1, max=12),
         ),
         probatio.Optional("full_resolution", default=False): cv.boolean,
@@ -48,6 +71,33 @@ PHOTO_PATROL_SERVICE_SCHEMA = cv.make_entity_service_schema(
         ),
         probatio.Optional("ai_task_entity_id"): cv.entity_id,
     }
+)
+
+
+def _all_or_none(data: dict[str, Any]) -> dict[str, Any]:
+    if len({"x", "y", "heading"} & data.keys()) not in (0, 3):
+        raise probatio.Invalid("give x, y and heading together, or none of them")
+    return data
+
+
+SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA = probatio.All(
+    cv.make_entity_service_schema(
+        {
+            probatio.Required("name"): probatio.All(
+                cv.string, probatio.Length(min=1, max=64)
+            ),
+            probatio.Optional("x"): probatio.Coerce(float),
+            probatio.Optional("y"): probatio.Coerce(float),
+            probatio.Optional("heading"): probatio.All(
+                probatio.Coerce(float), probatio.Range(min=-360, max=360)
+            ),
+        }
+    ),
+    _all_or_none,
+)
+
+DELETE_PHOTO_VIEWPOINT_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {probatio.Required("viewpoint"): _NAME}
 )
 
 CLEAN_ROOM_AGAIN_SERVICE_SCHEMA = cv.make_entity_service_schema(

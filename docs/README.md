@@ -17,7 +17,7 @@
 | Move around the map, browse saved maps and turn on map layers | [Matic Map](map.md) |
 | Build a dashboard or use room statistics | [Entities](entities.md) |
 | Understand what actually finished | [Cleaning results](native-cleaning-results.md) |
-| Photograph a room while respecting privacy settings | [Photo patrol](photo-patrol.md) |
+| Photograph rooms and viewpoints while respecting privacy settings | [Photo tours](photo-tours.md) |
 | Ask Assist about the robot or have it start a clean | [Assistant tools](assistant-tools.md) |
 
 ## Setup and help
