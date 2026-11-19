@@ -7,7 +7,7 @@ import "./review";
 import type { DialogKind, Localize, WorkspaceState } from "../map-studio-v4/contracts";
 import type { MaticMapStudioGalleryV4 } from "./gallery";
 import { GALLERY_DIALOGS, GALLERY_SCENARIOS, type GalleryScenario } from "./gallery-scenarios";
-import { HA_THEMES } from "./mockups/themes";
+import { HA_THEMES } from "./themes";
 // The walkthrough matrix (scripts/walkthrough_cells.json); only this
 // review entry imports it, so it stays out of the panel's startup graph.
 import WALKTHROUGH from "../../scripts/walkthrough_cells.json";

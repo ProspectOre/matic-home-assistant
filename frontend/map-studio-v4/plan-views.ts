@@ -76,7 +76,7 @@ export class MaticPlanViewsV4 extends LitElement {
 .switch-copy { display: grid; flex: 1; gap: 0.125rem; min-inline-size: 0; font-size: var(--ms-t-md); }
 .switch-copy small, .reason { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .sr-only { position: absolute; inset-block-start: 0; inset-inline-start: 0; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
-/* Edit (plan.md §3, ported from mockups/plan.ts). */
+/* Edit. */
 .edit { display: grid; gap: var(--ms-space-3); }
 .order { display: grid; gap: var(--ms-space-1); margin: 0; padding: 0; border: 0; font-size: var(--ms-t-sm); }
 .order .ms-segment { padding: 0; }
@@ -105,8 +105,8 @@ export class MaticPlanViewsV4 extends LitElement {
 .threshold input { inline-size: 100%; min-block-size: var(--ms-control-sm); accent-color: var(--ms-resolved-indicator, var(--ms-accent)); }
 .subtle { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ms-space-2); }
-/* The Schedule block (room-schedule.md §3, ported from mockups/plan.ts): the
-   room card is its only border; groups are separated by space and a heading. */
+/* The Schedule block: the room card is its only border; groups are separated
+   by space and a heading. */
 .schedule { display: grid; gap: var(--ms-space-3); min-inline-size: 0; margin-block-start: var(--ms-space-2); }
 .schedule-head { display: flex; align-items: center; gap: var(--ms-space-2); }
 .schedule-head h3 { flex: 1; margin: 0; font-size: var(--ms-t-md); font-weight: var(--ms-w-bold); }
