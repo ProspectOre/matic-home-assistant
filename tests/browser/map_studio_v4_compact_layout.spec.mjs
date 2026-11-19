@@ -98,16 +98,16 @@ test.describe("status strip (MS-STATUS-01, MS-STATUS-05)", () => {
       // Lit renders in microtasks, so a task boundary is enough; waiting for
       // frames would also wait for the map to draw each scenario.
       const settle = () => new Promise((resolve) => setTimeout(resolve));
-      const find = (root, selector) => {
-        const match = root.querySelector(selector);
-        if (match) return match;
-        for (const host of root.querySelectorAll("*")) {
-          const found = host.shadowRoot && find(host.shadowRoot, selector);
-          if (found) return found;
-        }
-        return null;
-      };
-      const text = (selector) => (find(element.shadowRoot ?? element, selector)?.textContent ?? "").trim();
+      // Every match through open shadow roots, as a Playwright locator reads.
+      const findAll = (root, selector) => [
+        ...root.querySelectorAll(selector),
+        ...[...root.querySelectorAll("*")].flatMap((host) => (host.shadowRoot ? findAll(host.shadowRoot, selector) : [])),
+      ];
+      const text = (selector) =>
+        findAll(element.shadowRoot ?? element, selector)
+          .map((match) => match.textContent)
+          .join("")
+          .trim();
       const seen = [];
       for (const battery of [92, null]) {
         for (const scenario of GALLERY_SCENARIOS) {
