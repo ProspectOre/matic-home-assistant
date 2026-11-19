@@ -123,7 +123,10 @@ def _run(
     )
 
 
-pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="needs jq")
+# CI must run these: the runner has jq, and a skip there would pass the gate.
+pytestmark = pytest.mark.skipif(
+    shutil.which("jq") is None and not os.environ.get("CI"), reason="needs jq"
+)
 
 
 def test_waits_while_an_earlier_run_is_unfinished(tmp_path: Path) -> None:
