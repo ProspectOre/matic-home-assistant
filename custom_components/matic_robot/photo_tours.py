@@ -151,8 +151,7 @@ async def async_run_photo_tour(
     else:
         attachment_generation = None
     async with lock:
-        # Opt-in and privacy come before any viewpoint or zone check.
-        _assert_photos_allowed(entry, [])
+        check_photo_tour(entry, stops)
         shots = _shots(entry, stops)
         rooms = list(dict.fromkeys(shot.room for shot in shots))
         _assert_photos_allowed(entry, rooms)
@@ -401,6 +400,13 @@ async def _async_wait_for(
     if timeout_error is not None:
         raise timeout_error
     return None
+
+
+def check_photo_tour(entry: MaticConfigEntry, stops: list[TourStop]) -> None:
+    """Refuse stops this robot cannot photograph, before any robot moves."""
+    # Opt-in and privacy come before any viewpoint or zone check.
+    _assert_photos_allowed(entry, [])
+    _shots(entry, stops)
 
 
 def _shots(entry: MaticConfigEntry, stops: list[TourStop]) -> list[_Shot]:

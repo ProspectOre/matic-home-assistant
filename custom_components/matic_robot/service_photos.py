@@ -11,7 +11,7 @@ from homeassistant.util.json import JsonValueType
 from . import service_context as context
 from .client import pose_observation_is_current
 from .const import CONF_PHOTO_NO_PHOTO_ROOMS
-from .photo_tours import TourStop, async_run_photo_tour
+from .photo_tours import TourStop, async_run_photo_tour, check_photo_tour
 from .robot_commands import validation_error
 from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
@@ -36,11 +36,17 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
     ) -> ServiceResponse:
         """Run the tour's stops with every selected robot in turn."""
         stops = [TourStop(**stop) for stop in call.data["stops"]]
+        entries = [
+            context._entry_for_entity(hass, entity_id) for entity_id in entity_ids
+        ]
+        # Viewpoints are per robot: refuse a stop any robot lacks before one moves.
+        for entry in entries:
+            check_photo_tour(entry, stops)
         robots: list[JsonValueType] = []
-        for entity_id in entity_ids:
+        for entity_id, entry in zip(entity_ids, entries, strict=True):
             photos = await async_run_photo_tour(
                 hass,
-                context._entry_for_entity(hass, entity_id),
+                entry,
                 entity_id,
                 stops,
                 full_resolution=call.data["full_resolution"],

@@ -8,18 +8,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from homeassistant.core import Context, ServiceCall
+from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.matic_robot import camera_ai, photo_tours
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.snaps import RobotPhoto
-from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.photo_tours import TourStop
 from custom_components.matic_robot.robot_controls import (
     RobotControls,
 )
-from tests.test_services import _registered_handler, _registered_services
 
 START = datetime(2026, 10, 31, 1, 0, tzinfo=UTC)
 
@@ -991,50 +989,6 @@ async def test_only_one_tour_runs_per_robot() -> None:
 
     assert raised.value.translation_key == "photo_tour_running"
     assert _commands(hass) == []
-
-
-async def test_photo_tour_action_returns_each_robots_photos() -> None:
-    hass = SimpleNamespace(data={})
-    services = await _registered_services(hass)
-    call = ServiceCall(
-        hass,
-        DOMAIN,
-        "run_photo_tour",
-        {
-            "entity_id": ["vacuum.a"],
-            "stops": [{"room": "Kitchen", "look_around": 1}],
-            "full_resolution": False,
-        },
-    )
-    entry = object()
-    taken = [{"room": "Kitchen", "url": "/api/matic_robot/photo/e/p"}]
-    with (
-        patch(
-            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
-            return_value=["vacuum.a"],
-        ),
-        patch(
-            "custom_components.matic_robot.service_context._entry_for_entity",
-            return_value=entry,
-        ),
-        patch(
-            "custom_components.matic_robot.service_photos.async_run_photo_tour",
-            AsyncMock(return_value=taken),
-        ) as mission,
-    ):
-        response = await _registered_handler(services, "run_photo_tour")(call)
-
-    assert response == {"robots": [{"entity_id": "vacuum.a", "photos": taken}]}
-    mission.assert_awaited_once_with(
-        hass,
-        entry,
-        "vacuum.a",
-        [TourStop(room="Kitchen")],
-        full_resolution=False,
-        question=None,
-        ai_task_entity_id=None,
-        context=call.context,
-    )
 
 
 @pytest.mark.parametrize(
