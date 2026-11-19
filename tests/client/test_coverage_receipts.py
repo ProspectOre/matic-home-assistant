@@ -197,6 +197,7 @@ def test_receipt_rejects_plan_with_different_goal_settings():
         (receipt_command() + _varint_field(15, 1), None),
         (None, _varint_field(7, 1)),
     ),
+    ids=("empty", "empty_task", "scalar_task", "scalar_plan"),
 )
 def test_receipt_rejects_missing_repeated_or_wrong_wire_envelopes(
     bad_command, bad_plan

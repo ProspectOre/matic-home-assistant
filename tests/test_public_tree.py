@@ -128,6 +128,11 @@ def test_privacy_scan_rejects_home_assistant_storage(tmp_path: Path) -> None:
     ]
 
 
+def test_privacy_scan_skips_a_file_deleted_after_listing(tmp_path: Path) -> None:
+    """A test or build can delete its output between listing and reading."""
+    assert scan_file(tmp_path / "vanished.txt", tmp_path) == []
+
+
 @pytest.mark.parametrize(
     "generated_directory", ("node_modules", "playwright-report", "test-results")
 )

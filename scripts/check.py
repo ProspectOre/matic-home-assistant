@@ -10,6 +10,9 @@ Home Assistant loads by name or which files a test reads, so --all runs every
 test, as CI does, and then requires a test to run every line and take every
 branch the change adds to the integration. Tests read the built Matic Map, so
 it is built first.
+
+The checks run at the same time, and the tests on one worker per CPU; each
+check's output is printed whole when it finishes.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Container, Iterable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +58,8 @@ GENERATED = "custom_components/matic_robot/client/proto/"
 SOURCE = PACKAGE.replace(".", "/")
 REPORT = Path("coverage.json")
 FULL_SUITE = [f"--cov={SOURCE}", f"--cov-report=json:{REPORT}"]
+# One worker per CPU; a worker that runs out of tests takes another's.
+PARALLEL = ["-n", "auto", "--dist", "worksteal"]
 CLIENT_SUITE = [
     *("-p", "tests.client.without_homeassistant", "-p", "no:homeassistant"),
     *("--confcutdir=tests/client", "tests/client"),
@@ -296,6 +302,32 @@ def tests_for(changed: Iterable[Path], root: Path = ROOT) -> list[str]:
     ]
 
 
+def _run_steps(
+    steps: list[list[str]], after: Future[tuple[bool, str]] | None = None
+) -> tuple[bool, str]:
+    """Run steps in order and return whether all passed, with their output.
+
+    A failed step skips the rest: a failed build leaves nothing to test. With
+    `after`, the steps start once that group has finished.
+    """
+    if after is not None:
+        after.result()
+    output = []
+    for step in steps:
+        result = subprocess.run(
+            step,
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output.append(result.stdout)
+        if result.returncode:
+            return False, "".join(output)
+    return True, "".join(output)
+
+
 def build_commands(root: Path = ROOT) -> list[list[str]] | None:
     """Return the commands that build Matic Map, or None without Node.js."""
     if (npm := shutil.which("npm")) is None:
@@ -330,7 +362,9 @@ def main(arguments: list[str] | None = None) -> int:
         "lint": [[python, "-m", "ruff", "check", "."]],
         "types": [[python, "-m", "mypy", "custom_components/matic_robot"]],
         "contracts": [[python, "scripts/contract_types.py", "--check"]],
-        "client without Home Assistant": [[python, "-m", "pytest", *CLIENT_SUITE]],
+        "client without Home Assistant": [
+            [python, "-m", "pytest", *PARALLEL, *CLIENT_SUITE]
+        ],
         "privacy": [[python, "scripts/check_public_tree.py"]],
     }
     structure = [*layer_violations(), *size_violations(_code_sizes(), _baseline())]
@@ -343,14 +377,21 @@ def main(arguments: list[str] | None = None) -> int:
         print("Tests read the built Matic Map; install Node.js 24 to build it.")
         failed.append("tests")
     else:
-        commands["tests"] = [*build, [python, "-m", "pytest", *selected]]
-    for name, steps in commands.items():
-        print(f"--- {name}", flush=True)
-        # A failed step skips the rest: a failed build leaves nothing to test.
-        if any(
-            subprocess.run(step, cwd=ROOT, check=False).returncode for step in steps
-        ):
-            failed.append(name)
+        commands["tests"] = [*build, [python, "-m", "pytest", *PARALLEL, *selected]]
+    with ThreadPoolExecutor(len(commands)) as pool:
+        # The privacy scan reads the whole tree, which the build and the tests
+        # write to, so they wait for it.
+        scanned = pool.submit(_run_steps, commands.pop("privacy"))
+        running = {scanned: "privacy"}
+        for name, steps in commands.items():
+            after = scanned if name == "tests" else None
+            running[pool.submit(_run_steps, steps, after)] = name
+        for done in as_completed(running):
+            name = running[done]
+            passed, output = done.result()
+            print(f"--- {name}\n{output}", end="", flush=True)
+            if not passed:
+                failed.append(name)
     if changed is None and "tests" not in failed:
         report = json.loads((ROOT / REPORT).read_text())
         lines, branches = (

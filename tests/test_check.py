@@ -347,6 +347,7 @@ GAP = {"missing_lines": [3], "missing_branches": []}
 def test_main_fails_when_any_check_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     arguments: list[str],
     changed: list[Path] | None,
     failing: str | None,
@@ -358,7 +359,9 @@ def test_main_fails_when_any_check_fails(
 
     def run(command: list[str], **_: object) -> SimpleNamespace:
         commands.append(command)
-        return SimpleNamespace(returncode=int(failing in command))
+        return SimpleNamespace(
+            returncode=int(failing in command), stdout=f"ran {command[-1]}\n"
+        )
 
     untested = str(failing).removeprefix("untested: ")
     totals = {
@@ -386,10 +389,20 @@ def test_main_fails_when_any_check_fails(
 
     assert check.main(arguments) == status
     pytest_runs = [command[3:] for command in commands if "pytest" in command]
+    # Every test run spreads over one worker per CPU.
+    assert all(run[: len(check.PARALLEL)] == check.PARALLEL for run in pytest_runs)
+    pytest_runs = [run[len(check.PARALLEL) :] for run in pytest_runs]
     # The client's tests run with Home Assistant blocked on every check.
-    assert pytest_runs == [check.CLIENT_SUITE, *([] if tests is None else [tests])]
+    # The suites run on separate threads, so they may start in either order.
+    expected = [check.CLIENT_SUITE, *([] if tests is None else [tests])]
+    assert sorted(map(str, pytest_runs)) == sorted(map(str, expected))
     # Tests read the built Matic Map, so every test run follows a build.
     assert (BUILD in commands) == (tests is not None or failing in BUILD)
+    # The scan reads the tree the build and the tests write to.
+    privacy = next(i for i, c in enumerate(commands) if "check_public_tree" in c[-1])
+    assert all(privacy < i for i, c in enumerate(commands) if c == BUILD)
+    # Each check's output is printed under its name.
+    assert "--- privacy\nran scripts/check_public_tree.py\n" in capsys.readouterr().out
 
 
 def test_base_that_is_not_a_commit_stops_the_check(

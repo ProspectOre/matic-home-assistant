@@ -136,7 +136,9 @@ def scan_file(path: Path, root: Path = ROOT) -> list[str]:
         return violations
     try:
         text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    # A file can go between listing and reading: other checks and tools can
+    # run beside the scan and delete their own output.
+    except UnicodeDecodeError, FileNotFoundError:
         return violations
     for line_number, line in enumerate(text.splitlines(), start=1):
         if MAC_ADDRESS.search(line):
