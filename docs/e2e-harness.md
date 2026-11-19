@@ -116,7 +116,7 @@ replaced before it is committed.
 - Camera and patrol calls cross the real service, client and image HTTP paths:
   arrival and capture freshness, wrong or unknown rooms, takeover, opt-in,
   cooldown, blocked-room manual snapshots, preview bytes, authentication and
-  the 16-photo memory limit.
+  photos kept on disk across a reload.
 - Entities go unavailable while the robot is off the network or silent, then
   recover. A reset or undecodable message makes the state stream resubscribe.
 - A keepalive ping finds a silent link with no request waiting; refused pings

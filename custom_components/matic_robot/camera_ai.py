@@ -10,7 +10,6 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
-from .client import RobotPhoto
 from .const import DOMAIN
 from .media_source import PhotoAttachmentUnavailable, photo_attachment_source
 
@@ -38,7 +37,8 @@ AI_DISCLOSURE = (
 async def async_answer_about_photo(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
-    photo: RobotPhoto,
+    photo_id: str,
+    image: bytes,
     question: str,
     ai_task_entity_id: str,
     context: Context | None,
@@ -60,8 +60,8 @@ async def async_answer_about_photo(
     try:
         media_source_id = await source.async_stage_photo(
             entry.entry_id,
-            photo.photo_id,
-            photo.image,
+            photo_id,
+            image,
             expected_generation=attachment_generation,
         )
     except PhotoAttachmentUnavailable:

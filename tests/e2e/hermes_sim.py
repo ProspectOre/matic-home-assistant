@@ -26,7 +26,7 @@ import struct
 import time
 from collections import Counter, deque
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from secrets import token_bytes
@@ -172,7 +172,8 @@ class SimPhoto:
     """A synthetic photo queued for publication after a snap command."""
 
     photo_id: UUID
-    captured_at: datetime.datetime
+    # None takes the time of the snap that publishes it.
+    captured_at: datetime.datetime | None
     image: bytes
     preview: bytes | None
 
@@ -432,10 +433,8 @@ class SimulatedRobot:
         captured_at: datetime.datetime | None = None,
         photo_id: UUID | None = None,
     ) -> UUID:
-        """Queue a synthetic WebP that appears after the captured snap command."""
-        if captured_at is None:
-            captured_at = datetime.datetime.now(datetime.UTC)
-        if captured_at.tzinfo is None:
+        """Queue a synthetic WebP that the next snap takes, at its time by default."""
+        if captured_at is not None and captured_at.tzinfo is None:
             raise ValueError("photo capture time must be timezone-aware")
         identifier = photo_id or uuid4()
         self._photos.append(SimPhoto(identifier, captured_at, image, preview))
@@ -580,6 +579,10 @@ class SimulatedRobot:
         if payload == EMOTE_SNAP_PAYLOAD:
             if self._photos:
                 photo = self._photos.popleft()
+                if photo.captured_at is None:
+                    photo = replace(
+                        photo, captured_at=datetime.datetime.now(datetime.UTC)
+                    )
                 if self.hold_photo_saves:
                     self._held_photos.append(photo)
                 else:
@@ -611,6 +614,7 @@ class SimulatedRobot:
             self._set_phase(Phase.RETURNING)
 
     def _save_photo(self, photo: SimPhoto) -> None:
+        assert photo.captured_at is not None
         captured_at = photo.captured_at.astimezone(datetime.UTC)
         timestamp = varint_field(1, int(captured_at.timestamp()))
         timestamp += varint_field(2, captured_at.microsecond * 1000)

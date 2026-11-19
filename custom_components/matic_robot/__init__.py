@@ -42,7 +42,7 @@ from .llm import async_register_matic_llm_api
 from .media_source import existing_photo_attachment_source
 from .migrations import async_migrate_entry
 from .native_history_sync import NativeHistorySync, async_resume_native_reconciliation
-from .photos import RobotPhotoStore
+from .photo_library import PhotoLibrary, PhotoPlace, async_remove_photos
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
 from .robot_health import async_delete_robot_alert_issues
@@ -76,7 +76,7 @@ class MaticRuntimeData:
     slam_history: SlamHistoryStore
     run_trails: RunTrails
     wifi_survey: WifiSurveyStore
-    photos: RobotPhotoStore
+    photos: PhotoLibrary
     cleaning_mode: CleaningMode = CleaningMode.BOTH
     coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL
 
@@ -191,6 +191,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await run_trails.async_load()
         wifi_survey = WifiSurveyStore(hass, entry.entry_id)
         await wifi_survey.async_load()
+        photos = PhotoLibrary(
+            hass,
+            entry.entry_id,
+            client,
+            place=lambda: PhotoPlace.at(
+                session.state.value.operational.current_area,
+                session.pose_on(session.floor.value),
+            ),
+        )
+        await photos.async_load()
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         runtime_data = MaticRuntimeData(
             client,
@@ -201,7 +211,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
             run_trails,
             wifi_survey,
-            RobotPhotoStore(client),
+            photos,
             cleaning_mode=CleaningMode(
                 entry.options.get(CONF_CLEANING_MODE, CleaningMode.BOTH)
             ),
@@ -343,4 +353,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await slam_history.async_remove()
     await RunTrails(hass, entry.entry_id).async_remove()
     await WifiSurveyStore(hass, entry.entry_id).async_remove()
+    await async_remove_photos(hass, entry.entry_id)
     await async_remove_floor_catalogs(hass, entry.entry_id)
