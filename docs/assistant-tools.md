@@ -26,8 +26,9 @@ vacuum is exposed to Assist.
 rooms share a leg, each custom area is its own leg, and with Smart Stop on each
 room is its own leg. The robot usually returns to the dock after each custom area.
 It also reports the most recent managed run for the selected plan, with its
-room roster and verified completions. Compare those lists only when both
-`room_roster_complete` and `completed_room_ids_complete` are true. Older runs,
+room roster, verified completions, and end time when known. Compare those lists
+only when both `room_roster_complete` and `completed_room_ids_complete` are true.
+Older runs,
 truncated rosters, or missing completion records stay unknown; the next-run
 preview does not reconstruct what was due in a past run.
 `MaticGetNativeHistory` returns 5 runs by default and up to 20, with at most 64

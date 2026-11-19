@@ -198,6 +198,21 @@ def normalize_run_provenance(value: str | None) -> RunProvenance:
     return "external_unknown"
 
 
+def public_managed_run_summary(value: Any) -> dict[str, Any] | None:
+    """Return public run status without plan-scoped room-evidence internals."""
+    if not isinstance(value, Mapping):
+        return None
+    summary = dict(value)
+    for key in (
+        "recovery_checkpoint",
+        "room_roster",
+        "room_roster_complete",
+        "completed_room_ids",
+    ):
+        summary.pop(key, None)
+    return summary
+
+
 class SavedPlanLimitError(HomeAssistantError):
     """Raised when a robot already has the maximum saved plans."""
 
@@ -1175,7 +1190,7 @@ class CleaningPlanManager:
                             "outcome": "unverified",
                             "reason_code": "home_assistant_restart",
                             "cause": "home_assistant",
-                            "ended_at": recovered_at,
+                            "ended_at": None,
                             "recovered_at": recovered_at,
                         }
                     )
@@ -4905,15 +4920,16 @@ class CleaningPlanManager:
                         saved_completed_ids.append(room_id)
         room_count = last_run.get("room_count")
         max_rooms = room_count if isinstance(room_count, int) and room_count >= 0 else 0
-        ended_at = dt_util.utcnow().isoformat()
+        recorded_at = dt_util.utcnow().isoformat()
+        docked = last_run.get("outcome") == "stopped_docked"
+        ended_at = last_run.get("ended_at") if docked else recorded_at
         unfinished = _close_unfinished_room_records(
             robot,
             plan_id=last_run["plan_id"],
             run_id=run_id,
-            ended_at=ended_at,
+            ended_at=recorded_at,
         )
-        _close_unfinished_area_records(robot, run_id=run_id, ended_at=ended_at)
-        docked = last_run.get("outcome") == "stopped_docked"
+        _close_unfinished_area_records(robot, run_id=run_id, ended_at=recorded_at)
         stored_completed_count = _stored_count(last_run, "completed_room_count")
         was_completed = last_run.get("outcome") == "completed"
         completed = was_completed or (
@@ -5007,6 +5023,11 @@ class CleaningPlanManager:
             ):
                 return None
             now = dt_util.utcnow().isoformat()
+            ended_at = (
+                now
+                if last_run.get("outcome") == "running"
+                else last_run.get("ended_at")
+            )
             provenance = normalize_run_provenance(
                 last_run.get("provenance")
                 if isinstance(last_run.get("provenance"), str)
@@ -5015,7 +5036,7 @@ class CleaningPlanManager:
             last_run.update(
                 {
                     "outcome": "stopped_docked",
-                    "ended_at": now,
+                    "ended_at": ended_at,
                     "reason_code": "stopped_docked",
                     "terminal_activity": "docked",
                     "docked_at": now,
@@ -7274,10 +7295,14 @@ def _repair_native_reconciled_run(
         return
     room_count = _stored_count(last_run, "room_count")
     completed_count = _stored_count(last_run, "completed_room_count")
-    if completed_count < room_count:
+    completed_room_ids = last_run.setdefault("completed_room_ids", [])
+    already_credited = (
+        isinstance(completed_room_ids, list)
+        and pending["room_id"] in completed_room_ids
+    )
+    if completed_count < room_count and not already_credited:
         completed_count += 1
         last_run["completed_room_count"] = completed_count
-        completed_room_ids = last_run.setdefault("completed_room_ids", [])
         if (
             isinstance(completed_room_ids, list)
             and pending["room_id"] not in completed_room_ids

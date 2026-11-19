@@ -677,6 +677,9 @@ def _timing_hass():
             "run_id": sample["run_id"],
             "outcome": "running",
             "completed_room_count": 0,
+            "room_roster": [{"id": "room-kitchen", "name": "Kitchen"}],
+            "room_roster_complete": True,
+            "completed_room_ids": ["room-kitchen"],
         },
     }
     hass = _hass(entry)
@@ -704,6 +707,11 @@ async def test_operations_reads_shared_timing_without_sampling_or_motion() -> No
     assert (
         result["robots"][0]["managed_runner"]["last_run"]["completed_room_count"] == 0
     )
+    assert not {
+        "room_roster",
+        "room_roster_complete",
+        "completed_room_ids",
+    }.intersection(result["robots"][0]["managed_runner"]["last_run"])
 
     # The API forwards the published sample; it never calculates a newer clock.
     for value in (0, 100):

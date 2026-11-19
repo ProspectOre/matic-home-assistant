@@ -1192,6 +1192,11 @@ async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
     assert {key: attributes["last_run"][key] for key in payload["last_run"]} == payload[
         "last_run"
     ]
+    assert not {
+        "room_roster",
+        "room_roster_complete",
+        "completed_room_ids",
+    }.intersection(attributes["last_run"])
     assert isinstance(attributes["plans"], dict)
     assert "matic_entry_id" in history._unrecorded_attributes
 

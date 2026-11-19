@@ -56,6 +56,7 @@ from .plans import (
     leg_groups,
     plan_entries,
     plan_floor_token,
+    public_managed_run_summary,
     resolve_room_reference,
     room_cadence_identity,
 )
@@ -2102,7 +2103,7 @@ def _robot_summary(hass: HomeAssistant, entry: ConfigEntry[Any]) -> JsonObjectTy
                 "lock_held": manager.lock(serial_number).locked(),
                 "stop_settle_pending": manager.stop_pending(serial_number),
                 "active_plan": snapshot.get("active_plan"),
-                "last_run": snapshot.get("last_run"),
+                "last_run": public_managed_run_summary(snapshot.get("last_run")),
                 "current_room_timing": _sampled_room_timing(hass, entry, snapshot),
             },
             "selected_plan": {

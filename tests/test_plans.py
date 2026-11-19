@@ -507,6 +507,67 @@ async def test_late_native_reconciliation_refreshes_plan_run_projection(hass) ->
     assert summary["outcome"] == "completed"
     assert summary["completed_room_ids"] == ["kitchen"]
     assert summary["completed_room_ids_complete"] is True
+    assert robot["last_run"]["completed_room_count"] == 1
+    plans_module._repair_native_reconciled_run(
+        robot, {"run_id": "run-1", "room_id": "kitchen"}, "away"
+    )
+    assert robot["last_run"]["completed_room_count"] == 1
+
+
+async def test_recovery_completion_ids_require_the_matching_managed_run(hass) -> None:
+    """Only an owned checkpoint completion advances its managed run roster."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-match",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[(room.room_id, room.name)],
+    )
+    await manager.async_set_recovery_checkpoint(
+        "serial", "run-match", {"rooms": [], "completed_room_ids": []}
+    )
+    recovering = CleaningPlanManager(hass)
+    recovering._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=deepcopy(manager._data)),
+        async_save=AsyncMock(),
+    )
+    await recovering.async_load()
+    assert await recovering.async_mark_completed(
+        "serial", "away", room, run_id="run-match", duration_seconds=30
+    )
+    assert recovering.snapshot("serial")["last_run"]["completed_room_ids"] == [
+        room.room_id
+    ]
+    assert await recovering.async_finish_run(
+        "serial", "run-match", "completed", "all_rooms_verified", 1
+    )
+    completed = recovering.snapshot("serial")["plan_history"]["away"][
+        "last_managed_run"
+    ]
+    assert completed["completed_room_ids"] == [room.room_id]
+    assert completed["completed_room_ids_complete"] is True
+
+    await recovering.async_begin_run(
+        "serial",
+        "away",
+        "run-current",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[(room.room_id, room.name)],
+    )
+    assert not await recovering.async_mark_completed(
+        "serial", "away", room, run_id="run-stale", duration_seconds=30
+    )
+    current = recovering.snapshot("serial")["last_run"]
+    assert current["run_id"] == "run-current"
+    assert current["completed_room_count"] == 0
+    assert current["completed_room_ids"] == []
 
 
 async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
@@ -694,6 +755,7 @@ async def test_docked_stop_upgrades_only_after_correlated_final_command(hass) ->
         terminal_activity="cleaning",
     )
     assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    original_ended_at = manager.snapshot("serial")["last_run"]["ended_at"]
     assert not await manager.async_mark_run_docked("serial", "wrong-run")
 
     assert await manager.async_mark_run_docked(
@@ -702,7 +764,9 @@ async def test_docked_stop_upgrades_only_after_correlated_final_command(hass) ->
     await hass.async_block_till_done()
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "stopped_docked"
+    assert last_run["ended_at"] == original_ended_at
     assert dt_util.parse_datetime(last_run["ended_at"]) is not None
+    assert dt_util.parse_datetime(last_run["docked_at"]) is not None
     assert last_run["terminal_activity"] == "docked"
     managed_run = manager.snapshot("serial")["plan_history"]["away"]["last_managed_run"]
     assert managed_run["outcome"] == "stopped_docked"
@@ -729,11 +793,13 @@ async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
     )
 
     assert await manager.async_mark_run_docked("serial", "run-1")
+    dock_end = manager.snapshot("serial")["last_run"]["ended_at"]
     assert await manager.async_finish_run(
         "serial", "run-1", "cancelled", "managed_stop", 0, terminal_activity="idle"
     )
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "stopped_docked"
+    assert last_run["ended_at"] == dock_end
     assert last_run["reason_code"] == "stopped_docked"
     assert last_run["terminal_activity"] == "docked"
 
@@ -1078,13 +1144,14 @@ async def test_restart_retires_persisted_running_outcome(
     assert last_run["outcome"] == "unverified"
     assert last_run["reason_code"] == "home_assistant_restart"
     assert last_run["cause"] == "home_assistant"
-    assert dt_util.parse_datetime(last_run["ended_at"]) is not None
+    assert last_run["ended_at"] is None
     assert dt_util.parse_datetime(last_run["recovered_at"]) is not None
     assert last_run["completed_room_count"] == int(verified_room)
     managed_run = recovering.snapshot("serial")["plan_history"]["away"][
         "last_managed_run"
     ]
     assert managed_run["outcome"] == "unverified"
+    assert managed_run["ended_at"] is None
     assert managed_run["room_roster_complete"] is False
     assert managed_run["completed_room_ids_complete"] is False
     assert recovering.snapshot("serial")["active_plan"] is None
