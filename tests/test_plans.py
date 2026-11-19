@@ -1076,6 +1076,93 @@ async def test_dock_observation_does_not_recreate_reset_plan_history(hass) -> No
     assert "stop_fence_expires_at" not in manager._robot("serial")
 
 
+@pytest.mark.parametrize("recover_after_reset", [False, True])
+async def test_plan_reset_fences_run_completion_and_recovery(
+    hass, recover_after_reset
+) -> None:
+    """A run that predates a plan reset cannot write its old history back."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["plans"]["away"] = {
+        "name": "Away",
+        "rooms": [{"room_id": "room-kitchen", "name": "Kitchen"}],
+    }
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-before-plan-reset",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[("room-kitchen", "Kitchen")],
+    )
+
+    await manager.async_reset_history("serial", "away")
+    if recover_after_reset:
+        recovering = CleaningPlanManager(hass)
+        recovering._store = SimpleNamespace(
+            async_load=AsyncMock(return_value=deepcopy(manager._data)),
+            async_save=AsyncMock(),
+        )
+        await recovering.async_load()
+        manager = recovering
+    else:
+        await manager.async_finish_run(
+            "serial",
+            "run-before-plan-reset",
+            "failed",
+            "room_failed",
+            0,
+            completed_room_ids=[],
+        )
+
+    assert "away" not in manager.snapshot("serial")["plan_history"]
+
+
+@pytest.mark.parametrize("recover_after_reset", [False, True])
+async def test_reset_all_fences_runs_started_before_reset(
+    hass, recover_after_reset
+) -> None:
+    """Reset-all must keep an active or restarting old run out of history."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["plans"]["away"] = {
+        "name": "Away",
+        "rooms": [{"room_id": "room-kitchen", "name": "Kitchen"}],
+    }
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-before-reset-all",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        room_roster=[("room-kitchen", "Kitchen")],
+    )
+
+    await manager.async_reset_history("serial")
+    assert "away" in manager._robot("serial")["rotation_resets"]
+    if recover_after_reset:
+        recovering = CleaningPlanManager(hass)
+        recovering._store = SimpleNamespace(
+            async_load=AsyncMock(return_value=deepcopy(manager._data)),
+            async_save=AsyncMock(),
+        )
+        await recovering.async_load()
+        manager = recovering
+    else:
+        await manager.async_finish_run(
+            "serial",
+            "run-before-reset-all",
+            "failed",
+            "room_failed",
+            0,
+            completed_room_ids=[],
+        )
+
+    assert "away" not in manager.snapshot("serial")["plan_history"]
+
+
 async def test_stale_dock_confirmation_preserves_newer_stop_fence(hass) -> None:
     """A prior dock watcher cannot clear a later STOP for the same run."""
     manager = CleaningPlanManager(hass)

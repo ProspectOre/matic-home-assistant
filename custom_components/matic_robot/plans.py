@@ -3339,7 +3339,16 @@ class CleaningPlanManager:
                     robot["rotations"] = {}
                     robot["rooms"] = {}
                     robot["area_history"] = {}
-                    robot["rotation_resets"] = {}
+                    reset_at = dt_util.utcnow().isoformat()
+                    reset_plan_ids = set(robot["plans"])
+                    last_run = robot.get("last_run")
+                    if isinstance(last_run, Mapping) and isinstance(
+                        last_run.get("plan_id"), str
+                    ):
+                        reset_plan_ids.add(last_run["plan_id"])
+                    if pending is not None:
+                        reset_plan_ids.add(pending["plan_id"])
+                    robot["rotation_resets"] = dict.fromkeys(reset_plan_ids, reset_at)
                 else:
                     robot["rotations"].pop(plan_id, None)
                     robot["rotation_resets"][plan_id] = dt_util.utcnow().isoformat()
