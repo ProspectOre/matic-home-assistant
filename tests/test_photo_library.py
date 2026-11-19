@@ -50,8 +50,8 @@ def _frozen(freezer: FrozenDateTimeFactory) -> None:
     freezer.move_to(NOW)
 
 
-@pytest.fixture
-def folder(hass: HomeAssistant, tmp_path: Path) -> Path:
+@pytest.fixture(name="folder")
+def folder_fixture(hass: HomeAssistant, tmp_path: Path) -> Path:
     hass.config.config_dir = str(tmp_path)
     return tmp_path / DOMAIN / "photos" / ENTRY_ID
 
@@ -214,6 +214,7 @@ async def test_a_photo_that_reads_back_wrong_is_not_recorded(
         await library.async_read()
 
     assert library.photo_count == 0
+    assert await hass.async_add_executor_job(lambda: [*folder.iterdir()]) == []
     issue = ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID)
     assert issue.translation_key == "photo_storage_failed"
 

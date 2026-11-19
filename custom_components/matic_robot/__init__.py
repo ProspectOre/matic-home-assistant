@@ -155,6 +155,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
     slam_map: SlamMapStore | None = None
     slam_history: SlamHistoryStore | None = None
     wifi_survey: WifiSurveyStore | None = None
+    photos: PhotoLibrary | None = None
     try:
         await session.async_start()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
@@ -275,6 +276,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             upgrade_pending=area_binding_upgrade.pending,
         ).async_start()
     except BaseException:
+        if photos is not None:
+            await photos.async_shutdown()
         if wifi_survey is not None:
             await wifi_survey.async_shutdown()
         if slam_history is not None:

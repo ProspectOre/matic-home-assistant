@@ -725,7 +725,9 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True),
-        patch("custom_components.matic_robot.PhotoLibrary", autospec=True),
+        patch(
+            "custom_components.matic_robot.PhotoLibrary", autospec=True
+        ) as photo_library,
         patch(
             "custom_components.matic_robot.SlamHistoryStore",
             return_value=slam_history,
@@ -740,6 +742,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     client.async_shutdown.assert_awaited_once_with()
     slam_map.async_shutdown.assert_awaited_once()
     slam_history.async_shutdown.assert_awaited_once()
+    photo_library.return_value.async_shutdown.assert_awaited_once_with()
 
 
 @pytest.mark.parametrize("unload_ok", [True, False])

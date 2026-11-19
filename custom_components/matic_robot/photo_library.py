@@ -139,6 +139,7 @@ class PhotoLibrary:
         self._listeners: set[Callable[[], None]] = set()
         self._lock = asyncio.Lock()
         self._unsaved = False
+        self._closed = False
         # Photos up to this capture time were removed to stay under the size
         # cap. The robot still holds them, so they are not read back in.
         self._evicted_through: datetime | None = None
@@ -199,24 +200,27 @@ class PhotoLibrary:
         self._records = {record.photo_id: record for record in records if record}
         if evicted := stored.get("evicted_through"):
             self._evicted_through = datetime.fromisoformat(evicted)
+        await self._hass.async_add_executor_job(self._delete_unrecorded_files)
         await self.async_prune()
         self._stop_pruning = async_track_time_interval(
             self._hass, self._async_prune_daily, PRUNE_INTERVAL
         )
 
     async def async_shutdown(self) -> None:
-        """Stop pruning and write any record not yet saved."""
-        if self._stop_pruning is not None:
-            self._stop_pruning()
-            self._stop_pruning = None
-        if self._unsaved:
-            self._unsaved = False
-            await self._store.async_save(self._data())
+        """Stop saving and pruning, and write any record not yet saved."""
+        async with self._lock:
+            self._closed = True
+            if self._stop_pruning is not None:
+                self._stop_pruning()
+                self._stop_pruning = None
+            if self._unsaved:
+                self._unsaved = False
+                await self._store.async_save(self._data())
 
     async def async_prune(self) -> None:
         """Remove photos past the age and size limits."""
         async with self._lock:
-            if await self._async_prune():
+            if not self._closed and await self._async_prune():
                 self._async_changed()
 
     async def async_image(
@@ -266,7 +270,9 @@ class PhotoLibrary:
         self, entries: Iterable[HermesCollectionEntry]
     ) -> None:
         async with self._lock:
-            saved = False
+            if self._closed:
+                return
+            saved = failed = False
             for entry in entries:
                 photo = _decode(entry)
                 if photo is None or photo.photo_id in self._records:
@@ -284,12 +290,13 @@ class PhotoLibrary:
                     # The photo stays on the robot and its request stays open
                     # for the next read.
                     self._async_storage_failed(err)
+                    failed = True
                     break
                 if expectation is not None:
                     self._expected.remove(expectation)
                 self._records[record.photo_id] = record
                 saved = True
-            else:
+            if saved and not failed:
                 ir.async_delete_issue(self._hass, DOMAIN, self._issue_id)
             if saved:
                 await self._async_prune()
@@ -359,20 +366,23 @@ class PhotoLibrary:
         files = [(self._path(photo.photo_id), photo.image)]
         if photo.preview is not None:
             files.append((self._path(photo.photo_id, preview=True), photo.preview))
-        for path, data in files:
-            unfinished = path.with_suffix(".part")
-            try:
+        try:
+            for path, data in files:
+                unfinished = path.with_suffix(".part")
                 descriptor = os.open(
                     unfinished, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
                 )
                 with os.fdopen(descriptor, "wb") as file:
                     file.write(data)
                 unfinished.replace(path)
-            except OSError:
-                unfinished.unlink(missing_ok=True)
-                raise
-        if files[0][0].read_bytes() != photo.image:
-            raise OSError(errno.EIO, "the saved photo does not match the robot's")
+            if files[0][0].read_bytes() != photo.image:
+                raise OSError(errno.EIO, "the saved photo does not match the robot's")
+        except OSError:
+            # Leave nothing behind that no record accounts for.
+            for path, _ in files:
+                for leftover in (path, path.with_suffix(".part")):
+                    leftover.unlink(missing_ok=True)
+            raise
 
     async def _async_prune(self) -> bool:
         cutoff = dt_util.utcnow() - MAX_PHOTO_AGE
@@ -381,6 +391,7 @@ class PhotoLibrary:
         )
         removed: list[str] = []
         total = 0
+        full = False
         for record in kept:
             if record.starred:
                 total += record.size
@@ -388,7 +399,9 @@ class PhotoLibrary:
             if record.captured_at < cutoff:
                 removed.append(record.photo_id)
                 continue
-            if total + record.size > MAX_LIBRARY_BYTES:
+            # Once one photo does not fit, every older one goes too.
+            full = full or total + record.size > MAX_LIBRARY_BYTES
+            if full:
                 removed.append(record.photo_id)
                 self._evicted_through = max(
                     self._evicted_through or record.captured_at, record.captured_at
@@ -400,6 +413,19 @@ class PhotoLibrary:
         if removed:
             await self._hass.async_add_executor_job(self._delete_files, removed)
         return bool(removed)
+
+    def _delete_unrecorded_files(self) -> None:
+        """Delete files no record accounts for, such as an interrupted write."""
+        if not self._folder.is_dir():
+            return
+        recorded = {self._path(photo_id) for photo_id in self._records} | {
+            self._path(record.photo_id, preview=True)
+            for record in self._records.values()
+            if record.has_preview
+        }
+        for path in self._folder.iterdir():
+            if path not in recorded:
+                path.unlink(missing_ok=True)
 
     def _delete_files(self, photo_ids: list[str]) -> None:
         """Delete files of removed records; a file that stays is only logged."""
