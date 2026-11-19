@@ -234,6 +234,16 @@ async def test_old_and_overflowing_photos_are_removed_but_starred_ones_kept(
     assert not (folder / f"{_id(2)}.webp").exists()
     assert not (folder / f"{_id(2)}.preview.webp").exists()
 
+    # The robot still holds the evicted photo; it is not saved again, even
+    # by a library that loads the records afresh.
+    _entries(library, _snap(1), _snap(2, age=timedelta(seconds=-1)))
+    assert await library.async_read() is False
+    await library._store.async_save(library._data())
+    reloaded = _library(hass, _snap(2, age=timedelta(seconds=-1)))
+    await reloaded.async_load()
+    assert await reloaded.async_read() is False
+    await reloaded.async_shutdown()
+
     # A month later only the starred photo is left.
     freezer.tick(photo_library.MAX_PHOTO_AGE + timedelta(seconds=10))
     _entries(library, _snap(4))

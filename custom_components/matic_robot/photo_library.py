@@ -139,6 +139,9 @@ class PhotoLibrary:
         self._listeners: set[Callable[[], None]] = set()
         self._lock = asyncio.Lock()
         self._unsaved = False
+        # Photos up to this capture time were removed to stay under the size
+        # cap. The robot still holds them, so they are not read back in.
+        self._evicted_through: datetime | None = None
         self._stop_pruning: CALLBACK_TYPE | None = None
 
     @property
@@ -194,6 +197,8 @@ class PhotoLibrary:
         stored = await self._store.async_load() or {}
         records = (_decode_record(item) for item in stored.get("photos", ()))
         self._records = {record.photo_id: record for record in records if record}
+        if evicted := stored.get("evicted_through"):
+            self._evicted_through = datetime.fromisoformat(evicted)
         await self.async_prune()
         self._stop_pruning = async_track_time_interval(
             self._hass, self._async_prune_daily, PRUNE_INTERVAL
@@ -266,7 +271,10 @@ class PhotoLibrary:
                 photo = _decode(entry)
                 if photo is None or photo.photo_id in self._records:
                     continue
-                if dt_util.utcnow() - photo.captured_at > MAX_PHOTO_AGE:
+                if dt_util.utcnow() - photo.captured_at > MAX_PHOTO_AGE or (
+                    self._evicted_through is not None
+                    and photo.captured_at <= self._evicted_through
+                ):
                     continue
                 expectation = self._expectation_for(photo)
                 record = self._new_record(photo, expectation)
@@ -373,8 +381,14 @@ class PhotoLibrary:
             if record.starred:
                 total += record.size
                 continue
-            if record.captured_at < cutoff or total + record.size > MAX_LIBRARY_BYTES:
+            if record.captured_at < cutoff:
                 removed.append(record.photo_id)
+                continue
+            if total + record.size > MAX_LIBRARY_BYTES:
+                removed.append(record.photo_id)
+                self._evicted_through = max(
+                    self._evicted_through or record.captured_at, record.captured_at
+                )
                 continue
             total += record.size
         for photo_id in removed:
@@ -411,7 +425,12 @@ class PhotoLibrary:
         return self._folder / f"{photo_id}{'.preview' if preview else ''}.webp"
 
     def _data(self) -> dict[str, Any]:
-        return {"photos": [_encode_record(record) for record in self._records.values()]}
+        return {
+            "photos": [_encode_record(record) for record in self._records.values()],
+            "evicted_through": self._evicted_through.isoformat()
+            if self._evicted_through is not None
+            else None,
+        }
 
 
 async def async_remove_photos(hass: HomeAssistant, entry_id: str) -> None:
