@@ -98,7 +98,8 @@ def encode_posture(*, x: float, y: float, heading: float) -> bytes:
     """Encode a NavigateTo Posture: wire-frame metres and a heading in radians.
 
     The heading travels as a unit complex {1: cos, 2: sin}. Zero values are left
-    off the wire, as the app's encoder leaves them.
+    off the wire, as the app's encoder leaves them. This layout comes from the
+    app's encoder; no robot has received a posture built here yet.
     """
     if (
         not all(math.isfinite(value) for value in (x, y, heading))
@@ -112,12 +113,13 @@ def encode_posture(*, x: float, y: float, heading: float) -> bytes:
 def encode_go_to_posture_command(
     *, mission_id: int, posture: bytes, await_refill: bool = False
 ) -> bytes:
-    """Drive to a posture on this floor, as a tap on the Matic app's map does.
+    """Drive to a posture on this floor, in the app encoder's NavigateTo layout.
 
-    Without a wait task the robot parks there and starts its auto-dock
-    countdown. ``await_refill`` adds the sink summon's wait: the robot waits up
-    to 15 minutes, docking once refilled. The sink posture is sent exactly as
-    read from ``sink_summon_locations``.
+    Without a wait task this is the app's map-tap goal. It awaits a live check,
+    so what the robot does on arrival is not recorded. ``await_refill`` adds
+    the sink summon's wait: the robot waits up to 15 minutes, docking once
+    refilled. The sink posture is sent exactly as read from
+    ``sink_summon_locations``.
     """
     if not posture:
         raise ValueError("a posture is required")
