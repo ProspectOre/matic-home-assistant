@@ -66,6 +66,11 @@ def _snap(
     )
 
 
+def _write_file(path: Path, size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(size))
+
+
 def _id(number: int) -> str:
     return str(UUID(int=number))
 
@@ -308,7 +313,7 @@ async def test_watch_saves_photos_from_every_subscription(
 
 
 async def test_load_skips_records_it_cannot_read(
-    hass: HomeAssistant, hass_storage: dict[str, Any]
+    hass: HomeAssistant, hass_storage: dict[str, Any], folder: Path
 ) -> None:
     good = {
         "photo_id": _id(1),
@@ -325,6 +330,7 @@ async def test_load_skips_records_it_cannot_read(
         "key": STORAGE_KEY,
         "data": {"photos": [good, {**good, "photo_id": "../x"}, {"album": "a"}]},
     }
+    await hass.async_add_executor_job(_write_file, folder / f"{_id(1)}.webp", 10)
     library = _library(hass)
     await library.async_load()
     assert list(library._records) == [_id(1)]

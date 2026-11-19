@@ -153,3 +153,52 @@ async def test_the_repair_stays_while_a_photo_still_fails_to_save(
     _entries(library, _snap(2, age=timedelta(seconds=-1)))
     await library.async_read()
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is None
+
+
+async def test_a_photo_whose_file_was_cut_short_is_saved_again(
+    hass: HomeAssistant, folder: Path
+) -> None:
+    """A power cut can leave a short or missing file; the robot still has it."""
+    library = _library(hass, _snap(1), _snap(2), _snap(3))
+    await library.async_read()
+    await library._store.async_save(library._data())
+    image = folder / f"{_id(1)}.webp"
+    saved = await hass.async_add_executor_job(image.read_bytes)
+    await hass.async_add_executor_job(image.write_bytes, b"")
+    await hass.async_add_executor_job((folder / f"{_id(2)}.preview.webp").unlink)
+
+    reloaded = _library(hass, _snap(1), _snap(2), _snap(3))
+    await reloaded.async_load()
+    assert sorted(reloaded._records) == [_id(3)]
+
+    await reloaded.async_read()
+    await reloaded.async_shutdown()
+    assert sorted(reloaded._records) == [_id(1), _id(2), _id(3)]
+    assert await hass.async_add_executor_job(image.read_bytes) == saved
+
+
+async def test_housekeeping_faults_at_load_are_only_logged(
+    hass: HomeAssistant, folder: Path, caplog
+) -> None:
+    library = _library(hass, _snap(1))
+    await library.async_read()
+    data = library._data() | {"evicted_through": "not a time"}
+    await library._store.async_save(data)
+    await hass.async_add_executor_job((folder / "stray").mkdir)
+
+    reloaded = _library(hass)
+    await reloaded.async_load()
+    assert reloaded._evicted_through is None
+    assert sorted(reloaded._records) == [_id(1)]
+    assert "Could not delete a Matic photo" in caplog.text
+
+    def unreadable(_folder: Path) -> Any:
+        raise OSError(errno.EACCES, "denied")
+
+    with patch.object(Path, "iterdir", unreadable):
+        again = _library(hass)
+        await again.async_load()
+    assert sorted(again._records) == [_id(1)]
+    assert "Could not read the Matic photo folder" in caplog.text
+    await reloaded.async_shutdown()
+    await again.async_shutdown()
