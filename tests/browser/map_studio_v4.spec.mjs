@@ -3222,7 +3222,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_health: "ready",
       stream_state: "connected",
       stream_failures: 0,
-      live_workspace_transport_enabled: true,
     };
     await page.route("**/api/matic_robot/slam_entries", (route) => {
       catalogRequests += 1;
@@ -6975,7 +6974,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_health: "ready",
       stream_state: "connected",
       stream_failures: 0,
-      live_workspace_transport_enabled: true,
     });
     await page.route("**/api/matic_robot/slam_entries", (route) => {
       catalogRequests += 1;

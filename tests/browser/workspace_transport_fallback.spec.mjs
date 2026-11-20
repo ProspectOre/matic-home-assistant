@@ -113,7 +113,7 @@ async function setup(page, failureMode) {
       vacuumEntityId: "vacuum.synthetic", entryKey: entry.entryId, robotLabel: "Matic",
       robots: [{ entryId: entry.entryId, label: "Matic" }] };
     const store = new WorkspaceStore();
-    const controller = new EffectController(store, backend, connection, true);
+    const controller = new EffectController(store, backend, connection);
     controller.sync(projection);
     window.fallbackHarness = { controller, store, projection, stats, intervals, clearedIntervals,
       updateSavedPlan: (name, cleaningMode) => {
