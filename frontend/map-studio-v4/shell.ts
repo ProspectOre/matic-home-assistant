@@ -1379,7 +1379,8 @@ export class MaticMapShellV4 extends LitElement {
               : state.workflow === "areaReview" ? this.#t("v4_name_this_area", "Name this area")
                 : state.workflow === "history" ? this.#t("v4_map_history", "Map history")
                   : state.workflow === "support" ? this.#t("v4_map_diagnostics", "Map diagnostics")
-                    : this.#t("v4_cleaning_history", "Cleaning history");
+                    : state.workflow === "photos" ? this.#t("v4_photos", "Photos")
+                      : this.#t("v4_cleaning_history", "Cleaning history");
     return { title, description: "" };
   }
 

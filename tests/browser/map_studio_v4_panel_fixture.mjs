@@ -297,6 +297,7 @@ export async function installPanelFixture(page, {
       if (photoGallery && path === "/api/matic_robot/photo_gallery/synthetic-entry") return json(window.__photoGalleryReply ?? photoGallery);
       if (photoGallery && path.startsWith("/api/matic_robot/photo/synthetic-entry/")) {
         window.__photoReads = [...window.__photoReads ?? [], path];
+        if (window.__photoFailures?.includes(path)) return new Response(null, { status: 404 });
         const webp = "UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vuUAAA=";
         return new Response(Uint8Array.from(atob(webp), (char) => char.charCodeAt(0)), { headers: { "Content-Type": "image/webp" } });
       }

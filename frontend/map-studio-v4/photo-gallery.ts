@@ -10,8 +10,8 @@ export const PHOTO_GALLERY_TAG = "matic-photo-gallery-v4";
 
 /** The manual album holds photos taken one at a time, from Home Assistant or the Matic app. */
 const MANUAL_ALBUM = "manual";
-/** Pixelated previews are small; this bounds memory on a phone. */
-const MAX_PREVIEWS = 60;
+/** Photos shown, and previews read, per "Show older photos". */
+const PAGE = 60;
 /** Preview reads in flight at once. */
 const PREVIEW_READS = 4;
 /** A horizontal drag this long, in CSS pixels, turns to the next photo. */
@@ -35,6 +35,8 @@ export class MaticPhotoGalleryV4 extends LitElement {
     _previews: { state: true },
     _open: { state: true },
     _full: { state: true },
+    _fullFailed: { state: true },
+    _shown: { state: true },
   };
 
   static override styles = [tokens, base, controls, css`
@@ -52,6 +54,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
 .viewer::backdrop { background: rgb(0 0 0 / 0.6); }
 .viewer header, .viewer footer { display: flex; align-items: center; justify-content: space-between; gap: var(--ms-space-2); }
 .viewer p { margin: 0; font-size: var(--ms-t-sm); }
+.viewer .failed { display: grid; place-content: center; justify-items: center; gap: var(--ms-space-2); }
 .viewer img { inline-size: 100%; block-size: 100%; object-fit: contain; user-select: none; }
 `];
 
@@ -66,12 +69,17 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   /** The photo open in the viewer. */
   _open: GalleryPhoto | null = null;
   _full: string | null = null;
+  _fullFailed = false;
+  /** How many of the newest photos the grid shows. */
+  _shown = PAGE;
   #controller: AbortController | null = null;
+  /** The open photo's full-size read; a step or close aborts it. */
+  #fullRead: AbortController | null = null;
   #opener: HTMLElement | null = null;
   #swipeX: number | null = null;
 
   protected override willUpdate(changed: PropertyValues<this>): void {
-    if ((changed.has("entryId") || changed.has("backend")) && this.backend && this.entryId) void this.#read();
+    if (!this.hasUpdated || changed.has("entryId") || changed.has("backend")) void this.#read();
   }
 
   protected override updated(): void {
@@ -92,52 +100,84 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     this.#controller?.abort();
     this.#controller = null;
     for (const url of Object.values(this._previews)) URL.revokeObjectURL(url);
-    if (this._full) URL.revokeObjectURL(this._full);
     this._previews = {};
-    this._full = null;
+    this.#dropFull();
     this._open = null;
   }
 
   async #read(): Promise<void> {
     this.#reset();
+    this._gallery = null;
+    this._shown = PAGE;
+    const { backend, entryId } = this;
+    // Photos can open before the catalog names a robot; the new entry starts a read.
+    if (!backend || !entryId) {
+      this._load = "failed";
+      return;
+    }
     const controller = new AbortController();
     this.#controller = controller;
-    const backend = this.backend!;
-    const entryId = this.entryId!;
     this._load = "loading";
     try {
       const gallery = await backend.photoGallery(entryId, controller.signal);
       if (controller.signal.aborted) return;
       this._gallery = gallery;
       this._load = "ready";
-      const queue = gallery.albums.flatMap((album) => album.photos).slice(0, MAX_PREVIEWS);
-      const reader = async (): Promise<void> => {
-        for (let photo = queue.shift(); photo; photo = queue.shift()) {
-          const blob = await backend.photo(photo.previewUrl, controller.signal).catch(() => null);
-          if (controller.signal.aborted) return;
-          if (blob) this._previews = { ...this._previews, [photo.id]: URL.createObjectURL(blob) };
-        }
-      };
-      await Promise.all(Array.from({ length: PREVIEW_READS }, reader));
+      await this.#readPreviews(0);
     } catch {
       if (!controller.signal.aborted) this._load = "failed";
     }
   }
 
+  /** Reads the previews of one page of photos, a few at a time; a failed one leaves its tile blank. */
+  async #readPreviews(from: number): Promise<void> {
+    const { backend } = this;
+    const signal = this.#controller?.signal;
+    if (!backend || !signal) return;
+    const queue = this.#photos().slice(from, from + PAGE);
+    const reader = async (): Promise<void> => {
+      for (let photo = queue.shift(); photo && !signal.aborted; photo = queue.shift()) {
+        const blob = await backend.photo(photo.previewUrl, signal).catch(() => null);
+        if (blob && !signal.aborted) this._previews = { ...this._previews, [photo.id]: URL.createObjectURL(blob) };
+      }
+    };
+    await Promise.all(Array.from({ length: PREVIEW_READS }, reader));
+  }
+
+  #more(): void {
+    const from = this._shown;
+    this._shown += PAGE;
+    void this.#readPreviews(from);
+  }
+
+  #photos(): readonly GalleryPhoto[] {
+    return this._gallery?.albums.flatMap((album) => album.photos) ?? [];
+  }
+
   async #show(photo: GalleryPhoto, opener?: HTMLElement): Promise<void> {
     if (opener) this.#opener = opener;
+    this.#dropFull();
+    this._open = photo;
+    const read = new AbortController();
+    this.#fullRead = read;
+    const blob = await this.backend?.photo(photo.url, read.signal).catch(() => null);
+    if (read.signal.aborted) return;
+    this.#fullRead = null;
+    if (blob) this._full = URL.createObjectURL(blob);
+    else this._fullFailed = true;
+  }
+
+  #dropFull(): void {
+    this.#fullRead?.abort();
+    this.#fullRead = null;
     if (this._full) URL.revokeObjectURL(this._full);
     this._full = null;
-    this._open = photo;
-    const signal = this.#controller?.signal;
-    const blob = await this.backend?.photo(photo.url, signal).catch(() => null);
-    if (blob && this._open === photo && !signal?.aborted) this._full = URL.createObjectURL(blob);
+    this._fullFailed = false;
   }
 
   #close(): void {
     this.renderRoot.querySelector<HTMLDialogElement>("dialog.viewer")?.close();
-    if (this._full) URL.revokeObjectURL(this._full);
-    this._full = null;
+    this.#dropFull();
     this._open = null;
     this.#opener?.focus();
     this.#opener = null;
@@ -145,7 +185,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
 
   /** The photo `offset` places from the open one, newest first across albums. */
   #neighbour(offset: number): GalleryPhoto | undefined {
-    const photos = this._gallery?.albums.flatMap((album) => album.photos) ?? [];
+    const photos = this.#photos();
     const index = photos.findIndex((photo) => photo.id === this._open?.id);
     return index < 0 ? undefined : photos[index + offset];
   }
@@ -179,10 +219,10 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     return where ? `${where} · ${when}` : when;
   }
 
-  #album(album: PhotoAlbum) {
+  #album(album: PhotoAlbum, photos: readonly GalleryPhoto[]) {
     return html`<section>
       <h3>${this.#albumTitle(album)}</h3>
-      <ul class="grid">${album.photos.map((photo) => html`<li>
+      <ul class="grid">${photos.map((photo) => html`<li>
         <button class="shot" type="button" aria-label=${this.#caption(photo)}
           @click=${(event: Event) => void this.#show(photo, event.currentTarget as HTMLElement)}>
           ${this._previews[photo.id] ? html`<img src=${this._previews[photo.id]} alt="">` : nothing}
@@ -209,7 +249,10 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
         <p>${this.#caption(photo)}</p>
         <button class="ms-btn" type="button" autofocus @click=${() => this.#close()}>${this.#t("v4_close", "Close")}</button>
       </header>
-      ${this._full ? html`<img src=${this._full} alt=${this.#caption(photo)} draggable="false">` : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`}
+      ${this._full ? html`<img src=${this._full} alt=${this.#caption(photo)} draggable="false">`
+        : this._fullFailed ? html`<div class="failed"><p role="alert">${this.#t("v4_photos_photo_failed", "Couldn't load this photo.")}</p>
+          <button class="ms-btn" type="button" @click=${() => void this.#show(photo)}>${this.#t("v4_retry", "Try again")}</button></div>`
+          : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`}
       <footer>
         <button class="ms-btn" type="button" aria-disabled=${String(!this.#neighbour(-1))} @click=${() => this.#step(-1)}>${this.#t("v4_photos_newer", "Newer")}</button>
         <button class="ms-btn" type="button" aria-disabled=${String(!this.#neighbour(1))} @click=${() => this.#step(1)}>${this.#t("v4_photos_older", "Older")}</button>
@@ -224,9 +267,17 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
         <button class="ms-btn" type="button" @click=${() => void this.#read()}>${this.#t("v4_retry", "Try again")}</button></div>`;
     }
     const { albums, viewpoints } = this._gallery;
+    // The newest `_shown` photos, still grouped by album.
+    let room = this._shown;
+    const shown = albums.map((album) => {
+      const photos = album.photos.slice(0, Math.max(room, 0));
+      room -= album.photos.length;
+      return { album, photos };
+    }).filter(({ photos }) => photos.length);
     return html`<div class="stack">
-      ${albums.length ? albums.map((album) => this.#album(album))
+      ${albums.length ? shown.map(({ album, photos }) => this.#album(album, photos))
         : html`<p class="subtle">${this.#t("v4_photos_empty", "No photos yet. Press Take photo, or run a photo tour from an automation.")}</p>`}
+      ${room < 0 ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}
       ${viewpoints.length ? html`<section>
         <h3>${this.#t("v4_photos_viewpoints", "Saved viewpoints")}</h3>
         <ul class="views">${viewpoints.map((viewpoint) => html`<li>${viewpoint.name}</li>`)}</ul>

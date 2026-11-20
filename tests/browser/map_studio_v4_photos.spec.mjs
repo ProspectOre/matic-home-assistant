@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { build } from "esbuild";
 
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
@@ -88,7 +89,9 @@ test("on a phone the viewer fills the screen and a swipe turns the photo", async
   await gallery.locator(".shot").nth(0).click();
   const viewer = gallery.getByRole("dialog");
   await expect(viewer.getByRole("img")).toBeVisible();
-  expect(await viewer.boundingBox()).toEqual({ x: 0, y: 0, width: 390, height: 844 });
+  // WebKit lays out 100dvh a fraction of a pixel short.
+  const box = await viewer.boundingBox();
+  expect(Object.fromEntries(Object.entries(box).map(([key, value]) => [key, Math.round(value)]))).toEqual({ x: 0, y: 0, width: 390, height: 844 });
 
   const swipe = async (from, to) => {
     await page.mouse.move(from, 420);
@@ -126,5 +129,51 @@ test("Photos explains an empty library and offers Try again after a failed read"
 
   await page.evaluate(() => { window.__photoGalleryReply = null; });
   await gallery.getByRole("button", { name: "Try again" }).click();
+  await expect(gallery).toContainText("No photos yet.");
+});
+
+test("a photo that fails to load says so and loads on Try again", async ({ page }) => {
+  const panel = await mountPanel(page, GALLERY);
+  await page.evaluate((path) => { window.__photoFailures = [path]; }, `${ROUTE}/p3`);
+  await openPhotos(panel);
+  const gallery = panel.locator("matic-photo-gallery-v4");
+  await gallery.locator(".shot").nth(0).click();
+  const viewer = gallery.getByRole("dialog");
+  await expect(viewer.getByRole("alert")).toHaveText("Couldn't load this photo.");
+  await page.evaluate(() => { window.__photoFailures = []; });
+  await viewer.getByRole("button", { name: "Try again" }).click();
+  await expect(viewer.getByRole("img")).toHaveAccessibleName(/^Hall · /);
+  await expect(viewer.getByRole("alert")).toHaveCount(0);
+});
+
+test("the grid shows sixty photos at a time and reads previews only for those shown", async ({ page }) => {
+  const photos = Array.from({ length: 65 }, (_, index) => shot(`q${index}`, new Date(Date.UTC(2026, 10, 19, 12, 0) - index * 60_000).toISOString()));
+  const panel = await mountPanel(page, { viewpoints: [], albums: [{ album: "tour-9", photos: photos.slice(0, 50) }, { album: "manual", photos: photos.slice(50) }] });
+  await openPhotos(panel);
+  const gallery = panel.locator("matic-photo-gallery-v4");
+  await expect(gallery.locator(".shot img")).toHaveCount(60);
+  await expect(gallery.locator(".shot")).toHaveCount(60);
+  await expect(gallery.locator("h3")).toHaveText([/^Photo tour, /, "Single photos"]);
+  expect((await photoReads(page)).length).toBe(60);
+  await gallery.getByRole("button", { name: "Show older photos" }).click();
+  await expect(gallery.locator(".shot img")).toHaveCount(65);
+  await expect(gallery.getByRole("button", { name: "Show older photos" })).toHaveCount(0);
+  expect(new Set(await photoReads(page)).size).toBe(65);
+});
+
+test("Photos opened before a robot is chosen says so, then reads once one is", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'import "./frontend/map-studio-v4/photo-gallery";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/photo-gallery-test.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  await page.evaluate(async () => {
+    await import("/photo-gallery-test.js");
+    document.body.append(document.createElement("matic-photo-gallery-v4"));
+  });
+  const gallery = page.locator("matic-photo-gallery-v4");
+  await expect(gallery.getByRole("alert")).toHaveText("Couldn't load the photos.");
+  await gallery.evaluate((element) => {
+    element.backend = { photoGallery: async () => ({ viewpoints: [], albums: [] }), photo: async () => new Blob() };
+    element.entryId = "entry";
+  });
   await expect(gallery).toContainText("No photos yet.");
 });

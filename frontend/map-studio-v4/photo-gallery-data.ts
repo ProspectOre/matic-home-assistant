@@ -43,8 +43,9 @@ export interface PhotoGallery {
   readonly albums: readonly PhotoAlbum[];
 }
 
-const MAX_ALBUMS = 500;
+// GALLERY_MAX_PHOTOS in photo_gallery_view.py; each album holds at least one photo.
 const MAX_PHOTOS = 5_000;
+const MAX_ALBUMS = MAX_PHOTOS;
 const MAX_VIEWPOINTS = 50;
 
 const fail = (code: string): never => {

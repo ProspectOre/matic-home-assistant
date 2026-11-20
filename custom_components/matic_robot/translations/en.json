@@ -802,6 +802,8 @@
     "v4_photos_from_app": "From the Matic app",
     "v4_photos_loading": "Loading photos…",
     "v4_photos_loading_photo": "Loading the photo…",
+    "v4_photos_more": "Show older photos",
+    "v4_photos_photo_failed": "Couldn't load this photo.",
     "v4_photos_newer": "Newer",
     "v4_photos_older": "Older",
     "v4_photos_single": "Single photos",
