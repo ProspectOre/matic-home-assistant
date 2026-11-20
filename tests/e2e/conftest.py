@@ -136,29 +136,41 @@ def config_entry(
 
 
 @pytest.fixture
-def fast_tour_polls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep photo tour polling deterministic without waiting minutes."""
+def fast_empty_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Take a collection for empty after 0.2 s without an entry, not 3 s.
+
+    An empty collection sends nothing, so a read of it waits out the
+    first-entry timeout. The simulator answers on loopback within milliseconds.
+    """
     # Imported here: the upgrade drill runs this harness on 0.5 code, which
-    # has neither module.
-    from custom_components.matic_robot import photo_tours
+    # does not have the module.
     from custom_components.matic_robot.client.hermes_collections import (
         HermesCollections,
     )
+
+    for read in (
+        "async_get_collection_entries",
+        "async_get_tracked_collection_entries",
+    ):
+        monkeypatch.setattr(
+            HermesCollections,
+            read,
+            partialmethod(getattr(HermesCollections, read), first_timeout=0.2),
+        )
+
+
+@pytest.fixture
+def fast_tour_polls(monkeypatch: pytest.MonkeyPatch, fast_empty_reads: None) -> None:
+    """Keep photo tour polling deterministic without waiting minutes."""
+    # Imported here: the upgrade drill runs this harness on 0.5 code, which
+    # does not have the module.
+    from custom_components.matic_robot import photo_tours
 
     monkeypatch.setattr(photo_tours, "POLL_SECONDS", 0.01)
     monkeypatch.setattr(photo_tours, "LEAVE_TIMEOUT_SECONDS", 0.3)
     monkeypatch.setattr(photo_tours, "ARRIVAL_TIMEOUT_SECONDS", 0.3)
     monkeypatch.setattr(photo_tours, "PHOTO_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(photo_tours, "SETTLE_SECONDS", 0)
-    # An empty photo collection sends nothing, so a read of it waits out the
-    # first-entry timeout. The simulator answers on loopback within milliseconds.
-    monkeypatch.setattr(
-        HermesCollections,
-        "async_get_tracked_collection_entries",
-        partialmethod(
-            HermesCollections.async_get_tracked_collection_entries, first_timeout=0.2
-        ),
-    )
 
 
 @pytest.fixture

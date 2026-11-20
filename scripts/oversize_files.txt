@@ -29,7 +29,7 @@ tests/test_config_flow.py 1708
 tests/test_config_flow_import.py 1037
 tests/test_config_flow_paths.py 1153
 tests/test_daily_room_limit.py 1430
-tests/test_entities.py 2884
+tests/test_entities.py 2472
 tests/test_firmware.py 1246
 tests/test_firmware_reports.py 1387
 tests/test_init.py 1203

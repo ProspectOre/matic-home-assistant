@@ -96,8 +96,8 @@ replaced before it is committed.
   own mode and strength send only those goals and get per-mode history.
 - Changing a running plan: skip the next room, bring the last room forward,
   clean a finished room again, and refusing to skip the only room left.
-- Go to room from the dock and during a plan (the run keeps its task and
-  finishes after Resume), and an unknown room refused before anything is sent.
+- Each vacuum action and `send_command` command sends its one command, and a
+  malformed call sends nothing. Go to room during a plan keeps the run's task.
 - A sink trip waits for the refill and docks; with no saved sink, it's refused.
 - An occupancy-aware saved plan holds a room whose sensor is on.
 - A full bag raises a Repair after a confirming sample and clears it when
