@@ -28,8 +28,7 @@ const brushCentimeters = (meters: number): number => Math.min(MAX_CM, Math.max(M
 const stepBrush = (cm: number, delta: -1 | 1): number =>
   delta > 0 ? Math.min(MAX_CM, Math.floor(cm / STEP_CM) * STEP_CM + STEP_CM) : Math.max(MIN_CM, Math.ceil(cm / STEP_CM) * STEP_CM - STEP_CM);
 
-// Brush settings only, docked beside the Draw content (map-surfaces.md §5
-// Precision): the stepper in centimetres and a range for a quick sweep. Zoom
+// Brush settings only, docked beside the Draw content: the stepper in centimetres and a range for a quick sweep. Zoom
 // is served by pinch, the map's Fit button and the +/-/0 keys. Intents still
 // carry metres, as the outline does.
 class MaticPrecisionControlsV4 extends LitElement {

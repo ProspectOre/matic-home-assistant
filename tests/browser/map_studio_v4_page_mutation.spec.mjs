@@ -257,7 +257,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
           draft: { id: "created-area", name: "New area draft", dirty: false },
         });
       } else {
-        // plan.md §9, shell.md §6: a failed Home Assistant write shows its
+        // A failed Home Assistant write shows its
         // own error notice and returns `command` to idle, so once the page
         // is shown again the primary is the save, not "Check robot status".
         expect(settled).toMatchObject({
@@ -310,7 +310,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
           draft: { id: "daily", name: "Updated daily draft", dirty: false },
         });
       } else {
-        // plan.md §9, shell.md §6: idle, the save's own notice, Save again.
+        // Idle, the save's own notice, Save again.
         expect(settled).toMatchObject({
           command: "idle",
           notice: "v4_notice_plan_save_failed",
@@ -666,7 +666,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
         vacuumEntityId: "vacuum.synthetic",
       });
       await run.effects.refreshCatalog(true);
-      // Delete is offered from the saved plan's Edit view (plan.md E7).
+      // Delete is offered from the saved plan's Edit view.
       await run.effects.loadPlans({ force: true });
       run.effects.selectPlan("daily");
       store.dispatch({ type: "set-plan-view", view: "edit" });
@@ -690,7 +690,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
           && run.clearedTimerIds.includes(timerId)).length,
       };
     });
-    // plan.md E7 and §9, shell.md §6: a failed delete returns `command` to
+    // A failed delete returns `command` to
     // idle with its own notice, and Edit keeps Done as its primary.
     expect(timedOut).toEqual({
       command: "idle",

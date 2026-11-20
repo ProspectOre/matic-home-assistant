@@ -100,15 +100,15 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   if ((page.viewportSize()?.width ?? Infinity) <= 600) {
     const sheet = panel.locator(".mobile-sheet");
     await expect(sheet).toBeVisible();
-    // shell.md §5 Sheet: a saved plan opens in Run, at half height.
+    // A saved plan opens in Run, at half height.
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await expect(sheet.locator(".sheet-body")).toBeVisible();
   }
 
   const rooms = panel.getByRole("list", { name: "Rooms", exact: true });
   const schedule = rooms.getByRole("group", { name: "Smart cleaning for Kitchen" });
-  // A saved plan opens in Run, and Save returns there (plan.md §5); its
-  // schedules change in Edit, inside the room's settings (plan.md §3).
+  // A saved plan opens in Run, and Save returns there; its
+  // schedules change in Edit, inside the room's settings.
   const openSchedule = async () => {
     await panel.getByRole("button", { name: "Edit Daily clean", exact: true }).click();
     const settings = rooms.getByRole("button", { name: "Settings for Kitchen", exact: true });
@@ -117,7 +117,7 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   };
   await openSchedule();
   await expectNoSeriousAccessibilityViolations(page, "plan cadence editor");
-  // "Count completed cleans" lives under Advanced (room-schedule.md §3).
+  // "Count completed cleans" lives under Advanced.
   const scopeRadio = (label) => schedule.getByRole("radio", { name: label, exact: true, includeHidden: true });
   const setScope = async (label) => {
     if (!(await scopeRadio(label).isVisible())) await schedule.getByText("Advanced", { exact: true }).click();
@@ -125,7 +125,7 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   };
   const shared = "Across all plans (recommended)";
   const thisPlan = "In this plan only";
-  // Each field is named by its row's label line, which says its value (room-schedule.md §3).
+  // Each field is named by its row's label line, which says its value.
   const mopInterval = schedule.getByRole("spinbutton", { name: /^(Mop|Occasional mopping)/ });
   const coverageInterval = schedule.getByRole("spinbutton", { name: /vacuum/ });
   const coverageSetting = schedule.getByLabel("Vacuum level for Kitchen");
@@ -215,7 +215,7 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   // Nothing is scheduled, so there is nothing to bring forward.
   await expect(nextClean).toHaveCount(0);
 
-  // A new rotation is Heavy duty unless a level is chosen first (room-schedule.md D1).
+  // A new rotation is Heavy duty unless a level is chosen first.
   await expect(coverageSetting).toHaveValue("heavy_duty");
   await coverageSetting.selectOption("standard");
   await mopInterval.fill("4");
@@ -272,7 +272,7 @@ test("mop-only legacy vacuum rules stay visible and can leave shared participati
   await openPlanPicker(panel);
   await panel.getByRole("button", { name: /^Daily clean/ }).click();
   await expect(panel.getByRole("button", { name: "Run plan Daily clean", exact: true })).toBeDisabled();
-  // The schedule changes in Edit, which opens at full height (plan.md §3).
+  // The schedule changes in Edit, which opens at full height.
   await panel.getByRole("button", { name: "Edit Daily clean", exact: true }).click();
   const rooms = panel.getByRole("list", { name: "Rooms", exact: true });
   await rooms.getByRole("button", { name: "Settings for Kitchen", exact: true }).click();

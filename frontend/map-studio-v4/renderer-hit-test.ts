@@ -45,7 +45,7 @@ export const containsMapPoint = (scene: SceneModel, point: MapPoint): boolean =>
 /** Lower-cased names of the rooms the current workflow has selected. */
 export const selectedRoomNames = (state: WorkspaceState): Set<string> => {
   const rooms = state.resources.plans.value?.rooms || state.resources.areas.value?.rooms || [];
-  // Rooms and plan draw their own selections; home draws none (R9).
+  // Rooms and plan draw their own selections; home draws none.
   const selectedRoomIds = new Set(state.workflow === "plan"
     ? state.planDraft.rooms.map((room) => room.roomId)
     : state.workflow === "rooms" ? state.selection.roomIds : []);

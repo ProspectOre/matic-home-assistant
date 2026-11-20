@@ -96,7 +96,7 @@ const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 const workflowTag = unsafeStatic(WORKFLOW_TAG);
 
-// shell.md §4 notice rule: glyph per tone, and how long each toast stays.
+// The notice rule: glyph per tone, and how long each toast stays.
 const NOTICE_ICONS: Readonly<Record<NoticeTone, string>> = {
   info: iconDiagnostics,
   success: iconNoticeSuccess,
@@ -165,13 +165,13 @@ export class MaticMapShellV4 extends LitElement {
   readonly #t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
     translate(this.localize, key, fallback, placeholders, this.dates);
   // The help popover (map-help.ts, in the views chunk) is the shell's: it
-  // opens from the rail "?" and closes from Close, Escape (after the menu,
-  // shell.md §5) or a change of workflow or Full map. The canvas renders it
+  // opens from the rail "?" and closes from Close, Escape (after the menu)
+  // or a change of workflow or Full map. The canvas renders it
   // beside its "?".
   protected _helpOpen = false;
   #helpLauncher: HTMLElement | null = null;
   #helpReturnsFull = false;
-  // The two live regions (shell.md §4 rule 6). Each holds only its newest
+  // The two live regions. Each holds only its newest
   // message: the polite one for detent, status title and non-error notices,
   // the alert one for error notices.
   protected _polite = "";
@@ -234,7 +234,7 @@ export class MaticMapShellV4 extends LitElement {
   // The workflows the entry screen's enabled rows offered at its last render
   // (#launch), plus Map diagnostics, which Map options offers on any screen.
   #launchers = new Set<string>();
-  /** The home launcher last pressed; it takes focus back when its workflow closes (home-rooms.md §5 Keyboard). */
+  /** The home launcher last pressed; it takes focus back when its workflow closes. */
   #homeLauncher: string | null = null;
   // A plan shortcut's run, until it starts (then home) or its view is left.
   // Home stays on screen meanwhile (owner, 2026-10-14): Run plan needs the
@@ -266,7 +266,7 @@ export class MaticMapShellV4 extends LitElement {
     return { ...views, ...actions };
   }
 
-  // D3 (map-surfaces.md §10): Full map asks the browser for full screen
+  // Full map asks the browser for full screen
   // and leaves it on exit; leaving the browser's full screen (its own
   // Escape, say) leaves Full map with the same focus return. A browser
   // that refuses keeps the panel-only Full map.
@@ -283,7 +283,7 @@ export class MaticMapShellV4 extends LitElement {
     this.#unwatchTheme = watchTheme(() => this.#resolveTheme());
   }
 
-  // MS-AXE-03 (design-system.md §5): semantic colours resolved from HA's
+  // MS-AXE-03: semantic colours resolved from HA's
   // theme colours (theme-probe.ts): the primary and Stop fill pairs, the
   // focus and selection indicator (3:1 on the card and sunken surfaces) and
   // danger text (4.5:1 on resting, hovered and pressed rows). Forced colours bypass it.
@@ -346,13 +346,13 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // A status title change, then each new notice object (never a re-render or
-  // a language swap), is announced once; a new notice also restarts the toast
-  // (shell.md §4 rules 3 and 6). Clearing a notice announces nothing.
+  // a language swap), is announced once; a new notice also restarts the toast.
+  // Clearing a notice announces nothing.
   protected override willUpdate(changed: PropertyValues<this>): void {
     // The control holding focus before this render. If the render removes or
     // hides it (Stop on its "No button" row, a closed notice or toast),
     // updated() hands focus to the heading rather than let it fall to the
-    // page (shell.md §5 Focus, MS-KEY-01).
+    // page.
     this.#sheet.captureFocus();
     if (!changed.has("state")) return;
     // Home Assistant flips its narrow hint as the panel resizes, but the
@@ -373,7 +373,7 @@ export class MaticMapShellV4 extends LitElement {
     const next = this.state.notice;
     if (next === previous?.notice) return;
     // A workflow change clears a success notice from the slot, but a toast
-    // already showing it finishes its timer (shell.md §4 rule 5).
+    // already showing it finishes its timer.
     if (!next && previous?.notice?.tone === "success" && previous.workflow !== this.state.workflow) return;
     this.#hideToast();
     if (!next) return;
@@ -435,7 +435,7 @@ export class MaticMapShellV4 extends LitElement {
   };
 
   // The slot's Close clears the notice; the toast's control only hides the
-  // toast, so it is named for that (shell.md §4 rule 3).
+  // toast, so it is named for that.
   #noticeBody(notice: WorkspaceNotice, close: () => void, label: string) {
     return html`${icon(NOTICE_ICONS[notice.tone])}<span class="notice-text">${this.#t(notice.key, notice.fallback, notice.placeholders)}</span><button
       class="ms-btn ms-btn--icon"
@@ -564,7 +564,7 @@ export class MaticMapShellV4 extends LitElement {
         this.#sheet.resetForWorkflow(this.state, true);
         const state = this.state;
         // Leaving a plan view, the control that led there takes focus once
-        // the views have rendered it (plan.md §5); else, at once, the heading,
+        // the views have rendered it; else, at once, the heading,
         // so a key pressed straight away still reaches the shell.
         void this.updateComplete.then(() => {
           if (state.workflow === "none") return this.#focusHomeLauncher();
@@ -638,7 +638,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // Opening a workflow any other way than from a home launcher clears the
-  // launcher, so Back lands on the heading (home-rooms.md R18). Back does
+  // launcher, so Back lands on the heading. Back does
   // not come through here.
   #workflow(workflow: Workflow, launcher?: EventTarget | null): void {
     this.#resume = null;
@@ -671,7 +671,7 @@ export class MaticMapShellV4 extends LitElement {
       this.#workflow(workflow as Workflow);
     } else if (workflow === "draw" && this.#launchers.has("areas")) {
       this.#resume = null;
-      // A new drawing opens from Your areas' New area (UX9), so it resumes
+      // A new drawing opens from Your areas' New area, so it resumes
       // the same road: Your areas, then Draw, with Back stepping through both.
       this.#workflow("areas");
       this.#homeLauncher = "areas";
@@ -742,7 +742,7 @@ export class MaticMapShellV4 extends LitElement {
     if (pending && pending.type !== "dismiss-top-layer") queueMicrotask(() => this.#emit(pending));
   }
 
-  // shell.md §5: the save Discard changes? started has answered. Saved, the
+  // The save Discard changes? started has answered. Saved, the
   // dialog closes and the navigation that asked goes on without discarding;
   // not saved, it closes and the user stays with the draft. The answer comes
   // from inside the write, so this waits a task for the state it left.
@@ -871,7 +871,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // Only the views send intents through here (dialog-copy.ts dialogLauncher).
-  // A map tap in Rooms (R7) is announced once the host has handled the
+  // A map tap in Rooms is announced once the host has handled the
   // intent and handed back the state (a task later, after its render): a
   // refused one repeats the reason on screen (the state is the same), an
   // accepted one names the change. The list's own controls speak for
@@ -973,7 +973,7 @@ export class MaticMapShellV4 extends LitElement {
           ?? this.#t(action.reasonKey, action.reason, action.reasonPlaceholders)
         : action.reason)
       : null;
-    // A link primary opens its page itself (home-rooms.md D2).
+    // A link primary opens its page itself.
     if (action.kind === "link") return html`<a class=${classes} href=${action.href ?? "#"}>${label}</a>`;
     return html`
       <button
@@ -994,17 +994,17 @@ export class MaticMapShellV4 extends LitElement {
 
 
   #actionBar(state: WorkspaceState, primary: PrimaryAction | NoButtonAction | null, secondary: PrimaryAction | null) {
-    // The rooms in run order, then the dock (home-rooms.md §5 Clean).
+    // The rooms in run order, then the dock.
     const summary = primary?.enabled && state.workflow === "rooms" && primary.id === "clean-rooms"
       ? this.#views.value?.roomsSummary(this.#t, state) ?? ""
       : "";
     const editing = state.workflow === "plan" && state.planView === "edit";
     // Draw pairs Cancel with its primary too, unless Stop holds the bar's
-    // second place (shell.md §3); Back in the heading then keeps the exit.
+    // second place; Back in the heading then keeps the exit.
     const drawing = state.workflow === "draw" && !secondary;
-    // The area review pairs Redraw, first, with its primary (map-surfaces.md §4).
+    // The area review pairs Redraw, first, with its primary.
     const reviewing = secondary?.id === "redraw";
-    // No bar when it would be empty: idle home has none (home-rooms.md §3).
+    // No bar when it would be empty: idle home has none.
     if (!summary && !editing && !drawing && !(primary && "label" in primary) && !secondary) return nothing;
     const leave = (intent: WorkspaceIntent, launcher: EventTarget | null) => this.#leave(intent, launcher);
     const second = secondary ? this.#actionButton(secondary, "ms-btn ms-btn--block ms-btn--lg ms-btn--secondary", "secondary-reason") : nothing;
@@ -1031,7 +1031,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // Back on home: the launcher that opened the workflow, if it is still shown,
-  // else the heading (shell.md §5 Focus).
+  // else the heading.
   #focusHomeLauncher(): void {
     const key = this.#homeLauncher;
     this.#homeLauncher = null;
@@ -1041,7 +1041,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // `described` links a held control to the home reason, which only the held
-  // home states render (R12), so a row disabled on its own never points at it.
+  // home states render, so a row disabled on its own never points at it.
   #shelfRow(label: string, glyph: string, workflow: Workflow, detail?: string, disabled = false, described = false, classes = "ms-row") {
     return shelfRow(this.#launch(workflow, disabled), label, glyph, workflow, detail, disabled, described, classes);
   }
@@ -1125,7 +1125,7 @@ export class MaticMapShellV4 extends LitElement {
     return this.#queueLoading(html`<p class="loading" role="status">${this.#t("v4_queue_catalog_held", "Queue changes are unavailable until the current map and room list are ready.")}</p>`);
   }
 
-  // Home (home-rooms.md §3): the heading and description come from homeCopy;
+  // Home: the heading and description come from homeCopy;
   // this is the body under them. Cards are demoted, never hidden, while the
   // robot is busy or the map is not ready, and they share the one reason the
   // description states (MS-HOME-03). Maps keeps history and diagnostics one
@@ -1279,9 +1279,9 @@ export class MaticMapShellV4 extends LitElement {
   // and never cover a control the body scrolls into view.
   // The back chevron, in the heading or, at peek, the grip. Run goes back to
   // the picker, every other workflow to all tasks; Edit has none, since
-  // Cancel replaces it (plan.md §3).
+  // Cancel replaces it.
   // Back from Run goes to where the plan was opened from: the picker, or home
-  // for the home plan card (home-rooms.md §5 Cards; plan.md §5 Navigation).
+  // for the home plan card.
   #back(state: WorkspaceState, grip: boolean) {
     if (state.workflow === "none" || (state.workflow === "plan" && state.planView === "edit")) return nothing;
     const plan = state.workflow === "plan" && state.planOrigin !== "home";
@@ -1411,9 +1411,9 @@ export class MaticMapShellV4 extends LitElement {
         reason: "Wait for map drawing to load before reviewing or saving this area.",
         reasonKey: "v4_draw_overlay_action_unavailable" } as typeof selectedPrimary
       : selectedPrimary;
-    // Stop takes the bar when work is stoppable (shell.md §3) and Redraw moves
+    // Stop takes the bar when work is stoppable and Redraw moves
     // into the body; else the area review pairs Redraw with its primary, held
-    // with the R12 reason (map-surfaces.md §4).
+    // with the command's reason.
     const held = heldReasonKey(state);
     const redraw: PrimaryAction | null = state.workflow === "areaReview" && !hasStoppableWork(state)
       ? { id: "redraw", label: "Redraw", labelKey: "v4_edit_outline", kind: "neutral", enabled: !held, ...(held ?? {}) }
@@ -1437,7 +1437,7 @@ export class MaticMapShellV4 extends LitElement {
     // be dirty in Draw while the views chunk failed. Every other dialog opens
     // from a control in the views chunk, which carries its copy.
     const discard = state.dialog === "discardDraft";
-    // shell.md §5: the saved plan or area by its saved name, else a new one.
+    // The saved plan or area by its saved name, else a new one.
     const saved = discard ? deleteSubject(state, plan ? "confirmDeletePlan" : "confirmDeleteArea")?.name : undefined;
     const dialog: DialogPresentation | undefined = discard ? {
       title: this.#t("v4_discard_title", "Discard changes?"),

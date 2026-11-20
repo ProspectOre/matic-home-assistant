@@ -1,5 +1,4 @@
-// Home shortcuts belong to one Home Assistant user and one robot (UX9,
-// Codex PRRT_kwDOTau7uM6sNi6X): a read or a queued write made for one owner
+// Home shortcuts belong to one Home Assistant user and one robot: a read or a queued write made for one owner
 // never lands in another's context or data.
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";

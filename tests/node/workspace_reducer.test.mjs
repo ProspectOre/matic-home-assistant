@@ -101,7 +101,6 @@ test("opens History without hiding the live map and preserves a chosen saved map
   assert.deepEqual([closed.dataMode, closed.workflow, closed.selection.historyId], ["history", "none", "saved-map"]);
 });
 
-// home-rooms.md §5 Cards D1; plan.md §5 State.
 test("a plan opened from home returns to home, one opened from the picker returns to the picker", () => {
   const store = new WorkspaceStore(createGalleryState("ready"));
   store.dispatch({ type: "select-plan", planId: "daily", origin: "home" });
@@ -123,7 +122,6 @@ test("a plan opened from home returns to home, one opened from the picker return
   assert.equal(store.value.planOrigin, "plans");
 });
 
-// home-rooms.md §5 Settings, Selection gate.
 test("a whole-clean change becomes the default and rewrites every selected room", () => {
   const store = new WorkspaceStore(createGalleryState("rooms"));
   store.dispatch({ type: "set-clean-settings", cleaningMode: "vacuum_and_mop" });
@@ -179,7 +177,6 @@ test("a refused add at the limit raises the limit notice", () => {
   has(store.value.notice, { tone: "info", key: "v4_room_limit_reached", placeholders: { limit: 100 } });
 });
 
-// plan.md §5 State, Map, Navigation; home-rooms.md §5 selection gate.
 test("the plan starts in Run with nothing pending and no open row", () => {
   const { planView, pendingAction, expandedRoom, planDraft } = new WorkspaceStore().value;
   assert.deepEqual({ planView, pendingAction, expandedRoom, parked: planDraft.parkedRooms },

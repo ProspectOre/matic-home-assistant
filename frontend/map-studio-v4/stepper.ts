@@ -23,7 +23,7 @@ export const stepInterval = (current: number | null, delta: -1 | 1, minimum = IN
     : current + delta < minimum ? delta > 0 ? minimum : null : Math.min(INTERVAL_MAX, current + delta);
 
 /**
- * `ms-stepper` (design-system.md §4): [− 44×44][number field][+ 44×44] in one
+ * `ms-stepper`: [− 44×44][number field][+ 44×44] in one
  * bordered box. Only room schedules use it, so it loads with the plan views
  * rather than with the shell's controls.
  */
@@ -59,7 +59,7 @@ interface StepperOptions {
   readonly commit: (value: number | null) => void;
 }
 
-/** One schedule's stepper (room-schedule.md §5 Stepper). */
+/** One schedule's stepper. */
 export const stepper = (o: StepperOptions): TemplateResult => {
   const { id, t, value } = o;
   const held = o.heldBy !== null;

@@ -45,8 +45,7 @@ type MapOptionsContext = {
 };
 
 /**
- * The ⋮ Map options menu (home-rooms.md §5 Display; design-system.md §5
- * Menus): the phone's Map display rows, the map detail choice and the
+ * The ⋮ Map options menu: the phone's Map display rows, the map detail choice and the
  * diagnostics action. The shell loads it on the first press, since the menu is off the
  * startup path. A display or detail row keeps the menu open so
  * the change shows on the map behind it; an action row closes it.

@@ -46,7 +46,7 @@ export { shellWorkflowStyles } from "./workflow-styles";
 export { homeShortcuts } from "./home-shortcuts";
 
 // One hint for the tool in hand, chosen by the pointer that will use it;
-// Move map needs none (map-surfaces.md §6). The keyboard recipes are
+// Move map needs none. The keyboard recipes are
 // assistive text on the map (map-help.ts). The shell renders it under the
 // phone sheet's tool rows; the panel renders it in the wide body.
 export const drawHint = (t: Translate, state: WorkspaceState): string | null => {
@@ -249,7 +249,7 @@ line-height: var(--ms-lh-snug);
     return translate(this.localize, key, fallback, placeholders);
   }
 
-  // Why the rows wait while a command runs (R12), in the host's words.
+  // Why the rows wait while a command runs, in the host's words.
   #heldReason(): string | null {
     const held = heldReasonKey(this.state);
     return held ? this.#t(held.reasonKey, held.reason) : null;
@@ -376,7 +376,7 @@ line-height: var(--ms-lh-snug);
    * Your areas (owner, 2026-10-13), as the plan picker: one row per saved
    * custom area on this floor with its setting and, when the map moved under
    * it, what it needs; New area last, the one way into Draw. Rows are held
-   * while a command runs, with the toolbar's reason (R12).
+   * while a command runs, with the toolbar's reason.
    */
   #areas() {
     const { status, value } = this.state.resources.areas;
@@ -411,7 +411,7 @@ line-height: var(--ms-lh-snug);
       <p class="subtle">${this.#t("v4_choose_area_detail", "Tap an area to clean it or change it.")}</p>
       <div class="list" role="list">
         ${areas.map((area) => {
-          // As the area's screen reads it (map-surfaces.md §4): changed, or unusable.
+          // As the area's screen reads it: changed, or unusable.
           const check = area.canRebind || area.status === "review";
           const redraw = !check && area.status !== "current";
           const noGo = value?.zones.some((zone) => zone.kind === "no_go" && zone.areaIds.includes(area.id));
@@ -451,12 +451,12 @@ line-height: var(--ms-lh-snug);
     const reviewHasOutline = this.state.draw.outline?.closed === true && this.state.draw.outline.points.length >= 3;
     const reviewHasCircles = this.state.draw.circles.length > 0;
     const stale = !needsReview && (draft.status === "stale" || draft.status === "unknown");
-    // Held while a command runs (R12): fields stay focusable and say why.
+    // Held while a command runs: fields stay focusable and say why.
     const held = this.#heldReason();
     const heldBy = held ? "review-held-reason" : nothing;
     const disabled = held ? "true" : nothing;
     // While Stop holds the bar, as primary or secondary, Redraw is a body
-    // button (shell.md §3): Stop never shares its place with an edit.
+    // button: Stop never shares its place with an edit.
     const bodyRedraw = hasStoppableWork(this.state);
     const canDelete = deleteSubject(this.state, "confirmDeleteArea") !== undefined;
     return html`
@@ -534,7 +534,7 @@ line-height: var(--ms-lh-snug);
     const last = liveEnd ? snapshots.length : snapshots.length - 1;
     const displayPosition = Math.min(this._historyPreviewPosition ?? position, last);
     const selectedSnapshot = snapshots[displayPosition];
-    // Held while a command runs (R12): rows and scrubber say why and change nothing.
+    // Held while a command runs: rows and scrubber say why and change nothing.
     const held = this.#heldReason();
     const disabled = held ? "true" : nothing;
     const heldBy = held ? "history-held-reason" : nothing;

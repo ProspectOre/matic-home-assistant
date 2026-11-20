@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { installPanelFixture, openPlanPicker } from "./map_studio_v4_panel_fixture.mjs";
 
-// room-schedule.md: the pure schedule model (plan-cadence.ts), tested through
+// The pure schedule model (plan-cadence.ts), tested through
 // an esbuild-bundled harness route, then the Schedule block in the gallery.
 
 async function loadHarness(page) {

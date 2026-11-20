@@ -285,7 +285,7 @@ export const savePlan = async (context: CatalogWriteContext): Promise<void> => {
       && store.value.planDraft === draft ? { ...draft, id: savedId, dirty: false, parkedRooms: [], parkedAreas: [] } : null;
     if (savedDraft) {
       store.dispatch({ type: "transition", planDraft: savedDraft, selection: { planId: savedId } });
-      // The saved draft is clean, so the plan returns to Run (plan.md §5).
+      // The saved draft is clean, so the plan returns to Run.
       store.dispatch({ type: "set-plan-view", view: "run" });
     }
     context.settled(true);
@@ -496,7 +496,7 @@ export const deleteSharedCadence = async (context: CatalogWriteContext, action: 
 };
 
 /**
- * The Run switch (plan.md §5). It shows the change at once, reads the catalog
+ * The Run switch. It shows the change at once, reads the catalog
  * in place, then saves the plan as Home Assistant now holds it with only
  * `enabled` changed. A failed read or send puts the switch back.
  */

@@ -38,7 +38,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
   if (isSelectedRobotUnavailable(state)) return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), detail: t("v4_choose_another_robot", "Choose another robot to open its map."), icon: iconOffline, notable: true };
   if (!state.host.robotConnected) return { title: t("v4_robot_offline", "Robot offline"), detail: t("v4_last_map_read_only", "Last known map · read only"), icon: iconOffline, notable: true };
   if (state.activity === "problem") return { title: t("v4_needs_attention", "Needs attention"), detail: t("v4_check_robot", "Check the robot"), icon: iconOffline, notable: true };
-  // shell.md §4 row 15: from the press until the robot or the backend's fence settles.
+  // From the press until the robot or the backend's fence settles.
   if (state.command === "settling" || state.activity === "stopping" || state.resources.entry?.stopSettlePending) {
     return { title: t("v4_stopping", "Stopping"), detail: t("v4_waiting_robot", "Waiting for the robot"), icon: iconPaused, notable: true };
   }
@@ -60,7 +60,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
   }
   if (state.comparisonActive && !hasStoppableWork(state) && state.activity !== "starting") return { title: t("v4_comparison_read_only_status", "Comparing saved maps"), detail: t("v4_comparison_read_only_detail", "Read-only comparison · live map unchanged"), icon: iconHistory, notable: false };
   if (state.dataMode === "history" && !state.comparisonActive) {
-    // shell.md §4 row 7: the date and place of the saved map, as the chip says.
+    // The date and place of the saved map, as the chip says.
     const saved = savedMapPosition(state);
     return {
       title: t("v4_saved_map", "Saved map"),
@@ -125,7 +125,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
     icon: iconOffline,
     notable: true,
   };
-  // shell.md §4 row 8: a degraded map while idle can persist, so say so and
+  // A degraded map while idle can persist, so say so and
   // offer the recheck at once rather than a Ready beside "Finding the map".
   if (state.coherence === "degraded") return {
     title: t("v4_map_limited", "Map limited"),
@@ -155,7 +155,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
 };
 
 /**
- * Home's one state (home-rooms.md §4 H1-H11), checked in the strip's order.
+ * Home's one state, checked in the strip's order.
  * Each state has one heading and at most one description; the cards and
  * the Maps group follow from it, so nothing is stated twice (MS-HOME-03).
  */
@@ -163,7 +163,7 @@ type HomeKind =
   | "ready" | "locating" | "busy" | "paused" | "problem" | "map-unavailable" | "map-limited"
   | "offline" | "reconnecting" | "administrator" | "robot-unavailable" | "read-only" | "setup";
 
-// Home reads the catalog only once it is ready (home-rooms.md §4 H2): a read
+// Home reads the catalog only once it is ready: a read
 // in flight or failed keeps the last catalog (loadPlans) but shows as such,
 // as the picker's own loading and unavailable lines do.
 export const readyPlans = (state: WorkspaceState) => (state.resources.plans.status === "ready" ? state.resources.plans.value : null);

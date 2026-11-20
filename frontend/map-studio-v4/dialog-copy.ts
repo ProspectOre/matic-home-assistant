@@ -166,7 +166,7 @@ export const confirmDialog = (
 /**
  * Where focus returns when a dialog closes, when that is not its launcher: a
  * schedule Reset returns to the header of the room that holds it, its
- * disclosure, since the menu or inline button may be gone (room-schedule.md §5).
+ * disclosure, since the menu or inline button may be gone.
  */
 export const dialogReturnTarget = (previous: WorkspaceState, root: ParentNode): HTMLElement | null => {
   const request = previous.cadenceResetRequest;

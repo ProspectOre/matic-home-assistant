@@ -27,7 +27,7 @@ export const translate = (
   );
 };
 
-/** Joins names as the language does, e.g. "Kitchen, Hall and Bath" (home-rooms.md). */
+/** Joins names as the language does, e.g. "Kitchen, Hall and Bath". */
 export const formatList = (language: string, items: readonly string[]): string =>
   new Intl.ListFormat(language, { style: "long", type: "conjunction" }).format(items);
 

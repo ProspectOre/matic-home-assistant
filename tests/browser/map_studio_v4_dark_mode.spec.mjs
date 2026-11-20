@@ -1,4 +1,4 @@
-// design-system.md Decision 3 (owner, 2026-10-11): the panel's light or dark
+// The panel's light or dark
 // mode follows Home Assistant's own theme (`hass.themes.darkMode`), and the
 // device setting only when Home Assistant gives no answer. Only the mode is
 // chosen here; the HA variables each token maps to are unchanged.
@@ -77,7 +77,7 @@ test("switching Home Assistant's theme switches the panel", async ({ page }) => 
   const shell = page.locator("matic-map-shell-v4");
   await shell.getByRole("group", { name: "Rooms to clean" }).getByRole("checkbox", { name: "Kitchen" }).check();
   // The contrast-resolved primary and Stop fills and the indicator, which
-  // the canvas strokes and fills its accent with (design-system.md §7).
+  // the canvas strokes and fills its accent with.
   const resolved = () => shell.evaluate((element) => Object.fromEntries(["accent-fill", "danger-fill", "indicator"]
     .map((name) => [name, element.style.getPropertyValue(`--ms-resolved-${name}`)])));
   const painted = () => page.evaluate(() => [...window.__canvasColours]);
