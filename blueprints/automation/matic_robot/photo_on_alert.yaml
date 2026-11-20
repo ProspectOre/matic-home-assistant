@@ -100,20 +100,20 @@ actions:
   - variables:
       sensor_name: "{{ trigger.to_state.name }}"
       room: "{{ room_name | trim }}"
-  - action: matic_robot.photo_patrol
+  - action: matic_robot.run_photo_tour
     target:
       entity_id: !input vacuum
     data:
-      rooms: ["{{ room }}"]
+      stops: [{ room: "{{ room }}" }]
       full_resolution: "{{ full_resolution_notification }}"
       question: "{{ question }}"
       ai_task_entity_id: "{{ ai_task_entity_id }}"
-    response_variable: patrol
+    response_variable: tour
     continue_on_error: true
   - variables:
       photos: >-
-        {{ patrol.robots[0].photos
-           if patrol is defined and patrol.robots | default([]) | length > 0
+        {{ tour.robots[0].photos
+           if tour is defined and tour.robots | default([]) | length > 0
            else [] }}
   - if: >-
       {{ photos | length > 0

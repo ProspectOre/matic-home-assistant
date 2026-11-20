@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
+import { pauseClockAt } from "./clock.mjs";
 
 const LIFECYCLE_MODULE = "/page-lifecycle-test.js";
 
@@ -131,8 +132,7 @@ test("@safety PageLifecycle deduplicates visibility and BFCache signals and disp
 });
 
 test("@safety synthetic page lifecycle revokes late live reads and revalidates before resume", async ({ page }) => {
-  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-  await page.clock.pauseAt(new Date("2026-09-30T12:00:00Z"));
+  await pauseClockAt(page, new Date("2026-09-30T12:00:00Z"));
   await page.addInitScript(() => {
     const tracked = new Map();
     const nativeAdd = EventTarget.prototype.addEventListener;
@@ -326,8 +326,7 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
 });
 
 test("@safety page suspension aborts saved-plan preflight and preserves its draft", async ({ page }) => {
-  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-  await page.clock.pauseAt(new Date("2026-09-30T12:00:00Z"));
+  await pauseClockAt(page, new Date("2026-09-30T12:00:00Z"));
   const fixture = await installPanelFixture(page, {
     moduleSource: "typescript",
     initialPlanCatalog: {

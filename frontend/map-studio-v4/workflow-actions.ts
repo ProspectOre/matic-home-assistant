@@ -203,6 +203,7 @@ export const workflowCopy = (state: WorkspaceState, localize?: Localize): {
     case "history": return { title: t("v4_map_history", "Map history"), description: t("v4_map_history_detail", "Saved maps show one floor each. They can't be edited and never show where the robot is now.") };
     case "support": return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Details to share with support") };
     case "runs": return { title: t("v4_cleaning_history", "Cleaning history"), description: "" };
+    case "photos": return { title: t("v4_photos", "Photos"), description: "" };
     case "none": return { title: "", description: "" };
   }
 };

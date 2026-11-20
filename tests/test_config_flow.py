@@ -1167,7 +1167,7 @@ async def test_options_flow_keeps_only_native_settings_and_maintenance(hass) -> 
         "default_plan",
         "reset_history",
         "confirm_reset_all_history",
-        "photo_patrol_settings",
+        "photo_settings",
         "finish",
     ]
     assert result["description_placeholders"] == {"plan_count": "1"}
@@ -1184,7 +1184,7 @@ async def test_options_flow_finish_preserves_existing_preferences(hass) -> None:
     assert result["data"] == {"existing_option": "preserved"}
 
 
-async def test_photo_patrol_settings_default_to_safe_values_and_preserve_options(
+async def test_photo_settings_default_to_safe_values_and_preserve_options(
     hass,
 ) -> None:
     entry, _manager = await _options_entry(
@@ -1192,49 +1192,49 @@ async def test_photo_patrol_settings_default_to_safe_values_and_preserve_options
     )
     flow = _direct_options_flow(hass, entry)
 
-    form = await flow.async_step_photo_patrol_settings()
+    form = await flow.async_step_photo_settings()
 
     assert _form_defaults(form) == {
-        "photo_patrol_allow_unattended": False,
-        "photo_patrol_no_photo_rooms": [],
-        "photo_patrol_cooldown_seconds": 900,
+        "photo_allow_unattended": False,
+        "photo_no_photo_rooms": [],
+        "photo_cooldown_seconds": 900,
     }
-    saved = await flow.async_step_photo_patrol_settings(
+    saved = await flow.async_step_photo_settings(
         {
-            "photo_patrol_allow_unattended": True,
-            "photo_patrol_no_photo_rooms": ["room-2"],
-            "photo_patrol_cooldown_seconds": 1800,
+            "photo_allow_unattended": True,
+            "photo_no_photo_rooms": ["room-2"],
+            "photo_cooldown_seconds": 1800,
         }
     )
     assert saved["type"] is FlowResultType.CREATE_ENTRY
     assert saved["data"] == {
         "existing_option": "preserved",
-        "photo_patrol_allow_unattended": True,
-        "photo_patrol_no_photo_rooms": ["room-2"],
-        "photo_patrol_cooldown_seconds": 1800,
+        "photo_allow_unattended": True,
+        "photo_no_photo_rooms": ["room-2"],
+        "photo_cooldown_seconds": 1800,
     }
 
 
-async def test_photo_patrol_settings_require_review_of_stale_blocked_rooms(
+async def test_photo_settings_require_review_of_stale_blocked_rooms(
     hass,
 ) -> None:
     entry, _manager = await _options_entry(
-        hass, options={"photo_patrol_no_photo_rooms": ["removed-room"]}
+        hass, options={"photo_no_photo_rooms": ["removed-room"]}
     )
     flow = _direct_options_flow(hass, entry)
 
-    form = await flow.async_step_photo_patrol_settings()
-    assert "removed-room" in _form_defaults(form)["photo_patrol_no_photo_rooms"]
+    form = await flow.async_step_photo_settings()
+    assert "removed-room" in _form_defaults(form)["photo_no_photo_rooms"]
 
-    saved = await flow.async_step_photo_patrol_settings(
+    saved = await flow.async_step_photo_settings(
         {
-            "photo_patrol_allow_unattended": True,
-            "photo_patrol_no_photo_rooms": ["removed-room"],
-            "photo_patrol_cooldown_seconds": 900,
+            "photo_allow_unattended": True,
+            "photo_no_photo_rooms": ["removed-room"],
+            "photo_cooldown_seconds": 900,
         }
     )
     assert saved["type"] is FlowResultType.ABORT
-    assert saved["reason"] == "photo_patrol_rooms_unavailable"
+    assert saved["reason"] == "photo_tour_rooms_unavailable"
 
 
 async def test_legacy_transport_option_does_not_enable_workspace_push(hass) -> None:
@@ -1249,7 +1249,7 @@ async def test_legacy_transport_option_does_not_enable_workspace_push(hass) -> N
         "default_plan",
         "reset_history",
         "confirm_reset_all_history",
-        "photo_patrol_settings",
+        "photo_settings",
         "finish",
     ]
     finished = await hass.config_entries.options.async_configure(
@@ -1360,7 +1360,7 @@ async def test_options_flow_returns_to_settings_when_no_plans_exist(hass, step) 
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
         "native_cleanings",
-        "photo_patrol_settings",
+        "photo_settings",
         "finish",
     ]
     assert result["description_placeholders"]["plan_count"] == "0"
@@ -1487,7 +1487,7 @@ async def test_options_flow_returns_to_settings_if_raced_plan_was_last(
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
         "native_cleanings",
-        "photo_patrol_settings",
+        "photo_settings",
         "finish",
     ]
     assert result["description_placeholders"]["plan_count"] == "0"
@@ -1509,7 +1509,7 @@ async def test_options_flow_returns_to_settings_when_reset_plan_disappears(
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
         "native_cleanings",
-        "photo_patrol_settings",
+        "photo_settings",
         "finish",
     ]
     assert flow._reset_plan_id is None
@@ -1670,29 +1670,29 @@ async def test_pairing_code_shows_progress_while_a_new_code_is_prepared(hass) ->
             await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_photo_patrol_settings_abort_when_entry_is_not_loaded(hass) -> None:
+async def test_photo_settings_abort_when_entry_is_not_loaded(hass) -> None:
     entry, _manager = await _options_entry(hass)
     entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
     flow = _direct_options_flow(hass, entry)
 
-    result = await flow.async_step_photo_patrol_settings()
+    result = await flow.async_step_photo_settings()
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_not_loaded"
 
 
-async def test_photo_patrol_settings_abort_if_entry_unloads_before_save(
+async def test_photo_settings_abort_if_entry_unloads_before_save(
     hass, monkeypatch
 ) -> None:
     entry, _manager = await _options_entry(hass)
     flow = _direct_options_flow(hass, entry)
     monkeypatch.setattr(flow, "_is_loaded", MagicMock(side_effect=[True, False]))
 
-    result = await flow.async_step_photo_patrol_settings(
+    result = await flow.async_step_photo_settings(
         {
-            "photo_patrol_allow_unattended": True,
-            "photo_patrol_no_photo_rooms": [],
-            "photo_patrol_cooldown_seconds": 900,
+            "photo_allow_unattended": True,
+            "photo_no_photo_rooms": [],
+            "photo_cooldown_seconds": 900,
         }
     )
 

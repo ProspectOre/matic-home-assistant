@@ -49,7 +49,7 @@ async def test_setup_registers_services_without_media_view() -> None:
         assert await async_setup(hass, {}) is True
 
     at_started.assert_called_once_with(hass, async_check_blueprints)
-    assert hass.services.async_register.call_count == 22
+    assert hass.services.async_register.call_count == 24
     assert hass.http.register_view.call_count == 2
     assert {call.args[0] for call in hass.http.register_view.call_args_list} == {
         MaticRobotPhotoView,

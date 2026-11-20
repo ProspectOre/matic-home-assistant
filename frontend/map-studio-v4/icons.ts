@@ -20,6 +20,7 @@ import {
   mdiFormatText,
   mdiHelpCircleOutline,
   mdiHistory,
+  mdiImageMultipleOutline,
   mdiInformationOutline,
   mdiMapMarkerOff,
   mdiMenu,
@@ -62,6 +63,7 @@ export const iconMoveUp = mdiArrowUp;
 export const iconMoveDown = mdiArrowDown;
 export const iconNewArea = mdiShapePolygonPlus;
 export const iconHistory = mdiHistory;
+export const iconPhotos = mdiImageMultipleOutline;
 export const iconPlan = mdiPlaylistCheck;
 export const iconDiagnostics = mdiInformationOutline;
 export { iconRobot } from "./robot-icon";

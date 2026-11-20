@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
+import { pauseClockAt } from "./clock.mjs";
 
 const secondEntry = () => ({
   entry_id: "synthetic-entry-b",
@@ -143,8 +144,7 @@ test("@safety switching entries closes open layers without leaving phantom brows
 
 test("@safety the same user regains map access immediately after administrator access returns", async ({ page }) => {
   const clockAnchor = new Date("2026-09-30T12:00:00Z");
-  await page.clock.install({ time: clockAnchor });
-  await page.clock.pauseAt(clockAnchor);
+  await pauseClockAt(page, clockAnchor);
   const { fixture } = await mountTwoRobotPanel(page);
   const panel = page.locator(fixture.panelTag);
   await panel.evaluate((element) => {
@@ -199,8 +199,7 @@ test("@safety entry removal revokes a pending selection before its stale catalog
 
 test("@safety a removed requested robot never falls back to another loaded robot", async ({ page }) => {
   const anchor = new Date("2026-09-30T12:00:00Z");
-  await page.clock.install({ time: anchor });
-  await page.clock.pauseAt(anchor);
+  await pauseClockAt(page, anchor);
   const { fixture, selector, entryA } = await mountTwoRobotPanel(page);
   const panel = page.locator(fixture.panelTag);
   await selector.selectOption("synthetic-entry-b");

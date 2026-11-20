@@ -42,7 +42,7 @@ from .llm import async_register_matic_llm_api
 from .media_source import existing_photo_attachment_source
 from .migrations import async_migrate_entry
 from .native_history_sync import NativeHistorySync, async_resume_native_reconciliation
-from .photos import RobotPhotoStore
+from .photo_library import PhotoLibrary, PhotoPlace, async_remove_photos
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
 from .robot_health import async_delete_robot_alert_issues
@@ -54,6 +54,7 @@ from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapStore
 from .slam_view_data import observe_trail
 from .vacuum_catalog import async_remove_floor_catalogs
+from .viewpoints import Viewpoints
 from .wifi_survey import WifiSurveyStore
 from .workspace_socket import workspace_socket
 
@@ -76,7 +77,8 @@ class MaticRuntimeData:
     slam_history: SlamHistoryStore
     run_trails: RunTrails
     wifi_survey: WifiSurveyStore
-    photos: RobotPhotoStore
+    photos: PhotoLibrary
+    viewpoints: Viewpoints
     cleaning_mode: CleaningMode = CleaningMode.BOTH
     coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL
 
@@ -155,6 +157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
     slam_map: SlamMapStore | None = None
     slam_history: SlamHistoryStore | None = None
     wifi_survey: WifiSurveyStore | None = None
+    photos: PhotoLibrary | None = None
     try:
         await session.async_start()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
@@ -191,6 +194,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await run_trails.async_load()
         wifi_survey = WifiSurveyStore(hass, entry.entry_id)
         await wifi_survey.async_load()
+        photos = PhotoLibrary(
+            hass,
+            entry.entry_id,
+            client,
+            place=lambda: PhotoPlace.at(
+                session.state.value.operational.current_area,
+                session.pose_on(session.floor.value),
+            ),
+        )
+        await photos.async_load()
+        viewpoints = Viewpoints(hass, entry.entry_id)
+        await viewpoints.async_load()
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         runtime_data = MaticRuntimeData(
             client,
@@ -201,7 +216,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
             run_trails,
             wifi_survey,
-            RobotPhotoStore(client),
+            photos,
+            viewpoints,
             cleaning_mode=CleaningMode(
                 entry.options.get(CONF_CLEANING_MODE, CleaningMode.BOTH)
             ),
@@ -265,6 +281,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             upgrade_pending=area_binding_upgrade.pending,
         ).async_start()
     except BaseException:
+        if photos is not None:
+            await photos.async_shutdown()
         if wifi_survey is not None:
             await wifi_survey.async_shutdown()
         if slam_history is not None:
@@ -315,6 +333,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
             await photo_source.async_release_entry(entry.entry_id)
         await entry.runtime_data.run_trails.async_shutdown()
         await entry.runtime_data.wifi_survey.async_shutdown()
+        await entry.runtime_data.photos.async_shutdown()
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
@@ -343,4 +362,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await slam_history.async_remove()
     await RunTrails(hass, entry.entry_id).async_remove()
     await WifiSurveyStore(hass, entry.entry_id).async_remove()
+    await async_remove_photos(hass, entry.entry_id)
+    await Viewpoints(hass, entry.entry_id).async_remove()
     await async_remove_floor_catalogs(hass, entry.entry_id)
