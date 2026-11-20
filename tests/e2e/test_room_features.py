@@ -38,6 +38,17 @@ async def test_go_to_room_from_the_dock(
     assert robot.destination == floor.rooms[1].id
     assert robot.current_area == "Study"
     assert robot.session is None
+    # The vacuum command takes a room ID or a name, under either spelling.
+    for command, room, destination in (
+        ("go-to-room", _room_id(plan.entry, "Kitchen"), floor.rooms[0]),
+        ("go_to_room", " study ", floor.rooms[1]),
+    ):
+        await plan.call(
+            "vacuum", "send_command", command=command, params={"room": room}
+        )
+        assert robot.destination == destination.id
+        assert robot.current_area == destination.name
+    assert len(robot.received()) == 3
 
 
 async def test_go_to_room_during_a_plan_keeps_the_run(
@@ -89,7 +100,7 @@ async def test_sink_trip_waits_for_the_refill_then_docks(
 
 
 async def test_sink_trip_without_a_saved_sink_is_refused(
-    plan: PlanRun, robot: SimulatedRobot
+    fast_empty_reads: None, plan: PlanRun, robot: SimulatedRobot
 ) -> None:
     # Served only here: an empty collection makes every read wait out its
     # snapshot window, which would slow each setup.
