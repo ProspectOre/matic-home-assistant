@@ -156,8 +156,8 @@ def test_blueprints_are_named_and_every_input_is_described() -> None:
         "Matic: Clean after pets leave",
         "Matic: Clean on a schedule",
         "Matic: Send firmware alerts",
-        "Matic: Photograph room on alert",
+        "Matic: Photo check on alert",
     }
     # The firmware blueprint derives the robot from its sensor; the photo
-    # blueprint asks the owner to choose an AI Task entity and question.
-    assert inputs == 27
+    # check blueprint asks for a place, a notify target and its options.
+    assert inputs == 30

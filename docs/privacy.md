@@ -44,7 +44,9 @@ map store; removing the integration deletes it.
 `image.matic_latest_photo` shows pictures the robot took inside your home.
 Every Home Assistant user who can see entities can open it; disable the entity
 if that is not wanted. Photo links serve saved photos to any signed-in user,
-and are never cached by the browser. Home Assistant backups may include
+and are never cached by the browser. A photo tour returns links signed for 24
+hours, each opening one photo without signing in, so notifications can show
+it; anyone holding such a link can open that photo until it expires. Home Assistant backups may include
 credentials, plans, maps and saved photos—protect backups and screenshots
 accordingly. Removing the robot erases its saved photos.
 

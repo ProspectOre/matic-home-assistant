@@ -84,7 +84,7 @@ async def prepare_api(hass: HomeAssistant, tmp_path: Path) -> list[ServiceCall]:
                     "summary": "A wet patch is visible.",
                 },
             }
-            for room in (stop["room"] for stop in call.data["stops"])
+            for room in (stop.get("room") for stop in call.data["stops"])
         ]
         return {"robots": [{"entity_id": VACUUM, "photos": photos}]}
 
@@ -141,6 +141,7 @@ def inputs_for(filename: str) -> dict[str, Any]:
             "sensors": [LEAK],
             "room": " Kitchen ",
             "ai_task_entity_id": "ai_task.blueprint_test",
+            "phone_app": False,
             "notify_service": "notify.blueprint_test_phone",
             "cooldown": {"seconds": 0},
         }
@@ -260,10 +261,11 @@ async def test_import_save_reload_and_source_trigger(
         assert calls[-1].data["action"] == "delivered"
     elif filename == "photo_on_alert.yaml":
         assert [(call.domain, call.service) for call in calls] == [
+            ("notify", "blueprint_test_phone"),
             ("matic_robot", "run_photo_tour"),
             ("notify", "blueprint_test_phone"),
         ]
-        assert calls[0].data == {
+        assert calls[1].data == {
             "entity_id": [VACUUM],
             "stops": [{"room": "Kitchen"}],
             "full_resolution": False,
@@ -273,13 +275,10 @@ async def test_import_save_reload_and_source_trigger(
             ),
             "ai_task_entity_id": "ai_task.blueprint_test",
         }
-        assert calls[1].data == {
+        assert calls[2].data == {
             "title": "Sink leak",
             "message": "A wet patch is visible.",
-            "data": {
-                "image": PHOTO_URL,
-                "tag": "matic_photo_automation.saved_matic_blueprint_test",
-            },
+            "data": {},
         }
     else:
         assert len(calls) == 1

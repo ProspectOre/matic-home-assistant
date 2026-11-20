@@ -126,11 +126,12 @@ async def test_tour_photo_crosses_the_real_client_and_private_http_view(
     assert photo["room"] == "Study"
     assert photo["photo_id"] == event["photo_id"]
     assert event["room"] == "Study"
-    assert event["url"] == photo["url"]
-    assert photo["url"] == photo["preview_url"]
-    assert photo["url"].startswith(
+    # The action's links are signed for notify targets; the event's are not.
+    assert event["url"] == event["preview_url"]
+    assert event["url"].startswith(
         f"/api/{DOMAIN}/photo/{loaded_entry.entry_id}/preview/"
     )
+    assert photo["url"].startswith(f"{event['url']}?authSig=")
     assert SNAP_PAYLOAD in robot.received()
     assert robot.phase.value == "returning"
 
@@ -142,7 +143,7 @@ async def test_tour_photo_crosses_the_real_client_and_private_http_view(
     # photo IDs and the private download URL must not be state attributes.
     serialized_state = json.dumps(dict(image_state.attributes))
     assert photo["photo_id"] not in serialized_state
-    assert photo["url"] not in serialized_state
+    assert event["url"] not in serialized_state
     assert _webp((18, 120, 210)).hex() not in serialized_state
 
     client = await hass_client()
@@ -152,10 +153,10 @@ async def test_tour_photo_crosses_the_real_client_and_private_http_view(
     assert await entity_image.read() == _webp((18, 120, 210))
 
     no_auth_client = await hass_client_no_auth()
-    unauthorized = await no_auth_client.get(photo["url"])
+    unauthorized = await no_auth_client.get(event["url"])
     assert unauthorized.status == 401
 
-    authorized = await client.get(photo["url"])
+    authorized = await no_auth_client.get(photo["url"])
     assert authorized.status == 200
     assert authorized.headers["Content-Type"].startswith("image/webp")
     assert authorized.headers["Cache-Control"] == "private, no-store, max-age=0"

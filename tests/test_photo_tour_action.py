@@ -40,6 +40,10 @@ async def _run(entity_ids: list[str], check: object) -> tuple[object, AsyncMock]
         ),
         patch(f"{SERVICE}.check_photo_tour", side_effect=check) as checked,
         patch(f"{SERVICE}.async_run_photo_tour", tour),
+        patch(
+            f"{SERVICE}.async_sign_path",
+            side_effect=lambda _hass, path, lifetime, **_: f"{path}?for={lifetime}",
+        ),
     ):
         try:
             response = await _registered_handler(services, "run_photo_tour")(call)
@@ -54,9 +58,13 @@ async def _run(entity_ids: list[str], check: object) -> tuple[object, AsyncMock]
 async def test_returns_each_robots_photos_in_turn() -> None:
     response, tour = await _run(["vacuum.a", "vacuum.b"], None)
 
+    # Each link is signed for a day so a phone can fetch it without signing in.
+    signed = [
+        {"viewpoint": "Stove", "url": "/api/matic_robot/photo/e/p?for=1 day, 0:00:00"}
+    ]
     assert response == {
         "robots": [
-            {"entity_id": entity_id, "photos": tour.return_value}
+            {"entity_id": entity_id, "photos": signed}
             for entity_id in ("vacuum.a", "vacuum.b")
         ]
     }

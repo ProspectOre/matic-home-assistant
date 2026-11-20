@@ -1,13 +1,15 @@
 blueprint:
-  name: "Matic: Photograph room on alert"
+  name: "Matic: Photo check on alert"
   description: >-
-    When one of your sensors turns on, sends the robot to a room, takes a photo
-    there and asks the selected Home Assistant AI Task entity whether there is
-    a problem, then docks the robot. The full photo and question go to that
-    entity, whose provider may be cloud-based according to your Home Assistant
-    setup. The automation notifies only when the answer reports a problem. It
-    starts only when the robot is docked or idle, and not again until the
-    cooldown has passed.
+    When a sensor turns on or an alarm goes off, the robot goes to a saved
+    viewpoint or a room, takes a photo and docks. Your phone hears about it at
+    once, then the same notification shows the photo when it is taken, usually
+    within a minute. The photo shows what is there when the robot arrives, not
+    a live view of the moment the sensor turned on. Choose an AI Task entity to
+    add its answer to a question about the photo; that entity receives the full
+    photo and the question, and its provider may be cloud-based. The robot
+    starts only from the dock or idle, and not again until the cooldown has
+    passed.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/photo_on_alert.yaml
   input:
@@ -21,93 +23,173 @@ blueprint:
     sensors:
       name: Alert sensors
       description: >-
-        Sensors that start a check when they turn on, for example a motion
-        sensor, a water leak sensor or a smoke alarm.
+        Sensors that start a check when they turn on, such as a door, motion or
+        water leak sensor, or an alarm panel that goes off.
       selector:
         entity:
-          domain: binary_sensor
+          domain: [binary_sensor, alarm_control_panel]
           multiple: true
+    viewpoint:
+      name: Viewpoint
+      description: >-
+        A viewpoint saved in Matic Map's Photos, for example Front door. Leave
+        empty to use a room instead.
+      default: ""
+      selector:
+        text:
     room:
       name: Room
       description: >-
-        The room to photograph, by its name in Matic Map, for example Kitchen.
+        Used when no viewpoint is set: a room by its name in Matic Map, where
+        the robot picks the spot.
+      default: ""
       selector:
         text:
-    ai_task_entity_id:
-      name: AI Task entity
+    notify_service:
+      name: Notification action
       description: >-
-        The selected entity receives the full photo and question. Matic does not
-        choose an AI provider automatically.
+        For example notify.mobile_app_my_phone. Other notification actions,
+        such as Telegram or email, get the text without the photo.
+      selector:
+        text:
+    phone_app:
+      name: Home Assistant phone app
+      description: >-
+        Turn off when the notification action is not the Home Assistant phone
+        app, which shows the photo and the Send home and Open Matic Map
+        buttons.
+      default: true
+      selector:
+        boolean:
+    urgent:
+      name: Break through Do Not Disturb
+      description: >-
+        Shows the notification right away on iPhone (time sensitive) and
+        Android (high priority), even in a Focus or Do Not Disturb.
+      default: false
+      selector:
+        boolean:
+    ai_task_entity_id:
+      name: AI Task entity (optional)
+      description: >-
+        Receives the full photo and your question; its answer becomes the
+        caption. Without one, the caption is the place and the time.
+      default: ""
       selector:
         entity:
           domain: ai_task
     question:
       name: Question
-      description: >-
-        Ask about visible details in the photo. The selected AI Task entity
-        receives the full photo and this question.
+      description: Asked about the photo when an AI Task entity is chosen.
       default: >-
         Is there a safety problem visible, such as water, smoke or an open door?
       selector:
         text:
           multiline: true
-    notify_service:
-      name: Mobile notification action
+    full_resolution_notification:
+      name: Send the full photo
       description: >-
-        Your Companion app notification action, for example
-        notify.mobile_app_my_phone. The photo is attached to the notification.
+        By default the notification shows a pixelated preview. Choose this only
+        when everyone who receives the notification may see the full photo.
+      default: false
       selector:
-        text:
+        boolean:
     cooldown:
       name: Cooldown
       description: >-
-        How long to wait after a check before another can start. Default 15
-        minutes; for example 1 hour for a busy motion sensor.
+        How long to wait after a check before another can start. Alerts during
+        the cooldown are ignored.
       default:
         minutes: 15
       selector:
         duration:
-    full_resolution_notification:
-      name: Send the full photo
-      description: >-
-        By default the notification uses a pixelated preview. Choose this only
-        when people who receive the notification may see the full photo.
-      default: false
-      selector:
-        boolean:
 
-mode: single
+mode: parallel
+max: 10
 max_exceeded: silent
 
 variables:
-  room_name: !input room
+  vacuum: !input vacuum
+  viewpoint: !input viewpoint
+  room: !input room
+  notify_service: !input notify_service
+  phone_app: !input phone_app
+  urgent: !input urgent
   ai_task_entity_id: !input ai_task_entity_id
   question: !input question
-  notify_service: !input notify_service
   full_resolution_notification: !input full_resolution_notification
+  tag: "{{ 'matic_photo_' ~ this.entity_id }}"
+  send_home: "{{ 'MATIC_SEND_HOME_' ~ this.entity_id }}"
+  matic_map: /matic-map
+  # One stack on the phone, and a way through Do Not Disturb when chosen.
+  phone_data: >-
+    {{ dict({'group': 'matic_photo_check', 'url': matic_map,
+             'clickAction': matic_map},
+            **({'push': {'interruption-level': 'time-sensitive'},
+                'priority': 'high', 'ttl': 0} if urgent else {})) }}
 
 triggers:
   - trigger: state
     entity_id: !input sensors
-    to: "on"
+    to: ["on", "triggered"]
+    id: alert
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: send_home
 
 conditions:
-  - condition: state
-    entity_id: !input vacuum
-    state: [docked, idle]
+  - condition: or
+    conditions:
+      # A check runs on its own: while one runs or cools down, alerts wait.
+      - "{{ trigger.id == 'alert' and this.attributes.current | default(0) == 0 }}"
+      - "{{ trigger.id == 'send_home' and trigger.event.data.action == send_home }}"
 
 actions:
+  - if: "{{ trigger.id == 'send_home' }}"
+    then:
+      - action: vacuum.return_to_base
+        target:
+          entity_id: "{{ vacuum }}"
+      - stop: Sent home
   - variables:
       sensor_name: "{{ trigger.to_state.name }}"
-      room: "{{ room_name | trim }}"
+      place: "{{ viewpoint | trim or room | trim }}"
+      tour_stop: >-
+        {{ {'viewpoint': viewpoint | trim} if viewpoint | trim
+           else {'room': room | trim} }}
+      busy: >-
+        {% set state = states(vacuum) %}
+        {% if state in ['docked', 'idle'] %}
+        {% elif state == 'cleaning' %}Matic is cleaning, so the photo check was skipped.
+        {% elif state == 'paused' %}Matic is paused in the middle of a clean.
+        {% elif state == 'error' %}Matic needs help, so the photo check was skipped.
+        {% elif state in ['unavailable', 'unknown'] %}Matic isn't reachable.
+        {% else %}Matic is busy, so the photo check was skipped.
+        {% endif %}
+  - if: "{{ busy | length > 0 }}"
+    then:
+      - action: "{{ notify_service }}"
+        data:
+          title: "{{ sensor_name }}"
+          message: "{{ busy }}"
+          data: "{{ dict(phone_data, tag=tag) if phone_app else {} }}"
+      - delay: !input cooldown
+      - stop: Robot busy
+  - action: "{{ notify_service }}"
+    data:
+      title: "{{ sensor_name }}"
+      message: Matic is on its way to look.
+      data: >-
+        {{ dict(phone_data, tag=tag,
+                actions=[{'action': send_home, 'title': 'Send home'}])
+           if phone_app else {} }}
   - action: matic_robot.run_photo_tour
     target:
-      entity_id: !input vacuum
-    data:
-      stops: [{ room: "{{ room }}" }]
-      full_resolution: "{{ full_resolution_notification }}"
-      question: "{{ question }}"
-      ai_task_entity_id: "{{ ai_task_entity_id }}"
+      entity_id: "{{ vacuum }}"
+    data: >-
+      {{ dict({'stops': [tour_stop], 'full_resolution': full_resolution_notification},
+              **({'question': question, 'ai_task_entity_id': ai_task_entity_id}
+                 if ai_task_entity_id else {})) }}
     response_variable: tour
     continue_on_error: true
   - variables:
@@ -115,27 +197,33 @@ actions:
         {{ tour.robots[0].photos
            if tour is defined and tour.robots | default([]) | length > 0
            else [] }}
-  - if: >-
-      {{ photos | length > 0
-         and photos[0].analysis is defined
-         and photos[0].analysis.problem | default(false) }}
-    then:
-      - action: "{{ notify_service }}"
-        data:
-          title: "{{ sensor_name }}"
-          message: >-
-            {{ photos[0].analysis.summary }}
-          data:
-            image: "{{ photos[0].url }}"
-            tag: "{{ 'matic_photo_' ~ this.entity_id }}"
   - if: "{{ photos | length == 0 }}"
     then:
       - action: "{{ notify_service }}"
         data:
           title: "{{ sensor_name }}"
-          message: >-
-            The robot couldn't take a photo in {{ room }}. Check the robot in
-            Home Assistant.
-          data:
-            tag: "{{ 'matic_photo_' ~ this.entity_id }}"
+          message: Matic couldn't get a photo of {{ place }}.
+          data: "{{ dict(phone_data, tag=tag) if phone_app else {} }}"
+    else:
+      # The first photo replaces the notification; a look-around adds the rest
+      # to the same stack.
+      - repeat:
+          for_each: "{{ photos }}"
+          sequence:
+            - action: "{{ notify_service }}"
+              data:
+                title: "{{ sensor_name }}"
+                message: >-
+                  {{ repeat.item.analysis.summary
+                     if repeat.item.analysis is defined
+                     else place ~ ', '
+                       ~ (as_datetime(repeat.item.captured_at) | as_local)
+                         .strftime('%-I:%M %p') }}
+                data: >-
+                  {{ dict(phone_data,
+                          tag=tag if repeat.first else tag ~ '_' ~ repeat.index,
+                          image=repeat.item.url,
+                          actions=[{'action': 'URI', 'title': 'Open Matic Map',
+                                    'uri': matic_map}])
+                     if phone_app else {} }}
   - delay: !input cooldown
