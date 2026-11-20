@@ -48,8 +48,8 @@ reopened by the supervisor whenever it ends, is the only writer of its state
 store, at most one snapshot a second. [Robot health](../custom_components/matic_robot/robot_health.py)
 shows an error code or bag flag once two samples 30 seconds apart carry it. A
 failed dial, or 10 seconds with no live state subscription, makes the robot
-and every entity unavailable until the next snapshot; the keepalive ping ends
-a silent connection. A `latest_pose` watch feeds the map trail and Matic Map.
+and the entities that show its state unavailable until the next snapshot;
+the keepalive ping ends a silent connection. A `latest_pose` watch feeds the map trail and Matic Map.
 The session raises the identity Repair, starts reauthentication when a dial or
 subscription is refused, and closes on unload and when Home Assistant stops.
 
@@ -100,7 +100,7 @@ authorized projections for [plans](../custom_components/matic_robot/plan_views.p
 and [areas](../custom_components/matic_robot/area_views.py). The [assistant APIs](../custom_components/matic_robot/llm.py)
 are read-only status, control (status plus control tools, under 0.5's id) and firmware research; Assist gets status and control.
 [Shared authorization](../custom_components/matic_robot/llm_common.py) admits current administrators and, on every path, only robots whose vacuum is exposed to the calling assistant.
-The run lifecycle is announced once, as `matic_robot_*` bus events from the executor, ledger and session (the list is `RUN_EVENT_TYPES` in [const](../custom_components/matic_robot/const.py)). The [Cleaning run event entity](../custom_components/matic_robot/event.py), the [device triggers](../custom_components/matic_robot/device_trigger.py) and the [logbook](../custom_components/matic_robot/logbook.py) read those events and fire none of their own; Home Assistant's `event.received` trigger works on the entity. Interface adapters do not establish independent cleaning or map truth. Actions, assistant tools, buttons and photo tours send direct commands through [robot controls](../custom_components/matic_robot/robot_controls.py), not `vacuum.send_command`, and like a vacuum action send nothing while the robot is unreachable; `vacuum.send_command` keeps the [documented commands](robot-command-actions.md), `resume` for Matic Map, and until 0.7 the deprecated clean and motion commands.
+The run lifecycle is announced once, as `matic_robot_*` bus events from the executor, ledger and session (the list is `RUN_EVENT_TYPES` in [const](../custom_components/matic_robot/const.py)). The [Cleaning run event entity](../custom_components/matic_robot/event.py) and the [device triggers](../custom_components/matic_robot/device_trigger.py) read those events and fire none of their own. The entity stays available while the robot is unreachable, and its state changes are the run's only logbook entries; Home Assistant's `event.received` trigger works on it. Interface adapters do not establish independent cleaning or map truth. Actions, assistant tools, buttons and photo tours send direct commands through [robot controls](../custom_components/matic_robot/robot_controls.py), not `vacuum.send_command`, and like a vacuum action send nothing while the robot is unreachable; `vacuum.send_command` keeps the [documented commands](robot-command-actions.md), `resume` for Matic Map, and until 0.7 the deprecated clean and motion commands.
 
 [Photo tours](../custom_components/matic_robot/photo_tours.py) check privacy,
 room, schedule and robot ownership before capture, and [viewpoints](../custom_components/matic_robot/viewpoints.py) hold the saved spots. The [photo library](../custom_components/matic_robot/photo_library.py)

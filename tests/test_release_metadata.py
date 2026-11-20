@@ -605,6 +605,20 @@ def test_every_exception_key_is_raised() -> None:
     assert set(_strings()["exceptions"]) - raised == set()
 
 
+def test_every_raised_home_assistant_error_is_translated() -> None:
+    untranslated = [
+        f"{path.name}:{node.lineno}"
+        for path in sorted(INTEGRATION.rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and getattr(node.exc.func, "id", None)
+        in {"HomeAssistantError", "ServiceValidationError"}
+        and not any(word.arg == "translation_key" for word in node.exc.keywords)
+    ]
+    assert untranslated == []
+
+
 def test_coverage_guard_text_matches_everywhere() -> None:
     from custom_components.matic_robot.managed_run import _COVERAGE_GUARD_MESSAGES
 
