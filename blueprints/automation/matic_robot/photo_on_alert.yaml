@@ -9,7 +9,7 @@ blueprint:
     add its answer to a question about the photo; that entity receives the full
     photo and the question, and its provider may be cloud-based. The robot
     starts only from the dock or idle, and not again until the cooldown has
-    passed.
+    passed, unless you press Send another on the photo.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/photo_on_alert.yaml
   input:
@@ -56,8 +56,8 @@ blueprint:
       name: Home Assistant phone app
       description: >-
         Turn off when the notification action is not the Home Assistant phone
-        app, which shows the photo and the Send home and Open photo
-        buttons.
+        app, which shows the photo and the Send home, Open photo and Send
+        another buttons.
       default: true
       selector:
         boolean:
@@ -99,7 +99,7 @@ blueprint:
       name: Cooldown
       description: >-
         How long to wait after a check before another can start. Alerts during
-        the cooldown are ignored.
+        the cooldown are ignored; Send another on the photo still goes.
       default:
         minutes: 15
       selector:
@@ -121,6 +121,7 @@ variables:
   full_resolution_notification: !input full_resolution_notification
   tag: "{{ 'matic_photo_' ~ this.entity_id }}"
   send_home: "{{ 'MATIC_SEND_HOME_' ~ this.entity_id }}"
+  send_another: "{{ 'MATIC_SEND_ANOTHER_' ~ this.entity_id }}"
   matic_map: /matic-map
   # One stack on the phone, and a way through Do Not Disturb when chosen.
   phone_data: >-
@@ -137,6 +138,9 @@ triggers:
   - trigger: event
     event_type: mobile_app_notification_action
     id: send_home
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: send_another
 
 conditions:
   - condition: or
@@ -144,6 +148,8 @@ conditions:
       # A check runs on its own: while one runs or cools down, alerts wait.
       - "{{ trigger.id == 'alert' and this.attributes.current | default(0) == 0 }}"
       - "{{ trigger.id == 'send_home' and trigger.event.data.action == send_home }}"
+      # A person asked to look again, so it goes even during the cooldown.
+      - "{{ trigger.id == 'send_another' and trigger.event.data.action == send_another }}"
 
 actions:
   - if: "{{ trigger.id == 'send_home' }}"
@@ -153,8 +159,10 @@ actions:
           entity_id: "{{ vacuum }}"
       - stop: Sent home
   - variables:
-      sensor_name: "{{ trigger.to_state.name }}"
       place: "{{ viewpoint | trim or room | trim }}"
+      sensor_name: >-
+        {{ trigger.to_state.name if trigger.id == 'alert'
+           else viewpoint | trim or room | trim }}
       tour_stop: >-
         {{ {'viewpoint': viewpoint | trim} if viewpoint | trim
            else {'room': room | trim} }}
@@ -174,7 +182,9 @@ actions:
           title: "{{ sensor_name }}"
           message: "{{ busy }}"
           data: "{{ dict(phone_data, tag=tag) if phone_app else {} }}"
-      - delay: !input cooldown
+      - if: "{{ trigger.id == 'alert' }}"
+        then:
+          - delay: !input cooldown
       - stop: Robot busy
   - action: "{{ notify_service }}"
     data:
@@ -189,7 +199,8 @@ actions:
       entity_id: "{{ vacuum }}"
     data: >-
       {{ dict({'stops': [tour_stop], 'report_failures': true,
-               'full_resolution': full_resolution_notification},
+               'full_resolution': full_resolution_notification,
+               'skip_cooldown': trigger.id == 'send_another'},
               **({'question': question, 'ai_task_entity_id': ai_task_entity_id}
                  if ai_task_entity_id else {})) }}
     response_variable: tour
@@ -229,7 +240,8 @@ actions:
           data: "{{ dict(phone_data, tag=tag) if phone_app else {} }}"
     else:
       # The first photo replaces the notification; a look-around adds the rest
-      # to the same stack. Each one opens its photo in Matic Map.
+      # to the same stack. Each one opens its photo in Matic Map, and Send
+      # another sends the robot to look again.
       - repeat:
           for_each: "{{ photos }}"
           sequence:
@@ -249,6 +261,8 @@ actions:
                           url=repeat.item.map_url,
                           clickAction=repeat.item.map_url,
                           actions=[{'action': 'URI', 'title': 'Open photo',
-                                    'uri': repeat.item.map_url}])
+                                    'uri': repeat.item.map_url},
+                                   {'action': send_another,
+                                    'title': 'Send another'}])
                      if phone_app else {} }}
   - delay: !input cooldown

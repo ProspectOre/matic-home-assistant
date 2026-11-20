@@ -2189,6 +2189,10 @@
           "name": "Report failures in the response",
           "description": "Instead of failing the action, return each robot whose tour could not finish with an error reason and message, and keep going with the other robots."
         },
+        "skip_cooldown": {
+          "name": "Skip the cooldown",
+          "description": "Start even if a tour ran within the cooldown set in the integration's settings. Use it for a tour a person asked for, such as a button press, not for one a sensor started."
+        },
         "full_resolution": {
           "name": "Send the full photo",
           "description": "By default, the response and event use a pixelated preview. Set this only when full-resolution photos are appropriate for the recipients."

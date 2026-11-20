@@ -47,8 +47,9 @@ from a permitted room can show a no-photo room through an open doorway, so aim
 viewpoints away from one. A stop with `look_around` above 1 faces every
 direction, so do not use it beside a doorway into a no-photo room. These settings do not control photos requested in the Matic app.
 
-The minimum time between tours defaults to 15 minutes. Only one tour may
-run per robot. It requires at least 20% battery, checks again between stops,
+The minimum time between tours defaults to 15 minutes; `skip_cooldown: true`
+starts one anyway, for a tour a person asked for. Only one tour may run per
+robot. It requires at least 20% battery, checks again between stops,
 and stops after 15 minutes. A robot schedule due soon also prevents a tour
 from starting. If another clean or navigation takes over, the tour yields.
 
