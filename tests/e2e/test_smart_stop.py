@@ -54,6 +54,10 @@ async def test_stop_finishes_the_current_room_and_skips_the_rest(
     assert robot.session is not None
     assert robot.session.rooms == [floor.rooms[0].id]
     assert STOP_PAYLOAD not in robot.received()
+    # The vacuum's own stop, by action or command, follows the same policy.
+    await plan.call("vacuum", "stop")
+    await plan.call("vacuum", "send_command", command="stop")
+    assert robot.phase is Phase.CLEANING
     robot.finish_room()
     robot.finish_session()
     await plan.poll()

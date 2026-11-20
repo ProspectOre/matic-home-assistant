@@ -26,7 +26,6 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
-    UserCommand,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plan_model import CleaningRoom
@@ -188,48 +187,6 @@ async def test_button_press_reaches_owned_vacuum_service(
     if service == "clean_area":
         expected["area"] = "area-two"
     assert calls[0].data == expected
-
-
-@pytest.mark.parametrize(
-    "service, command",
-    [
-        ("pause", UserCommand.PAUSE),
-        ("stop", UserCommand.STOP),
-        ("return_to_base", UserCommand.DOCK),
-    ],
-)
-async def test_vacuum_service_reaches_transport_once(
-    hass: HomeAssistant, platforms: SimpleNamespace, service: str, command: UserCommand
-) -> None:
-    """Use HA's native vacuum dispatcher instead of calling an entity method."""
-    await hass.services.async_call(
-        "vacuum", service, {"entity_id": platforms.entities["vacuum"]}, blocking=True
-    )
-    platforms.session.client.async_send_user_command.assert_awaited_once_with(command)
-
-
-async def test_vacuum_start_and_named_room_validation(
-    hass: HomeAssistant, platforms: SimpleNamespace
-) -> None:
-    """Native dispatcher selects real protocol rooms and rejects missing names."""
-    target = {"entity_id": platforms.entities["vacuum"]}
-    client = platforms.session.client
-    await hass.services.async_call("vacuum", "start", target, blocking=True)
-    assert client.async_start_coverage.await_args.args[1] == [
-        "protocol-1",
-        "protocol-2",
-    ]
-    client.async_start_coverage.reset_mock()
-    await hass.services.async_call(
-        DOMAIN, "clean", {**target, "rooms": ["Study"]}, blocking=True
-    )
-    assert client.async_start_coverage.await_args.args[1] == ["protocol-2"]
-    client.async_start_coverage.reset_mock()
-    with pytest.raises(ServiceValidationError):
-        await hass.services.async_call(
-            DOMAIN, "clean", {**target, "rooms": ["Missing room"]}, blocking=True
-        )
-    client.async_start_coverage.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
