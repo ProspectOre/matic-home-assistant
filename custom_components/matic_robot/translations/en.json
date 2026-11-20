@@ -771,7 +771,7 @@
     "v4_queue_catalog_failed": "The rooms for this clean couldn't be read. Check the map and reload to try again.",
     "v4_queue_catalog_held": "Queue changes are unavailable until the current map and room list are ready.",
     "v4_queue_room": "Room",
-      "v4_queue_room_scope": "All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.",
+    "v4_queue_room_scope": "All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.",
     "v4_queue_actions": "Change {room}",
     "v4_queue_skip": "Skip",
     "v4_queue_next": "Clean next",
@@ -795,6 +795,21 @@
     "v4_schedule_from_app": "Set in the Matic app",
     "v4_schedule_next": "Next scheduled clean",
     "v4_cleaning_history": "Cleaning history",
+    "v4_photos": "Photos",
+    "v4_photos_quick_detail": "See photos the robot took and the views you saved.",
+    "v4_photos_empty": "No photos yet. Press Take photo, or run a photo tour from an automation.",
+    "v4_photos_failed": "Couldn't load the photos.",
+    "v4_photos_from_app": "From the Matic app",
+    "v4_photos_loading": "Loading photos…",
+    "v4_photos_loading_photo": "Loading the photo…",
+    "v4_photos_more": "Show older photos",
+    "v4_photos_photo_failed": "Couldn't load this photo.",
+    "v4_photos_newer": "Newer",
+    "v4_photos_older": "Older",
+    "v4_photos_single": "Single photos",
+    "v4_photos_tour": "Photo tour",
+    "v4_photos_tour_at": "Photo tour, {time}",
+    "v4_photos_viewpoints": "Saved viewpoints",
     "v4_runs_last_unfinished": "The last run didn't finish. See what happened.",
     "v4_runs_quick_detail": "See recent cleans and how they ended.",
     "v4_robot_trail": "Robot trail",
@@ -1107,11 +1122,11 @@
       "default_plan_set": "Default plan: {plan_name}",
       "history_reset": "Room cleaning history reset for {plan_name}",
       "all_history_reset": "Room cleaning history reset for all plans",
-      "photo_patrol_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
+      "photo_tour_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
     },
     "error": {
       "plan_unavailable": "That plan no longer exists. Choose another plan.",
-      "photo_patrol_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
+      "photo_tour_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
     },
     "step": {
       "init": {
@@ -1121,7 +1136,7 @@
           "default_plan": "Choose the default plan",
           "reset_history": "Reset room cleaning history for one plan",
           "confirm_reset_all_history": "Reset room cleaning history for all plans",
-          "photo_patrol_settings": "Photo patrol privacy and safety",
+          "photo_settings": "Photo privacy and safety",
           "finish": "Done",
           "native_cleanings": "App-started cleanings"
         }
@@ -1156,18 +1171,18 @@
         "description": "Every plan starts again from its first room and each room's last-cleaned record is cleared, while plans and settings are kept. This can't be undone.",
         "submit": "Reset"
       },
-      "photo_patrol_settings": {
-        "title": "Photo patrol privacy and safety",
-        "description": "Photo patrols move the robot on their own. Enable them only after reviewing these safeguards. The room list uses the current map.",
+      "photo_settings": {
+        "title": "Photo privacy and safety",
+        "description": "Photo tours move the robot on their own. Enable them only after reviewing these safeguards. The room list uses the current map.",
         "data": {
-          "photo_patrol_allow_unattended": "Allow unattended photo patrols",
-          "photo_patrol_no_photo_rooms": "No-photo rooms",
-          "photo_patrol_cooldown_seconds": "Minimum time between patrols (seconds)"
+          "photo_allow_unattended": "Allow unattended photo tours",
+          "photo_no_photo_rooms": "No-photo rooms",
+          "photo_cooldown_seconds": "Minimum time between photo tours (seconds)"
         },
         "data_description": {
-          "photo_patrol_allow_unattended": "Required before any photo patrol can move or take photos. Manual Take photo remains available separately.",
-          "photo_patrol_no_photo_rooms": "Photos from Home Assistant snapshots and patrols are refused in these rooms. Names are saved as room IDs on the current map. An unavailable room stays selected and blocks photos until you review it.",
-          "photo_patrol_cooldown_seconds": "Minimum delay between patrols, including sensor-triggered patrols."
+          "photo_allow_unattended": "Required before any photo tour can move or take photos. Manual Take photo remains available separately.",
+          "photo_no_photo_rooms": "Photos taken through Home Assistant, tours included, are refused while the robot is in these rooms. The camera can still see into them through an open doorway. Names are saved as room IDs on the current map. An unavailable room stays selected and blocks photos until you review it.",
+          "photo_cooldown_seconds": "Minimum delay between photo tours, including tours an automation starts."
         }
       },
       "native_cleanings": {
@@ -1944,50 +1959,50 @@
     "smart_stop_not_pending": {
       "message": "Smart Stop is no longer finishing this room or area. Check the robot before trying again."
     },
-    "photo_patrol_running": {
-      "message": "A photo patrol is already running on this robot."
+    "photo_tour_running": {
+      "message": "A photo tour is already running on this robot."
     },
-    "photo_patrol_not_opted_in": {
-      "message": "Unattended photo patrols are disabled. Review the robot's privacy settings before enabling them."
+    "photo_tour_not_opted_in": {
+      "message": "Unattended photo tours are disabled. Review the robot's privacy settings before enabling them."
     },
-    "photo_patrol_rooms_unavailable": {
-      "message": "The current map or room is unavailable, so the photo patrol was stopped without taking a photo."
+    "photo_tour_rooms_unavailable": {
+      "message": "The current map or room is unavailable, so the photo tour was stopped without taking a photo."
     },
-    "photo_patrol_room_unknown": {
+    "photo_tour_room_unknown": {
       "message": "Home Assistant can't match {room} to a room on the current map."
     },
-    "photo_patrol_room_blocked": {
+    "photo_tour_room_blocked": {
       "message": "Photos are disabled in this room."
     },
-    "photo_patrol_schedule_conflict": {
-      "message": "The photo patrol could overlap a robot schedule. Try again after the schedule window."
+    "photo_tour_schedule_conflict": {
+      "message": "The photo tour could overlap a robot schedule. Try again after the schedule window."
     },
-    "photo_patrol_cooldown": {
-      "message": "Another photo patrol ran recently. Wait {seconds} seconds before trying again."
+    "photo_tour_cooldown": {
+      "message": "Another photo tour ran recently. Wait {seconds} seconds before trying again."
     },
-    "photo_patrol_timeout": {
-      "message": "The photo patrol reached its time limit. The robot was returned to the dock when it was safe to do so."
+    "photo_tour_timeout": {
+      "message": "The photo tour reached its time limit. The robot was returned to the dock when it was safe to do so."
     },
-    "photo_patrol_dock_timeout": {
-      "message": "The photo patrol finished, but Home Assistant could not confirm the robot's safe return to the dock within the time limit."
+    "photo_tour_dock_timeout": {
+      "message": "The photo tour finished, but Home Assistant could not confirm the robot's safe return to the dock within the time limit."
     },
-    "photo_patrol_battery_unknown": {
-      "message": "The robot's battery level is unavailable, so the photo patrol was not started."
+    "photo_tour_battery_unknown": {
+      "message": "The robot's battery level is unavailable, so the photo tour was not started."
     },
-    "photo_patrol_robot_busy": {
+    "photo_tour_robot_busy": {
       "message": "The robot is busy with a clean or on its way to the dock. Take photos once it has docked."
     },
-    "photo_patrol_low_battery": {
-      "message": "The battery is at {battery}%. A photo patrol needs at least 20%."
+    "photo_tour_low_battery": {
+      "message": "The battery is at {battery}%. A photo tour needs at least 20%."
     },
-    "photo_patrol_no_arrival": {
+    "photo_tour_no_arrival": {
       "message": "The robot did not reach {room} in time, so no photo was taken there."
     },
-    "photo_patrol_no_photo": {
+    "photo_tour_no_photo": {
       "message": "The robot reached {room} but no new photo arrived."
     },
-    "photo_patrol_unreachable": {
-      "message": "The robot stopped answering during the photo patrol."
+    "photo_tour_unreachable": {
+      "message": "The robot stopped answering during the photo tour."
     },
     "daily_room_limit_reached": {
       "message": "The room has reached its daily completed-clean limit."
@@ -1995,17 +2010,65 @@
     "daily_room_limit_requires_managed": {
       "message": "This room has a daily clean limit. Start it through Rooms or a saved cleaning plan so completed cleans can be counted."
     },
-    "photo_patrol_ai_question_required": {
+    "photo_tour_ai_question_required": {
       "message": "Provide both a question and an AI Task entity to analyze a photo."
     },
-    "photo_patrol_ai_question_invalid": {
+    "photo_tour_ai_question_invalid": {
       "message": "The photo question must contain 1 to 500 characters."
     },
-    "photo_patrol_ai_unavailable": {
+    "photo_tour_ai_unavailable": {
       "message": "Choose an available AI Task entity that supports photo questions."
     },
-    "photo_patrol_ai_failed": {
+    "photo_tour_ai_failed": {
       "message": "The selected AI Task could not return a structured photo answer."
+    },
+    "viewpoint_unknown": {
+      "message": "There is no photo viewpoint called {viewpoint}."
+    },
+    "viewpoint_name_invalid": {
+      "message": "Give the viewpoint a name of up to 64 characters."
+    },
+    "viewpoint_name_taken": {
+      "message": "A viewpoint called {viewpoint} already exists. Delete it first or choose another name."
+    },
+    "viewpoint_name_is_room": {
+      "message": "{viewpoint} is the name of a room. Choose a name that is not a room's, so a stop or a request for a photo there is not ambiguous."
+    },
+    "viewpoint_limit": {
+      "message": "This robot already has {limit} viewpoints. Delete one before saving another."
+    },
+    "viewpoint_outside_rooms": {
+      "message": "A viewpoint has to be inside a room on the current map."
+    },
+    "viewpoint_room_no_photo": {
+      "message": "Photos are off in {room}, so a viewpoint can't be saved there."
+    },
+    "viewpoint_in_no_go_zone": {
+      "message": "That spot is in or next to a no-go zone. Choose a spot at least 25 cm away."
+    },
+    "viewpoint_other_floor": {
+      "message": "{viewpoint} is on another floor. Carry the robot to that floor first."
+    },
+    "viewpoint_task_changed": {
+      "message": "The clean ended before the robot could be sent to the viewpoint. Try again."
+    },
+    "viewpoint_map_unavailable": {
+      "message": "The robot's map is unavailable, so the viewpoint can't be saved."
+    },
+    "viewpoint_pose_unavailable": {
+      "message": "The robot's position and direction are unknown right now. Give x, y and heading, or try again once the robot reports where it is."
+    },
+    "viewpoint_zones_unavailable": {
+      "message": "The robot's no-go zones can't be read right now, so the spot can't be checked. Try again shortly."
+    },
+    "photo_tour_zones_unavailable": {
+      "message": "The robot's no-go zones can't be read right now, so viewpoint stops can't be checked. Try again shortly."
+    },
+    "photo_tour_viewpoint_in_no_go_zone": {
+      "message": "{viewpoint} is now in or next to a no-go zone. Delete it and save it again at least 25 cm away."
+    },
+    "photo_tour_viewpoint_room_gone": {
+      "message": "The {viewpoint} viewpoint is no longer inside the room it was saved in. Delete it and save it again."
     }
   },
   "issues": {
@@ -2062,6 +2125,14 @@
           }
         }
       }
+    },
+    "photo_disk_full": {
+      "title": "Robot photos can't be saved: the disk is full",
+      "description": "Home Assistant could not save a new photo from the robot because its disk is full. The photo stays on the robot and is saved on the next read once there is room. Photos are kept in {folder}; photos older than 30 days are removed on their own."
+    },
+    "photo_storage_failed": {
+      "title": "Robot photos can't be saved",
+      "description": "Home Assistant could not write a new photo from the robot to {folder}. The photo stays on the robot and is saved on the next read. Check that Home Assistant can write to that folder. This Repair clears when a photo is saved."
     }
   },
   "services": {
@@ -2075,17 +2146,49 @@
         }
       }
     },
-    "photo_patrol": {
-      "name": "Photo patrol",
-      "description": "Sends the robot to each room in turn, takes a photo in each one, then docks. Returns each photo's room, capture time and link, and fires a photo taken event for each one.",
+    "run_photo_tour": {
+      "name": "Run photo tour",
+      "description": "Sends the robot to each stop in turn, takes its photos, then docks. A stop is a room, where the robot picks the spot, or a saved viewpoint, where it faces the saved direction. Returns each photo's stop, capture time and link, and fires a photo taken event for each one.",
       "fields": {
-        "rooms": {
-          "name": "Rooms",
-          "description": "Room names or IDs, visited in this order. Up to 12."
+        "stops": {
+          "name": "Stops",
+          "description": "Visited in this order, up to 12 photos in all. Each stop is a room or a saved viewpoint, by name or ID. At a viewpoint, a look-around count of 2 to 4 turns the robot in place and takes that many photos."
         },
         "full_resolution": {
           "name": "Send the full photo",
           "description": "By default, the response and event use a pixelated preview. Set this only when full-resolution photos are appropriate for the recipients."
+        }
+      }
+    },
+    "save_photo_viewpoint": {
+      "name": "Save photo viewpoint",
+      "description": "Saves a named spot and direction on one robot's map for photo tours. Without x, y and heading it saves where the robot stands and the way it faces. Administrators only.",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "What to call the viewpoint, for example Front door."
+        },
+        "x": {
+          "name": "X",
+          "description": "Metres along the map's x axis."
+        },
+        "y": {
+          "name": "Y",
+          "description": "Metres along the map's y axis."
+        },
+        "heading": {
+          "name": "Heading",
+          "description": "Direction to face, in degrees counter-clockwise from the map's x axis."
+        }
+      }
+    },
+    "delete_photo_viewpoint": {
+      "name": "Delete photo viewpoint",
+      "description": "Deletes a saved photo viewpoint from one robot. Administrators only.",
+      "fields": {
+        "viewpoint": {
+          "name": "Viewpoint",
+          "description": "The viewpoint's name or ID."
         }
       }
     },

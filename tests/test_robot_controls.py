@@ -11,14 +11,16 @@ import pytest
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.matic_robot import button, photo_patrol, vacuum
+from custom_components.matic_robot import button, photo_tours, vacuum
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
     UserCommand,
 )
+from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.llm_control import MaticSendToSinkTool
+from custom_components.matic_robot.photo_tours import TourStop
 from custom_components.matic_robot.robot_controls import (
     RobotControls,
     ensure_current_room_allows_photo,
@@ -26,14 +28,14 @@ from custom_components.matic_robot.robot_controls import (
 from tests.session_fakes import FakeRobot, set_operational
 from tests.test_entities import _entry
 from tests.test_llm import _control_hass, _run
-from tests.test_photo_patrol import (
+from tests.test_photo_tours import (
     DOCKED,
     _hass,
     _parked_in,
     _Photos,
-    clock,  # noqa: F401  # The patrol tests' fake clock.
+    clock,  # noqa: F401  # The tour tests' fake clock.
 )
-from tests.test_photo_patrol import _entry as _patrol_entry
+from tests.test_photo_tours import _entry as _tour_entry
 from tests.test_services import (
     _reachable_entry,
     _registered_handler,
@@ -76,12 +78,25 @@ async def test_vacuum_snap_is_refused_in_a_no_photo_room() -> None:
     await entity.async_send_command("emote", {"kind": "snap"})
     send.assert_awaited_once_with(UserCommand.EMOTE_SNAP)
 
-    entry.options = {"photo_patrol_no_photo_rooms": ["room-1"]}
+    entry.options = {"photo_no_photo_rooms": ["room-1"]}
     set_operational(entry.runtime_data.session, current_area="Kitchen")
     with pytest.raises(HomeAssistantError) as refused:
         await entity.async_send_command("emote", {"kind": "snap"})
-    assert refused.value.translation_key == "photo_patrol_room_blocked"
+    assert refused.value.translation_key == "photo_tour_room_blocked"
     send.assert_awaited_once()
+
+
+async def test_a_snap_that_fails_to_send_withdraws_its_album_request() -> None:
+    entry = _entry()
+    photos = entry.runtime_data.photos
+    send = entry.runtime_data.session.client.async_send_user_command
+    send.side_effect = CannotConnectError("offline")
+
+    with pytest.raises(CannotConnectError):
+        await RobotControls(None, entry, None).async_take_photo("mission")
+
+    photos.async_expect_photo.assert_called_once_with("mission")
+    photos.async_expect_photo.return_value.assert_called_once_with()
 
 
 async def test_take_photo_button_sends_nothing_to_an_unreachable_robot() -> None:
@@ -110,26 +125,26 @@ async def test_send_to_sink_tool_sends_nothing_to_an_unreachable_robot() -> None
     sink_summon.assert_not_awaited()
 
 
-async def test_patrol_sends_no_room_visit_to_an_unreachable_robot() -> None:
-    entry = _patrol_entry([DOCKED] * 100, _Photos())
+async def test_tour_sends_no_room_visit_to_an_unreachable_robot() -> None:
+    entry = _tour_entry([DOCKED] * 100, _Photos())
     entry.runtime_data.session.error.value = ConnectionError("offline")
 
     with (
         patch.object(RobotControls, "async_go_to_room") as go_to_room,
-        patch.object(photo_patrol, "_async_check_schedule", AsyncMock()),
+        patch.object(photo_tours, "_async_check_schedule", AsyncMock()),
         pytest.raises(HomeAssistantError) as raised,
     ):
-        await photo_patrol.async_photo_patrol(
-            _hass(), entry, "vacuum.matic", ["Kitchen"]
+        await photo_tours.async_run_photo_tour(
+            _hass(), entry, "vacuum.matic", [TourStop(room="Kitchen")]
         )
 
-    assert raised.value.translation_key == "photo_patrol_no_arrival"
+    assert raised.value.translation_key == "photo_tour_no_arrival"
     go_to_room.assert_not_awaited()
 
 
-async def test_patrol_sends_no_snap_to_a_robot_lost_after_arrival() -> None:
+async def test_tour_sends_no_snap_to_a_robot_lost_after_arrival() -> None:
     store = _Photos(None)
-    entry = _patrol_entry([DOCKED] + [_parked_in("Kitchen")] * 100, store)
+    entry = _tour_entry([DOCKED] + [_parked_in("Kitchen")] * 100, store)
     session = entry.runtime_data.session
 
     async def read_then_lose_robot() -> bool:
@@ -140,14 +155,14 @@ async def test_patrol_sends_no_snap_to_a_robot_lost_after_arrival() -> None:
     with (
         patch.object(RobotControls, "async_go_to_room") as go_to_room,
         patch.object(RobotControls, "async_take_photo") as take_photo,
-        patch.object(photo_patrol, "_async_check_schedule", AsyncMock()),
+        patch.object(photo_tours, "_async_check_schedule", AsyncMock()),
         pytest.raises(HomeAssistantError) as raised,
     ):
-        await photo_patrol.async_photo_patrol(
-            _hass(), entry, "vacuum.matic", ["Kitchen"]
+        await photo_tours.async_run_photo_tour(
+            _hass(), entry, "vacuum.matic", [TourStop(room="Kitchen")]
         )
 
-    assert raised.value.translation_key == "photo_patrol_no_photo"
+    assert raised.value.translation_key == "photo_tour_no_photo"
     go_to_room.assert_awaited_once_with("Kitchen")
     take_photo.assert_not_awaited()
 
@@ -271,55 +286,55 @@ async def test_deprecated_cleans_refuse_a_plans_private_keys(command: str) -> No
     entry.runtime_data.session.client.async_start_coverage.assert_not_awaited()
 
 
-# The snap's room check, for the vacuum, the button and the patrol.
+# The snap's room check, for the vacuum, the button and photo tours.
 
 
 async def test_manual_snap_obeys_no_photo_room_policy() -> None:
-    entry = _patrol_entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
+    entry = _tour_entry([], _Photos())
+    entry.options["photo_no_photo_rooms"] = ["kitchen"]
     entry.runtime_data.session.state.value.operational.current_area = "Kitchen"
 
     with pytest.raises(HomeAssistantError) as raised:
         ensure_current_room_allows_photo(entry)
 
-    assert raised.value.translation_key == "photo_patrol_room_blocked"
+    assert raised.value.translation_key == "photo_tour_room_blocked"
 
 
 def test_manual_snap_requires_current_known_room_when_blocklist_is_configured() -> None:
-    entry = _patrol_entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
+    entry = _tour_entry([], _Photos())
+    entry.options["photo_no_photo_rooms"] = ["kitchen"]
     with pytest.raises(HomeAssistantError) as unknown_area:
         ensure_current_room_allows_photo(entry)
-    assert unknown_area.value.translation_key == "photo_patrol_rooms_unavailable"
+    assert unknown_area.value.translation_key == "photo_tour_rooms_unavailable"
 
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
     with pytest.raises(HomeAssistantError) as stale_map:
         ensure_current_room_allows_photo(entry)
-    assert stale_map.value.translation_key == "photo_patrol_rooms_unavailable"
+    assert stale_map.value.translation_key == "photo_tour_rooms_unavailable"
 
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     entry.runtime_data.session.state.value.operational.current_area = "unknown"
     with pytest.raises(HomeAssistantError) as unknown_room:
         ensure_current_room_allows_photo(entry)
-    assert unknown_room.value.translation_key == "photo_patrol_rooms_unavailable"
+    assert unknown_room.value.translation_key == "photo_tour_rooms_unavailable"
 
 
 def test_manual_snap_allows_any_room_when_no_blocklist_is_configured() -> None:
-    entry = _patrol_entry([], _Photos())
+    entry = _tour_entry([], _Photos())
     ensure_current_room_allows_photo(entry)
 
 
 def test_manual_snap_rejects_stale_blocklist_ids() -> None:
-    entry = _patrol_entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["removed-room"]
+    entry = _tour_entry([], _Photos())
+    entry.options["photo_no_photo_rooms"] = ["removed-room"]
     entry.runtime_data.session.state.value.operational.current_area = "Kitchen"
     with pytest.raises(HomeAssistantError) as raised:
         ensure_current_room_allows_photo(entry)
-    assert raised.value.translation_key == "photo_patrol_rooms_unavailable"
+    assert raised.value.translation_key == "photo_tour_rooms_unavailable"
 
 
 def test_manual_snap_allows_a_room_outside_the_blocklist() -> None:
-    entry = _patrol_entry([], _Photos())
-    entry.options["photo_patrol_no_photo_rooms"] = ["kitchen"]
+    entry = _tour_entry([], _Photos())
+    entry.options["photo_no_photo_rooms"] = ["kitchen"]
     entry.runtime_data.session.state.value.operational.current_area = "Dining"
     ensure_current_room_allows_photo(entry)

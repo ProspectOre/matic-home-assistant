@@ -45,16 +45,13 @@ from custom_components.matic_robot.const import (
     PLATFORMS,
 )
 from custom_components.matic_robot.media_source import DATA_PHOTO_ATTACHMENT_SOURCE
-from custom_components.matic_robot.photos import (
-    RobotPhotoStore,
-)
 from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_view_data import observe_trail
 from custom_components.matic_robot.stores import CleaningHistory
 from custom_components.matic_robot.workspace_socket import DATA_WORKSPACE_SOCKET
 from tests import legacy_bindings
-from tests.session_fakes import fake_session
+from tests.session_fakes import fake_session, stub_viewpoints  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -166,7 +163,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 17
+    assert hass.http.register_view.call_count == 18
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -213,7 +210,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
     assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
-    assert hass.services.async_register.call_count == 22
+    assert hass.services.async_register.call_count == 24
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
     assert "classic_module_url" not in panel.config
@@ -309,6 +306,9 @@ async def test_setup_starts_the_session_before_forwarding_platforms(
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True) as run_trails,
         patch(
+            "custom_components.matic_robot.PhotoLibrary", autospec=True
+        ) as photo_library,
+        patch(
             "custom_components.matic_robot.SlamHistoryStore",
             return_value=slam_history,
         ),
@@ -399,7 +399,10 @@ async def test_setup_starts_the_session_before_forwarding_platforms(
     assert runtime.slam_history is slam_history
     assert runtime.run_trails is run_trails.return_value
     assert runtime.firmware_tracker is firmware_tracker
-    assert isinstance(runtime.photos, RobotPhotoStore)
+    assert runtime.photos is photo_library.return_value
+    runtime.photos.async_load.assert_awaited_once_with()
+    place = photo_library.call_args.kwargs["place"]()
+    assert place.area == robot_session.state.value.operational.current_area
     slam_map.async_load.assert_awaited_once()
     slam_map.async_add_listener.assert_called_once()
     assert slam_map.set_expected_mission_id.call_args.args == (
@@ -548,6 +551,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         patch("custom_components.matic_robot.session_listeners.async_listen"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True),
+        patch("custom_components.matic_robot.PhotoLibrary", autospec=True),
         patch(
             "custom_components.matic_robot.SlamHistoryStore", return_value=slam_history
         ),
@@ -722,6 +726,9 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True),
         patch(
+            "custom_components.matic_robot.PhotoLibrary", autospec=True
+        ) as photo_library,
+        patch(
             "custom_components.matic_robot.SlamHistoryStore",
             return_value=slam_history,
         ),
@@ -735,6 +742,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     client.async_shutdown.assert_awaited_once_with()
     slam_map.async_shutdown.assert_awaited_once()
     slam_history.async_shutdown.assert_awaited_once()
+    photo_library.return_value.async_shutdown.assert_awaited_once_with()
 
 
 @pytest.mark.parametrize("unload_ok", [True, False])
@@ -772,6 +780,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             slam_history=slam_history,
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
+            photos=SimpleNamespace(async_shutdown=AsyncMock()),
             cleaning_plans=plans,
         ),
     )
@@ -819,6 +828,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     else:
         plans.recovery.async_retire_recovery.assert_not_awaited()
     assert client.async_shutdown.called is unload_ok
+    assert entry.runtime_data.photos.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert floor_layers_view.clear_entry.called is unload_ok
     assert run_thumbnail_view.clear_entry.called is unload_ok
@@ -870,6 +880,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             slam_history=slam_history,
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
+            photos=SimpleNamespace(async_shutdown=AsyncMock()),
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
@@ -1085,6 +1096,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         ) as get_plan_manager,
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True) as run_trails,
+        patch("custom_components.matic_robot.async_remove_photos") as remove_photos,
         patch(
             "custom_components.matic_robot.SlamHistoryStore", return_value=slam_history
         ),
@@ -1114,6 +1126,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     delete_area_issue.assert_called_once_with(hass, "entry")
     delete_alert_issues.assert_called_once_with(hass, "entry")
     catalogs.assert_awaited_once_with(hass, "entry")
+    remove_photos.assert_awaited_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
     bare_plans = SimpleNamespace(async_remove_robot=AsyncMock())
@@ -1124,6 +1137,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         ) as bare_get_plan_manager,
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True) as run_trails,
+        patch("custom_components.matic_robot.async_remove_photos") as remove_photos,
         patch(
             "custom_components.matic_robot.SlamHistoryStore", return_value=slam_history
         ),
@@ -1167,6 +1181,7 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
         patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True),
+        patch("custom_components.matic_robot.async_remove_photos"),
         patch(
             "custom_components.matic_robot.SlamHistoryStore",
             return_value=slam_history,

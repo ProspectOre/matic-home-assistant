@@ -8,7 +8,7 @@ custom_components/matic_robot/plan_ledger.py 1734
 custom_components/matic_robot/sensor.py 1229
 custom_components/matic_robot/slam_map_store.py 1329
 frontend/map-studio-v4/effects.ts 1190
-frontend/map-studio-v4/shell.ts 1738
+frontend/map-studio-v4/shell.ts 1730
 frontend/map-studio-v4/state.ts 1322
 tests/browser/map_studio_v4.spec.mjs 10982
 tests/browser/map_studio_v4_deferred_assets.spec.mjs 1098
@@ -24,7 +24,7 @@ tests/node/workspace_resource_ownership.test.mjs 1020
 tests/test_area_binding.py 3029
 tests/test_bluetooth_pairing.py 2334
 tests/test_cadence_manager.py 2982
-tests/test_camera_ai.py 1172
+tests/test_camera_ai.py 1170
 tests/test_config_flow.py 1709
 tests/test_config_flow_import.py 1037
 tests/test_config_flow_paths.py 1153
@@ -35,7 +35,7 @@ tests/test_firmware_reports.py 1387
 tests/test_init.py 1203
 tests/test_llm.py 3056
 tests/test_mixed_coverage.py 2079
-tests/test_photo_patrol.py 1622
+tests/test_photo_tours.py 1468
 tests/test_plan_entries.py 1072
 tests/test_plans.py 10107
 tests/test_restart.py 1550
@@ -45,5 +45,5 @@ tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1822
 tests/test_slam_scene.py 3114
 tests/test_stop_return.py 1503
-tests/test_vacuum.py 1448
+tests/test_vacuum.py 1405
 tests/test_workspace_socket.py 1262

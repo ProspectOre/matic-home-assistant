@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -13,11 +12,9 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
 from PIL import Image
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot import photo_patrol
 from custom_components.matic_robot.client import tls
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.const import (
@@ -34,13 +31,7 @@ from .hermes_sim import SimulatedRobot, start_simulator
 from .plan_run import poll
 from .sim_mission import SimFloor, SimRoom, two_room_floor
 
-
-@pytest.fixture(autouse=True)
-def fast_patrol_polls(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(photo_patrol, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(photo_patrol, "LEAVE_TIMEOUT_SECONDS", 0.3)
-    monkeypatch.setattr(photo_patrol, "ARRIVAL_TIMEOUT_SECONDS", 0.3)
-    monkeypatch.setattr(photo_patrol, "PHOTO_TIMEOUT_SECONDS", 1.0)
+pytestmark = pytest.mark.usefixtures("fast_tour_polls")
 
 
 def _webp(color: tuple[int, int, int]) -> bytes:
@@ -71,7 +62,7 @@ def _floor(index: int, label: str, *, room_count: int = 2) -> SimFloor:
     )
 
 
-async def test_three_robot_camera_patrols_stay_isolated_across_reload(
+async def test_three_robot_camera_tours_stay_isolated_across_reload(
     hass: HomeAssistant,
     hass_client,
     tmp_path: Path,
@@ -110,7 +101,6 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
             robot.set_native_schedules([])
             robot.queue_photo(
                 _webp(color),
-                captured_at=dt_util.utcnow(),
                 photo_id=photo_id,
             )
             simulator_dir = tmp_path / label.lower()
@@ -131,9 +121,9 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
                     CONF_PAIRING_METHOD: PAIRING_METHOD_BLUETOOTH,
                 },
                 options={
-                    "photo_patrol_allow_unattended": True,
-                    "photo_patrol_no_photo_rooms": [],
-                    "photo_patrol_cooldown_seconds": 0,
+                    "photo_allow_unattended": True,
+                    "photo_no_photo_rooms": [],
+                    "photo_cooldown_seconds": 0,
                 },
                 version=1,
                 minor_version=3,
@@ -181,15 +171,15 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
                 mapped.mission_id for mapped in robot_floors
             ]
 
-        async def patrol_one(index: int) -> tuple[str, dict[str, object]]:
+        async def tour_one(index: int) -> tuple[str, dict[str, object]]:
             entry, floor = entries[index], floors[index]
             room = floor.rooms[0]
             result = await hass.services.async_call(
                 DOMAIN,
-                "photo_patrol",
+                "run_photo_tour",
                 {
                     "entity_id": f"vacuum.matic_{labels[index].lower()}",
-                    "rooms": [room.name],
+                    "stops": [{"room": room.name}],
                 },
                 blocking=True,
                 return_response=True,
@@ -201,7 +191,7 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
             assert photo_result["room"] == room.name
             return entry.entry_id, photo_result
 
-        results = await asyncio.gather(*(patrol_one(index) for index in range(3)))
+        results = await asyncio.gather(*(tour_one(index) for index in range(3)))
         by_entry = dict(results)
         client = await hass_client()
         for entry, robot, floor, color, robot_floors in zip(
@@ -210,9 +200,8 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
             photo = by_entry[entry.entry_id]
             assert photo["photo_id"] == str(photo_id)
             assert f"/photo/{entry.entry_id}/preview/{photo_id}" in photo["url"]
-            stored = entry.runtime_data.photos.photo(str(photo_id))
-            assert stored is not None
-            assert stored.image == _webp(color)
+            stored = await entry.runtime_data.photos.async_image(str(photo_id))
+            assert stored == _webp(color)
             response = await client.get(
                 f"/api/{DOMAIN}/photo/{entry.entry_id}/{photo_id}"
             )
@@ -276,7 +265,7 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
                 tuple(room.name for room in plan.rooms),
             ) == floor_snapshots[entries[index].entry_id]
 
-        # Reconnecting one robot reloads its collection into a fresh store and
+        # Reconnecting one robot reloads its photo library from disk and
         # leaves the other two runtimes and their colliding IDs untouched.
         reloaded = entries[1]
         west_runtime = reloaded.runtime_data
@@ -284,22 +273,24 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
         assert reloaded.state is ConfigEntryState.LOADED
         assert reloaded.runtime_data is not west_runtime
         reloaded_photo_url = f"/api/{DOMAIN}/photo/{reloaded.entry_id}/{photo_id}"
-        assert (await client.get(reloaded_photo_url)).status == 404
+        # Saved photos are on disk, so a reload still serves them.
+        kept = await client.get(reloaded_photo_url)
+        assert kept.status == 200
+        assert await kept.read() == _webp(colors[1])
         robots[1].arrive_at_dock()
         await poll(hass, reloaded, robots[1])
         reconnected_photo_id = uuid4()
         reconnected_color = (235, 170, 25)
         robots[1].queue_photo(
             _webp(reconnected_color),
-            captured_at=dt_util.utcnow() + timedelta(seconds=1),
             photo_id=reconnected_photo_id,
         )
         reconnect_result = await hass.services.async_call(
             DOMAIN,
-            "photo_patrol",
+            "run_photo_tour",
             {
                 "entity_id": "vacuum.matic_west",
-                "rooms": [mapped_floors[1][1].rooms[1].name],
+                "stops": [{"room": mapped_floors[1][1].rooms[1].name}],
             },
             blocking=True,
             return_response=True,
@@ -307,20 +298,20 @@ async def test_three_robot_camera_patrols_stay_isolated_across_reload(
         assert isinstance(reconnect_result, dict)
         reconnect_photo = reconnect_result["robots"][0]["photos"][0]
         assert reconnect_photo["photo_id"] == str(reconnected_photo_id)
-        reconnected_store_photo = reloaded.runtime_data.photos.photo(
+        reconnected_image = await reloaded.runtime_data.photos.async_image(
             str(reconnected_photo_id)
         )
-        assert reconnected_store_photo is not None
-        assert reconnected_store_photo.image == _webp(reconnected_color)
+        assert reconnected_image == _webp(reconnected_color)
         reconnected_response = await client.get(
             f"/api/{DOMAIN}/photo/{reloaded.entry_id}/{reconnected_photo_id}"
         )
         assert reconnected_response.status == 200
         assert await reconnected_response.read() == _webp(reconnected_color)
         for index in (0, 2):
-            retained_photo = entries[index].runtime_data.photos.photo(str(photo_id))
-            assert retained_photo is not None
-            assert retained_photo.image == _webp(colors[index])
+            retained = await entries[index].runtime_data.photos.async_image(
+                str(photo_id)
+            )
+            assert retained == _webp(colors[index])
         assert all(entry.state is ConfigEntryState.LOADED for entry in entries)
     finally:
         for entry in reversed(entries):

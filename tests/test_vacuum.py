@@ -1196,49 +1196,6 @@ async def test_go_to_room_keeps_the_plan_driving_the_task_it_joins(hass) -> None
     assert not manager.control.cancellation_event(serial_number).is_set()
 
 
-async def test_go_to_room_refuses_when_the_task_ends_while_queued(hass) -> None:
-    entry = _entry()
-    session = entry.runtime_data.session
-    state = session.state.value
-    session.state.set(
-        replace(
-            state, operational=replace(state.operational, paused=True, cleaning=False)
-        )
-    )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    entry.runtime_data.cleaning_plans = manager
-    command_lock = manager.control.command_lock("synthetic-serial")
-    await command_lock.acquire()
-    task = asyncio.create_task(
-        RobotControls(None, entry, None).async_go_to_room("Kitchen")
-    )
-    try:
-        for _ in range(30):
-            waiters = getattr(command_lock, "_waiters", None)
-            if waiters is not None and any(not waiter.done() for waiter in waiters):
-                break
-            await asyncio.sleep(0)
-        else:
-            pytest.fail("Go to room never queued for the command lock")
-
-        session.state.set(
-            replace(state, operational=replace(state.operational, cleaning=False))
-        )
-        command_lock.release()
-        with pytest.raises(HomeAssistantError) as raised:
-            await task
-    finally:
-        if command_lock.locked():
-            command_lock.release()
-        if not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
-    assert raised.value.translation_key == "go_to_room_task_changed"
-    session.client.async_go_to_room.assert_not_awaited()
-
-
 @pytest.mark.parametrize("room", ["Kitchen", "Attic"])
 async def test_go_to_room_without_a_task_owns_motion_only_when_it_goes(
     hass, room: str

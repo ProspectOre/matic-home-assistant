@@ -10,9 +10,9 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_INCLUDE_NATIVE_CLEANINGS,
-    CONF_PHOTO_PATROL_ALLOW_UNATTENDED,
-    CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
-    CONF_PHOTO_PATROL_NO_PHOTO_ROOMS,
+    CONF_PHOTO_ALLOW_UNATTENDED,
+    CONF_PHOTO_COOLDOWN_SECONDS,
+    CONF_PHOTO_NO_PHOTO_ROOMS,
 )
 from .plan_repository import MetadataAdmissionClosedError
 from .plans import CleaningPlanManager
@@ -65,7 +65,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             options.extend(
                 ("default_plan", "reset_history", "confirm_reset_all_history")
             )
-        options.extend(("photo_patrol_settings", "finish"))
+        options.extend(("photo_settings", "finish"))
         return self.async_show_menu(
             step_id="init",
             menu_options=options,
@@ -110,10 +110,10 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             return self._entry_unavailable()
         return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
-    async def async_step_photo_patrol_settings(
+    async def async_step_photo_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Set photo-patrol permission, blocked rooms and cooldown."""
+        """Set photo tour permission, no-photo rooms and cooldown."""
         if not self._is_loaded():
             return self._entry_unavailable()
         options = dict(self.config_entry.options)
@@ -124,21 +124,21 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             else {}
         )
         if user_input is not None:
-            blocked = user_input.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, [])
+            blocked = user_input.get(CONF_PHOTO_NO_PHOTO_ROOMS, [])
             if not isinstance(blocked, list) or not set(blocked) <= set(current_rooms):
-                return self.async_abort(reason="photo_patrol_rooms_unavailable")
-            options[CONF_PHOTO_PATROL_ALLOW_UNATTENDED] = bool(
-                user_input.get(CONF_PHOTO_PATROL_ALLOW_UNATTENDED, False)
+                return self.async_abort(reason="photo_tour_rooms_unavailable")
+            options[CONF_PHOTO_ALLOW_UNATTENDED] = bool(
+                user_input.get(CONF_PHOTO_ALLOW_UNATTENDED, False)
             )
-            options[CONF_PHOTO_PATROL_NO_PHOTO_ROOMS] = blocked
-            options[CONF_PHOTO_PATROL_COOLDOWN_SECONDS] = int(
-                user_input.get(CONF_PHOTO_PATROL_COOLDOWN_SECONDS, 900)
+            options[CONF_PHOTO_NO_PHOTO_ROOMS] = blocked
+            options[CONF_PHOTO_COOLDOWN_SECONDS] = int(
+                user_input.get(CONF_PHOTO_COOLDOWN_SECONDS, 900)
             )
             if not self._is_loaded():
                 return self._entry_unavailable()
             return self.async_create_entry(title="", data=options)
 
-        default_rooms = list(options.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, ()))
+        default_rooms = list(options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ()))
         room_options = [
             selector.SelectOptionDict(value=room_id, label=name)
             for room_id, name in sorted(current_rooms.items())
@@ -150,17 +150,15 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             for room_id in sorted(set(default_rooms) - set(current_rooms))
         )
         return self.async_show_form(
-            step_id="photo_patrol_settings",
+            step_id="photo_settings",
             data_schema=probatio.Schema(
                 {
                     probatio.Required(
-                        CONF_PHOTO_PATROL_ALLOW_UNATTENDED,
-                        default=bool(
-                            options.get(CONF_PHOTO_PATROL_ALLOW_UNATTENDED, False)
-                        ),
+                        CONF_PHOTO_ALLOW_UNATTENDED,
+                        default=bool(options.get(CONF_PHOTO_ALLOW_UNATTENDED, False)),
                     ): selector.BooleanSelector(),
                     probatio.Required(
-                        CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, default=default_rooms
+                        CONF_PHOTO_NO_PHOTO_ROOMS, default=default_rooms
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=room_options,
@@ -169,10 +167,8 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                         )
                     ),
                     probatio.Required(
-                        CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
-                        default=int(
-                            options.get(CONF_PHOTO_PATROL_COOLDOWN_SECONDS, 900)
-                        ),
+                        CONF_PHOTO_COOLDOWN_SECONDS,
+                        default=int(options.get(CONF_PHOTO_COOLDOWN_SECONDS, 900)),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
                             min=0,

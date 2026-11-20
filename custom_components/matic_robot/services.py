@@ -13,6 +13,7 @@ from .service_controls import register_controls_services
 from .service_editing import register_editing_services
 from .service_execution import register_execution_services
 from .service_firmware import register_firmware_services
+from .service_photos import register_photo_services
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -35,5 +36,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
     runtime = ServiceRuntime(hass, manager, firmware_tracker)
     register_firmware_services(runtime)
     register_controls_services(runtime)
+    register_photo_services(runtime)
     register_execution_services(runtime)
     register_editing_services(runtime)
