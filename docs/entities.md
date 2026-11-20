@@ -18,7 +18,9 @@ and entities follow within a second. Home Assistant reads the floor plan,
 telemetry, run progress and cleaning history itself: every 5 minutes while the
 robot is docked and every 30 seconds while it is out. The current-room sensors
 refresh every five seconds. If Home Assistant loses the robot for 10 seconds,
-every entity becomes unavailable until the robot answers again.
+the entities that show the robot's state become unavailable until it answers
+again. Cleaning run and the sensors kept in Home Assistant, such as run history,
+stay available.
 
 ## Controls
 
@@ -43,7 +45,8 @@ names the first room or custom area of the default plan's next run; its
 **Cleaning run** is an event entity that records each run event: a plan
 starting, each room and custom area starting and ending, the plan ending, and
 the robot's own Cleaning finished. Its event type names the event and its
-attributes hold the event's fields. See
+attributes hold the event's fields. Its events are the run's logbook entries.
+See
 [run events](automation-events.md#run-events-in-automations-the-logbook-and-the-dashboard)
 to trigger on it.
 

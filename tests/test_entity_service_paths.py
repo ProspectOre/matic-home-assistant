@@ -42,23 +42,6 @@ PLATFORMS = ["button", "select", "vacuum", "switch", "number"]
 
 
 @pytest.fixture
-def mock_recorder_before_hass(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Choose the test database before the Core fixture initializes."""
-    if "recorder_mock" in request.fixturenames:
-        # Python 3.14 evaluates TYPE_CHECKING-only names when the recorder
-        # fixture autospecs its migration and session helpers.
-        from homeassistant.components.recorder import Recorder, migration
-        from homeassistant.helpers import recorder as recorder_helper
-        from sqlalchemy.orm import Session
-
-        monkeypatch.setattr(migration, "Recorder", Recorder, raising=False)
-        monkeypatch.setattr(recorder_helper, "Session", Session, raising=False)
-        request.getfixturevalue("recorder_db_url")
-
-
-@pytest.fixture
 async def platforms(hass: HomeAssistant) -> AsyncIterator[SimpleNamespace]:
     """Load production platforms into HA; fake only the robot dependency."""
     dependency = _entry(idle=True)

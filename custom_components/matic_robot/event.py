@@ -71,7 +71,10 @@ class MaticCuesEventEntity(MaticEntity, EventEntity):
 
 
 class MaticRunEventEntity(MaticEntity, EventEntity):
-    """Mirror this robot's run lifecycle bus events, one event type each."""
+    """Mirror this robot's run lifecycle bus events, one event type each.
+
+    Its state changes are the run's logbook entries.
+    """
 
     entity_description = RUN_DESCRIPTION
     # Cleaning finished's room lists and results stay out of Recorder, as on
@@ -84,6 +87,11 @@ class MaticRunEventEntity(MaticEntity, EventEntity):
 
     def _stores(self) -> Iterable[Store[Any]]:
         return ()
+
+    @property
+    def available(self) -> bool:
+        """Stay available: the run is Home Assistant's, and ends while offline too."""
+        return True
 
     async def async_added_to_hass(self) -> None:
         """Listen for this robot's run events."""
