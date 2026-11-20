@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from hashlib import sha256
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import frontend as ha_frontend
@@ -18,7 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from custom_components.matic_robot import frontend
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import DOMAIN, MATIC_MAP_URL_PATH
 from tests import conftest
 from tests.frontend_sources import shipped_modules, without_comments
 
@@ -115,6 +115,24 @@ async def test_a_copy_without_the_built_panel_raises_a_repair(
     hass.http.async_register_static_paths.assert_not_called()
     assert hass.data[ha_frontend.DATA_EXTRA_MODULE_URL] == set()
     assert ha_frontend.DATA_PANELS not in hass.data
+
+
+async def test_matic_map_is_registered_once_at_its_path(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second robot, or a reload, keeps the panel Home Assistant has."""
+    monkeypatch.setattr(
+        hass, "http", MagicMock(async_register_static_paths=AsyncMock())
+    )
+    hass.data[ha_frontend.DATA_EXTRA_MODULE_URL] = set()
+    register = AsyncMock()
+    with patch("homeassistant.components.panel_custom.async_register_panel", register):
+        await frontend.async_register_frontend(hass)
+        hass.data[ha_frontend.DATA_PANELS] = {MATIC_MAP_URL_PATH: object()}
+        await frontend.async_register_frontend(hass)
+
+    register.assert_awaited_once()
+    assert register.await_args.kwargs["frontend_url_path"] == "matic-map"
 
 
 def test_the_suite_stops_at_once_without_the_built_panel(
