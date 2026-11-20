@@ -173,9 +173,6 @@ def catalog_entry_projection(
     plan_snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
     return {
         "entry_id": entry_id,
-        # The workspace push is the default transport when this capability is
-        # present. Keep legacy saved opt-in values from changing the projection.
-        "live_workspace_transport_enabled": True,
         "scene_url": scene_api_url(entry_id),
         "history_url": history_api_url(entry_id),
         "areas_url": areas_api_url(entry_id),

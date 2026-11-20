@@ -56,7 +56,7 @@ test(`${scenario.name} pushed pose is ordered against the admitted map revision`
       plans: async () => initial.resources.plans.value,
       areas: async () => initial.resources.areas.value,
       dispose() {},
-    }, connection, true);
+    }, connection);
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92,
       robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "pose-ordering",
       entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });

@@ -23,7 +23,6 @@ const setup = async (page, deferInitialSnapshot = false) => {
     const wireCatalogEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
       history_url: entry.historyUrl,
       areas_url: entry.areasUrl, plans_url: entry.plansUrl, map_revision: entry.mapRevision,
-      live_workspace_transport_enabled: entry.liveWorkspaceTransportEnabled,
       map_scene_epoch: entry.mapSceneEpoch,
       map_floor_coherent: entry.mapFloorCoherent, map_session_verified: entry.mapSessionVerified,
       map_session_key: entry.mapSessionKey, map_block_reason: entry.mapBlockReason,
@@ -78,7 +77,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
       activity: "idle", batteryPercent: 50, language: "en", userKey: "u", vacuumEntityId: "vacuum.x", entryKey,
       robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
     const store = new WorkspaceStore();
-    const controller = new EffectController(store, backend, connection, true);
+    const controller = new EffectController(store, backend, connection);
     controller.sync(projection("synthetic-entry"));
     window.adapterHarness = { callbacks, counts, store, controller, projection, snapshotFor, backend, invalidation,
       get snapshotCalls() { return snapshotCalls; },
@@ -142,7 +141,7 @@ test("a ready-looking shortcut state cannot mutate before its persistence loader
   const result = await page.evaluate(() => {
     const h = window.adapterHarness;
     h.controller.dispose();
-    h.controller = new h.controller.constructor(h.store, h.backend, null, true);
+    h.controller = new h.controller.constructor(h.store, h.backend);
     h.controller.sync(h.projection("synthetic-entry"));
     // Simulate a stale ready projection arriving before the new lazy module.
     h.store.replace({ ...h.store.value, homePins: { status: "ready", pins: [{ kind: "plan", id: "retained" }] } });

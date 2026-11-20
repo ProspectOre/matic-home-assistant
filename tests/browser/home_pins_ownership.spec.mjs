@@ -85,7 +85,7 @@ async function setup(page, stores) {
     };
     const make = () => {
       const store = new WorkspaceStore();
-      const controller = new EffectController(store, backend, connection, false);
+      const controller = new EffectController(store, backend, connection);
       const sync = (user, entryKey, connected = true) => {
         h.user = user;
         controller.sync({ host: { connected, administrator: true, robotConnected: true, robotCount: 2 },

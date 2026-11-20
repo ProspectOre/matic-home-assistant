@@ -135,7 +135,7 @@ test("the area catalog keeps outline geometry validation in the deferred parser"
   expect(result).toEqual([true, "invalid-area-outline"]);
 });
 
-test("catalog live workspace capability defaults off and validates explicit booleans; scene revision is optional", async ({ page }) => {
+test("catalog ignores the retired live workspace flag; scene revision is optional", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async () => {
     const { parseCatalog } = await import("/backend-contracts.js");
@@ -168,18 +168,15 @@ test("catalog live workspace capability defaults off and validates explicit bool
       bootstrap_structure_seen: false,
       bootstrap_failures: 0,
     };
-    const parse = value => parseCatalog({ entries: [value] })[0].liveWorkspaceTransportEnabled;
-    const malformed = { ...entry, live_workspace_transport_enabled: "yes" };
-    let malformedCode = null;
-    try { parse(malformed); } catch (error) { malformedCode = error.code ?? null; }
-    const sceneRevision = value => parseCatalog({ entries: [value] })[0].sceneRevision;
-    return { omitted: parse(entry), enabled: parse({ ...entry, live_workspace_transport_enabled: true }),
-      disabled: parse({ ...entry, live_workspace_transport_enabled: false }), malformedCode,
+    // 0.5 servers and a 0.6 server before this field was retired still send it.
+    const parse = value => parseCatalog({ entries: [value] })[0];
+    const sceneRevision = value => parse(value).sceneRevision;
+    return { sameRow: [true, false].map(flag =>
+        JSON.stringify(parse({ ...entry, live_workspace_transport_enabled: flag })) === JSON.stringify(parse(entry))),
       sceneRevisions: [sceneRevision(entry), sceneRevision({ ...entry, scene_revision: 8 })] };
   });
 
-  expect(result).toEqual({ omitted: false, enabled: true, disabled: false,
-    malformedCode: "invalid-live-workspace-transport", sceneRevisions: [null, 8] });
+  expect(result).toEqual({ sameRow: [true, true], sceneRevisions: [null, 8] });
 });
 
 async function load(page) {

@@ -2,13 +2,9 @@ import { appendFile } from "node:fs/promises";
 import { expect, test as baseTest } from "./fixtures.mjs";
 
 const test = baseTest.extend({
-  workspacePushMode: ["off", { option: true }],
-  workspacePush: async ({ request, workspacePushMode }, use, testInfo) => {
-    const project = testInfo.project.use;
-    const port = Number(new URL(project.baseURL).port);
-    const controlURL = `http://127.0.0.1:${port + 1}`;
+  robot: async ({ request, baseURL }, use) => {
+    const controlURL = `http://127.0.0.1:${Number(new URL(baseURL).port) + 1}`;
     await use({
-      mode: workspacePushMode,
       step: async (name) => {
         const response = await request.post(`${controlURL}/step/${name}`);
         expect(response.ok()).toBe(true);
@@ -227,7 +223,7 @@ function observeWorkspaceFrames(page) {
   return counts;
 }
 
-async function workspacePushEvidence(page, entryId) {
+async function workspaceStreamEvidence(page, entryId) {
   try {
     return await page.evaluate(async (id) => {
       const visit = (root) => {
@@ -250,22 +246,17 @@ async function workspacePushEvidence(page, entryId) {
       const catalog = await response.json();
       const entry = catalog.entries?.find((candidate) => candidate.entry_id === id) ?? null;
       const workspaceRpcCounts = window.__maticWorkspaceRpcCounts ?? null;
-      let capabilities = null;
-      if (entry?.live_workspace_transport_enabled === true) {
-        const snapshot = await hass.connection.sendMessagePromise({
-          type: "matic_robot/workspace_snapshot",
-          version: 1,
-          entry_id: id,
-        });
-        capabilities = snapshot.capabilities;
-      }
+      const snapshot = entry && await hass.connection.sendMessagePromise({
+        type: "matic_robot/workspace_snapshot",
+        version: 1,
+        entry_id: id,
+      });
       return {
         status: response.status,
         entry,
-        capabilityPresent: Object.hasOwn(entry ?? {}, "live_workspace_transport_enabled"),
         workspaceRpcCounts,
         diagnostics: panel.getRequestDiagnostics(),
-        capabilities,
+        capabilities: snapshot?.capabilities ?? null,
       };
     }, entryId);
   } catch (error) {
@@ -281,45 +272,23 @@ async function workspacePushEvidence(page, entryId) {
   }
 }
 
-async function expectWorkspacePushMode(page, robot) {
+async function expectWorkspaceStream(page, robot) {
   const entryId = (await robotState(robot)).entry_id;
-  const enabled = robot.mode === "on";
   await expect(page.getByRole("heading", { name: "Matic Map", exact: true })).toBeVisible({ timeout: 30_000 });
   await expect.poll(async () => {
-    const result = await workspacePushEvidence(page, entryId);
+    const result = await workspaceStreamEvidence(page, entryId);
     return result.status === 200
-      && (enabled
-        ? result.entry?.live_workspace_transport_enabled === true
-        : result.capabilityPresent === false)
-      && (enabled
-        ? result.capabilities?.subscription === 1
-          && result.diagnostics?.workspace?.snapshotAttempts?.completed > 0
-          && result.diagnostics.workspace.snapshotAttempts.failed === 0
-          && result.diagnostics.workspace.activeRecovery === null
-          && result.workspaceRpcCounts?.snapshot > 0
-          && result.workspaceRpcCounts?.subscribe > 0
-        : result.diagnostics?.workspace === null
-          && result.workspaceRpcCounts?.snapshot === 0
-          && result.workspaceRpcCounts?.subscribe === 0);
+      && result.capabilities?.subscription === 1
+      && result.diagnostics?.workspace?.snapshotAttempts?.completed > 0
+      && result.diagnostics.workspace.snapshotAttempts.failed === 0
+      && result.diagnostics.workspace.activeRecovery === null
+      && result.workspaceRpcCounts?.snapshot > 0
+      && result.workspaceRpcCounts?.subscribe > 0;
   }, { timeout: 30_000 }).toBe(true);
-  const result = await workspacePushEvidence(page, entryId);
-  if (enabled) expect(result.entry.live_workspace_transport_enabled).toBe(true);
-  else expect(result.capabilityPresent).toBe(false);
-  if (enabled) {
-    expect(result.capabilities.subscription).toBe(1);
-    expect(result.diagnostics.workspace.snapshotAttempts.completed).toBeGreaterThan(0);
-    expect(result.diagnostics.workspace.snapshotAttempts.failed).toBe(0);
-    expect(result.diagnostics.workspace.activeRecovery).toBeNull();
-    expect(result.workspaceRpcCounts.snapshot).toBeGreaterThan(0);
-    expect(result.workspaceRpcCounts.subscribe).toBeGreaterThan(0);
-  } else {
-    expect(result.diagnostics.workspace).toBeNull();
-    expect(result.workspaceRpcCounts).toEqual({ snapshot: 0, subscribe: 0 });
-  }
 }
 
-test.beforeEach(async ({ sharedPage: page, workspacePush: robot }) => {
-  if (page.url() !== "about:blank") return expectWorkspacePushMode(page, robot);
+test.beforeEach(async ({ sharedPage: page, robot }) => {
+  if (page.url() !== "about:blank") return expectWorkspaceStream(page, robot);
   await page.addInitScript(() => {
     const counts = { snapshot: 0, subscribe: 0 };
     window.__maticWorkspaceRpcCounts = counts;
@@ -362,10 +331,10 @@ async function callWifiSurveyService(page, service) {
   }, service);
 }
 
-test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ sharedPage: page, workspacePush: robot }, testInfo) => {
+test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ sharedPage: page, robot }, testInfo) => {
   await step(robot, "hold_history");
   await page.goto("/matic-map");
-  await expectWorkspacePushMode(page, robot);
+  await expectWorkspaceStream(page, robot);
   await expect(
     page.getByRole("complementary", { name: "Cleaning panel" }).getByText("Docked", { exact: true }),
   ).toBeVisible({ timeout: 30_000 });
@@ -432,7 +401,7 @@ test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ shar
   expect(await page.evaluate(() => window.__maticRunHistoryMarker)).toBe(pageMarker);
 });
 
-test("Go to room sends the docked robot to one room", async ({ sharedPage: page, workspacePush: robot }) => {
+test("Go to room sends the docked robot to one room", async ({ sharedPage: page, robot }) => {
   await returnToTasksHome(page);
   await expectReadyToClean(page, robot);
   const panel = page.getByRole("complementary", { name: "Cleaning panel" });
@@ -464,7 +433,7 @@ test("Go to room sends the docked robot to one room", async ({ sharedPage: page,
   await returnToTasksHome(page);
 });
 
-test("Skip in Change this clean drops a room from a clean started in Matic Map", async ({ sharedPage: page, workspacePush: robot }) => {
+test("Skip in Change this clean drops a room from a clean started in Matic Map", async ({ sharedPage: page, robot }) => {
   await returnToTasksHome(page);
   await expectReadyToClean(page, robot);
   const panel = page.getByRole("complementary", { name: "Cleaning panel" });
@@ -494,7 +463,7 @@ test("Skip in Change this clean drops a room from a clean started in Matic Map",
   await expectReadyToClean(page, robot);
 });
 
-test("a custom area is drawn, saved and cleaned through Home Assistant", async ({ sharedPage: page, workspacePush: robot }) => {
+test("a custom area is drawn, saved and cleaned through Home Assistant", async ({ sharedPage: page, robot }) => {
   await returnToTasksHome(page);
   const panel = page.getByRole("complementary", { name: "Cleaning panel" });
   await expectReadyToClean(page, robot);
@@ -563,7 +532,7 @@ test("a custom area is drawn, saved and cleaned through Home Assistant", async (
   await panel.getByRole("button", { name: "Back to all tasks" }).click();
 });
 
-test("the native schedule appears in Cleaning history", async ({ sharedPage: page, workspacePush: robot }) => {
+test("the native schedule appears in Cleaning history", async ({ sharedPage: page, robot }) => {
   await returnToTasksHome(page);
   const panel = page.getByRole("complementary", { name: "Cleaning panel" });
   await expectReadyToClean(page, robot);
@@ -574,7 +543,7 @@ test("the native schedule appears in Cleaning history", async ({ sharedPage: pag
   await expect(next).toContainText("Set in the Matic app");
 });
 
-test("the Wi-Fi signal layer reads a real survey cell and follows its switch", async ({ sharedPage: page, workspacePush: robot }) => {
+test("the Wi-Fi signal layer reads a real survey cell and follows its switch", async ({ sharedPage: page, robot }) => {
   await returnToTasksHome(page);
   const panel = page.getByRole("complementary", { name: "Cleaning panel" });
   await expectReadyToClean(page, robot);
@@ -657,7 +626,7 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
   await expect.poll(async () => (await robotState(robot)).phase).toBe("docked");
 });
 
-test("Home Assistant reconnect restores fresh robot state without replaying commands", async ({ sharedPage: page, workspacePush: robot }) => {
+test("Home Assistant reconnect restores fresh robot state without replaying commands", async ({ sharedPage: page, robot }) => {
   const workspaceFrames = observeWorkspaceFrames(page);
   const homeAssistantTransport = { opened: 0, current: null };
   await page.routeWebSocket((url) => url.pathname === "/api/websocket", (route) => {
@@ -671,14 +640,9 @@ test("Home Assistant reconnect restores fresh robot state without replaying comm
   await expect.poll(() => homeAssistantTransport.opened).toBeGreaterThan(0);
   const initial = await robotState(robot);
   const commandCount = initial.commands.length;
-  if (robot.mode === "on") {
-    await expect.poll(() => workspaceFrames.snapshots).toBeGreaterThan(0);
-    await expect.poll(() => workspaceFrames.subscriptions).toBeGreaterThan(0);
-  } else {
-    expect(workspaceFrames.snapshots).toBe(0);
-    expect(workspaceFrames.subscriptions).toBe(0);
-  }
-  await expectWorkspacePushMode(page, robot);
+  await expect.poll(() => workspaceFrames.snapshots).toBeGreaterThan(0);
+  await expect.poll(() => workspaceFrames.subscriptions).toBeGreaterThan(0);
+  await expectWorkspaceStream(page, robot);
   const snapshotsBeforeDisconnect = workspaceFrames.snapshots;
   const closuresBeforeDisconnect = workspaceFrames.workspaceSocketClosures;
   const homeAssistantClosuresBeforeDisconnect = workspaceFrames.homeAssistantSocketClosures;
@@ -702,11 +666,9 @@ test("Home Assistant reconnect restores fresh robot state without replaying comm
     await expect.poll(async () => !(await clean.isVisible()) || await clean.isDisabled())
       .toBe(true);
 
-    if (robot.mode === "on") {
-      await expect.poll(() => workspaceFrames.workspaceSocketClosures, {
-        timeout: 30_000,
-      }).toBeGreaterThan(closuresBeforeDisconnect);
-    }
+    await expect.poll(() => workspaceFrames.workspaceSocketClosures, {
+      timeout: 30_000,
+    }).toBeGreaterThan(closuresBeforeDisconnect);
 
     // The independent loopback control API still reaches the simulator while
     // the browser is offline. This changes reported state without a robot command.
@@ -723,16 +685,14 @@ test("Home Assistant reconnect restores fresh robot state without replaying comm
     }).toBe(true);
     await expect.poll(async () => (await workspaceState(page))?.currentArea).toBe("Study");
 
-    if (robot.mode === "on") {
-      await expect.poll(async () => {
-        const diagnostics = (await workspaceDiagnostics(page))?.workspace;
-        return diagnostics?.activeRecovery === null
-          && diagnostics.snapshotAttempts.completed >= 1;
-      }, { timeout: 30_000 }).toBe(true);
-      await expect.poll(() => workspaceFrames.snapshots, {
-        timeout: 30_000,
-      }).toBeGreaterThan(snapshotsBeforeDisconnect);
-    }
+    await expect.poll(async () => {
+      const diagnostics = (await workspaceDiagnostics(page))?.workspace;
+      return diagnostics?.activeRecovery === null
+        && diagnostics.snapshotAttempts.completed >= 1;
+    }, { timeout: 30_000 }).toBe(true);
+    await expect.poll(() => workspaceFrames.snapshots, {
+      timeout: 30_000,
+    }).toBeGreaterThan(snapshotsBeforeDisconnect);
 
     // Enter a dirty, unsaved area draft locally, then verify its write gate
     // closes during a second real browser network outage.
@@ -763,10 +723,8 @@ test("Home Assistant reconnect restores fresh robot state without replaying comm
     await secondSocket.close({ code: 3000, reason: "test-owned offline interruption" });
     await expect.poll(() => workspaceFrames.homeAssistantSocketClosures)
       .toBeGreaterThan(homeAssistantClosuresBeforeSecondDisconnect);
-    if (robot.mode === "on") {
-      await expect.poll(() => workspaceFrames.workspaceSocketClosures)
-        .toBeGreaterThan(workspaceClosuresBeforeSecondDisconnect);
-    }
+    await expect.poll(() => workspaceFrames.workspaceSocketClosures)
+      .toBeGreaterThan(workspaceClosuresBeforeSecondDisconnect);
     await expect.poll(async () => (await workspaceState(page))?.host.connected, {
       timeout: 30_000,
     }).toBe(false);

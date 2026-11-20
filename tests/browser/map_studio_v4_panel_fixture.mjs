@@ -76,8 +76,6 @@ export async function installPanelFixture(page, {
   userData = {},
   // The Wi-Fi survey response. Null leaves the URL out of the catalog, as before.
   wifiSignal = null,
-  // False models a server without the workspace capability, which pushes no pose.
-  workspacePush = true,
   // The carpet and vent response. Null leaves the URL out of the catalog.
   floorTypes = null,
   // The Photos read (photo_gallery_view.py); every photo route answers with a
@@ -142,7 +140,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, photoGallery, workspacePush }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, photoGallery }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -282,10 +280,7 @@ export async function installPanelFixture(page, {
       }
       if (path.endsWith("slam_entries")) {
         catalogReads += 1;
-        // Home Assistant announces the workspace capability on every entry.
-        const result = json({ entries: catalogEntries.map((entry) => ({
-          ...(workspacePush ? { live_workspace_transport_enabled: true } : {}), ...structuredClone(entry),
-        })) });
+        const result = json({ entries: structuredClone(catalogEntries) });
         if (deferredCatalogs > 0) {
           deferredCatalogs -= 1;
           return new Promise((resolve) => pendingCatalogs.push(() => resolve(result)));
@@ -647,7 +642,6 @@ export async function installPanelFixture(page, {
     wifiSignal,
     floorTypes,
     photoGallery,
-    workspacePush,
   });
   await remount();
   return {
