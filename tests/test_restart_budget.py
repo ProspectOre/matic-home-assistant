@@ -19,20 +19,8 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, direct_state
 from tests.wire_builders import _session_identity
-
-from .test_restart import (
-    _operational_state,
-)
-from .test_restart import (
-    recovery_state as recovery_fixture,
-)
-
-
-@pytest.fixture
-async def recovery_state(hass):
-    return await recovery_fixture.__wrapped__(hass)
 
 
 async def test_completion_budget_is_persisted_once_and_not_reset():
@@ -99,11 +87,11 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
             hass.states.async_set(checkpoint["entity_id"], "idle")
             entry.robot.show("idle")
             client.async_get_active_cleaning_session_state.return_value = native_active
-            client.async_get_state.return_value = _operational_state()
+            client.async_get_state.return_value = direct_state()
         elif value is UserCommand.DOCK:
             hass.states.async_set(checkpoint["entity_id"], "docked")
             entry.robot.show("docked")
-            client.async_get_state.return_value = _operational_state(charging_idle=True)
+            client.async_get_state.return_value = direct_state(charging_idle=True)
 
     client.async_send_user_command.side_effect = command
     docked = []

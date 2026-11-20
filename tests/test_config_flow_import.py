@@ -50,6 +50,7 @@ from custom_components.matic_robot.const import (
     CONF_SERIAL_NUMBER,
     DOMAIN,
 )
+from tests.test_config_flow_paths import _flow
 
 CONF_IMPORT_CREDENTIAL = flow_module.CONF_IMPORT_CREDENTIAL
 
@@ -176,16 +177,6 @@ class _Recorder:
         else:
             get_info = AsyncMock(return_value=info)
         return _Client(get_info)
-
-
-def _flow(hass) -> MaticRobotConfigFlow:
-    flow = MaticRobotConfigFlow()
-    flow.hass = hass
-    flow.context = {}
-    flow.async_set_unique_id = AsyncMock()
-    flow._abort_if_unique_id_configured = MagicMock()
-    flow._abort_if_unique_id_mismatch = MagicMock()
-    return flow
 
 
 def _entry_flow(hass, entry, source: str) -> MaticRobotConfigFlow:

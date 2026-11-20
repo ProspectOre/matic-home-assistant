@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -23,7 +23,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.heartbeat import REQUEST_REFRESH_COOLDOWN_SECONDS
 from tests.session_fakes import (
-    SYNTHETIC_INFO,
+    idle_client,
     push_state,
     session_entry,
     start_session,
@@ -35,18 +35,8 @@ CLEANING = RobotOperationalState(
 )
 
 
-def _client() -> AsyncMock:
-    client = AsyncMock()
-    client.async_get_info.return_value = SYNTHETIC_INFO
-    client.async_get_state.return_value = IDLE
-    client.async_get_floor_plan.return_value = None
-    client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
-    client.add_connection_listener = MagicMock()
-    return client
-
-
 async def test_discard_current_room_delegates_to_session_tracker(hass) -> None:
-    session = await start_session(hass, _client())
+    session = await start_session(hass, idle_client())
     now = datetime(2026, 7, 21, 2, tzinfo=UTC)
 
     with (
@@ -63,7 +53,7 @@ async def test_discard_current_room_delegates_to_session_tracker(hass) -> None:
 
 
 async def test_confirm_completed_room_delegates_to_session_tracker(hass) -> None:
-    session = await start_session(hass, _client())
+    session = await start_session(hass, idle_client())
 
     with patch(
         "custom_components.matic_robot.heartbeat.CleaningSessionTracker.confirm_room_completed"
@@ -76,7 +66,7 @@ async def test_confirm_completed_room_delegates_to_session_tracker(hass) -> None
 async def test_start_reads_the_floor_and_telemetry_and_watches_the_display(
     hass,
 ) -> None:
-    client = _client()
+    client = idle_client()
     floor = FloorPlan(42, "partition", b"", ())
     client.async_get_floor_plan.return_value = floor
 
@@ -91,7 +81,7 @@ async def test_start_reads_the_floor_and_telemetry_and_watches_the_display(
 
 
 async def test_a_state_pushed_during_a_heartbeat_outlives_it(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     read_started = asyncio.Event()
     release_read = asyncio.Event()
@@ -116,7 +106,7 @@ async def test_a_state_pushed_during_a_heartbeat_outlives_it(hass) -> None:
 
 
 async def test_a_read_after_a_write_publishes_after_an_older_read(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     read_started = asyncio.Event()
     release_read = asyncio.Event()
@@ -146,7 +136,7 @@ async def test_a_read_after_a_write_publishes_after_an_older_read(hass) -> None:
 
 
 async def test_nothing_is_read_while_the_robot_cannot_be_reached(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     connection_changed = client.add_connection_listener.call_args.args[0]
     reads = client.async_get_telemetry.await_count
@@ -166,7 +156,7 @@ async def test_nothing_is_read_while_the_robot_cannot_be_reached(hass) -> None:
 
 
 async def test_an_outage_found_during_a_heartbeat_discards_its_reads(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     connection_changed = client.add_connection_listener.call_args.args[0]
     telemetry = session.telemetry.value
@@ -190,7 +180,7 @@ async def test_an_outage_found_during_a_heartbeat_discards_its_reads(hass) -> No
 async def test_the_heartbeat_is_slow_on_the_dock_and_restarts_when_that_changes(
     hass,
 ) -> None:
-    client = _client()
+    client = idle_client()
     docked = replace(IDLE, charging_idle=True)
     client.async_get_state.return_value = docked
     session = await start_session(hass, client)
@@ -217,7 +207,7 @@ async def test_the_heartbeat_is_slow_on_the_dock_and_restarts_when_that_changes(
 
 
 async def test_requests_in_a_burst_cost_one_read_now_and_one_after(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     heartbeat = session.heartbeat
     heartbeat._slow_refresh_due = 0.0
@@ -239,7 +229,7 @@ async def test_requests_in_a_burst_cost_one_read_now_and_one_after(hass) -> None
 
 
 async def test_no_heartbeat_is_scheduled_while_polling_is_disabled(hass) -> None:
-    client = _client()
+    client = idle_client()
     entry = session_entry()
     entry.pref_disable_polling = True
     session = await start_session(hass, client, entry)
@@ -254,7 +244,7 @@ async def test_no_heartbeat_is_scheduled_while_polling_is_disabled(hass) -> None
 
 
 async def test_run_progress_is_read_only_during_a_clean(hass) -> None:
-    client = _client()
+    client = idle_client()
     client.async_get_run_progress.return_value = RunProgress(600, 1800)
     session = await start_session(hass, client)
     heartbeat = session.heartbeat
@@ -284,7 +274,7 @@ async def test_run_progress_is_read_only_during_a_clean(hass) -> None:
 
 
 async def test_optional_read_failures_do_not_hide_core_state(hass) -> None:
-    client = _client()
+    client = idle_client()
     client.async_get_floor_plan.side_effect = MaticError("no floor plan")
     client.async_get_telemetry.side_effect = MaticError("no telemetry")
 
@@ -297,7 +287,7 @@ async def test_optional_read_failures_do_not_hide_core_state(hass) -> None:
 
 
 async def test_the_heartbeat_caches_slow_reads_and_can_force_them(hass) -> None:
-    client = _client()
+    client = idle_client()
     client.async_get_floor_plan.return_value = FloorPlan(1, "partition", b"", ())
     session = await start_session(hass, client)
 
@@ -315,7 +305,7 @@ async def test_the_heartbeat_caches_slow_reads_and_can_force_them(hass) -> None:
 
 
 async def test_pushed_task_evidence_changes_while_settings_remain_cached(hass) -> None:
-    client = _client()
+    client = idle_client()
     client.async_get_telemetry.return_value = RobotTelemetry(software_version="test")
     session = await start_session(hass, client)
 
@@ -329,7 +319,7 @@ async def test_pushed_task_evidence_changes_while_settings_remain_cached(hass) -
 
 
 async def test_unknown_native_task_state_stays_unknown(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     session.heartbeat._force_full_refresh = True
     client.async_get_telemetry.side_effect = MaticError("settings unavailable")
@@ -345,7 +335,7 @@ async def test_unknown_native_task_state_stays_unknown(hass) -> None:
 
 
 async def test_a_floor_refresh_leaves_telemetry_cached(hass) -> None:
-    client = _client()
+    client = idle_client()
     client.async_get_floor_plan.return_value = FloorPlan(1, "partition", b"", ())
     session = await start_session(hass, client)
     heartbeat = session.heartbeat
@@ -368,7 +358,7 @@ async def test_a_floor_refresh_leaves_telemetry_cached(hass) -> None:
 
 
 async def test_slow_refresh_failure_retains_last_good_values(hass) -> None:
-    client = _client()
+    client = idle_client()
     client.async_get_floor_plan.return_value = FloorPlan(1, "partition", b"", ())
     session = await start_session(hass, client)
     floor, telemetry = session.floor.value, session.telemetry.value
@@ -383,7 +373,7 @@ async def test_slow_refresh_failure_retains_last_good_values(hass) -> None:
 
 
 async def test_history_shows_the_newer_of_native_and_watched_runs(hass) -> None:
-    client = _client()
+    client = idle_client()
     room = Room("room", "Living Room", "protocol", b"room", ())
     client.async_get_floor_plan.return_value = FloorPlan(
         1, "partition", b"partition", (room,)
@@ -450,7 +440,7 @@ async def test_history_shows_the_newer_of_native_and_watched_runs(hass) -> None:
 
 
 async def test_recorder_recovery_failure_does_not_break_reads(hass) -> None:
-    client = _client()
+    client = idle_client()
     registry = er.async_get(hass)
     registry.async_get_or_create("binary_sensor", "matic_robot", "synthetic_cleaning")
     registry.async_get_or_create("sensor", "matic_robot", "synthetic_current_area")
@@ -472,7 +462,7 @@ async def test_recorder_recovery_failure_does_not_break_reads(hass) -> None:
 
 
 async def test_recorder_recovery_retries_until_entities_are_registered(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     assert session.heartbeat._session_history_recovered is False
 
@@ -490,7 +480,7 @@ async def test_recorder_recovery_retries_until_entities_are_registered(hass) -> 
 
 
 async def test_stopping_cancels_the_next_heartbeat(hass) -> None:
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
     assert session.heartbeat._timer is not None
 

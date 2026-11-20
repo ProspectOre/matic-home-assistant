@@ -24,7 +24,13 @@ from custom_components.matic_robot.managed_observation import (
 )
 from custom_components.matic_robot.managed_run import PlanCancelledError, RoomRunOutcome
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import leg_manager, leg_record, leg_rooms, run_plan_call
+from tests.plans.fakes import (
+    kitchen_leg_ends,
+    leg_manager,
+    leg_record,
+    leg_rooms,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot, run_step
 
 
@@ -83,16 +89,7 @@ async def test_leg_partial_verification_does_not_start_next_leg(
     rooms = leg_rooms()
     manager = leg_manager()
 
-    async def send_command(_call) -> None:
-        robot.show("cleaning", current_area="Kitchen")
-
-        async def end_leg() -> None:
-            await asyncio.sleep(0)
-            robot.show("returning", current_area="Kitchen", low_charge=False)
-
-        hass.async_create_task(end_leg(), eager_start=True)
-
-    robot.on_start = send_command
+    robot.on_start = kitchen_leg_ends(hass, robot)
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:

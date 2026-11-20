@@ -26,14 +26,8 @@ from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, robot_port, run_step
-
-from .test_restart import recovery_state as recovery_fixture
-
-
-@pytest.fixture
-async def recovery_state(hass):
-    return await recovery_fixture.__wrapped__(hass)
 
 
 @pytest.mark.parametrize("multi", [False, True])
@@ -110,8 +104,7 @@ def test_shutdown_suspension_is_distinct_from_explicit_unload(
 
 async def test_shutdown_checkpoint_is_retained(hass) -> None:
     """A shutdown candidate remains durable until native reconciliation."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.ledger.async_begin_run(
         "serial",
         "plan",
@@ -146,8 +139,7 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
     hass, stopping, expected, error_type
 ) -> None:
     """A task cancellation during shutdown cannot finalize or stop the robot."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.control.actor("serial").cancellation_reason = (
         "home_assistant_shutdown" if stopping else None
     )
@@ -185,8 +177,7 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
 
 async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
     """HA's actual stop path must not send STOP or finish the managed run."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     started = asyncio.Event()
     release = asyncio.Event()
     room = CleaningRoom("room", "Kitchen", "vacuum", "standard")

@@ -5,30 +5,17 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from homeassistant.helpers import issue_registry as ir
 
 from custom_components.matic_robot.client.models import (
     RobotOperationalState,
-    RobotTelemetry,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.robot_health import async_delete_robot_alert_issues
 from custom_components.matic_robot.session import RobotSession
-from tests.session_fakes import SYNTHETIC_INFO, push_state, start_session
-
-
-def _client() -> AsyncMock:
-    client = AsyncMock()
-    client.async_get_info.return_value = SYNTHETIC_INFO
-    client.async_get_state.return_value = RobotOperationalState(
-        50, (), (), False, False, False, False, False, False
-    )
-    client.async_get_floor_plan.return_value = None
-    client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
-    client.add_connection_listener = MagicMock()
-    return client
+from tests.session_fakes import idle_client, push_state, start_session
 
 
 async def _sighting(session: RobotSession) -> RobotOperationalState:
@@ -40,7 +27,7 @@ async def _sighting(session: RobotSession) -> RobotOperationalState:
 
 async def _error_poller(hass):
     """Return a session and a sighting that reports decoded error state."""
-    client = _client()
+    client = idle_client()
     session = await start_session(hass, client)
 
     async def poll(*error_codes: int) -> RobotOperationalState:
@@ -60,7 +47,7 @@ async def test_bag_observation_tracks_confirmed_full_and_replacement_edges(
     hass,
 ) -> None:
     """Keep bag transition evidence available without registering entities."""
-    client = _client()
+    client = idle_client()
     # Transitions are only counted from an observed clear bag, so the first
     # sample has to report the flags rather than leaving them unknown.
     client.async_get_state.return_value = replace(
@@ -140,14 +127,14 @@ async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> N
 
 async def test_bag_flags_stay_unknown_until_an_error_is_ever_reported(hass) -> None:
     """Never claim the bag is fine on a robot that has reported nothing."""
-    session = await start_session(hass, _client())
+    session = await start_session(hass, idle_client())
 
     assert session.state.value.operational.bag_full is None
     assert session.state.value.operational.bag_missing is None
 
 
 async def test_transient_robot_errors_require_two_consecutive_samples(hass) -> None:
-    client = _client()
+    client = idle_client()
     fault = replace(
         client.async_get_state.return_value, error_codes=(206,), bag_full=True
     )
@@ -236,7 +223,7 @@ async def test_cleared_robot_errors_clear_immediately(hass) -> None:
 
 
 async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
-    session = await start_session(hass, _client())
+    session = await start_session(hass, idle_client())
     base = session.state.value.operational
     registry = ir.async_get(hass)
     issue = "robot_alert_bag_full_entry"
@@ -277,7 +264,7 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
         severity=ir.IssueSeverity.WARNING,
         translation_key="robot_alert_bag_missing",
     )
-    client = _client()
+    client = idle_client()
     client.async_get_state.return_value = replace(base, error_codes=(206,))
     reloaded = await start_session(hass, client)
     # The first sample after a reload is still unconfirmed, so it leaves the
@@ -298,7 +285,7 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
 
 async def test_confirmed_bag_repair_survives_new_fault_then_retires(hass) -> None:
     """Changing codes preserve active Repairs and retire cleared ones."""
-    session = await start_session(hass, _client())
+    session = await start_session(hass, idle_client())
     base = session.state.value.operational
     registry = ir.async_get(hass)
     issue = "robot_alert_bag_full_entry"

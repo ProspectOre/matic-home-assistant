@@ -1,17 +1,27 @@
 """Synthetic rooms, calls and fakes shared by the plan tests."""
 
+import asyncio
+import hashlib
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
+from dataclasses import asdict
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot.area_binding import binding_for_area
+from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
+    FloorPlan,
+    Room,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_run import RoomRunOutcome
@@ -19,9 +29,10 @@ from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     _rotation_details,
     _rotation_sort_key,
+    plan_floor_token,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, direct_state, robot_client
 
 
 def heavy_room(name: str, room_id: str) -> CleaningRoom:
@@ -77,6 +88,23 @@ def mission_ends(robot: FakeRobot) -> AsyncMock:
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
     return AsyncMock(side_effect=outcome)
+
+
+def kitchen_leg_ends(
+    hass: HomeAssistant, robot: FakeRobot
+) -> Callable[[object], Awaitable[None]]:
+    """A start handler: the robot cleans the kitchen, then heads home a tick later."""
+
+    async def send_command(_call: object) -> None:
+        robot.show("cleaning", current_area="Kitchen")
+
+        async def end_leg() -> None:
+            await asyncio.sleep(0)
+            robot.show("returning", current_area="Kitchen", low_charge=False)
+
+        hass.async_create_task(end_leg(), eager_start=True)
+
+    return send_command
 
 
 def run_plan_call(
@@ -151,8 +179,94 @@ def leg_rooms() -> list[CleaningRoom]:
     return [plan_room("Kitchen", "room-kitchen"), plan_room("Office", "room-office")]
 
 
+def saved_area(floor_plan: FloorPlan, name: str) -> dict[str, Any]:
+    """A stored vacuum area: one small circle bound to ``floor_plan``."""
+    return {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "name": name,
+        "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "map_binding": binding_for_area(
+            floor_plan, [{"x": 0.1, "y": 0.1, "radius": 0.1}]
+        ),
+    }
+
+
 def memory_manager(hass: HomeAssistant) -> CleaningPlanManager:
     """A plan manager whose store accepts every save and writes nothing."""
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     return manager
+
+
+async def interrupted_run(
+    hass: HomeAssistant,
+) -> tuple[CleaningPlanManager, SimpleNamespace, dict[str, Any], CleaningRoom]:
+    """A one-room run that a restart interrupted after its dispatch.
+
+    Returns the manager, the loaded entry, the saved checkpoint and the room.
+    """
+    manager = memory_manager(hass)
+    room = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
+    floor = FloorPlan(
+        42,
+        "partition",
+        b"partition",
+        (
+            Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),
+            Room("office", "Office", "office", b"office", ()),
+            Room("hall", "Hall", "hall", b"hall", ()),
+        ),
+    )
+    identity = b"synthetic-session"
+    entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
+    robot = FakeRobot()
+    robot.show("cleaning")
+    await manager.ledger.async_begin_run(
+        "serial", "plan", "run", 1, trigger="automation", service="run_selected_plan"
+    )
+    await manager.ledger.async_mark_started("serial", "plan", room, run_id="run")
+    data = {
+        "plan_id": "plan",
+        "start_timeout": 120,
+        "completion_timeout": 21600,
+        "return_to_base": False,
+    }
+    checkpoint = {
+        "version": 1,
+        "mixed_settings": True,
+        "phase": "accepted",
+        "leg_index": 0,
+        "floor_token": plan_floor_token(floor),
+        "rooms": [asdict(room)],
+        "entity_id": entity.entity_id,
+        "data": data,
+        "native_identity_hash": hashlib.sha256(identity).hexdigest(),
+        "dispatched_at": dt_util.utcnow().isoformat(),
+        "completion_deadline": (dt_util.utcnow() + timedelta(hours=6)).isoformat(),
+        "history_baseline": [],
+        "completed_room_ids": [],
+        "started_room_ids": [room.room_id],
+    }
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    client = robot_client(
+        async_get_cleaning_session_identity=AsyncMock(return_value=identity),
+        async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=True),
+        async_get_state=AsyncMock(return_value=direct_state()),
+        async_send_user_command=AsyncMock(),
+    )
+    heartbeat = SimpleNamespace(
+        async_request_refresh=AsyncMock(), async_confirm_room_completed=MagicMock()
+    )
+    session = SimpleNamespace(floor=SimpleNamespace(value=floor), heartbeat=heartbeat)
+    session.state, session.error = robot.state, robot.error
+    slam_map = SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True))
+    runtime = SimpleNamespace(
+        client=client, cleaning_plans=manager, session=session, slam_map=slam_map
+    )
+    entry = SimpleNamespace(
+        runtime_data=runtime, robot=robot, state=ConfigEntryState.LOADED
+    )
+    return manager, entry, checkpoint, room

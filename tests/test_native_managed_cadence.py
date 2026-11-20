@@ -2,20 +2,17 @@
 
 from dataclasses import replace
 from datetime import timedelta
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.plan_model import CleaningRoom, plan_floor_token
-from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
 from tests.test_native_cadence import scenario
 
 
 async def test_native_retraction_preserves_a_later_managed_completion(hass):
     floor, native, _schedule, _robot = scenario()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     identity = _schedule["identity"]
     await manager.catalog.async_save_plan(

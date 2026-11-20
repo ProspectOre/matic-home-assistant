@@ -8,7 +8,8 @@ from custom_components.matic_robot.plan_model import (
     plan_floor_token,
     room_cadence_identity,
 )
-from tests.test_cadence_manager import _floor, _manager
+from tests.plans.fakes import memory_manager
+from tests.test_cadence_manager import _floor
 from tests.test_completion_ledger import _snapshot
 
 
@@ -22,7 +23,7 @@ from tests.test_completion_ledger import _snapshot
 async def test_shared_partial_reset_survives_next_native_ledger_replay(
     hass, reset_mode, expected_progress
 ):
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor()
     room_identity = room_cadence_identity(floor, "room-a")
     await manager.catalog.async_save_plan(

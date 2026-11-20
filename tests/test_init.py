@@ -51,6 +51,7 @@ from custom_components.matic_robot.slam_view_data import observe_trail
 from custom_components.matic_robot.stores import CleaningHistory
 from custom_components.matic_robot.workspace_socket import DATA_WORKSPACE_SOCKET
 from tests import legacy_bindings
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import fake_session, stub_viewpoints  # noqa: F401
 
 
@@ -478,8 +479,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         "map_binding": legacy_bindings.v4(old_frame, legacy_circles),
     }
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     robot = manager.repository.robot(serial)
     robot["areas"].update({"current": current_area, "legacy": legacy_area})
     robot["plans"]["area-plan"] = {

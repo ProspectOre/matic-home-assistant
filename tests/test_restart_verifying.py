@@ -18,12 +18,10 @@ from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.session_fakes import verifying_write
 
-from .test_restart import recovery_state as recovery_fixture
-
 
 @pytest.fixture
-async def recovery_state(hass):
-    manager, entry, checkpoint, room = await recovery_fixture.__wrapped__(hass)
+async def recovery_state(recovery_state):
+    manager, entry, checkpoint, room = recovery_state
     await manager.ledger.async_mark_verifying(
         "serial",
         "plan",

@@ -9,7 +9,6 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,9 +30,9 @@ from custom_components.matic_robot.native_completion import (
     match_single_room_unreachable,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import PlanStart
 from custom_components.matic_robot.run_history import run_ending, run_rooms
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.wire_builders import _session_identity
 
@@ -201,8 +200,7 @@ class _Robot:
 
 
 async def _run_plan(hass, robot: _Robot):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "finish_current_room": True
     }

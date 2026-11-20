@@ -26,7 +26,9 @@ from custom_components.matic_robot.room_statistics import (
     native_room_statistics_by_session,
 )
 from custom_components.matic_robot.stores import CleaningHistory
+from tests.plans.fakes import memory_manager
 from tests.test_entities import _entry as entity_entry
+from tests.test_room_statistics import _import_history
 
 
 def _floor(*names: tuple[str, str], mission_id: int = 7) -> FloorPlan:
@@ -59,24 +61,6 @@ def _record(
             mode_results=tuple(results),
         ),
     )
-
-
-async def _import_history(manager, serial_number, floor_plan, records, **kwargs):
-    return await manager.ledger.async_import_native_history(
-        serial_number, floor_plan, records, **kwargs
-    )
-
-
-async def _process_history(manager, serial_number, floor_plan, records, **kwargs):
-    return await manager.ledger.async_process_native_history(
-        serial_number, floor_plan, records, **kwargs
-    )
-
-
-async def _manager(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    return manager
 
 
 def _stored_room(manager: CleaningPlanManager, serial_number: str) -> dict:
@@ -146,7 +130,7 @@ def test_native_statistics_treat_duplicate_mode_as_tombstone_but_keep_other_mode
 async def test_floor_change_excludes_old_native_timestamp_and_sensors_reject_old_floor(
     hass,
 ):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     old_floor = _floor(("living", "Living"), mission_id=7)
     recent = dt_util.utcnow() - timedelta(minutes=2)
     record = _record(
@@ -172,7 +156,7 @@ async def test_floor_change_excludes_old_native_timestamp_and_sensors_reject_old
 
 @pytest.mark.asyncio
 async def test_native_equal_time_different_session_does_not_replace_existing(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     first = _record(
@@ -195,7 +179,7 @@ async def test_native_equal_time_different_session_does_not_replace_existing(has
 
 @pytest.mark.asyncio
 async def test_newer_partial_only_history_does_not_hide_older_completion(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living"))
     now = dt_util.utcnow()
     older = _record(
@@ -223,7 +207,7 @@ async def test_newer_partial_only_history_does_not_hide_older_completion(hass):
 
 @pytest.mark.asyncio
 async def test_same_session_partial_retracts_only_its_mode_and_stays_retracted(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     completed = _record(
@@ -261,7 +245,7 @@ async def test_same_session_partial_retracts_only_its_mode_and_stays_retracted(h
 
 @pytest.mark.asyncio
 async def test_first_seen_partial_allows_late_completion_for_same_session(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     partial = _record(
@@ -284,7 +268,7 @@ async def test_first_seen_partial_allows_late_completion_for_same_session(hass):
 
 @pytest.mark.asyncio
 async def test_retraction_tombstone_matches_session_when_timestamp_is_refined(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living"))
     now = dt_util.utcnow()
     completed = _record(
@@ -312,7 +296,7 @@ async def test_retraction_tombstone_matches_session_when_timestamp_is_refined(ha
 
 @pytest.mark.asyncio
 async def test_legacy_invalid_modes_migrate_to_persistent_tombstone(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     stale_completed = _record(
@@ -348,7 +332,7 @@ async def test_legacy_invalid_modes_migrate_to_persistent_tombstone(hass):
 
 @pytest.mark.asyncio
 async def test_new_positive_session_is_not_blocked_by_later_negative_timestamp(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living"))
     now = dt_util.utcnow()
     older_at = (now - timedelta(minutes=4)).isoformat()

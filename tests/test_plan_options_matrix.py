@@ -2,7 +2,6 @@
 
 import asyncio
 from dataclasses import asdict
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,7 +18,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
-from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.wire_builders import _session_identity
 
@@ -42,8 +41,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
     hass, monkeypatch, layout, return_to_base
 ):
     robot = FakeRobot()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     rooms = [
         CleaningRoom(f"room-{i}", f"Room {i}", mode, setting)
         for i, (mode, setting) in enumerate(layout)
@@ -201,8 +199,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
 async def test_stop_threshold_is_independent_of_cleaning_configuration(
     hass, finish_current_room, threshold, progress, expected
 ):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room = CleaningRoom("room", "Room", "vacuum", "quick")
     await manager.catalog.async_save_plan(
         "serial",
@@ -235,8 +232,7 @@ async def test_stop_threshold_is_independent_of_cleaning_configuration(
 async def test_stop_threshold_does_not_estimate_from_unscoped_duration_history(
     hass,
 ):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room = CleaningRoom("room", "Room", "vacuum", "quick")
     await manager.catalog.async_save_plan(
         "serial",
@@ -271,8 +267,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_TIMEOUT_SECONDS",
         0.01,
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     rooms = [
         CleaningRoom("room-a", "Room A", "vacuum", "quick"),
         CleaningRoom("room-b", "Room B", "vacuum", "quick"),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from google.protobuf.message import DecodeError
@@ -16,30 +16,17 @@ from custom_components.matic_robot.client.models import (
     FloorPlan,
     HermesCollectionEntry,
     MappedFloor,
-    RobotOperationalState,
     RobotTelemetry,
 )
 from custom_components.matic_robot.session import RobotSession
 from tests.hermes_fakes import FakeChannel, watch
 from tests.session_fakes import (
-    SYNTHETIC_INFO,
     displayed_mission_handler,
+    idle_client,
     start_session,
 )
 
 DECODE = "custom_components.matic_robot.heartbeat.decode_mission_client_state"
-
-
-def _client() -> AsyncMock:
-    client = AsyncMock()
-    client.async_get_info.return_value = SYNTHETIC_INFO
-    client.async_get_state.return_value = RobotOperationalState(
-        50, (), (), False, False, False, False, False, False
-    )
-    client.async_get_floor_plan.return_value = None
-    client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
-    client.add_connection_listener = MagicMock()
-    return client
 
 
 async def _watch_display(session: RobotSession, entries, runs: int = 1) -> None:
@@ -52,7 +39,7 @@ async def _watch_display(session: RobotSession, entries, runs: int = 1) -> None:
 async def test_floor_watcher_refreshes_changed_mission_and_labels(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     floors = (
         MappedFloor(42, "Main", "1" * 64),
         MappedFloor(84, "Workshop", "2" * 64),
@@ -92,7 +79,7 @@ async def test_floor_watcher_refreshes_changed_mission_and_labels(
 async def test_a_repeated_displayed_mission_leaves_admitted_floor_reads_alone(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     floor = MappedFloor(42, "Main", "1" * 64)
     client.async_get_floor_plan.return_value = FloorPlan(
         42, "partition", b"", (), mapped_floors=(floor,)
@@ -116,7 +103,7 @@ async def test_a_repeated_displayed_mission_leaves_admitted_floor_reads_alone(
 async def test_floor_watcher_revokes_verified_map_after_same_mission_signature_change(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     old_floor = MappedFloor(42, "Main", "1" * 64)
     new_floor = MappedFloor(42, "Main", "2" * 64)
     client.async_get_floor_plan.return_value = FloorPlan(
@@ -151,7 +138,7 @@ async def test_floor_watcher_revokes_verified_map_after_same_mission_signature_c
 async def test_floor_read_rejects_old_signature_and_accepts_single_plan_payload(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     old_floor = MappedFloor(42, "Main", "1" * 64)
     new_floor = MappedFloor(42, "Main", "2" * 64)
     old_map = FloorPlan(42, "partition", b"", (), mapped_floors=(old_floor,))
@@ -187,7 +174,7 @@ async def test_floor_read_rejects_old_signature_and_accepts_single_plan_payload(
 async def test_floor_watcher_preserves_published_map_when_invalidated_read_matches(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     mapped_floor = MappedFloor(42, "Main", "1" * 64)
     floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(mapped_floor,))
     client.async_get_floor_plan.return_value = floor_plan
@@ -237,7 +224,7 @@ async def test_floor_watcher_preserves_published_map_when_invalidated_read_match
 async def test_repeated_displayed_mission_revokes_conflicting_verified_read(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     mapped_floor = MappedFloor(42, "Main", "1" * 64)
     floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(mapped_floor,))
     client.async_get_floor_plan.return_value = floor_plan
@@ -288,7 +275,7 @@ async def test_repeated_displayed_mission_revokes_conflicting_verified_read(
 async def test_floor_read_does_not_preserve_map_after_same_mission_signature_change(
     hass,
 ) -> None:
-    client = _client()
+    client = idle_client()
     old_floor = MappedFloor(42, "Main", "1" * 64)
     new_floor = MappedFloor(42, "Main", "2" * 64)
     floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(old_floor,))
@@ -326,7 +313,7 @@ async def test_floor_read_does_not_preserve_map_after_same_mission_signature_cha
 async def test_floor_watcher_revokes_unknown_state_and_subscribes_again(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     floor = MappedFloor(42, "Main", "1" * 64)
     attempts = 0
 
@@ -361,7 +348,7 @@ async def test_floor_watcher_revokes_unknown_state_and_subscribes_again(
 async def test_unknown_display_revokes_published_and_inflight_maps(
     hass, monkeypatch, malformed
 ) -> None:
-    client = _client()
+    client = idle_client()
     floor = MappedFloor(42, "Main", "1" * 64)
     plan = FloorPlan(42, b"partition", b"partition", ())
     client.async_get_floor_plan.return_value = plan
@@ -433,7 +420,7 @@ async def test_floor_revocation_fences_completed_poll_snapshot(
     hass, monkeypatch, malformed, recover_before_publish, delay_history
 ) -> None:
     """A cached map cannot outlive its authority while unrelated work waits."""
-    client = _client()
+    client = idle_client()
     floor = MappedFloor(42, "Main", "1" * 64)
     plan = FloorPlan(42, b"partition", b"partition", ())
     client.async_get_floor_plan.return_value = plan
@@ -519,7 +506,7 @@ async def test_floor_revocation_fences_completed_poll_snapshot(
 
 
 async def test_floor_revocation_during_the_reads_withholds_the_floor(hass) -> None:
-    client = _client()
+    client = idle_client()
     client.async_get_floor_plan.return_value = FloorPlan(42, "partition", b"", ())
     session = await start_session(hass, client)
     heartbeat = session.heartbeat
@@ -539,7 +526,7 @@ async def test_floor_revocation_during_the_reads_withholds_the_floor(hass) -> No
 
 
 async def test_floor_fetch_failure_does_not_reuse_old_mission_plan(hass) -> None:
-    client = _client()
+    client = idle_client()
     old_floor = FloorPlan(42, "partition", b"", ())
     client.async_get_floor_plan.return_value = old_floor
     session = await start_session(hass, client)
@@ -559,7 +546,7 @@ async def test_floor_fetch_failure_does_not_reuse_old_mission_plan(hass) -> None
 async def test_floor_fetch_started_before_mission_change_cannot_publish_old_plan(
     hass,
 ) -> None:
-    client = _client()
+    client = idle_client()
     old_floor = FloorPlan(42, "partition", b"", ())
     started = asyncio.Event()
     release = asyncio.Event()
@@ -587,7 +574,7 @@ async def test_floor_fetch_started_before_mission_change_cannot_publish_old_plan
 async def test_failed_floor_fetch_started_before_mission_change_cannot_reuse_old_plan(
     hass,
 ) -> None:
-    client = _client()
+    client = idle_client()
     old_floor = FloorPlan(42, "partition", b"", ())
     client.async_get_floor_plan.return_value = old_floor
     session = await start_session(hass, client)
@@ -617,7 +604,7 @@ async def test_failed_floor_fetch_started_before_mission_change_cannot_reuse_old
 async def test_floor_read_rejects_displayed_mission_aba_result(
     hass, monkeypatch
 ) -> None:
-    client = _client()
+    client = idle_client()
     floor = FloorPlan(42, "partition", b"", ())
     session = await start_session(hass, client)
     heartbeat = session.heartbeat
@@ -673,7 +660,7 @@ async def test_floor_read_rejects_displayed_mission_aba_result(
 
 
 async def test_same_floor_fetch_failure_reuses_verified_cached_plan(hass) -> None:
-    client = _client()
+    client = idle_client()
     floor = FloorPlan(42, "partition", b"", ())
     client.async_get_floor_plan.return_value = floor
     session = await start_session(hass, client)
@@ -699,7 +686,7 @@ async def test_watcher_finishes_when_a_closed_channel_replaces_its_cancellation(
     from grpclib.utils import Wrapper
 
     client = MaticHermesClient("192.0.2.1", 16320)
-    fake = _client()
+    fake = idle_client()
     for name in ("async_get_info", "async_get_state", "async_get_floor_plan"):
         setattr(client, name, getattr(fake, name))
     client.async_get_telemetry = fake.async_get_telemetry
@@ -755,7 +742,7 @@ async def test_a_refresh_naming_no_new_mission_keeps_the_floor_generation(
     hass,
 ) -> None:
     """Only a newly verified mission makes reads already in flight stale."""
-    session = await start_session(hass, _client())
+    session = await start_session(hass, idle_client())
     heartbeat = session.heartbeat
     heartbeat.async_request_refresh = AsyncMock()
 

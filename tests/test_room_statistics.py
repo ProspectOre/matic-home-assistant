@@ -4,8 +4,6 @@ import asyncio
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.util import dt as dt_util
@@ -19,8 +17,8 @@ from custom_components.matic_robot.client.models import (
     MappedFloor,
     Room,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.stores import CleaningHistory
+from tests.plans.fakes import memory_manager
 from tests.test_entities import _entry as entity_entry
 
 
@@ -68,15 +66,9 @@ async def _process_history(manager, serial_number, floor_plan, records, **kwargs
     )
 
 
-async def _manager(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    return manager
-
-
 @pytest.mark.asyncio
 async def test_completed_native_modes_update_sensors_without_managed_credit(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     records = (
@@ -119,7 +111,7 @@ async def test_completed_native_modes_update_sensors_without_managed_credit(hass
 @pytest.mark.asyncio
 async def test_managed_native_exclusion_survives_overwrite_and_reload(hass):
     floor = _floor(("living", "Living Room"))
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     robot = manager.repository.robot("robot")
     robot["rotations"] = {
         "plan": {
@@ -148,7 +140,7 @@ async def test_managed_native_exclusion_survives_overwrite_and_reload(hass):
     manager.repository.robot("robot")["rotations"]["plan"]["rooms"]["living"][
         "last_started"
     ] = "2026-01-02T08:20:00+00:00"
-    reloaded = await _manager(hass)
+    reloaded = memory_manager(hass)
     reloaded.repository.data = deepcopy(manager.repository.data)
     await _import_history(reloaded, "robot", floor, [native])
     restored = reloaded.history.snapshot("robot")["robot_reported_completed_by_room"][
@@ -159,7 +151,7 @@ async def test_managed_native_exclusion_survives_overwrite_and_reload(hass):
 
 @pytest.mark.asyncio
 async def test_incomplete_unknown_and_ambiguous_native_results_are_ignored(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"), ("living-copy", " living room "))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     records = (
@@ -186,7 +178,7 @@ async def test_incomplete_unknown_and_ambiguous_native_results_are_ignored(hass)
 
 @pytest.mark.asyncio
 async def test_newer_native_statistics_are_monotonic(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     newest = dt_util.utcnow() - timedelta(minutes=1)
     older = newest - timedelta(minutes=2)
@@ -269,7 +261,7 @@ def test_room_sensor_reads_native_room_evidence_separately_from_managed_history(
 
 @pytest.mark.asyncio
 async def test_same_native_session_can_gain_a_mode_without_cross_session_sum(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     vacuum_only = _record(
@@ -308,7 +300,7 @@ async def test_same_native_session_can_gain_a_mode_without_cross_session_sum(has
 
 @pytest.mark.asyncio
 async def test_duplicate_modes_in_same_native_session_are_not_enriched(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     first = _record(
@@ -334,7 +326,7 @@ async def test_duplicate_modes_in_same_native_session_are_not_enriched(hass):
 
 @pytest.mark.asyncio
 async def test_conflicted_mode_tombstone_cannot_reappear_later_in_same_history(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     key = b"one-native-session"
@@ -365,7 +357,7 @@ async def test_conflicted_mode_tombstone_cannot_reappear_later_in_same_history(h
 
 @pytest.mark.asyncio
 async def test_managed_session_excludes_incidental_other_room_after_reload(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("room-a", "Room A"), ("room-b", "Room B"))
     now = dt_util.utcnow()
     managed_start = (now - timedelta(minutes=45)).isoformat()
@@ -406,7 +398,7 @@ async def test_managed_session_excludes_incidental_other_room_after_reload(hass)
         key=b"later-mission",
         started_at=later_start,
     )
-    restored = await _manager(hass)
+    restored = memory_manager(hass)
     restored.repository.data = deepcopy(manager.repository.data)
     await _import_history(restored, "robot", floor, [later])
     snapshot = restored.history.snapshot("robot")
@@ -447,7 +439,7 @@ async def test_managed_session_excludes_incidental_other_room_after_reload(hass)
 
 @pytest.mark.asyncio
 async def test_mode_duration_conflict_persists_across_imports_and_reload(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     started_at = (dt_util.utcnow() - timedelta(minutes=6)).isoformat()
@@ -469,7 +461,7 @@ async def test_mode_duration_conflict_persists_across_imports_and_reload(hass):
     assert room["robot_last_conflicted_modes"] == ["vacuum"]
     assert room["robot_last_duration_seconds"] == 500
 
-    restored = await _manager(hass)
+    restored = memory_manager(hass)
     restored.repository.data = deepcopy(manager.repository.data)
     assert not await _import_history(restored, "robot", floor, [record(900)])
     room = restored.repository.robot("robot")["rooms"]["living"]
@@ -484,7 +476,7 @@ async def test_mode_duration_conflict_persists_across_imports_and_reload(hass):
 
 @pytest.mark.asyncio
 async def test_stale_floor_native_history_is_discarded_after_lock_wait(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     new_floor = FloorPlan(
         8,
@@ -524,7 +516,7 @@ async def test_stale_floor_native_history_is_discarded_after_lock_wait(hass):
 
 @pytest.mark.asyncio
 async def test_native_history_processing_distinguishes_rejection_from_noop(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     assert await _process_history(manager, "robot", floor, []) is True
 
@@ -539,7 +531,7 @@ async def test_native_history_processing_distinguishes_rejection_from_noop(hass)
 
 @pytest.mark.asyncio
 async def test_motion_generation_change_while_waiting_for_store_retries_history(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     now = dt_util.utcnow()
     record = _record(
@@ -573,7 +565,7 @@ async def test_motion_generation_change_while_waiting_for_store_retries_history(
 
 @pytest.mark.asyncio
 async def test_native_room_stats_are_held_when_multiple_floors_are_known(hass):
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     floor = _floor(("living", "Living Room"))
     floor = FloorPlan(
         floor.mission_id,
@@ -819,7 +811,7 @@ async def test_conflicted_native_mode_clears_sensors_and_stays_tombstoned(hass):
     entry = entity_entry()
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
-    manager = await _manager(hass)
+    manager = memory_manager(hass)
     ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
     key = b"ambiguous-session"
     accepted = _record(

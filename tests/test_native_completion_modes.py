@@ -22,6 +22,7 @@ from custom_components.matic_robot.native_completion import (
     match_single_room_completions,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot
 from tests.wire_builders import _bfield, _vfield
 
@@ -311,8 +312,7 @@ async def test_restart_reconciliation_preserves_mode_admission(
         marker.pop("cleaning_mode")
     else:
         marker["cleaning_mode"] = mode
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.ledger.async_mark_started("synthetic-serial", "synthetic-plan", room)
     await manager.ledger.async_mark_failed(
         "synthetic-serial",
@@ -454,13 +454,9 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
     assert reported["Pantry"]["completed"] is None
     assert reported["Pantry"]["modes"]["mop"]["status"] == "unattempted"
 
-    from types import SimpleNamespace
-
     from custom_components.matic_robot.client.models import FloorPlan, Room
-    from custom_components.matic_robot.plans import CleaningPlanManager
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = FloorPlan(
         1,
         "synthetic",

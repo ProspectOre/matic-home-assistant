@@ -36,12 +36,11 @@ from custom_components.matic_robot.native_history_sync import (
     async_watch_native_reconciliation,
 )
 from custom_components.matic_robot.plan_storage import STOP_FENCE_EXPIRES_AT
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.session import RobotSession
 from custom_components.matic_robot.session_listeners import _FinishedSessions
 from custom_components.matic_robot.stores import Store
-from tests.session_fakes import session_entry, start_session
-from tests.test_robot_health import _client
+from tests.plans.fakes import memory_manager
+from tests.session_fakes import idle_client, session_entry, start_session
 
 SYNC = "custom_components.matic_robot.native_history_sync"
 EMPTY_SESSION = CleaningSession(None, None, None, (), (), None)
@@ -58,7 +57,7 @@ def _floor_plan() -> FloorPlan:
 
 async def _syncing(hass, *, processed=False, generation=None):
     """Return a session whose revision-0 history is imported, and its sync."""
-    client = _client()
+    client = idle_client()
     client.async_get_floor_plan.return_value = _floor_plan()
     client.async_get_telemetry.return_value = RobotTelemetry(
         native_history_revision="revision-0"
@@ -420,8 +419,7 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
         ((0, 0), (1, 0), (1, 1), (0, 1)),
     )
     floor_plan = FloorPlan(1, "partition", b"partition", (room,))
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("synthetic-serial")["pending_native_reconciliation"] = {
         "plan_id": "away",
         "room_id": room.id,
@@ -478,8 +476,7 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
 async def test_restart_recovery_expires_marker_after_transport_error(hass) -> None:
     now = datetime(2026, 8, 13, 12, tzinfo=UTC)
     dispatched_at = now - timedelta(seconds=5)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     robot = manager.repository.robot("synthetic-serial")
     robot["pending_native_reconciliation"] = {
         "plan_id": "away",
@@ -525,8 +522,7 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(
     hass, replaced: str
 ) -> None:
     now = datetime(2026, 8, 13, 12, tzinfo=UTC)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     robot = manager.repository.robot("synthetic-serial")
     robot["pending_native_reconciliation"] = {
         "plan_id": "away",

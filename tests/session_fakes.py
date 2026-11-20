@@ -71,6 +71,21 @@ def session_entry() -> SimpleNamespace:
     )
 
 
+def idle_client(telemetry: RobotTelemetry | None = None) -> AsyncMock:
+    """Return a client to an idle robot with no floor plan, for ``start_session``."""
+    client = AsyncMock()
+    client.async_get_info.return_value = SYNTHETIC_INFO
+    client.async_get_state.return_value = RobotOperationalState(
+        50, (), (), False, False, False, False, False, False
+    )
+    client.async_get_floor_plan.return_value = None
+    client.async_get_telemetry.return_value = telemetry or RobotTelemetry(
+        protocol_version=25
+    )
+    client.add_connection_listener = MagicMock()
+    return client
+
+
 async def start_session(
     hass: Any, client: AsyncMock, entry: Any = None
 ) -> RobotSession:
@@ -320,6 +335,21 @@ def _operational(**flags: Any) -> RobotOperationalState:
             "cleaning": False,
             "returning": False,
             **flags,
+        }
+    )
+
+
+def direct_state(**changes: Any) -> SimpleNamespace:
+    """Return what one direct state read shows of a robot at rest."""
+    return SimpleNamespace(
+        **{
+            "returning": False,
+            "cleaning": False,
+            "paused": False,
+            "charging": False,
+            "charging_idle": False,
+            "error_codes": (),
+            **changes,
         }
     )
 

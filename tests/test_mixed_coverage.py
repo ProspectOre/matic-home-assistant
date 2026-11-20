@@ -6,7 +6,6 @@ from base64 import b64decode
 from collections import Counter
 from dataclasses import replace
 from itertools import product
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -56,6 +55,7 @@ from custom_components.matic_robot.plan_model import (
     CleaningRoom,
 )
 from custom_components.matic_robot.robot_commands import RobotCommands
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, managed_clean_rooms
 from tests.wire_builders import _field, _varint_field
 
@@ -1794,12 +1794,10 @@ def test_mismatched_per_room_encoder_options(key):
 async def test_entity_mixed_dispatch_guards(hass, failure, monkeypatch):
     from homeassistant.exceptions import HomeAssistantError
 
-    from custom_components.matic_robot.plans import CleaningPlanManager
     from tests.test_entities import _entry
 
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     token = manager.control.begin_managed_motion("synthetic-serial")
 
@@ -1896,12 +1894,10 @@ async def test_entity_mixed_dispatch_guards(hass, failure, monkeypatch):
 
 
 async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
-    from custom_components.matic_robot.plans import CleaningPlanManager
     from tests.test_entities import _entry
 
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     await manager.ledger.async_begin_run(
         "synthetic-serial",
