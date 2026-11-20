@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot import photo_gallery_view
@@ -51,6 +52,7 @@ def _photo(number: int, album_place: dict, *, starred: bool = False) -> dict:
         "source": "home_assistant",
         "starred": starred,
         **album_place,
+        "url": f"/api/matic_robot/photo/e/photo-{number}",
         "preview_url": f"/api/matic_robot/photo/e/preview/photo-{number}",
     }
 
@@ -99,23 +101,23 @@ class _Request(dict):
         self.app = {KEY_HASS: object()}
 
 
-@pytest.mark.parametrize("admin", [False, True])
-async def test_lists_viewpoints_and_albums_newest_first(admin: bool) -> None:
+async def test_lists_viewpoints_and_albums_newest_first() -> None:
     runtime = SimpleNamespace(
         photos=SimpleNamespace(records=RECORDS),
         viewpoints=SimpleNamespace(all=(STOVE,)),
     )
-    request = _Request(hass_user=SimpleNamespace(is_admin=admin))
+    request = _Request(hass_user=SimpleNamespace(is_admin=True))
     with patch.object(photo_gallery_view, "runtime_for_entry", return_value=runtime):
         response = await MaticPhotoGalleryView().get(request, "e")
 
-    expected = json.loads(json.dumps(GALLERY))
-    if admin:
-        for album in expected["albums"]:
-            for photo in album["photos"]:
-                photo["url"] = f"/api/matic_robot/photo/e/{photo['photo_id']}"
-    assert json.loads(response.body) == expected
+    assert json.loads(response.body) == GALLERY
     assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
+
+
+async def test_only_an_administrator_reads_the_gallery() -> None:
+    request = _Request(hass_user=SimpleNamespace(is_admin=False))
+    with pytest.raises(Unauthorized):
+        await MaticPhotoGalleryView().get(request, "e")
 
 
 async def test_an_unloaded_robot_has_no_gallery() -> None:

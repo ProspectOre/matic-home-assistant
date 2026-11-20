@@ -6,6 +6,7 @@ from http import HTTPStatus
 from typing import Any
 
 from aiohttp import web
+from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .http import PHOTO_GALLERY_API_URL, PRIVATE_NO_STORE_HEADERS, runtime_for_entry
@@ -15,29 +16,23 @@ from .viewpoints import Viewpoint
 
 
 class MaticPhotoGalleryView(HomeAssistantView):
-    """List viewpoints and albums, newest album first.
-
-    Only an administrator is given full photo links; everyone else gets the
-    pixelated previews.
-    """
+    """List viewpoints and albums, newest album first, for Matic Map's admins."""
 
     url = PHOTO_GALLERY_API_URL
     name = "api:matic_robot:photo_gallery"
 
+    @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
         if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        admin = request["hass_user"].is_admin
         albums: dict[str, list[dict[str, Any]]] = {}
         for record in sorted(
             runtime.photos.records, key=lambda record: record.captured_at, reverse=True
         ):
-            albums.setdefault(record.album, []).append(
-                _photo(entry_id, record, full=admin)
-            )
+            albums.setdefault(record.album, []).append(_photo(entry_id, record))
         return self.json(
             {
                 "viewpoints": [_viewpoint(item) for item in runtime.viewpoints.all],
@@ -62,9 +57,9 @@ def _viewpoint(viewpoint: Viewpoint) -> dict[str, Any]:
     }
 
 
-def _photo(entry_id: str, record: PhotoRecord, *, full: bool) -> dict[str, Any]:
+def _photo(entry_id: str, record: PhotoRecord) -> dict[str, Any]:
     place = record.place
-    photo: dict[str, Any] = {
+    return {
         "photo_id": record.photo_id,
         "captured_at": record.captured_at.isoformat(),
         "source": record.source.value,
@@ -80,8 +75,6 @@ def _photo(entry_id: str, record: PhotoRecord, *, full: bool) -> dict[str, Any]:
                 "mission_id": place.mission_id,
             }
         ),
+        "url": photo_url(entry_id, record.photo_id),
         "preview_url": photo_preview_url(entry_id, record.photo_id),
     }
-    if full:
-        photo["url"] = photo_url(entry_id, record.photo_id)
-    return photo
