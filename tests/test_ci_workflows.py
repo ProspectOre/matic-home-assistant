@@ -37,7 +37,7 @@ def test_ci_runs_for_every_merge_into_main_and_release_branches(name: str) -> No
 
 def test_browser_shards_keep_the_traces_of_retried_tests() -> None:
     """Record a trace on retry and upload it under a name unique to the shard."""
-    browser = _workflow("browser.yml")["jobs"]["browser"]
+    browser = _workflow("test.yml")["jobs"]["browser"]
     steps = browser["steps"]
     shard = "--shard=${{ matrix.shard }}/${{ strategy.job-total }}"
     commands = [step.get("run") for step in steps]
@@ -74,7 +74,7 @@ def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> Non
     ("workflow", "job", "reader"),
     [
         ("test.yml", "live", "npx playwright test"),
-        ("browser.yml", "browser", "npm run test:browser"),
+        ("test.yml", "browser", "npm run test:browser"),
         ("nightly.yml", "nightly", "pytest"),
         ("nightly.yml", "nightly", "npx playwright test"),
         ("release.yml", "build", "python scripts/release.py zip"),
@@ -142,7 +142,7 @@ def test_the_allowed_install_script_is_the_locked_esbuild() -> None:
 
 
 def test_dependabot_updates_npm_but_not_the_browser_runtime() -> None:
-    """Playwright must match the browser.yml image, which Dependabot cannot move."""
+    """Playwright must match the browser job's image, which Dependabot cannot move."""
     dependabot = yaml.safe_load((GITHUB / "dependabot.yml").read_text(encoding="utf-8"))
     npm = next(
         update
@@ -151,3 +151,43 @@ def test_dependabot_updates_npm_but_not_the_browser_runtime() -> None:
     )
 
     assert {"dependency-name": "@playwright/test"} in npm["ignore"]
+
+
+def test_ci_requires_every_lane_and_an_edit_run_reports_its_last_code_run() -> None:
+    """The one required check fails when any lane, browser shards included, does."""
+    jobs = _workflow("test.yml")["jobs"]
+    ci = jobs["ci"]
+    gate = next(step for step in ci["steps"] if step.get("name"))
+    replay = next(
+        step for step in ci["steps"] if "last-code-run.sh" in step.get("run", "")
+    )
+
+    assert ci["needs"] == [name for name in jobs if name != "ci"]
+    assert ci["if"] == "always()"
+    for lane in ci["needs"]:
+        assert f'"${lane.upper()}" = success' in gate["run"]
+    assert gate["env"] == {
+        lane.upper(): f"${{{{ needs.{lane}.result }}}}" for lane in ci["needs"]
+    }
+    # An edit run's replays wait for the whole code run, up to 55 minutes.
+    edit_run = "${{ github.event.action == 'edited' && !github.event.changes.base"
+    assert ci["timeout-minutes"] == f"{edit_run} && 60 || 5 }}}}"
+    for lane in ("test", "live"):
+        assert jobs[lane]["timeout-minutes"] == f"{edit_run} && 60 || 20 }}}}"
+    assert replay["run"] == ".github/scripts/last-code-run.sh ci"
+    # Exactly one of the gate and the replay runs, whichever kind of run it is.
+    assert gate["if"] == "${{ !fromJSON(env.RECHECK) }}"
+    assert all(
+        step["if"] == "${{ fromJSON(env.RECHECK) }}"
+        for step in ci["steps"]
+        if step is not gate
+    )
+    assert ci["permissions"] == {
+        "actions": "read",
+        "checks": "read",
+        "contents": "read",
+    }
+    # An edit run changes no code, so the shards skip and `ci` replays.
+    assert jobs["browser"]["if"] == (
+        "${{ !(github.event.action == 'edited' && !github.event.changes.base) }}"
+    )

@@ -16,7 +16,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.storage import Store
 
 from .client import FloorPlan, MapZone, room_at, room_name_key, zone_overlaps_circle
-from .const import DOMAIN
+from .const import CONF_PHOTO_NO_PHOTO_ROOMS, DOMAIN
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -143,6 +143,36 @@ class Viewpoints:
         await self._store.async_save(
             {"viewpoints": [asdict(viewpoint) for viewpoint in self.all]}
         )
+
+
+def current_floor_plan(entry: MaticConfigEntry) -> FloorPlan:
+    """Return the floor plan viewpoints are saved on, once the map is confirmed."""
+    runtime = entry.runtime_data
+    floor_plan = runtime.session.floor.value
+    if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
+        raise _error("viewpoint_map_unavailable")
+    return floor_plan
+
+
+async def async_save_viewpoint(
+    entry: MaticConfigEntry,
+    floor_plan: FloorPlan,
+    name: str,
+    *,
+    x: float,
+    y: float,
+    heading: float,
+) -> Viewpoint:
+    """Save a viewpoint with the robot's no-go zones and no-photo rooms."""
+    return await entry.runtime_data.viewpoints.async_save(
+        name,
+        floor_plan,
+        readable_zones(entry),
+        set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ())),
+        x=x,
+        y=y,
+        heading=heading,
+    )
 
 
 def readable_zones(entry: MaticConfigEntry) -> tuple[MapZone, ...] | None:
