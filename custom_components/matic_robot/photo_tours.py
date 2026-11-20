@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from time import monotonic
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
@@ -33,6 +34,7 @@ from .const import (
     CONF_PHOTO_COOLDOWN_SECONDS,
     CONF_PHOTO_NO_PHOTO_ROOMS,
     DOMAIN,
+    MATIC_MAP_URL_PATH,
 )
 from .media_source import PhotoAttachmentUnavailable, photo_attachment_source
 from .native_schedules import schedule_occurrences
@@ -90,6 +92,11 @@ def photo_url(entry_id: str, photo_id: str) -> str:
 def photo_preview_url(entry_id: str, photo_id: str) -> str:
     """Return the authenticated, pixelated URL safe for notifications."""
     return f"/api/{DOMAIN}/photo/{entry_id}/preview/{photo_id}"
+
+
+def photo_map_url(entry_id: str, photo_id: str) -> str:
+    """Return the Matic Map page that opens one photo in Photos."""
+    return f"/{MATIC_MAP_URL_PATH}?{urlencode({'entry': entry_id, 'photo': photo_id})}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +303,7 @@ async def _async_run_tour(
                         else photo_preview_url(entry.entry_id, photo.photo_id)
                     ),
                     "preview_url": photo_preview_url(entry.entry_id, photo.photo_id),
+                    "map_url": photo_map_url(entry.entry_id, photo.photo_id),
                 }
                 if analysis is not None:
                     result["analysis"] = analysis

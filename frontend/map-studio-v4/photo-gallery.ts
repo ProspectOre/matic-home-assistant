@@ -5,6 +5,7 @@ import type { DateFormat, Localize, NoticePlaceholders, PhotoMarks, ViewpointDra
 import { formatDateTime, translate } from "./localize";
 import { downloadName, earlierOfSamePlace, withStar } from "./photo-compare";
 import type { GalleryPhoto, GalleryViewpoint, PhotoAlbum, PhotoGallery } from "./photo-gallery-data";
+import { forgetPhotoLink, photoLink } from "./photo-link";
 import { base, tokens } from "./tokens";
 import "./viewpoint-editor";
 
@@ -53,6 +54,7 @@ export class MaticPhotoGalleryV4 extends LitElement {
     _viewerError: { state: true },
     _starring: { state: true },
     _shown: { state: true },
+    _linkMissing: { state: true },
   };
 
   static override styles = [tokens, base, controls, css`
@@ -109,6 +111,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   _starring = false;
   /** How many of the newest photos the grid shows. */
   _shown = PAGE;
+  /** A link named a photo the library no longer holds. */
+  _linkMissing = false;
   #controller: AbortController | null = null;
   /** The open photo's full-size read; a step or close aborts it. */
   #fullRead: AbortController | null = null;
@@ -127,8 +131,15 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     if (viewer && !viewer.open) viewer.showModal();
   }
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // Home Assistant fires this when it navigates an open panel to a new link.
+    window.addEventListener("location-changed", this.#openLinked);
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    window.removeEventListener("location-changed", this.#openLinked);
     this.#reset();
   }
 
@@ -166,7 +177,9 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
       this._gallery = gallery;
       this._load = "ready";
       this.emit({ type: "show-photo-marks", marks: photoMarks(gallery) });
-      await this.#readPreviews(0);
+      const previews = this.#readPreviews(0);
+      void this.#openLinked();
+      await previews;
     } catch {
       if (!controller.signal.aborted) this._load = "failed";
     }
@@ -224,8 +237,28 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     return sections;
   }
 
+  /** Opens the photo a link names, with its tile in the grid, and forgets the link. */
+  readonly #openLinked = async (): Promise<void> => {
+    const link = photoLink();
+    if (!link || link.entryId !== this.entryId || !this._gallery) return;
+    forgetPhotoLink();
+    const photos = this.#photos();
+    const index = photos.findIndex((photo) => photo.id === link.photoId);
+    this._linkMissing = index < 0;
+    if (index < 0) return;
+    for (let from = this._shown; from <= index; from += PAGE) {
+      this._shown = from + PAGE;
+      void this.#readPreviews(from);
+    }
+    void this.#show(photos[index]!);
+    await this.updateComplete;
+    // Closing the viewer returns focus to the photo's tile, as after a tap.
+    this.#opener = this.renderRoot.querySelectorAll<HTMLElement>(".shot")[index] ?? null;
+  };
+
   async #show(photo: GalleryPhoto, opener?: HTMLElement): Promise<void> {
     if (opener) this.#opener = opener;
+    this._linkMissing = false;
     this.#dropFull();
     this.#dropCompare();
     this._viewerError = null;
@@ -413,6 +446,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     }
     const { albums, viewpoints } = this._gallery;
     return html`<div class="stack">
+      ${this._linkMissing ? html`<p role="status">${this.#t("v4_photos_link_missing", "The photo from the link is no longer saved.")}</p>` : nothing}
       ${albums.length ? this.#sections().map(({ album, photos }) => this.#album(album, photos))
         : html`<p class="subtle">${this.#t("v4_photos_empty", "No photos yet. Press Take photo, or run a photo tour from an automation.")}</p>`}
       ${this.#photos().length > this._shown ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => void this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}

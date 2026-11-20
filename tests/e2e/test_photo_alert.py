@@ -97,6 +97,7 @@ async def phone(
 async def test_the_phone_gets_a_photo_it_can_open_without_signing_in(
     hass: HomeAssistant,
     hass_client_no_auth,
+    loaded_entry: MockConfigEntry,
     robot: SimulatedRobot,
     phone: Phone,
 ) -> None:
@@ -112,6 +113,11 @@ async def test_the_phone_gets_a_photo_it_can_open_without_signing_in(
     image = await client.get(taken["data"]["image"])
     assert image.status == 200
     assert image.headers["Content-Type"].startswith("image/webp")
+    # A tap opens the same photo in Matic Map.
+    photo_id = taken["data"]["image"].partition("?")[0].rsplit("/", 1)[1]
+    assert taken["data"]["clickAction"] == (
+        f"/matic-map?entry={loaded_entry.entry_id}&photo={photo_id}"
+    )
     assert robot.phase is Phase.RETURNING
 
 

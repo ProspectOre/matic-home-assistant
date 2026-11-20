@@ -32,9 +32,12 @@ AUTOMATION = "automation.blueprint_under_test"
 TAG = f"matic_photo_{AUTOMATION}"
 SEND_HOME = f"MATIC_SEND_HOME_{AUTOMATION}"
 URL = "/api/matic_robot/photo/e/preview/p1?authSig=signed"
+OPEN = "/matic-map?entry=e&photo=p1"
 TAKEN = "2026-11-20T09:01:00+00:00"
 PHONE = {"group": "matic_photo_check", "url": "/matic-map", "clickAction": "/matic-map"}
-OPEN_MAP = [{"action": "URI", "title": "Open Matic Map", "uri": "/matic-map"}]
+# A photo opens itself in Matic Map, on a tap or its button.
+SHOWN = {"url": OPEN, "clickAction": OPEN}
+OPEN_PHOTO = [{"action": "URI", "title": "Open photo", "uri": OPEN}]
 
 
 @pytest.fixture(autouse=True)
@@ -134,7 +137,13 @@ def failed(reason: str) -> dict[str, Any]:
 
 
 def photo(**fields: Any) -> dict[str, Any]:
-    return {"viewpoint": "Front door", "url": URL, "captured_at": TAKEN, **fields}
+    return {
+        "viewpoint": "Front door",
+        "url": URL,
+        "map_url": OPEN,
+        "captured_at": TAKEN,
+        **fields,
+    }
 
 
 async def open_door(hass: HomeAssistant) -> None:
@@ -175,7 +184,7 @@ async def test_phone_hears_at_once_then_sees_the_photo_in_place(
     assert taken == {
         "title": "Front door",
         "message": "Front door, 1:01 AM",
-        "data": {**PHONE, "tag": TAG, "image": URL, "actions": OPEN_MAP},
+        "data": {**PHONE, **SHOWN, "tag": TAG, "image": URL, "actions": OPEN_PHOTO},
     }
     assert all(len(sent["message"]) < 80 for sent in calls.notified)
 
@@ -215,13 +224,18 @@ async def test_a_look_around_stacks_its_photos_under_one_group(
     hass: HomeAssistant,
 ) -> None:
     second = "/api/matic_robot/photo/e/preview/p2?authSig=signed"
-    calls = await setup_blueprint(hass, photos=[photo(), photo(url=second)])
+    opens = "/matic-map?entry=e&photo=p2"
+    calls = await setup_blueprint(
+        hass, photos=[photo(), photo(url=second, map_url=opens)]
+    )
 
     await open_door(hass)
 
     first, extra = calls.notified[1:]
     assert (first["data"]["tag"], first["data"]["image"]) == (TAG, URL)
     assert (extra["data"]["tag"], extra["data"]["image"]) == (f"{TAG}_2", second)
+    # Each photo opens itself.
+    assert (first["data"]["clickAction"], extra["data"]["clickAction"]) == (OPEN, opens)
     assert {sent["data"]["group"] for sent in calls.notified} == {"matic_photo_check"}
 
 

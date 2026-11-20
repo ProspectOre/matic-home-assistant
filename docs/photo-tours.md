@@ -59,7 +59,8 @@ Each result names its stop: `room` for a room stop, or `viewpoint`, `room` and
 `url` and `preview_url`. The default `url` serves a pixelated WebP mosaic of
 the robot's preview, or of the full image when there is no preview. Set
 `full_resolution: true` only when a full photo is wanted; `preview_url` always
-refers to the preview. Each photo also fires `matic_robot_photo_taken` with the
+refers to the preview. `map_url` opens the photo in Matic Map's Photos, for
+a notification to open on a tap. Each photo also fires `matic_robot_photo_taken` with the
 same fields, with links that need a signed-in user.
 
 With `report_failures: true`, a robot whose tour could not finish is returned

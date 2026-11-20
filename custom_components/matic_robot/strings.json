@@ -810,6 +810,7 @@
     "v4_photos_tour": "Photo tour",
     "v4_photos_tour_at": "Photo tour, {time}",
     "v4_photos_viewpoints": "Saved viewpoints",
+    "v4_photos_link_missing": "The photo from the link is no longer saved.",
     "v4_photos_star_limit": "100 photos are starred. Unstar one to star this one.",
     "v4_photos_star_failed": "Couldn't change the star. Try again.",
     "v4_photos_starred_caption": "{caption}, starred",
