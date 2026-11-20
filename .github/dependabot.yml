@@ -28,5 +28,5 @@ updates:
       npm:
         patterns: ["*"]
     ignore:
-      # Moves together with the browser.yml container image.
+      # Moves together with the browser job's container image in test.yml.
       - dependency-name: "@playwright/test"

@@ -97,7 +97,7 @@ def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:
 
 def test_browser_ci_image_matches_the_locked_playwright_runtime() -> None:
     """Use immutable preinstalled browsers compatible with the full test suite."""
-    workflow = load_yaml(ROOT / ".github" / "workflows" / "browser.yml")
+    workflow = load_yaml(ROOT / ".github" / "workflows" / "test.yml")
     browser = workflow["jobs"]["browser"]
     package = json.loads((ROOT / "package.json").read_text())
     lock = json.loads((ROOT / "package-lock.json").read_text())
