@@ -24,6 +24,7 @@ from .client import (
     FloorPlan,
     coverage_floor_hash,
     coverage_region_hash,
+    is_sha256_hex,
 )
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .coverage_accounting import (
@@ -272,9 +273,7 @@ class PlanRecovery:
 
         async def commit(_lease: _MetadataLockLease) -> None:
             async with self.repository.commit(serial_number):
-                if len(session_identity_hash) != 64 or any(
-                    char not in "0123456789abcdef" for char in session_identity_hash
-                ):
+                if not is_sha256_hex(session_identity_hash):
                     raise ValueError(
                         "mixed session identity must be a SHA-256 fingerprint"
                     )

@@ -10,7 +10,7 @@ from time import monotonic
 from typing import cast
 
 from .exceptions import ProtocolError
-from .hermes_connection import HermesConnection
+from .hermes_connection import RPC_TIMEOUT, HermesConnection
 from .models import (
     HermesCollectionEntry,
 )
@@ -29,7 +29,6 @@ from .transport import (
 )
 from .wifi_status import WIFI_STATUS_MAX_BYTES
 
-_RPC_TIMEOUT = 10.0
 _COLLECTION_TIMEOUT = 30.0
 _COLLECTION_MAX_BYTES = 64 * 1024 * 1024
 
@@ -59,7 +58,7 @@ class HermesCollections:
         )
         async with (
             self._connection._map_stream_errors(f"{collection_name} stream"),
-            asyncio.timeout(_RPC_TIMEOUT),
+            asyncio.timeout(RPC_TIMEOUT),
         ):
             async with HermesStub(channel).FetchCollection.open(
                 metadata=self._connection._metadata

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from google.protobuf.message import DecodeError
@@ -14,7 +15,13 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from .client import CleaningSessionRecord, MaticError, UserCommand, uuid_string
+from .client import (
+    CleaningSessionRecord,
+    MaticError,
+    UserCommand,
+    is_sha256_hex,
+    uuid_string,
+)
 from .const import DOMAIN
 from .coverage_accounting import async_confirm_completed_coverage
 from .managed_dispatch import (
@@ -39,7 +46,6 @@ from .run_machine import (
     RoomVerified,
     Run,
     RunPhase,
-    is_digest,
     stored_instant,
     transition,
 )
@@ -80,7 +86,7 @@ def _recovered_call(
 
 def _matches_mixed_session_hash(identity: bytes, expected_hash: object) -> bool:
     """Compare a live opaque session to the generated mixed-session fingerprint."""
-    if not is_digest(expected_hash):
+    if not is_sha256_hex(expected_hash):
         return False
     try:
         canonical_identity = uuid_string(identity)
@@ -277,10 +283,15 @@ async def async_recover_managed_run(
         if entity_id is None:
             return
 
-        async def command(token: int, value: UserCommand) -> None:
-            await _async_managed_user_command(
-                hass, entry, manager, serial_number, entity_id, None, token, value
-            )
+        command = partial(
+            _async_managed_user_command,
+            hass,
+            entry,
+            manager,
+            serial_number,
+            entity_id,
+            None,
+        )
 
         def floor_is_current() -> bool:
             floor = runtime.session.floor.value

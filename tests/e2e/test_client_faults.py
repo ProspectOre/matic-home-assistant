@@ -40,8 +40,8 @@ SCHEDULES = [(b"a", b"\x08\x01"), (b"b", b"\x08\x02"), (b"c", b"\x08\x03")]
 @pytest.fixture
 def short_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shorten the 10 s dial and RPC timeouts; the logic is unchanged."""
-    monkeypatch.setattr(hermes_collections, "_RPC_TIMEOUT", 0.2)
-    monkeypatch.setattr(hermes_connection, "_RPC_TIMEOUT", 0.2)
+    monkeypatch.setattr(hermes_collections, "RPC_TIMEOUT", 0.2)
+    monkeypatch.setattr(hermes_connection, "RPC_TIMEOUT", 0.2)
 
 
 class _Watched:

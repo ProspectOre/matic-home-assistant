@@ -159,6 +159,17 @@ def field_bytes(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]
     )
 
 
+def field_varints(fields: tuple[WireField, ...], number: int) -> tuple[int, ...]:
+    """Select varint values from an already bounded message."""
+    return tuple(
+        field.value
+        for field in fields
+        if field.number == number
+        and field.wire_type == 0
+        and isinstance(field.value, int)
+    )
+
+
 def field_varint(fields: tuple[WireField, ...], number: int) -> int:
     """Select a required varint from an already bounded message."""
     for field in fields:

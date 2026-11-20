@@ -9,7 +9,9 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from .cadence import advance_cadence
+from .client import is_sha256_hex
 from .completion_ledger import record_completion
+from .plan_model import CLEANING_MODES, COVERAGE_SETTINGS
 
 
 class CadenceCompletion(Protocol):
@@ -20,14 +22,6 @@ class CadenceCompletion(Protocol):
 
     @property
     def cleaning_mode(self) -> str: ...
-
-
-def _valid_room_identity(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(char in "0123456789abcdef" for char in value)
-    )
 
 
 def validated_cadence_snapshot(value: object) -> dict[str, Any] | None:
@@ -55,24 +49,18 @@ def validated_cadence_snapshot(value: object) -> dict[str, Any] | None:
             return None
     coverage = value.get("periodic_coverage_setting")
     if coverage is not None and (
-        not isinstance(coverage, str)
-        or coverage not in {"quick", "standard", "heavy_duty"}
+        not isinstance(coverage, str) or coverage not in COVERAGE_SETTINGS
     ):
         return None
     result["periodic_coverage_setting"] = coverage
     mode = value.get("effective_cleaning_mode")
     coverage_setting = value.get("effective_coverage_setting")
-    if not isinstance(mode, str) or mode not in {
-        "vacuum",
-        "mop",
-        "vacuum_and_mop",
-    }:
+    if not isinstance(mode, str) or mode not in CLEANING_MODES:
         return None
-    if not isinstance(coverage_setting, str) or coverage_setting not in {
-        "quick",
-        "standard",
-        "heavy_duty",
-    }:
+    if (
+        not isinstance(coverage_setting, str)
+        or coverage_setting not in COVERAGE_SETTINGS
+    ):
         return None
     result["effective_cleaning_mode"] = mode
     result["effective_coverage_setting"] = coverage_setting
@@ -83,7 +71,7 @@ def validated_cadence_snapshot(value: object) -> dict[str, Any] | None:
         result[key] = value.get(key) is True
     if "identity" in value:
         identity = value.get("identity")
-        if not _valid_room_identity(identity):
+        if not is_sha256_hex(identity):
             return None
         result["identity"] = identity
     return result
@@ -112,7 +100,7 @@ def validated_cadence_snapshots(value: object) -> dict[str, dict[str, Any]] | No
         if raw_snapshot.get("shared_schedule_participating") is True:
             reservation["shared_schedule_participating"] = True
         identity = raw_snapshot.get("identity")
-        if _valid_room_identity(identity):
+        if is_sha256_hex(identity):
             reservation["identity"] = identity
         if reservation:
             result[room_id] = reservation
@@ -139,8 +127,8 @@ def apply_verified_cadence(
         return False
     expected_identity = cadence_state.get("identity")
     if validate_current_identity and (
-        not _valid_room_identity(expected_identity)
-        or not _valid_room_identity(current_identity)
+        not is_sha256_hex(expected_identity)
+        or not is_sha256_hex(current_identity)
         or expected_identity != current_identity
     ):
         return False

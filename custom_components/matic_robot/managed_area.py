@@ -56,7 +56,7 @@ async def _async_wait_for_area_end(
             raise PlanCancelledError
         state = robot.observed()
         if state is not None and state.activity is RobotActivity.ERROR:
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
         identity = await observation._async_read_session_identity(
@@ -67,7 +67,7 @@ async def _async_wait_for_area_end(
             raise PlanCancelledError
         current = robot.observed()
         if current is not None and current.activity is RobotActivity.ERROR:
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
         if identity is None:
@@ -95,7 +95,7 @@ async def _async_wait_for_area_end(
                     raise PlanCancelledError
                 current = robot.observed()
                 if current is not None and current.activity is RobotActivity.ERROR:
-                    raise managed_run._validation_error(
+                    raise managed_run.validation_error(
                         "The selected Matic robot reported an error", "robot_error"
                     )
                 if (
@@ -271,7 +271,7 @@ async def _async_run_area_leg(
             {**event_data, "reason_code": "native_task_taken_over"},
             context=call.context,
         )
-        raise managed_run._validation_error(
+        raise managed_run.validation_error(
             "The original native cleaning task could no longer be verified",
             "room_taken_over",
             {"room": area.name},
@@ -300,20 +300,20 @@ async def _async_run_area_leg(
         if isinstance(err, ServiceValidationError):
             raise
         if isinstance(err, RoomStartTimeoutError):
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 f"The robot did not begin cleaning {area.name} before the "
                 "start timeout",
                 "plan_start_timeout",
                 {"room": area.name},
             ) from err
         if isinstance(err, TimeoutError):
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 f"Timed out while cleaning {area.name}",
                 "plan_timeout",
                 {"room": area.name},
             ) from err
         if isinstance(err, MaticError):
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 "The robot could not complete the custom area",
                 "robot_command_failed",
             ) from err

@@ -163,9 +163,9 @@ _ROOM_ENTRY_KEYS = frozenset({"kind", "room_id"})
 
 _AREA_ENTRY_KEYS = frozenset({"kind", "area_id", "cleaning_mode", "coverage_setting"})
 
-_CLEANING_MODES = frozenset(mode.value for mode in CleaningMode)
+CLEANING_MODES = frozenset(mode.value for mode in CleaningMode)
 
-_COVERAGE_SETTINGS = frozenset(setting.value for setting in CoverageSetting)
+COVERAGE_SETTINGS = frozenset(setting.value for setting in CoverageSetting)
 
 
 def _plan_room_ids(rooms: object) -> list[str]:
@@ -196,8 +196,8 @@ def _validated_entries(raw: object) -> list[dict[str, Any]]:
             if (
                 isinstance(area_id, str)
                 and area_id
-                and item["cleaning_mode"] in _CLEANING_MODES
-                and item["coverage_setting"] in _COVERAGE_SETTINGS
+                and item["cleaning_mode"] in CLEANING_MODES
+                and item["coverage_setting"] in COVERAGE_SETTINGS
             ):
                 entries.append(
                     {
@@ -393,8 +393,8 @@ def plan_legs(
                 isinstance(entry[key], str) and entry[key]
                 for key in _RUN_AREA_ENTRY_KEYS
             )
-            and entry["cleaning_mode"] in _CLEANING_MODES
-            and entry["coverage_setting"] in _COVERAGE_SETTINGS
+            and entry["cleaning_mode"] in CLEANING_MODES
+            and entry["coverage_setting"] in COVERAGE_SETTINGS
             and len(entry["fingerprint"]) == 64
         ):
             close_rooms()

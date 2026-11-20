@@ -19,8 +19,8 @@ from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
 from .client import pose_observation_is_current
+from .managed_run import validation_error
 from .photo_tours import TourStop, async_run_photo_tour, check_photo_tour
-from .robot_commands import validation_error
 from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
     SERVICE_DELETE_PHOTO_VIEWPOINT,

@@ -5642,12 +5642,7 @@ async def test_native_stop_reconciliation_expires_without_history_baseline(
         ) as sleep,
     ):
         await _async_expire_native_reconciliation(
-            hass,
-            manager,
-            "serial",
-            "vacuum.test",
-            room,
-            reconciliation,
+            manager, "serial", room, reconciliation
         )
 
     sleep.assert_awaited_once_with(1)

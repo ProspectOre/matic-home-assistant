@@ -15,6 +15,7 @@ from typing import Any, cast
 from .cadence_accounting import (
     validated_cadence_snapshots as _validated_cadence_snapshots,
 )
+from .client import is_sha256_hex
 from .native_history import (
     NATIVE_COMPLETION_DEDUP_MAX_KEYS,
     _native_reconciliation_key,
@@ -461,9 +462,7 @@ def _normalize_robot(robot: dict[str, Any]) -> bool:
         normalized_dedup = [
             key
             for key in dedup[-NATIVE_COMPLETION_DEDUP_MAX_KEYS:]
-            if isinstance(key, str)
-            and len(key) == 64
-            and all(char in "0123456789abcdef" for char in key)
+            if is_sha256_hex(key)
         ]
         if normalized_dedup != dedup:
             robot["native_completion_dedup"] = normalized_dedup
@@ -473,10 +472,7 @@ def _normalize_robot(robot: dict[str, Any]) -> bool:
         {
             key: value
             for key, value in claims.items()
-            if isinstance(key, str)
-            and len(key) == 64
-            and all(char in "0123456789abcdef" for char in key)
-            and isinstance(value, dict)
+            if is_sha256_hex(key) and isinstance(value, dict)
         }
         if isinstance(claims, dict)
         else {}

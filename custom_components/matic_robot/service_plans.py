@@ -11,7 +11,7 @@ from homeassistant.exceptions import ServiceValidationError
 from .area_binding import AreaBindingStatus, area_binding_status
 from .client import CleaningMode, CoverageSetting, FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
-from .managed_run import _validation_error
+from .managed_run import validation_error
 from .occupancy import occupancy_holds
 from .plan_model import (
     CadenceBindingError,
@@ -51,11 +51,11 @@ def _validated_area_command(
 ]:
     """Validate saved private geometry without changing robot ownership."""
     if floor_plan is None or not floor_plan.rooms:
-        raise _validation_error(
+        raise validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     if area_binding_status(area, floor_plan) is not AreaBindingStatus.CURRENT:
-        raise _validation_error(
+        raise validation_error(
             "The saved custom area belongs to a different room map",
             "area_map_changed",
         )
@@ -71,7 +71,7 @@ def _validated_area_command(
         mode = CleaningMode(mode_value)
         coverage = CoverageSetting(coverage_value)
     except (KeyError, TypeError, ValueError) as err:
-        raise _validation_error(
+        raise validation_error(
             "The saved custom area is invalid", "invalid_area"
         ) from err
     return floor_plan, circles, mode, coverage
@@ -192,46 +192,44 @@ def _preview_has_area(preview: Mapping[str, Any]) -> bool:
 def _plan_request_error(err: ValueError) -> ServiceValidationError:
     """Translate a rejected plan or room sequence without exposing its text."""
     if isinstance(err, PlanAreaLimitError):
-        return _validation_error(
+        return validation_error(
             "The custom area limit is exceeded",
             "plan_area_limit",
             {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
         )
     if isinstance(err, PlanAreaMissingError):
-        return _validation_error(
+        return validation_error(
             "A custom area in the plan no longer exists", "plan_area_missing"
         )
     if isinstance(err, PlanAreaMapChangedError):
-        return _validation_error(
+        return validation_error(
             "The saved custom area belongs to a different room map",
             "area_map_changed",
         )
     if isinstance(err, DuplicatePlanAreaError):
-        return _validation_error(
+        return validation_error(
             "A custom area appears more than once", "duplicate_area"
         )
     if isinstance(err, RoomSequenceLimitError):
-        return _validation_error(
+        return validation_error(
             "The room limit is exceeded",
             "room_sequence_limit",
             {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
         )
     if isinstance(err, PlanDisabledError):
-        return _validation_error("The plan is turned off", "plan_disabled")
+        return validation_error("The plan is turned off", "plan_disabled")
     if isinstance(err, EmptyPlanError):
-        return _validation_error("The plan has no rooms", "plan_empty")
+        return validation_error("The plan has no rooms", "plan_empty")
     if isinstance(err, PlanRoomsHeldError):
-        return _validation_error(
-            "Every room in the plan is occupied", "plan_rooms_held"
-        )
+        return validation_error("Every room in the plan is occupied", "plan_rooms_held")
     if isinstance(err, DuplicateRoomError):
-        return _validation_error("A room appears more than once", "duplicate_room")
+        return validation_error("A room appears more than once", "duplicate_room")
     if isinstance(err, CadenceBindingError):
-        return _validation_error(
+        return validation_error(
             "A shared room schedule has no confirmed map room",
             "room_schedule_map_unconfirmed",
         )
-    return _validation_error("The plan request cannot run", "invalid_plan")
+    return validation_error("The plan request cannot run", "invalid_plan")
 
 
 def _resolve_saved_plan(
@@ -241,7 +239,7 @@ def _resolve_saved_plan(
     try:
         return manager.catalog.plan(serial_number, reference)
     except KeyError as err:
-        raise _validation_error(
+        raise validation_error(
             f"Unknown Matic cleaning plan: {reference}",
             "unknown_plan",
             {"plan": reference},
@@ -277,7 +275,7 @@ def _normalize_saved_area(
     try:
         area = manager.catalog.area(serial_number, item["area"])
     except KeyError as err:
-        raise _validation_error(
+        raise validation_error(
             f"Unknown Matic custom area: {item['area']}",
             "unknown_area",
             {"area": str(item["area"])},
@@ -302,12 +300,12 @@ def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
         room_id, _room_name = resolve_room_reference(identifier, room_map)
     except ValueError as err:
         if str(err).startswith("ambiguous "):
-            raise _validation_error(
+            raise validation_error(
                 f"Ambiguous Matic room: {identifier}",
                 "ambiguous_room",
                 {"room": identifier},
             ) from err
-        raise _validation_error(
+        raise validation_error(
             f"Unknown Matic room: {identifier}",
             "unknown_rooms",
             {"rooms": identifier},

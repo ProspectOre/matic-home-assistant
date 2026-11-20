@@ -26,9 +26,10 @@ from .client import (
     encode_posture,
 )
 from .const import CONF_PHOTO_NO_PHOTO_ROOMS, DOMAIN
+from .managed_run import validation_error
 from .photo_library import MANUAL_ALBUM
 from .plan_model import plan_floor_token, resolve_room_reference
-from .robot_commands import RobotCommands, enum_option, validation_error
+from .robot_commands import RobotCommands, enum_option
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry

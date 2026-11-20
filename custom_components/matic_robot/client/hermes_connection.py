@@ -44,7 +44,7 @@ from .transport import (
 
 _LOGGER = logging.getLogger(__name__)
 HERMES_TARGET_KEY = "hermes-target"
-_RPC_TIMEOUT = 10.0
+RPC_TIMEOUT = 10.0
 
 
 class HermesConnection:
@@ -113,7 +113,7 @@ class HermesConnection:
                 # next one. A pinning failure is a security error: it ends
                 # the dial.
                 try:
-                    async with asyncio.timeout(_RPC_TIMEOUT):
+                    async with asyncio.timeout(RPC_TIMEOUT):
                         await channel.__connect__()
                 except TimeoutError:
                     error = TransportError("Hermes connection timed out")
@@ -160,7 +160,7 @@ class HermesConnection:
         """Bind authenticated Hermes context to ``channel``."""
         if self._credential is None:
             return
-        async with self._map_stream_errors("handshake"), asyncio.timeout(_RPC_TIMEOUT):
+        async with self._map_stream_errors("handshake"), asyncio.timeout(RPC_TIMEOUT):
             await HermesStub(channel).Handshake(Unit(), metadata=self._metadata)
 
     async def _async_send_user_data(self, channel: PinnedChannel) -> None:
@@ -255,7 +255,7 @@ class HermesConnection:
         try:
             async with (
                 self._map_stream_errors("command"),
-                asyncio.timeout(_RPC_TIMEOUT),
+                asyncio.timeout(RPC_TIMEOUT),
             ):
                 async with HermesStub(channel).SendToChannel.open(
                     metadata=metadata

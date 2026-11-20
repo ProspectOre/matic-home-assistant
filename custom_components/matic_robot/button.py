@@ -9,12 +9,11 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.const import ATTR_ENTITY_ID, EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .const import DOMAIN
-from .entity import MaticEntity
+from .entity import MaticEntity, MaticPlanDataEntity
 from .occupancy import entry_vacuum_entity_id
 from .plan_model import plan_floor_token, room_cadence_identity
 from .robot_controls import RobotControls
@@ -39,7 +38,22 @@ async def async_setup_entry(
     )
 
 
-class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
+class _MaticRobotButton(MaticEntity, ButtonEntity):
+    """A button that acts through the entry's vacuum entity."""
+
+    def _vacuum_entity_id(self) -> str:
+        """Find the vacuum entity owned by this config entry."""
+        entity_id = entry_vacuum_entity_id(self.hass, self._config_entry.entry_id)
+        if entity_id is None:
+            raise HomeAssistantError(
+                "The selected Matic robot is unavailable",
+                translation_domain=DOMAIN,
+                translation_key="robot_unavailable",
+            )
+        return entity_id
+
+
+class _MaticFloorBoundButton(_MaticRobotButton):
     """Refresh a button only when live floor coherence crosses an edge."""
 
     def __init__(self, entry: MaticConfigEntry) -> None:
@@ -84,7 +98,7 @@ class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
         self.async_write_ha_state()
 
 
-class MaticPlanButton(_MaticFloorBoundButton):
+class MaticPlanButton(MaticPlanDataEntity, _MaticFloorBoundButton):
     """Run the default saved plan for this robot."""
 
     # Matic Map and the standard vacuum controls cover everyday use. This
@@ -97,19 +111,6 @@ class MaticPlanButton(_MaticFloorBoundButton):
         self._serial_number = self.session.info.serial_number
         self._plans = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_run_selected_plan"
-
-    async def async_added_to_hass(self) -> None:
-        """Refresh availability when plans change."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._plans.repository.async_add_listener(
-                self._serial_number, self._async_plans_updated
-            )
-        )
-
-    @callback
-    def _async_plans_updated(self) -> None:
-        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
@@ -135,19 +136,6 @@ class MaticPlanButton(_MaticFloorBoundButton):
             return False
         return True
 
-    def _vacuum_entity_id(self) -> str:
-        """Find the vacuum entity owned by this config entry."""
-        for entity in er.async_entries_for_config_entry(
-            er.async_get(self.hass), self._config_entry.entry_id
-        ):
-            if entity.domain == "vacuum" and entity.platform == DOMAIN:
-                return entity.entity_id
-        raise HomeAssistantError(
-            "The selected Matic robot is unavailable",
-            translation_domain=DOMAIN,
-            translation_key="robot_unavailable",
-        )
-
     async def async_press(self) -> None:
         """Run the default plan the way it is saved."""
         await self.hass.services.async_call(
@@ -158,7 +146,7 @@ class MaticPlanButton(_MaticFloorBoundButton):
         )
 
 
-class MaticAreaButton(_MaticFloorBoundButton):
+class MaticAreaButton(MaticPlanDataEntity, _MaticFloorBoundButton):
     """Run the custom area selected on the Matic device page."""
 
     _attr_translation_key = "clean_selected_area"
@@ -170,19 +158,6 @@ class MaticAreaButton(_MaticFloorBoundButton):
         self._areas = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_clean_selected_area"
 
-    async def async_added_to_hass(self) -> None:
-        """Refresh availability when custom areas change."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._areas.repository.async_add_listener(
-                self._serial_number, self._async_areas_updated
-            )
-        )
-
-    @callback
-    def _async_areas_updated(self) -> None:
-        self.async_write_ha_state()
-
     @property
     def available(self) -> bool:
         """Expose the action only while a current custom area can be resolved."""
@@ -193,19 +168,6 @@ class MaticAreaButton(_MaticFloorBoundButton):
         except KeyError:
             return False
         return True
-
-    def _vacuum_entity_id(self) -> str:
-        """Find the vacuum entity owned by this config entry."""
-        for entity in er.async_entries_for_config_entry(
-            er.async_get(self.hass), self._config_entry.entry_id
-        ):
-            if entity.domain == "vacuum" and entity.platform == DOMAIN:
-                return entity.entity_id
-        raise HomeAssistantError(
-            "The selected Matic robot is unavailable",
-            translation_domain=DOMAIN,
-            translation_key="robot_unavailable",
-        )
 
     async def async_press(self) -> None:
         """Run the selected private custom area through the validated action."""
@@ -240,7 +202,7 @@ class MaticWifiSurveyClearButton(MaticEntity, ButtonEntity):
         self._survey.clear()
 
 
-class MaticTakePhotoButton(MaticEntity, ButtonEntity):
+class MaticTakePhotoButton(_MaticRobotButton):
     """Ask the robot to take a photo with its camera."""
 
     _attr_translation_key = "take_photo"
@@ -255,16 +217,7 @@ class MaticTakePhotoButton(MaticEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Send the snap emote, then read the photo once the robot saves it."""
-        vacuum_entity_id = entry_vacuum_entity_id(
-            self.hass, self._config_entry.entry_id
-        )
-        if vacuum_entity_id is None:
-            raise HomeAssistantError(
-                "The selected Matic robot is unavailable",
-                translation_domain=DOMAIN,
-                translation_key="robot_unavailable",
-            )
-        robot = RobotControls(self.hass, self._config_entry, vacuum_entity_id)
+        robot = RobotControls(self.hass, self._config_entry, self._vacuum_entity_id())
         if robot.reachable:
             await robot.async_take_photo()
         self._config_entry.async_create_background_task(

@@ -603,7 +603,7 @@ async def _async_run_leg(
             reason_code="native_task_taken_over",
             cause="unknown",
         )
-        raise managed_run._validation_error(
+        raise managed_run.validation_error(
             "The original native cleaning task could no longer be verified",
             "room_taken_over",
             {"room": active_room.name},
@@ -626,7 +626,7 @@ async def _async_run_leg(
             reason_code=managed_run._interruption_reason_code(err),
             cause="unknown",
         )
-        raise managed_run._validation_error(
+        raise managed_run.validation_error(
             str(err), "room_interrupted", {"room": active_room.name}
         ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
@@ -675,24 +675,24 @@ async def _async_run_leg(
         if isinstance(err, ServiceValidationError):
             raise
         if isinstance(err, RoomStartTimeoutError):
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 f"The robot did not begin cleaning {active_room.name} before the "
                 "start timeout",
                 "plan_start_timeout",
                 {"room": active_room.name},
             ) from err
         if isinstance(err, CoverageGuardError):
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 managed_run.coverage_guard_message(err), err.reason_code
             ) from err
         if isinstance(err, MaticError):
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 "The robot could not complete the managed room",
                 "robot_command_failed",
                 {"room": active_room.name},
             ) from err
         if isinstance(err, TimeoutError):
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 f"Timed out while cleaning {active_room.name}",
                 "plan_timeout",
                 {"room": active_room.name},

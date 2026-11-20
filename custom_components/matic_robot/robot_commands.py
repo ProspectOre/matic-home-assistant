@@ -21,7 +21,7 @@ from .client import (
     Room,
 )
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
-from .managed_run import coverage_guard_message
+from .managed_run import coverage_guard_message, validation_error
 from .plan_model import (
     plan_area_fingerprint,
     plan_floor_token,
@@ -708,17 +708,3 @@ def enum_option[CleaningOptionT: (CleaningMode, CoverageSetting)](
                 return option
     choices = ", ".join(option.value for option in enum_type)
     raise ValueError(f"{_OPTION_LABELS[enum_type]} must be one of: {choices}.")
-
-
-def validation_error(
-    message: str,
-    translation_key: str,
-    placeholders: dict[str, str] | None = None,
-) -> ServiceValidationError:
-    """Create a user-facing and fully translatable action error."""
-    return ServiceValidationError(
-        message,
-        translation_domain=DOMAIN,
-        translation_key=translation_key,
-        translation_placeholders=placeholders,
-    )

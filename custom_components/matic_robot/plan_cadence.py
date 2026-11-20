@@ -31,7 +31,7 @@ from .cadence import (
 )
 from .completion_ledger import reset_progress as _reset_completion_progress
 from .const import DOMAIN
-from .managed_run import _validation_error
+from .managed_run import validation_error
 from .plan_model import (
     CleaningRoom,
     SharedRoomScheduleLockedError,
@@ -197,7 +197,7 @@ class PlanCadence:
         if existing is not None:
             if existing.run_id == run_id:
                 return
-            raise _validation_error("Run already reserved", "plan_already_running")
+            raise validation_error("Run already reserved", "plan_already_running")
         plan = self.repository.robot(serial_number)["plans"].get(plan_id, {})
         stop_enabled, stop_threshold = _managed_stop_policy(plan)
         if finish_current_room is not None:
@@ -254,9 +254,9 @@ class PlanCadence:
                 mutation.deletes_plan
                 or set(reservations).intersection(mutation.plan_room_ids)
             ):
-                raise _validation_error("Plan cadence saving", "room_schedule_saving")
+                raise validation_error("Plan cadence saving", "room_schedule_saving")
             if shared_schedule_rooms.intersection(mutation.shared_room_ids):
-                raise _validation_error("Shared cadence saving", "room_schedule_saving")
+                raise validation_error("Shared cadence saving", "room_schedule_saving")
         self.prepared_runs[serial_number] = _PreparedRunReservation(
             plan_id,
             run_id,

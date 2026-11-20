@@ -265,8 +265,8 @@ async def test_the_run_entity_stays_available_while_the_robot_is_unreachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A run ends in Home Assistant, so its last events must still be recorded.
-    monkeypatch.setattr(hermes_collections, "_RPC_TIMEOUT", 0.2)
-    monkeypatch.setattr(hermes_connection, "_RPC_TIMEOUT", 0.2)
+    monkeypatch.setattr(hermes_collections, "RPC_TIMEOUT", 0.2)
+    monkeypatch.setattr(hermes_connection, "RPC_TIMEOUT", 0.2)
     monkeypatch.setattr(session, "UNREACHABLE_AFTER_SECONDS", 0.2)
     simulator.link.stall()
     await state_becomes(hass, VACUUM, STATE_UNAVAILABLE)

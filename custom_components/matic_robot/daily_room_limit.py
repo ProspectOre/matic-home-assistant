@@ -8,6 +8,7 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
+from .client import is_sha256_hex
 from .plan_schema import DailyLimit, DailyLimitReason
 
 MAX_DAILY_ROOM_LIMIT = 100
@@ -25,23 +26,11 @@ def _time(value: object) -> datetime | None:
         return None
 
 
-def _valid_identity(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(char in "0123456789abcdef" for char in value)
-    )
-
-
-def _valid_session_hash(value: object) -> bool:
-    return _valid_identity(value)
-
-
 def _resolve_unknown_session_hold(
     row: dict[str, Any], session_hash: str | None
 ) -> bool:
     """Remove one session-bound hold after that session receives a valid time."""
-    if not _valid_session_hash(session_hash):
+    if not is_sha256_hex(session_hash):
         return False
     holds = row.get("unknown_time_holds")
     if not isinstance(holds, list) or len(holds) > MAX_RECENT_COMPLETIONS:
@@ -87,7 +76,7 @@ def record_unknown_completion_time(
     if not isinstance(row, dict):
         return False
     now = now.astimezone(UTC)
-    if _valid_session_hash(session_hash):
+    if is_sha256_hex(session_hash):
         holds = row.get("unknown_time_holds", [])
         if not isinstance(holds, list) or len(holds) > MAX_RECENT_COMPLETIONS:
             return _mark_unknown_hold_overflow(row, now)
@@ -156,7 +145,7 @@ def record_completion(
         if not isinstance(row, dict):
             return False
         changed = _resolve_unknown_session_hold(row, session_hash)
-        if _valid_session_hash(session_hash):
+        if is_sha256_hex(session_hash):
             receipts = row.get("receipts")
             if isinstance(receipts, list) and len(receipts) <= MAX_RECENT_COMPLETIONS:
                 prior = next(
@@ -192,7 +181,7 @@ def record_completion(
             or _time(item.get("at")) is None
             or (
                 item.get("identity") is not None
-                and not _valid_identity(item.get("identity"))
+                and not is_sha256_hex(item.get("identity"))
             )
             for item in existing
         )
@@ -204,7 +193,7 @@ def record_completion(
             if isinstance(item, dict)
             and (stamp := _time(item.get("at"))) is not None
             and stamp >= now - RECEIPT_RETENTION
-            and (item.get("identity") is None or _valid_identity(item.get("identity")))
+            and (item.get("identity") is None or is_sha256_hex(item.get("identity")))
         ]
         if isinstance(existing, list)
         else []
@@ -216,13 +205,7 @@ def record_completion(
         if isinstance(run_id, str) and run_id
         else None
     )
-    valid_session = (
-        session_hash
-        if isinstance(session_hash, str)
-        and len(session_hash) == 64
-        and all(char in "0123456789abcdef" for char in session_hash)
-        else None
-    )
+    valid_session = session_hash if is_sha256_hex(session_hash) else None
     prior = next(
         (
             item
@@ -370,7 +353,7 @@ def daily_state(
                 "reached": True,
                 "reason": "completion_history_unverified",
             }
-        if hold_until > now and not _valid_session_hash(hold.get("session_hash")):
+        if hold_until > now and not is_sha256_hex(hold.get("session_hash")):
             return {
                 "limit": limit,
                 "completed_today": 0,
@@ -428,7 +411,7 @@ def daily_state(
         recorded_times.add(stamp)
         if receipt.get("identity") is None:
             ambiguous = True
-        elif not _valid_identity(receipt.get("identity")):
+        elif not is_sha256_hex(receipt.get("identity")):
             return {
                 "limit": limit,
                 "completed_today": count,

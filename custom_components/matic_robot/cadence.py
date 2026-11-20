@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .plan_model import COVERAGE_SETTINGS
+
 MAX_CADENCE_INTERVAL = 100
-_COVERAGE_SETTINGS = {"quick", "standard", "heavy_duty"}
 
 
 class CoverageCadenceRequiresVacuumError(ValueError):
@@ -37,7 +38,7 @@ def normalize_cadence_policy(
         periodic_coverage = None
     elif (
         not isinstance(periodic_coverage, str)
-        or periodic_coverage not in _COVERAGE_SETTINGS
+        or periodic_coverage not in COVERAGE_SETTINGS
     ):
         raise ValueError(
             "periodic coverage is required when coverage cadence is enabled"
@@ -46,7 +47,7 @@ def normalize_cadence_policy(
         raise ValueError("mop cadence requires vacuum as the normal cleaning mode")
     if (
         not isinstance(coverage_setting, str)
-        or coverage_setting not in _COVERAGE_SETTINGS
+        or coverage_setting not in COVERAGE_SETTINGS
     ):
         raise ValueError("room coverage setting is invalid")
     do_mop_next = value.get("do_mop_next", False)

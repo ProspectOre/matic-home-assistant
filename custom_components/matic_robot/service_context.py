@@ -45,7 +45,7 @@ from .firmware import (
     FirmwareTracker,
 )
 from .managed_run import (
-    _validation_error,
+    validation_error,
 )
 from .plans import CleaningPlanManager
 from .room_coherence import current_floor_plan as _current_floor_plan
@@ -185,7 +185,7 @@ def _saved_plan_context(
 ) -> tuple[str, MaticConfigEntry, str, dict[str, str]]:
     """Return the one targeted robot and its current stable room inventory."""
     if len(entity_ids) != 1:
-        raise _validation_error(
+        raise validation_error(
             "Saved cleaning plans require exactly one Matic robot",
             "single_robot_required",
         )
@@ -202,7 +202,7 @@ def _saved_plan_context(
         else {}
     )
     if require_rooms and not room_map:
-        raise _validation_error(
+        raise validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     return entity_id, entry, serial_number, room_map
@@ -261,12 +261,12 @@ def _entry_for_entity(hass: HomeAssistant, entity_id: str) -> MaticConfigEntry:
     """Return the loaded typed Matic config entry behind a vacuum entity."""
     registry_entry = er.async_get(hass).async_get(entity_id)
     if registry_entry is None or registry_entry.config_entry_id is None:
-        raise _validation_error(
+        raise validation_error(
             "The selected Matic robot is unavailable", "robot_unavailable"
         )
     entry = hass.config_entries.async_get_entry(registry_entry.config_entry_id)
     if entry is None:
-        raise _validation_error(
+        raise validation_error(
             "The selected Matic robot is unavailable", "robot_unavailable"
         )
     return entry

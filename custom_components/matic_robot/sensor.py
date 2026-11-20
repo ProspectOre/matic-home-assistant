@@ -38,7 +38,7 @@ from .client import (
     RobotActivity,
     Room,
 )
-from .entity import MaticEntity
+from .entity import MaticEntity, MaticPlanDataEntity
 from .native_completion import native_room_key
 from .plan_model import plan_floor_token, room_cadence_identity
 from .room_statistics import native_statistics_have_ambiguous_floor
@@ -502,7 +502,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
         return None
 
 
-class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
+class MaticCleaningHistorySensor(MaticPlanDataEntity, SensorEntity):
     """Expose durable managed-plan outcomes for advanced automations."""
 
     entity_description = HISTORY_DESCRIPTION
@@ -527,21 +527,8 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
         self._history = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_cleaning_history"
 
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to storage-backed history changes."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._history.repository.async_add_listener(
-                self._serial_number, self._async_history_updated
-            )
-        )
-
     def _stores(self) -> Iterable[Store[Any]]:
         return ()
-
-    @callback
-    def _async_history_updated(self) -> None:
-        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
@@ -567,7 +554,7 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
         }
 
 
-class _MaticPlanSensor(MaticEntity, SensorEntity):
+class _MaticPlanSensor(MaticPlanDataEntity, SensorEntity):
     """Base for storage-backed saved-plan sensors."""
 
     def __init__(self, entry: MaticConfigEntry) -> None:
@@ -575,21 +562,8 @@ class _MaticPlanSensor(MaticEntity, SensorEntity):
         self._serial_number = self.session.info.serial_number
         self._history = entry.runtime_data.cleaning_plans
 
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to plan and history changes."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._history.repository.async_add_listener(
-                self._serial_number, self._async_history_updated
-            )
-        )
-
     def _stores(self) -> Iterable[Store[Any]]:
         return ()
-
-    @callback
-    def _async_history_updated(self) -> None:
-        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
@@ -792,7 +766,7 @@ class MaticNextCleaningRoomSensor(_MaticPlanSensor):
         return {"preview": preview} if preview else None
 
 
-class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
+class _MaticRoomStatisticsSensor(MaticPlanDataEntity, RestoreSensor):
     """Opt-in, restore-backed statistics for one named room.
 
     Values persist across restarts and robot outages so long-term
@@ -813,19 +787,11 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         suffix = self.entity_description.key.removeprefix("room_")
         return slugify(f"{self._suggested_suffix}_{suffix}")
 
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to verified managed-room outcomes."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._history.repository.async_add_listener(
-                self._serial_number, self._async_history_updated
-            )
-        )
-
     @callback
-    def _async_history_updated(self) -> None:
+    def _handle_plan_data_update(self) -> None:
+        """Apply verified managed-room outcomes before publishing."""
         self._async_apply_session()
-        self.async_write_ha_state()
+        super()._handle_plan_data_update()
 
     @property
     def available(self) -> bool:

@@ -9,7 +9,7 @@ from google.protobuf.message import DecodeError
 
 from .models import MappedFloor
 from .slam_tiles import decode_slam_mission_id
-from .wire import WireField, decode_fields
+from .wire import WireField, decode_fields, field_bytes
 
 MAX_MAPPED_FLOORS = 64
 MAX_FLOOR_LABEL_BYTES = 256
@@ -39,12 +39,12 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
     if len(payload) > MAX_MISSION_CLIENT_STATE_BYTES:
         raise DecodeError("mission client state exceeds its byte limit")
     fields = _decode_bounded_fields(payload)
-    active_values = _bytes_values(fields, 5)
-    canonical_values = _bytes_values(fields, 6)
+    active_values = field_bytes(fields, 5)
+    canonical_values = field_bytes(fields, 6)
     if len(active_values) > 1 or len(canonical_values) != 1:
         raise DecodeError("mission client state has an invalid root shape")
 
-    canonical_entries = _bytes_values(_decode_bounded_fields(canonical_values[0]), 1)
+    canonical_entries = field_bytes(_decode_bounded_fields(canonical_values[0]), 1)
     if not canonical_entries or len(canonical_entries) > MAX_MAPPED_FLOORS:
         raise DecodeError("mission client state has an invalid floor count")
     labeled_floors = tuple(
@@ -84,8 +84,8 @@ def _decode_labeled_mission(payload: bytes) -> tuple[MappedFloor, int | None]:
         if "field limit" in str(err):
             raise DecodeError("labeled mission exceeds its field limit") from err
         raise DecodeError("labeled mission has an invalid shape") from err
-    mission_values = _bytes_values(fields, 1)
-    label_values = _bytes_values(fields, 2)
+    mission_values = field_bytes(fields, 1)
+    label_values = field_bytes(fields, 2)
     known_fields = tuple(field for field in fields if field.number in (1, 2))
     if len(known_fields) != 2 or len(mission_values) != 1 or len(label_values) != 1:
         raise DecodeError("labeled mission has an invalid shape")
@@ -111,7 +111,7 @@ def _decode_floor_label(payload: bytes) -> tuple[str, int | None]:
         # The numeric label's meaning is unknown. Preserve its discriminator for
         # active/canonical agreement, but never use it as a floor identity.
         return "Floor", field.value
-    values = _bytes_values(fields, 2)
+    values = field_bytes(fields, 2)
     if len(values) != 1:
         raise DecodeError("floor label has an invalid shape")
     encoded = values[0]
@@ -128,16 +128,6 @@ def _decode_floor_label(payload: bytes) -> tuple[str, int | None]:
     ):
         raise DecodeError("floor label is not safe to display")
     return label, None
-
-
-def _bytes_values(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
-    return tuple(
-        field.value
-        for field in fields
-        if field.number == number
-        and field.wire_type == 2
-        and isinstance(field.value, bytes)
-    )
 
 
 def _decode_bounded_fields(payload: bytes) -> tuple[WireField, ...]:

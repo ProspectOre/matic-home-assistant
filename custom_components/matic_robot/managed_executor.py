@@ -290,7 +290,7 @@ async def _async_execute_rooms_reserved(
                 ]
                 if ambiguous:
                     # Admission and completion must use the same identity key.
-                    raise managed_run._validation_error(
+                    raise managed_run.validation_error(
                         "Managed completion cannot distinguish duplicate "
                         "mapped room names",
                         "ambiguous_room_name",
@@ -586,7 +586,7 @@ async def _async_execute_rooms_reserved(
                 except ManagedMotionReplacedError as err:
                     raise PlanCancelledError from err
                 except MaticError as err:
-                    raise managed_run._validation_error(
+                    raise managed_run.validation_error(
                         "The robot could not return to its dock",
                         "robot_command_failed",
                     ) from err
@@ -870,11 +870,11 @@ async def _async_execute_rooms(
     manager.control.require_command_admission(serial_number)
     lock = manager.control.lock(serial_number)
     if recovery is None and manager.recovery.recovery_run(serial_number) is not None:
-        raise managed_run._validation_error(
+        raise managed_run.validation_error(
             "A managed Matic plan is reconnecting", "plan_already_running"
         )
     if lock.locked():
-        raise managed_run._validation_error(
+        raise managed_run.validation_error(
             "A managed Matic cleaning plan is already running", "plan_already_running"
         )
     run_id = str(recovery["run_id"]) if recovery else uuid4().hex

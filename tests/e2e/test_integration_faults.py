@@ -125,8 +125,8 @@ async def test_keepalive_finds_a_silent_link_and_the_pushes_come_back(
 ) -> None:
     # The dial and RPC timeouts and the outage grace are 10 s; shorten the
     # waits, not the logic.
-    monkeypatch.setattr(hermes_collections, "_RPC_TIMEOUT", 0.2)
-    monkeypatch.setattr(hermes_connection, "_RPC_TIMEOUT", 0.2)
+    monkeypatch.setattr(hermes_collections, "RPC_TIMEOUT", 0.2)
+    monkeypatch.setattr(hermes_connection, "RPC_TIMEOUT", 0.2)
     monkeypatch.setattr(session, "UNREACHABLE_AFTER_SECONDS", 0.2)
     heartbeat = loaded_entry.runtime_data.session.heartbeat
     reads = AsyncMock(wraps=heartbeat._async_read)

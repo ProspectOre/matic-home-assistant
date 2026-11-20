@@ -11,6 +11,7 @@ from typing import Any
 
 from homeassistant.util import dt as dt_util
 
+from .client import CleaningMode, CoverageSetting
 from .plan_model import CleaningRoom
 
 DURATION_HISTORY_MAX_SAMPLES = 7
@@ -18,9 +19,7 @@ DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
 
 DURATION_PROFILE_KEYS = tuple(
-    f"{mode}:{coverage}"
-    for mode in ("vacuum", "mop", "vacuum_and_mop")
-    for coverage in ("quick", "standard", "heavy_duty")
+    f"{mode}:{coverage}" for mode in CleaningMode for coverage in CoverageSetting
 )
 
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60

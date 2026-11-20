@@ -7,13 +7,13 @@ from typing import Any
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .client import CleaningMode, CoverageSetting
 from .const import CONF_CLEANING_MODE, CONF_COVERAGE_SETTING
-from .entity import MaticEntity
+from .entity import MaticEntity, MaticPlanDataEntity
 from .stores import Store
 
 PARALLEL_UPDATES = 0
@@ -113,7 +113,7 @@ class MaticCoverageSettingSelect(MaticEntity, SelectEntity):
         self.async_write_ha_state()
 
 
-class MaticSavedPlanSelect(MaticEntity, SelectEntity):
+class MaticSavedPlanSelect(MaticPlanDataEntity, SelectEntity):
     """Choose the named saved plan used by run/preview/retry entities."""
 
     entity_description = SAVED_PLAN_DESCRIPTION
@@ -126,19 +126,6 @@ class MaticSavedPlanSelect(MaticEntity, SelectEntity):
 
     def _stores(self) -> Iterable[Store[Any]]:
         return ()
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to saved-plan changes."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._history.repository.async_add_listener(
-                self._serial_number, self._async_plans_updated
-            )
-        )
-
-    @callback
-    def _async_plans_updated(self) -> None:
-        self.async_write_ha_state()
 
     @property
     def options(self) -> list[str]:
@@ -165,7 +152,7 @@ class MaticSavedPlanSelect(MaticEntity, SelectEntity):
         await self._history.catalog.async_select_plan(self._serial_number, plan["id"])
 
 
-class MaticCustomAreaSelect(MaticEntity, SelectEntity):
+class MaticCustomAreaSelect(MaticPlanDataEntity, SelectEntity):
     """Choose the private saved area used by the native clean-area button."""
 
     entity_description = CUSTOM_AREA_DESCRIPTION
@@ -178,19 +165,6 @@ class MaticCustomAreaSelect(MaticEntity, SelectEntity):
 
     def _stores(self) -> Iterable[Store[Any]]:
         return ()
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to custom-area changes."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._areas.repository.async_add_listener(
-                self._serial_number, self._async_areas_updated
-            )
-        )
-
-    @callback
-    def _async_areas_updated(self) -> None:
-        self.async_write_ha_state()
 
     @property
     def options(self) -> list[str]:

@@ -7,6 +7,7 @@ import json
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
+from typing import TypeGuard
 from uuid import UUID
 
 from google.protobuf.message import DecodeError
@@ -30,7 +31,8 @@ def _hash(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _is_hash(value: object) -> bool:
+def is_sha256_hex(value: object) -> TypeGuard[str]:
+    """Return whether a value is a lowercase SHA-256 hex digest."""
     return (
         isinstance(value, str)
         and len(value) == 64
@@ -174,7 +176,11 @@ def receipt_from_storage(value: object) -> CoverageReceipt | None:
         value.get("floor_hash"),
         value.get("rooms"),
     )
-    if not _is_hash(session) or not _is_hash(floor) or not isinstance(rooms, list):
+    if (
+        not is_sha256_hex(session)
+        or not is_sha256_hex(floor)
+        or not isinstance(rooms, list)
+    ):
         return None
     if not 1 <= len(rooms) <= _MAX_ROOMS:
         return None
@@ -188,7 +194,7 @@ def receipt_from_storage(value: object) -> CoverageReceipt | None:
             room.get("goals_hash"),
             room.get("coverage_setting"),
         )
-        if not _is_hash(region) or not _is_hash(goals) or region in seen:
+        if not is_sha256_hex(region) or not is_sha256_hex(goals) or region in seen:
             return None
         if not isinstance(setting, str) or setting not in CoverageSetting:
             return None

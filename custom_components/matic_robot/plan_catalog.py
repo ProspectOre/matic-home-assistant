@@ -33,7 +33,7 @@ from .cadence import (
     CoverageCadenceRequiresVacuumError,
     normalize_cadence_policy,
 )
-from .client import MAX_FLOOR_PLAN_BOUNDARY_POINTS, FloorPlan
+from .client import MAX_FLOOR_PLAN_BOUNDARY_POINTS, FloorPlan, is_sha256_hex
 from .const import (
     MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
     MAX_ROOM_SEQUENCE_SIZE,
@@ -460,14 +460,6 @@ class PlanCatalog:
         )
         room_identities = room_identities or {}
 
-        def valid_binding_token(value: object) -> bool:
-            """Accept only tokens produced by the native binding helpers."""
-            return (
-                isinstance(value, str)
-                and len(value) == 64
-                and all(char in "0123456789abcdef" for char in value)
-            )
-
         for raw_room in saved_plan.get("rooms", []):
             if not isinstance(raw_room, Mapping):
                 raise ValueError("plan contains an invalid room")
@@ -568,9 +560,9 @@ class PlanCatalog:
                 )
                 if active_shared:
                     bound_identity = room_identities.get(room_id)
-                    has_verified_binding = valid_binding_token(
-                        floor_token
-                    ) and valid_binding_token(bound_identity)
+                    has_verified_binding = is_sha256_hex(floor_token) and is_sha256_hex(
+                        bound_identity
+                    )
                     schedule_identity = (
                         schedule.get("identity")
                         if isinstance(schedule, Mapping)
@@ -589,12 +581,12 @@ class PlanCatalog:
                     previously_bound_shared_room = (
                         isinstance(old_policy, Mapping)
                         and old_policy.get("scope") == "shared"
-                        and valid_binding_token(inherited.get("cadence_identity"))
+                        and is_sha256_hex(inherited.get("cadence_identity"))
                         and inherited.get("cadence_identity") == schedule_identity
                     )
                     schedule_is_bound = (
-                        valid_binding_token(schedule_identity)
-                        and valid_binding_token(schedule_floor)
+                        is_sha256_hex(schedule_identity)
+                        and is_sha256_hex(schedule_floor)
                         and floor_token is None
                         and bound_identity is None
                         and previously_bound_shared_room

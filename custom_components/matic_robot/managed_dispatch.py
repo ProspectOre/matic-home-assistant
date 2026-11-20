@@ -146,7 +146,7 @@ async def _async_dispatch_leg_command(
     area = rooms if isinstance(rooms, AreaLeg) else None
     leg = () if isinstance(rooms, AreaLeg) else tuple(rooms)
     if floor_is_current is not None and not floor_is_current():
-        raise managed_run._validation_error(
+        raise managed_run.validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     history_baseline = await observation._async_session_history_baseline(
@@ -183,7 +183,7 @@ async def _async_dispatch_leg_command(
     ):
         raise RoomTakenOverError("The native task changed during the handoff boundary")
     if floor_is_current is not None and not floor_is_current():
-        raise managed_run._validation_error(
+        raise managed_run.validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     managed_session_id = uuid4()
@@ -219,7 +219,7 @@ async def _async_dispatch_leg_command(
         # arrive immediately after the robot accepts it.
         await on_claim(str(managed_session_id))
         if floor_is_current is not None and not floor_is_current():
-            raise managed_run._validation_error(
+            raise managed_run.validation_error(
                 "The robot's room map is unavailable", "room_plan_unavailable"
             )
     if on_dispatch is not None:
@@ -478,7 +478,7 @@ async def _ensure_stop_settled(
         entity_id=entity_id,
     ):
         return
-    raise managed_run._validation_error(
+    raise managed_run.validation_error(
         "The robot is stopping; wait until it docks",
         "robot_stop_pending",
     )

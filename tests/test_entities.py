@@ -816,8 +816,8 @@ def test_room_statistics_apply_newer_verified_plan_history() -> None:
     duration.async_write_ha_state = MagicMock()
     last_cleaned.async_write_ha_state = MagicMock()
 
-    duration._async_history_updated()
-    last_cleaned._async_history_updated()
+    duration._handle_plan_data_update()
+    last_cleaned._handle_plan_data_update()
 
     assert duration.native_value == 510
     assert last_cleaned.native_value is not None
@@ -1501,18 +1501,18 @@ async def test_saved_plan_select_and_native_button() -> None:
         domain="vacuum", platform="matic_robot", entity_id="vacuum.test_robot"
     )
     with (
-        patch("custom_components.matic_robot.button.er.async_get"),
+        patch("custom_components.matic_robot.occupancy.er.async_get"),
         patch(
-            "custom_components.matic_robot.button.er.async_entries_for_config_entry",
+            "custom_components.matic_robot.occupancy.er.async_entries_for_config_entry",
             return_value=[registry_entry],
         ),
     ):
         assert plan_button._vacuum_entity_id() == "vacuum.test_robot"
 
     with (
-        patch("custom_components.matic_robot.button.er.async_get"),
+        patch("custom_components.matic_robot.occupancy.er.async_get"),
         patch(
-            "custom_components.matic_robot.button.er.async_entries_for_config_entry",
+            "custom_components.matic_robot.occupancy.er.async_entries_for_config_entry",
             return_value=[],
         ),
         pytest.raises(HomeAssistantError, match="unavailable"),
@@ -1585,17 +1585,17 @@ async def test_custom_area_select_and_native_button() -> None:
         domain="vacuum", platform="matic_robot", entity_id="vacuum.test_robot"
     )
     with (
-        patch("custom_components.matic_robot.button.er.async_get"),
+        patch("custom_components.matic_robot.occupancy.er.async_get"),
         patch(
-            "custom_components.matic_robot.button.er.async_entries_for_config_entry",
+            "custom_components.matic_robot.occupancy.er.async_entries_for_config_entry",
             return_value=[registry_entry],
         ),
     ):
         assert area_button._vacuum_entity_id() == "vacuum.test_robot"
     with (
-        patch("custom_components.matic_robot.button.er.async_get"),
+        patch("custom_components.matic_robot.occupancy.er.async_get"),
         patch(
-            "custom_components.matic_robot.button.er.async_entries_for_config_entry",
+            "custom_components.matic_robot.occupancy.er.async_entries_for_config_entry",
             return_value=[],
         ),
         pytest.raises(HomeAssistantError, match="unavailable"),

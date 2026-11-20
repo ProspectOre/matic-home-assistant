@@ -11,7 +11,7 @@ from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .cadence import CoverageCadenceRequiresVacuumError
-from .client import CleaningMode, CoverageSetting
+from .client import CleaningMode, CoverageSetting, is_sha256_hex
 from .http import (
     PLANS_API_URL,
     PRIVATE_NO_STORE_HEADERS,
@@ -436,11 +436,7 @@ class MaticPlansView(HomeAssistantView):
             token = runtime.cleaning_plans.cadence.shared_cadence_delete_token(
                 serial_number, room.id
             )
-            if (
-                isinstance(token, str)
-                and len(token) == 64
-                and all(char in "0123456789abcdef" for char in token)
-            ):
+            if is_sha256_hex(token):
                 workspace_room_projection["shared_cadence_delete_token"] = token
             cadence = cadence_state(
                 "quick_clean",

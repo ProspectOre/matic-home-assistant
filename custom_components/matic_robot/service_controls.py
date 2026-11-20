@@ -15,7 +15,7 @@ from . import service_context as context
 from .client import MaticError, QueueAction
 from .managed_dispatch import _ensure_stop_settled
 from .managed_run import (
-    _validation_error,
+    validation_error,
 )
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .room_coherence import current_floor_plan as _current_floor_plan
@@ -127,7 +127,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                 manager.control.motion_generation(serial_number)
                 != expected_motion_generation
             ):
-                raise _validation_error(
+                raise validation_error(
                     "The cleaning request was superseded before it could start",
                     "robot_command_failed",
                 )
@@ -135,7 +135,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                 manager.control.stop_request_generation(serial_number)
                 != request_stop_generation
             ):
-                raise _validation_error(
+                raise validation_error(
                     "The cleaning request was superseded before it could start",
                     "robot_command_failed",
                 )
@@ -155,7 +155,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
         try:
             area = manager.catalog.area(serial_number, call.data["area"])
         except KeyError as err:
-            raise _validation_error(
+            raise validation_error(
                 f"Unknown Matic custom area: {call.data['area']}",
                 "unknown_area",
                 {"area": str(call.data["area"])},
@@ -181,7 +181,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
             try:
                 current_area = manager.catalog.area(serial_number, call.data["area"])
             except KeyError as err:
-                raise _validation_error(
+                raise validation_error(
                     f"Unknown Matic custom area: {call.data['area']}",
                     "unknown_area",
                     {"area": str(call.data["area"])},
@@ -213,7 +213,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                     coverage_setting=coverage,
                 )
             except MaticError as err:
-                raise _validation_error(
+                raise validation_error(
                     "The robot could not start the custom-area clean",
                     "robot_command_failed",
                 ) from err
