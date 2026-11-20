@@ -31,13 +31,17 @@ ALARM = "alarm_control_panel.home"
 AUTOMATION = "automation.blueprint_under_test"
 TAG = f"matic_photo_{AUTOMATION}"
 SEND_HOME = f"MATIC_SEND_HOME_{AUTOMATION}"
+SEND_ANOTHER = f"MATIC_SEND_ANOTHER_{AUTOMATION}"
 URL = "/api/matic_robot/photo/e/preview/p1?authSig=signed"
 OPEN = "/matic-map?entry=e&photo=p1"
 TAKEN = "2026-11-20T09:01:00+00:00"
 PHONE = {"group": "matic_photo_check", "url": "/matic-map", "clickAction": "/matic-map"}
-# A photo opens itself in Matic Map, on a tap or its button.
+# A photo opens itself in Matic Map, on a tap or its button, or asks for another.
 SHOWN = {"url": OPEN, "clickAction": OPEN}
-OPEN_PHOTO = [{"action": "URI", "title": "Open photo", "uri": OPEN}]
+PHOTO_BUTTONS = [
+    {"action": "URI", "title": "Open photo", "uri": OPEN},
+    {"action": SEND_ANOTHER, "title": "Send another"},
+]
 
 
 @pytest.fixture(autouse=True)
@@ -169,6 +173,7 @@ async def test_phone_hears_at_once_then_sees_the_photo_in_place(
         "stops": [{"viewpoint": "Front door"}],
         "report_failures": True,
         "full_resolution": False,
+        "skip_cooldown": False,
     }
     on_the_way, taken = calls.notified
     assert on_the_way == {
@@ -184,7 +189,7 @@ async def test_phone_hears_at_once_then_sees_the_photo_in_place(
     assert taken == {
         "title": "Front door",
         "message": "Front door, 1:01 AM",
-        "data": {**PHONE, **SHOWN, "tag": TAG, "image": URL, "actions": OPEN_PHOTO},
+        "data": {**PHONE, **SHOWN, "tag": TAG, "image": URL, "actions": PHOTO_BUTTONS},
     }
     assert all(len(sent["message"]) < 80 for sent in calls.notified)
 
@@ -209,6 +214,7 @@ async def test_ai_answer_is_the_caption_and_urgent_breaks_through(
         "stops": [{"viewpoint": "Front door"}],
         "report_failures": True,
         "full_resolution": True,
+        "skip_cooldown": False,
         "question": "Is the door open?",
         "ai_task_entity_id": "ai_task.home",
     }
@@ -346,3 +352,61 @@ async def test_alerts_during_a_check_or_its_cooldown_are_ignored(
 
     assert len(calls.tours) == 1
     assert len(calls.notified) == 2
+
+
+async def test_send_another_looks_again_during_the_cooldown(
+    hass: HomeAssistant,
+) -> None:
+    calls = await setup_blueprint(hass, photos=[photo()], cooldown=3600)
+    hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
+    await settle()
+
+    hass.bus.async_fire("mobile_app_notification_action", {"action": "OTHER"})
+    hass.bus.async_fire("mobile_app_notification_action", {"action": SEND_ANOTHER})
+    await settle()
+
+    # Only its own button counts, and the tour skips the integration's cooldown.
+    first, again = calls.tours
+    assert (first.data["skip_cooldown"], again.data["skip_cooldown"]) == (False, True)
+    on_the_way, taken = calls.notified[2:]
+    assert on_the_way["message"] == "Matic is on its way to look."
+    # No sensor turned on, so the place names the notification.
+    assert (taken["title"], taken["data"]["tag"]) == ("Front door", TAG)
+
+
+async def test_send_another_while_the_robot_is_busy_says_why(
+    hass: HomeAssistant,
+) -> None:
+    calls = await setup_blueprint(hass, photos=[photo()], cooldown=3600)
+    hass.states.async_set(VACUUM, "cleaning")
+
+    hass.bus.async_fire("mobile_app_notification_action", {"action": SEND_ANOTHER})
+    await settle()
+
+    assert calls.tours == []
+    assert [sent["message"] for sent in calls.notified] == [
+        "Matic is cleaning, so the photo check was skipped."
+    ]
+    # A pressed button doesn't hold back the next alert.
+    hass.states.async_set(VACUUM, "docked")
+    hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
+    await settle()
+    assert len(calls.tours) == 1
+
+
+async def test_repeated_send_another_presses_keep_the_buttons_working(
+    hass: HomeAssistant,
+) -> None:
+    calls = await setup_blueprint(hass, photos=[photo()], cooldown=3600)
+    hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
+    await settle()
+
+    # More presses than the automation's ten parallel runs.
+    for _ in range(12):
+        hass.bus.async_fire("mobile_app_notification_action", {"action": SEND_ANOTHER})
+        await settle()
+    hass.bus.async_fire("mobile_app_notification_action", {"action": SEND_HOME})
+    await settle()
+
+    assert len(calls.tours) == 13
+    assert len(calls.docked) == 1

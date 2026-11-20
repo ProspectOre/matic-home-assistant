@@ -95,6 +95,7 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
                     entity_id,
                     stops,
                     full_resolution=call.data["full_resolution"],
+                    skip_cooldown=call.data["skip_cooldown"],
                     question=call.data.get("question"),
                     ai_task_entity_id=call.data.get("ai_task_entity_id"),
                     context=call.context,

@@ -149,6 +149,7 @@ async def async_run_photo_tour(
     stops: list[TourStop],
     *,
     full_resolution: bool = False,
+    skip_cooldown: bool = False,
     question: str | None = None,
     ai_task_entity_id: str | None = None,
     context: Context | None = None,
@@ -166,6 +167,7 @@ async def async_run_photo_tour(
             entity_id,
             stops,
             full_resolution=full_resolution,
+            skip_cooldown=skip_cooldown,
             question=question,
             ai_task_entity_id=ai_task_entity_id,
             context=context,
@@ -188,6 +190,7 @@ async def _async_run_tour(
     stops: list[TourStop],
     *,
     full_resolution: bool,
+    skip_cooldown: bool,
     question: str | None,
     ai_task_entity_id: str | None,
     context: Context | None,
@@ -249,7 +252,7 @@ async def _async_run_tour(
             ),
         )
         elapsed = monotonic() - _last_tour_started.get(entry.entry_id, -float("inf"))
-        if elapsed < cooldown:
+        if elapsed < cooldown and not skip_cooldown:
             raise _error(
                 "photo_tour_cooldown",
                 seconds=str(max(1, int(cooldown - elapsed))),

@@ -52,6 +52,10 @@ run_photo_tour:
       default: false
       selector:
         boolean:
+    skip_cooldown:
+      default: false
+      selector:
+        boolean:
     question:
       required: false
       description: >-
