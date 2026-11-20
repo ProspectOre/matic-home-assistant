@@ -22,10 +22,11 @@ stable release on `main`.
 
 `uv run scripts/check.py` runs the formatter, linter, type checker, layer and
 size rules, privacy scan, and the tests whose imports lead to a changed file.
-`uv run ruff format .` fixes formatting. The layer rules are listed in
-[AGENTS.md](AGENTS.md#layers); code outside the robot client imports it from
-`client/__init__.py`, so export a new client name there. Put tests of the
-client alone in `tests/client`; the check reruns them with Home Assistant blocked.
+`uv run ruff format .` fixes formatting. The layer, size and unused-name rules
+are listed in [AGENTS.md](AGENTS.md#layers); code outside the robot client
+imports it from `client/__init__.py`, so export a new client name there. Put
+tests of the client alone in `tests/client`; the check reruns them with Home
+Assistant blocked.
 
 CI runs the same command with `--all`, which runs every test. On a pull request
 it then requires a test to run every line and take every branch that your

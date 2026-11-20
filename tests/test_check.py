@@ -1,7 +1,8 @@
-"""Layer, size, test-selection and coverage rules of the check command."""
+"""Layer, size, unused-name, test-selection and coverage rules of the check."""
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -130,7 +131,7 @@ def test_plan_core_module_that_no_longer_exists_is_reported(integration: Path) -
 @pytest.mark.parametrize(
     ("sizes", "baseline", "violations"),
     [
-        ({"a.py": check.CEILING}, {}, []),
+        ({"a.py": check.FILES.ceiling}, {}, []),
         ({"old.py": 1500}, {"old.py": 1500}, []),
         ({"old.py": 1200}, {"old.py": 1500}, []),
         ({"a.py": 1001}, {}, ["a.py: 1001 lines, over the 1000 ceiling; split it"]),
@@ -143,7 +144,7 @@ def test_plan_core_module_that_no_longer_exists_is_reported(integration: Path) -
             {"old.py": 900},
             {"old.py": 1500, "gone.py": 1100},
             [
-                f"{check.BASELINE}: {name} is within the ceiling or gone; "
+                f"{check.FILES.record}: {name} is within the ceiling or gone; "
                 "delete its line"
                 for name in ("gone.py", "old.py")
             ],
@@ -154,6 +155,200 @@ def test_file_sizes_are_held_to_the_ceiling_or_their_record(
     sizes: dict[str, int], baseline: dict[str, int], violations: list[str]
 ) -> None:
     assert check.size_violations(sizes, baseline) == violations
+
+
+RUN = f"{PACKAGE}/run.py::Runner.run"
+LONG = check.FUNCTIONS.ceiling + 50
+
+
+@pytest.mark.parametrize(
+    ("lengths", "baseline", "violations"),
+    [
+        ({RUN: check.FUNCTIONS.ceiling}, {}, []),
+        ({RUN: LONG}, {RUN: LONG}, []),
+        ({RUN: LONG}, {}, [f"{RUN}: {LONG} lines, over the 150 ceiling; split it"]),
+        (
+            {RUN: LONG + 1},
+            {RUN: LONG},
+            [
+                f"{RUN}: {LONG + 1} lines, over its recorded {LONG}; "
+                "put additions in a new function"
+            ],
+        ),
+        (
+            {RUN: LONG - 1},
+            {RUN: LONG},
+            [f"{check.FUNCTIONS.record}: {RUN} is down to {LONG - 1} lines; record it"],
+        ),
+        (
+            {RUN: check.FUNCTIONS.ceiling},
+            {RUN: LONG, "gone.py::run": LONG},
+            [
+                f"{check.FUNCTIONS.record}: {name} is within the ceiling or gone; "
+                "delete its line"
+                for name in (RUN, "gone.py::run")
+            ],
+        ),
+    ],
+)
+def test_function_lengths_are_held_to_the_ceiling_and_their_exact_record(
+    lengths: dict[str, int], baseline: dict[str, int], violations: list[str]
+) -> None:
+    assert check.size_violations(lengths, baseline, check.FUNCTIONS) == violations
+
+
+def test_functions_are_measured_under_their_qualified_names() -> None:
+    source = """
+@decorated
+def outer():
+    def inner():
+        return 1
+
+    return inner
+
+
+class Runner:
+    async def run(self):
+        if self:
+            def step():
+                return (
+                    1
+                )
+
+if FAST:
+    def choice(): return 1
+else:
+    def choice():
+        return 2
+"""
+
+    assert check.function_lengths({"a.py": ast.parse(source)}) == {
+        "a.py::outer": 5,
+        "a.py::outer.inner": 2,
+        "a.py::Runner.run": 6,
+        "a.py::Runner.run.step": 4,
+        "a.py::choice": 2,
+    }
+
+
+USED = {
+    f"{PACKAGE}/__init__.py": """
+from homeassistant.helpers.storage import Store
+from . import plans
+from .plans import renamed as _renamed
+
+__all__ = ["exported"]
+PARALLEL_UPDATES = 0
+LIMIT: int = 3
+
+
+async def async_setup_entry():
+    return getattr(plans, "named_in_text")(_renamed, LIMIT, Saved, Flow, Local)
+
+
+class Saved(Store[dict]):
+    def _async_migrate_func(self): ...
+
+
+class Flow(Base, domain="matic"):
+    pass
+
+
+class Local(plans.Saved):
+    def reached_through_home_assistant(self): ...
+
+    def __repr__(self): ...
+""",
+    f"{PACKAGE}/plans.py": """
+from homeassistant.helpers import storage
+
+def exported(): ...
+def named_in_text(): ...
+def renamed(): ...
+def called_by_a_script(): ...
+
+
+class Saved(storage.Store):
+    pass
+""",
+}
+
+
+def _test_only(files: dict[str, str], kept: dict[str, str] | None = None) -> list[str]:
+    trees = {name: ast.parse(source) for name, source in (USED | files).items()}
+    script = ast.parse("called_by_a_script()")
+    return check.unused_violations(trees, [script], kept or {})
+
+
+def test_names_reached_by_reference_or_by_home_assistant_pass() -> None:
+    assert _test_only({}) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "names"),
+    [
+        ("def helper(): ...\n", ["helper"]),
+        ("LIMIT_BYTES = 1\nDELAY: float = 2.0\n", ["DELAY", "LIMIT_BYTES"]),
+        ("class Plain:\n    def unused(self): ...\nPlain()\n", ["Plain.unused"]),
+        ("class Unused:\n    def method(self): ...\n", ["Unused", "Unused.method"]),
+        # Text that mentions a name does not use it.
+        (
+            'def helper():\n    """Call helper."""\n    return "see helper"\n',
+            ["helper"],
+        ),
+        # A base class of the integration's own does not reach its subclass.
+        (
+            "class Store:\n    pass\n"
+            "class Mine(Store):\n    def unused(self): ...\nMine()\n",
+            ["Mine.unused"],
+        ),
+    ],
+)
+def test_name_only_tests_refer_to_is_reported(source: str, names: list[str]) -> None:
+    path = f"{PACKAGE}/store.py"
+
+    assert _test_only({path: source}) == [
+        f"{path}::{name}: only tests refer to it; delete it and their uses of it"
+        for name in names
+    ]
+
+
+def test_kept_test_only_names_pass_until_they_are_used_or_gone() -> None:
+    path = f"{PACKAGE}/store.py"
+    kept = {f"{path}::helper": "a fixture builder", f"{path}::gone": "was needed"}
+
+    assert _test_only({path: "def helper(): ...\n"}, kept) == [
+        f"scripts/check.py: TEST_ONLY lists {path}::gone, which is used or gone"
+    ]
+
+
+def test_structure_rules_read_the_checkout_and_its_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = "    pass\n" * check.FUNCTIONS.ceiling
+    _write(
+        tmp_path,
+        {
+            f"{PACKAGE}/run.py": f"def run():\n{body}\n\nrun()\n",
+            f"{PACKAGE}/old.py": f"def old():\n{body}\n\nold()\n",
+            f"{PACKAGE}/client/proto/pb2.py": f"def generated():\n{body}",
+            "scripts/tool.py": "used_by_a_script()\n",
+            f"{PACKAGE}/plans.py": "def used_by_a_script(): ...\ndef unused(): ...\n",
+            str(check.FILES.record): "big.py 1200\n",
+            str(check.FUNCTIONS.record): f"{PACKAGE}/old.py::old 151\n",
+        },
+    )
+    monkeypatch.setattr(check, "ROOT", tmp_path)
+    monkeypatch.setattr(check, "layer_violations", lambda: ["a layer"])
+    monkeypatch.setattr(check, "_code_sizes", lambda: {"big.py": 1201})
+
+    assert check.structure_violations() == [
+        "a layer",
+        "big.py: 1201 lines, over its recorded 1200; put additions in a new file",
+        f"{PACKAGE}/run.py::run: 151 lines, over the 150 ceiling; split it",
+        f"{PACKAGE}/plans.py::unused: only tests refer to it; "
+        "delete it and their uses of it",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -380,9 +575,7 @@ def test_main_fails_when_any_check_fails(
     monkeypatch.setattr(check, "changed_files", lambda base: changed)
     monkeypatch.setattr(check, "changed_lines", lambda base: {"new.py": {3}})
     monkeypatch.setattr(check, "tests_for", lambda paths: [str(p) for p in paths])
-    monkeypatch.setattr(check, "layer_violations", lambda: violations)
-    monkeypatch.setattr(check, "_code_sizes", dict)
-    monkeypatch.setattr(check, "_baseline", dict)
+    monkeypatch.setattr(check, "structure_violations", lambda: violations)
     monkeypatch.setattr(
         check, "build_commands", lambda: None if failing == "no Node.js" else [BUILD]
     )
