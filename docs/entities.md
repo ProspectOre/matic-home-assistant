@@ -62,10 +62,10 @@ including ones taken from the Matic app, as a WebP image. Its state is the
 capture time, so an automation can trigger on a state change of the image
 entity to act on each new photo, for example to send it in a phone
 notification with `image: /api/image_proxy/image.matic_latest_photo`, or save
-it with `image.snapshot`. The `photo_count` attribute counts the photos seen on
-the robot. Home Assistant keeps the 16 newest in memory for
-[photo patrol](actions.md#photo-patrol) links. A photo deleted
-in the Matic app stays here until the integration reloads.
+it with `image.snapshot`. The `photo_count` attribute counts the photos saved
+in Home Assistant, which keeps them on disk for up to 30 days and 500 MB (see
+[photo tours](photo-tours.md)). A photo deleted in the Matic app stays saved
+here.
 
 ## Maintenance
 

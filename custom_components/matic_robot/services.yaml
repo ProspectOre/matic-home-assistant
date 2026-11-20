@@ -33,15 +33,17 @@ go_to_room:
       selector:
         text:
 
-photo_patrol:
+run_photo_tour:
   target: *vacuum_target
   fields:
-    rooms:
+    stops:
       required: true
-      example: [Kitchen, Living room]
+      example:
+        - room: Kitchen
+        - viewpoint: Front door
+          look_around: 4
       selector:
-        text:
-          multiple: true
+        object:
     full_resolution:
       default: false
       selector:
@@ -63,6 +65,54 @@ photo_patrol:
       selector:
         entity:
           domain: ai_task
+
+save_photo_viewpoint:
+  target: *vacuum_target
+  fields:
+    name:
+      required: true
+      example: Front door
+      selector:
+        text:
+    x:
+      required: false
+      example: 3.2
+      selector:
+        number:
+          min: -10000
+          max: 10000
+          step: 0.01
+          unit_of_measurement: m
+          mode: box
+    y:
+      required: false
+      example: 0.5
+      selector:
+        number:
+          min: -10000
+          max: 10000
+          step: 0.01
+          unit_of_measurement: m
+          mode: box
+    heading:
+      required: false
+      example: 90
+      selector:
+        number:
+          min: -360
+          max: 360
+          step: 1
+          unit_of_measurement: "°"
+          mode: box
+
+delete_photo_viewpoint:
+  target: *vacuum_target
+  fields:
+    viewpoint:
+      required: true
+      example: Front door
+      selector:
+        text:
 
 skip_room:
   target: *vacuum_target

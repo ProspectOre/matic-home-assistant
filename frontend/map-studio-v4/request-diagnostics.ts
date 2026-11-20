@@ -10,6 +10,7 @@ export const BACKEND_REQUEST_OPERATIONS = [
   "areaSave",
   "areaDelete",
   "runs",
+  "photos",
   "wifiSignal",
   "carpetVents",
 ] as const;

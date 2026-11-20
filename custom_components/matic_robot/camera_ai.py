@@ -10,7 +10,6 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
-from .client import RobotPhoto
 from .const import DOMAIN
 from .media_source import PhotoAttachmentUnavailable, photo_attachment_source
 
@@ -38,7 +37,8 @@ AI_DISCLOSURE = (
 async def async_answer_about_photo(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
-    photo: RobotPhoto,
+    photo_id: str,
+    image: bytes,
     question: str,
     ai_task_entity_id: str,
     context: Context | None,
@@ -47,25 +47,25 @@ async def async_answer_about_photo(
     """Send one immutable photo snapshot to the explicitly selected AI entity."""
     question = question.strip()
     if not question or len(question) > MAX_QUESTION_LENGTH:
-        raise _error("photo_patrol_ai_question_invalid")
+        raise _error("photo_tour_ai_question_invalid")
     if not ai_task_entity_id.startswith("ai_task."):
-        raise _error("photo_patrol_ai_unavailable")
+        raise _error("photo_tour_ai_unavailable")
 
     source = photo_attachment_source(hass)
     if attachment_generation is None:
         try:
             attachment_generation = source.capture_entry_generation(entry.entry_id)
         except PhotoAttachmentUnavailable:
-            raise _error("photo_patrol_ai_unavailable") from None
+            raise _error("photo_tour_ai_unavailable") from None
     try:
         media_source_id = await source.async_stage_photo(
             entry.entry_id,
-            photo.photo_id,
-            photo.image,
+            photo_id,
+            image,
             expected_generation=attachment_generation,
         )
     except PhotoAttachmentUnavailable:
-        raise _error("photo_patrol_ai_unavailable") from None
+        raise _error("photo_tour_ai_unavailable") from None
     try:
         result = await _async_generate_data(
             hass,
@@ -85,7 +85,7 @@ async def async_answer_about_photo(
     except Exception:
         # Provider exceptions may contain prompts or image-derived content.
         # Return a generic integration error and never log their details.
-        raise _error("photo_patrol_ai_failed") from None
+        raise _error("photo_tour_ai_failed") from None
     finally:
         await source.async_release(media_source_id)
 
@@ -97,7 +97,7 @@ async def async_answer_about_photo(
         or not summary.strip()
         or len(summary) > MAX_SUMMARY_LENGTH
     ):
-        raise _error("photo_patrol_ai_failed")
+        raise _error("photo_tour_ai_failed")
     return {
         "problem": data["problem"],
         "summary": summary.strip(),
@@ -125,11 +125,11 @@ def validate_ai_task_entity(hass: HomeAssistant, entity_id: str) -> None:
     component = hass.data.get(AI_TASK_DATA_COMPONENT)
     entity = component.get_entity(entity_id) if component is not None else None
     if entity is None:
-        raise _error("photo_patrol_ai_unavailable")
+        raise _error("photo_tour_ai_unavailable")
     if AITaskEntityFeature.GENERATE_DATA not in entity.supported_features:
-        raise _error("photo_patrol_ai_unavailable")
+        raise _error("photo_tour_ai_unavailable")
     if AITaskEntityFeature.SUPPORT_ATTACHMENTS not in entity.supported_features:
-        raise _error("photo_patrol_ai_unavailable")
+        raise _error("photo_tour_ai_unavailable")
 
 
 def _error(key: str) -> HomeAssistantError:

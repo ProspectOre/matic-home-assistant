@@ -67,6 +67,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   nextSchedule: null,
   smartStop: null,
   trail: null,
+  photoMarks: null,
   runThumbnails: {},
   pageActive: true,
   optionalUiReady: false,

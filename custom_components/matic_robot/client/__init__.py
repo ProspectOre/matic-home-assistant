@@ -12,6 +12,7 @@ from .commands import (
     QueueAction,
     QueueChangeError,
     UserCommand,
+    encode_posture,
 )
 from .coverage_receipts import (
     CoverageReceipt,
@@ -93,7 +94,7 @@ from .snaps import RobotPhoto, decode_instamatic_snap
 from .supervisor import WatchStatus
 from .tls import PeerIdentity, async_fetch_peer_certificate, validate_certificate
 from .wire import uuid_string, wire_shape
-from .zones import zone_overlaps_circle, zone_overlaps_polygon
+from .zones import room_at, zone_overlaps_circle, zone_overlaps_polygon
 
 __all__ = [
     "HERMES_ENDPOINTS",
@@ -162,6 +163,7 @@ __all__ = [
     "decode_slam_semantic_tile",
     "decode_slam_structure_tile",
     "decode_slam_tile",
+    "encode_posture",
     "is_sha256_hex",
     "mission_token",
     "native_session_hash",
@@ -172,6 +174,7 @@ __all__ = [
     "receipt_from_storage",
     "resolve_robot_map_position",
     "robot_location_source",
+    "room_at",
     "room_name_key",
     "token_request",
     "uuid_string",

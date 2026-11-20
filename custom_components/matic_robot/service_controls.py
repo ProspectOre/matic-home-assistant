@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, cast
+from typing import Any
 
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
-    ServiceResponse,
-    SupportsResponse,
 )
-from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
 from .client import MaticError, QueueAction
@@ -20,7 +17,6 @@ from .managed_dispatch import _ensure_stop_settled
 from .managed_run import (
     validation_error,
 )
-from .photo_patrol import async_photo_patrol
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .service_context import ServiceRuntime, register_robot_action
@@ -30,7 +26,6 @@ from .service_names import (
     SERVICE_CLEAN_ROOM_AGAIN,
     SERVICE_CLEAN_ROOM_NEXT,
     SERVICE_GO_TO_ROOM,
-    SERVICE_PHOTO_PATROL,
     SERVICE_SKIP_ROOM,
 )
 from .service_plans import (
@@ -41,7 +36,6 @@ from .service_schemas import (
     CLEAN_ROOM_AGAIN_SERVICE_SCHEMA,
     CLEAN_SERVICE_SCHEMA,
     GO_TO_ROOM_SERVICE_SCHEMA,
-    PHOTO_PATROL_SERVICE_SCHEMA,
 )
 
 
@@ -85,35 +79,6 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
 
     register_robot_action(
         hass, SERVICE_GO_TO_ROOM, async_go_to_room, GO_TO_ROOM_SERVICE_SCHEMA
-    )
-
-    async def async_photo_patrol_call(
-        call: ServiceCall, entity_ids: list[str]
-    ) -> ServiceResponse:
-        """Photograph each room in turn with every selected robot."""
-        robots: list[JsonValueType] = []
-        for entity_id in entity_ids:
-            photos = await async_photo_patrol(
-                hass,
-                context._entry_for_entity(hass, entity_id),
-                entity_id,
-                call.data["rooms"],
-                full_resolution=call.data["full_resolution"],
-                question=call.data.get("question"),
-                ai_task_entity_id=call.data.get("ai_task_entity_id"),
-                context=call.context,
-            )
-            robots.append(
-                {"entity_id": entity_id, "photos": cast(list[JsonValueType], photos)}
-            )
-        return {"robots": robots}
-
-    register_robot_action(
-        hass,
-        SERVICE_PHOTO_PATROL,
-        async_photo_patrol_call,
-        PHOTO_PATROL_SERVICE_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
     )
 
     def queue_handler(

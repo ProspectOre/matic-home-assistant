@@ -73,7 +73,7 @@ async def prepare_api(hass: HomeAssistant, tmp_path: Path) -> list[ServiceCall]:
     ):
         hass.services.async_register(domain, service, record)
 
-    async def photo_patrol(call: ServiceCall) -> ServiceResponse:
+    async def run_photo_tour(call: ServiceCall) -> ServiceResponse:
         calls.append(call)
         photos = [
             {
@@ -84,14 +84,14 @@ async def prepare_api(hass: HomeAssistant, tmp_path: Path) -> list[ServiceCall]:
                     "summary": "A wet patch is visible.",
                 },
             }
-            for room in call.data["rooms"]
+            for room in (stop["room"] for stop in call.data["stops"])
         ]
         return {"robots": [{"entity_id": VACUUM, "photos": photos}]}
 
     hass.services.async_register(
         "matic_robot",
-        "photo_patrol",
-        photo_patrol,
+        "run_photo_tour",
+        run_photo_tour,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.states.async_set(VACUUM, "docked")
@@ -260,12 +260,12 @@ async def test_import_save_reload_and_source_trigger(
         assert calls[-1].data["action"] == "delivered"
     elif filename == "photo_on_alert.yaml":
         assert [(call.domain, call.service) for call in calls] == [
-            ("matic_robot", "photo_patrol"),
+            ("matic_robot", "run_photo_tour"),
             ("notify", "blueprint_test_phone"),
         ]
         assert calls[0].data == {
             "entity_id": [VACUUM],
-            "rooms": ["Kitchen"],
+            "stops": [{"room": "Kitchen"}],
             "full_resolution": False,
             "question": (
                 "Is there a safety problem visible, such as water, smoke or an open "
