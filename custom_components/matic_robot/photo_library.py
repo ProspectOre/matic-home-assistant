@@ -161,6 +161,10 @@ class PhotoLibrary:
     def total_bytes(self) -> int:
         return sum(record.size for record in self._records.values())
 
+    @property
+    def records(self) -> tuple[PhotoRecord, ...]:
+        return tuple(self._records.values())
+
     def photo(self, photo_id: str) -> PhotoRecord | None:
         return self._records.get(photo_id)
 
