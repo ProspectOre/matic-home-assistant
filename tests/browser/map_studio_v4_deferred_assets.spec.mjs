@@ -159,7 +159,7 @@ test("first-map capture includes a script request still in flight at the marker"
 
 test("supported servers automatically load workspace push within the first-map gzip budget", async ({ page }) => {
   await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "packaged", workspacePush: true, userData: {} });
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged", userData: {} });
   await page.evaluate(() => import("/matic_icons.js"));
   await armFirstMapOpportunity(page, fixture.panelTag);
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
@@ -312,7 +312,7 @@ test("a failed current room catalog read has reload recovery instead of loading 
 test("push invalidation and periodic polling refresh the active clean room list without shortcuts", async ({ page }) => {
   await page.goto("/");
   const emptyShortcuts = { "matic_robot_home_shortcuts.synthetic-entry": { version: 2, pins: [], excluded: [] } };
-  const fixture = await installPanelFixture(page, { moduleSource: "typescript", workspacePush: true,
+  const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: emptyShortcuts });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
@@ -353,7 +353,7 @@ test("push invalidation and periodic polling refresh the active clean room list 
 
 test("a sent queue change stays pending across a catalog refresh and cannot be duplicated", async ({ page }) => {
   await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "typescript", workspacePush: true,
+  const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
@@ -396,7 +396,7 @@ test("a sent queue change stays pending across a catalog refresh and cannot be d
 
 test("a confirmed queue change remains visible during a live catalog refresh", async ({ page }) => {
   await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "typescript", workspacePush: true,
+  const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
@@ -432,7 +432,7 @@ test("a confirmed queue change remains visible during a live catalog refresh", a
 
 test("an equivalent refreshed room catalog still permits the sent queue result notice", async ({ page }) => {
   await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "typescript", workspacePush: true,
+  const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
@@ -581,7 +581,7 @@ test("a no-map queue fallback waits two seconds without loading workflows, then 
 
 test("a failed room catalog keeps its retry visible when the map is unavailable", async ({ page }) => {
   await page.goto("/");
-  const fixture = await installPanelFixture(page, { moduleSource: "typescript", workspacePush: true,
+  const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();

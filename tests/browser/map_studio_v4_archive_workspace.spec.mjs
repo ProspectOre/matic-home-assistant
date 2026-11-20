@@ -64,7 +64,7 @@ test.beforeEach(async ({ page }) => {
       },
     };
     const store = new WorkspaceStore();
-    const effects = new EffectController(store, backend, null, false);
+    const effects = new EffectController(store, backend);
     effects.sync({ userKey: "owner-a", entryKey: entry.entryId, vacuumEntityId: "vacuum.test", activity: "idle",
       host: { ...store.value.host, connected: true, administrator: true, robotConnected: true, robotCount: 1 },
       robots: [{ entryId: entry.entryId, label: "Synthetic robot" }], language: "en" });

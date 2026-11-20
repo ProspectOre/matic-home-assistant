@@ -276,7 +276,6 @@ CATALOG = {
     "entries": [
         {
             "entry_id": "entry",
-            "live_workspace_transport_enabled": True,
             "scene_url": "/api/matic_robot/slam_scene/entry",
             "history_url": "/api/matic_robot/slam_history/entry",
             "areas_url": "/api/matic_robot/areas/entry",
@@ -318,7 +317,6 @@ CATALOG = {
         },
         {
             "entry_id": "other",
-            "live_workspace_transport_enabled": True,
             "scene_url": "/api/matic_robot/slam_scene/other",
             "history_url": "/api/matic_robot/slam_history/other",
             "areas_url": "/api/matic_robot/areas/other",
@@ -363,7 +361,6 @@ CATALOG = {
 
 PROJECTION = {
     "entry_id": "entry",
-    "live_workspace_transport_enabled": True,
     "scene_url": "/api/matic_robot/slam_scene/entry",
     "history_url": "/api/matic_robot/slam_history/entry",
     "areas_url": "/api/matic_robot/areas/entry",

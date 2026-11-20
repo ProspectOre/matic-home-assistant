@@ -910,7 +910,6 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         "entries": [
             {
                 "entry_id": loaded.entry_id,
-                "live_workspace_transport_enabled": True,
                 "scene_url": f"/api/matic_robot/slam_scene/{loaded.entry_id}",
                 "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
                 "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",

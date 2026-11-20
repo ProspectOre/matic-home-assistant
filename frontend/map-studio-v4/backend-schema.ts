@@ -6,7 +6,6 @@
 /** One robot's map state, in the catalog and the workspace snapshot. */
 export interface CatalogEntry {
   readonly entry_id: string;
-  readonly live_workspace_transport_enabled: boolean;
   readonly scene_url: string;
   readonly history_url: string;
   readonly areas_url: string;

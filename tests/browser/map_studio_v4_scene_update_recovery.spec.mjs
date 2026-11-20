@@ -148,7 +148,7 @@ async function startUpdate(page, failure = null, { socket = true } = {}) {
       areas: async () => initial.resources.areas.value,
       dispose() {},
     };
-    const effects = new EffectController(store, backend, socket ? connection : null, socket);
+    const effects = new EffectController(store, backend, socket ? connection : null);
     const projection = {
       host: initial.host,
       activity: initial.activity,

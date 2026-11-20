@@ -202,7 +202,7 @@ class MaticMapPanelV4 extends LitElement {
     // host from before the detach.
     this.#projection = this.#project();
     this.#backend = new MaticBackend(() => this.hass);
-    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null, undefined, this.#poseMotion);
+    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null, this.#poseMotion);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
     this.#layerRestore = new LayerRestore(this.#store, this.#route);
