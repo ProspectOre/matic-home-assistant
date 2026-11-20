@@ -29,6 +29,7 @@ from .cadence import (
     cadence_snapshot,
     normalize_cadence_policy,
 )
+from .client import is_sha256_hex
 from .completion_ledger import reset_progress as _reset_completion_progress
 from .const import DOMAIN
 from .managed_run import validation_error
@@ -141,9 +142,7 @@ class PlanCadence:
         if (
             not isinstance(room_id, str)
             or not room_id
-            or not isinstance(room_identity, str)
-            or len(room_identity) != 64
-            or any(char not in "0123456789abcdef" for char in room_identity)
+            or not is_sha256_hex(room_identity)
         ):
             raise ValueError("current room identity is required")
         if limit is not None and (
@@ -659,10 +658,8 @@ class PlanCadence:
                         "shared room schedule no longer exists"
                     )
                 if (
-                    not isinstance(floor_token, str)
-                    or len(floor_token) != 64
-                    or not isinstance(identity, str)
-                    or len(identity) != 64
+                    not is_sha256_hex(floor_token)
+                    or not is_sha256_hex(identity)
                     or schedule.get("floor_token") != floor_token
                     or schedule.get("identity") != identity
                 ):

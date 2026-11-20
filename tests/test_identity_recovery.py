@@ -393,7 +393,7 @@ async def test_recovery_reports_rejected_and_expired_codes(
 ) -> None:
     async def request_credential(_hass, _user_id, passkey_exchange=None, **_kwargs):
         request = asyncio.create_task(passkey_exchange.async_request_passkey())
-        await passkey_exchange.async_wait_until_requested()
+        await passkey_exchange._requested.wait()
         if submit:
             passkey_exchange.submit(123456)
         else:

@@ -9437,7 +9437,6 @@ test.describe("plan primary action", () => {
       ["area_map_changed", "v4_preview_area_changed", "Can't run this plan until you review its custom areas on the current map."],
       // An enabled draft with a preview still paused: the preview is stale, so it is retried.
       ["plan_disabled", "v4_reason_run_plan_preview"],
-      ["preview_unavailable", "v4_reason_run_plan_preview"],
       ["coverage_requires_vacuum", "v4_reason_run_plan_preview"],
     ];
     for (const [blocker, reasonKey, reason] of cases) {

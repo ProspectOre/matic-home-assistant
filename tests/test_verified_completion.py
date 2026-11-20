@@ -28,6 +28,7 @@ from custom_components.matic_robot.plan_model import (
     room_cadence_identity,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import rotation_explanation
 
 GOLDEN = Path(__file__).parent / "fixtures" / "verified_completion_da40c75a.json"
 SERIAL = "serial"
@@ -92,7 +93,7 @@ def _projections(manager: CleaningPlanManager) -> object:
                 floor_token=plan_floor_token(GROUND),
                 room_identities={room.room_id: _identity(room) for room in ROOMS},
             ),
-            "rotation": manager.planning.rotation_details(SERIAL, "home", ROOMS),
+            "rotation": rotation_explanation(manager, SERIAL, "home", ROOMS),
             "history": manager.history.snapshot(SERIAL),
             "stored": {key: robot.get(key) for key in STORED},
         }

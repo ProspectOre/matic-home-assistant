@@ -150,7 +150,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
             autospec=register_legacy_panel if legacy_panel_api else register_panel,
             side_effect=register_panel,
         ) as panel_registration,
-        patch("custom_components.matic_robot.services.CleaningPlanManager") as history,
+        patch("custom_components.matic_robot.plans.CleaningPlanManager") as history,
         patch("custom_components.matic_robot.services.FirmwareTracker") as firmware,
         patch(
             "custom_components.matic_robot.async_register_matic_llm_api",

@@ -59,7 +59,7 @@ type WorkspaceTransportEvent =
   | { readonly type: "resync"; readonly reason: WorkspaceResyncReason; readonly accessDenied?: boolean };
 
 /** The server's recovery reasons, and the ones the transport raises itself. */
-type WorkspaceResyncReason = wire.RecoveryReason | "reconnect" | "invalid_message" | "server_request";
+type WorkspaceResyncReason = wire.RecoveryReason | "gap" | "reconnect" | "invalid_message" | "server_request";
 
 interface WorkspaceTransportOptions {
   readonly entryId: string;
@@ -155,13 +155,13 @@ function parseSnapshot(value: unknown, expectedEntryId?: string): WorkspaceSnaps
       || !identity || identity.entry_id !== entryId
       || (identity.floor_mission_id !== null && !finiteInteger(identity.floor_mission_id, MAX_SEQUENCE))
       || typeof identity.floor_verified !== "boolean" || identity.floor_verified !== (identity.floor_mission_id !== null)
-      || !status || (state !== "ready" && state !== "stale" && state !== "unavailable")
+      || !status || (state !== "ready" && state !== "stale")
       || (status.reason !== null && statusReason === null)
       || typeof status.retryable !== "boolean"
       || typeof available !== "boolean"
       || (entry !== null && entry.entryId !== entryId)
       || (state === "ready" && (statusReason !== null || status.retryable || !available))
-      || ((state === "stale" || state === "unavailable") && (statusReason === null || available))
+      || (state === "stale" && (statusReason === null || available))
       || (statusReason === "authorization" && status.retryable)) return null;
   return {
     ...parsed,

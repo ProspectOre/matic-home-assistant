@@ -14,7 +14,6 @@ import pytest
 
 from custom_components.matic_robot.client.models import (
     FloorPlan,
-    HermesCollectionEntry,
     RobotActivity,
     RobotInfo,
     RobotOperationalState,
@@ -93,11 +92,6 @@ def displayed_mission_handler(client: AsyncMock) -> Callable[..., Any]:
     name, on_entry = client.async_watch.call_args.args[:2]
     assert name == "displayed_mission"
     return on_entry  # type: ignore[no-any-return]
-
-
-def mission_entry(payload: bytes) -> HermesCollectionEntry:
-    """Return one displayed-mission collection entry carrying ``payload``."""
-    return HermesCollectionEntry(b"", payload)
 
 
 async def push_state(session: RobotSession, state: RobotOperationalState) -> None:

@@ -146,10 +146,6 @@ class BluetoothPasskeyExchange:
         """Return whether the live request can still accept a code."""
         return not self._passkey.done()
 
-    async def async_wait_until_requested(self) -> None:
-        """Wait until BlueZ asks Home Assistant for Matic's displayed code."""
-        await self._requested.wait()
-
     def begin_candidate(self) -> None:
         """Attribute the next request and submission to a new candidate."""
         self._candidate_requested = False

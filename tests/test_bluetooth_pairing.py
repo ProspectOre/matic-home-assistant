@@ -810,7 +810,7 @@ def _install_bluetooth(monkeypatch, scanners, *, heard=None):
 async def test_cancelled_passkey_exchange_raises_typed_error() -> None:
     exchange = BluetoothPasskeyExchange()
     request = asyncio.create_task(exchange.async_request_passkey())
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
 
     exchange.cancel()
 
@@ -822,7 +822,7 @@ async def test_cancelled_passkey_exchange_raises_typed_error() -> None:
 async def test_successful_passkey_exchange_delivers_the_submitted_code() -> None:
     exchange = BluetoothPasskeyExchange()
     request = asyncio.create_task(exchange.async_request_passkey())
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
     assert exchange.requested
     assert not exchange.submitted
 
@@ -835,7 +835,7 @@ async def test_successful_passkey_exchange_delivers_the_submitted_code() -> None
 async def test_malformed_passkey_is_rejected_without_ending_the_exchange() -> None:
     exchange = BluetoothPasskeyExchange()
     request = asyncio.create_task(exchange.async_request_passkey())
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
 
     with pytest.raises(ValueError, match="six digits"):
         exchange.submit(1000000)
@@ -850,7 +850,7 @@ async def test_malformed_passkey_is_rejected_without_ending_the_exchange() -> No
 async def test_duplicate_passkey_submission_is_rejected() -> None:
     exchange = BluetoothPasskeyExchange()
     request = asyncio.create_task(exchange.async_request_passkey())
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
     exchange.submit(123456)
 
     with pytest.raises(RuntimeError, match="already submitted"):
@@ -863,7 +863,7 @@ async def test_passkey_facts_belong_to_one_candidate_and_never_replay() -> None:
     exchange = BluetoothPasskeyExchange()
     exchange.begin_candidate()
     request = asyncio.create_task(exchange.async_request_passkey())
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
     exchange.submit(123456)
     assert await request == 123456
     assert exchange.candidate_requested and exchange.candidate_submitted
@@ -926,7 +926,7 @@ async def test_grant_reports_the_issuing_candidates_passkey_bond(
 
     async def pair(path, **_kwargs):
         request = asyncio.create_task(agent.RequestPasskey.__wrapped__(agent, path))
-        await exchange.async_wait_until_requested()
+        await exchange._requested.wait()
         exchange.submit(123456)
         await request
         session.reused_existing_bond = reused
@@ -1006,7 +1006,7 @@ async def test_grant_from_a_later_candidate_does_not_inherit_an_earlier_code(
         session.reused_existing_bond = False
         if path == first_path:
             request = asyncio.create_task(exchange.async_request_passkey())
-            await exchange.async_wait_until_requested()
+            await exchange._requested.wait()
             exchange.submit(123456)
             await request
             raise BleakConnectionError("first robot rejected the code")

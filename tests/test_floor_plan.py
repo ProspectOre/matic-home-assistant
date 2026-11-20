@@ -16,7 +16,6 @@ from PIL import Image, ImageChops, ImageDraw
 
 from custom_components.matic_robot.client import floor_plan as floor_plan_module
 from custom_components.matic_robot.client.floor_plan import (
-    decode_floor_plan,
     decode_floor_plans,
     decode_pose,
     pose_vector_paths,
@@ -25,8 +24,6 @@ from custom_components.matic_robot.client.floor_plan import (
 )
 from custom_components.matic_robot.client.models import FloorPlan, RobotPose, Room
 from custom_components.matic_robot.floor_render import (
-    _box_inside_mask,
-    _boxes_overlap,
     _erode_room_mask,
     _layout_room_labels,
     _nearest_mask_point,
@@ -38,6 +35,26 @@ from tests.wire_builders import _field, _fixed32, _fixed64, _varint_field
 PARTITION_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 REGION_ID = UUID("11111111-1111-4111-8111-111111111111")
 SECOND_REGION_ID = UUID("22222222-2222-4222-8222-222222222222")
+
+
+def _decode_floor_plan(payload: bytes) -> FloorPlan:
+    (floor_plan,) = decode_floor_plans(payload)
+    return floor_plan
+
+
+def _box_inside_mask(box: tuple[int, int, int, int], mask: Image.Image) -> bool:
+    return mask.crop(box).getextrema() == (255, 255)
+
+
+def _boxes_overlap(
+    first: tuple[int, int, int, int], second: tuple[int, int, int, int], *, gap: int = 0
+) -> bool:
+    return not (
+        first[2] + gap <= second[0]
+        or second[2] + gap <= first[0]
+        or first[3] + gap <= second[1]
+        or second[3] + gap <= first[1]
+    )
 
 
 def _uuid(value: UUID) -> bytes:
@@ -76,7 +93,7 @@ def _plan_payload(*regions: bytes) -> bytes:
 
 
 def test_decode_named_rooms_and_protocol_ids() -> None:
-    floor_plan = decode_floor_plan(_floor_plan_payload())
+    floor_plan = _decode_floor_plan(_floor_plan_payload())
 
     assert floor_plan.mission_id == 42
     assert floor_plan.partition_protocol_id == str(PARTITION_ID)
@@ -98,15 +115,13 @@ def test_duplicate_room_protocol_identity_is_rejected(reordered: bool) -> None:
         second = second.replace(_uuid(REGION_ID), _field(2, raw))
         assert first != second
     with pytest.raises(DecodeError, match="repeats a room identity"):
-        decode_floor_plan(_plan_payload(first, second))
+        _decode_floor_plan(_plan_payload(first, second))
 
 
 def test_decode_all_mapped_floors_without_guessing_the_active_one() -> None:
     payload = _floor_plan_payload(42) + _floor_plan_payload(84)
 
     assert [plan.mission_id for plan in decode_floor_plans(payload)] == [42, 84]
-    with pytest.raises(DecodeError, match="multiple mapped floors"):
-        decode_floor_plan(payload)
 
 
 def test_decode_mapped_floors_rejects_duplicate_or_excessive_identities(
@@ -126,7 +141,7 @@ def test_decode_pose_and_render_local_png() -> None:
     pose = decode_pose(pose_payload)
     current_pose = decode_pose(pose_payload, mission_id=42, observed_at=time.time())
     image_bytes = render_floor_plan(
-        decode_floor_plan(_floor_plan_payload()), current_pose, width=512, height=384
+        _decode_floor_plan(_floor_plan_payload()), current_pose, width=512, height=384
     )
 
     assert (pose.x, pose.y, pose.z) == (2.0, 1.0, 0.0)
@@ -197,7 +212,7 @@ def test_pose_vector_path_inspection_is_bounded_and_ignores_invalid_data() -> No
 
 
 def test_robot_position_requires_exact_coordinates_and_tracks_room_presence() -> None:
-    floor_plan = decode_floor_plan(_floor_plan_payload())
+    floor_plan = _decode_floor_plan(_floor_plan_payload())
 
     pose = RobotPose(2, 1, 0, floor_plan.mission_id, time.time())
     assert resolve_robot_map_position(floor_plan, pose, "Test room") == (
@@ -226,7 +241,7 @@ def test_robot_position_requires_exact_coordinates_and_tracks_room_presence() ->
 
 
 def test_robot_position_rejects_wrong_mission_unknown_or_stale_observation() -> None:
-    floor_plan = decode_floor_plan(_floor_plan_payload())
+    floor_plan = _decode_floor_plan(_floor_plan_payload())
     now = 1_800_000_000.0
     assert (
         resolve_robot_map_position(
@@ -372,7 +387,7 @@ def test_robot_position_prefers_verified_geometry_over_reported_room() -> None:
 
 def test_decode_rejects_plan_without_standard_partition() -> None:
     with pytest.raises(DecodeError, match="no standard partition"):
-        decode_floor_plan(b"")
+        _decode_floor_plan(b"")
 
 
 @pytest.mark.parametrize(
@@ -392,7 +407,7 @@ def test_decode_floor_plan_enforces_geometry_budgets(
     monkeypatch.setattr(floor_plan_module, limit_name, limit)
 
     with pytest.raises(DecodeError, match=message):
-        decode_floor_plan(_floor_plan_payload())
+        _decode_floor_plan(_floor_plan_payload())
 
 
 @pytest.mark.parametrize("coordinate", [float("nan"), float("inf")])
@@ -406,7 +421,7 @@ def test_decode_floor_plan_rejects_non_finite_coordinates(coordinate) -> None:
     )
 
     with pytest.raises(DecodeError, match="boundary coordinate"):
-        decode_floor_plan(payload)
+        _decode_floor_plan(payload)
 
 
 def test_decode_skips_rooms_with_degenerate_outlines() -> None:
@@ -419,7 +434,7 @@ def test_decode_skips_rooms_with_degenerate_outlines() -> None:
         ),
     )
 
-    floor_plan = decode_floor_plan(payload)
+    floor_plan = _decode_floor_plan(payload)
 
     assert [room.name for room in floor_plan.rooms] == ["Kitchen"]
     assert floor_plan.rooms[0].protocol_id == str(SECOND_REGION_ID)
@@ -440,7 +455,7 @@ def test_render_blends_semi_transparent_room_fill() -> None:
             ((0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)),
         )
     )
-    image_bytes = render_floor_plan(decode_floor_plan(payload), None)
+    image_bytes = render_floor_plan(_decode_floor_plan(payload), None)
 
     expected = (
         Image.alpha_composite(
@@ -475,7 +490,7 @@ def test_render_centers_a_narrow_floor_plan_in_a_wide_viewport() -> None:
         )
     )
     image_bytes = render_floor_plan(
-        decode_floor_plan(payload),
+        _decode_floor_plan(payload),
         None,
         width=640,
         height=320,
@@ -508,7 +523,7 @@ def test_render_survives_collinear_room_boundary() -> None:
         _region_wire(REGION_ID, "Hallway", ((0.0, 0.0), (2.0, 2.0), (4.0, 4.0)))
     )
 
-    image_bytes = render_floor_plan(decode_floor_plan(payload), None)
+    image_bytes = render_floor_plan(_decode_floor_plan(payload), None)
 
     with Image.open(BytesIO(image_bytes)) as image:
         assert image.format == "PNG"
@@ -596,10 +611,9 @@ def test_room_label_layout_omits_a_physically_impossible_label() -> None:
     assert _layout_room_labels(rooms, width=400, height=400, font_size=24) == ()
 
 
-def test_room_label_containment_rejects_boxes_outside_the_image() -> None:
+def test_room_label_mask_helpers_handle_empty_and_sparse_masks() -> None:
     mask = Image.new("L", (20, 20), 255)
 
-    assert not _box_inside_mask((-1, 1, 10, 10), mask)
     assert _erode_room_mask(mask, 21, 1).getbbox() is None
 
     sparse_mask = Image.new("L", (5, 5), 0)

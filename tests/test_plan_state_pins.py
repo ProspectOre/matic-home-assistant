@@ -29,6 +29,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plan_storage import STORAGE_KEY, STORAGE_VERSION
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import rotation_explanation
 
 GOLDEN = Path(__file__).parent / "fixtures" / "plan_state_pins_2c7aa210.json"
 SERIAL = "pin-robot"
@@ -256,7 +257,7 @@ def _projections(manager: CleaningPlanManager) -> object:
                 floor_token=plan_floor_token(GROUND),
                 room_identities=IDENTITIES,
             ),
-            "rotation": manager.planning.rotation_details(SERIAL, "home", ROOMS),
+            "rotation": rotation_explanation(manager, SERIAL, "home", ROOMS),
             "history": manager.history.snapshot(SERIAL),
         }
     )

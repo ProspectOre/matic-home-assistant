@@ -714,7 +714,7 @@ async def test_expired_code_requires_a_fresh_pairing_window(monkeypatch) -> None
         assert exchange is not None
         exchanges.append(exchange)
         request = asyncio.create_task(exchange.async_request_passkey())
-        await exchange.async_wait_until_requested()
+        await exchange._requested.wait()
         exchange.cancel()
         await asyncio.gather(request, return_exceptions=True)
         return {
@@ -746,7 +746,7 @@ async def test_rejected_code_requires_a_fresh_pairing_window(monkeypatch) -> Non
         assert exchange is not None
         attempts.append(exchange)
         request = asyncio.create_task(exchange.async_request_passkey())
-        await exchange.async_wait_until_requested()
+        await exchange._requested.wait()
         exchange.submit(123456)
         assert await request == 123456
         return {
@@ -1650,7 +1650,7 @@ async def test_pairing_code_shows_progress_while_a_new_code_is_prepared(hass) ->
     flow.context = {}
     flow._passkey_exchange = flow_module.BluetoothPasskeyExchange()
     request = asyncio.create_task(flow._passkey_exchange.async_request_passkey())
-    await flow._passkey_exchange.async_wait_until_requested()
+    await flow._passkey_exchange._requested.wait()
     flow._passkey_exchange.cancel()
     await asyncio.gather(request, return_exceptions=True)
     never = asyncio.Event()

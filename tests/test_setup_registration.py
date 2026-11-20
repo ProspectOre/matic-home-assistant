@@ -33,7 +33,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     firmware = SimpleNamespace(async_load=AsyncMock())
     with (
         patch(
-            "custom_components.matic_robot.services.CleaningPlanManager",
+            "custom_components.matic_robot.plans.CleaningPlanManager",
             return_value=history,
         ),
         patch(

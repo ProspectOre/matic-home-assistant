@@ -24,7 +24,12 @@ from custom_components.matic_robot.plan_model import (
     resolve_rooms,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import memory_manager, plan_room, run_plan_call
+from tests.plans.fakes import (
+    memory_manager,
+    plan_room,
+    rotation_explanation,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot
 
 
@@ -399,7 +404,8 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
         "name": "Study",
         "last_opportunity": same_opportunity,
     }
-    tied_rotation = manager.planning.rotation_details(
+    tied_rotation = rotation_explanation(
+        manager,
         "serial",
         "whole_home",
         [

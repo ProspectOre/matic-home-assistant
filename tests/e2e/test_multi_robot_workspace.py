@@ -160,8 +160,9 @@ async def test_three_robot_workspace_operational_load_fanout_and_cleanup(
             )
             state_changed_by_entry[entry.entry_id] = state_changed
             history = entry.runtime_data.slam_history
-            await history.async_set_policy(
-                True,
+            await history.async_mutate(
+                "pause_capture",
+                (),
                 request_id=f"hold-load-history-{entry.entry_id}",
                 expected_generation=history.generation,
             )
@@ -611,8 +612,9 @@ async def test_three_robot_workspace_websocket_isolation_replay_and_reload(
         # Stabilize the unchanged third robot, then give it a separate live
         # connection so leakage onto its subscription is observable.
         garage_history = entries[2].runtime_data.slam_history
-        await garage_history.async_set_policy(
-            True,
+        await garage_history.async_mutate(
+            "pause_capture",
+            (),
             request_id="hold-garage-history",
             expected_generation=garage_history.generation,
         )
@@ -646,13 +648,15 @@ async def test_three_robot_workspace_websocket_isolation_replay_and_reload(
         # Concurrent private-store mutations reach only North and South. Garage
         # remains unchanged on its own subscribed connection.
         await asyncio.gather(
-            entries[0].runtime_data.slam_history.async_set_policy(
-                True,
+            entries[0].runtime_data.slam_history.async_mutate(
+                "pause_capture",
+                (),
                 request_id="pause-north",
                 expected_generation=entries[0].runtime_data.slam_history.generation,
             ),
-            entries[1].runtime_data.slam_history.async_set_policy(
-                True,
+            entries[1].runtime_data.slam_history.async_mutate(
+                "pause_capture",
+                (),
                 request_id="pause-south-initial",
                 expected_generation=entries[1].runtime_data.slam_history.generation,
             ),
@@ -675,8 +679,9 @@ async def test_three_robot_workspace_websocket_isolation_replay_and_reload(
             snapshot = await _snapshot(second_ws, 200 + index, entry.entry_id)
             assert snapshot["payload"]["entry"]["entry_id"] == entry.entry_id
         south_history = entries[1].runtime_data.slam_history
-        await south_history.async_set_policy(
-            False,
+        await south_history.async_mutate(
+            "resume_capture",
+            (),
             request_id="resume-south-before-reload",
             expected_generation=south_history.generation,
         )
@@ -699,18 +704,21 @@ async def test_three_robot_workspace_websocket_isolation_replay_and_reload(
         await _subscribe(second_ws, 401, entries[1].entry_id)
 
         await asyncio.gather(
-            entries[0].runtime_data.slam_history.async_set_policy(
-                False,
+            entries[0].runtime_data.slam_history.async_mutate(
+                "resume_capture",
+                (),
                 request_id="resume-north",
                 expected_generation=entries[0].runtime_data.slam_history.generation,
             ),
-            entries[1].runtime_data.slam_history.async_set_policy(
-                False,
+            entries[1].runtime_data.slam_history.async_mutate(
+                "resume_capture",
+                (),
                 request_id="resume-south",
                 expected_generation=entries[1].runtime_data.slam_history.generation,
             ),
-            entries[2].runtime_data.slam_history.async_set_policy(
-                False,
+            entries[2].runtime_data.slam_history.async_mutate(
+                "resume_capture",
+                (),
                 request_id="resume-garage",
                 expected_generation=entries[2].runtime_data.slam_history.generation,
             ),

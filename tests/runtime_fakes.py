@@ -184,7 +184,6 @@ def entity_slam_map() -> SimpleNamespace:
     """Return an empty live map whose floor checks pass, as entity tests use."""
     return SimpleNamespace(
         async_add=AsyncMock(),
-        decoded_tiles=MagicMock(return_value=()),
         async_decoded_map=AsyncMock(return_value=DecodedMap(0, None, (), ())),
         tile_count=0,
         structure_tile_count=0,
