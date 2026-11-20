@@ -38,7 +38,7 @@ Home Assistant raises a Repair for most things it needs from you. Check
 | A plan leaves a room out | The room is occupied ([occupied rooms](cleaning.md#occupied-rooms)) or at its [daily clean limit](room-schedules.md#daily-clean-limit). The Run view names the reason. |
 | Home Assistant restarted during a clean | The plan picks up where it can, and Home Assistant never repeats a cleaning command to do so ([restart recovery](restart-recovery.md)). |
 | Skip, Clean next or Clean again is refused | See the [limits](queue-changes.md#limits) on changing a running clean. |
-| A photo patrol is refused | Patrols are off until you allow them, and blocked rooms, battery and a cooldown apply ([photo patrol](photo-patrol.md#set-up-privacy-and-safety)). |
+| A photo tour is refused | Tours are off until you allow them, and no-photo rooms, battery and a cooldown apply ([photo tours](photo-tours.md#set-up-privacy-and-safety)). |
 | The **Robot schedules** calendar looks wrong | Compare it with the Matic app, then follow [robot schedules](native-schedule-diagnostics.md). |
 
 ## After an update

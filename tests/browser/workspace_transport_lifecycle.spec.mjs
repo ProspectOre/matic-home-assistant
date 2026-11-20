@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
+import { pauseClockAt } from "./clock.mjs";
 
 const bundle = await build({
   stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state"; export { syntheticEntry } from "./frontend/map-studio-v4-review/synthetic-fixtures";', resolveDir: process.cwd() },
@@ -233,8 +234,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
   await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const clockAnchor = new Date("2026-09-28T12:00:00Z");
-  await page.clock.install({ time: clockAnchor });
-  await page.clock.pauseAt(clockAnchor);
+  await pauseClockAt(page, clockAnchor);
   await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
     const sampleCount = 200;

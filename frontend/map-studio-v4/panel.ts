@@ -348,6 +348,10 @@ class MaticMapPanelV4 extends LitElement {
       void this.#effects?.loadRunThumbnail(intent.id);
       return;
     }
+    if (intent.type === "show-photo-marks") {
+      this.#store.dispatch({ type: "result", photoMarks: intent.marks });
+      return;
+    }
     if (intent.type === "show-trail") {
       void this.#effects?.showTrail(intent.trail);
       return;

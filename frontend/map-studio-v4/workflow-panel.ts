@@ -227,6 +227,7 @@ line-height: var(--ms-lh-snug);
   _historyPreviewPosition: number | null = null;
   readonly #diagnostics = new LazyChunk(this, () => import("./diagnostics-panel"));
   readonly #runHistory = new LazyChunk(this, () => import("./run-history"));
+  readonly #photos = new LazyChunk(this, () => import("./photo-gallery"));
   readonly #archive = new LazyChunk(this, () => import("./archive-workspace"));
   #historySelectionKey = "";
 
@@ -624,6 +625,13 @@ line-height: var(--ms-lh-snug);
     return html`<matic-run-history-v4 .state=${this.state} .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit}></matic-run-history-v4>`;
   }
 
+  #photoGallery() {
+    this.#photos.request();
+    if (this.#photos.status !== "ready") return chunkStatus(this.#photos.status, this.localize, this.retry);
+    return html`<matic-photo-gallery-v4 .backend=${this.backend} .entryId=${this.state.resources.entry?.entryId ?? null}
+      .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit}></matic-photo-gallery-v4>`;
+  }
+
   protected override render() {
     switch (this.state.workflow) {
       case "rooms": return this.#rooms();
@@ -635,6 +643,7 @@ line-height: var(--ms-lh-snug);
       case "history": return this.#history();
       case "support": return this.#support();
       case "runs": return this.#runs();
+      case "photos": return this.#photoGallery();
       case "none": return nothing;
     }
   }

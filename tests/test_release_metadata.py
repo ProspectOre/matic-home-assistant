@@ -643,7 +643,7 @@ _HOUSEHOLD_DOCS = (
     "docs/map.md",
     "docs/native-cleaning-results.md",
     "docs/native-schedule-diagnostics.md",
-    "docs/photo-patrol.md",
+    "docs/photo-tours.md",
     "docs/queue-changes.md",
     "docs/release-notes-0.5.0.md",
     "docs/release-notes-0.6.0-beta1.md",
@@ -690,7 +690,7 @@ def test_options_flow_directs_editing_to_the_single_map_workspace() -> None:
             "reset_history",
             "confirm_reset_history",
             "confirm_reset_all_history",
-            "photo_patrol_settings",
+            "photo_settings",
         }
         assert "[Matic Map](/matic-map)" in steps["init"]["description"]
         assert "actions that do not name a plan" in steps["default_plan"]["description"]
@@ -706,7 +706,7 @@ def test_action_metadata_matches_the_room_native_public_api() -> None:
     services = yaml.safe_load((INTEGRATION / "services.yaml").read_text())
 
     assert set(strings["services"]) == set(services)
-    assert len(services) == 22
+    assert len(services) == 24
     # 0.6 removed these; the release notes name each replacement.
     assert not {
         "intelligent_clean",

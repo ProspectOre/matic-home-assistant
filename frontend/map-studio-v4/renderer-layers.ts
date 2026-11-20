@@ -7,6 +7,7 @@ import { canShowExactPose } from "./state";
 
 export { OverlayGeometry } from "./overlay-geometry";
 export { layerToggles, mapLegends } from "./map-layers";
+export { drawViewpoints } from "./photo-marks";
 export { drawInspectMarker, inspectAt, inspectMarker, inspectPanel, stillInspectable } from "./map-inspect";
 
 interface MapPoint {

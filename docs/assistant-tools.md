@@ -39,8 +39,8 @@ cleaning mode; each room keeps its saved schedule), `MaticStopCleaning`,
 `MaticResetSchedule` (mopping or vacuum rotation progress for one room or a
 whole plan), `MaticGoToRoom` (one room, using [Go to room](actions.md#go-to-room)),
 `MaticSendToSink` (the [sink refill](actions.md#sink-refill)), and
-`MaticTakePhoto` and `MaticInvestigate` (a [photo patrol](photo-patrol.md) of
-one room). When Matic Map would refuse, the tool returns the same reason
+`MaticTakePhoto` and `MaticInvestigate` (a [photo tour](photo-tours.md) to
+one room or viewpoint). When Matic Map would refuse, the tool returns the same reason
 instead. `MaticGoToRoom` and `MaticSendToSink` also refuse while the robot is
 offline, still stopping or on an unconfirmed map, and relay the action's own
 refusal, such as no saved sink location. `MaticRunPlan` and `MaticCleanRooms`
