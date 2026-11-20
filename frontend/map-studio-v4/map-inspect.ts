@@ -23,7 +23,7 @@ export type Inspected =
   | { readonly kind: "trail"; readonly point: TrailPoint };
 
 /** Taps inspect the live map on home and in Cleaning history; the other workflows use them to pick. */
-export const canInspect = (state: WorkspaceState): boolean =>
+const canInspect = (state: WorkspaceState): boolean =>
   state.dataMode === "live" && state.selection.floorId === "current" && !state.floor.readOnly
   && state.map.available && !state.comparisonActive && (state.workflow === "none" || state.workflow === "runs");
 
@@ -126,7 +126,7 @@ const ringArea = (ring: Polygon): number =>
     return sum + x * nextY - nextX * y;
   }, 0)) / 2;
 
-export interface InspectContext {
+interface InspectContext {
   readonly state: WorkspaceState;
   readonly scene: SceneModel;
   readonly inspected: Inspected;

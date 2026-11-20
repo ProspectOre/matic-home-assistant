@@ -1,4 +1,4 @@
-export interface PageLifecycleOptions {
+interface PageLifecycleOptions {
   readonly onSuspend: () => void;
   readonly onResume: () => void;
 }

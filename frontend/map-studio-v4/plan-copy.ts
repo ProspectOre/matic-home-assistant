@@ -12,7 +12,7 @@ export type Translate = (key: string, fallback: string, placeholders?: Readonly<
 export const formatNumber = (locale: string, value: number): string => new Intl.NumberFormat(locale).format(value);
 
 /** A saved custom area in a plan, read from the entries the plans list sent. */
-export interface PlanAreaEntry {
+interface PlanAreaEntry {
   readonly areaId: string;
   readonly name: string;
   readonly cleaningMode: CleaningMode;
@@ -48,7 +48,7 @@ export const withPlanAreas = <T>(plan: SavedPlan, rooms: readonly T[], area: (en
 };
 
 /** One step of a plan draft's run: a room with its settings, or a custom area. */
-export type DraftStep =
+type DraftStep =
   | { readonly room: PlanRoom; readonly area?: undefined }
   | { readonly room?: undefined; readonly area: PlanDraftArea };
 
@@ -131,7 +131,7 @@ export const planRowLine2 = (t: Translate, locale: string, plan: SavedPlan): str
     : t("v4_plan_row_rotation", "{count} rooms · Smart Order", { count: formatNumber(locale, count) });
 };
 
-export type PlanRowLine3 = { readonly blocked: string } | { readonly due: readonly string[] } | null;
+type PlanRowLine3 = { readonly blocked: string } | { readonly due: readonly string[] } | null;
 
 /**
  * A plan row's third line: the due work, or the one blocked line. A paused

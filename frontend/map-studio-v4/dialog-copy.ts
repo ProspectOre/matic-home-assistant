@@ -21,7 +21,7 @@ export interface DialogPresentation {
  * the draft confirmation and builds `discardDraft` itself, so that dialog
  * shows even when this chunk failed to load.
  */
-export type WorkflowDialog = Exclude<DialogKind, "discardDraft">;
+type WorkflowDialog = Exclude<DialogKind, "discardDraft">;
 
 export const dialogCopy = (
   dialog: WorkflowDialog,

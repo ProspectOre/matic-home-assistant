@@ -3,6 +3,8 @@
 from typing import Final
 
 DOMAIN: Final = "matic_robot"
+# Matic Map's panel, at /matic-map in Home Assistant.
+MATIC_MAP_URL_PATH: Final = "matic-map"
 PLATFORMS: Final = [
     "binary_sensor",
     "button",

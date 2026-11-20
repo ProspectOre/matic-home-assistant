@@ -19,8 +19,8 @@ from custom_components.matic_robot.managed_run import (
     RoomRunOutcome,
     RoomTakenOverError,
 )
+from tests.plans.fakes import OWNED_SESSION, plan_room
 from tests.session_fakes import FakeRobot
-from tests.test_plans import _OWNED, _room
 
 
 async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> None:
@@ -32,7 +32,7 @@ async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> 
     distinguishes them.
     """
     robot = FakeRobot()
-    room = _room("Kitchen", "room-kitchen")
+    room = plan_room("Kitchen", "room-kitchen")
     robot.show("cleaning", current_area="Kitchen")
 
     async def settle(state: str) -> None:
@@ -64,7 +64,7 @@ async def test_room_outcome_requires_target_evidence_and_classifies_recharge(
     hass,
 ) -> None:
     robot = FakeRobot()
-    room = _room("Study", "room-study")
+    room = plan_room("Study", "room-study")
     robot.show("returning")
     assert (
         await _async_wait_for_room_outcome(robot.port(), room)
@@ -98,7 +98,7 @@ async def test_room_outcome_requires_target_evidence_and_classifies_recharge(
 
 async def test_room_outcome_propagates_errors_and_cancellation(hass) -> None:
     robot = FakeRobot()
-    room = _room("Study", "room-study")
+    room = plan_room("Study", "room-study")
     robot.show("error")
     with pytest.raises(ServiceValidationError, match="reported an error"):
         await _async_wait_for_room_outcome(robot.port(), room)
@@ -132,7 +132,7 @@ async def test_room_outcome_propagates_errors_and_cancellation(hass) -> None:
 
 async def test_room_outcome_ignores_transit_through_other_mapped_rooms(hass) -> None:
     robot = FakeRobot()
-    room = _room("Study", "room-study")
+    room = plan_room("Study", "room-study")
     robot.show("cleaning", current_area="Study")
     waiting = asyncio.create_task(_async_wait_for_room_outcome(robot.port(), room))
     await asyncio.sleep(0)
@@ -172,7 +172,7 @@ async def test_wait_handles_error_unavailable_transition_and_cancel(hass) -> Non
     with pytest.raises(PlanCancelledError):
         await waiting
 
-    room = _room("Study", "room-study")
+    room = plan_room("Study", "room-study")
     robot.show("cleaning", current_area="Kitchen")
     target_wait = asyncio.create_task(
         _async_wait_for_robot_activity(
@@ -206,16 +206,16 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
     robot.show("cleaning")
     assert (
         await _async_wait_for_active_session_resolution(
-            robot.port(session_identity=AsyncMock(return_value=_OWNED)),
-            expected_identity=_OWNED,
+            robot.port(session_identity=AsyncMock(return_value=OWNED_SESSION)),
+            expected_identity=OWNED_SESSION,
         )
         is True
     )
     robot.show("error")
     with pytest.raises(ServiceValidationError, match="reported an error"):
         await _async_wait_for_active_session_resolution(
-            robot.port(session_identity=AsyncMock(return_value=_OWNED)),
-            expected_identity=_OWNED,
+            robot.port(session_identity=AsyncMock(return_value=OWNED_SESSION)),
+            expected_identity=OWNED_SESSION,
         )
 
     robot.show("returning")
@@ -225,7 +225,7 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
         with pytest.raises(RoomTakenOverError, match="could not be verified"):
             await _async_wait_for_active_session_resolution(
                 robot.port(session_identity=AsyncMock(return_value=None)),
-                expected_identity=_OWNED,
+                expected_identity=OWNED_SESSION,
             )
         assert (
             await _async_wait_for_active_session_resolution(
@@ -234,7 +234,7 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
                         side_effect=[MaticError("temporary"), b""]
                     )
                 ),
-                expected_identity=_OWNED,
+                expected_identity=OWNED_SESSION,
             )
             is False
         )
@@ -243,22 +243,22 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
     cancelled.set()
     with pytest.raises(PlanCancelledError):
         await _async_wait_for_active_session_resolution(
-            robot.port(session_identity=AsyncMock(return_value=_OWNED)),
+            robot.port(session_identity=AsyncMock(return_value=OWNED_SESSION)),
             cancelled,
-            expected_identity=_OWNED,
+            expected_identity=OWNED_SESSION,
         )
 
     cancelled.clear()
 
     async def set_cancel() -> bytes:
         cancelled.set()
-        return _OWNED
+        return OWNED_SESSION
 
     with pytest.raises(PlanCancelledError):
         await _async_wait_for_active_session_resolution(
             robot.port(session_identity=set_cancel),
             cancelled,
-            expected_identity=_OWNED,
+            expected_identity=OWNED_SESSION,
         )
 
     with patch(
@@ -267,9 +267,11 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
     ):
         assert (
             await _async_wait_for_active_session_resolution(
-                robot.port(session_identity=AsyncMock(side_effect=[_OWNED, b""])),
+                robot.port(
+                    session_identity=AsyncMock(side_effect=[OWNED_SESSION, b""])
+                ),
                 asyncio.Event(),
-                expected_identity=_OWNED,
+                expected_identity=OWNED_SESSION,
             )
             is False
         )

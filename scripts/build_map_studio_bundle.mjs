@@ -45,7 +45,6 @@ const options = {
   entryPoints: {
     index: panel,
     review: "frontend/map-studio-v4-review/review.ts",
-    mockups: "frontend/map-studio-v4-review/mockups.ts",
     stage: "frontend/map-studio-v4-review/stage.ts",
   },
   bundle: true, format: "esm", target: "es2022", charset: "ascii", minify: true,

@@ -7,7 +7,7 @@ import "./review";
 import type { DialogKind, Localize, WorkspaceState } from "../map-studio-v4/contracts";
 import type { MaticMapStudioGalleryV4 } from "./gallery";
 import { GALLERY_DIALOGS, GALLERY_SCENARIOS, type GalleryScenario } from "./gallery-scenarios";
-import { HA_THEMES } from "./mockups/themes";
+import { HA_THEMES } from "./themes";
 // The walkthrough matrix (scripts/walkthrough_cells.json); only this
 // review entry imports it, so it stays out of the panel's startup graph.
 import WALKTHROUGH from "../../scripts/walkthrough_cells.json";
@@ -17,13 +17,13 @@ const FRAME_PATH = "/map-studio-v4-stage-frame";
 const STRINGS_PATH = "/map-studio-v4-stage/strings.json";
 const PREFIX = "component.matic_robot.common.";
 
-export interface StageStep {
+interface StageStep {
   readonly scenario: GalleryScenario;
   readonly dialog: DialogKind | null;
   readonly label: string;
 }
 
-export interface StageParams {
+interface StageParams {
   readonly cell: string;
   /** True only for a cell ID whose settings are exactly that matrix cell's. */
   readonly cellMatches: boolean;
@@ -139,7 +139,7 @@ const ACCENTS: Readonly<Record<string, string>> = {
  * longer, with `{placeholders}` untouched. Plain English left on a staged
  * screen is text that never went through a translation key.
  */
-export const pseudoText = (text: string): string => {
+const pseudoText = (text: string): string => {
   const accented = text.split(/(\{[a-z0-9_]+\})/u)
     .map((part, index) => index % 2 ? part : [...part].map((character) => ACCENTS[character] ?? character).join(""))
     .join("");
@@ -147,7 +147,7 @@ export const pseudoText = (text: string): string => {
 };
 
 /** A Home Assistant style `localize` over the pseudo-language; a key it lacks comes back unchanged, as in HA. */
-export const pseudoLocalize = (common: Readonly<Record<string, string>>): Localize => {
+const pseudoLocalize = (common: Readonly<Record<string, string>>): Localize => {
   const table = new Map(Object.entries(common).map(([key, value]) => [key, pseudoText(value)]));
   return (key, placeholders) => {
     const template = key.startsWith(PREFIX) ? table.get(key.slice(PREFIX.length)) : undefined;

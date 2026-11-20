@@ -15,7 +15,7 @@ import { icon, iconChevronRight, iconNoticeWarning, iconOverflow } from "./icons
 import type { MenuController } from "./menu-controller";
 import { MOP_INTERVAL_MIN, snapInterval, stepper } from "./stepper";
 
-export { INTERVAL_MAX, INTERVAL_MIN, MOP_INTERVAL_MIN, snapInterval, stepInterval } from "./stepper";
+export { snapInterval, stepInterval } from "./stepper";
 
 export const MODES: readonly CleaningMode[] = ["vacuum", "mop", "vacuum_and_mop"];
 export const COVERAGES: readonly CoverageSetting[] = ["quick", "standard", "heavy_duty"];
@@ -26,7 +26,7 @@ export const modeLabel = (t: Translate, mode: CleaningMode): string =>
 export const coverageLabel = (t: Translate, value: CoverageSetting): string =>
   value === "quick" ? t("quick", "Quick") : value === "standard" ? t("standard", "Optimal") : t("heavy_duty", "Heavy duty");
 
-export const coverageNeedsVacuum = (t: Translate): string =>
+const coverageNeedsVacuum = (t: Translate): string =>
   t("v4_cadence_coverage_requires_vacuum", "The vacuum rotation needs a cleaning mode that includes vacuuming, so change the mode or turn the rotation off.");
 
 /** A room schedule's state in one or two sentences, most urgent first. */
@@ -63,7 +63,7 @@ export const cadenceProblem = (t: Translate, reasons: readonly CadenceReason[]):
 
 // ---- The schedule model (room-schedule.md §3-§6) ----------------------------
 
-export type ScheduleKind = "mop" | "coverage";
+type ScheduleKind = "mop" | "coverage";
 /** A room with no schedule yet counts across all plans (room-schedule.md §5 Scope). */
 const OFF: RoomCadencePolicy = {
   scope: "shared",
@@ -74,7 +74,7 @@ const OFF: RoomCadencePolicy = {
   doCoverageNext: false,
 };
 
-export const hasSchedule = (policy: RoomCadencePolicy | null | undefined): boolean =>
+const hasSchedule = (policy: RoomCadencePolicy | null | undefined): boolean =>
   Boolean(policy && (policy.mopEveryN !== null || policy.coverageEveryN !== null));
 
 export interface ScheduleInput {
@@ -89,7 +89,7 @@ export interface ScheduleInput {
   readonly offLevel: CoverageSetting | null;
 }
 
-export interface ScheduleRow {
+interface ScheduleRow {
   readonly every: number | null;
   /** The label line, which also names the field. */
   readonly label: string;
@@ -103,7 +103,7 @@ export interface ScheduleRow {
   readonly unverified: boolean;
 }
 
-export interface NextClean {
+interface NextClean {
   readonly label: string;
   readonly on: boolean;
   /** The label names mopping: the work brought forward while on, else the work it can bring forward. */
@@ -113,7 +113,7 @@ export interface NextClean {
   readonly blocked: ScheduleKind | null;
 }
 
-export interface ScheduleModel {
+interface ScheduleModel {
   /** The draft cadence, or Off counted across all plans. */
   readonly policy: RoomCadencePolicy;
   /** The rotation's level as shown. */
@@ -494,7 +494,7 @@ export const resetBlock = (t: Translate, state: WorkspaceState): string | null =
       : null;
 
 /** What the schedule block needs from the Edit view that shows it. */
-export interface ScheduleContext {
+interface ScheduleContext {
   readonly t: Translate;
   readonly state: WorkspaceState;
   readonly intent: (intent: WorkspaceIntent) => void;
@@ -509,7 +509,7 @@ export interface ScheduleContext {
 }
 
 /** The room schedule's inputs from the draft, the saved plan and the catalog. */
-export const scheduleInput = (state: WorkspaceState, room: PlanRoom, name: string, offLevel: CoverageSetting | null): ScheduleInput => {
+const scheduleInput = (state: WorkspaceState, room: PlanRoom, name: string, offLevel: CoverageSetting | null): ScheduleInput => {
   const catalog = state.resources.plans.value;
   const draftId = state.planDraft.id;
   return {

@@ -59,10 +59,18 @@ Each result names its stop: `room` for a room stop, or `viewpoint`, `room` and
 `url` and `preview_url`. The default `url` serves a pixelated WebP mosaic of
 the robot's preview, or of the full image when there is no preview. Set
 `full_resolution: true` only when a full photo is wanted; `preview_url` always
-refers to the preview. Each photo also fires `matic_robot_photo_taken` with the
-same fields.
+refers to the preview. `map_url` opens the photo in Matic Map's Photos, for
+a notification to open on a tap. Each photo also fires `matic_robot_photo_taken` with the
+same fields, with links that need a signed-in user.
 
-Both URLs require a signed-in Home Assistant user and disable browser caching.
+With `report_failures: true`, a robot whose tour could not finish is returned
+with no photos and `error`: its `reason` (for example
+`photo_tour_low_battery`) and a plain-language `message`. The other robots
+still run, and the action itself does not fail.
+
+The action's links are signed: each opens that one photo, without signing in,
+for 24 hours, so a phone or other notify target can fetch it. Browsers never
+cache them.
 Home Assistant saves every photo it reads from the robot to
 `matic_robot/photos/<entry id>` in its configuration folder, so links survive a
 restart. Each tour files its photos in an album of its own; other snaps go
@@ -99,11 +107,16 @@ false) and a short `summary`. The answer is returned to the caller only: it is
 not added to the photo event, an entity or the log. The copy handed to the
 entity is deleted when the answer arrives.
 
-The **Matic: Photograph room on alert** blueprint visits one room when a sensor
-turns on, asks your AI Task entity your question, and notifies you only when
-the answer reports a problem. It uses the same opt-in, no-photo room and
-cooldown checks, and attaches a pixelated preview unless **Send the full
-photo** is on. If no photo could be taken, it says so in a text notification.
+The **Matic: Photo check on alert** blueprint sends the robot to a viewpoint or
+room when a sensor turns on or an alarm goes off. The phone hears "Matic is on
+its way to look." at once, with a **Send home** button; the same notification
+then shows the photo, captioned with your AI Task entity's answer or the place
+and time. A look-around adds its other photos to the same stack. If the robot
+is busy, no photo could be taken or Send home stopped the check, the
+notification says why in a few words, such as "Matic couldn't reach Front
+door. Is a door closed?" Previews are pixelated unless **Send the full photo** is
+on, and **Time-sensitive notifications** marks them time sensitive on iPhone
+and high priority on Android.
 
 Administrators can also ask Assist or an MCP client: `MaticTakePhoto` returns
 a pixelated preview of one room or viewpoint, and `MaticInvestigate` adds a
@@ -113,7 +126,9 @@ every check above.
 ## Stops and errors
 
 The tour requests docking when it finishes, or after an error, only while
-the robot is still parked where the tour left it. It does not send a stop
+the robot is still parked where the tour left it. Start, Pause, Stop or Return
+to dock on the robot's Home Assistant entity ends a running tour with an error
+before it sends the robot anywhere else; photos it already took are kept. It does not send a stop
 or dock command to interrupt a task that took over. Docking is a request, not
 proof that the robot physically reached the dock.
 

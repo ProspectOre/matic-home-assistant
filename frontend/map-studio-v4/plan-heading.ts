@@ -16,7 +16,7 @@ import { translate } from "./localize";
  * More actions menu of a saved plan's Edit. They show only inside the plan
  * workflow, so they load with its views.
  */
-export class MaticPlanToolsV4 extends LitElement {
+class MaticPlanToolsV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },
@@ -215,7 +215,7 @@ export const drawCancel = (
   `;
 
 /** Where Draw's Back and Cancel go: the saved area's review, else Your areas. */
-export const drawExit = (state: WorkspaceState): WorkspaceIntent =>
+const drawExit = (state: WorkspaceState): WorkspaceIntent =>
   state.areaDraft.id !== null
     ? { type: "select-area", areaId: state.areaDraft.id, workflow: "areaReview" }
     : { type: "open-workflow", workflow: "areas" };

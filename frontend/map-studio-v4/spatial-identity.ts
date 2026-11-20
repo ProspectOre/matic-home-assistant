@@ -1,6 +1,6 @@
 import type { SceneRoom } from "./backend-contracts";
 
-export interface CatalogRoomIdentity {
+interface CatalogRoomIdentity {
   readonly roomId: string;
   readonly name: string;
 }

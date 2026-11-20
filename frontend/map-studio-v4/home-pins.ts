@@ -2,7 +2,7 @@ import type { HomePin, WorkspaceNotice, WorkspaceState } from "./contracts";
 import type { WorkspaceStore } from "./state";
 import type { WorkspaceConnection } from "./workspace-transport";
 
-export interface HomePinActions {
+interface HomePinActions {
   homePinExclusions(): readonly HomePin[];
   saveHomePin(pin: HomePin, pinned: boolean, previous: readonly HomePin[]): void;
   saveHomePinState(excluded: readonly HomePin[], pins?: readonly HomePin[]): void;
@@ -15,7 +15,7 @@ export interface HomePinActions {
  * conservatively excludes every currently saved item absent from the list,
  * because the old format cannot distinguish an explicit off from no choice.
  */
-export const HOME_PINS_KEY = "matic_robot_home_shortcuts";
+const HOME_PINS_KEY = "matic_robot_home_shortcuts";
 const FORMAT_VERSION = 2;
 const keyFor = (entryId: string): string => `${HOME_PINS_KEY}.${entryId}`;
 
@@ -38,7 +38,7 @@ const same = (a: HomePin, b: HomePin): boolean => a.kind === b.kind && a.id === 
 const unique = (pins: readonly HomePin[]): HomePin[] => clean(pins);
 
 interface StoredPins { readonly pins: HomePin[]; readonly excluded: HomePin[]; readonly mode: "new" | "legacy" | "v2" }
-export interface LoadedPins extends StoredPins {}
+interface LoadedPins extends StoredPins {}
 
 const readPins = async (connection: WorkspaceConnection, entryId: string): Promise<StoredPins> => {
   const response = await connection.sendMessagePromise<{ value?: unknown } | null>({ type: "frontend/get_user_data", key: keyFor(entryId) });
@@ -51,7 +51,7 @@ const readPins = async (connection: WorkspaceConnection, entryId: string): Promi
 };
 
 /** Writes this user's ordered visible items and explicit exclusions to one robot's key. */
-export const writePins = async (
+const writePins = async (
   connection: WorkspaceConnection,
   entryId: string,
   pins: readonly HomePin[],
@@ -155,7 +155,7 @@ export const loadPins = async (
 };
 
 const notice = (tone: WorkspaceNotice["tone"], key: string, fallback: string): WorkspaceNotice => ({ tone, key, fallback });
-export const PINS_SAVE_FAILED = notice("error", "v4_notice_shortcuts_save_failed", "Home Assistant couldn't save your home shortcuts. Try again.");
+const PINS_SAVE_FAILED = notice("error", "v4_notice_shortcuts_save_failed", "Home Assistant couldn't save your home shortcuts. Try again.");
 
 interface PersistedPinsState {
   readonly pins: HomePin[];

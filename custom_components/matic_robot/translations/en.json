@@ -810,6 +810,40 @@
     "v4_photos_tour": "Photo tour",
     "v4_photos_tour_at": "Photo tour, {time}",
     "v4_photos_viewpoints": "Saved viewpoints",
+    "v4_photos_link_missing": "The photo from the link is no longer saved.",
+    "v4_photos_star_limit": "100 photos are starred. Unstar one to star this one.",
+    "v4_photos_star_failed": "Couldn't change the star. Try again.",
+    "v4_photos_starred_caption": "{caption}, starred",
+    "v4_photos_star": "Star",
+    "v4_photos_download": "Download",
+    "v4_photos_compare_end": "Show one photo",
+    "v4_photos_compare": "Compare with earlier",
+    "v4_viewpoint_name_invalid": "Give the viewpoint a name of up to 64 characters.",
+    "v4_viewpoint_name_taken": "Another viewpoint already has this name.",
+    "v4_viewpoint_name_is_room": "A room has this name. Choose another, so a photo tour stop can't mean either.",
+    "v4_viewpoint_limit": "This robot has 50 viewpoints. Delete one to save another.",
+    "v4_viewpoint_outside_rooms": "Place the viewpoint inside a room.",
+    "v4_viewpoint_room_no_photo": "Photos are off in this room. Place the viewpoint in another room.",
+    "v4_viewpoint_in_no_go_zone": "That spot is in or next to a no-go zone. Move it at least 25 cm away.",
+    "v4_viewpoint_zones_unavailable": "The robot's no-go zones can't be read right now. Try again shortly.",
+    "v4_viewpoint_map_changed": "The robot's map changed. Cancel, then place the viewpoint again.",
+    "v4_viewpoint_place_first": "Tap the map where the robot should stand.",
+    "v4_viewpoint_save_failed": "Couldn't save the viewpoint. Try again.",
+    "v4_viewpoint_delete_failed": "Couldn't delete the viewpoint. Try again.",
+    "v4_viewpoint_delete_confirm": "Delete {name}? Photo tours that stop there will stop working.",
+    "v4_viewpoint_delete": "Delete viewpoint",
+    "v4_keep": "Keep",
+    "v4_viewpoint_delete_named": "Delete {name}",
+    "v4_delete": "Delete",
+    "v4_viewpoint_aim": "Tap the map where the camera should look, or turn it here.",
+    "v4_viewpoint_turn_left": "Turn left",
+    "v4_viewpoint_turn_right": "Turn right",
+    "v4_viewpoint_move": "Move",
+    "v4_viewpoint_name": "Name",
+    "v4_viewpoint_save": "Save viewpoint",
+    "v4_viewpoint_none": "A viewpoint is a spot and direction a photo tour can stop at to take a photo.",
+    "v4_viewpoint_add": "Add viewpoint",
+    "v4_viewpoint_no_map": "Viewpoints can be added once the robot's current map is shown.",
     "v4_runs_last_unfinished": "The last run didn't finish. See what happened.",
     "v4_runs_quick_detail": "See recent cleans and how they ended.",
     "v4_robot_trail": "Robot trail",
@@ -1983,6 +2017,9 @@
     "photo_tour_battery_unknown": {
       "message": "The robot's battery level is unavailable, so the photo tour was not started."
     },
+    "photo_tour_stopped": {
+      "message": "The photo tour stopped because the robot was given another command."
+    },
     "photo_tour_robot_busy": {
       "message": "The robot is busy with a clean or on its way to the dock. Take photos once it has docked."
     },
@@ -2147,6 +2184,10 @@
         "stops": {
           "name": "Stops",
           "description": "Visited in this order, up to 12 photos in all. Each stop is a room or a saved viewpoint, by name or ID. At a viewpoint, a look-around count of 2 to 4 turns the robot in place and takes that many photos."
+        },
+        "report_failures": {
+          "name": "Report failures in the response",
+          "description": "Instead of failing the action, return each robot whose tour could not finish with an error reason and message, and keep going with the other robots."
         },
         "full_resolution": {
           "name": "Send the full photo",

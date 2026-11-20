@@ -77,6 +77,7 @@ RUN_PHOTO_TOUR_SERVICE_SCHEMA = cv.make_entity_service_schema(
             _photo_budget,
         ),
         probatio.Optional("full_resolution", default=False): cv.boolean,
+        probatio.Optional("report_failures", default=False): cv.boolean,
         probatio.Optional("question"): probatio.All(
             cv.string, probatio.Length(min=1, max=500)
         ),

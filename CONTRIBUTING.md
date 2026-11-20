@@ -106,7 +106,7 @@ so no real home appears.
 
 Before a pull request merges:
 
-- CI passes: Test, Browser UI and Validate.
+- CI passes: Test (its `ci` check) and Validate.
 - Every pull request gets an automated code review of its whole diff. You need
   no account with an AI service. Wait for a successful `review` status on the
   current head and answer each finding with a fix or a reason.

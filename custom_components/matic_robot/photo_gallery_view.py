@@ -50,7 +50,7 @@ class MaticPhotoGalleryView(HomeAssistantView):
                     if map_key is None or identity is None
                     else {"map_session_key": map_key, "mission_id": identity.mission_id}
                 ),
-                "viewpoints": [_viewpoint(item) for item in runtime.viewpoints.all],
+                "viewpoints": [viewpoint_json(item) for item in runtime.viewpoints.all],
                 "albums": [
                     {"album": album, "photos": photos}
                     for album, photos in albums.items()
@@ -60,7 +60,8 @@ class MaticPhotoGalleryView(HomeAssistantView):
         )
 
 
-def _viewpoint(viewpoint: Viewpoint) -> dict[str, Any]:
+def viewpoint_json(viewpoint: Viewpoint) -> dict[str, Any]:
+    """A viewpoint as Matic Map reads it."""
     return {
         "viewpoint_id": viewpoint.viewpoint_id,
         "name": viewpoint.name,

@@ -10,7 +10,7 @@ import { wifiLegend } from "./wifi-legend";
 
 type Translate = (key: string, fallback: string, placeholders?: NoticePlaceholders) => string;
 
-export interface MapLayersContext {
+interface MapLayersContext {
   readonly state: WorkspaceState;
   readonly t: Translate;
 }
@@ -62,7 +62,7 @@ const mapKey = ({ state, t, marked }: MapKeyContext) => {
   </details>`;
 };
 
-export interface MapLegendsContext extends MapKeyContext {
+interface MapLegendsContext extends MapKeyContext {
   readonly scene: SceneModel | null;
   /** The map point the user last tapped, if any. */
   readonly spot: MapPoint | null;

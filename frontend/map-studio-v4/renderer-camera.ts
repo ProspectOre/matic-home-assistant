@@ -24,14 +24,14 @@ export interface CameraOrigin {
   readonly yPercent: number;
 }
 
-export interface ViewportBounds {
+interface ViewportBounds {
   readonly width: number;
   readonly height: number;
   readonly left: number;
   readonly top: number;
 }
 
-export interface CameraHost {
+interface CameraHost {
   readonly scene: () => SceneModel | null;
   readonly state: () => WorkspaceState | null;
   readonly requestRender: () => void;

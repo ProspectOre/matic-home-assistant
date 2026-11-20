@@ -1,10 +1,13 @@
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
-import type { MaticBackend } from "./backend";
+import { BackendError, type MaticBackend } from "./backend";
 import { controls } from "./controls";
-import type { DateFormat, Localize, NoticePlaceholders, PhotoMarks, WorkspaceIntent } from "./contracts";
+import type { DateFormat, Localize, NoticePlaceholders, PhotoMarks, ViewpointDraft, WorkspaceIntent } from "./contracts";
 import { formatDateTime, translate } from "./localize";
-import type { GalleryPhoto, PhotoAlbum, PhotoGallery } from "./photo-gallery-data";
+import { downloadName, earlierOfSamePlace, withStar } from "./photo-compare";
+import type { GalleryPhoto, GalleryViewpoint, PhotoAlbum, PhotoGallery } from "./photo-gallery-data";
+import { forgetPhotoLink, photoLink } from "./photo-link";
 import { base, tokens } from "./tokens";
+import "./viewpoint-editor";
 
 export const PHOTO_GALLERY_TAG = "matic-photo-gallery-v4";
 
@@ -20,10 +23,11 @@ const SWIPE = 48;
 type Load = "loading" | "ready" | "failed";
 
 /** The saved viewpoints on the map the server named, for the map canvas. */
-const photoMarks = ({ map, viewpoints }: PhotoGallery): PhotoMarks | null => map && {
+const photoMarks = ({ map, viewpoints }: PhotoGallery, draft: ViewpointDraft | null = null): PhotoMarks | null => map && {
   mapSessionKey: map.mapSessionKey,
   viewpoints: viewpoints.filter((viewpoint) => viewpoint.missionId === map.missionId)
     .map(({ id, name, x, y, heading }) => ({ id, name, x, y, heading })),
+  draft,
 };
 
 /**
@@ -38,13 +42,19 @@ export class MaticPhotoGalleryV4 extends LitElement {
     localize: { attribute: false },
     dates: { attribute: false },
     emit: { attribute: false },
+    marks: { attribute: false },
     _load: { state: true },
     _gallery: { state: true },
     _previews: { state: true },
     _open: { state: true },
     _full: { state: true },
     _fullFailed: { state: true },
+    _compare: { state: true },
+    _compareFull: { state: true },
+    _viewerError: { state: true },
+    _starring: { state: true },
     _shown: { state: true },
+    _linkMissing: { state: true },
   };
 
   static override styles = [tokens, base, controls, css`
@@ -56,9 +66,21 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
 .shot { display: block; inline-size: 100%; aspect-ratio: 4 / 3; padding: 0; border: 1px solid var(--ms-line); border-radius: var(--ms-radius-sm); background: var(--ms-surface-sunken); overflow: hidden; cursor: pointer; }
 .shot:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 2px; }
 .shot img { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; }
-.views { display: grid; gap: var(--ms-space-1); margin: 0; padding: 0; list-style: none; font-size: var(--ms-t-sm); }
 .viewer { box-sizing: border-box; inline-size: 100vw; max-inline-size: none; block-size: 100dvh; max-block-size: none; margin: 0; padding: var(--ms-space-3); border: 0; background: rgb(0 0 0 / 0.94); color: #fff; touch-action: pan-y; }
-.viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: var(--ms-space-2); }
+.viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: var(--ms-space-2); }
+/* Light controls on the dark viewer; the shared ones are drawn for the panel's surface. */
+.viewer .ms-btn { --ms-local: rgb(255 255 255 / 0.1); color: #fff; border-color: rgb(255 255 255 / 0.45); background: var(--ms-local); text-decoration: none; }
+.viewer .ms-btn:hover:not([aria-disabled="true"]) { background: rgb(255 255 255 / 0.2); }
+.viewer .ms-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.viewer .ms-btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.viewer .tools { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--ms-space-2); }
+.viewer .tools [aria-pressed="true"] .mark { color: #f5c518; }
+.viewer .tools [role="alert"] { flex-basis: 100%; text-align: center; }
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: var(--ms-space-2); min-block-size: 0; }
+.pair figure { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: var(--ms-space-1); margin: 0; min-block-size: 0; }
+.pair figcaption { font-size: var(--ms-t-sm); text-align: center; }
+.shot { position: relative; }
+.shot .badge { position: absolute; inset-block-start: var(--ms-space-1); inset-inline-end: var(--ms-space-1); color: #f5c518; font-size: var(--ms-t-md); line-height: 1; text-shadow: 0 0 2px rgb(0 0 0 / 0.8); }
 .viewer::backdrop { background: rgb(0 0 0 / 0.6); }
 .viewer header, .viewer footer { display: flex; align-items: center; justify-content: space-between; gap: var(--ms-space-2); }
 .viewer p { margin: 0; font-size: var(--ms-t-sm); }
@@ -72,6 +94,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   dates?: DateFormat;
   /** The workflow panel's intent dispatch, which draws the viewpoints on the map. */
   emit: (intent: WorkspaceIntent) => void = () => {};
+  /** Photos' marks on the map shown now, or null when viewpoints can't be placed on it. */
+  marks: PhotoMarks | null = null;
   _load: Load = "loading";
   _gallery: PhotoGallery | null = null;
   /** Object URLs of fetched previews, by photo ID. */
@@ -80,8 +104,15 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   _open: GalleryPhoto | null = null;
   _full: string | null = null;
   _fullFailed = false;
+  /** The earlier photo of the same place shown beside the open one. */
+  _compare: GalleryPhoto | null = null;
+  _compareFull: string | null = null;
+  _viewerError: string | null = null;
+  _starring = false;
   /** How many of the newest photos the grid shows. */
   _shown = PAGE;
+  /** A link named a photo the library no longer holds. */
+  _linkMissing = false;
   #controller: AbortController | null = null;
   /** The open photo's full-size read; a step or close aborts it. */
   #fullRead: AbortController | null = null;
@@ -89,6 +120,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   #timelineOf: PhotoGallery | null = null;
   #opener: HTMLElement | null = null;
   #swipeX: number | null = null;
+  #compareRead: AbortController | null = null;
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (!this.hasUpdated || changed.has("entryId") || changed.has("backend")) void this.#read();
@@ -99,8 +131,15 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     if (viewer && !viewer.open) viewer.showModal();
   }
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // Home Assistant fires this when it navigates an open panel to a new link.
+    window.addEventListener("location-changed", this.#linkArrived);
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    window.removeEventListener("location-changed", this.#linkArrived);
     this.#reset();
   }
 
@@ -114,6 +153,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     for (const url of Object.values(this._previews)) URL.revokeObjectURL(url);
     this._previews = {};
     this.#dropFull();
+    this.#dropCompare();
     this._open = null;
   }
 
@@ -137,7 +177,9 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
       this._gallery = gallery;
       this._load = "ready";
       this.emit({ type: "show-photo-marks", marks: photoMarks(gallery) });
-      await this.#readPreviews(0);
+      const previews = this.#readPreviews(0);
+      void this.#openLinked(true);
+      await previews;
     } catch {
       if (!controller.signal.aborted) this._load = "failed";
     }
@@ -195,9 +237,38 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     return sections;
   }
 
+  readonly #linkArrived = (): void => void this.#openLinked();
+
+  /**
+   * Opens the photo a link names, with its tile in the grid, and forgets the
+   * link. A photo taken since the last read reads the photos again first.
+   */
+  async #openLinked(fresh = false): Promise<void> {
+    const link = photoLink();
+    if (!link || link.entryId !== this.entryId || !this._gallery) return;
+    const photos = this.#photos();
+    const index = photos.findIndex((photo) => photo.id === link.photoId);
+    if (index < 0 && !fresh) return this.#read();
+    forgetPhotoLink();
+    this._linkMissing = index < 0;
+    if (index < 0) return;
+    for (let from = this._shown; from <= index; from += PAGE) {
+      this._shown = from + PAGE;
+      void this.#readPreviews(from);
+    }
+    void this.#show(photos[index]!);
+    await this.updateComplete;
+    // Closing the viewer returns focus to the photo's tile, as after a tap.
+    this.#opener = this.renderRoot.querySelectorAll<HTMLElement>(".shot")[index] ?? null;
+  }
+
+
   async #show(photo: GalleryPhoto, opener?: HTMLElement): Promise<void> {
     if (opener) this.#opener = opener;
+    this._linkMissing = false;
     this.#dropFull();
+    this.#dropCompare();
+    this._viewerError = null;
     this._open = photo;
     const read = new AbortController();
     this.#fullRead = read;
@@ -216,9 +287,52 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     this._fullFailed = false;
   }
 
+  #dropCompare(): void {
+    this.#compareRead?.abort();
+    this.#compareRead = null;
+    if (this._compareFull) URL.revokeObjectURL(this._compareFull);
+    this._compareFull = null;
+    this._compare = null;
+  }
+
+  /** Shows the newest earlier photo of the same place beside the open one; a second press shows one photo again. */
+  async #toggleCompare(photo: GalleryPhoto): Promise<void> {
+    if (this._compare) return this.#dropCompare();
+    const earlier = earlierOfSamePlace(this.#photos(), photo);
+    if (!earlier) return;
+    this._compare = earlier;
+    const read = new AbortController();
+    this.#compareRead = read;
+    const blob = await this.backend?.photo(earlier.url, read.signal).catch(() => null);
+    if (read.signal.aborted) return;
+    this.#compareRead = null;
+    if (blob) this._compareFull = URL.createObjectURL(blob);
+    else this._viewerError = this.#t("v4_photos_photo_failed", "Couldn't load this photo.");
+  }
+
+  async #star(photo: GalleryPhoto): Promise<void> {
+    const { backend, entryId } = this;
+    if (!backend || !entryId || this._starring) return;
+    this._starring = true;
+    this._viewerError = null;
+    try {
+      const starred = await backend.starPhoto(entryId, photo.id, !photo.starred);
+      if (!this._gallery) return;
+      this._gallery = withStar(this._gallery, photo.id, starred);
+      if (this._open?.id === photo.id) this._open = { ...this._open, starred };
+    } catch (error) {
+      this._viewerError = error instanceof BackendError && error.code === "star_limit"
+        ? this.#t("v4_photos_star_limit", "100 photos are starred. Unstar one to star this one.")
+        : this.#t("v4_photos_star_failed", "Couldn't change the star. Try again.");
+    } finally {
+      this._starring = false;
+    }
+  }
+
   #close(): void {
     this.renderRoot.querySelector<HTMLDialogElement>("dialog.viewer")?.close();
     this.#dropFull();
+    this.#dropCompare();
     this._open = null;
     this.#opener?.focus();
     this.#opener = null;
@@ -264,9 +378,11 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     return html`<section>
       <h3>${this.#albumTitle(album)}</h3>
       <ul class="grid">${photos.map((photo) => html`<li>
-        <button class="shot" type="button" aria-label=${this.#caption(photo)}
+        <button class="shot" type="button" aria-label=${photo.starred
+          ? this.#t("v4_photos_starred_caption", "{caption}, starred", { caption: this.#caption(photo) }) : this.#caption(photo)}
           @click=${(event: Event) => void this.#show(photo, event.currentTarget as HTMLElement)}>
           ${this._previews[photo.id] ? html`<img src=${this._previews[photo.id]} alt="">` : nothing}
+          ${photo.starred ? html`<span class="badge" aria-hidden="true">★</span>` : nothing}
         </button></li>`)}</ul>
     </section>`;
   }
@@ -276,6 +392,22 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     this.#swipeX = null;
     if (start === null || Math.abs(event.clientX - start) < SWIPE) return;
     this.#step(event.clientX < start ? 1 : -1);
+  }
+
+  #single(photo: GalleryPhoto) {
+    return this._full ? html`<img src=${this._full} alt=${this.#caption(photo)} draggable="false">`
+      : this._fullFailed ? html`<div class="failed"><p role="alert">${this.#t("v4_photos_photo_failed", "Couldn't load this photo.")}</p>
+        <button class="ms-btn" type="button" @click=${() => void this.#show(photo)}>${this.#t("v4_retry", "Try again")}</button></div>`
+        : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`;
+  }
+
+  /** The open photo beside the earlier one of the same place, each with its own caption. */
+  #pair(photo: GalleryPhoto, earlier: GalleryPhoto) {
+    const figure = (item: GalleryPhoto, url: string | null) => html`<figure>
+      ${url ? html`<img src=${url} alt=${this.#caption(item)} draggable="false">`
+        : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`}
+      <figcaption>${this.#caption(item)}</figcaption></figure>`;
+    return html`<div class="pair">${figure(earlier, this._compareFull)}${figure(photo, this._full)}</div>`;
   }
 
   // A modal dialog sits in the top layer above the sheet, keeps focus inside
@@ -290,16 +422,28 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
         <p>${this.#caption(photo)}</p>
         <button class="ms-btn" type="button" autofocus @click=${() => this.#close()}>${this.#t("v4_close", "Close")}</button>
       </header>
-      ${this._full ? html`<img src=${this._full} alt=${this.#caption(photo)} draggable="false">`
-        : this._fullFailed ? html`<div class="failed"><p role="alert">${this.#t("v4_photos_photo_failed", "Couldn't load this photo.")}</p>
-          <button class="ms-btn" type="button" @click=${() => void this.#show(photo)}>${this.#t("v4_retry", "Try again")}</button></div>`
-          : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`}
+      ${this._compare ? this.#pair(photo, this._compare) : this.#single(photo)}
+      <div class="tools">
+        <button class="ms-btn" type="button" aria-pressed=${String(photo.starred)} aria-disabled=${String(this._starring)} @click=${() => void this.#star(photo)}>
+          <span class="mark" aria-hidden="true">${photo.starred ? "★" : "☆"}</span> ${this.#t("v4_photos_star", "Star")}</button>
+        ${this._full ? html`<a class="ms-btn" href=${this._full} download=${downloadName(photo)}>${this.#t("v4_photos_download", "Download")}</a>` : nothing}
+        ${this._compare || earlierOfSamePlace(this.#photos(), photo) ? html`<button class="ms-btn" type="button" @click=${() => void this.#toggleCompare(photo)}>
+          ${this._compare ? this.#t("v4_photos_compare_end", "Show one photo") : this.#t("v4_photos_compare", "Compare with earlier")}</button>` : nothing}
+        ${this._viewerError ? html`<p role="alert">${this._viewerError}</p>` : nothing}
+      </div>
       <footer>
         <button class="ms-btn" type="button" aria-disabled=${String(!this.#neighbour(-1))} @click=${() => this.#step(-1)}>${this.#t("v4_photos_newer", "Newer")}</button>
         <button class="ms-btn" type="button" aria-disabled=${String(!this.#neighbour(1))} @click=${() => this.#step(1)}>${this.#t("v4_photos_older", "Older")}</button>
       </footer>
     </dialog>`;
   }
+
+  readonly #viewpointsChanged = (event: CustomEvent<readonly GalleryViewpoint[]>): void => {
+    if (!this._gallery) return;
+    this._gallery = { ...this._gallery, viewpoints: event.detail };
+    // A delete while placing keeps the viewpoint being placed.
+    this.emit({ type: "show-photo-marks", marks: photoMarks(this._gallery, this.marks?.draft ?? null) });
+  };
 
   protected override render() {
     if (this._load === "loading") return html`<p class="subtle" role="status">${this.#t("v4_photos_loading", "Loading photos…")}</p>`;
@@ -309,13 +453,12 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     }
     const { albums, viewpoints } = this._gallery;
     return html`<div class="stack">
+      ${this._linkMissing ? html`<p role="status">${this.#t("v4_photos_link_missing", "The photo from the link is no longer saved.")}</p>` : nothing}
       ${albums.length ? this.#sections().map(({ album, photos }) => this.#album(album, photos))
         : html`<p class="subtle">${this.#t("v4_photos_empty", "No photos yet. Press Take photo, or run a photo tour from an automation.")}</p>`}
       ${this.#photos().length > this._shown ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => void this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}
-      ${viewpoints.length ? html`<section>
-        <h3>${this.#t("v4_photos_viewpoints", "Saved viewpoints")}</h3>
-        <ul class="views">${viewpoints.map((viewpoint) => html`<li>${viewpoint.name}</li>`)}</ul>
-      </section>` : nothing}
+      <matic-viewpoint-editor-v4 .backend=${this.backend} .entryId=${this.entryId} .localize=${this.localize} .dates=${this.dates}
+        .emit=${this.emit} .viewpoints=${viewpoints} .marks=${this.marks} @viewpoints-changed=${this.#viewpointsChanged}></matic-viewpoint-editor-v4>
       ${this._open ? this.#viewer(this._open) : nothing}
     </div>`;
   }
