@@ -392,6 +392,10 @@ export class MaticMapCanvasV4 extends LitElement {
       onRoomCandidates: (roomIds) => this.#intent({ type: "show-room-candidates", roomIds }),
       onCameraGesture: () => this.#unfollow(),
       onTap: (point) => {
+        if (this.state.workflow === "photos" && this.state.photoMarks?.draft) {
+          this.#intent({ type: "place-viewpoint", point });
+          return;
+        }
         if (this.state.wifiSignal) this.#wifiSpot = point;
         this.#inspectAt(point);
       },
