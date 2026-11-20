@@ -33,7 +33,6 @@ class CatalogEntry(TypedDict):
     """One robot's map state, in the catalog and the workspace snapshot."""
 
     entry_id: str
-    live_workspace_transport_enabled: bool
     scene_url: str
     history_url: str
     areas_url: str

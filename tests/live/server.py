@@ -1,7 +1,6 @@
 """Run Home Assistant with the integration against the simulated robot.
 
 Usage: ``python tests/live/server.py [--port 8123] [--control-port 8124]``
-       ``[--workspace-push off|on]``
 
 This is the backend for the live browser tests. It starts the simulated
 robot from ``tests/e2e/hermes_sim.py`` on loopback, writes a throwaway Home
@@ -85,8 +84,6 @@ def write_config(
     directory: Path,
     simulator: RunningSimulator,
     port: int,
-    *,
-    workspace_push: bool = False,
 ) -> str:
     """Write a configuration that is onboarded and has the robot paired."""
     (directory / "configuration.yaml").write_text(
@@ -177,7 +174,7 @@ def write_config(
                         "domain": "matic_robot",
                         "title": simulator.robot.name,
                         "data": entry_data(simulator, credential),
-                        "options": {"workspace_push": workspace_push},
+                        "options": {},
                         "pref_disable_new_entities": False,
                         "pref_disable_polling": False,
                         "source": "user",
@@ -473,12 +470,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8123)
     parser.add_argument("--control-port", type=int, default=8124)
-    parser.add_argument(
-        "--workspace-push",
-        choices=("off", "on"),
-        default="off",
-        help="simulate an older server without push or a supported server",
-    )
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="matic-live-") as temporary:
@@ -490,7 +481,6 @@ def main() -> int:
             Path(temporary),
             args.port,
             args.control_port,
-            workspace_push=args.workspace_push == "on",
             robot_trace=robot_trace,
             session_trace=session_trace,
             trace_lock=trace_lock,
@@ -503,7 +493,6 @@ def run(
     port: int,
     control_port: int,
     *,
-    workspace_push: bool = False,
     robot_trace: deque[dict[str, Any]],
     session_trace: deque[dict[str, Any]],
     trace_lock: threading.Lock,
@@ -531,25 +520,7 @@ def run(
     socket.getaddrinfo = getaddrinfo
     config = workspace / "config"
     config.mkdir()
-    write_config(config, simulator, port, workspace_push=workspace_push)
-    # Keep the paired live-test lanes meaningful after push becomes the default:
-    # off simulates an older server that omits the capability, while on
-    # exercises the current server projection. Saved legacy options do not
-    # control production behavior.
-    from custom_components.matic_robot import slam_catalog_view, slam_view_data
-
-    catalog_projection = slam_view_data.catalog_entry_projection
-
-    def simulated_catalog_projection(
-        entry_id: str, runtime: Any, scene_view: Any = None
-    ) -> dict[str, Any]:
-        projection = catalog_projection(entry_id, runtime, scene_view)
-        if not workspace_push:
-            projection.pop("live_workspace_transport_enabled", None)
-        return projection
-
-    slam_view_data.catalog_entry_projection = simulated_catalog_projection
-    slam_catalog_view.catalog_entry_projection = simulated_catalog_projection
+    write_config(config, simulator, port)
     _session_state_trace(session_trace, trace_lock, started_at)
 
     from homeassistant import __main__ as hass_main

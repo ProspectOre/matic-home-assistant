@@ -15,7 +15,7 @@ test.beforeEach(async ({ page, browserName }) => {
   await page.evaluate(async () => {
     const { WorkspaceSynchronizer, WorkspaceStore, CoherenceMachine, createGalleryState } = await import("/workspace-activation.js");
     const initial = createGalleryState("ready");
-    const entry = { ...initial.resources.entry, liveWorkspaceTransportEnabled: true };
+    const { entry } = initial.resources;
     const store = new WorkspaceStore({ ...initial, resources: { ...initial.resources,
       entry, catalog: { status: "ready", value: [entry], problem: null } } });
     let projection = { host: initial.host, activity: initial.activity, batteryPercent: initial.batteryPercent,
@@ -33,7 +33,7 @@ test.beforeEach(async ({ page, browserName }) => {
       dispose() { disposed += 1; }
       notifyReconnect() {}
     }
-    const sync = new WorkspaceSynchronizer(store, new CoherenceMachine(), {}, undefined, {
+    const sync = new WorkspaceSynchronizer(store, new CoherenceMachine(), {}, {
       projection: () => projection, accessDenied() {},
       catalogRequestGeneration: () => catalogRequestGeneration,
       catalogSuccessfulGeneration: () => catalogSuccessfulGeneration,
@@ -44,12 +44,10 @@ test.beforeEach(async ({ page, browserName }) => {
       spatialRecoveryBlocks: () => false, sceneRevision() {},
       loadTransport: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
     });
-    const enable = value => {
-      const current = { ...entry, liveWorkspaceTransportEnabled: value };
-      store.replace({ ...store.value, resources: { ...store.value.resources, entry: current,
-        catalog: { status: "ready", value: [current], problem: null } } });
-    };
-    window.activation = { store, sync, pending, starts, enable,
+    // The catalog no longer lists the entry, so the workspace admits none.
+    const dropEntry = () => store.replace({ ...store.value, resources: { ...store.value.resources, entry: null,
+      catalog: { status: "empty", value: [], problem: null } } });
+    window.activation = { store, sync, pending, starts, dropEntry,
       run: () => sync.sync(projection),
       mapAvailable: value => store.replace({ ...store.value, map: { ...store.value.map, available: value } }),
       owner: changes => { projection = { ...projection, ...changes }; },
@@ -98,14 +96,13 @@ test("default admitted capability loads once and failure waits for retry", async
     retainedScene: true, starts: 1, disposed: 1 });
 });
 
-for (const boundary of ["opt-out", "entry", "user", "page", "access", "dispose"]) {
+for (const boundary of ["unlisted entry", "entry", "user", "page", "access", "dispose"]) {
   test(`late optional module cannot activate across ${boundary}`, async ({ page }) => {
     const result = await page.evaluate(async boundary => {
       const h = window.activation;
-      h.enable(true);
       h.run();
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      if (boundary === "opt-out") h.enable(false);
+      if (boundary === "unlisted entry") h.dropEntry();
       if (boundary === "entry") h.owner({ entryKey: "other-entry" });
       if (boundary === "user") h.owner({ userKey: "user-b" });
       if (boundary === "page") h.store.replace({ ...h.store.value, pageActive: false });

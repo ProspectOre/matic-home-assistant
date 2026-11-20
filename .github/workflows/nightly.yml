@@ -63,5 +63,3 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npx playwright test --config playwright.live.config.mjs
-        env:
-          MATIC_LIVE_WORKSPACE_PUSH: paired

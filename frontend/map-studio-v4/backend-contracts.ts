@@ -32,7 +32,6 @@ export type Unchecked<T> = { readonly [K in keyof T]?: unknown };
 
 export interface MapEntry {
   readonly entryId: string;
-  readonly liveWorkspaceTransportEnabled: boolean;
   readonly sceneUrl: string;
   readonly historyUrl: string;
   readonly areasUrl: string;
@@ -474,9 +473,6 @@ export const booleanValue = (value: unknown, code: string): boolean => {
   return value;
 };
 
-const optionalBooleanDefaultFalse = (value: unknown, code: string): boolean =>
-  value === undefined ? false : booleanValue(value, code);
-
 const nullableBoolean = (value: unknown, code: string): boolean | null => {
   if (value === null) return null;
   return booleanValue(value, code);
@@ -547,10 +543,6 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
     const mapRevision = boundedInteger(entry.map_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-map-revision");
     return {
       entryId: boundedString(entry.entry_id, 128, "invalid-entry-id"),
-      liveWorkspaceTransportEnabled: optionalBooleanDefaultFalse(
-        entry.live_workspace_transport_enabled,
-        "invalid-live-workspace-transport",
-      ),
       sceneUrl: privatePath(entry.scene_url, "invalid-scene-url"),
       historyUrl: privatePath(entry.history_url, "invalid-history-url"),
       areasUrl: privatePath(entry.areas_url, "invalid-areas-url"),

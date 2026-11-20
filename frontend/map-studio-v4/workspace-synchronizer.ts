@@ -30,12 +30,11 @@ interface WorkspaceSynchronizationCallbacks {
   readonly loadTransport?: () => Promise<typeof import("./workspace-transport")>;
 }
 
-/** Owns the optional workspace stream and its monotonic admission fence. */
+/** Owns the workspace stream and its monotonic admission fence. */
 export class WorkspaceSynchronizer {
   readonly #store: WorkspaceStore;
   readonly #coherence: CoherenceMachine;
   readonly #connection: WorkspaceConnection | null;
-  readonly #transportOverride: boolean | undefined;
   readonly #callbacks: WorkspaceSynchronizationCallbacks;
   #transport: WorkspaceTransport | null = null;
   #transportEntry: string | null = null;
@@ -63,13 +62,11 @@ export class WorkspaceSynchronizer {
     store: WorkspaceStore,
     coherence: CoherenceMachine,
     connection: WorkspaceConnection | null,
-    transportOverride: boolean | undefined,
     callbacks: WorkspaceSynchronizationCallbacks,
   ) {
     this.#store = store;
     this.#coherence = coherence;
     this.#connection = connection;
-    this.#transportOverride = transportOverride;
     this.#callbacks = callbacks;
   }
 
@@ -110,14 +107,11 @@ export class WorkspaceSynchronizer {
   #enabled(projection: HassProjection): boolean {
     const entryId = projection.entryKey;
     const state = this.#store.value;
-    const catalogEntry = state.resources.catalog.value?.find((entry) => entry.entryId === entryId);
-    const admittedEntry = state.resources.entry;
-    const capabilityEnabled = this.#transportOverride
-      ?? Boolean(catalogEntry?.liveWorkspaceTransportEnabled
-        && admittedEntry?.entryId === entryId
-        && admittedEntry.liveWorkspaceTransportEnabled);
-    return Boolean(capabilityEnabled && this.#connection && projection.host.administrator
-      && projection.host.connected && projection.vacuumEntityId && entryId && state.pageActive);
+    // The stream opens only for the entry the catalog lists and the workspace admitted.
+    return Boolean(this.#connection && projection.host.administrator
+      && projection.host.connected && projection.vacuumEntityId && entryId && state.pageActive
+      && state.resources.entry?.entryId === entryId
+      && state.resources.catalog.value?.some((entry) => entry.entryId === entryId));
   }
 
   #syncWorkspaceTransport(projection: HassProjection): void {
@@ -172,7 +166,7 @@ export class WorkspaceSynchronizer {
     const activation = this.#activation;
     const loading = { entryId, userKey, pending: true };
     this.#loading = loading;
-    // Polling remains active while the capability module loads; a failed module
+    // Polling remains active while the transport module loads; a failed module
     // leaves it active until a retry or lifecycle change.
     void (this.#callbacks.loadTransport?.() ?? import("./workspace-transport")).then(({ WorkspaceTransport }) => {
       const current = this.#callbacks.projection();
@@ -218,7 +212,7 @@ export class WorkspaceSynchronizer {
           }
           // Retire the admitted projection as well as the subscription. Until
           // the catalog confirms removal, a later host update could otherwise
-          // reopen the stream from a stale capability row.
+          // reopen the stream from a stale catalog row.
           void Promise.resolve(this.#callbacks.refreshSpatialBoundary(
             entryId, ["plans", "areas", "history"],
           )).then(() => {
