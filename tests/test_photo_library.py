@@ -108,6 +108,7 @@ async def test_a_photo_is_written_to_disk_and_recorded(
     assert record.sha256 == hashlib.sha256(WEBP).hexdigest()
     assert record.place == HERE
     assert library.photo_count == 1
+    assert library.records == (record,)
     assert library.album(MANUAL_ALBUM) == [record]
     listener.assert_called_once_with()
 
