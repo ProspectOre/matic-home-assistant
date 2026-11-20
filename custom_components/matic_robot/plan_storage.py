@@ -1,4 +1,8 @@
-"""Private plan storage and its version check."""
+"""Private plan storage and its version check.
+
+0.5.1 to 0.5.5 and 0.6 all write 1.13, so 0.6 has no version step. 0.5.0
+wrote 1.12 and 0.4 wrote 1.5: those files are refused and left as saved.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,6 @@ from homeassistant.util.file import WriteError
 from homeassistant.util.json import SerializationError
 
 from .const import DOMAIN
-from .plan_state import migrate_plan_document
 
 STORAGE_VERSION = 1
 
@@ -23,8 +26,12 @@ STOP_FENCE_EXPIRES_AT = "stop_fence_expires_at"
 STOP_FENCE_RUN_ID = "stop_fence_run_id"
 
 
+class PlanStoreTooOldError(HomeAssistantError):
+    """The plan file predates 1.13; a release before 0.5.1 saved it."""
+
+
 class _CleaningPlanStore(Store[dict[str, Any]]):
-    """Private plan storage with fail-closed schema migrations."""
+    """Private plan storage that reads 1.13 and refuses every other version."""
 
     @override
     async def _async_write_data(self, data: dict[str, Any]) -> None:
@@ -48,11 +55,14 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
         old_minor_version: int,
         old_data: dict[str, Any],
     ) -> dict[str, Any]:
-        """Run the version steps; Home Assistant then saves the file at 1.13."""
+        """Refuse another version; raising keeps Home Assistant from saving it."""
         if old_major_version != STORAGE_VERSION:
             raise ValueError(f"unsupported plan storage version {old_major_version}")
         if old_minor_version > STORAGE_MINOR_VERSION:
             raise ValueError(
                 f"unsupported plan storage minor version {old_minor_version}"
             )
-        return migrate_plan_document(old_minor_version, old_data)
+        raise PlanStoreTooOldError(
+            f"plan storage minor version {old_minor_version} is older than "
+            f"{STORAGE_MINOR_VERSION}"
+        )

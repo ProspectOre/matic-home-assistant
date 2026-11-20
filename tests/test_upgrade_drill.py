@@ -9,15 +9,20 @@ from typing import Any
 
 import pytest
 
+from custom_components.matic_robot.plan_storage import STORAGE_MINOR_VERSION
+from scripts import upgrade_drill
 from scripts.upgrade_drill import (
     PHASE_OUTPUT_LIMIT,
+    PLAN_STORE_FLOOR,
     DrillFailed,
     _phase_failure_output,
     compare,
     compare_floor_catalogs,
     history_path,
+    integration_stores,
     plan_state,
     require_unchanged_history,
+    require_unchanged_stores,
     run_phase,
 )
 
@@ -402,3 +407,51 @@ def test_downgrade_must_leave_the_history_file_byte_for_byte(tmp_path: Path) -> 
     path.write_bytes(b'{"version": 2, "data": {"snapshots": [{"id": "a"}]}}')
     with pytest.raises(DrillFailed, match="rewrote the v2 store file"):
         require_unchanged_history(stored, tmp_path)
+
+
+def _seed_stores(config: Path, minor_version: int) -> None:
+    storage = config / ".storage"
+    storage.mkdir(parents=True)
+    (storage / "matic_robot.plans").write_text(
+        json.dumps({"minor_version": minor_version})
+    )
+    (storage / "matic_robot.firmware").write_text("{}")
+    (storage / "core.entity_registry").write_text("{}")
+
+
+def test_refused_start_must_leave_every_integration_store(tmp_path: Path) -> None:
+    _seed_stores(tmp_path, 12)
+    stores = integration_stores(tmp_path)
+    assert sorted(stores) == ["matic_robot.firmware", "matic_robot.plans"]
+    require_unchanged_stores(stores, tmp_path)
+
+    (tmp_path / ".storage" / "matic_robot.plans").write_text("{}")
+    (tmp_path / ".storage" / "matic_robot.photos.entry").write_text("{}")
+    with pytest.raises(
+        DrillFailed, match=r"changed matic_robot\.photos\.entry, matic_robot\.plans"
+    ):
+        require_unchanged_stores(stores, tmp_path)
+
+
+def test_release_below_the_floor_gets_the_refusal_drill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert PLAN_STORE_FLOOR == STORAGE_MINOR_VERSION
+    phases: list[tuple[str, str]] = []
+
+    def run(checkout: Path, phase: str, config: Path) -> None:
+        phases.append((checkout.name, phase))
+        if phase == "seed":
+            _seed_stores(config, PLAN_STORE_FLOOR - 1)
+
+    state = {**_state(2), "minor_version": PLAN_STORE_FLOOR - 1}
+    monkeypatch.setattr(upgrade_drill, "prepare_older", lambda tag, worktree: None)
+    monkeypatch.setattr(upgrade_drill, "run_phase", run)
+    monkeypatch.setattr(upgrade_drill, "plan_state", lambda config: state)
+
+    assert upgrade_drill.drill("v0.5.0", tmp_path) == {"seed": state, "restore": state}
+    assert phases == [
+        ("older", "seed"),
+        (upgrade_drill.ROOT.name, "refused"),
+        ("older", "restore"),
+    ]

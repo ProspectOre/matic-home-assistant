@@ -1,13 +1,13 @@
-"""Stored plan files of every released version read and credit as before.
+"""A plan file 0.5.4 saved reads and credits as before.
 
 `plan_state_pins_2c7aa210.json` holds what release/0.6 at 2c7aa210 read from
-the synthetic store below saved at minor version 5 (0.4.8) and, alike, at 11,
-12 (0.5.0) and 13 (0.5.1 to 0.5.4): the robot state, cadence progress, the
-plan preview that decides what the robot is sent, rotation order and history,
-then the same after one verified room, the saved file and a cold reload. The
-store carries every legacy field the plan store has had to repair: duration
-scalars, a pre-0.5 room run under `quick_clean`, the old one-time run name,
-`trigger` without `provenance`, old run outcomes and malformed containers.
+the synthetic store below saved at minor version 13 (0.5.1 to 0.5.5): the
+robot state, cadence progress, the plan preview that decides what the robot
+is sent, rotation order and history, then the same after one verified room,
+the saved file and a cold reload. The store carries every legacy field a 1.13
+file can still hold: duration scalars, a pre-0.5 room run under
+`quick_clean`, the old one-time run name, `trigger` without `provenance`, old
+run outcomes and malformed containers.
 """
 
 from __future__ import annotations
@@ -27,7 +27,11 @@ from custom_components.matic_robot.plan_model import (
     plan_floor_token,
     room_cadence_identity,
 )
-from custom_components.matic_robot.plan_storage import STORAGE_KEY, STORAGE_VERSION
+from custom_components.matic_robot.plan_storage import (
+    STORAGE_KEY,
+    STORAGE_MINOR_VERSION,
+    STORAGE_VERSION,
+)
 from custom_components.matic_robot.plans import CleaningPlanManager
 
 GOLDEN = Path(__file__).parent / "fixtures" / "plan_state_pins_2c7aa210.json"
@@ -298,10 +302,14 @@ async def _verified_room(manager: CleaningPlanManager, freezer) -> None:
     )
 
 
-async def _pins(hass, freezer, minor_version: int) -> dict[str, object]:
+async def _pins(hass, freezer) -> dict[str, object]:
     freezer.move_to(NOW)
     await Store(
-        hass, STORAGE_VERSION, STORAGE_KEY, private=True, minor_version=minor_version
+        hass,
+        STORAGE_VERSION,
+        STORAGE_KEY,
+        private=True,
+        minor_version=STORAGE_MINOR_VERSION,
     ).async_save(_stored())
     manager = CleaningPlanManager(hass)
     await manager.async_load()
@@ -320,9 +328,5 @@ async def _pins(hass, freezer, minor_version: int) -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize("minor_version", [5, 11, 12, 13])
-async def test_released_store_reads_and_credits_as_before(
-    hass, freezer, minor_version: int
-) -> None:
-    golden = json.loads(GOLDEN.read_text())["0.4.8" if minor_version == 5 else "0.5"]
-    assert await _pins(hass, freezer, minor_version) == golden
+async def test_released_store_reads_and_credits_as_before(hass, freezer) -> None:
+    assert await _pins(hass, freezer) == json.loads(GOLDEN.read_text())["0.5"]

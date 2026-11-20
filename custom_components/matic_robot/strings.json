@@ -2150,7 +2150,7 @@
     },
     "upgrade_through_0_5_4": {
       "title": "Install Matic (Unofficial) {version} before this update",
-      "description": "This update reads data saved by Matic (Unofficial) {version}, and this installation's data is older, so the integration did not start. Nothing was changed or deleted.\n\nInstall {version} from HACS, restart Home Assistant once, then install this update again."
+      "description": "This update needs Matic (Unofficial) {version} or a later 0.5 release to have run first. This installation's saved data is from an older release, so the integration did not start. Nothing was changed or deleted.\n\nInstall {version} from HACS, restart Home Assistant once, then install this update again."
     },
     "blueprints_use_removed_action": {
       "title": "Matic blueprints need an update",
