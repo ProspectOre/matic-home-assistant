@@ -629,7 +629,7 @@ line-height: var(--ms-lh-snug);
     this.#photos.request();
     if (this.#photos.status !== "ready") return chunkStatus(this.#photos.status, this.localize, this.retry);
     return html`<matic-photo-gallery-v4 .backend=${this.backend} .entryId=${this.state.resources.entry?.entryId ?? null}
-      .localize=${this.localize} .dates=${this.dates}></matic-photo-gallery-v4>`;
+      .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit}></matic-photo-gallery-v4>`;
   }
 
   protected override render() {

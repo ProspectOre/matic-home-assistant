@@ -58,6 +58,7 @@ def _photo(number: int, album_place: dict, *, starred: bool = False) -> dict:
 
 
 GALLERY = {
+    "map": None,
     "viewpoints": [
         {
             "viewpoint_id": "vp-1",
@@ -95,6 +96,12 @@ GALLERY = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_current_map():
+    with patch.object(photo_gallery_view, "_map_session_key", return_value=None):
+        yield
+
+
 class _Request(dict):
     def __init__(self, **values: object) -> None:
         super().__init__(values)
@@ -105,6 +112,7 @@ async def test_lists_viewpoints_and_albums_newest_first() -> None:
     runtime = SimpleNamespace(
         photos=SimpleNamespace(records=RECORDS),
         viewpoints=SimpleNamespace(all=(STOVE,)),
+        slam_map=SimpleNamespace(mission_identity=None),
     )
     request = _Request(hass_user=SimpleNamespace(is_admin=True))
     with patch.object(photo_gallery_view, "runtime_for_entry", return_value=runtime):
@@ -118,6 +126,7 @@ async def test_lists_only_the_newest_photos() -> None:
     runtime = SimpleNamespace(
         photos=SimpleNamespace(records=RECORDS),
         viewpoints=SimpleNamespace(all=()),
+        slam_map=SimpleNamespace(mission_identity=None),
     )
     request = _Request(hass_user=SimpleNamespace(is_admin=True))
     with (
@@ -131,6 +140,25 @@ async def test_lists_only_the_newest_photos() -> None:
         ["photo-3"],
         ["photo-2"],
     ]
+
+
+async def test_names_the_map_matic_map_shows() -> None:
+    runtime = SimpleNamespace(
+        photos=SimpleNamespace(records=()),
+        viewpoints=SimpleNamespace(all=()),
+        slam_map=SimpleNamespace(mission_identity=SimpleNamespace(mission_id=7)),
+    )
+    request = _Request(hass_user=SimpleNamespace(is_admin=True))
+    with (
+        patch.object(photo_gallery_view, "runtime_for_entry", return_value=runtime),
+        patch.object(photo_gallery_view, "_map_session_key", return_value="a" * 64),
+    ):
+        response = await MaticPhotoGalleryView().get(request, "e")
+
+    assert json.loads(response.body)["map"] == {
+        "map_session_key": "a" * 64,
+        "mission_id": 7,
+    }
 
 
 async def test_only_an_administrator_reads_the_gallery() -> None:

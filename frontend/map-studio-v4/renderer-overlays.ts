@@ -29,7 +29,7 @@ export const trailVisible = (state: WorkspaceState): boolean => {
  */
 export const layersNeeded = (state: WorkspaceState, scene: SceneModel | null): "now" | "soon" | null => {
   const live = state.dataMode === "live" && state.selection.floorId === "current";
-  if (state.seen || trailVisible(state)
+  if (state.seen || trailVisible(state) || (state.workflow === "photos" && state.photoMarks)
     || (live && !state.floor.readOnly && (state.wifiSignal || state.floorTypes))) return "now";
   return state.optionalUiReady && state.map.available && (live
     || scene?.metadata.rooms.length
@@ -262,6 +262,8 @@ export class RendererOverlay {
       : state.draw.circles;
     this.#modules.drawOverlays?.drawTaskOverlays(context, state, circles, this.#cursor, palette,
       bounds.width, bounds.height,
+      (x, y, height, clip) => camera.projectMeters(x, y, height, clip));
+    this.#modules.layers?.drawViewpoints(context, state, palette,
       (x, y, height, clip) => camera.projectMeters(x, y, height, clip));
     if (this.#marker) {
       this.#modules.layers?.drawInspectMarker(context, this.#marker, palette,

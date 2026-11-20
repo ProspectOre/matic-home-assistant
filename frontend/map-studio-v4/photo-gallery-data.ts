@@ -37,7 +37,14 @@ export interface GalleryViewpoint {
   readonly roomId: string;
 }
 
+/** The map Matic Map shows now, as the server read it. */
+export interface GalleryMap {
+  readonly mapSessionKey: string;
+  readonly missionId: number;
+}
+
 export interface PhotoGallery {
+  readonly map: GalleryMap | null;
   readonly viewpoints: readonly GalleryViewpoint[];
   /** Newest album first. */
   readonly albums: readonly PhotoAlbum[];
@@ -127,6 +134,13 @@ const viewpoint = (value: unknown): GalleryViewpoint => {
   };
 };
 
+const galleryMap = (value: unknown): GalleryMap | null => {
+  if (value === null) return null;
+  const raw = record(value);
+  const key = text(raw.map_session_key, 64);
+  return /^[0-9a-f]{64}$/.test(key) ? { mapSessionKey: key, missionId: missionId(raw.mission_id) } : fail("invalid-photo-gallery");
+};
+
 export function parsePhotoGallery(value: unknown, entryId: string): PhotoGallery {
   const raw = record(value);
   let photos = 0;
@@ -137,5 +151,5 @@ export function parsePhotoGallery(value: unknown, entryId: string): PhotoGallery
     return { id: text(album.album), photos: parsed };
   });
   if (photos > MAX_PHOTOS) fail("invalid-photo-gallery");
-  return { viewpoints: list(raw.viewpoints, MAX_VIEWPOINTS).map(viewpoint), albums };
+  return { map: galleryMap(raw.map), viewpoints: list(raw.viewpoints, MAX_VIEWPOINTS).map(viewpoint), albums };
 }
