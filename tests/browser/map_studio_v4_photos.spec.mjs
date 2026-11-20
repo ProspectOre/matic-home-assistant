@@ -15,7 +15,12 @@ const shot = (id, capturedAt, { area = "Kitchen", source = "home_assistant" } = 
 });
 
 const GALLERY = {
-  viewpoints: [{ viewpoint_id: "v1", name: "Back door", mission_id: 7, x: 1, y: 2, heading: 0.5, room_id: "r1" }],
+  map: { map_session_key: "a".repeat(64), mission_id: 7 },
+  viewpoints: [
+    { viewpoint_id: "v1", name: "Back door", mission_id: 7, x: 1, y: 2, heading: 0.5, room_id: "r1" },
+    // Saved on another floor's map, so not drawn on this one.
+    { viewpoint_id: "v2", name: "Landing", mission_id: 8, x: 0, y: 0, heading: 0, room_id: "r9" },
+  ],
   albums: [
     { album: "tour-2", photos: [shot("p3", "2026-11-19T18:02:00+00:00", { area: "Hall" }), shot("p2", "2026-11-19T18:00:00+00:00")] },
     { album: "manual", photos: [shot("p1", "2026-11-18T09:00:00+00:00", { area: null, source: "matic_app" })] },
@@ -49,6 +54,10 @@ test("Photos lists albums newest first and the viewer steps through every photo"
   const gallery = panel.locator("matic-photo-gallery-v4");
   await expect(gallery.locator("h3")).toHaveText([/^Photo tour, /, "Single photos", "Saved viewpoints"]);
   await expect(gallery.getByRole("listitem").filter({ hasText: "Back door" })).toHaveCount(1);
+  // The viewpoints on this floor's map go to the map canvas.
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().photoMarks)).toEqual({
+    mapSessionKey: "a".repeat(64), viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0.5 }],
+  });
   await expect(gallery.locator(".shot img")).toHaveCount(3);
   expect((await photoReads(page)).sort()).toEqual([`${ROUTE}/preview/p1`, `${ROUTE}/preview/p2`, `${ROUTE}/preview/p3`]);
 
@@ -109,7 +118,7 @@ test("on a phone the viewer fills the screen and a swipe turns the photo", async
 });
 
 test("Photos explains an empty library and offers Try again after a failed read", async ({ page }) => {
-  const panel = await mountPanel(page, { viewpoints: [], albums: [] });
+  const panel = await mountPanel(page, { map: null, viewpoints: [], albums: [] });
   await openPhotos(panel);
   const gallery = panel.locator("matic-photo-gallery-v4");
   await expect(gallery).toContainText("No photos yet. Press Take photo, or run a photo tour from an automation.");
@@ -117,7 +126,7 @@ test("Photos explains an empty library and offers Try again after a failed read"
 
   // A photo link outside this robot's photo route fails the whole read, and nothing is fetched.
   await page.evaluate((route) => {
-    window.__photoGalleryReply = { viewpoints: [], albums: [{ album: "manual", photos: [{
+    window.__photoGalleryReply = { map: null, viewpoints: [], albums: [{ album: "manual", photos: [{
       photo_id: "p1", captured_at: "2026-11-18T09:00:00+00:00", source: "home_assistant", starred: false, area: null, pose: null,
       url: "/api/elsewhere/p1", preview_url: `${route}/preview/p1`,
     }] }] };
@@ -148,7 +157,7 @@ test("a photo that fails to load says so and loads on Try again", async ({ page 
 
 test("the grid shows sixty photos at a time and reads previews only for those shown", async ({ page }) => {
   const photos = Array.from({ length: 65 }, (_, index) => shot(`q${index}`, new Date(Date.UTC(2026, 10, 19, 12, 0) - index * 60_000).toISOString()));
-  const panel = await mountPanel(page, { viewpoints: [], albums: [{ album: "tour-9", photos: photos.slice(0, 50) }, { album: "manual", photos: photos.slice(50) }] });
+  const panel = await mountPanel(page, { map: null, viewpoints: [], albums: [{ album: "tour-9", photos: photos.slice(0, 50) }, { album: "manual", photos: photos.slice(50) }] });
   await openPhotos(panel);
   const gallery = panel.locator("matic-photo-gallery-v4");
   await expect(gallery.locator(".shot img")).toHaveCount(60);
@@ -173,14 +182,14 @@ test("Photos opened before a robot is chosen says so, then reads once one is", a
   const gallery = page.locator("matic-photo-gallery-v4");
   await expect(gallery.getByRole("alert")).toHaveText("Couldn't load the photos.");
   await gallery.evaluate((element) => {
-    element.backend = { photoGallery: async () => ({ viewpoints: [], albums: [] }), photo: async () => new Blob() };
+    element.backend = { photoGallery: async () => ({ map: null, viewpoints: [], albums: [] }), photo: async () => new Blob() };
     element.entryId = "entry";
   });
   await expect(gallery).toContainText("No photos yet.");
 });
 
 test("photos run newest first by time when single photos straddle a photo tour", async ({ page }) => {
-  const panel = await mountPanel(page, { viewpoints: [], albums: [
+  const panel = await mountPanel(page, { map: null, viewpoints: [], albums: [
     { album: "manual", photos: [shot("m10", "2026-11-10T09:00:00+00:00", { area: "Den" }), shot("m1", "2026-11-01T09:00:00+00:00", { area: "Porch" })] },
     { album: "tour-5", photos: [shot("t5", "2026-11-05T09:00:00+00:00", { area: "Hall" })] },
   ] });
@@ -212,7 +221,7 @@ test("the gallery read accepts the server's 5,000 newest photos and its longest 
     const read = (count) => {
       try {
         // A viewpoint name of 64 code points, each two UTF-16 units.
-        return parsePhotoGallery({ viewpoints: [{ viewpoint_id: "v1", name: "\u{1F600}".repeat(64), mission_id: 7, x: 0, y: 0, heading: 0, room_id: "r1" }], albums: photos(count).map((photo) => ({ album: photo.photo_id, photos: [photo] })) }, "synthetic-entry").albums.length;
+        return parsePhotoGallery({ map: null, viewpoints: [{ viewpoint_id: "v1", name: "\u{1F600}".repeat(64), mission_id: 7, x: 0, y: 0, heading: 0, room_id: "r1" }], albums: photos(count).map((photo) => ({ album: photo.photo_id, photos: [photo] })) }, "synthetic-entry").albums.length;
       } catch (error) {
         return error.code;
       }
@@ -220,4 +229,49 @@ test("the gallery read accepts the server's 5,000 newest photos and its longest 
     return [read(5_000), read(5_001)];
   }, ROUTE);
   expect(result).toEqual([5_000, "invalid-photo-gallery"]);
+});
+
+test("each viewpoint is a pin with a wedge facing its heading on the mirrored map", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { drawViewpoints } from "./frontend/map-studio-v4/photo-marks"; export { initialWorkspaceState } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/photo-marks-test.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { drawViewpoints, initialWorkspaceState } = await import("/photo-marks-test.js");
+    const key = "a".repeat(64);
+    const base = initialWorkspaceState();
+    const state = (changes) => ({
+      ...base, workflow: "photos", dataMode: "live",
+      resources: { ...base.resources, entry: { mapSessionKey: key } },
+      photoMarks: { mapSessionKey: key, viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0 }] },
+      ...changes,
+    });
+    const draw = (value) => {
+      const calls = [];
+      const context = new Proxy({}, {
+        get: (_target, name) => (...args) => { calls.push([name, ...args.map((arg) => typeof arg === "number" ? Math.round(arg) : arg)]); },
+        set: (_target, name, value) => { calls.push([`=${String(name)}`, value]); return true; },
+      });
+      const palette = { accent: [0, 0, 0], onAccent: [255, 255, 255], text: [0, 0, 0] };
+      // The map mirrors X, as Matic Map does: +x metres go left on screen.
+      drawViewpoints(context, value, palette, (x, y) => ({ x: 300 - x * 100, y: 300 - y * 100 }));
+      return calls;
+    };
+    const shown = draw(state({}));
+    return {
+      pin: shown.find(([name]) => name === "arc").slice(1, 3),
+      tip: shown.filter(([name]) => name === "lineTo")[2].slice(1),
+      label: shown.find(([name]) => name === "fillText").slice(1),
+      // Set inside the drawing, whatever alignment room names left on the shared context.
+      align: shown.findLast(([name], index) => name === "=textAlign" && index < shown.findIndex(([call]) => call === "fillText"))?.[1],
+      otherWorkflow: draw(state({ workflow: "runs" })).length,
+      otherMap: draw(state({ photoMarks: { mapSessionKey: "b".repeat(64), viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0 }] } })).length,
+    };
+  });
+  expect(result.pin).toEqual([200, 100]);
+  // Heading 0 faces +x, which the mirrored map draws to the left: 1.2 m is 120 px.
+  expect(result.tip).toEqual([80, 100]);
+  expect(result.label).toEqual(["Back door", 210, 100]);
+  expect(result.align).toBe("left");
+  expect(result.otherWorkflow).toBe(0);
+  expect(result.otherMap).toBe(0);
 });

@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
 import type { MaticBackend } from "./backend";
 import { controls } from "./controls";
-import type { DateFormat, Localize, NoticePlaceholders } from "./contracts";
+import type { DateFormat, Localize, NoticePlaceholders, PhotoMarks, WorkspaceIntent } from "./contracts";
 import { formatDateTime, translate } from "./localize";
 import type { GalleryPhoto, PhotoAlbum, PhotoGallery } from "./photo-gallery-data";
 import { base, tokens } from "./tokens";
@@ -19,6 +19,13 @@ const SWIPE = 48;
 
 type Load = "loading" | "ready" | "failed";
 
+/** The saved viewpoints on the map the server named, for the map canvas. */
+const photoMarks = ({ map, viewpoints }: PhotoGallery): PhotoMarks | null => map && {
+  mapSessionKey: map.mapSessionKey,
+  viewpoints: viewpoints.filter((viewpoint) => viewpoint.missionId === map.missionId)
+    .map(({ id, name, x, y, heading }) => ({ id, name, x, y, heading })),
+};
+
 /**
  * Photos: albums newest first, a grid of each album's pixelated previews, and
  * a full-size viewer. It reads only this robot's photo routes and never moves
@@ -30,6 +37,7 @@ export class MaticPhotoGalleryV4 extends LitElement {
     entryId: { attribute: false },
     localize: { attribute: false },
     dates: { attribute: false },
+    emit: { attribute: false },
     _load: { state: true },
     _gallery: { state: true },
     _previews: { state: true },
@@ -62,6 +70,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   entryId: string | null = null;
   localize?: Localize;
   dates?: DateFormat;
+  /** The workflow panel's intent dispatch, which draws the viewpoints on the map. */
+  emit: (intent: WorkspaceIntent) => void = () => {};
   _load: Load = "loading";
   _gallery: PhotoGallery | null = null;
   /** Object URLs of fetched previews, by photo ID. */
@@ -120,11 +130,13 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     const controller = new AbortController();
     this.#controller = controller;
     this._load = "loading";
+    this.emit({ type: "show-photo-marks", marks: null });
     try {
       const gallery = await backend.photoGallery(entryId, controller.signal);
       if (controller.signal.aborted) return;
       this._gallery = gallery;
       this._load = "ready";
+      this.emit({ type: "show-photo-marks", marks: photoMarks(gallery) });
       await this.#readPreviews(0);
     } catch {
       if (!controller.signal.aborted) this._load = "failed";

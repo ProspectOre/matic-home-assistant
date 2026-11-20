@@ -388,6 +388,22 @@ export function readWorkspaceNotice(value: unknown): WorkspaceNotice | null {
 }
 
 /** What effects report: the robot, its maps and catalogs, and the command in flight. */
+/** A saved viewpoint: where the robot stands, in map metres, and the way its camera faces. */
+export interface ViewpointMark {
+  readonly id: string;
+  readonly name: string;
+  readonly x: number;
+  readonly y: number;
+  /** Radians, counter-clockwise from the map's +x axis. */
+  readonly heading: number;
+}
+
+export interface PhotoMarks {
+  /** The map the viewpoints belong to; they are drawn only while it is shown. */
+  readonly mapSessionKey: string;
+  readonly viewpoints: readonly ViewpointMark[];
+}
+
 export interface ReportedState {
   readonly deepMop: RobotSetting | null;
   readonly lastRun: ManagedRunSummary | null;
@@ -395,6 +411,8 @@ export interface ReportedState {
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
+  /** Saved viewpoints Photos read last; drawn only while Photos is open, on the map they were read for. */
+  readonly photoMarks: PhotoMarks | null;
   readonly seen?: LastSeenDuringRun | undefined;
   /** Object URLs of robot map pictures by history id. */
   readonly runThumbnails: Readonly<Record<string, string>>;
@@ -586,6 +604,8 @@ export type WorkspaceIntent =
   | { readonly type: "reload-home-pins" }
   /** Draws a trail on the map, `live` for the run in progress; null hides it. */
   | { readonly type: "show-trail"; readonly trail: string | null }
+  /** Photos' saved viewpoints for the map, or null while a read is under way. */
+  | { readonly type: "show-photo-marks"; readonly marks: PhotoMarks | null }
   | { readonly type: "load-run-thumbnail"; readonly id: string };
 
 /** A saved plan or custom area shown on home as a one-tap shortcut. */
@@ -816,6 +836,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "move-home-pin": true,
   "reload-home-pins": true,
   "show-trail": true,
+  "show-photo-marks": true,
   "load-run-thumbnail": true,
 };
 
