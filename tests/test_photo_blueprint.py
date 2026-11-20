@@ -392,3 +392,21 @@ async def test_send_another_while_the_robot_is_busy_says_why(
     hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
     await settle()
     assert len(calls.tours) == 1
+
+
+async def test_repeated_send_another_presses_keep_the_buttons_working(
+    hass: HomeAssistant,
+) -> None:
+    calls = await setup_blueprint(hass, photos=[photo()], cooldown=3600)
+    hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
+    await settle()
+
+    # More presses than the automation's ten parallel runs.
+    for _ in range(12):
+        hass.bus.async_fire("mobile_app_notification_action", {"action": SEND_ANOTHER})
+        await settle()
+    hass.bus.async_fire("mobile_app_notification_action", {"action": SEND_HOME})
+    await settle()
+
+    assert len(calls.tours) == 13
+    assert len(calls.docked) == 1

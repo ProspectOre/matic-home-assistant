@@ -265,4 +265,8 @@ actions:
                                    {'action': send_another,
                                     'title': 'Send another'}])
                      if phone_app else {} }}
-  - delay: !input cooldown
+  # Only an alert holds back the next alert; a button run ends here, so
+  # repeated presses never use up the parallel runs.
+  - if: "{{ trigger.id == 'alert' }}"
+    then:
+      - delay: !input cooldown
