@@ -38,12 +38,9 @@ from custom_components.matic_robot import image as image_platform
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
-    UserCommand,
 )
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
-    EndpointUnsupportedError,
-    SinkLocationUnavailableError,
 )
 from custom_components.matic_robot.client.models import (
     CleaningSchedule,
@@ -71,7 +68,6 @@ from custom_components.matic_robot.plan_model import (
     PlanStopDecision,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.slam_decoded_map import DecodedMap
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
@@ -2099,68 +2095,6 @@ def test_photorealistic_camera_withholds_mismatched_floor_overlays() -> None:
     assert render.call_args.kwargs["robot_position"] is None
 
 
-async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
-    entry = _entry()
-    entity = vacuum.MaticVacuum(entry)
-    session = entry.runtime_data.session
-
-    assert entity.activity is VacuumActivity.CLEANING
-    assert [segment.id for segment in await entity.async_get_segments()] == [
-        "room-1",
-        "room-2",
-    ]
-
-    plans = entry.runtime_data.cleaning_plans
-    await entity.async_pause()
-    # Pausing must keep a managed plan resumable.
-    assert plans.control.cancel.call_count == 0
-    await entity.async_stop()
-    await entity.async_return_to_base()
-    commands = [
-        call.args[0] for call in session.client.async_send_user_command.await_args_list
-    ]
-    assert commands == [
-        UserCommand.PAUSE,
-        UserCommand.STOP,
-        UserCommand.STOP,
-    ]
-    # A user stop or dock ends the managed plan instead of letting the
-    # runner treat the docked robot as a finished room and continue.
-    assert plans.control.request_stop.call_count == 1
-    assert plans.control.external_command.call_count == 2
-    assert plans.control.external_motion.call_count == 1
-    plans.control.async_replace_managed_motion.assert_awaited_once_with(
-        "synthetic-serial"
-    )
-
-    await entity.async_clean_segments(["room-2"])
-    coverage_call = session.client.async_start_coverage.await_args
-    assert coverage_call.args[1] == ["protocol-2"]
-    _assert_current_coverage_call(
-        coverage_call,
-        {
-            "cleaning_mode": CleaningMode.BOTH,
-            "coverage_setting": CoverageSetting.STANDARD,
-            "ordered": False,
-        },
-    )
-    assert "require_settings_readback" not in coverage_call.kwargs
-    assert session.heartbeat.async_request_refresh.await_count == 4
-
-
-async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
-    entry = _entry()
-    entity = vacuum.MaticVacuum(entry)
-    plans = entry.runtime_data.cleaning_plans
-    plans.control.request_stop.return_value = PlanStopDecision("after_room", 75, 50)
-
-    await entity.async_stop()
-    await entity.async_send_command("stop")
-
-    assert plans.control.request_stop.call_count == 2
-    entry.runtime_data.session.client.async_send_user_command.assert_not_awaited()
-
-
 async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
     entry = _entry()
 
@@ -2186,22 +2120,6 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
     entry.runtime_data.cleaning_plans.control.managed_command.assert_called_once_with(
         "synthetic-serial", 7
     )
-
-
-async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
-    paused_entry = _entry(paused=True)
-    await vacuum.MaticVacuum(paused_entry).async_start()
-    paused_entry.runtime_data.session.client.async_send_user_command.assert_awaited_once_with(
-        UserCommand.RESUME
-    )
-
-    ready_entry = _entry()
-    await vacuum.MaticVacuum(ready_entry).async_start()
-    start_call = ready_entry.runtime_data.session.client.async_start_coverage.await_args
-    assert start_call.args[1] == [
-        "protocol-1",
-        "protocol-2",
-    ]
 
 
 async def test_paused_vacuum_with_latched_warning_reports_paused_and_problem() -> None:
@@ -2238,51 +2156,6 @@ def test_problem_sensor_names_the_current_errors() -> None:
         "errors": ["Mopping water unavailable", "error_code_326"]
     }
     assert attributes["charging"] is None
-
-
-async def test_clean_action_supports_the_complete_verified_option_matrix() -> None:
-    entry = _entry()
-    entity = vacuum.MaticVacuum(entry)
-
-    await entity.async_send_command(
-        "clean_rooms",
-        {
-            "rooms": ["Study", "room-1"],
-            "cleaning_mode": "mop",
-            "coverage": "quick",
-            "ordered": True,
-        },
-    )
-
-    call = entry.runtime_data.session.client.async_start_coverage.await_args
-    assert call.args[1] == ["protocol-2", "protocol-1"]
-    _assert_current_coverage_call(
-        call,
-        {
-            "cleaning_mode": CleaningMode.MOP,
-            "coverage_setting": CoverageSetting.QUICK,
-            "ordered": True,
-        },
-    )
-    assert "require_settings_readback" not in call.kwargs
-
-    await entity.async_send_command(
-        "clean_all",
-        {
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage": "standard",
-        },
-    )
-    call = entry.runtime_data.session.client.async_start_coverage.await_args
-    _assert_current_coverage_call(
-        call,
-        {
-            "cleaning_mode": CleaningMode.BOTH,
-            "coverage_setting": CoverageSetting.STANDARD,
-            "ordered": False,
-        },
-    )
-    assert "require_settings_readback" not in call.kwargs
 
 
 async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> None:
@@ -2324,222 +2197,6 @@ def test_vacuum_rejects_a_missing_or_empty_room_map() -> None:
         assert raised.value.translation_key == "room_plan_unavailable"
 
 
-async def test_send_command_defaults_and_option_type_validation() -> None:
-    entry = _entry()
-    entity = vacuum.MaticVacuum(entry)
-
-    await entity.async_send_command("clean_all")
-    coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
-    assert coverage_call.args[1] == ["protocol-1", "protocol-2"]
-    _assert_current_coverage_call(
-        coverage_call,
-        {
-            "cleaning_mode": CleaningMode.BOTH,
-            "coverage_setting": CoverageSetting.STANDARD,
-            "ordered": False,
-        },
-    )
-    assert "require_settings_readback" not in coverage_call.kwargs
-
-    await entity.async_send_command("clean_segments", ["Study"])
-    coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
-    assert coverage_call.args[1] == ["protocol-2"]
-    assert coverage_call.kwargs["ordered"] is False
-
-    with pytest.raises(
-        ServiceValidationError,
-        match=r"^Cleaning mode must be one of: vacuum, mop, vacuum_and_mop\.$",
-    ) as raised:
-        await entity.async_send_command("clean_all", {"cleaning_mode": 5})
-    assert "CleaningMode" not in str(raised.value)
-    assert "CleaningMode" not in raised.value.translation_placeholders["error"]
-
-
-async def test_vacuum_named_commands_and_validation() -> None:
-    entry = _entry()
-    entity = vacuum.MaticVacuum(entry)
-
-    await entity.async_send_command("return home")
-    await entity.async_send_command("pause")
-    await entity.async_send_command("resume")
-    await entity.async_send_command("stay put")
-    await entity.async_send_command("emote", {"kind": " Pirouette "})
-    sent = entry.runtime_data.session.client.async_send_user_command.await_args_list
-    assert [call.args[0] for call in sent[-2:]] == [
-        UserCommand.STAY_PUT,
-        UserCommand.EMOTE_PIROUETTE,
-    ]
-    await entity.async_send_command(
-        "clean_rooms",
-        {
-            "rooms": ["Study", "room-1", "Study"],
-            "cleaning_mode": "vacuum",
-            "coverage": "quick",
-            "ordered": True,
-        },
-    )
-    call = entry.runtime_data.session.client.async_start_coverage.await_args
-    assert call.args[1] == ["protocol-2", "protocol-1"]
-    _assert_current_coverage_call(
-        call,
-        {
-            "cleaning_mode": CleaningMode.VACUUM,
-            "coverage_setting": CoverageSetting.QUICK,
-            "ordered": True,
-        },
-    )
-    assert "require_settings_readback" not in call.kwargs
-
-    for command, params, message, translation_key in (
-        ("clean_rooms", {"rooms": []}, "Select at least one", "no_rooms"),
-        ("clean_rooms", {"rooms": ["Garage"]}, "Unknown Matic room", "unknown_rooms"),
-        (
-            "clean_rooms",
-            {"rooms": "Kitchen"},
-            "requires params.rooms",
-            "rooms_must_be_list",
-        ),
-        (
-            "clean_rooms",
-            {"rooms": ["Kitchen", 7]},
-            "requires params.rooms",
-            "rooms_must_be_list",
-        ),
-        ("clean_all", {"ordered": "yes"}, "ordered must be", "ordered_must_be_boolean"),
-        ("clean_all", {"ordered": None}, "ordered must be", "ordered_must_be_boolean"),
-        (
-            "clean_all",
-            {"coverage": "unknown"},
-            r"^Vacuum coverage must be one of: quick, standard, heavy_duty\.$",
-            "invalid_cleaning_option",
-        ),
-        (
-            "clean_all",
-            {"coverage": 7},
-            r"^Vacuum coverage must be one of: quick, standard, heavy_duty\.$",
-            "invalid_cleaning_option",
-        ),
-        ("emote", None, "emote requires", "emote_kind_required"),
-        ("emote", {"kind": "wave"}, "emote requires", "emote_kind_required"),
-        ("unknown", None, "Unsupported Matic command", "unsupported_command"),
-    ):
-        with pytest.raises(ServiceValidationError, match=message) as raised:
-            await entity.async_send_command(command, params)
-        assert raised.value.translation_key == translation_key
-
-    with pytest.raises(ServiceValidationError, match="room map is unavailable"):
-        await vacuum.MaticVacuum(_entry(with_floor_plan=False)).async_start()
-
-
-async def test_sink_summon_sends_the_current_floor_when_idle() -> None:
-    entry = _entry(idle=True)
-    client = entry.runtime_data.session.client
-
-    await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
-
-    client.async_go_to_posture.assert_awaited_once_with(
-        _floor_plan(), b"synthetic-posture", await_refill=True
-    )
-    entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once_with()
-
-
-async def test_sink_summon_rejects_a_floor_without_a_saved_location() -> None:
-    unsaved = _entry(idle=True)
-    unsaved.runtime_data.session.client.async_get_sink_posture.side_effect = (
-        SinkLocationUnavailableError("synthetic")
-    )
-    with pytest.raises(ServiceValidationError) as missing:
-        await RobotControls(None, unsaved, None).async_sink_summon()
-    assert missing.value.translation_key == "sink_location_unavailable"
-    unsaved.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
-
-
-async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> None:
-    stale = _entry(idle=True)
-    stale.runtime_data.slam_map.floor_plan_is_current.return_value = False
-    with pytest.raises(ServiceValidationError) as unavailable:
-        await RobotControls(None, stale, None).async_sink_summon()
-    assert unavailable.value.translation_key == "room_plan_unavailable"
-    stale.runtime_data.session.client.async_go_to_posture.assert_not_awaited()
-
-    for method in ("async_get_sink_posture", "async_go_to_posture"):
-        unsupported = _entry(idle=True)
-        getattr(
-            unsupported.runtime_data.session.client, method
-        ).side_effect = EndpointUnsupportedError("synthetic")
-        with pytest.raises(HomeAssistantError) as failed:
-            await RobotControls(None, unsupported, None).async_sink_summon()
-        assert not isinstance(failed.value, ServiceValidationError)
-        assert failed.value.translation_key == "robot_command_failed"
-        unsupported.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
-
-
-async def test_go_to_room_sends_the_named_room_on_the_current_floor() -> None:
-    entry = _entry(idle=True)
-    client = entry.runtime_data.session.client
-
-    await vacuum.MaticVacuum(entry).async_send_command(
-        "go_to_room", {"room": " study "}
-    )
-    await vacuum.MaticVacuum(entry).async_send_command("go-to-room", {"room": "room-1"})
-
-    assert [call.args for call in client.async_go_to_room.await_args_list] == [
-        (_floor_plan(), _floor_plan().rooms[1]),
-        (_floor_plan(), _floor_plan().rooms[0]),
-    ]
-    assert entry.runtime_data.session.heartbeat.async_request_refresh.await_count == 2
-
-
-@pytest.mark.parametrize(
-    "params", [None, {}, {"room": ""}, {"room": "  "}, {"room": 3}, ["Kitchen"]]
-)
-async def test_go_to_room_requires_one_room(params) -> None:
-    entry = _entry(idle=True)
-    with pytest.raises(ServiceValidationError) as raised:
-        await vacuum.MaticVacuum(entry).async_send_command("go_to_room", params)
-    assert raised.value.translation_key == "go_to_room_room_required"
-    entry.runtime_data.session.client.async_go_to_room.assert_not_awaited()
-
-
-async def test_go_to_room_refuses_unknown_and_ambiguous_rooms() -> None:
-    entry = _entry(idle=True)
-    with pytest.raises(ServiceValidationError) as unknown:
-        await RobotControls(None, entry, None).async_go_to_room("Attic")
-    assert unknown.value.translation_key == "unknown_rooms"
-    assert unknown.value.translation_placeholders == {"rooms": "Attic"}
-
-    twin = replace(
-        _floor_plan(),
-        rooms=(*_floor_plan().rooms, replace(_floor_plan().rooms[1], id="room-3")),
-    )
-    entry.runtime_data.session.floor.set(twin)
-    with pytest.raises(ServiceValidationError) as ambiguous:
-        await RobotControls(None, entry, None).async_go_to_room("Study")
-    assert ambiguous.value.translation_key == "ambiguous_room"
-    assert ambiguous.value.translation_placeholders == {"room": "Study"}
-    entry.runtime_data.session.client.async_go_to_room.assert_not_awaited()
-    entry.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
-
-
-async def test_go_to_room_rejects_stale_maps_and_reports_robot_failures() -> None:
-    stale = _entry(idle=True)
-    stale.runtime_data.slam_map.floor_plan_is_current.return_value = False
-    with pytest.raises(ServiceValidationError) as unavailable:
-        await RobotControls(None, stale, None).async_go_to_room("Kitchen")
-    assert unavailable.value.translation_key == "room_plan_unavailable"
-    stale.runtime_data.session.client.async_go_to_room.assert_not_awaited()
-
-    unsupported = _entry(idle=True)
-    unsupported.runtime_data.session.client.async_go_to_room.side_effect = (
-        EndpointUnsupportedError("synthetic")
-    )
-    with pytest.raises(HomeAssistantError) as failed:
-        await RobotControls(None, unsupported, None).async_go_to_room("Kitchen")
-    assert not isinstance(failed.value, ServiceValidationError)
-    assert failed.value.translation_key == "robot_command_failed"
-    unsupported.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
-
-
 _SESSION_KEY = bytes.fromhex("1214121209" + "aa" * 8 + "11" + "bb" * 8)
 
 
@@ -2550,98 +2207,29 @@ def _session_record(key: bytes, started_at: str, ended_at: str | None):
     )
 
 
-async def test_redo_last_clean_repeats_the_newest_finished_clean() -> None:
+async def test_redo_last_clean_skips_a_clean_still_open() -> None:
+    """The simulated robot writes history only when a clean ends, so the open
+    record a real robot lists is faked here."""
     entry = _entry(idle=True)
     client = entry.runtime_data.session.client
     newest = _SESSION_KEY[:-1] + b"\x01"
     open_session = _SESSION_KEY[:-1] + b"\x02"
+    still_open = _session_record(open_session, "2026-10-31T10:00:00", None)
     client.async_get_cleaning_session_records.return_value = (
         _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
         _session_record(newest, "2026-10-30T10:00:00", "2026-10-30T10:30:00"),
-        _session_record(open_session, "2026-10-31T10:00:00", None),
+        still_open,
     )
 
     await vacuum.MaticVacuum(entry).async_send_command("redo last clean")
 
     client.async_redo_clean.assert_awaited_once_with(newest)
-    entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once_with()
 
-
-async def test_redo_last_clean_refuses_without_history_or_while_busy() -> None:
-    empty = _entry(idle=True)
-    with pytest.raises(ServiceValidationError) as missing:
-        await vacuum.MaticVacuum(empty).async_redo_last_clean()
-    assert missing.value.translation_key == "redo_no_previous_clean"
-
-    unfinished = _entry(idle=True)
-    open_records = (
-        unfinished.runtime_data.session.client.async_get_cleaning_session_records
-    )
-    open_records.return_value = (
-        _session_record(_SESSION_KEY, "2026-10-31T10:00:00", None),
-    )
+    client.async_get_cleaning_session_records.return_value = (still_open,)
     with pytest.raises(ServiceValidationError) as open_only:
-        await vacuum.MaticVacuum(unfinished).async_redo_last_clean()
+        await vacuum.MaticVacuum(entry).async_redo_last_clean()
     assert open_only.value.translation_key == "redo_no_previous_clean"
-
-    busy = _entry()
-    with pytest.raises(ServiceValidationError) as cleaning:
-        await vacuum.MaticVacuum(busy).async_redo_last_clean()
-    assert cleaning.value.translation_key == "redo_robot_busy"
-    busy.runtime_data.session.client.async_get_cleaning_session_records.assert_not_awaited()
-
-    unreadable = _entry(idle=True)
-    records = unreadable.runtime_data.session.client.async_get_cleaning_session_records
-    records.side_effect = CannotConnectError("synthetic")
-    with pytest.raises(HomeAssistantError) as history:
-        await vacuum.MaticVacuum(unreadable).async_redo_last_clean()
-    assert history.value.translation_key == "robot_command_failed"
-    for entry in (empty, unfinished, busy, unreadable):
-        entry.runtime_data.session.client.async_redo_clean.assert_not_awaited()
-
-
-async def test_redo_last_clean_rechecks_the_robot_and_reports_failures() -> None:
-    raced = _entry(idle=True)
-    client = raced.runtime_data.session.client
-    client.async_get_cleaning_session_records.return_value = (
-        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
-    )
-    entity = vacuum.MaticVacuum(raced)
-
-    async def started(*args, **kwargs):
-        raced.runtime_data.session.state.set(_state().state.value)
-        return client.async_get_cleaning_session_records.return_value
-
-    client.async_get_cleaning_session_records.side_effect = started
-    with pytest.raises(ServiceValidationError) as busy:
-        await entity.async_redo_last_clean()
-    assert busy.value.translation_key == "redo_robot_busy"
-    client.async_redo_clean.assert_not_awaited()
-
-    failing = _entry(idle=True)
-    failing_client = failing.runtime_data.session.client
-    failing_client.async_get_cleaning_session_records.return_value = (
-        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
-    )
-    failing.runtime_data.session.client.async_redo_clean.side_effect = (
-        EndpointUnsupportedError("synthetic")
-    )
-    with pytest.raises(HomeAssistantError) as failed:
-        await vacuum.MaticVacuum(failing).async_redo_last_clean()
-    assert not isinstance(failed.value, ServiceValidationError)
-    assert failed.value.translation_key == "robot_command_failed"
-    failing.runtime_data.session.heartbeat.async_request_refresh.assert_not_awaited()
-
-
-async def test_vacuum_dock_from_idle_sends_no_stop() -> None:
-    entry = _entry(idle=True)
-    entity = vacuum.MaticVacuum(entry)
-
-    await entity.async_return_to_base()
-
-    client = entry.runtime_data.session.client
-    commands = [call.args[0] for call in client.async_send_user_command.await_args_list]
-    assert commands == [UserCommand.DOCK]
+    client.async_redo_clean.assert_awaited_once()
 
 
 async def test_room_statistics_sensors_use_verified_managed_runs() -> None:
