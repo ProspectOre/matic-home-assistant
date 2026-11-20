@@ -881,33 +881,30 @@ async def _async_execute_rooms(
     recovery_checkpoint = (
         recovery.get("recovery_checkpoint") if isinstance(recovery, dict) else None
     )
-    try:
-        manager.cadence.reserve_prepared_run(
-            serial_number,
-            str(call.data["plan_id"]),
-            run_id,
-            (room.room_id for room in rooms),
-            cadence_by_room,
-            finish_current_room=(
-                recovery_checkpoint.get("finish_current_room")
-                if isinstance(recovery_checkpoint, Mapping)
-                and isinstance(recovery_checkpoint.get("finish_current_room"), bool)
-                else None
-            ),
-            finish_current_room_threshold=(
-                recovery_checkpoint.get("finish_current_room_threshold")
-                if isinstance(recovery_checkpoint, Mapping)
-                and isinstance(
-                    recovery_checkpoint.get("finish_current_room_threshold"), int
-                )
-                and not isinstance(
-                    recovery_checkpoint.get("finish_current_room_threshold"), bool
-                )
-                else None
-            ),
-        )
-    except HomeAssistantError as err:
-        raise managed_run._validation_error(str(err), "plan_already_running") from err
+    manager.cadence.reserve_prepared_run(
+        serial_number,
+        str(call.data["plan_id"]),
+        run_id,
+        (room.room_id for room in rooms),
+        cadence_by_room,
+        finish_current_room=(
+            recovery_checkpoint.get("finish_current_room")
+            if isinstance(recovery_checkpoint, Mapping)
+            and isinstance(recovery_checkpoint.get("finish_current_room"), bool)
+            else None
+        ),
+        finish_current_room_threshold=(
+            recovery_checkpoint.get("finish_current_room_threshold")
+            if isinstance(recovery_checkpoint, Mapping)
+            and isinstance(
+                recovery_checkpoint.get("finish_current_room_threshold"), int
+            )
+            and not isinstance(
+                recovery_checkpoint.get("finish_current_room_threshold"), bool
+            )
+            else None
+        ),
+    )
     try:
         await _async_execute_rooms_reserved(
             hass,
