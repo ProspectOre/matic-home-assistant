@@ -306,7 +306,8 @@ async def _async_run_tour(
             # The tour's own dock request must not stop the tour.
             _running.pop(entry.entry_id, None)
             can_dock = False
-            if arrivals:
+            # A command that stopped the tour decides where the robot goes.
+            if arrivals and entry.entry_id not in _stop_requested:
                 try:
                     remaining = max(0, deadline - monotonic())
                     if remaining == 0:
