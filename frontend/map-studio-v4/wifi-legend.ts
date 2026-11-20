@@ -7,7 +7,7 @@ import { wifiReadingAt, type WifiReading } from "./wifi-surface";
 
 type Translate = (key: string, fallback: string, placeholders?: NoticePlaceholders) => string;
 
-export interface WifiLegendContext {
+interface WifiLegendContext {
   readonly layer: WifiSignalLayer;
   readonly scene: SceneModel;
   /** The map point the user last tapped, if any. */

@@ -21,7 +21,7 @@ import {
   type Unchecked,
 } from "./backend-contracts";
 import type * as wire from "./backend-schema";
-import type { PhotoGallery } from "./photo-gallery-data";
+import type { GalleryViewpoint, PhotoGallery } from "./photo-gallery-data";
 import { SceneParser as SceneParserImplementation, manifestPages, type PageBatch, type SceneParser } from "./scene-parser";
 import {
   BackendRequestDiagnosticsStore,
@@ -41,6 +41,16 @@ const REQUEST_TIMEOUTS = {
   floorTypes: 50_000,
   mutation: 20_000,
 } as const;
+
+/** The body that saves a viewpoint; viewpoint_view.py checks it. */
+export interface ViewpointSave {
+  readonly name: string;
+  readonly x: number;
+  readonly y: number;
+  /** Radians, counter-clockwise from the map's +x axis. */
+  readonly heading: number;
+  readonly map_session_key: string;
+}
 
 export class BackendError extends Error {
   readonly code: string;
@@ -439,6 +449,52 @@ export class MaticBackend {
   /** One photo or its preview, at a path the gallery read returned. */
   async photo(path: string, signal?: AbortSignal): Promise<Blob> {
     return this.#webp("photos", path, signal);
+  }
+
+  /** Save a viewpoint placed on the map `map_session_key` names; a refusal's reason is the error's code. */
+  async saveViewpoint(entryId: string, viewpoint: ViewpointSave, signal?: AbortSignal): Promise<GalleryViewpoint> {
+    const [{ parseGalleryViewpoint }, value] = await Promise.all([
+      import("./photo-gallery-data"),
+      this.#photoChange(`/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}/viewpoints`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(viewpoint),
+      }, signal),
+    ]);
+    return parseGalleryViewpoint(value);
+  }
+
+  async deleteViewpoint(entryId: string, viewpointId: string, signal?: AbortSignal): Promise<void> {
+    await this.#photoChange(
+      `/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}/viewpoints/${encodeURIComponent(viewpointId)}`,
+      { method: "DELETE" }, signal);
+  }
+
+  /** Star or unstar a photo; a refusal's reason, such as `star_limit`, is the error's code. */
+  async starPhoto(entryId: string, photoId: string, starred: boolean, signal?: AbortSignal): Promise<boolean> {
+    const value = await this.#photoChange(
+      `/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}/photos/${encodeURIComponent(photoId)}/star`,
+      { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred }) }, signal);
+    const reply = value && typeof value === "object" ? (value as { starred?: unknown }).starred : undefined;
+    if (typeof reply !== "boolean") throw new ContractError("invalid-photo-star");
+    return reply;
+  }
+
+  /** A change to a viewpoint or photo: the reply, null for none, or the server's reason as the error's code. */
+  async #photoChange(path: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
+    return this.#request("photos", path, { ...init, headers: { Accept: "application/json", ...init.headers } },
+      REQUEST_TIMEOUTS.mutation, signal, async (response, operationSignal) => {
+        if (response.status === 204) return null;
+        let value: unknown = null;
+        try {
+          value = JSON.parse(new TextDecoder().decode(await this.#readBody(response, operationSignal, 4096)));
+        } catch {
+          if (response.ok) throw new ContractError("invalid-json-response");
+        }
+        if (response.ok) return value;
+        const error = value && typeof value === "object" ? (value as { error?: unknown }).error : null;
+        throw new BackendError(typeof error === "string" && /^[a-z_]{1,64}$/.test(error) ? error : "request-failed", response.status);
+      });
   }
 
   async #webp(operation: "runs" | "photos", path: string, signal?: AbortSignal): Promise<Blob> {

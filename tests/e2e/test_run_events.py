@@ -17,6 +17,8 @@ from homeassistant.core import (
     ServiceCall,
     callback,
 )
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
@@ -277,3 +279,67 @@ async def test_the_run_entity_stays_available_while_the_robot_is_unreachable(
     assert state.attributes["event_type"] == "plan_finished"
     simulator.link.restore()
     await state_becomes(hass, VACUUM, "docked")
+
+
+async def test_device_triggers_follow_this_robots_run(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+) -> None:
+    device_id = er.async_get(hass).async_get(VACUUM).device_id
+    # Another robot's device, whose triggers must stay quiet.
+    other = dr.async_get(hass).async_get_or_create(
+        config_entry_id=plan.entry.entry_id, identifiers={(DOMAIN, "other-robot")}
+    )
+    other_vacuum = er.async_get(hass).async_get_or_create(
+        "vacuum", DOMAIN, "other-robot_vacuum", device_id=other.id
+    )
+    fired: list[str] = []
+    # A callback, so the action finishes in the loop. A plain function runs in
+    # the executor, and a single-mode automation skips a trigger that arrives
+    # while its previous action is still there.
+    hass.services.async_register(
+        "test", "automation", callback(lambda call: fired.append(call.data["type"]))
+    )
+
+    def automation(device: str, trigger_type: str) -> dict[str, Any]:
+        return {
+            "triggers": [
+                {
+                    "trigger": "device",
+                    "domain": DOMAIN,
+                    "device_id": device,
+                    "type": trigger_type,
+                }
+            ],
+            "actions": [{"action": "test.automation", "data": {"type": trigger_type}}],
+        }
+
+    assert await async_setup_component(
+        hass,
+        "automation",
+        {
+            "automation": [
+                automation(device_id, "room_completed"),
+                automation(device_id, "plan_finished"),
+                automation(other.id, "plan_finished"),
+            ]
+        },
+    )
+    await plan.start()
+    robot.finish_room()
+    await plan.poll()
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    expect_finished(
+        await plan.outcome(), "completed", "all_rooms_verified", 2, "docked"
+    )
+    await hass.async_block_till_done()
+
+    assert fired == ["room_completed", "room_completed", "plan_finished"]
+    # The other robot's trigger is attached and answers only its own robot.
+    hass.bus.async_fire(
+        f"{DOMAIN}_plan_finished", {"entity_id": other_vacuum.entity_id}
+    )
+    await hass.async_block_till_done()
+    assert fired[3:] == ["plan_finished"]

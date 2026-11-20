@@ -56,7 +56,7 @@ test("Photos lists albums newest first and the viewer steps through every photo"
   await expect(gallery.getByRole("listitem").filter({ hasText: "Back door" })).toHaveCount(1);
   // The viewpoints on this floor's map go to the map canvas.
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().photoMarks)).toEqual({
-    mapSessionKey: "a".repeat(64), viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0.5 }],
+    mapSessionKey: "a".repeat(64), viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0.5 }], draft: null,
   });
   await expect(gallery.locator(".shot img")).toHaveCount(3);
   expect((await photoReads(page)).sort()).toEqual([`${ROUTE}/preview/p1`, `${ROUTE}/preview/p2`, `${ROUTE}/preview/p3`]);
@@ -122,7 +122,7 @@ test("Photos explains an empty library and offers Try again after a failed read"
   await openPhotos(panel);
   const gallery = panel.locator("matic-photo-gallery-v4");
   await expect(gallery).toContainText("No photos yet. Press Take photo, or run a photo tour from an automation.");
-  await expect(gallery.locator("h3")).toHaveCount(0);
+  await expect(gallery.locator("h3")).toHaveText(["Saved viewpoints"]);
 
   // A photo link outside this robot's photo route fails the whole read, and nothing is fetched.
   await page.evaluate((route) => {
@@ -162,7 +162,7 @@ test("the grid shows sixty photos at a time and reads previews only for those sh
   const gallery = panel.locator("matic-photo-gallery-v4");
   await expect(gallery.locator(".shot img")).toHaveCount(60);
   await expect(gallery.locator(".shot")).toHaveCount(60);
-  await expect(gallery.locator("h3")).toHaveText([/^Photo tour, /, "Single photos"]);
+  await expect(gallery.locator("h3")).toHaveText([/^Photo tour, /, "Single photos", "Saved viewpoints"]);
   expect((await photoReads(page)).length).toBe(60);
   await gallery.getByRole("button", { name: "Show older photos" }).click();
   await expect(gallery.locator(".shot img")).toHaveCount(65);
@@ -195,7 +195,7 @@ test("photos run newest first by time when single photos straddle a photo tour",
   ] });
   await openPhotos(panel);
   const gallery = panel.locator("matic-photo-gallery-v4");
-  await expect(gallery.locator("h3")).toHaveText(["Single photos", /^Photo tour, /, "Single photos"]);
+  await expect(gallery.locator("h3")).toHaveText(["Single photos", /^Photo tour, /, "Single photos", "Saved viewpoints"]);
   for (const [index, name] of [/^Den · /, /^Hall · /, /^Porch · /].entries()) {
     await expect(gallery.locator(".shot").nth(index)).toHaveAccessibleName(name);
   }
@@ -242,7 +242,7 @@ test("each viewpoint is a pin with a wedge facing its heading on the mirrored ma
     const state = (changes) => ({
       ...base, workflow: "photos", dataMode: "live",
       resources: { ...base.resources, entry: { mapSessionKey: key } },
-      photoMarks: { mapSessionKey: key, viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0 }] },
+      photoMarks: { mapSessionKey: key, viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0 }], draft: null },
       ...changes,
     });
     const draw = (value) => {
@@ -264,7 +264,10 @@ test("each viewpoint is a pin with a wedge facing its heading on the mirrored ma
       // Set inside the drawing, whatever alignment room names left on the shared context.
       align: shown.findLast(([name], index) => name === "=textAlign" && index < shown.findIndex(([call]) => call === "fillText"))?.[1],
       otherWorkflow: draw(state({ workflow: "runs" })).length,
-      otherMap: draw(state({ photoMarks: { mapSessionKey: "b".repeat(64), viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0 }] } })).length,
+      otherMap: draw(state({ photoMarks: { mapSessionKey: "b".repeat(64), viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0 }], draft: null } })).length,
+      // The viewpoint being placed: dashed, unnamed, drawn with no saved ones.
+      placing: draw(state({ photoMarks: { mapSessionKey: key, viewpoints: [], draft: { spot: { x: 0, y: 0 }, heading: Math.PI / 2 } } })),
+      unplaced: draw(state({ photoMarks: { mapSessionKey: key, viewpoints: [], draft: { spot: null, heading: 0 } } })).length,
     };
   });
   expect(result.pin).toEqual([200, 100]);
@@ -274,4 +277,10 @@ test("each viewpoint is a pin with a wedge facing its heading on the mirrored ma
   expect(result.align).toBe("left");
   expect(result.otherWorkflow).toBe(0);
   expect(result.otherMap).toBe(0);
+  expect(result.placing.find(([name]) => name === "setLineDash")).toEqual(["setLineDash", [5, 4]]);
+  expect(result.placing.find(([name]) => name === "arc").slice(1, 4)).toEqual([300, 300, 8]);
+  // Heading pi/2 faces +y, up the screen.
+  expect(result.placing.filter(([name]) => name === "lineTo")[2].slice(1)).toEqual([300, 180]);
+  expect(result.placing.some(([name]) => name === "fillText")).toBe(false);
+  expect(result.unplaced).toBe(0);
 });

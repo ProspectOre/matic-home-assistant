@@ -48,6 +48,10 @@ run_photo_tour:
       default: false
       selector:
         boolean:
+    report_failures:
+      default: false
+      selector:
+        boolean:
     question:
       required: false
       description: >-

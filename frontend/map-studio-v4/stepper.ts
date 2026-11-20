@@ -3,9 +3,9 @@ import type { TemplateResult } from "lit";
 import { icon, iconMinus, iconPlus } from "./icons";
 import type { Translate } from "./plan-copy";
 
-export const INTERVAL_MIN = 1;
+const INTERVAL_MIN = 1;
 export const MOP_INTERVAL_MIN = 2;
-export const INTERVAL_MAX = 100;
+const INTERVAL_MAX = 100;
 
 /** What a committed field becomes: bad input keeps the value, empty is Off, numbers snap into the allowed interval. */
 export const snapInterval = (raw: string, badInput: boolean, current: number | null, minimum = INTERVAL_MIN): number | null => {
@@ -40,7 +40,7 @@ export const stepperStyles = css`
 @media (forced-colors: active) { .ms-stepper { border: 1px solid CanvasText; } }
 `;
 
-export interface StepperOptions {
+interface StepperOptions {
   /** The field's id; − and + control it. */
   readonly id: string;
   /** The visible label line's id, which names the field. */

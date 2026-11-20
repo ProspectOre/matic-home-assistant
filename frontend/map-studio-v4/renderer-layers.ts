@@ -17,24 +17,24 @@ export interface MapPoint {
 
 let positionFormat: { readonly locale: string; readonly format: Intl.NumberFormat } | null = null;
 
-export type ProjectMeters = (
+type ProjectMeters = (
   x: number,
   y: number,
   height?: number,
   clipToViewport?: boolean,
 ) => MapPoint | null;
 
-export interface RoomLabelBounds {
+interface RoomLabelBounds {
   readonly width: number;
   readonly height: number;
 }
 
-export interface RoomLabelResult {
+interface RoomLabelResult {
   readonly offsets: Map<string, readonly [x: number, y: number]>;
   readonly retryWithoutHistory: boolean;
 }
 
-export type ProjectCell = (x: number, y: number, height?: number, clipToViewport?: boolean) => MapPoint | null;
+type ProjectCell = (x: number, y: number, height?: number, clipToViewport?: boolean) => MapPoint | null;
 
 /** Lay out and paint room-name plates after the controller has painted room fills. */
 export function drawRoomNames(

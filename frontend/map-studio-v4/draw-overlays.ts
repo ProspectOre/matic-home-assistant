@@ -3,7 +3,7 @@ import type { WorkspaceState } from "./contracts";
 import { rgba, type CanvasPalette } from "./theme-probe";
 import type { MapPoint } from "./renderer-controller";
 
-export type ProjectMeters = (x: number, y: number, height?: number, clipToViewport?: boolean) => MapPoint | null;
+type ProjectMeters = (x: number, y: number, height?: number, clipToViewport?: boolean) => MapPoint | null;
 
 export function drawTaskOverlays(
   context: CanvasRenderingContext2D,

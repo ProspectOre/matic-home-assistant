@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import math
-from typing import cast
+from datetime import timedelta
+from typing import Any, cast
 
-from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.components.http.auth import async_sign_path
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.translation import async_get_exception_message
 from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
 from .client import pose_observation_is_current
-from .const import CONF_PHOTO_NO_PHOTO_ROOMS
 from .photo_tours import TourStop, async_run_photo_tour, check_photo_tour
 from .robot_commands import validation_error
 from .service_context import ServiceRuntime, register_robot_action
@@ -24,7 +32,37 @@ from .service_schemas import (
     RUN_PHOTO_TOUR_SERVICE_SCHEMA,
     SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
 )
-from .viewpoints import readable_zones
+from .viewpoints import async_save_viewpoint, current_floor_plan
+
+# A phone or other notify target fetches the photo without signing in.
+PHOTO_LINK_LIFETIME = timedelta(hours=24)
+
+
+def signed_photo(hass: HomeAssistant, photo: dict[str, Any]) -> dict[str, Any]:
+    """Sign the photo's links so each opens that one photo for a day."""
+    return photo | {
+        key: async_sign_path(
+            hass, photo[key], PHOTO_LINK_LIFETIME, use_content_user=True
+        )
+        for key in ("url", "preview_url")
+        if key in photo
+    }
+
+
+def failed_tour(entity_id: str, err: HomeAssistantError) -> dict[str, JsonValueType]:
+    """One robot's failure, for a caller that reads it instead of an error."""
+    message = (
+        async_get_exception_message(
+            err.translation_domain, err.translation_key, err.translation_placeholders
+        )
+        if err.translation_domain and err.translation_key
+        else str(err)
+    )
+    return {
+        "entity_id": entity_id,
+        "photos": [],
+        "error": {"reason": err.translation_key, "message": message},
+    }
 
 
 def register_photo_services(runtime: ServiceRuntime) -> None:
@@ -39,23 +77,36 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
         entries = [
             context._entry_for_entity(hass, entity_id) for entity_id in entity_ids
         ]
+        report = call.data["report_failures"]
         # Viewpoints are per robot: refuse a stop any robot lacks before one moves.
-        for entry in entries:
-            check_photo_tour(entry, stops)
+        try:
+            for entry in entries:
+                check_photo_tour(entry, stops)
+        except HomeAssistantError as err:
+            if not report:
+                raise
+            return {"robots": [failed_tour(entity_id, err) for entity_id in entity_ids]}
         robots: list[JsonValueType] = []
         for entity_id, entry in zip(entity_ids, entries, strict=True):
-            photos = await async_run_photo_tour(
-                hass,
-                entry,
-                entity_id,
-                stops,
-                full_resolution=call.data["full_resolution"],
-                question=call.data.get("question"),
-                ai_task_entity_id=call.data.get("ai_task_entity_id"),
-                context=call.context,
-            )
+            try:
+                photos = await async_run_photo_tour(
+                    hass,
+                    entry,
+                    entity_id,
+                    stops,
+                    full_resolution=call.data["full_resolution"],
+                    question=call.data.get("question"),
+                    ai_task_entity_id=call.data.get("ai_task_entity_id"),
+                    context=call.context,
+                )
+            except HomeAssistantError as err:
+                if not report:
+                    raise
+                robots.append(failed_tour(entity_id, err))
+                continue
+            signed = [signed_photo(hass, photo) for photo in photos]
             robots.append(
-                {"entity_id": entity_id, "photos": cast(list[JsonValueType], photos)}
+                {"entity_id": entity_id, "photos": cast(list[JsonValueType], signed)}
             )
         return {"robots": robots}
 
@@ -67,25 +118,18 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
-    async def async_save_viewpoint(
+    async def async_save_action(
         call: ServiceCall, entity_ids: list[str]
     ) -> ServiceResponse:
         """Save a viewpoint from the given spot, or where the robot stands."""
         entity_id = _one_robot(entity_ids)
         entry = context._entry_for_entity(hass, entity_id)
-        session = entry.runtime_data.session
-        floor_plan = session.floor.value
-        if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
-            floor_plan
-        ):
-            raise validation_error(
-                "The robot's map is unavailable", "viewpoint_map_unavailable"
-            )
+        floor_plan = current_floor_plan(entry)
         if "x" in call.data:
             x, y = call.data["x"], call.data["y"]
             heading = math.radians(call.data["heading"])
         else:
-            pose = session.pose_on(floor_plan)
+            pose = entry.runtime_data.session.pose_on(floor_plan)
             if (
                 not pose_observation_is_current(pose, floor_plan)
                 or pose.heading is None
@@ -95,14 +139,8 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
                     "viewpoint_pose_unavailable",
                 )
             x, y, heading = pose.x, pose.y, pose.heading
-        viewpoint = await entry.runtime_data.viewpoints.async_save(
-            call.data["name"],
-            floor_plan,
-            readable_zones(entry),
-            set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ())),
-            x=x,
-            y=y,
-            heading=heading,
+        viewpoint = await async_save_viewpoint(
+            entry, floor_plan, call.data["name"], x=x, y=y, heading=heading
         )
         room = next(
             room.name for room in floor_plan.rooms if room.id == viewpoint.room_id
@@ -118,7 +156,7 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
     register_robot_action(
         hass,
         SERVICE_SAVE_PHOTO_VIEWPOINT,
-        async_save_viewpoint,
+        async_save_action,
         SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
         admin_only=True,

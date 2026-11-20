@@ -1,1 +1,1 @@
-export { resource, cancelLoading, isAbort, problemCode, sameCoherenceGeneration } from "./shared-primitives";
+export { resource, isAbort, problemCode } from "./shared-primitives";

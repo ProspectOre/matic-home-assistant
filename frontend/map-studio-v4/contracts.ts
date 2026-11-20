@@ -8,7 +8,7 @@ export const MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE = 256;
 export const DRAW_BRUSH_MIN_METERS = 0.2;
 export const DRAW_BRUSH_MAX_METERS = 2.5;
 
-export type CoherenceState =
+type CoherenceState =
   | "booting"
   | "verifying"
   | "current"
@@ -18,14 +18,14 @@ export type CoherenceState =
 
 /** The panel's colour scheme from Home Assistant's theme; "" lets the device decide. */
 export type ColorScheme = "light" | "dark" | "";
-export type DataMode = "live" | "history";
+type DataMode = "live" | "history";
 export type MapView = "three" | "top";
-export type FollowMode = "off" | "follow" | "ride";
+type FollowMode = "off" | "follow" | "ride";
 export type MapQuality = "auto" | "efficient" | "balanced" | "maximum";
 export type MapAppearance = "photo" | "rooms";
 export type Localize = (key: string, placeholders?: Record<string, unknown>) => string;
 
-export interface RobotChoice {
+interface RobotChoice {
   readonly entryId: string;
   readonly label: string;
 }
@@ -161,14 +161,14 @@ export interface MapSafetyState {
   readonly exactPose: boolean;
 }
 
-export interface HostState {
+interface HostState {
   readonly connected: boolean;
   readonly administrator: boolean;
   readonly robotConnected: boolean;
   readonly robotCount: number;
 }
 
-export interface DrawState {
+interface DrawState {
   readonly outline?: AreaOutline | null;
   readonly outlineUndo?: readonly (AreaOutline | null)[];
   readonly outlineRedo?: readonly (AreaOutline | null)[];
@@ -250,7 +250,7 @@ export interface FloorTypesLayer {
   readonly vent: readonly FloorTypeOutline[];
 }
 
-export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";
+type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";
 
 export interface PlanDraft {
   readonly id: string | null;
@@ -287,7 +287,7 @@ export interface PlanDraftArea {
   readonly slot: number;
 }
 
-export interface AreaDraft {
+interface AreaDraft {
   readonly id: string | null;
   readonly name: string;
   readonly cleaningMode: CleaningMode;
@@ -313,7 +313,7 @@ export interface WorkspaceSelection {
 
 export type NoticeTone = "info" | "success" | "warning" | "error";
 /** A timestamp a view formats as it renders, so a language change reaches it. */
-export interface NoticeDate { readonly date: string }
+interface NoticeDate { readonly date: string }
 export type NoticePlaceholders = Readonly<Record<string, string | number | NoticeDate>>;
 
 /**
@@ -398,10 +398,18 @@ export interface ViewpointMark {
   readonly heading: number;
 }
 
+/** A viewpoint being placed: the spot once the map is tapped, and the way the camera faces. */
+export interface ViewpointDraft {
+  readonly spot: { readonly x: number; readonly y: number } | null;
+  readonly heading: number;
+}
+
 export interface PhotoMarks {
   /** The map the viewpoints belong to; they are drawn only while it is shown. */
   readonly mapSessionKey: string;
   readonly viewpoints: readonly ViewpointMark[];
+  /** A viewpoint being placed on this map; while it is set, a map tap places or aims it. */
+  readonly draft: ViewpointDraft | null;
 }
 
 export interface ReportedState {
@@ -606,6 +614,10 @@ export type WorkspaceIntent =
   | { readonly type: "show-trail"; readonly trail: string | null }
   /** Photos' saved viewpoints for the map, or null while a read is under way. */
   | { readonly type: "show-photo-marks"; readonly marks: PhotoMarks | null }
+  /** Starts, turns or ends placing a viewpoint on the map Photos shows. */
+  | { readonly type: "edit-viewpoint"; readonly draft: ViewpointDraft | null }
+  /** A map tap while a viewpoint is placed: the first sets its spot, later ones aim it. */
+  | { readonly type: "place-viewpoint"; readonly point: { readonly x: number; readonly y: number } }
   | { readonly type: "load-run-thumbnail"; readonly id: string };
 
 /** A saved plan or custom area shown on home as a one-tap shortcut. */
@@ -615,12 +627,12 @@ export interface HomePin {
 }
 
 /** `unavailable`: no Home Assistant connection to read user data with, so home shows none and says nothing. */
-export interface HomePins {
+interface HomePins {
   readonly status: "idle" | "loading" | "ready" | "error" | "unavailable";
   readonly pins: readonly HomePin[];
 }
 
-export type PrimaryActionKind = "primary" | "danger" | "neutral" | "link";
+type PrimaryActionKind = "primary" | "danger" | "neutral" | "link";
 
 export type PlanOrigin = "home" | "plans";
 
@@ -749,14 +761,14 @@ export interface ScheduledRun {
 }
 
 /** An accepted finish-current-entry request, bound to the active managed run. */
-export interface SmartStopStatus {
+interface SmartStopStatus {
   readonly runId: string;
   readonly target: string | null;
   readonly kind: "room" | "area";
   readonly phase: "finishing_room" | "finishing_area" | "verifying_completion" | "returning_to_dock";
 }
 
-export interface ManagedRunSummary {
+interface ManagedRunSummary {
   readonly runId: string;
   readonly outcome: "running" | "partial" | "unverified";
   readonly completedRoomCount: number;
@@ -764,7 +776,7 @@ export interface ManagedRunSummary {
   readonly estimate?: { readonly roomId: string; readonly room: string; readonly percent: number };
 }
 
-export interface RobotSetting {
+interface RobotSetting {
   readonly entityId: string;
   readonly enabled: boolean | null;
 }
@@ -837,6 +849,8 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "reload-home-pins": true,
   "show-trail": true,
   "show-photo-marks": true,
+  "edit-viewpoint": true,
+  "place-viewpoint": true,
   "load-run-thumbnail": true,
 };
 

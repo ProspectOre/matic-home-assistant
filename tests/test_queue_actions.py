@@ -31,9 +31,9 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
 from custom_components.matic_robot.run_machine import RoomSettled
 from custom_components.matic_robot.verified_completion import global_room
+from tests.plans.fakes import leg_manager, leg_record, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot, run_step
 from tests.test_entities import _entry
-from tests.test_plans import _call, _leg_manager, _leg_record, _room
 
 SERIAL = "synthetic-serial"
 
@@ -245,7 +245,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     robot.on_start = AsyncMock()
-    rooms = [_room("Kitchen", "room-kitchen"), _room("Study", "room-study")]
+    rooms = [plan_room("Kitchen", "room-kitchen"), plan_room("Study", "room-study")]
     events = []
     for event in ("room_skipped", "room_ended_unverified"):
         hass.bus.async_listen(f"matic_robot_{event}", events.append)
@@ -284,7 +284,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
         await asyncio.wait_for(
             _async_execute_rooms(
                 hass,
-                _call(hass),
+                run_plan_call(hass),
                 manager,
                 "vacuum.matic",
                 "serial",
@@ -313,8 +313,8 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
     )
-    rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
-    manager = _leg_manager()
+    rooms = [plan_room("Kitchen", "room-kitchen"), plan_room("Office", "room-office")]
+    manager = leg_manager()
     manager.ledger.skipped_room_ids = MagicMock(return_value=frozenset({"room-office"}))
     manager.ledger.async_mark_skipped = AsyncMock()
     skipped = []
@@ -337,11 +337,11 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         reads += 1
         if reads == 1:
             return ()
-        return (_leg_record(("Kitchen",), ("Kitchen",)),)
+        return (leg_record(("Kitchen",), ("Kitchen",)),)
 
     completed = await _async_run_leg(
         hass,
-        _call(hass),
+        run_plan_call(hass),
         manager,
         "vacuum.matic",
         "serial",
@@ -406,7 +406,7 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
     ):
         settled = await _async_run_leg(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",

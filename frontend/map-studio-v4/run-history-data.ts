@@ -9,7 +9,7 @@ import type { RobotActivity, WorkspaceNotice } from "./contracts";
 import type { WorkspaceStore } from "./state";
 import type { LastSeenDuringRun } from "./contracts";
 
-export type RunEnding =
+type RunEnding =
   | "running" | "finished" | "stopped" | "smart_stop" | "replaced" | "low_battery"
   | "robot_problem" | "taken_over" | "home_assistant" | "interrupted" | "unknown";
 export type RunItemResult =

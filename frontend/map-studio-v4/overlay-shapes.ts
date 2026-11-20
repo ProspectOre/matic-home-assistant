@@ -18,11 +18,11 @@ interface Paint {
 }
 
 /** Rings filled together with the even-odd rule, so an inner ring is a hole. */
-export interface FillShape extends Paint {
+interface FillShape extends Paint {
   readonly kind: "fill";
 }
 
-export interface StrokeShape extends Paint {
+interface StrokeShape extends Paint {
   readonly kind: "stroke";
   readonly closed: boolean;
   /** CSS pixels, constant on screen at every zoom. */
@@ -35,7 +35,7 @@ export interface StrokeShape extends Paint {
  * [dBm × opacity, opacity]. `corners` holds world [x, z] of its first texel's
  * outer corner, then of the far ends of its first row and its first column.
  */
-export interface SurfaceShape {
+interface SurfaceShape {
   readonly kind: "surface";
   readonly values: Float32Array<ArrayBuffer>;
   readonly columns: number;

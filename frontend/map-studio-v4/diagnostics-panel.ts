@@ -7,7 +7,7 @@ import type { Localize, WorkspaceState } from "./contracts";
 import { translate } from "./localize";
 import { initialWorkspaceState } from "./state";
 
-export const DIAGNOSTICS_TAG = "matic-map-diagnostics-v4";
+const DIAGNOSTICS_TAG = "matic-map-diagnostics-v4";
 
 /** Support details are loaded only when the user opens Map diagnostics. */
 export class MaticMapDiagnosticsV4 extends LitElement {

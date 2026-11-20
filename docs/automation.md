@@ -15,7 +15,7 @@ shown on your robot's device page.
 | Matic: Clean after pets leave | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Fpet_aware.yaml) |
 | Matic: Clean on a schedule | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Froom_rotation.yaml) |
 | Matic: Send firmware alerts | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Ffirmware_intelligence.yaml) |
-| Matic: Photograph room on alert | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Fphoto_on_alert.yaml) |
+| Matic: Photo check on alert | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Fphoto_on_alert.yaml) |
 
 - Every cleaning blueprint starts only when the robot is docked or idle, and
   runs the plan in Smart Order, so the longest-waiting rooms and custom areas go
@@ -30,12 +30,13 @@ shown on your robot's device page.
 - Clean after pets leave runs at most once a day. Clean during quiet hours
   checks the battery only when you choose a sensor.
 - Send firmware alerts finds the robot from the Firmware check status sensor.
-- Photograph room on alert runs a [photo tour](actions.md#photo-tours) to one
-  room when any chosen sensor turns on and the robot is docked or idle, then
-  sends the photo to your phone, or a message if the robot couldn't take it.
-  Enable photo tours and set no-photo rooms in the integration's settings first.
+- Photo check on alert runs a [photo tour](actions.md#photo-tours) to one
+  viewpoint or room when any chosen sensor turns on or alarm goes off. Your
+  phone hears at once and then sees the photo in the same notification, or
+  why there is none; tapping the photo opens it in Matic Map. Enable photo
+  tours and set no-photo rooms in the integration's settings first.
   Notifications use pixelated previews unless full resolution is selected.
-  Alerts during the cooldown are ignored.
+  Alerts during a check or its cooldown are ignored.
 
 ## Clean action
 

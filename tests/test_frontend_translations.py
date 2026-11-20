@@ -433,18 +433,18 @@ def test_the_walk_scans_every_module_a_shipped_entry_imports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Shipped code is what the entry points reach; no module name is exempt."""
-    (tmp_path / "mockups").mkdir()
+    (tmp_path / "nested").mkdir()
     (tmp_path / "index.ts").write_text(
         'import "./gallery-state";\nimport("./review");\n'
     )
     (tmp_path / "ha-icons.ts").write_text(
-        'import { x } from "./synthetic-fixtures";\nimport "./mockups/copy";\n'
+        'import { x } from "./synthetic-fixtures";\nimport "./nested/copy";\n'
     )
     for name in (
         "gallery-state.ts",
         "review.ts",
         "synthetic-fixtures.ts",
-        "mockups/copy.ts",
+        "nested/copy.ts",
     ):
         (tmp_path / name).write_text("")
     monkeypatch.setattr(frontend_sources, "STUDIO_SOURCE", tmp_path)
@@ -457,7 +457,7 @@ def test_the_walk_scans_every_module_a_shipped_entry_imports(
         "gallery-state.ts",
         "ha-icons.ts",
         "index.ts",
-        "mockups/copy.ts",
+        "nested/copy.ts",
         "review.ts",
         "synthetic-fixtures.ts",
     ], f"modules the walk scanned: {walked}"

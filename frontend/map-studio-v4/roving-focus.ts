@@ -5,7 +5,7 @@ import type { ReactiveController, ReactiveControllerHost } from "lit";
 // preventDefault() -- the map's GestureController listens on an ancestor and
 // orbits the camera on arrows, bailing only when `defaultPrevented` is set.
 
-export interface RovingFocusOptions {
+interface RovingFocusOptions {
   readonly container: () => HTMLElement | null;
   readonly items: string;
   readonly orientation?: "horizontal" | "vertical" | "both";

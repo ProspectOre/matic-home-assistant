@@ -7,7 +7,7 @@ import type { MaticBackend } from "./backend";
 import type { WorkspaceStore } from "./state";
 import { QueueActionController } from "./queue-action-controller";
 
-export interface CatalogWorkflowActions {
+interface CatalogWorkflowActions {
   loadPlans(options?: { force?: boolean; inPlace?: boolean; onError?: () => void }): Promise<PlansCatalog | null>;
   loadAreas(options?: { reconcileDraft?: boolean }): Promise<AreasCatalog | null>;
   selectPlan(planId: string | null, preserveNotice?: boolean, origin?: PlanOrigin): void;

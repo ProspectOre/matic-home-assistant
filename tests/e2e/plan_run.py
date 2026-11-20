@@ -62,6 +62,27 @@ async def poll(
     await hass.async_block_till_done()
 
 
+async def firmware_snapshot_saved(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Wait for the firmware snapshot setup starts in the background.
+
+    It reads every endpoint, so it changes endpoint health, the firmware
+    entities and what the robot has served.
+    """
+    robot_session = entry.runtime_data.session
+    tracker = entry.runtime_data.firmware_tracker
+    telemetry = robot_session.telemetry.value
+    version = (
+        telemetry.software_version
+        or robot_session.state.value.operational.software_version
+    )
+    entry_id, protocol = entry.entry_id, telemetry.protocol_version
+    async with asyncio.timeout(10):
+        # The tracker announces no finished snapshot.
+        while tracker.needs_snapshot(entry_id, version, protocol):  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+    await hass.async_block_till_done()
+
+
 async def state_becomes(hass: HomeAssistant, entity_id: str, state: str) -> None:
     """Wait for an entity to reach ``state`` with nothing asking the robot."""
     reached = asyncio.Event()

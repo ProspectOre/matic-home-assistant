@@ -35,7 +35,7 @@ import "./rooms-view";
 import "./precision-controls";
 // The plan heading's tools, which the shell renders once these views load,
 // and the shell's other plan-only pieces.
-export { actionReason, drawCancel, drawExit, focusPlanTarget, planCancel, planTitle, planTools } from "./plan-heading";
+export { actionReason, drawCancel, focusPlanTarget, planCancel, planTitle, planTools } from "./plan-heading";
 
 // Dialogs that only these views' controls open carry their copy, launcher and
 // confirm here.
@@ -625,11 +625,17 @@ line-height: var(--ms-lh-snug);
     return html`<matic-run-history-v4 .state=${this.state} .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit}></matic-run-history-v4>`;
   }
 
+  /** Photos' marks when they are for the live map shown now, so a viewpoint placed on it is saved there. */
+  #shownMarks() {
+    const marks = this.state.photoMarks;
+    return marks && this.state.dataMode === "live" && marks.mapSessionKey === this.state.resources.entry?.mapSessionKey ? marks : null;
+  }
+
   #photoGallery() {
     this.#photos.request();
     if (this.#photos.status !== "ready") return chunkStatus(this.#photos.status, this.localize, this.retry);
     return html`<matic-photo-gallery-v4 .backend=${this.backend} .entryId=${this.state.resources.entry?.entryId ?? null}
-      .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit}></matic-photo-gallery-v4>`;
+      .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit} .marks=${this.#shownMarks()}></matic-photo-gallery-v4>`;
   }
 
   protected override render() {

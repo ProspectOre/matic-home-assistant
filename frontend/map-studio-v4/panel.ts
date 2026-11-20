@@ -20,9 +20,11 @@ import { MaticBackend } from "./backend";
 import { EffectController } from "./effects";
 import { LayerHistoryController } from "./layer-history";
 import { LayerRestore, rememberLayer } from "./layer-choices";
+import { PhotoLinkOpener } from "./photo-link";
 import { PoseMotion, POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
+import { editViewpoint, placeViewpoint } from "./viewpoint-draft";
 
 const shellTag = unsafeStatic(SHELL_TAG);
 
@@ -48,7 +50,7 @@ const forgetFailedPair = (owner: object, language: string): void => {
   if (commonTranslationsRequested.get(owner) === language) commonTranslationsRequested.delete(owner);
 };
 
-export class MaticMapPanelV4 extends LitElement {
+class MaticMapPanelV4 extends LitElement {
   static override styles = [tokens, base, css`
 :host { display: block; block-size: 100%; color-scheme: light dark; }
 `];
@@ -75,6 +77,7 @@ export class MaticMapPanelV4 extends LitElement {
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
   #layerRestore: LayerRestore | null = null;
+  #photoLink: PhotoLinkOpener | null = null;
   // Outlives the controllers, so the map canvas keeps it across a reconnect.
   readonly #poseMotion = new PoseMotion();
   #stopViewport: (() => void) | null = null;
@@ -203,6 +206,7 @@ export class MaticMapPanelV4 extends LitElement {
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
     this.#layerRestore = new LayerRestore(this.#store, this.#route);
+    this.#photoLink = new PhotoLinkOpener(this.#store, this.#route);
     if (this.#projection) {
       this.#effects.sync(this.#projection);
       // A detached panel keeps its last verified workspace state, but its
@@ -222,6 +226,8 @@ export class MaticMapPanelV4 extends LitElement {
   #stopControllers(): void {
     this.#layerRestore?.dispose();
     this.#layerRestore = null;
+    this.#photoLink?.dispose();
+    this.#photoLink = null;
     this.#layers?.dispose();
     this.#layers = null;
     this.#effects?.dispose();
@@ -256,6 +262,7 @@ export class MaticMapPanelV4 extends LitElement {
         this.#effects?.sync(projection);
       }
     }
+    if (changed.has("route")) this.#photoLink?.check();
     if (changed.has("narrow") && this.#store.value.narrowHint !== this.narrow) {
       this.#store.dispatch({ type: "set-narrow-hint", value: this.narrow });
     }
@@ -350,6 +357,14 @@ export class MaticMapPanelV4 extends LitElement {
     }
     if (intent.type === "show-photo-marks") {
       this.#store.dispatch({ type: "result", photoMarks: intent.marks });
+      return;
+    }
+    if (intent.type === "edit-viewpoint") {
+      this.#store.dispatch({ type: "result", photoMarks: editViewpoint(this.#store.value.photoMarks, intent.draft) });
+      return;
+    }
+    if (intent.type === "place-viewpoint") {
+      this.#store.dispatch({ type: "result", photoMarks: placeViewpoint(this.#store.value.photoMarks, intent.point) });
       return;
     }
     if (intent.type === "show-trail") {
