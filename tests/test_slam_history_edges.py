@@ -66,6 +66,12 @@ async def _add(store: SlamHistoryStore, page_x: int = 0, minute: int = 0) -> str
     return store.catalog()[-1].record_id
 
 
+async def _capture(store: SlamHistoryStore, action: str, request_id: str) -> None:
+    await store.async_mutate(
+        action, (), request_id=request_id, expected_generation=store.generation
+    )
+
+
 async def test_history_mutation_errors_and_all_lifecycle_actions(hass) -> None:
     store = SlamHistoryStore(hass, "history-action-edges")
     await store.async_load()
@@ -145,8 +151,10 @@ async def test_history_mutation_errors_and_all_lifecycle_actions(hass) -> None:
         request_id="delete-kept-allowed",
         allow_kept=True,
     )
-    assert [item.record_id for item in store.trash_catalog()] == [first]
-    assert [item.record_id for item in store.active_catalog()] == [second]
+    retention = [
+        (item.record_id, item.retention == "trash") for item in store.catalog()
+    ]
+    assert retention == [(first, True), (second, False)]
     assert store.usage()["trash_count"] == 1
     with pytest.raises(ValueError, match="in-trash"):
         await store.async_mutate(
@@ -221,9 +229,7 @@ async def test_history_mutation_errors_and_all_lifecycle_actions(hass) -> None:
         "pause_capture", [], expected_generation=store.generation, request_id="pause"
     )
     assert store.capture_paused
-    await store.async_set_policy(
-        False, request_id="resume", expected_generation=store.generation
-    )
+    await _capture(store, "resume_capture", "resume")
     assert not store.capture_paused
     await store.async_mutate(
         "permanent_delete",
@@ -231,7 +237,7 @@ async def test_history_mutation_errors_and_all_lifecycle_actions(hass) -> None:
         expected_generation=store.generation,
         request_id="purge-trash",
     )
-    assert store.trash_catalog() == ()
+    assert all(item.retention != "trash" for item in store.catalog())
     await store.async_shutdown()
 
 
@@ -262,7 +268,7 @@ async def test_history_add_and_mutation_persist_failures_roll_back(hass) -> None
     with pytest.raises(OSError, match="disk full"):
         await expiring.async_expire_trash(now=datetime.now(UTC) + timedelta(days=2))
     assert expiring.generation == generation
-    assert expiring.trash_catalog()
+    assert any(item.retention == "trash" for item in expiring.catalog())
     expiring._store.async_save = AsyncMock()
     await expiring.async_shutdown()
 
@@ -399,13 +405,9 @@ async def test_history_capacity_block_is_separate_and_recovers(hass) -> None:
         assert not await store.async_add(_scene(1), 2)
         assert store.capacity_blocked
         assert not store.capture_paused
-        await store.async_set_policy(
-            True, request_id="capacity-pause", expected_generation=store.generation
-        )
+        await _capture(store, "pause_capture", "capacity-pause")
         assert store.capture_paused and store.capacity_blocked
-        await store.async_set_policy(
-            False, request_id="capacity-resume", expected_generation=store.generation
-        )
+        await _capture(store, "resume_capture", "capacity-resume")
         assert not store.capture_paused and store.capacity_blocked
         await store.async_mutate(
             "delete",
@@ -766,9 +768,7 @@ async def test_history_import_second_commit_rechecks_generation_and_idempotency(
             )
         )
         await started.wait()
-        await store.async_set_policy(
-            True, request_id="generation-change", expected_generation=store.generation
-        )
+        await _capture(store, "pause_capture", "generation-change")
         release.set()
         with pytest.raises(ValueError, match="generation-conflict"):
             await importing

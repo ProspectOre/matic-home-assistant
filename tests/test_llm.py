@@ -237,7 +237,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
     api = MaticRobotStatusAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 21
+    assert hass.bus.async_listen.call_count == 25
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -475,7 +475,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "matic_robot_firmware_research",
     ]
     assert register.call_args_list[0].args == (hass, registered)
-    assert hass.bus.async_listen.call_count == 42
+    assert hass.bus.async_listen.call_count == 50
 
 
 async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:

@@ -71,10 +71,9 @@ MAX_CANDIDATE_MISSIONS = 2
 MAX_CANDIDATE_TILES_PER_LAYER = MAX_TILES
 # All pending candidates share one floor's raw-byte allowance. A newer
 # observed mission is authoritative, so an older candidate yields pages first.
-# Together with the active map this bounds resident raw page bytes to
-# ``MAX_RESIDENT_BYTES`` regardless of how many candidates are pending.
+# Together with the active map this bounds resident raw page bytes to twice
+# ``MAX_STORED_BYTES`` regardless of how many candidates are pending.
 MAX_CANDIDATE_BYTES = MAX_STORED_BYTES
-MAX_RESIDENT_BYTES = MAX_STORED_BYTES + MAX_CANDIDATE_BYTES
 MAP_SNAPSHOT_MAX_PAGES = MAX_TILES * (MAX_CANDIDATE_MISSIONS + 1)
 MAP_SNAPSHOT_MAX_BYTES = MAX_STORED_BYTES * (MAX_CANDIDATE_MISSIONS + 1)
 MAP_SNAPSHOT_TIMEOUT = 30.0
@@ -732,10 +731,6 @@ class SlamMapStore:
         """Return raw key/value bytes retained by every pending candidate."""
         return sum(candidate.raw_bytes for candidate in self._candidates.values())
 
-    def resident_bytes(self) -> int:
-        """Return raw page bytes held by the active map and all candidates."""
-        return self._active_raw_bytes + self._candidate_bytes()
-
     @staticmethod
     def _bound_candidate(
         candidate: _MissionCandidate, *, max_tiles: int, max_bytes: int
@@ -976,26 +971,6 @@ class SlamMapStore:
         self._invalidate_live_session()
         self._promote_latest_complete_candidate()
         self._schedule_candidate_expiry()
-
-    def decoded_tiles(self) -> tuple[SlamTile, ...]:
-        """Return all currently valid tiles for local rendering."""
-        tiles: list[SlamTile] = []
-        for entry in self._entries.values():
-            try:
-                tiles.append(decode_slam_tile(entry))
-            except DecodeError:
-                continue
-        return tuple(tiles)
-
-    def decoded_structure_tiles(self) -> tuple[SlamStructureTile, ...]:
-        """Return all currently valid integrated-map pages for rendering."""
-        tiles: list[SlamStructureTile] = []
-        for entry in self._structure_entries.values():
-            try:
-                tiles.append(decode_slam_structure_tile(entry))
-            except DecodeError:
-                continue
-        return tuple(tiles)
 
     async def async_decoded_map(self) -> DecodedMap:
         """Decode the active map once for every reader of the current revision."""
@@ -1273,14 +1248,6 @@ class SlamMapStore:
             self._dropped_structure_tiles,
             self._truncation_bounds,
             None if self._legacy_recovery is None else self._legacy_recovery.retained,
-        )
-
-    def _serialized_data(self) -> StoredSnapshot:
-        """Build a private payload synchronously for diagnostics and migration."""
-        return encode_snapshot(
-            tuple(self._entries.values()),
-            tuple(self._structure_entries.values()),
-            self._snapshot_health(),
         )
 
 

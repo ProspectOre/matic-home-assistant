@@ -25,17 +25,6 @@ DURATION_PROFILE_KEYS = tuple(
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 
 
-def _elapsed_seconds(started: object, now: datetime) -> int | None:
-    """Return positive elapsed wall-clock seconds from a stored ISO timestamp."""
-    if not isinstance(started, str):
-        return None
-    parsed = dt_util.parse_datetime(started)
-    if parsed is None or parsed.tzinfo is None:
-        return None
-    elapsed = (now - parsed).total_seconds()
-    return max(1, round(elapsed))
-
-
 def _stored_count(record: object, key: str) -> int:
     """Return a nonnegative persisted counter or zero."""
     value = record.get(key) if isinstance(record, Mapping) else None

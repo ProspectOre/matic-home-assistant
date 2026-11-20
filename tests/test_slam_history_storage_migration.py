@@ -163,8 +163,6 @@ async def test_v2_lifecycle_survives_reload_and_v1_reader_refuses_unchanged_file
         (record_ids[1], "kept", "Kept map"),
         (record_ids[2], "trash", None),
     ]
-    assert len(reloaded.active_catalog()) == 2
-    assert [item.record_id for item in reloaded.trash_catalog()] == [record_ids[2]]
     await reloaded.async_shutdown()
 
 

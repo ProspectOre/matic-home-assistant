@@ -107,9 +107,10 @@ def _plan_store() -> Path:
 
 def _floor_plan() -> Any:
     """The simulator's floor as the integration decodes it, in either release."""
-    from custom_components.matic_robot.client.floor_plan import decode_floor_plan
+    from custom_components.matic_robot.client.floor_plan import decode_floor_plans
 
-    return decode_floor_plan(two_room_floor().encode())
+    (floor_plan,) = decode_floor_plans(two_room_floor().encode())
+    return floor_plan
 
 
 def _add_legacy_area() -> None:

@@ -468,34 +468,6 @@ def _centered_box(center: tuple[int, int], width: int, height: int) -> _Box:
     return (left, top, left + width, top + height)
 
 
-def _box_inside_mask(box: _Box, mask: Image.Image, margin: int = 0) -> bool:
-    """Return whether a box and optional margin are fully inside a room mask."""
-    expanded = (
-        box[0] - margin,
-        box[1] - margin,
-        box[2] + margin,
-        box[3] + margin,
-    )
-    if (
-        expanded[0] < 0
-        or expanded[1] < 0
-        or expanded[2] > mask.width
-        or expanded[3] > mask.height
-    ):
-        return False
-    return mask.crop(expanded).getextrema() == (255, 255)
-
-
-def _boxes_overlap(first: _Box, second: _Box, *, gap: int = 0) -> bool:
-    """Return whether two label boxes overlap or violate their visual gap."""
-    return not (
-        first[2] + gap <= second[0]
-        or second[2] + gap <= first[0]
-        or first[3] + gap <= second[1]
-        or second[3] + gap <= first[1]
-    )
-
-
 def _polygon_area(points: tuple[_Point, ...]) -> float:
     """Return the absolute area of a polygon."""
     return abs(

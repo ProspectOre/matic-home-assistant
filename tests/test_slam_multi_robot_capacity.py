@@ -16,10 +16,12 @@ except ImportError:  # Windows does not expose process high-water RSS.
 from custom_components.matic_robot import slam_map_store as storage
 from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
 from custom_components.matic_robot.slam_map_store import (
-    MAX_RESIDENT_BYTES,
+    MAX_CANDIDATE_BYTES,
+    MAX_STORED_BYTES,
     SlamMapStore,
 )
 from custom_components.matic_robot.slam_snapshot import stored_bytes
+from tests.slam_store_probes import resident_bytes
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
@@ -44,7 +46,7 @@ async def test_resident_byte_accounting_survives_replacement_eviction_and_reload
             )
             assert candidate.raw_bytes == candidate_bytes
             actual += candidate_bytes
-        assert store.resident_bytes() == actual
+        assert resident_bytes(store) == actual
 
     photo = synthetic_slam_entry(mission_id=1)
     await store.async_add(photo)
@@ -75,11 +77,11 @@ async def test_resident_byte_accounting_survives_replacement_eviction_and_reload
     await store.async_shutdown()
     restored = SlamMapStore(hass, "byte-accounting")
     await restored.async_load()
-    assert restored.resident_bytes() == stored_bytes(
+    assert resident_bytes(restored) == stored_bytes(
         restored._entries, restored._structure_entries
     )
     await restored.async_remove()
-    assert restored.resident_bytes() == 0
+    assert resident_bytes(restored) == 0
 
 
 async def test_resident_byte_accounting_after_candidate_pruning_and_byte_eviction(
@@ -93,7 +95,7 @@ async def test_resident_byte_accounting_after_candidate_pruning_and_byte_evictio
     for mission in (2, 3, 4):
         await store.async_add(synthetic_slam_entry(mission_id=mission))
     assert [candidate.mission_id for candidate in store._candidates.values()] == [3, 4]
-    assert store.resident_bytes() == stored_bytes(
+    assert resident_bytes(store) == stored_bytes(
         store._entries, store._structure_entries
     ) + sum(
         stored_bytes(candidate.entries, candidate.structure_entries)
@@ -105,15 +107,15 @@ async def test_resident_byte_accounting_after_candidate_pruning_and_byte_evictio
     structure = synthetic_structure_entry(mission_id=3)
     await store.async_add_structure(structure)
     assert store.mission_identity.mission_id == 3
-    assert store.resident_bytes() == stored_bytes(
+    assert resident_bytes(store) == stored_bytes(
         store._entries, store._structure_entries
     )
 
-    monkeypatch.setattr(storage, "MAX_STORED_BYTES", store.resident_bytes() - 1)
+    monkeypatch.setattr(storage, "MAX_STORED_BYTES", resident_bytes(store) - 1)
     await store.async_add_structure(structure)
     assert store.health.truncated
     assert (
-        store.resident_bytes()
+        resident_bytes(store)
         == stored_bytes(store._entries, store._structure_entries)
         == 0
     )
@@ -154,15 +156,18 @@ async def test_three_large_maps_switch_floor_and_restore_independently(hass):
     assert all(
         store.live_session_verified and not store.health.truncated for store in stores
     )
-    active_bytes = sum(store.resident_bytes() for store in stores)
+    active_bytes = sum(resident_bytes(store) for store in stores)
     active_peak_rss = _peak_rss_bytes()
 
     await add_floor(2)
     candidate_seconds = perf_counter() - started - active_seconds
-    staged_bytes = sum(store.resident_bytes() for store in stores)
+    staged_bytes = sum(resident_bytes(store) for store in stores)
     staged_peak_rss = _peak_rss_bytes()
     assert staged_bytes > active_bytes
-    assert all(store.resident_bytes() <= MAX_RESIDENT_BYTES for store in stores)
+    assert all(
+        resident_bytes(store) <= MAX_STORED_BYTES + MAX_CANDIDATE_BYTES
+        for store in stores
+    )
     assert all(store.mission_identity.mission_id == 1 for store in stores)
     assert all(not store.live_session_verified for store in stores)
 

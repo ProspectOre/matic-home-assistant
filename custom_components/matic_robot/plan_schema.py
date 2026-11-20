@@ -25,7 +25,6 @@ type PlanBlocker = Literal[
     "area_missing",
     "coverage_requires_vacuum",
     "cadence_identity_unavailable",
-    "preview_unavailable",
     "plan_disabled",
     "plan_has_no_rooms",
     "plan_room_limit",

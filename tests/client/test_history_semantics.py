@@ -324,9 +324,6 @@ def test_wire_helpers_reject_wrong_types_duplicates_and_missing_fields() -> None
         semantics._known((WireField(1, 2, b""),), 1, 0)
     with pytest.raises(DecodeError):
         semantics._known((WireField(1, 0, 1), WireField(1, 0, 2)), 1, 0)
-    with pytest.raises(DecodeError):
-        semantics._required_varint((), 1)
-    assert semantics._required_varint((WireField(1, 0, 9),), 1) == 9
     assert semantics._optional_varint((), 1) is None
     with pytest.raises(DecodeError):
         semantics._optional_varint((WireField(1, 2, b""),), 1)

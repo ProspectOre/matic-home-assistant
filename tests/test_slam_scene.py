@@ -174,7 +174,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             bootstrap_structure_seen=True,
             bootstrap_failures=0,
         ),
-        decoded_tiles=MagicMock(return_value=tuple(map(decode_slam_tile, map_entries))),
+        tiles=tuple(map(decode_slam_tile, map_entries)),
         async_add_listener=MagicMock(return_value=MagicMock()),
     )
     slam_map.floor_plan_is_current = MagicMock(
@@ -185,7 +185,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
     )
     slam_map.async_decoded_map = AsyncMock(
         side_effect=lambda: DecodedMap(
-            slam_map.revision, slam_map.mission_identity, slam_map.decoded_tiles(), ()
+            slam_map.revision, slam_map.mission_identity, slam_map.tiles, ()
         )
     )
     return SimpleNamespace(
@@ -323,7 +323,7 @@ def _set_map_mission(runtime: SimpleNamespace, mission_id: int, revision: int) -
     runtime.slam_map.mission_identity = SlamMapIdentity(
         tile.mission_token, tile.mission_id
     )
-    runtime.slam_map.decoded_tiles.return_value = (tile,)
+    runtime.slam_map.tiles = (tile,)
     runtime.slam_map.revision = revision
 
 

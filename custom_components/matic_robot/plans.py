@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import (
-    Callable,
     Mapping,
 )
 from copy import deepcopy
@@ -241,11 +240,7 @@ class CleaningPlanManager:
         )
 
 
-async def async_get_plan_manager(
-    hass: HomeAssistant,
-    *,
-    manager_factory: Callable[[HomeAssistant], CleaningPlanManager] | None = None,
-) -> CleaningPlanManager:
+async def async_get_plan_manager(hass: HomeAssistant) -> CleaningPlanManager:
     """Return the shared plan manager, publishing it before storage load awaits."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     lock = domain_data.setdefault("_plan_manager_init_lock", asyncio.Lock())
@@ -253,7 +248,7 @@ async def async_get_plan_manager(
         manager = domain_data.get(DATA_PLAN_MANAGER)
         if manager is not None:
             return cast(CleaningPlanManager, manager)
-        manager = (manager_factory or CleaningPlanManager)(hass)
+        manager = CleaningPlanManager(hass)
         domain_data[DATA_PLAN_MANAGER] = manager
         try:
             await manager.async_load()
