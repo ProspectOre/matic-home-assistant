@@ -28,6 +28,7 @@ from custom_components.matic_robot.slam_decoded_map import page_digest
 from custom_components.matic_robot.slam_render import (
     render_slam_map,
 )
+from tests.slam_store_probes import resident_bytes, saved_snapshot
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
@@ -141,7 +142,7 @@ async def test_legacy_truncated_cache_reacquires_both_layers_without_reset(hass)
         frozenset(retained_structure),
     )
     assert restored._legacy_recovery.pending == (retained_photo, retained_structure)
-    assert restored._serialized_data()["bounds"] == {
+    assert saved_snapshot(restored)["bounds"] == {
         "tiles": 1024,
         "bytes": 16 * 1024**2,
     }
@@ -150,7 +151,7 @@ async def test_legacy_truncated_cache_reacquires_both_layers_without_reset(hass)
     with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
         assert restored.map_complete
     assert not restored.health.truncated
-    assert "legacy_retained" not in restored._serialized_data()
+    assert "legacy_retained" not in saved_snapshot(restored)
     await restored.async_shutdown()
 
 
@@ -366,7 +367,7 @@ async def test_legacy_truncation_clears_after_full_replay_settles(hass):
     assert not restored.health.truncated
     assert restored.tile_count == restored.structure_tile_count == len(entries)
     assert restored._legacy_recovery is None
-    assert restored._serialized_data()["bounds"] == {
+    assert saved_snapshot(restored)["bounds"] == {
         "tiles": storage.MAX_TILES,
         "bytes": storage.MAX_STORED_BYTES,
     }
@@ -521,27 +522,24 @@ async def test_candidates_share_one_floor_byte_budget(hass):
     active_bytes = snapshot_codec.stored_bytes(store._entries, store._structure_entries)
     pair_bytes = snapshot_codec.stored_bytes({"a": active[0][0]}, {"a": active[0][1]})
     budget = pair_bytes * 10
-    with (
-        patch.object(storage, "MAX_CANDIDATE_BYTES", budget),
-        patch.object(storage, "MAX_RESIDENT_BYTES", active_bytes + budget),
-    ):
+    with patch.object(storage, "MAX_CANDIDATE_BYTES", budget):
         # Photo-only candidates never promote; each alone fits the budget.
         stage(store, floor_entries(8, mission_id=2))
-        assert store.resident_bytes() <= storage.MAX_RESIDENT_BYTES
+        assert resident_bytes(store) <= active_bytes + budget
         older = next(iter(store._candidates.values()))
         assert not older.truncated and len(older.entries) == 8
         stage(store, floor_entries(8, mission_id=3))
         tokens = list(store._candidates)
         assert len(tokens) == 2
         older, newer = (store._candidates[token] for token in tokens)
-        assert store.resident_bytes() <= storage.MAX_RESIDENT_BYTES
+        assert resident_bytes(store) <= active_bytes + budget
         # The newest mission keeps every page; the older candidate yielded.
         assert len(newer.entries) == 8 and not newer.truncated
         assert older.truncated and 0 < len(older.entries) < 8
         assert older.dropped_photo_tiles == 8 - len(older.entries)
         # Only once the older candidate is empty does the newest shrink.
         stage(store, floor_entries(16, mission_id=3))
-        assert store.resident_bytes() <= storage.MAX_RESIDENT_BYTES
+        assert resident_bytes(store) <= active_bytes + budget
         assert not older.entries and older.truncated
         assert newer.truncated and 0 < len(newer.entries) < 16
     # The active floor is never degraded by pending candidates.
@@ -553,8 +551,7 @@ async def test_candidates_share_one_floor_byte_budget(hass):
 
 def test_resident_byte_ceiling_is_derived_from_the_shared_budgets():
     assert storage.MAX_CANDIDATE_BYTES == storage.MAX_STORED_BYTES
-    assert storage.MAX_RESIDENT_BYTES == 2 * storage.MAX_STORED_BYTES
-    assert storage.MAX_RESIDENT_BYTES == 128 * 1024**2
+    assert storage.MAX_STORED_BYTES + storage.MAX_CANDIDATE_BYTES == 128 * 1024**2
 
 
 async def test_truncation_under_current_bounds_survives_restart_unrecovered(hass):
@@ -571,7 +568,7 @@ async def test_truncation_under_current_bounds_survives_restart_unrecovered(hass
             if snapshot_codec.tile_key(decode_slam_tile(photo)) in store._entries
         }
         await store.async_shutdown()
-        serialized = store._serialized_data()
+        serialized = saved_snapshot(store)
         assert serialized["bounds"] == {
             "tiles": 32,
             "bytes": storage.MAX_STORED_BYTES,
@@ -729,7 +726,7 @@ async def test_restart_after_gap_pages_keeps_the_recovery_baseline(hass):
     baseline = store._legacy_recovery.retained
     await replay(store, entries)
     assert store._legacy_recovery.satisfied
-    serialized = store._serialized_data()
+    serialized = saved_snapshot(store)
     assert serialized["legacy_retained"] == {
         "tiles": sorted(baseline[0]),
         "structure_tiles": sorted(baseline[1]),
@@ -749,7 +746,7 @@ async def test_restart_after_gap_pages_keeps_the_recovery_baseline(hass):
     with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
         assert restored.map_complete
     assert not restored.health.truncated
-    assert "legacy_retained" not in restored._serialized_data()
+    assert "legacy_retained" not in saved_snapshot(restored)
     await restored.async_shutdown()
 
 

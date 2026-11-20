@@ -801,10 +801,6 @@ class _MaticRoomStatisticsSensor(MaticPlanDataEntity, RestoreSensor):
             room.id == self._room_id for room in floor_plan.rooms
         )
 
-    def _room_session_value(self) -> tuple[str, int] | None:
-        """Return this room's (ended_at, seconds) from the latest session."""
-        return self._room_session_result()[1]
-
     def _room_session_result(self) -> tuple[bool, tuple[str, int] | None]:
         """Return whether a managed run owns the session and its room result."""
         floor_plan = self.session.floor.value

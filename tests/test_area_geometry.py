@@ -92,8 +92,13 @@ def test_indexed_room_geometry_matches_reference_polygon(tolerance: float) -> No
         (3.0, 0.5),
         (3.005, 0.5),
     ):
-        assert geometry.contains(x, y, tolerance) is (
-            AreaGeometry._point_in_or_near_polygon(x, y, boundary, tolerance)
+        assert (
+            geometry.contains(x, y, tolerance)
+            is (
+                AreaGeometry._point_in_or_near_polygon_with_work_limit(
+                    x, y, boundary, tolerance, None
+                )[0]
+            )
         )
 
 

@@ -98,7 +98,7 @@ async def test_agent_returns_typed_dbus_error_when_pairing_is_cancelled() -> Non
     request = asyncio.create_task(
         request_passkey(agent, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
     )
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
 
     cancel(agent)
 
@@ -257,7 +257,7 @@ async def test_pairing_session_attests_already_exists_with_answered_passkey() ->
     exchange = BluetoothPasskeyExchange()
     exchange.begin_candidate()
     request = asyncio.create_task(exchange.async_request_passkey())
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
     exchange.submit(123456)
     assert await request == 123456
     exchange.note_answered()
@@ -280,7 +280,7 @@ async def test_already_exists_stays_uncertain_without_agent_answer() -> None:
     exchange = BluetoothPasskeyExchange()
     exchange.begin_candidate()
     request = asyncio.create_task(exchange.async_request_passkey())
-    await exchange.async_wait_until_requested()
+    await exchange._requested.wait()
     exchange.submit(123456)
     assert await request == 123456
 
@@ -447,7 +447,7 @@ async def test_pairing_agent_releases_a_pending_passkey_prompt_on_exit(
                 agent, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
             )
         )
-        await exchange.async_wait_until_requested()
+        await exchange._requested.wait()
 
     with pytest.raises(DBusError, match="passkey request ended"):
         await request
@@ -479,7 +479,7 @@ async def test_pairing_agent_keeps_an_unrequested_passkey_prompt_for_retry(
                 agent, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
             )
         )
-        await exchange.async_wait_until_requested()
+        await exchange._requested.wait()
         exchange.submit(123456)
         assert await request == 123456
 

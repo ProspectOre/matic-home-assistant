@@ -230,8 +230,9 @@ async def test_three_robot_map_history_workspace_and_plan_isolation(hass) -> Non
     # The live management state also invalidates on policy and capacity changes.
     _map_two, history_two, floor_plan_two, _serial_two = stores["entry-2"]
     for paused, request_id in ((True, "pause-garage"), (False, "resume-garage")):
-        await history_two.async_set_policy(
-            paused,
+        await history_two.async_mutate(
+            "pause_capture" if paused else "resume_capture",
+            (),
             request_id=request_id,
             expected_generation=history_two.generation,
         )

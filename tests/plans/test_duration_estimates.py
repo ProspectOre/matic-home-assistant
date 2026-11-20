@@ -13,7 +13,6 @@ from custom_components.matic_robot.plan_model import CleaningRoom, PlanStopDecis
 from custom_components.matic_robot.plan_timing import (
     _compatible_duration_history,
     _duration_history,
-    _elapsed_seconds,
     _estimated_progress,
     _expected_duration,
     _stored_count,
@@ -297,11 +296,6 @@ async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
 
 
 def test_progress_estimate_rejects_missing_and_malformed_start_times() -> None:
-    now = dt_util.utcnow()
-    assert _elapsed_seconds(None, now) is None
-    assert _elapsed_seconds("not-a-timestamp", now) is None
-    assert _elapsed_seconds("2026-01-01T00:00:00", now) is None
-    assert _elapsed_seconds((now - timedelta(seconds=5)).isoformat(), now) == 5
     assert _estimated_progress("not-a-timestamp", 100) is None
 
 

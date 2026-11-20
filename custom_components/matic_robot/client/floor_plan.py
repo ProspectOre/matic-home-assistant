@@ -37,14 +37,6 @@ MAX_FLOOR_PLAN_FIELDS = MAX_FLOOR_PLAN_BOUNDARY_POINTS * 4
 _FLOOR_MESSAGE_MAX_FIELDS = 64
 
 
-def decode_floor_plan(payload: bytes) -> FloorPlan:
-    """Decode one unambiguous standard partition and its named rooms."""
-    floor_plans = decode_floor_plans(payload)
-    if len(floor_plans) != 1:
-        raise DecodeError("coverage plan contains multiple mapped floors")
-    return floor_plans[0]
-
-
 def decode_floor_plans(payload: bytes) -> tuple[FloorPlan, ...]:
     """Decode every bounded standard partition in a multi-floor payload."""
     if len(payload) > MAX_FLOOR_PLAN_PAYLOAD_BYTES:

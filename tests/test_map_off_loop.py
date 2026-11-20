@@ -272,7 +272,7 @@ async def test_pages_leaving_their_layer_are_freed(hass: HomeAssistant) -> None:
     assert [ref() for ref in refs] == [None, None]
     assert not store._candidates
     assert store._digests.layer(False).keys() == store._entries.keys()
-    assert store.decoded_tiles() == (
+    assert (await store.async_decoded_map()).tiles == (
         decode_slam_tile(textured_photo_entry(0, 0, seed=202)),
     )
     await store.async_shutdown()

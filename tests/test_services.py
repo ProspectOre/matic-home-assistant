@@ -391,7 +391,7 @@ async def _registered_services(hass, manager=None, *, is_running=False):
     )
     with (
         patch(
-            "custom_components.matic_robot.services.CleaningPlanManager",
+            "custom_components.matic_robot.plans.CleaningPlanManager",
             return_value=replacement,
         ),
         patch(

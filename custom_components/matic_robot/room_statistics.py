@@ -38,38 +38,6 @@ class NativeRoomStatistic:
     partition_hash: str | None = None
 
 
-def completed_native_room_statistics(
-    records: Iterable[CleaningSessionRecord],
-    rooms: Iterable[Room],
-    *,
-    now: datetime,
-    future_tolerance_seconds: int,
-    multiple_floors_known: bool = False,
-    minimum_timestamp: float | None = None,
-    floor_plan: FloorPlan | None = None,
-) -> dict[str, NativeRoomStatistic]:
-    """Return the latest positive completion for each unambiguous room."""
-    candidates = native_room_statistics_by_session(
-        records,
-        rooms,
-        now=now,
-        future_tolerance_seconds=future_tolerance_seconds,
-        multiple_floors_known=multiple_floors_known,
-        minimum_timestamp=minimum_timestamp,
-        floor_plan=floor_plan,
-    )
-    return {
-        room_id: statistic
-        for room_id, room_history in candidates.items()
-        if (
-            statistic := next(
-                (item for item in room_history if item.mode_durations), None
-            )
-        )
-        is not None
-    }
-
-
 def native_room_statistics_by_session(
     records: Iterable[CleaningSessionRecord],
     rooms: Iterable[Room],
