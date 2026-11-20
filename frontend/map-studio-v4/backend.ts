@@ -455,7 +455,7 @@ export class MaticBackend {
   async saveViewpoint(entryId: string, viewpoint: ViewpointSave, signal?: AbortSignal): Promise<GalleryViewpoint> {
     const [{ parseGalleryViewpoint }, value] = await Promise.all([
       import("./photo-gallery-data"),
-      this.#viewpoints(`/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}/viewpoints`, {
+      this.#photoChange(`/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}/viewpoints`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(viewpoint),
@@ -465,13 +465,23 @@ export class MaticBackend {
   }
 
   async deleteViewpoint(entryId: string, viewpointId: string, signal?: AbortSignal): Promise<void> {
-    await this.#viewpoints(
+    await this.#photoChange(
       `/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}/viewpoints/${encodeURIComponent(viewpointId)}`,
       { method: "DELETE" }, signal);
   }
 
-  /** A viewpoint change: the saved viewpoint, nothing for a delete, or the server's reason as the error's code. */
-  async #viewpoints(path: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
+  /** Star or unstar a photo; a refusal's reason, such as `star_limit`, is the error's code. */
+  async starPhoto(entryId: string, photoId: string, starred: boolean, signal?: AbortSignal): Promise<boolean> {
+    const value = await this.#photoChange(
+      `/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}/photos/${encodeURIComponent(photoId)}/star`,
+      { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred }) }, signal);
+    const reply = value && typeof value === "object" ? (value as { starred?: unknown }).starred : undefined;
+    if (typeof reply !== "boolean") throw new ContractError("invalid-photo-star");
+    return reply;
+  }
+
+  /** A change to a viewpoint or photo: the reply, null for none, or the server's reason as the error's code. */
+  async #photoChange(path: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
     return this.#request("photos", path, { ...init, headers: { Accept: "application/json", ...init.headers } },
       REQUEST_TIMEOUTS.mutation, signal, async (response, operationSignal) => {
         if (response.status === 204) return null;

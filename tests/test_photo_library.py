@@ -32,6 +32,7 @@ from custom_components.matic_robot.photo_library import (
     PhotoLibrary,
     PhotoPlace,
     PhotoSource,
+    StarLimitError,
     async_remove_photos,
 )
 from tests.hermes_fakes import watch
@@ -486,3 +487,31 @@ async def test_failed_file_operations_leave_no_partial_files_and_are_logged(
     assert "Could not erase removed robot photo" in caplog.text
     # A robot that never saved a photo has no folder to erase.
     await async_remove_photos(hass, "never-saved")
+
+
+async def test_a_star_keeps_a_photo_and_is_bounded(
+    hass: HomeAssistant, folder: Path
+) -> None:
+    library = _library(hass, _snap(1), _snap(2, age=timedelta(seconds=-1)))
+    await library.async_read()
+
+    record = await library.async_set_starred(_id(1), True)
+    assert record is not None and record.starred
+    assert library.photo(_id(1)).starred is True
+    # Starring again changes nothing.
+    assert await library.async_set_starred(_id(1), True) is record
+    assert await library.async_set_starred("missing", True) is None
+
+    with (
+        patch.object(photo_library, "MAX_STARRED_PHOTOS", 1),
+        pytest.raises(StarLimitError),
+    ):
+        await library.async_set_starred(_id(2), True)
+    assert library.photo(_id(2)).starred is False
+
+    # An unstarred photo stays until the next prune.
+    assert (await library.async_set_starred(_id(1), False)).starred is False
+    assert library.photo(_id(1)) is not None
+
+    await library.async_shutdown()
+    assert await library.async_set_starred(_id(2), True) is None

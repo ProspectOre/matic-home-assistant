@@ -295,6 +295,14 @@ export async function installPanelFixture(page, {
       if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
       if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
       if (photoGallery && path === "/api/matic_robot/photo_gallery/synthetic-entry") return json(window.__photoGalleryReply ?? photoGallery);
+      // A photo's star (photo_star_view.py): recorded, then answered with
+      // window.__photoStarReply ({ status, body }) or as the server would.
+      if (photoGallery && /^\/api\/matic_robot\/photo_gallery\/synthetic-entry\/photos\/[^/]+\/star$/.test(path)) {
+        const body = JSON.parse(options.body);
+        window.__photoStars = [...window.__photoStars ?? [], { method: options.method, path, body }];
+        const reply = window.__photoStarReply ?? { status: 200, body: { starred: body.starred } };
+        return new Response(JSON.stringify(reply.body ?? null), { status: reply.status, headers: { "Content-Type": "application/json" } });
+      }
       // Viewpoint saves and deletes (viewpoint_view.py): recorded, then answered
       // with window.__viewpointReply ({ status, body }) or as the server would.
       if (photoGallery && path.startsWith("/api/matic_robot/photo_gallery/synthetic-entry/viewpoints")) {

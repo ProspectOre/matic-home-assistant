@@ -55,6 +55,9 @@ MAX_PHOTO_ENTRIES = 64
 SNAP_READ_DELAYS_SECONDS = (12.0, 8.0)
 MAX_LIBRARY_BYTES = 500 * 1024 * 1024
 MAX_PHOTO_AGE = timedelta(days=30)
+# Starred photos are kept past the age and size limits, so their number is
+# bounded instead: about 44 MB at the robot's usual photo size.
+MAX_STARRED_PHOTOS = 100
 PRUNE_INTERVAL = timedelta(days=1)
 # A photo up to this much older than the request that asked for it still
 # answers it: live snaps matched Home Assistant's clock within a few seconds,
@@ -105,6 +108,10 @@ class PhotoRecord:
     has_preview: bool
     place: PhotoPlace
     starred: bool = False
+
+
+class StarLimitError(Exception):
+    """``MAX_STARRED_PHOTOS`` photos are starred already."""
 
 
 @dataclass(slots=True, eq=False)
@@ -225,6 +232,29 @@ class PhotoLibrary:
         async with self._lock:
             if not self._closed and await self._async_prune():
                 self._async_changed()
+
+    async def async_set_starred(
+        self, photo_id: str, starred: bool
+    ) -> PhotoRecord | None:
+        """Star a photo to keep it past the limits, or unstar it.
+
+        Return the updated record, or None when there is no such photo. An
+        unstarred photo past the limits goes at the next daily prune.
+        """
+        async with self._lock:
+            record = self._records.get(photo_id)
+            if record is None or self._closed:
+                return None
+            if record.starred == starred:
+                return record
+            if starred and (
+                sum(item.starred for item in self._records.values())
+                >= MAX_STARRED_PHOTOS
+            ):
+                raise StarLimitError
+            record = self._records[photo_id] = replace(record, starred=starred)
+            self._async_changed()
+            return record
 
     async def async_image(
         self, photo_id: str, *, preview: bool = False
