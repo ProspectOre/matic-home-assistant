@@ -1,8 +1,9 @@
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
-import type { MaticBackend } from "./backend";
+import { BackendError, type MaticBackend } from "./backend";
 import { controls } from "./controls";
 import type { DateFormat, Localize, NoticePlaceholders, PhotoMarks, ViewpointDraft, WorkspaceIntent } from "./contracts";
 import { formatDateTime, translate } from "./localize";
+import { downloadName, earlierOfSamePlace, withStar } from "./photo-compare";
 import type { GalleryPhoto, GalleryViewpoint, PhotoAlbum, PhotoGallery } from "./photo-gallery-data";
 import { base, tokens } from "./tokens";
 import "./viewpoint-editor";
@@ -47,6 +48,10 @@ export class MaticPhotoGalleryV4 extends LitElement {
     _open: { state: true },
     _full: { state: true },
     _fullFailed: { state: true },
+    _compare: { state: true },
+    _compareFull: { state: true },
+    _viewerError: { state: true },
+    _starring: { state: true },
     _shown: { state: true },
   };
 
@@ -60,7 +65,20 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
 .shot:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 2px; }
 .shot img { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; }
 .viewer { box-sizing: border-box; inline-size: 100vw; max-inline-size: none; block-size: 100dvh; max-block-size: none; margin: 0; padding: var(--ms-space-3); border: 0; background: rgb(0 0 0 / 0.94); color: #fff; touch-action: pan-y; }
-.viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: var(--ms-space-2); }
+.viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: var(--ms-space-2); }
+/* Light controls on the dark viewer; the shared ones are drawn for the panel's surface. */
+.viewer .ms-btn { --ms-local: rgb(255 255 255 / 0.1); color: #fff; border-color: rgb(255 255 255 / 0.45); background: var(--ms-local); text-decoration: none; }
+.viewer .ms-btn:hover:not([aria-disabled="true"]) { background: rgb(255 255 255 / 0.2); }
+.viewer .ms-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.viewer .ms-btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.viewer .tools { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--ms-space-2); }
+.viewer .tools [aria-pressed="true"] .mark { color: #f5c518; }
+.viewer .tools [role="alert"] { flex-basis: 100%; text-align: center; }
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: var(--ms-space-2); min-block-size: 0; }
+.pair figure { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: var(--ms-space-1); margin: 0; min-block-size: 0; }
+.pair figcaption { font-size: var(--ms-t-sm); text-align: center; }
+.shot { position: relative; }
+.shot .badge { position: absolute; inset-block-start: var(--ms-space-1); inset-inline-end: var(--ms-space-1); color: #f5c518; font-size: var(--ms-t-md); line-height: 1; text-shadow: 0 0 2px rgb(0 0 0 / 0.8); }
 .viewer::backdrop { background: rgb(0 0 0 / 0.6); }
 .viewer header, .viewer footer { display: flex; align-items: center; justify-content: space-between; gap: var(--ms-space-2); }
 .viewer p { margin: 0; font-size: var(--ms-t-sm); }
@@ -84,6 +102,11 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   _open: GalleryPhoto | null = null;
   _full: string | null = null;
   _fullFailed = false;
+  /** The earlier photo of the same place shown beside the open one. */
+  _compare: GalleryPhoto | null = null;
+  _compareFull: string | null = null;
+  _viewerError: string | null = null;
+  _starring = false;
   /** How many of the newest photos the grid shows. */
   _shown = PAGE;
   #controller: AbortController | null = null;
@@ -93,6 +116,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   #timelineOf: PhotoGallery | null = null;
   #opener: HTMLElement | null = null;
   #swipeX: number | null = null;
+  #compareRead: AbortController | null = null;
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (!this.hasUpdated || changed.has("entryId") || changed.has("backend")) void this.#read();
@@ -118,6 +142,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     for (const url of Object.values(this._previews)) URL.revokeObjectURL(url);
     this._previews = {};
     this.#dropFull();
+    this.#dropCompare();
     this._open = null;
   }
 
@@ -202,6 +227,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   async #show(photo: GalleryPhoto, opener?: HTMLElement): Promise<void> {
     if (opener) this.#opener = opener;
     this.#dropFull();
+    this.#dropCompare();
+    this._viewerError = null;
     this._open = photo;
     const read = new AbortController();
     this.#fullRead = read;
@@ -220,9 +247,52 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     this._fullFailed = false;
   }
 
+  #dropCompare(): void {
+    this.#compareRead?.abort();
+    this.#compareRead = null;
+    if (this._compareFull) URL.revokeObjectURL(this._compareFull);
+    this._compareFull = null;
+    this._compare = null;
+  }
+
+  /** Shows the newest earlier photo of the same place beside the open one; a second press shows one photo again. */
+  async #toggleCompare(photo: GalleryPhoto): Promise<void> {
+    if (this._compare) return this.#dropCompare();
+    const earlier = earlierOfSamePlace(this.#photos(), photo);
+    if (!earlier) return;
+    this._compare = earlier;
+    const read = new AbortController();
+    this.#compareRead = read;
+    const blob = await this.backend?.photo(earlier.url, read.signal).catch(() => null);
+    if (read.signal.aborted) return;
+    this.#compareRead = null;
+    if (blob) this._compareFull = URL.createObjectURL(blob);
+    else this._viewerError = this.#t("v4_photos_photo_failed", "Couldn't load this photo.");
+  }
+
+  async #star(photo: GalleryPhoto): Promise<void> {
+    const { backend, entryId } = this;
+    if (!backend || !entryId || this._starring) return;
+    this._starring = true;
+    this._viewerError = null;
+    try {
+      const starred = await backend.starPhoto(entryId, photo.id, !photo.starred);
+      if (!this._gallery) return;
+      this._gallery = withStar(this._gallery, photo.id, starred);
+      if (this._open?.id === photo.id) this._open = { ...this._open, starred };
+    } catch (error) {
+      this._viewerError = error instanceof BackendError && error.code === "star_limit"
+        ? this.#t("v4_photos_star_limit", "100 photos are starred. Unstar one to star this one.")
+        : this.#t("v4_photos_star_failed", "Couldn't change the star. Try again.");
+    } finally {
+      this._starring = false;
+    }
+  }
+
   #close(): void {
     this.renderRoot.querySelector<HTMLDialogElement>("dialog.viewer")?.close();
     this.#dropFull();
+    this.#dropCompare();
     this._open = null;
     this.#opener?.focus();
     this.#opener = null;
@@ -268,9 +338,11 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     return html`<section>
       <h3>${this.#albumTitle(album)}</h3>
       <ul class="grid">${photos.map((photo) => html`<li>
-        <button class="shot" type="button" aria-label=${this.#caption(photo)}
+        <button class="shot" type="button" aria-label=${photo.starred
+          ? this.#t("v4_photos_starred_caption", "{caption}, starred", { caption: this.#caption(photo) }) : this.#caption(photo)}
           @click=${(event: Event) => void this.#show(photo, event.currentTarget as HTMLElement)}>
           ${this._previews[photo.id] ? html`<img src=${this._previews[photo.id]} alt="">` : nothing}
+          ${photo.starred ? html`<span class="badge" aria-hidden="true">★</span>` : nothing}
         </button></li>`)}</ul>
     </section>`;
   }
@@ -280,6 +352,22 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     this.#swipeX = null;
     if (start === null || Math.abs(event.clientX - start) < SWIPE) return;
     this.#step(event.clientX < start ? 1 : -1);
+  }
+
+  #single(photo: GalleryPhoto) {
+    return this._full ? html`<img src=${this._full} alt=${this.#caption(photo)} draggable="false">`
+      : this._fullFailed ? html`<div class="failed"><p role="alert">${this.#t("v4_photos_photo_failed", "Couldn't load this photo.")}</p>
+        <button class="ms-btn" type="button" @click=${() => void this.#show(photo)}>${this.#t("v4_retry", "Try again")}</button></div>`
+        : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`;
+  }
+
+  /** The open photo beside the earlier one of the same place, each with its own caption. */
+  #pair(photo: GalleryPhoto, earlier: GalleryPhoto) {
+    const figure = (item: GalleryPhoto, url: string | null) => html`<figure>
+      ${url ? html`<img src=${url} alt=${this.#caption(item)} draggable="false">`
+        : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`}
+      <figcaption>${this.#caption(item)}</figcaption></figure>`;
+    return html`<div class="pair">${figure(earlier, this._compareFull)}${figure(photo, this._full)}</div>`;
   }
 
   // A modal dialog sits in the top layer above the sheet, keeps focus inside
@@ -294,10 +382,15 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
         <p>${this.#caption(photo)}</p>
         <button class="ms-btn" type="button" autofocus @click=${() => this.#close()}>${this.#t("v4_close", "Close")}</button>
       </header>
-      ${this._full ? html`<img src=${this._full} alt=${this.#caption(photo)} draggable="false">`
-        : this._fullFailed ? html`<div class="failed"><p role="alert">${this.#t("v4_photos_photo_failed", "Couldn't load this photo.")}</p>
-          <button class="ms-btn" type="button" @click=${() => void this.#show(photo)}>${this.#t("v4_retry", "Try again")}</button></div>`
-          : html`<p role="status">${this.#t("v4_photos_loading_photo", "Loading the photo…")}</p>`}
+      ${this._compare ? this.#pair(photo, this._compare) : this.#single(photo)}
+      <div class="tools">
+        <button class="ms-btn" type="button" aria-pressed=${String(photo.starred)} aria-disabled=${String(this._starring)} @click=${() => void this.#star(photo)}>
+          <span class="mark" aria-hidden="true">${photo.starred ? "★" : "☆"}</span> ${this.#t("v4_photos_star", "Star")}</button>
+        ${this._full ? html`<a class="ms-btn" href=${this._full} download=${downloadName(photo)}>${this.#t("v4_photos_download", "Download")}</a>` : nothing}
+        ${this._compare || earlierOfSamePlace(this.#photos(), photo) ? html`<button class="ms-btn" type="button" @click=${() => void this.#toggleCompare(photo)}>
+          ${this._compare ? this.#t("v4_photos_compare_end", "Show one photo") : this.#t("v4_photos_compare", "Compare with earlier")}</button>` : nothing}
+        ${this._viewerError ? html`<p role="alert">${this._viewerError}</p>` : nothing}
+      </div>
       <footer>
         <button class="ms-btn" type="button" aria-disabled=${String(!this.#neighbour(-1))} @click=${() => this.#step(-1)}>${this.#t("v4_photos_newer", "Newer")}</button>
         <button class="ms-btn" type="button" aria-disabled=${String(!this.#neighbour(1))} @click=${() => this.#step(1)}>${this.#t("v4_photos_older", "Older")}</button>
