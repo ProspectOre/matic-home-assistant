@@ -28,7 +28,7 @@ uploading nothing. A robot that has stopped draws nothing.
 
 ## CI gate
 
-`tests/browser/map_studio_v4_frame_cost.spec.mjs` runs in the Browser UI
+`tests/browser/map_studio_v4_frame_cost.spec.mjs` runs in the Test
 workflow's Chromium project. How long a frame takes on a runner's software GL
 says little about a phone, so the gate counts what a frame does, which is the
 same on every machine, with every layer and the robot on, in the 3D and the top
