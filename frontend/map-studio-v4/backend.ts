@@ -21,6 +21,7 @@ import {
   type Unchecked,
 } from "./backend-contracts";
 import type * as wire from "./backend-schema";
+import type { PhotoGallery } from "./photo-gallery-data";
 import { SceneParser as SceneParserImplementation, manifestPages, type PageBatch, type SceneParser } from "./scene-parser";
 import {
   BackendRequestDiagnosticsStore,
@@ -423,10 +424,27 @@ export class MaticBackend {
 
   /** The robot's WebP map of one clean, named by its robot history id. */
   async runThumbnail(entryId: string, id: string, signal?: AbortSignal): Promise<Blob> {
-    const { runThumbnailResponse } = await import("./run-history-transport");
-    const path = `/api/matic_robot/run_thumbnail/${encodeURIComponent(entryId)}/${encodeURIComponent(id)}`;
-    return this.#request("runs", path, { headers: { Accept: "image/webp" } }, REQUEST_TIMEOUTS.runs, signal,
-      (response, operationSignal) => runThumbnailResponse(response, operationSignal,
+    return this.#webp("runs", `/api/matic_robot/run_thumbnail/${encodeURIComponent(entryId)}/${encodeURIComponent(id)}`, signal);
+  }
+
+  /** Photo albums and saved viewpoints; photo-gallery-data.ts decodes them. */
+  async photoGallery(entryId: string, signal?: AbortSignal): Promise<PhotoGallery> {
+    const [{ parsePhotoGallery }, value] = await Promise.all([
+      import("./photo-gallery-data"),
+      this.#json("photos", `/api/matic_robot/photo_gallery/${encodeURIComponent(entryId)}`, REQUEST_TIMEOUTS.workflow, signal),
+    ]);
+    return parsePhotoGallery(value, entryId);
+  }
+
+  /** One photo or its preview, at a path the gallery read returned. */
+  async photo(path: string, signal?: AbortSignal): Promise<Blob> {
+    return this.#webp("photos", path, signal);
+  }
+
+  async #webp(operation: "runs" | "photos", path: string, signal?: AbortSignal): Promise<Blob> {
+    const { webpImageResponse } = await import("./webp-image");
+    return this.#request(operation, path, { headers: { Accept: "image/webp" } }, REQUEST_TIMEOUTS.runs, signal,
+      (response, operationSignal) => webpImageResponse(response, operationSignal,
         (target, activeSignal, maxBytes, invalidCode) => this.#readBody(target, activeSignal, maxBytes, invalidCode),
         (code, status) => new BackendError(code, status), (code) => new ContractError(code)));
   }

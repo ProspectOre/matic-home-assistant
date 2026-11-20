@@ -80,6 +80,9 @@ export async function installPanelFixture(page, {
   workspacePush = true,
   // The carpet and vent response. Null leaves the URL out of the catalog.
   floorTypes = null,
+  // The Photos read (photo_gallery_view.py); every photo route answers with a
+  // 1x1 WebP. Null leaves both unserved.
+  photoGallery = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -139,7 +142,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, workspacePush }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, photoGallery, workspacePush }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -291,6 +294,12 @@ export async function installPanelFixture(page, {
       }
       if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
       if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
+      if (photoGallery && path === "/api/matic_robot/photo_gallery/synthetic-entry") return json(window.__photoGalleryReply ?? photoGallery);
+      if (photoGallery && path.startsWith("/api/matic_robot/photo/synthetic-entry/")) {
+        window.__photoReads = [...window.__photoReads ?? [], path];
+        const webp = "UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vuUAAA=";
+        return new Response(Uint8Array.from(atob(webp), (char) => char.charCodeAt(0)), { headers: { "Content-Type": "image/webp" } });
+      }
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
       // No live trail is stored before a run records a point.
       if (path.endsWith("runs/synthetic-entry?trail=live")) return new Response(null, { status: 404 });
@@ -615,6 +624,7 @@ export async function installPanelFixture(page, {
     userData,
     wifiSignal,
     floorTypes,
+    photoGallery,
     workspacePush,
   });
   await remount();

@@ -42,11 +42,11 @@ import {
   icon,
   iconBack,
   iconChevronDown,
-  iconChevronRight,
   iconChevronUp,
   iconClose,
   iconDiagnostics,
   iconHistory,
+  iconPhotos,
   iconMenu,
   iconPlan,
   iconNewArea,
@@ -63,6 +63,7 @@ import {
 } from "./map-canvas";
 import "./map-canvas";
 import { translate } from "./localize";
+import { shelfRow } from "./shelf-row";
 import type { RendererModuleStatus } from "./renderer-controller";
 
 import { needsDraftConfirmation } from "./draft-navigation";
@@ -1042,20 +1043,7 @@ export class MaticMapShellV4 extends LitElement {
   // `described` links a held control to the home reason, which only the held
   // home states render (R12), so a row disabled on its own never points at it.
   #shelfRow(label: string, glyph: string, workflow: Workflow, detail?: string, disabled = false, described = false, classes = "ms-row") {
-    return html`
-      <button
-        class=${classes}
-        type="button"
-        data-launcher=${workflow}
-        aria-disabled=${disabled ? "true" : nothing}
-        aria-describedby=${described ? "home-reason" : nothing}
-        @click=${this.#launch(workflow, disabled)}
-      >
-        <span class="ms-row__lead">${icon(glyph)}</span>
-        <span class="ms-row__body"><strong>${label}</strong>${detail ? html`<small>${detail}</small>` : nothing}</span>
-        <span class="ms-row__trail">${icon(iconChevronRight, { directional: true })}</span>
-      </button>
-    `;
+    return shelfRow(this.#launch(workflow, disabled), label, glyph, workflow, detail, disabled, described, classes);
   }
 
   #floorSwitcher(state: WorkspaceState) {
@@ -1151,11 +1139,14 @@ export class MaticMapShellV4 extends LitElement {
       const runs = this.#shelfRow(t("v4_cleaning_history", "Cleaning history"), iconPlan, "runs", statusCopy(state).history
         ? t("v4_runs_last_unfinished", "The last run didn't finish. See what happened.")
         : t("v4_runs_quick_detail", "See recent cleans and how they ended."));
+      // Photos reads the robot's photo routes itself, so it needs Home Assistant's backend.
+      const photos = this.backend ? this.#shelfRow(t("v4_photos", "Photos"), iconPhotos, "photos",
+        t("v4_photos_quick_detail", "See photos the robot took and the views you saved.")) : nothing;
       const history = this.#shelfRow(t("v4_map_history", "Map history"), iconHistory, "history", t("v4_history_quick_detail", "Browse earlier floor maps."));
       const diagnostics = this.#shelfRow(t("v4_map_diagnostics", "Map diagnostics"), iconDiagnostics, "support", t("v4_diagnostics_quick_detail", "Check the map and copy details for support."));
       return html`
         <h3 class="ms-section-heading">${t("v4_maps_heading", "Maps")}</h3>
-        <div class="shelf maps">${diagnosticsFirst ? [diagnostics, runs, history] : [runs, history, diagnostics]}</div>
+        <div class="shelf maps">${diagnosticsFirst ? [diagnostics, runs, photos, history] : [runs, photos, history, diagnostics]}</div>
       `;
     };
     switch (kind) {
