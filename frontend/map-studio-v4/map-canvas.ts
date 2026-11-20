@@ -81,7 +81,7 @@ export class MaticMapCanvasV4 extends LitElement {
     // The help popover (map-help.ts), rendered by the shell into the rail
     // so the "?" and its aria-controls share this root; null while closed.
     help: { attribute: false },
-    // Draw's screen-reader recipes (map-help.ts drawRecipes), with the help
+    // Draw's screen-reader recipes (draw-recipes.ts drawRecipes), with the help
     // rows in the views chunk Draw loads anyway.
     recipes: { attribute: false },
     // The panel's light or dark scheme (shell.ts scheme); a change repaints
@@ -163,7 +163,7 @@ export class MaticMapCanvasV4 extends LitElement {
 
     .map-dock, .map-scale, .map-message { position: absolute; z-index: 4; }
     /* The saved-map chip sits top centre under the rail's first row; the
-       appearance switch steps down to make room (map-surfaces.md §4). */
+       appearance switch steps down to make room. */
     .map-chip { position: absolute; inset-block-start: var(--row); inset-inline: 0; margin-inline: auto; inline-size: fit-content; max-inline-size: 100%; padding: var(--ms-space-1) var(--ms-space-3); font-size: var(--ms-t-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
     .map-rail:has(.map-chip) .appearance-switch { inset-block-start: calc(2 * var(--row)); }
 
@@ -688,8 +688,8 @@ export class MaticMapCanvasV4 extends LitElement {
     // Draw and the area review force the top view, so the view, appearance
     // and camera groups are noise there; the sheet owns the tools on a phone. Both leave Fit and
     // help in the map rail because workspace visibility belongs to the app
-    // bar. Without a scene there is nothing to fit, switch or explain
-    // (home-rooms.md §11 MS-HOME-04), so the rail keeps nothing. A phone's
+    // bar. Without a scene there is nothing to fit, switch or explain,
+    // so the rail keeps nothing. A phone's
     // Room names row is in Map options; its rail keeps the help "?".
     const showView = !this.comparisonMode && !draw && state.workflow !== "areaReview";
     const showAppearance = showView && !narrow && view === "top";
@@ -810,7 +810,7 @@ export class MaticMapCanvasV4 extends LitElement {
     // chip would only duplicate it.
     const count = state.selection.roomIds.length;
     if (state.workflow === "rooms" && count > 0 && !this.narrow) {
-      // Clear shares the rows' gate (home-rooms.md §5 Selection gate): while
+      // Clear shares the rows' gate: while
       // the selection is held the chip keeps the count and the panel's Clear
       // says why (startup budget, Task 6 ruling).
       return html`

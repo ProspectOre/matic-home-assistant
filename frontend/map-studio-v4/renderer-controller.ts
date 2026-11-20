@@ -353,7 +353,7 @@ export class RendererController {
     }
     if (!previous || previous.quality !== state.quality) this.#governor.reset(qualityScale(state.quality));
     // Leaving the area review gives back the camera the user had before it
-    // framed the area (map-surfaces.md §5): live when Draw follows, else as
+    // framed the area: live when Draw follows, else as
     // the top view's saved preference, so the 3D view is untouched.
     const leftReview = previous?.workflow === "areaReview" && state.workflow !== "areaReview";
     let published = false;

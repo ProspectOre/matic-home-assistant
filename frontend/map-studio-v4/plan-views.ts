@@ -26,14 +26,14 @@ import { dailyLimitHeldRoomCopy, dailyLimitHeldSummaryCopy } from "./daily-limit
 /** A plan holds up to 100 custom areas, as many as rooms (`save_plan`). */
 const MAX_PLAN_AREAS = MAX_ROOM_SEQUENCE_SIZE;
 
-/** The saved schedule reasons that keep a room's run from starting (plan.md R3). */
+/** The saved schedule reasons that keep a room's run from starting. */
 const BLOCKING: readonly CadenceReason[] = [
   "mop_progress_unverified", "coverage_progress_unverified", "cadence_progress_unverified", "identity_changed",
   "room_not_on_current_map", "shared_schedule_unavailable", "invalid_cadence_policy", "coverage_requires_vacuum",
 ];
 
 /**
- * The plan picker and a plan's Run view (plan.md §3). Their rows and copy
+ * The plan picker and a plan's Run view. Their rows and copy
  * load with the workflow views, since only the plan workflows show them.
  */
 export class MaticPlanViewsV4 extends LitElement {
@@ -47,7 +47,7 @@ export class MaticPlanViewsV4 extends LitElement {
 .plan-row .plan-title .ms-chip { flex: none; }
 .chip-default { border-color: transparent; background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-surface-card)); }
 .chip-attention { border-color: transparent; background: color-mix(in srgb, var(--ms-danger) 12%, var(--ms-surface-card)); }
-/* Line 3 keeps the text colour; the glyph carries the tone (design-system.md §5). */
+/* Line 3 keeps the text colour; the glyph carries the tone. */
 .lines { display: grid; gap: 0.125rem; margin: 0; color: var(--ms-text); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .line { display: flex; gap: var(--ms-space-1); align-items: flex-start; margin: 0; color: var(--ms-text); }
 .line .ms-icon { inline-size: 1rem; block-size: 1rem; color: var(--ms-resolved-indicator, var(--ms-accent)); }
@@ -118,7 +118,7 @@ export class MaticPlanViewsV4 extends LitElement {
 .sched-controls { display: flex; flex-wrap: wrap; gap: var(--ms-space-3); align-items: center; }
 .sched-level { flex: none; inline-size: 9rem; block-size: var(--ms-control); font-size: var(--ms-t-md); }
 .sched-status { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
-/* Reasons keep the text colour; the glyph carries the tone (design-system.md §5). */
+/* Reasons keep the text colour; the glyph carries the tone. */
 .sched-reason { display: flex; gap: var(--ms-space-1); align-items: flex-start; color: var(--ms-text); }
 .sched-reason .ms-icon { flex: none; inline-size: 1rem; block-size: 1rem; color: var(--ms-warning); }
 .sched-off, .sched-row > .ms-btn { justify-self: start; }
@@ -154,13 +154,13 @@ export class MaticPlanViewsV4 extends LitElement {
     _moved: { state: true },
   };
 
-  /** The last move, said once in the polite region (plan.md §5 Order). */
+  /** The last move, said once in the polite region. */
   protected _moved = "";
   /** The control a move or an area change was made from, focused again once the rows have moved. */
   #refocus: string | null = null;
   /** A vacuum rotation level chosen while the rotation is Off, by room: never a draft change. */
   readonly #offLevels = new Map<string, CoverageSetting>();
-  /** The open room's "More for {room}" menu (room-schedule.md §3). */
+  /** The open room's "More for {room}" menu. */
   readonly #roomMenu = new MenuController(this, ".room-more", "> button");
 
   state: WorkspaceState = initialWorkspaceState();
@@ -185,10 +185,10 @@ export class MaticPlanViewsV4 extends LitElement {
   }
 
   #planRow(plan: SavedPlan, isDefault: boolean) {
-    // The home plan card shares these lines (home-rooms.md §5 Cards).
+    // The home plan card shares these lines.
     const line2 = planRowLine2(this.#t, this.state.locale, plan);
     const third = planRowLine3(this.#t, this.state.locale, plan);
-    // A paused plan shows one status, its chip (plan.md R2).
+    // A paused plan shows one status, its chip.
     const line3 = third === null
       ? nothing
       : "blocked" in third
@@ -226,7 +226,7 @@ export class MaticPlanViewsV4 extends LitElement {
         <button class="ms-btn ms-btn--primary" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>${create}</button>
       </div>`;
     }
-    // The default plan first, then the catalog's order (plan.md §3).
+    // The default plan first, then the catalog's order.
     const plans = [...catalog.plans].sort((a, b) => Number(b.id === catalog.selectedPlan) - Number(a.id === catalog.selectedPlan));
     return html`<ul class="plain">
       ${plans.map((plan) => this.#planRow(plan, plan.id === catalog.selectedPlan))}
@@ -243,7 +243,7 @@ export class MaticPlanViewsV4 extends LitElement {
       : this.#t("v4_reason_plan_saving", "Waiting for Home Assistant to save the plan.");
   }
 
-  /** Run's "Plan enabled" switch and why it is held (plan.md §5 Run switch, row RS). */
+  /** Run's "Plan enabled" switch and why it is held. */
   #switchReason(): string | null {
     const state = this.state;
     if (state.pendingAction === "save-plan" || state.planWriteBlock) return this.#planChangeReason();
@@ -293,7 +293,7 @@ export class MaticPlanViewsV4 extends LitElement {
     </li>`;
   }
 
-  /** plan.md §3 Run view, rows R1-R4. */
+  /** The Run view. */
   #run() {
     const state = this.state;
     const draft = state.planDraft;
@@ -400,7 +400,7 @@ export class MaticPlanViewsV4 extends LitElement {
     this.#refocus = null;
   }
 
-  /** The id of the shared reason while a save holds every Edit control (plan.md §4 E5), else null. */
+  /** The id of the shared reason while a save holds every Edit control, else null. */
   #held(): string | null {
     return this.state.pendingAction === "save-plan" || this.state.planWriteBlock ? "edit-held" : null;
   }
@@ -506,7 +506,7 @@ export class MaticPlanViewsV4 extends LitElement {
   }
 
   /**
-   * One Edit room row (plan.md §3 Edit room row). `index` is the room's place
+   * One Edit room row. `index` is the room's place
    * in the draft's rooms, `position` its place in the run with the plan's
    * custom areas, and `last` the run's last place.
    */
@@ -516,7 +516,7 @@ export class MaticPlanViewsV4 extends LitElement {
     const limited = room === null && atLimit;
     const schedule = room ? scheduleLine(this.#t, this.state.locale, room.cadence) : null;
     const blocked = room?.cadenceReasons?.some((reason) => BLOCKING.includes(reason));
-    // While the mop schedule is on, the mode stays Vacuum (room-schedule.md §4 S10).
+    // While the mop schedule is on, the mode stays Vacuum.
     const modeLocked = Boolean(room?.cadence?.mopEveryN);
     return html`<li class="ms-row edit-row" data-selected=${room ? "true" : nothing}>
       <label class="edit-check"><input
@@ -600,7 +600,7 @@ export class MaticPlanViewsV4 extends LitElement {
     </li>`;
   }
 
-  /** A run-end switch (plan.md §3 When a run ends). */
+  /** A run-end switch. */
   #endSwitch(id: string, label: string, hint: string | null, on: boolean, held: string | null, change: (on: boolean) => void) {
     const described = [hint ? `${id}-hint` : "", held ?? ""].filter(Boolean).join(" ");
     return html`<div class="switch-row">
@@ -763,7 +763,7 @@ export class MaticPlanViewsV4 extends LitElement {
     `;
   }
 
-  /** plan.md §3 Edit view. */
+  /** The Edit view. */
   #edit() {
     const state = this.state;
     const draft = state.planDraft;

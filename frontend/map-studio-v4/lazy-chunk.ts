@@ -8,8 +8,8 @@ export interface ChunkStatusCopy {
   readonly failed?: { readonly key: string; readonly fallback: string };
 }
 
-// copy-style-0.5.md:83 requires a loading line to time out with a recovery
-// action. Twenty seconds matches the Locating timer (shell.md §5).
+// docs/copy-style.md requires a loading line to time out with a recovery
+// action. Twenty seconds matches the Locating timer.
 const TIMEOUT_MS = 20_000;
 
 /**

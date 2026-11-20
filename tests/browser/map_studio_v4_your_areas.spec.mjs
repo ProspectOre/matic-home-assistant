@@ -1,5 +1,4 @@
-// UX9 owner rulings (2026-10-13): the home plan card's due lines show in
-// full; custom areas get Your areas; saved plans and areas can be pinned to
+// The home plan card's due lines show in full; custom areas have Your areas; saved plans and areas can be pinned to
 // home as one-tap shortcuts, kept in Home Assistant's per-user frontend data.
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";

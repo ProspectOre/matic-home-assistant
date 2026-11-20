@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { accessibilityReadout, cellHash, cellIds, findCell, startStaging } from "../../scripts/walkthrough.mjs";
 
-// The owner walkthrough stage (docs/owner-walkthrough-0.5.md): one URL hash
+// The owner walkthrough stage: one URL hash
 // puts the real shell gallery into a matrix cell's state, size and setup.
 const STAGE = "/map-studio-v4-stage";
 const FRAME = "/map-studio-v4-stage-frame";

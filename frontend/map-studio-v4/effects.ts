@@ -803,7 +803,7 @@ export class EffectController {
     if (workflow === "areas" || workflow === "draw" || workflow === "areaReview" || workflow === "plan") await this.loadAreas();
   }
 
-  // The home plan card passes origin "home" (home-rooms.md §5 Cards).
+  // The home plan card passes origin "home".
   selectPlan(planId: string | null, preserveNotice = false, origin?: PlanOrigin): void {
     this.#store.dispatch({ type: "transition", ...planSelection(this.#store.value, planId, preserveNotice, origin) });
     // Edit offers the saved custom areas, so a plan reads them as Your areas does.

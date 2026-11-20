@@ -1,4 +1,4 @@
-// The owner walkthrough stage (docs/owner-walkthrough-0.5.md): one URL hash
+// The owner walkthrough stage: one URL hash
 // puts the real shell gallery into a matrix cell's scenario, dialog, size,
 // theme, direction and language. Review only: served by
 // tests/browser/gallery_server.mjs at /map-studio-v4-stage, never shipped.
@@ -184,11 +184,11 @@ export async function mountStageFrame(doc: Document): Promise<void> {
   const gallery = doc.createElement(GALLERY_TAG) as MaticMapStudioGalleryV4;
   gallery.controls = false;
   gallery.simulateMotion = true;
-  // The first paint's hint; the shell then measures itself (design-system.md §7).
+  // The first paint's hint; the shell then measures itself.
   const { innerWidth: width, innerHeight: height } = view;
   gallery.narrow = height < 480 || width < 768 || (width < 1024 && width <= height);
   for (const [name, value] of Object.entries(theme)) gallery.style.setProperty(name, value);
-  // As the panel does from Home Assistant's theme (design-system.md Decision 3).
+  // As the panel does from Home Assistant's theme.
   gallery.style.colorScheme = params.theme;
   if (params.lang === "xa") gallery.localize = pseudoLocalize(await loadCommon());
   gallery.scenario = current.scenario;

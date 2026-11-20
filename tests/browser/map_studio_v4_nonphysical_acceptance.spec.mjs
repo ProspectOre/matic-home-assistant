@@ -139,7 +139,7 @@ test("keyboard dismissal keeps an edited plan draft and restores its launcher fo
   await panel.getByRole("button", { name: "Create a plan", exact: true }).click();
   const name = panel.getByRole("textbox", { name: "Plan name" });
   await name.fill("Evening kitchen");
-  // plan.md §3: Edit leaves through Cancel, which replaces the back chevron.
+  // Edit leaves through Cancel, which replaces the back chevron.
   const back = panel.getByRole("button", { name: "Cancel", exact: true });
   await back.click();
   const discard = panel.getByRole("dialog", { name: "Discard changes?" });

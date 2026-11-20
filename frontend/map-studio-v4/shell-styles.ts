@@ -17,7 +17,7 @@ export const shellStyles = [tokens, base, controls, css`
 
     /* Fixed layout widths also hold when HA uses a different root font size. */
     .root { --ms-inspector: 360px; position: relative; min-block-size: 0; block-size: 100%; }
-    /* The compact inspector, 768 to 1023 px landscape (design-system.md §7). */
+    /* The compact inspector, 768 to 1023 px landscape. */
     @container (max-width: 1023px) { .root { --ms-inspector: 320px; } }
 
     .sr-only, .skip-link:not(:focus) {
@@ -69,7 +69,7 @@ export const shellStyles = [tokens, base, controls, css`
     .floor-switcher:dir(rtl), .robot-switcher:dir(rtl) { background-position: 10px 50%, 15px 50%; }
 
 
-    /* The title keeps its own width (R24): a robot select beside it takes
+    /* The title keeps its own width: a robot select beside it takes
        the rest of the bar and ends in an ellipsis. */
     .title {
       flex: none;
@@ -160,7 +160,7 @@ export const shellStyles = [tokens, base, controls, css`
     .panel-heading h2:focus-visible { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: 4px; border-radius: var(--ms-radius-xs); }
     .panel-description { margin: var(--ms-space-1) 0 var(--ms-space-4); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
 
-    /* Notice slot and toast (shell.md §4, design-system.md .ms-notice): the
+    /* Notice slot and toast: the
        text stays --ms-text on the tone's tint; the glyph carries the tone. */
     .notice {
       --notice-tone: var(--ms-accent);
@@ -213,7 +213,7 @@ export const shellStyles = [tokens, base, controls, css`
        the body text colour so it clears 4.5:1 on both schemes. */
     .quick-actions .ms-row--featured .ms-row__body small { color: color-mix(in srgb, var(--ms-text-quiet) 70%, var(--ms-text)); }
     /* A demoted card drops its tint and reads in the disabled colour; it stays
-       in place and focusable, described by the one home reason (home-rooms.md §4). */
+       in place and focusable, described by the one home reason. */
     .quick-actions .ms-row[aria-disabled="true"] { --ms-local: var(--ms-surface-sunken); border-color: var(--ms-line); }
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__lead { color: var(--ms-text-disabled); background: color-mix(in srgb, var(--ms-text) 6%, var(--ms-local)); }
     .quick-actions .ms-row[aria-disabled="true"] :is(strong, small) { color: var(--ms-text-disabled); }
@@ -383,7 +383,7 @@ export const shellStyles = [tokens, base, controls, css`
     @media (prefers-reduced-motion: reduce) {
       .narrow .mobile-sheet { transition: none; }
     }
-    /* Compact sheet, height < 480 (design-system.md §7): a 48 px bar, peek
+    /* Compact sheet, height < 480: a 48 px bar, peek
        and full, and the action bar in the grip row with its reason under it. */
     .compact .app { grid-template-rows: calc(3rem + var(--ms-safe-top)) minmax(0, 1fr); }
     .compact .mobile-sheet[data-detent="full"] { block-size: 72%; }
@@ -393,6 +393,6 @@ export const shellStyles = [tokens, base, controls, css`
     .compact .sheet-grip .ms-btn--block { inline-size: auto; min-block-size: var(--ms-control); }
     .compact .sheet-grip .action-reason { flex-basis: 100%; order: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .compact .action-summary { display: none; }
-    /* Draw at peek: the grip row and one 44 px tool row (map-surfaces.md §5). */
+    /* Draw at peek: the grip row and one 44 px tool row. */
     .compact .sheet-tools { padding-block: var(--ms-space-1) 0; }
   `];

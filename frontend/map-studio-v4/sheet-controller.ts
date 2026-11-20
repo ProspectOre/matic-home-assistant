@@ -5,11 +5,10 @@ import { hasFocusable } from "./shell-focus";
 type SheetDetent = "peek" | "half" | "full";
 
 const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
-// A compact sheet (height < 480) has no half (design-system.md §7).
+// A compact sheet (height < 480) has no half.
 const COMPACT_DETENTS: readonly SheetDetent[] = ["peek", "full"];
 
-// Where the sheet rests when a workflow or plan view opens (shell.md §5
-// Sheet). The map is the document, so a drawing starts at peek; room and
+// Where the sheet rests when a workflow or plan view opens. The map is the document, so a drawing starts at peek; room and
 // plan choices stay visible at half height, while the long forms (plan Edit,
 // diagnostics) start at full height.
 const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {

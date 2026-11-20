@@ -1,8 +1,8 @@
-// The UX audit's last open P0/P1 rows, closed in UX8: the status strip after
-// Stop (MS-STATUS-01, shell.md §4 row 15), details that never restate their
-// title (MS-STATUS-05, rows 11-18), the compact sheet under 480 px of height
-// (MS-RESP-01/02/03, design-system.md §7) and the 320 px inspector at 768 to
-// 1023 px landscape (MS-RESP-04, the frozen responsive row).
+// The status strip after
+// Stop (MS-STATUS-01), details that never restate their title
+// (MS-STATUS-05), the compact sheet under 480 px of height
+// (MS-RESP-01/02/03) and the 320 px inspector at 768 to 1023 px landscape
+// (MS-RESP-04).
 import { expect, test } from "@playwright/test";
 
 const GALLERY = "matic-map-studio-gallery-v0-4-0";
@@ -146,7 +146,7 @@ test.describe("compact sheet at 844×390 (MS-RESP-01, -02, -03)", () => {
     }
   });
 
-  test("compact sheets start at shell.md's detents and step between peek and full only", async ({ page }) => {
+  test("compact sheets start at their detents and step between peek and full only", async ({ page }) => {
     for (const [steps, start] of [["rooms", "peek"], ["draw", "peek"], ["history", "peek"], ["area-review-new", "peek"], ["plans", "full"], ["plan-saved-intelligent", "full"], ["ready", "full"]]) {
       const gallery = await stage(page, steps, LANDSCAPE);
       await expect(gallery.locator(".mobile-sheet"), steps).toHaveAttribute("data-detent", start);

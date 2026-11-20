@@ -262,7 +262,7 @@ test.describe("area save ownership across map transitions", () => {
   });
 });
 
-// plan.md §9 and shell.md §6: a failed Home Assistant write returns `command`
+// A failed Home Assistant write returns `command`
 // to idle with its notice, so "Check robot status" follows only a robot command.
 test.describe("a failed area write", () => {
   for (const write of ["save", "delete"]) {

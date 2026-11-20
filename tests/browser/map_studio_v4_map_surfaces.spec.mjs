@@ -1,5 +1,4 @@
-// UX5 Map surfaces (docs/ux-spec-0.5/map-surfaces.md; D1-D3 accepted
-// 2026-10-11): one input-aware help popover in every workflow, Full map,
+// Map surfaces: one input-aware help popover in every workflow, Full map,
 // the Draw tool row and precision, area review and history.
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
@@ -92,7 +91,7 @@ const drag = async (page, from, to, options = {}) => {
   await page.mouse.up(options);
 };
 
-test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
+test.describe("help", () => {
   test("Help dismissal detaches with its host and works after reconnect", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await helpButton(gallery).click();
@@ -382,7 +381,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     }
   });
 
-  test("Escape closes Map options, then help, then the workflow (shell.md §5)", async ({ page }) => {
+  test("Escape closes Map options, then help, then the workflow", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "rooms" });
     await helpButton(gallery).click();
     await expect(helpDialog(gallery)).toBeVisible();
@@ -471,7 +470,7 @@ const installFullscreen = (page) => page.evaluate((tag) => {
   window.__fs.leave = () => { current = null; document.dispatchEvent(new Event("fullscreenchange")); };
 }, GALLERY_TAG);
 
-test.describe("Full map (map-surfaces.md §5 Full map, §11 MS-FULL-01…04)", () => {
+test.describe("Full map", () => {
   for (const narrow of [false, true]) {
     test(`the toggle is pressed in Full map and the HUD holds the status, the primary and Exit${narrow ? " @mobile" : ""}`, async ({ page }) => {
       const gallery = await loadGallery(page, { scenario: "ready", narrow, viewport: narrow ? null : { width: 1024, height: 768 } });
@@ -497,7 +496,7 @@ test.describe("Full map (map-surfaces.md §5 Full map, §11 MS-FULL-01…04)", (
   test("every exit lands on the toggle and closes precision and help", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw", viewport: { width: 1024, height: 768 } });
     // Browser full screen is stubbed: a real one would turn Escape into
-    // its own exit (the D3 trade-off), which the @safety test covers.
+    // its own exit, which the @safety test covers.
     await installFullscreen(page);
     const toggle = fullMapToggle(gallery);
     await toggle.click();
@@ -627,7 +626,7 @@ test.describe("Full map (map-surfaces.md §5 Full map, §11 MS-FULL-01…04)", (
   });
 });
 
-// ---- Draw (map-surfaces.md §3-§8 Draw, §11 MS-DRAW-01…07, MS-RESP-02) ------
+// ---- Draw ------
 const DRAW_TOOLS = ["Points", "Paint", "Erase", "Move map", "Undo", "Redo", "Clear", "Brush width, 60 cm. Opens brush settings."];
 const toolbarOf = (scope) => scope.getByRole("toolbar", { name: "Draw area tools" });
 const labelWidth = (button) => button.locator(".ms-btn__label").evaluate((label) => label.getBoundingClientRect().width);
@@ -784,7 +783,7 @@ test.describe("Draw bar and Custom areas", () => {
     await expect(redraw).toBeFocused();
   });
 
-  // UX9: a new area starts from Your areas' New area, and Cancel returns there.
+  // A new area starts from Your areas' New area, and Cancel returns there.
   test("Cancel from a dirty fresh Draw asks, then lands on the New area that opened it", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.getByRole("button", { name: /^Clean custom area/ }).click();
@@ -851,7 +850,7 @@ test.describe("Draw bar and Custom areas", () => {
         await expect(tool).toBeEnabled();
         await expect(tool).not.toHaveAttribute("aria-disabled", "true");
       }
-      // UX9: Draw no longer lists saved areas or New area (Your areas does).
+      // Draw no longer lists saved areas or New area (Your areas does).
       await expect(panel.getByRole("button", { name: "New area", exact: true })).toHaveCount(0);
       await patchState(gallery, { command: "starting" });
       expect(await describedBy(toolbar.getByRole("button", { name: "Undo", exact: true }))).toBe("Waiting for the robot to begin.");
@@ -863,7 +862,7 @@ test.describe("Draw bar and Custom areas", () => {
     });
   }
 
-  // UX9 owner ruling: saved areas live in Your areas; Draw only draws.
+  // Saved areas live in Your areas; Draw only draws.
   test("Draw lists no saved areas: no Custom areas section and no area rows", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw" });
     const panel = panelOf(gallery);
@@ -874,7 +873,7 @@ test.describe("Draw bar and Custom areas", () => {
   });
 });
 
-// ---- Precision (map-surfaces.md §5 Precision; design-system.md §4 .ms-stepper, .ms-range) ----
+// ---- Precision ----
 const brushOf = (scope) => scope.getByRole("button", { name: /^Brush width, / });
 const precisionOf = (scope) => scope.getByRole("group", { name: "Drawing precision" });
 const brushField = (scope) => scope.getByRole("spinbutton", { name: "Brush width in centimeters" });
@@ -986,7 +985,7 @@ test.describe("Precision", () => {
   });
 });
 
-// ---- Area review (map-surfaces.md §4 Area review, §5 Area review, §11 MS-AREA-01…04) ----
+// ---- Area review ----
 const overlayAlpha = (gallery, x, y) => canvasOf(gallery).locator(".overlay-canvas").evaluate((canvas, point) => {
   const ratio = canvas.width / canvas.getBoundingClientRect().width;
   return canvas.getContext("2d").getImageData(Math.round(point.x * ratio), Math.round(point.y * ratio), 1, 1).data[3];
@@ -1013,7 +1012,7 @@ test.describe("Area review", () => {
   });
 
   test("a saved area is titled by its name, cleans from the bar and deletes from the last body row", async ({ page }) => {
-    // UX9: a saved area opens from its row in Your areas.
+    // A saved area opens from its row in Your areas.
     const gallery = await loadGallery(page, { scenario: "areas-list" });
     const panel = panelOf(gallery);
     await panel.getByRole("button", { name: /^Entryway/ }).click();
@@ -1236,7 +1235,7 @@ test.describe("Area review", () => {
   });
 });
 
-// ---- History (map-surfaces.md §4 History, §5 History, §11 MS-HIST-01…05, MS-RESP-09) ----
+// ---- History ----
 // The shell formats dates as formatDateTime does: medium date, short time, in
 // the host's language and zone (the gallery leaves both to the browser).
 const formatted = (page, iso, dates = null) => page.evaluate(({ iso, dates }) =>
@@ -1362,7 +1361,7 @@ test.describe("History", () => {
     const strip = gallery.locator(".status-strip");
     await expect(bar.getByRole("button")).toHaveText(["Show live map"]);
     await patchState(gallery, { activity: "cleaning" });
-    // Wide: Stop keeps its strip place (shell.md §3) and the bar keeps the primary.
+    // Wide: Stop keeps its strip place and the bar keeps the primary.
     await expect(bar.getByRole("button")).toHaveText(["Show live map"]);
     await expect(strip.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /^Start|^Clean|^Run/ })).toHaveCount(0);
@@ -1440,12 +1439,12 @@ test.describe("History", () => {
   });
 });
 
-// design-system.md §8, map-surfaces.md §9: the open surfaces and the themed
+// The open surfaces and the themed
 // Draw and History states carry no serious or critical axe finding.
 const axeFindings = (results) => results.map(({ id, nodes }) => `${id}: ${nodes.map(({ target }) => target.flat().join(" >> ")).join(" | ")}`);
 const expectNoSeriousFinding = async (page, { forced = false } = {}) => {
-  // Linux WebKit's emulated forced colours fail axe's contrast rule (UX3
-  // R34), so under forced colors that rule is replaced by the style checks.
+  // Linux WebKit's emulated forced colours fail axe's contrast rule,
+  // so under forced colors that rule is replaced by the style checks.
   const builder = new AxeBuilder({ page });
   const { violations, incomplete } = await (forced ? builder.disableRules(["color-contrast"]) : builder).analyze();
   expect(axeFindings(violations.filter(({ impact }) => impact === "serious" || impact === "critical"))).toEqual([]);
@@ -1513,7 +1512,7 @@ test.describe("Accessibility", () => {
   }
 });
 
-// R26: the sheet detent and the status title are announced once each through
+// The sheet detent and the status title are announced once each through
 // the shell's polite region, in the host's language; the chip and HUD are
 // plain content with no live role of their own.
 test.describe("Announcements", () => {
@@ -1896,7 +1895,7 @@ test.describe("Codex review", () => {
     await expect(dialog).toBeVisible();
     expect(await shown(".dialog [data-dialog-initial-focus]")).toEqual({ inside: true, hit: true });
     await expect(dialog.locator("[data-dialog-initial-focus]")).toBeFocused();
-    // The browser may take Escape to leave full screen (D3, R24), so close by the button.
+    // The browser may take Escape to leave full screen, so close by the button.
     await dialog.locator("[data-dialog-initial-focus]").click();
     await expect(dialog).toHaveCount(0);
     expect((await snapshot(page)).fullMap).toBe(true);
