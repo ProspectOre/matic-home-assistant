@@ -115,3 +115,27 @@ async def test_a_command_that_stops_the_tour_is_not_followed_by_its_dock(
 
     # The tour leaves the robot to Pause instead of sending it to the dock.
     assert DOCK_PAYLOAD not in robot.received()[sent:]
+
+
+async def test_a_second_tour_waits_and_a_cancelled_one_stays_cancelled(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    robot: SimulatedRobot,
+) -> None:
+    tour = await _start_tour_and_wait_for_the_photo(hass, loaded_entry, robot)
+
+    with pytest.raises(HomeAssistantError) as running:
+        await hass.services.async_call(
+            DOMAIN,
+            "run_photo_tour",
+            {"entity_id": VACUUM, "stops": [{"room": "Study"}]},
+            blocking=True,
+            return_response=True,
+        )
+    assert running.value.translation_key == "photo_tour_running"
+
+    # Cancelling it any other way, such as Home Assistant stopping, is not
+    # reported as a stop.
+    tour.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tour
