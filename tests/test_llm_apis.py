@@ -13,7 +13,11 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot.const import DATA_LLM_API, DOMAIN
+from custom_components.matic_robot.const import (
+    DATA_LLM_API,
+    DOMAIN,
+    RUN_EVENT_TYPES,
+)
 from custom_components.matic_robot.llm import (
     LLM_API_ID,
     READ_ONLY_LLM_API_ID,
@@ -39,6 +43,14 @@ _READ_TOOLS = [
     "MaticGetZones",
     "MaticGetFirmware",
 ]
+
+
+async def test_status_api_keeps_every_run_event_the_robot_announces() -> None:
+    hass = _hass(_entry())
+    MaticRobotStatusAPI(hass).async_start()
+
+    listened = {call.args[0] for call in hass.bus.async_listen.call_args_list}
+    assert {f"{DOMAIN}_{event_type}" for event_type in RUN_EVENT_TYPES} <= listened
 
 
 async def test_read_only_api_offers_only_the_read_tools() -> None:

@@ -9,7 +9,12 @@ import probatio
 from homeassistant.helpers import config_validation as cv
 
 from .cadence import MAX_CADENCE_INTERVAL, validate_cadence_interval
-from .client import HERMES_ENDPOINT_NAMES, CleaningMode, CoverageSetting
+from .client import (
+    HERMES_ENDPOINT_NAMES,
+    CleaningMode,
+    CoverageSetting,
+    is_sha256_hex,
+)
 from .const import MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE, MAX_ROOM_SEQUENCE_SIZE
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
@@ -36,6 +41,15 @@ GO_TO_ROOM_SERVICE_SCHEMA = cv.make_entity_service_schema(
 )
 
 _NAME = probatio.All(cv.string, probatio.Length(min=1, max=128))
+
+
+def _sha256_hex(value: str) -> str:
+    if not is_sha256_hex(value):
+        raise probatio.Invalid("expected a lowercase SHA-256 hex digest")
+    return value
+
+
+_DIGEST = probatio.All(cv.string, _sha256_hex)
 
 
 def _one_place(stop: dict[str, Any]) -> dict[str, Any]:
@@ -227,10 +241,7 @@ RUN_SELECTED_PLAN_SCHEMA = cv.make_entity_service_schema(
         probatio.Optional("plan"): probatio.All(
             cv.string, probatio.Length(min=1, max=128)
         ),
-        probatio.Optional("preview_token"): probatio.All(
-            cv.string,
-            probatio.Match(r"^[0-9a-f]{64}$"),
-        ),
+        probatio.Optional("preview_token"): _DIGEST,
         probatio.Optional("run_behavior"): probatio.In(("intelligent", "ordered")),
         probatio.Optional("wait"): cv.boolean,
     }
@@ -249,10 +260,7 @@ _ROOM_SEQUENCE_FIELDS = {
 CLEAN_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(
     {
         **_ROOM_SEQUENCE_FIELDS,
-        probatio.Optional("preview_token"): probatio.All(
-            cv.string,
-            probatio.Match(r"^[0-9a-f]{64}$"),
-        ),
+        probatio.Optional("preview_token"): _DIGEST,
         probatio.Optional("wait"): cv.boolean,
     }
 )
@@ -298,9 +306,7 @@ DELETE_ROOM_SCHEDULE_SCHEMA = cv.make_entity_service_schema(
         probatio.Required("room_id"): probatio.All(
             cv.string, probatio.Length(min=1, max=128)
         ),
-        probatio.Required("expected_token"): probatio.All(
-            cv.string, probatio.Match(r"^[0-9a-f]{64}$")
-        ),
+        probatio.Required("expected_token"): _DIGEST,
     }
 )
 

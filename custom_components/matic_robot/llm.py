@@ -25,8 +25,8 @@ from .const import (
     EVENT_CUES,
     EVENT_FIRMWARE_ANALYZED,
     EVENT_FIRMWARE_CHANGED,
-    EVENT_PLAN_DOCKED,
     EVENT_PLAN_FINISHED,
+    RUN_EVENT_TYPES,
 )
 from .llm_camera import MaticInvestigateTool, MaticTakePhotoTool
 from .llm_common import (
@@ -108,24 +108,13 @@ FIRMWARE_RESEARCH_PROMPT = (
     "the exact report you reserved."
 )
 _MATIC_EVENT_TYPES = (
+    *(f"{DOMAIN}_{event_type}" for event_type in RUN_EVENT_TYPES),
     EVENT_ACTIVITY_OBSERVED,
-    EVENT_CLEANING_FINISHED,
-    EVENT_PLAN_DOCKED,
-    EVENT_PLAN_FINISHED,
     EVENT_CUES,
     EVENT_FIRMWARE_CHANGED,
     EVENT_FIRMWARE_ANALYZED,
     f"{DOMAIN}_firmware_report_updated",
-    f"{DOMAIN}_room_started",
-    f"{DOMAIN}_room_completed",
-    f"{DOMAIN}_room_ended_unverified",
-    f"{DOMAIN}_room_failed",
-    f"{DOMAIN}_room_cancelled",
-    f"{DOMAIN}_room_skipped",
     f"{DOMAIN}_queue_changed",
-    f"{DOMAIN}_room_interrupted",
-    f"{DOMAIN}_room_reconciled",
-    f"{DOMAIN}_room_held",
 )
 _SAFE_EVENT_FIELDS = (
     "observation_session",
