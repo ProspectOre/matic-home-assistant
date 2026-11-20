@@ -9,7 +9,6 @@ from typing import Literal, NotRequired, TypedDict
 from .map_schema import CatalogEntry
 
 type RecoveryReason = Literal[
-    "gap",
     "overflow",
     "restart",
     "entry_removed",
@@ -38,7 +37,7 @@ class WorkspaceIdentity(TypedDict):
 
 
 class WorkspaceStatus(TypedDict):
-    state: Literal["ready", "stale", "unavailable"]
+    state: Literal["ready", "stale"]
     reason: RecoveryReason | None
     retryable: bool
 
