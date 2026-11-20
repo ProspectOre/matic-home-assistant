@@ -68,6 +68,7 @@ export type Workflow =
   | "areaReview"
   | "history"
   | "runs"
+  | "photos"
   | "support";
 
 export type CommandState = "idle" | "pending" | "starting" | "settling" | "failed";

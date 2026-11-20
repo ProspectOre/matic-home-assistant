@@ -114,6 +114,25 @@ async def test_lists_viewpoints_and_albums_newest_first() -> None:
     assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
 
 
+async def test_lists_only_the_newest_photos() -> None:
+    runtime = SimpleNamespace(
+        photos=SimpleNamespace(records=RECORDS),
+        viewpoints=SimpleNamespace(all=()),
+    )
+    request = _Request(hass_user=SimpleNamespace(is_admin=True))
+    with (
+        patch.object(photo_gallery_view, "runtime_for_entry", return_value=runtime),
+        patch.object(photo_gallery_view, "GALLERY_MAX_PHOTOS", 2),
+    ):
+        response = await MaticPhotoGalleryView().get(request, "e")
+
+    albums = json.loads(response.body)["albums"]
+    assert [[photo["photo_id"] for photo in album["photos"]] for album in albums] == [
+        ["photo-3"],
+        ["photo-2"],
+    ]
+
+
 async def test_only_an_administrator_reads_the_gallery() -> None:
     request = _Request(hass_user=SimpleNamespace(is_admin=False))
     with pytest.raises(Unauthorized):
