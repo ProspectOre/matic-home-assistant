@@ -171,7 +171,6 @@ export class EffectController {
     store: WorkspaceStore,
     backend: MaticBackend,
     workspaceConnection: WorkspaceConnection | null = null,
-    workspaceTransportOverride?: boolean,
     poseMotion: PoseMotion | null = null,
   ) {
     this.#store = store;
@@ -191,7 +190,6 @@ export class EffectController {
       store,
       this.#coherence,
       workspaceConnection,
-      workspaceTransportOverride,
       {
         projection: () => this.#projection,
         accessDenied: () => this.#denyWorkspaceAccess(),

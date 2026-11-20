@@ -26,7 +26,7 @@ test("@safety Smart Stop cannot send an immediate override while checking or ret
     const host = { ...initial.host, connected: true, administrator: true, robotConnected: true, robotCount: 1 };
     const store = new WorkspaceStore({ ...initial, activity: "idle", host });
     const calls = [];
-    const effects = new EffectController(store, { service: async (...args) => calls.push(args), dispose() {} }, null, false);
+    const effects = new EffectController(store, { service: async (...args) => calls.push(args), dispose() {} });
     const base = { host, activity: "idle", batteryPercent: 61, robotLabel: "Robot",
       robots: [{ entryId: "synthetic-entry", label: "Robot" }], language: "en",
       userKey: "stop-test", entryKey: "synthetic-entry", vacuumEntityId: "vacuum.synthetic" };
@@ -77,7 +77,7 @@ test("@safety active selected vacuum remains stoppable when its catalog is unava
       },
       service: async (domain, service, data, entityId) => calls.push({ domain, service, data, entityId }),
       dispose() {},
-    }, null, false);
+    });
     const projection = {
       host,
       activity: "cleaning",
@@ -157,7 +157,7 @@ test("@safety stale catalog work cannot stop idle B, while active B stops only B
       catalog: async () => [staleCatalogEntry],
       service: async (domain, service, data, entityId) => calls.push({ domain, service, data, entityId }),
       dispose() {},
-    }, null, false);
+    });
     const projection = {
       host,
       activity: "docked",
@@ -232,7 +232,7 @@ for (const pendingBeforeAck of [false, true]) {
           if (calls.length === 1) await firstAck;
         },
         dispose() {},
-      }, null, false);
+      });
       const projection = {
         host, activity: "cleaning", batteryPercent: 61, robotLabel: "Robot",
         robots: [{ entryId: "synthetic-entry", label: "Robot" }], language: "en",

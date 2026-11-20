@@ -126,7 +126,7 @@ test("a new session on the same floor waits for its scene even when pose arrives
       plans: async () => initial.resources.plans.value,
       areas: async () => initial.resources.areas.value,
       dispose() {},
-    }, connection, true);
+    }, connection);
     try {
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       await effects.refreshCatalog(true);
@@ -1062,7 +1062,7 @@ test("a rejected pose session cannot be resurrected by a same-floor catalog refr
     const effects = new EffectController(store, {
       catalog: async () => { window.poseRecoveryCatalogs += 1; return [initial.resources.entry]; },
       scene: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {},
-    }, connection, true);
+    }, connection);
     window.poseRecoveryStore = store;
     window.poseRecoveryEffects = effects;
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });

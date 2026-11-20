@@ -11,11 +11,11 @@ test.beforeEach(async ({ browserName }) => {
   test.skip(browserName !== "chromium", "Workspace lifecycle runs once in Chromium");
 });
 
-test("legacy mode is inert and enabled mode follows admin, entry, and dispose lifecycle", async ({ page }) => {
+test("the stream follows admin, entry, and dispose lifecycle", async ({ page }) => {
   await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
-    const { EffectController, WorkspaceStore } = await import("/lifecycle.js");
+    const { EffectController, WorkspaceStore, syntheticEntry } = await import("/lifecycle.js");
     const callbacks = [];
     let unsubscribed = 0;
     const connection = {
@@ -26,48 +26,37 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     };
     const projection = entryKey => ({ host: { connected: true, administrator: true, robotConnected: true, robotCount: 1 }, activity: "idle",
       batteryPercent: 50, language: "en", userKey: "u", vacuumEntityId: "vacuum.x", entryKey, robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
-    let catalogCalls = 0;
-    const backend = { catalog: async () => { catalogCalls += 1; return new Promise(() => {}); }, dispose() {} };
-    const legacy = new EffectController(new WorkspaceStore(), backend, connection);
-    legacy.sync(projection("entry-a"));
-    const legacySubscriptions = callbacks.length;
-    legacy.dispose();
-    const enabledStore = new WorkspaceStore();
-    enabledStore.replace({ ...enabledStore.value, map: { ...enabledStore.value.map, available: true } });
-    const enabled = new EffectController(enabledStore, backend, connection, true);
-    enabled.sync(projection("entry-a"));
+    const backend = { catalog: async () => ["entry-a", "entry-b", "entry-c"].map(entryId => ({ ...syntheticEntry(), entryId })), dispose() {} };
+    const store = new WorkspaceStore();
+    const controller = new EffectController(store, backend, connection);
+    controller.sync(projection("entry-a"));
+    // The stream waits for the catalog to list the entry, then for the map.
     const waitForSubscription = async (index) => {
       for (let attempt = 0; attempt < 100 && typeof callbacks[index] !== "function"; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 0));
+        if (!store.value.map.available) store.replace({ ...store.value, map: { ...store.value.map, available: true } });
+        await new Promise(resolve => requestAnimationFrame(resolve));
       }
-      if (typeof callbacks[index] !== "function") throw new Error(`workspace subscription ${index} was not established; map=${enabledStore.value.map.available}, page=${enabledStore.value.pageActive}, diagnostics=${JSON.stringify(enabled.workspaceDiagnostics())}`);
+      if (typeof callbacks[index] !== "function") throw new Error(`workspace subscription ${index} was not established; map=${store.value.map.available}, page=${store.value.pageActive}, diagnostics=${JSON.stringify(controller.workspaceDiagnostics())}`);
     };
     await waitForSubscription(0);
     const first = callbacks.length;
-    const baselineCatalogCalls = catalogCalls;
-    callbacks[0]({ type: "invalidate", ...({ schema: 1, capabilities: {}, epoch: "e", sequence: 1, coherence_generation: 1, revisions: { status: 1 }, resources: ["status"] }) });
-    await new Promise(resolve => setTimeout(resolve, 0));
-    const afterInvalidation = catalogCalls;
-    enabled.sync(projection("entry-b"));
-    enabledStore.replace({ ...enabledStore.value, map: { ...enabledStore.value.map, available: true } });
+    controller.sync(projection("entry-b"));
     await waitForSubscription(1);
     const afterEntryChange = { subscriptions: callbacks.length, unsubscribed };
     callbacks[1]({ type: "resync", reason: "entry_removed" });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterEntryRemoved = unsubscribed;
-    enabled.sync(projection("entry-c"));
-    enabledStore.replace({ ...enabledStore.value, map: { ...enabledStore.value.map, available: true } });
+    controller.sync(projection("entry-c"));
     await waitForSubscription(2);
     const afterEntryRemovedReplacement = callbacks.length;
-    enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, administrator: false } });
+    controller.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, administrator: false } });
     const afterAuthorizationLoss = unsubscribed;
-    enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, connected: false } });
+    controller.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, connected: false } });
     const afterDisconnect = unsubscribed;
-    enabled.dispose(); enabled.dispose();
-    window.lifecycleResult = { legacySubscriptions, first, baselineCatalogCalls, afterInvalidation, afterEntryChange, afterEntryRemoved, afterEntryRemovedReplacement, afterAuthorizationLoss, afterDisconnect, unsubscribed };
+    controller.dispose(); controller.dispose();
+    window.lifecycleResult = { first, afterEntryChange, afterEntryRemoved, afterEntryRemovedReplacement, afterAuthorizationLoss, afterDisconnect, unsubscribed };
   });
   await expect.poll(() => page.evaluate(() => window.lifecycleResult)).toMatchObject({
-    legacySubscriptions: 0,
     first: 1,
     afterEntryChange: { subscriptions: 2, unsubscribed: 1 },
     afterEntryRemoved: 2,
@@ -76,17 +65,15 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     afterDisconnect: 3,
     unsubscribed: 3,
   });
-  const lifecycle = await page.evaluate(() => window.lifecycleResult);
-  expect(lifecycle.afterInvalidation).toBe(lifecycle.baselineCatalogCalls);
 });
 
-test("production transport follows the admitted entry capability", async ({ page }) => {
+test("the stream closes when the catalog stops listing the entry", async ({ page }) => {
   await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
     const base = createGalleryState("ready");
-    let transportEnabled = true;
+    let listed = true;
     let unsubscribed = 0;
     const callbacks = [];
     const connection = {
@@ -95,9 +82,9 @@ test("production transport follows the admitted entry capability", async ({ page
         revisions: {}, entry_id: message.entry_id, identity: { entry_id: message.entry_id, floor_mission_id: null, floor_verified: false },
         status: { state: "ready", reason: null, retryable: false }, payload: { available: true, entry: null } }),
     };
-    const entry = { ...base.resources.entry, liveWorkspaceTransportEnabled: true };
+    const { entry } = base.resources;
     const backend = {
-      catalog: async () => [{ ...entry, liveWorkspaceTransportEnabled: transportEnabled }],
+      catalog: async () => (listed ? [entry] : []),
       scene: async () => ({ ...base.resources.scene.value, revision: 7, floorCoherent: true }),
       pose: async () => base.resources.pose.value,
       history: async () => base.resources.history.value,
@@ -116,9 +103,9 @@ test("production transport follows the admitted entry capability", async ({ page
     store.replace({ ...store.value, map: { ...store.value.map, available: true } });
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
-    if (callbacks.length !== 1) throw new Error("ready catalog capability did not enable production transport");
+    if (callbacks.length !== 1) throw new Error("the listed entry did not start the stream");
     await new Promise(resolve => setTimeout(resolve, 0));
-    transportEnabled = false;
+    listed = false;
     await controller.refreshCatalog(true);
     for (let attempt = 0; attempt < 40 && unsubscribed === 0; attempt += 1) await new Promise(resolve => setTimeout(resolve, 0));
     window.productionTransportResult = { subscriptions: callbacks.length, unsubscribed };
@@ -127,38 +114,13 @@ test("production transport follows the admitted entry capability", async ({ page
   await expect.poll(() => page.evaluate(() => window.productionTransportResult)).toEqual({ subscriptions: 1, unsubscribed: 1 });
 });
 
-test("production transport stays off when the admitted catalog capability is absent", async ({ page }) => {
+test("an old catalog row cannot start the stream for a changed entry", async ({ page }) => {
   await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
     const base = createGalleryState("ready");
-    const { liveWorkspaceTransportEnabled: _legacyFlag, ...legacyEntry } = base.resources.entry;
-    let finishCatalog;
-    const catalogReady = new Promise(resolve => { finishCatalog = resolve; });
-    const callbacks = [];
-    const connection = { subscribeMessage: async callback => { callbacks.push(callback); return () => {}; }, sendMessagePromise: async () => ({}) };
-    const backend = { catalog: async () => { finishCatalog(); return [legacyEntry]; }, dispose() {} };
-    const projection = { host: base.host, activity: base.activity, batteryPercent: base.batteryPercent,
-      language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
-      entryKey: base.resources.entry.entryId, robotLabel: "Matic", robots: base.robots };
-    const controller = new EffectController(new WorkspaceStore(), backend, connection);
-    controller.sync(projection);
-    await catalogReady;
-    await new Promise(resolve => setTimeout(resolve, 0));
-    window.productionTransportOffResult = callbacks.length;
-    controller.dispose();
-  });
-  await expect.poll(() => page.evaluate(() => window.productionTransportOffResult)).toBe(0);
-});
-
-test("an old enabled catalog row cannot start transport for a changed entry", async ({ page }) => {
-  await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
-  await page.goto("/");
-  await page.evaluate(async () => {
-    const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
-    const base = createGalleryState("ready");
-    const oldEntry = { ...base.resources.entry, liveWorkspaceTransportEnabled: true };
+    const oldEntry = base.resources.entry;
     const callbacks = [];
     let unsubscribed = 0;
     let catalogCalls = 0;
@@ -180,7 +142,7 @@ test("an old enabled catalog row cannot start transport for a changed entry", as
     store.replace({ ...store.value, map: { ...store.value.map, available: true } });
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
-    if (callbacks.length !== 1) throw new Error("initial enabled entry did not start transport");
+    if (callbacks.length !== 1) throw new Error("the initial entry did not start the stream");
     await new Promise(resolve => setTimeout(resolve, 0));
     controller.sync(projection("entry-b"));
     for (let attempt = 0; attempt < 40 && catalogCalls < 2; attempt += 1) await Promise.resolve();
@@ -193,7 +155,7 @@ test("an old enabled catalog row cannot start transport for a changed entry", as
   expect(result.catalogCalls).toBeGreaterThanOrEqual(2);
 });
 
-test("a delayed obsolete enabled catalog cannot start after entry and authorization change", async ({ page }) => {
+test("a delayed obsolete catalog cannot start the stream after entry and authorization change", async ({ page }) => {
   await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async () => {
@@ -201,7 +163,7 @@ test("a delayed obsolete enabled catalog cannot start after entry and authorizat
     const base = createGalleryState("ready");
     let releaseCatalog;
     let catalogStarted = false;
-    const oldEntry = { ...base.resources.entry, liveWorkspaceTransportEnabled: true };
+    const oldEntry = base.resources.entry;
     const callbacks = [];
     const connection = { subscribeMessage: async callback => { callbacks.push(callback); return () => {}; }, sendMessagePromise: async () => ({}) };
     const backend = { catalog: async () => { catalogStarted = true; return await new Promise(resolve => { releaseCatalog = resolve; }); }, dispose() {} };
@@ -244,12 +206,12 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       batteryPercent: base.batteryPercent, language: "en", userKey: "synthetic-user",
       vacuumEntityId: "vacuum.synthetic", entryKey: base.resources.entry.entryId,
       robotLabel: "Matic", robots: base.robots });
-    const makeRun = (enabled, holdCatalog = false, forceFallback = false) => {
+    const makeRun = (socket, holdCatalog = false, forceFallback = false) => {
       const entry = { ...base.resources.entry };
       const run = { catalogCalls: 0, activeCatalog: 0, maxActiveCatalog: 0,
         sceneCalls: 0, updateCalls: 0, activeUpdate: 0, maxActiveUpdate: 0,
         revisions: 7, pendingCatalog: [], pendingUpdate: [], deliveredEvents: 0, effects: null,
-        store: null, holdCatalog, enabled, forceFallback };
+        store: null, holdCatalog, socket, forceFallback };
       // A manifest scene is updated when a newer revision is announced; the
       // fallback run serves whole scenes, which the catalog poll replaces.
       const manifest = forceFallback ? {} : { manifest: new ArrayBuffer(1) };
@@ -260,7 +222,8 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
           run.activeCatalog += 1;
           run.maxActiveCatalog = Math.max(run.maxActiveCatalog, run.activeCatalog);
           const rows = [{ ...entry, mapRevision: run.revisions, sceneRevision: run.revisions }];
-          if (!holdCatalog) {
+          // The stream opens once the catalog lists the entry, so a held run holds from its second read.
+          if (!holdCatalog || run.catalogCalls === 1) {
             run.activeCatalog -= 1;
             return rows;
           }
@@ -324,8 +287,8 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       };
       run.callbacks = callbacks;
       run.store = new WorkspaceStore();
-      if (enabled && !forceFallback) run.store.replace({ ...run.store.value, map: { ...run.store.value.map, available: true } });
-      run.effects = new EffectController(run.store, backend, connection, enabled);
+      if (socket && !forceFallback) run.store.replace({ ...run.store.value, map: { ...run.store.value.map, available: true } });
+      run.effects = new EffectController(run.store, backend, socket ? connection : null);
       run.effects.sync(makeProjection());
       return run;
     };
@@ -334,23 +297,23 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
     };
     const finishRun = run => run.effects.dispose();
 
-    const immediateLegacy = makeRun(false);
-    const immediateEnabled = makeRun(true);
-    await flushStartup(immediateLegacy);
-    await flushStartup(immediateEnabled);
-    const heldLegacy = makeRun(false, true);
-    const heldEnabled = makeRun(true, true);
-    await flushStartup(heldLegacy);
-    await flushStartup(heldEnabled);
-    const fallbackEnabled = makeRun(true, false, true);
-    await flushStartup(fallbackEnabled);
-    const runs = { immediateLegacy, immediateEnabled, heldLegacy, heldEnabled, fallbackEnabled };
+    const immediatePolling = makeRun(false);
+    const immediateSocket = makeRun(true);
+    await flushStartup(immediatePolling);
+    await flushStartup(immediateSocket);
+    const heldPolling = makeRun(false, true);
+    const heldSocket = makeRun(true, true);
+    await flushStartup(heldPolling);
+    await flushStartup(heldSocket);
+    const fallbackSocket = makeRun(true, false, true);
+    await flushStartup(fallbackSocket);
+    const runs = { immediatePolling, immediateSocket, heldPolling, heldSocket, fallbackSocket };
     window.workspaceMeasurement = {
       runs,
       emit(index) {
         const revision = 7 + index;
         for (const run of Object.values(runs)) run.revisions = revision;
-        for (const run of [immediateEnabled, heldEnabled, fallbackEnabled]) {
+        for (const run of [immediateSocket, heldSocket, fallbackSocket]) {
           run.callbacks[0]({ type: "invalidate", schema: 1, capabilities: { snapshot: 1 },
             epoch: "synthetic-epoch", sequence: index, coherence_generation: 1,
             revisions: { scene: revision }, resources: ["scene"] });
@@ -360,7 +323,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       },
       release(runName) { runs[runName].pendingCatalog.shift()?.(); },
       disposeRun(runName) { finishRun(runs[runName]); },
-      admitImmediateMap() { runs.immediateEnabled.store.replace({ ...runs.immediateEnabled.store.value, map: { ...runs.immediateEnabled.store.value.map, available: true } }); },
+      admitImmediateMap() { runs.immediateSocket.store.replace({ ...runs.immediateSocket.store.value, map: { ...runs.immediateSocket.store.value.map, available: true } }); },
       measure() {
         return Object.fromEntries(Object.entries(runs).map(([name, run]) => [name, {
           catalogReads: run.catalogCalls,
@@ -384,87 +347,87 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
   await page.clock.fastForward(2_100);
   await expect.poll(() => page.evaluate(() => {
     const runs = window.workspaceMeasurement.measure();
-    return window.workspaceMeasurement.runs.immediateEnabled.callbacks.length === 1
-      && window.workspaceMeasurement.runs.heldEnabled.callbacks.length === 1
-      && window.workspaceMeasurement.runs.fallbackEnabled.callbacks.length === 1
-      && window.workspaceMeasurement.runs.immediateLegacy.callbacks.length === 0
-      && window.workspaceMeasurement.runs.heldLegacy.callbacks.length === 0
-      && runs.immediateEnabled.activeUpdateReads === 0;
+    return window.workspaceMeasurement.runs.immediateSocket.callbacks.length === 1
+      && window.workspaceMeasurement.runs.heldSocket.callbacks.length === 1
+      && window.workspaceMeasurement.runs.fallbackSocket.callbacks.length === 1
+      && window.workspaceMeasurement.runs.immediatePolling.callbacks.length === 0
+      && window.workspaceMeasurement.runs.heldPolling.callbacks.length === 0
+      && runs.immediateSocket.activeUpdateReads === 0;
   })).toBe(true);
   for (let index = 1; index <= 200; index += 1) {
     await page.evaluate(index => window.workspaceMeasurement.emit(index), index);
     await page.clock.fastForward(50);
   }
   const beforeRelease = await page.evaluate(() => window.workspaceMeasurement.measure());
-  for (const runName of ["heldLegacy", "heldEnabled"]) {
+  for (const runName of ["heldPolling", "heldSocket"]) {
     await page.evaluate(runName => window.workspaceMeasurement.release(runName), runName);
   }
-  await expect.poll(() => page.evaluate(() => window.workspaceMeasurement.measure().heldEnabled.activeCatalogReads)).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.workspaceMeasurement.measure().heldSocket.activeCatalogReads)).toBe(0);
   const afterFirstRelease = await page.evaluate(() => window.workspaceMeasurement.measure());
   await page.evaluate(() => {
-    window.workspaceMeasurement.disposeRun("heldLegacy");
-    window.workspaceMeasurement.disposeRun("heldEnabled");
+    window.workspaceMeasurement.disposeRun("heldPolling");
+    window.workspaceMeasurement.disposeRun("heldSocket");
   });
   await page.clock.fastForward(5_000);
-  await expect.poll(() => page.evaluate(() => window.workspaceMeasurement.measure().fallbackEnabled.admittedSceneRevision)).toBe(207);
+  await expect.poll(() => page.evaluate(() => window.workspaceMeasurement.measure().fallbackSocket.admittedSceneRevision)).toBe(207);
   const immediateResult = await page.evaluate(() => window.workspaceMeasurement.measure());
   await page.evaluate(() => window.workspaceMeasurement.dispose());
   const result = {
     conditions: { syntheticRevisions: 200, cadenceHz: 20, durationMs: 10_000, tickMs: 50,
       automaticFallbackPollWaitMs: 5_000,
-      catalogResponse: "immediate in first pair; explicitly held until after stimulus in second pair",
+      catalogResponse: "immediate in first pair; second read held until after stimulus in second pair",
       sceneUpdate: "one pending synthetic manifest read resolves at each 50ms revision" },
     prePollFallback: {
-      catalogReads: beforeRelease.fallbackEnabled.catalogReads,
-      admittedSceneRevision: beforeRelease.fallbackEnabled.admittedSceneRevision,
+      catalogReads: beforeRelease.fallbackSocket.catalogReads,
+      admittedSceneRevision: beforeRelease.fallbackSocket.admittedSceneRevision,
     },
     afterPollFallback: {
-      catalogReads: immediateResult.fallbackEnabled.catalogReads,
-      admittedSceneRevision: immediateResult.fallbackEnabled.admittedSceneRevision,
+      catalogReads: immediateResult.fallbackSocket.catalogReads,
+      admittedSceneRevision: immediateResult.fallbackSocket.admittedSceneRevision,
     },
     immediate: {
-      legacyCatalogReads: immediateResult.immediateLegacy.catalogReads,
-      workspaceEnabledCatalogReads: immediateResult.immediateEnabled.catalogReads,
-      legacySceneReads: immediateResult.immediateLegacy.sceneReads,
-      workspaceEnabledSceneReads: immediateResult.immediateEnabled.sceneReads,
-      legacyUpdateReads: immediateResult.immediateLegacy.updateReads,
-      legacyMaxConcurrentUpdateReads: immediateResult.immediateLegacy.maxActiveUpdateReads,
-      workspaceEnabledUpdateReads: immediateResult.immediateEnabled.updateReads,
-      workspaceEnabledMaxConcurrentUpdateReads: immediateResult.immediateEnabled.maxActiveUpdateReads,
-      workspaceEnabledAdmittedSceneRevision: immediateResult.immediateEnabled.admittedSceneRevision,
-      workspaceEnabledAdmittedEntryRevision: immediateResult.immediateEnabled.admittedEntryRevision,
-      workspaceEventsReceived: immediateResult.immediateEnabled.workspaceEventsReceived,
-      maxConcurrentCatalogReads: Math.max(immediateResult.immediateLegacy.maxActiveCatalogReads,
-        immediateResult.immediateEnabled.maxActiveCatalogReads),
+      pollingCatalogReads: immediateResult.immediatePolling.catalogReads,
+      socketCatalogReads: immediateResult.immediateSocket.catalogReads,
+      pollingSceneReads: immediateResult.immediatePolling.sceneReads,
+      socketSceneReads: immediateResult.immediateSocket.sceneReads,
+      pollingUpdateReads: immediateResult.immediatePolling.updateReads,
+      pollingMaxConcurrentUpdateReads: immediateResult.immediatePolling.maxActiveUpdateReads,
+      socketUpdateReads: immediateResult.immediateSocket.updateReads,
+      socketMaxConcurrentUpdateReads: immediateResult.immediateSocket.maxActiveUpdateReads,
+      socketAdmittedSceneRevision: immediateResult.immediateSocket.admittedSceneRevision,
+      socketAdmittedEntryRevision: immediateResult.immediateSocket.admittedEntryRevision,
+      workspaceEventsReceived: immediateResult.immediateSocket.workspaceEventsReceived,
+      maxConcurrentCatalogReads: Math.max(immediateResult.immediatePolling.maxActiveCatalogReads,
+        immediateResult.immediateSocket.maxActiveCatalogReads),
     },
     wholeSceneFallback: {
-      catalogReads: immediateResult.fallbackEnabled.catalogReads,
-      sceneReads: immediateResult.fallbackEnabled.sceneReads,
-      updateReads: immediateResult.fallbackEnabled.updateReads,
-      maxConcurrentCatalogReads: immediateResult.fallbackEnabled.maxActiveCatalogReads,
-      workspaceEventsReceived: immediateResult.fallbackEnabled.workspaceEventsReceived,
-      admittedSceneRevision: immediateResult.fallbackEnabled.admittedSceneRevision,
-      admittedEntryRevision: immediateResult.fallbackEnabled.admittedEntryRevision,
+      catalogReads: immediateResult.fallbackSocket.catalogReads,
+      sceneReads: immediateResult.fallbackSocket.sceneReads,
+      updateReads: immediateResult.fallbackSocket.updateReads,
+      maxConcurrentCatalogReads: immediateResult.fallbackSocket.maxActiveCatalogReads,
+      workspaceEventsReceived: immediateResult.fallbackSocket.workspaceEventsReceived,
+      admittedSceneRevision: immediateResult.fallbackSocket.admittedSceneRevision,
+      admittedEntryRevision: immediateResult.fallbackSocket.admittedEntryRevision,
     },
     held: {
       beforeRelease: {
-        legacyCatalogReads: beforeRelease.heldLegacy.catalogReads,
-        workspaceEnabledCatalogReads: beforeRelease.heldEnabled.catalogReads,
-        legacyInFlight: beforeRelease.heldLegacy.activeCatalogReads,
-        workspaceEnabledInFlight: beforeRelease.heldEnabled.activeCatalogReads,
-        workspaceEventsReceived: beforeRelease.heldEnabled.workspaceEventsReceived,
+        pollingCatalogReads: beforeRelease.heldPolling.catalogReads,
+        socketCatalogReads: beforeRelease.heldSocket.catalogReads,
+        pollingInFlight: beforeRelease.heldPolling.activeCatalogReads,
+        socketInFlight: beforeRelease.heldSocket.activeCatalogReads,
+        workspaceEventsReceived: beforeRelease.heldSocket.workspaceEventsReceived,
       },
       afterFirstRelease: {
-        legacyCatalogReads: afterFirstRelease.heldLegacy.catalogReads,
-        workspaceEnabledCatalogReads: afterFirstRelease.heldEnabled.catalogReads,
-        workspaceEnabledInFlight: afterFirstRelease.heldEnabled.activeCatalogReads,
-        maxConcurrentCatalogReads: Math.max(afterFirstRelease.heldLegacy.maxActiveCatalogReads,
-          afterFirstRelease.heldEnabled.maxActiveCatalogReads),
+        pollingCatalogReads: afterFirstRelease.heldPolling.catalogReads,
+        socketCatalogReads: afterFirstRelease.heldSocket.catalogReads,
+        socketInFlight: afterFirstRelease.heldSocket.activeCatalogReads,
+        maxConcurrentCatalogReads: Math.max(afterFirstRelease.heldPolling.maxActiveCatalogReads,
+          afterFirstRelease.heldSocket.maxActiveCatalogReads),
       },
-      finalLegacyCatalogReads: immediateResult.heldLegacy.catalogReads,
-      finalCatalogReads: immediateResult.heldEnabled.catalogReads,
-      maxConcurrentCatalogReads: Math.max(immediateResult.heldLegacy.maxActiveCatalogReads,
-        immediateResult.heldEnabled.maxActiveCatalogReads),
+      finalPollingCatalogReads: immediateResult.heldPolling.catalogReads,
+      finalCatalogReads: immediateResult.heldSocket.catalogReads,
+      maxConcurrentCatalogReads: Math.max(immediateResult.heldPolling.maxActiveCatalogReads,
+        immediateResult.heldSocket.maxActiveCatalogReads),
     },
   };
   console.info("[workspace transport synthetic measurement]", JSON.stringify(result));
@@ -474,22 +437,22 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
     durationMs: 10_000,
     tickMs: 50,
   });
-  expect(result.immediate.workspaceEnabledCatalogReads).toBe(result.immediate.legacyCatalogReads);
-  expect(result.immediate.workspaceEnabledSceneReads).toBe(result.immediate.legacySceneReads);
+  expect(result.immediate.socketCatalogReads).toBe(result.immediate.pollingCatalogReads);
+  expect(result.immediate.socketSceneReads).toBe(result.immediate.pollingSceneReads);
   expect(result.immediate).toMatchObject({
     workspaceEventsReceived: 200,
     maxConcurrentCatalogReads: 1,
-    legacyMaxConcurrentUpdateReads: 1,
-    workspaceEnabledMaxConcurrentUpdateReads: 1,
-    workspaceEnabledAdmittedSceneRevision: 207,
-    workspaceEnabledAdmittedEntryRevision: 207,
+    pollingMaxConcurrentUpdateReads: 1,
+    socketMaxConcurrentUpdateReads: 1,
+    socketAdmittedSceneRevision: 207,
+    socketAdmittedEntryRevision: 207,
   });
   // Push reads at most one manifest per announced revision; without the
   // socket, at most one per catalog poll.
-  expect(result.immediate.workspaceEnabledUpdateReads).toBeGreaterThan(result.immediate.legacyUpdateReads);
-  expect(result.immediate.workspaceEnabledUpdateReads).toBeLessThanOrEqual(200);
-  expect(result.immediate.legacyUpdateReads).toBeGreaterThan(0);
-  expect(result.immediate.legacyUpdateReads).toBeLessThanOrEqual(result.immediate.legacyCatalogReads);
+  expect(result.immediate.socketUpdateReads).toBeGreaterThan(result.immediate.pollingUpdateReads);
+  expect(result.immediate.socketUpdateReads).toBeLessThanOrEqual(200);
+  expect(result.immediate.pollingUpdateReads).toBeGreaterThan(0);
+  expect(result.immediate.pollingUpdateReads).toBeLessThanOrEqual(result.immediate.pollingCatalogReads);
   expect(result.wholeSceneFallback).toMatchObject({
     updateReads: 0,
     workspaceEventsReceived: 200,
@@ -497,21 +460,21 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
     admittedSceneRevision: 207,
     admittedEntryRevision: 207,
   });
-  expect(result.wholeSceneFallback.catalogReads).toBeLessThanOrEqual(result.immediate.legacyCatalogReads + 1);
+  expect(result.wholeSceneFallback.catalogReads).toBeLessThanOrEqual(result.immediate.pollingCatalogReads + 1);
   expect(result.held.beforeRelease).toMatchObject({
-    legacyCatalogReads: 1,
-    workspaceEnabledCatalogReads: 1,
-    legacyInFlight: 1,
-    workspaceEnabledInFlight: 1,
+    pollingCatalogReads: 2,
+    socketCatalogReads: 2,
+    pollingInFlight: 1,
+    socketInFlight: 1,
     workspaceEventsReceived: 200,
   });
   expect(result.held.afterFirstRelease).toMatchObject({
-    legacyCatalogReads: 1,
-    workspaceEnabledCatalogReads: 1,
+    pollingCatalogReads: 2,
+    socketCatalogReads: 2,
     maxConcurrentCatalogReads: 1,
   });
-  expect(result.held.finalLegacyCatalogReads).toBe(1);
-  expect(result.held.finalCatalogReads).toBe(1);
+  expect(result.held.finalPollingCatalogReads).toBe(2);
+  expect(result.held.finalCatalogReads).toBe(2);
 });
 
 test("same-generation snapshot scene revisions read the new manifest; new identity revalidates", async ({ page }) => {
@@ -581,7 +544,7 @@ test("same-generation snapshot scene revisions read the new manifest; new identi
       language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
       entryKey: catalogEntry.entryId, robotLabel: "Matic", robots: base.robots };
     const store = new WorkspaceStore();
-    const controller = new EffectController(store, backend, connection, true);
+    const controller = new EffectController(store, backend, connection);
     controller.sync(projection);
     window.snapshotHarness = { callbacks, pendingUpdates, counts, store, controller, catalogEntry, snapshotFor,
       setCatalogEntry: value => { catalogEntry = value; },

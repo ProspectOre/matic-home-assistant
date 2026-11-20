@@ -96,7 +96,6 @@ export const syntheticScene = (): SceneModel => {
 
 export const syntheticEntry = (): MapEntry => ({
   entryId: "synthetic-entry",
-  liveWorkspaceTransportEnabled: false,
   sceneUrl: "/api/matic_robot/slam_scene/synthetic",
   historyUrl: "/api/matic_robot/slam_history/synthetic",
   areasUrl: "/api/matic_robot/areas/synthetic",
