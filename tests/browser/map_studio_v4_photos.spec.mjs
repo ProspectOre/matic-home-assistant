@@ -177,3 +177,22 @@ test("Photos opened before a robot is chosen says so, then reads once one is", a
   });
   await expect(gallery).toContainText("No photos yet.");
 });
+
+test("photos run newest first by time when single photos straddle a photo tour", async ({ page }) => {
+  const panel = await mountPanel(page, { viewpoints: [], albums: [
+    { album: "manual", photos: [shot("m10", "2026-11-10T09:00:00+00:00", { area: "Den" }), shot("m1", "2026-11-01T09:00:00+00:00", { area: "Porch" })] },
+    { album: "tour-5", photos: [shot("t5", "2026-11-05T09:00:00+00:00", { area: "Hall" })] },
+  ] });
+  await openPhotos(panel);
+  const gallery = panel.locator("matic-photo-gallery-v4");
+  await expect(gallery.locator("h3")).toHaveText(["Single photos", /^Photo tour, /, "Single photos"]);
+  for (const [index, name] of [/^Den · /, /^Hall · /, /^Porch · /].entries()) {
+    await expect(gallery.locator(".shot").nth(index)).toHaveAccessibleName(name);
+  }
+  await gallery.locator(".shot").nth(0).click();
+  const viewer = gallery.getByRole("dialog");
+  await viewer.getByRole("button", { name: "Older" }).click();
+  await expect(viewer).toHaveAccessibleName(/^Hall · /);
+  await viewer.getByRole("button", { name: "Older" }).click();
+  await expect(viewer).toHaveAccessibleName(/^Porch · /);
+});

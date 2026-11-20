@@ -75,6 +75,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   #controller: AbortController | null = null;
   /** The open photo's full-size read; a step or close aborts it. */
   #fullRead: AbortController | null = null;
+  #timeline: readonly GalleryPhoto[] = [];
+  #timelineOf: PhotoGallery | null = null;
   #opener: HTMLElement | null = null;
   #swipeX: number | null = null;
 
@@ -150,8 +152,31 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     void this.#readPreviews(from);
   }
 
+  /**
+   * Every photo newest first by capture time. Single photos share one album
+   * that spans the whole library, so album order alone would interleave
+   * wrongly with photo tours.
+   */
   #photos(): readonly GalleryPhoto[] {
-    return this._gallery?.albums.flatMap((album) => album.photos) ?? [];
+    if (this.#timelineOf !== this._gallery) {
+      this.#timelineOf = this._gallery;
+      this.#timeline = (this._gallery?.albums.flatMap((album) => album.photos) ?? [])
+        .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
+    }
+    return this.#timeline;
+  }
+
+  /** The newest `_shown` photos, in runs of consecutive photos from one album. */
+  #sections(): readonly { album: PhotoAlbum; photos: GalleryPhoto[] }[] {
+    const albumOf = new Map(this._gallery?.albums.flatMap((album) => album.photos.map((photo) => [photo.id, album] as const)));
+    const sections: { album: PhotoAlbum; photos: GalleryPhoto[] }[] = [];
+    for (const photo of this.#photos().slice(0, this._shown)) {
+      const album = albumOf.get(photo.id)!;
+      const last = sections.at(-1);
+      if (last?.album === album) last.photos.push(photo);
+      else sections.push({ album, photos: [photo] });
+    }
+    return sections;
   }
 
   async #show(photo: GalleryPhoto, opener?: HTMLElement): Promise<void> {
@@ -183,7 +208,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     this.#opener = null;
   }
 
-  /** The photo `offset` places from the open one, newest first across albums. */
+  /** The photo `offset` places from the open one, newest first. */
   #neighbour(offset: number): GalleryPhoto | undefined {
     const photos = this.#photos();
     const index = photos.findIndex((photo) => photo.id === this._open?.id);
@@ -267,17 +292,10 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
         <button class="ms-btn" type="button" @click=${() => void this.#read()}>${this.#t("v4_retry", "Try again")}</button></div>`;
     }
     const { albums, viewpoints } = this._gallery;
-    // The newest `_shown` photos, still grouped by album.
-    let room = this._shown;
-    const shown = albums.map((album) => {
-      const photos = album.photos.slice(0, Math.max(room, 0));
-      room -= album.photos.length;
-      return { album, photos };
-    }).filter(({ photos }) => photos.length);
     return html`<div class="stack">
-      ${albums.length ? shown.map(({ album, photos }) => this.#album(album, photos))
+      ${albums.length ? this.#sections().map(({ album, photos }) => this.#album(album, photos))
         : html`<p class="subtle">${this.#t("v4_photos_empty", "No photos yet. Press Take photo, or run a photo tour from an automation.")}</p>`}
-      ${room < 0 ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}
+      ${this.#photos().length > this._shown ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}
       ${viewpoints.length ? html`<section>
         <h3>${this.#t("v4_photos_viewpoints", "Saved viewpoints")}</h3>
         <ul class="views">${viewpoints.map((viewpoint) => html`<li>${viewpoint.name}</li>`)}</ul>
