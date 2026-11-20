@@ -57,13 +57,22 @@ class Phone:
 
 
 @pytest.fixture
+def tour_cooldown() -> int:
+    """The integration's own cooldown between tours, in seconds."""
+    return 0
+
+
+@pytest.fixture
 async def phone(
-    hass: HomeAssistant, loaded_entry: MockConfigEntry, robot: SimulatedRobot
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    robot: SimulatedRobot,
+    tour_cooldown: int,
 ) -> Phone:
     """Load the blueprint for the Study, with photo tours allowed."""
     robot.set_collection("instamatic_snaps", [])
     robot.set_native_schedules([])
-    await _configure_tour(hass, loaded_entry)
+    await _configure_tour(hass, loaded_entry, cooldown_seconds=tour_cooldown)
     phone = Phone()
     hass.services.async_register("notify", "phone", phone.notify)
     hass.states.async_set(DOOR, "off", {"friendly_name": "Front door"})
@@ -118,6 +127,40 @@ async def test_the_phone_gets_a_photo_it_can_open_without_signing_in(
     assert taken["data"]["clickAction"] == (
         f"/matic-map?entry={loaded_entry.entry_id}&photo={photo_id}"
     )
+    assert robot.phase is Phase.RETURNING
+
+
+@pytest.mark.parametrize("tour_cooldown", [900])
+async def test_send_another_looks_again_within_the_tour_cooldown(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    robot: SimulatedRobot,
+    phone: Phone,
+) -> None:
+    robot.queue_photo(_webp((30, 140, 90)))
+    hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
+    first = (await phone.wait_for(2))[-1]
+    robot.arrive_at_dock()
+    await poll(hass, loaded_entry, robot)
+
+    # Another alert within the cooldown leaves the robot docked.
+    hass.states.async_set(DOOR, "off", {"friendly_name": "Front door"})
+    hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
+    shown = await phone.wait_for(4)
+    assert shown[-1]["message"] == "Matic looked recently, so it didn't go again."
+    # Send another on the photo still goes.
+    robot.queue_photo(_webp((200, 60, 40)))
+    sent = len(robot.received())
+    send_another = first["data"]["actions"][1]
+    assert send_another["title"] == "Send another"
+    hass.bus.async_fire(
+        "mobile_app_notification_action", {"action": send_another["action"]}
+    )
+    taken = (await phone.wait_for(6))[-1]
+
+    assert taken["data"]["image"] != first["data"]["image"]
+    assert taken["message"].startswith("Study, ")
+    assert len(robot.received()) > sent
     assert robot.phase is Phase.RETURNING
 
 

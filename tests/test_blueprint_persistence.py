@@ -270,6 +270,7 @@ async def test_import_save_reload_and_source_trigger(
             "stops": [{"room": "Kitchen"}],
             "report_failures": True,
             "full_resolution": False,
+            "skip_cooldown": False,
             "question": (
                 "Is there a safety problem visible, such as water, smoke or an open "
                 "door?"

@@ -34,6 +34,7 @@ async def _run(
             "entity_id": entity_ids,
             "stops": [{"viewpoint": "Stove", "look_around": 1}],
             "full_resolution": False,
+            "skip_cooldown": False,
             "report_failures": report_failures,
         },
     )
