@@ -14,6 +14,10 @@ from .photo_library import PhotoRecord
 from .photo_tours import photo_preview_url, photo_url
 from .viewpoints import Viewpoint
 
+# The newest photos Matic Map lists; the library itself is bounded by age and
+# size, not by count. photo-gallery-data.ts accepts at most this many.
+GALLERY_MAX_PHOTOS = 5_000
+
 
 class MaticPhotoGalleryView(HomeAssistantView):
     """List viewpoints and albums, newest album first, for Matic Map's admins."""
@@ -29,9 +33,10 @@ class MaticPhotoGalleryView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         albums: dict[str, list[dict[str, Any]]] = {}
-        for record in sorted(
+        newest = sorted(
             runtime.photos.records, key=lambda record: record.captured_at, reverse=True
-        ):
+        )
+        for record in newest[:GALLERY_MAX_PHOTOS]:
             albums.setdefault(record.album, []).append(_photo(entry_id, record))
         return self.json(
             {

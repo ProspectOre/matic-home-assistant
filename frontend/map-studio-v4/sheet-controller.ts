@@ -22,6 +22,7 @@ const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
   areaReview: "half",
   history: "half",
   runs: "half",
+  photos: "half",
   support: "full",
 };
 const startingDetent = (state: WorkspaceState, compact: boolean): SheetDetent =>
