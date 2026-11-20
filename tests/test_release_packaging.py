@@ -73,7 +73,7 @@ def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:
     for path in (ROOT / ".github" / "workflows").glob("*.yml"):
         content = path.read_text()
         uses = list(ACTION_USE.finditer(content))
-        # A workflow with no `uses:` lines (pure-shell, e.g. auto-merge.yml) has
+        # A workflow with no `uses:` lines (pure shell) has
         # nothing to pin; the non-empty assert only guards ACTION_USE against
         # silently rotting, so anchor it to the lines it must parse.
         has_uses_lines = re.search(r"^\s*(?:-\s*)?uses:", content, re.MULTILINE)

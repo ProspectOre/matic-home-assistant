@@ -140,7 +140,7 @@ test("a coverage guard rejection maps to its notice key", async ({ page }) => {
     translation_domain: "matic_robot",
     translation_key: "coverage_native_session_active",
   }));
-  // plan.md §6 (v4_action_run_plan_named): Run plan is named with the plan.
+  // `v4_action_run_plan_named`: Run plan is named with the plan.
   await panel.getByRole("button", { name: "Run plan Daily clean", exact: true }).first().click();
 
   await expect.poll(async () => (await snapshot(page)).command).toBe("failed");
@@ -254,7 +254,7 @@ test("the notice slot sits directly under the workflow heading in every workflow
     const order = await slot.evaluate((element) => {
       const root = element.getRootNode();
       const heading = root.querySelector("h2");
-      // The body region: Run and Edit have no description (plan.md §3).
+      // The body region: Run and Edit have no description.
       const body = root.querySelector("[role=region]");
       const follows = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
       return {
@@ -722,7 +722,7 @@ test("a repeated workspace notice toasts and announces again", async ({ page }) 
     window.__noticePanel.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
   await panel.locator('[data-plan-row="daily"]').click();
   await expect.poll(async () => (await snapshot(page)).workflow).toBe("plan");
-  // Full map hides the slot, so a warning toasts (shell.md §4 rule 3).
+  // Full map hides the slot, so a warning toasts.
   await sendIntent(page, { type: "enter-full-map" });
   await watchRegions(page);
   const runPlan = () => page.evaluate(() => {
@@ -860,9 +860,9 @@ test("notice text keeps 4.5:1 contrast in every tone with Home Assistant's palet
   }
 });
 
-// shell.md §2: on a "No button" row the policy still returns its disabled
+// On a "No button" row the policy still returns its disabled
 // branch, but it carries no copy, since no view renders it; the strip says
-// the state. The no-robot row is a link primary (home-rooms.md D2), covered
+// the state. The no-robot row is a link primary, covered
 // in map_studio_v4_home_rooms.spec.mjs.
 test("rows the spec marks No button render no footer button and carry no copy", async ({ page }) => {
   for (const [scenario, id] of [
@@ -888,11 +888,11 @@ test("rows the spec marks No button render no footer button and carry no copy", 
   }
 });
 
-// design-system.md: text keeps its primary colour on a tone tint, without an edge bar.
+// Text keeps its primary colour on a tone tint, without an edge bar.
 test("workflow problems and warnings use primary text without a coloured edge bar", async ({ page }) => {
   for (const [scenario, selector] of [["plan-legacy-oversized", ".problem"], ["area-review-rebind", '.notice[data-tone="warning"]']]) {
     const gallery = await loadGallery(page, { scenario });
-    // Run's R4 problem line (plan.md §3); the scenario opens in Edit.
+    // Run's problem line; the scenario opens in Edit.
     if (scenario === "plan-legacy-oversized") {
       await gallery.evaluate((element) => element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), planView: "run" }));
     }
@@ -972,7 +972,7 @@ test("slot, toast and canvas chip carry no live role", async ({ page }) => {
 test("the heading and notice slot stay put while the plan editor body scrolls", async ({ page }) => {
   for (const [width, height, narrow] of [[1024, 768, false], [390, 844, true]]) {
     await page.setViewportSize({ width, height });
-    // A saved plan's Edit view (plan.md §3), long enough to scroll.
+    // A saved plan's Edit view, long enough to scroll.
     const gallery = await loadGallery(page, { scenario: "plan-cadence-shared", narrow });
     await setGalleryNotice(page, sampleNotice("warning", `Pinned at ${width}`));
     await expect(gallery.locator("[data-notice-slot]")).toBeVisible();
@@ -984,7 +984,7 @@ test("the heading and notice slot stay put while the plan editor body scrolls", 
       const tops = () => ({
         heading: heading.getBoundingClientRect().top,
         slot: root.querySelector("[data-notice-slot]").getBoundingClientRect().top,
-        // The body's first content: Run has no description (plan.md §3).
+        // The body's first content: Run has no description.
         content: root.querySelector("[role=region] > *").getBoundingClientRect().top,
       });
       const before = tops();

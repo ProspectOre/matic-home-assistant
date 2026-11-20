@@ -73,7 +73,7 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
   console.log(`\n--- K3 plan editor @${w}x${h}`);
   await openScenario(page, "ready", { width: w, height: h });
   await inject(page);
-  // UX9: the picker opens from the Your plans row.
+  // The picker opens from the Your plans row.
   let t = await tabTo((x) => /^(Your plans|Run a plan)/.test(x.name));
   await page.keyboard.press("Enter");
   await settleAll();

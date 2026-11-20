@@ -1,5 +1,4 @@
-// UX4 Home and rooms (docs/ux-spec-0.5/home-rooms.md; D1-D5 accepted
-// 2026-10-11). Home gets one heading per state and three task cards, Rooms a
+// Home and rooms. Home has one heading per state and three task cards, Rooms a
 // settings disclosure, check lines and `.ms-check` rows, and the narrow
 // Display group moves into Map options.
 import { expect, test } from "@playwright/test";
@@ -73,7 +72,7 @@ const twoRooms = (state, activity = state.activity) => ({
   },
 });
 
-test.describe("plan origin (home-rooms.md §5 Cards D1; plan.md §5 State)", () => {
+test.describe("plan origin", () => {
   test("Back from Run names and reaches the origin", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "plan-saved-intelligent" });
     await patchState(gallery, { planOrigin: "home" });
@@ -156,7 +155,7 @@ test.describe("room daily limits", () => {
   });
 });
 
-test.describe("no robot (home-rooms.md §4 H10, D2)", () => {
+test.describe("no robot", () => {
   for (const narrow of [true, false]) {
     test(`the primary action is a link to the integration page (narrow: ${narrow})`, async ({ page }) => {
       const gallery = await loadGallery(page, { scenario: "empty", narrow });
@@ -174,11 +173,11 @@ test.describe("no robot (home-rooms.md §4 H10, D2)", () => {
   }
 });
 
-// ---- Home by state (home-rooms.md §3 Home, §4 H1-H11) ----------------------
+// ---- Home by state ----------------------
 
 const panelOf = (gallery) => gallery.getByRole("complementary", { name: "Cleaning panel" });
 const homeReason = (gallery) => gallery.locator("#home-reason");
-// The task cards; the "Your plans" row sits among them (R4 amended). Pinned
+// The task cards; the "Your plans" row sits among them. Pinned
 // shortcuts sit in their own Shortcuts section above (owner, 2026-10-14).
 const cards = (gallery) => gallery.getByRole("group", { name: "Cleaning choices" }).locator("button.ms-row--card");
 const shortcutsGroup = (gallery) => gallery.getByRole("group", { name: "Shortcuts" });
@@ -197,7 +196,7 @@ test.describe("home by state", () => {
       await expect(panelOf(gallery).locator(".panel-description")).toHaveCount(0);
       const group = gallery.getByRole("group", { name: "Cleaning choices" });
       // The default plan pinned as a one-tap shortcut in its own section
-      // first, then two cards and, last, the Your plans row (UX9 owner ruling).
+      // first, then two cards and, last, the Your plans row.
       await expect(shortcutsGroup(gallery).getByRole("button")).toHaveCount(1);
       await expect(planCard(gallery)).toHaveAccessibleName(/^Run Daily clean/);
       await expect(group.getByRole("button")).toHaveCount(3);
@@ -488,7 +487,7 @@ test.describe("home by state", () => {
   });
 });
 
-// ---- The plan card (home-rooms.md §5 Cards D1; plan.md §5 Navigation) -------
+// ---- The plan card -------
 
 // The deepest focused element, through shadow roots, as name-ish text.
 const focusedText = (page) => page.evaluate(() => {
@@ -507,7 +506,7 @@ test.describe("the plan card", () => {
     await expect(planCard(gallery).locator(".line")).toHaveCount(0);
   });
 
-  // UX9 owner ruling: every due line shows in full (no clamp).
+  // Every due line shows in full (no clamp).
   test("shows due work below, every line in full, all of it in the name", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "home-plan-due" });
     const lines = planCard(gallery).locator(".line");
@@ -517,7 +516,7 @@ test.describe("the plan card", () => {
     await expect(planCard(gallery)).toHaveAccessibleName(/Mop due in Kitchen and Living room Heavy duty vacuum due in Living room$/);
   });
 
-  // A shortcut that can't run gives Run plan's own reason (UX9).
+  // A shortcut that can't run gives Run plan's own reason.
   test("shows a blocked plan's one line with the warning glyph", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "home-plan-blocked" });
     const line = planCard(gallery).locator(".line");
@@ -593,7 +592,7 @@ test.describe("the plan card", () => {
     await expect.poll(() => focusedText(page)).toMatch(/^button Run Daily/);
   });
 
-  // UX9: a catalog being reread or that failed keeps its last list, so the
+  // A catalog being reread or that failed keeps its last list, so the
   // shortcut stays, gated as its Run view is; the picker reports the status.
   for (const status of ["loading", "error"]) {
     test(`a retained catalog while ${status} keeps the shortcut and the Your plans row`, async ({ page }) => {
@@ -653,7 +652,7 @@ test.describe("the plan card", () => {
     await expect(plansRow(picker)).toHaveCount(1);
   });
 
-  test("the picker still returns to its row (plan.md §5)", async ({ page }) => {
+  test("the picker still returns to its row", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "plans" });
     await openPlanPicker(gallery);
     await expect(gallery.getByRole("heading", { level: 2, name: "Your plans" })).toBeVisible();
@@ -664,7 +663,7 @@ test.describe("the plan card", () => {
     await expect.poll(() => focusedText(page)).toMatch(/^button Daily clean/);
   });
 
-  // A pinned plan that is gone or on another floor shows no shortcut (UX9).
+  // A pinned plan that is gone or on another floor shows no shortcut.
   test("a pinned plan that is missing shows nothing, and Your plans still opens the picker", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.evaluate((element) => {
@@ -755,7 +754,7 @@ test.describe("the plan card", () => {
     await back();
     await expect.poll(() => focusedText(page)).toMatch(/^h2 Choose what to clean/);
 
-    // R18: a workflow opened another way after a card press drops the card.
+    // A workflow opened another way after a card press drops the card.
     await cards(gallery).nth(0).click();
     await expect(gallery.getByRole("heading", { level: 2, name: "Choose rooms" })).toBeVisible();
     await gallery.getByRole("button", { name: "Map options" }).click();
@@ -772,7 +771,7 @@ test.describe("the plan card", () => {
     await expect.poll(() => focusedText(page)).toMatch(/^button Open map diagnostics/);
   });
 
-  // UX9 owner ruling: due lines show in full, so on a phone the half sheet
+  // Due lines show in full, so on a phone the half sheet
   // shows Clean rooms and the plan shortcut whole and the custom-area card's
   // top edge; the Your plans row is reached by a small scroll (accepted).
   // Shortcuts come first (owner, 2026-10-14): the pinned shortcut fits the
@@ -797,8 +796,8 @@ test.describe("the plan card", () => {
   });
 });
 
-// Map options is an ARIA menu (design-system.md §5 Menus, MS-KEY-02) that
-// holds the phone's Map display rows (home-rooms.md §5 Display); help lives
+// Map options is an ARIA menu that
+// holds the phone's Map display rows; help lives
 // in the map rail on every width (MS-HOME-04).
 const optionsButton = (gallery) => gallery.getByRole("button", { name: "Map options", exact: true });
 const optionsMenu = (gallery) => gallery.getByRole("menu", { name: "Map options" });
@@ -809,7 +808,7 @@ const openOptions = async (gallery) => {
 };
 const rowNames = (menu) => menu.locator("[role^=menuitem]").evaluateAll((rows) => rows.map((row) => row.textContent.replace(/\s+/g, " ").trim()));
 
-test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME-04, MS-RESP-05)", () => {
+test.describe("Map options and the rail", () => {
   test("opens as a menu named Map options with its first row focused @mobile", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "top" });
@@ -932,7 +931,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     await expect(gallery.locator("matic-map-canvas-v4").getByRole("button", { name: "Room names" })).toHaveCount(0);
     await help.click();
     const popover = gallery.getByRole("dialog", { name: "How to move the map" });
-    // A coarse pointer reads the Touch row alone (map-surfaces.md §5 Help).
+    // A coarse pointer reads the Touch row alone.
     await expect(popover.locator("dt")).toHaveText(["Touch"]);
     await expect(popover).toContainText("Drag to move the map · pinch to zoom · twist two fingers to rotate");
     await expect(popover.getByRole("button", { name: "Close" })).toBeFocused();
@@ -953,7 +952,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     await expect(locating.getByRole("button", { name: "How to move the map" })).toHaveCount(0);
   });
 
-  test("Escape closes the menu first and leaves Rooms second (shell.md §5)", async ({ page }) => {
+  test("Escape closes the menu first and leaves Rooms second", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await cards(gallery).nth(0).click();
     await expect(gallery.getByRole("heading", { level: 2, name: "Choose rooms" })).toBeVisible();
@@ -979,8 +978,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
   });
 });
 
-// The Rooms view (home-rooms.md §3 Rooms, §4 R1-R10, §5 Settings, Due work,
-// Clean, Selection gate and Keyboard; R5, R20-R22, R25, R28).
+// The Rooms view: settings, due work, Clean, the selection gate and keyboard.
 const roomsGroup = (gallery) => gallery.getByRole("group", { name: "Rooms to clean" });
 const roomBox = (gallery, name) => roomsGroup(gallery).getByRole("checkbox", { name: new RegExp(`^${name}( |$)`) });
 const primary = (gallery) => panelOf(gallery).getByRole("button", { name: /^Clean( \d+)? rooms?$/ });
@@ -1427,7 +1425,7 @@ const listFormat = (page, locale, items) => page.evaluate(({ language, names }) 
   new Intl.ListFormat(language, { style: "long", type: "conjunction" }).format(names), { language: locale, names: items });
 const numberFormat = (page, locale, value) => page.evaluate(({ language, count }) => new Intl.NumberFormat(language).format(count), { language: locale, count: value });
 
-test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection gate; §8 Screen readers; R7-R9)", () => {
+test.describe("map parity and announcements", () => {
   test("a map tap announces the room added, then removed; a list click announces nothing", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "rooms", viewport: { width: 1024, height: 768 } });
     await expect(roomBox(gallery, "Kitchen")).not.toBeChecked();
@@ -1512,7 +1510,7 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
     const clear = chip.getByRole("button", { name: "Clear" });
     await expect(chip).toContainText("4 selected");
     await expect(clear).toHaveCount(0);
-    // The panel's Clear carries the reason (R22).
+    // The panel's Clear carries the reason.
     await expect(listHeader(gallery).getByRole("button", { name: "Clear" })).toHaveAccessibleDescription("Can't change rooms until the robot finishes or stops.");
     await patchState(gallery, { activity: "docked" });
     await expect(clear).toBeVisible();

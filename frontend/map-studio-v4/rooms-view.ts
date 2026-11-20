@@ -39,10 +39,10 @@ const catalogNames = (state: WorkspaceState, roomIds: readonly string[]): string
     return name === null ? [] : [name];
   });
 
-/** The catalog names of the selected rooms, in selection order, never a scene id (R9). */
+/** The catalog names of the selected rooms, in selection order, never a scene id. */
 const selectedRoomNames = (state: WorkspaceState): string[] => catalogNames(state, state.selection.roomIds);
 
-/** The grip line while rooms are selected: the count and the names (shell.md Sheet). */
+/** The grip line while rooms are selected: the count and the names. */
 export const roomsGripLine = (t: Translate, state: WorkspaceState): string | null => {
   const names = selectedRoomNames(state);
   if (names.length === 0) return null;
@@ -55,7 +55,7 @@ export const roomsGripLine = (t: Translate, state: WorkspaceState): string | nul
 /**
  * The action bar's line: the rooms in preview order once a preview is
  * admitted, else selection order, as one list of up to three entries, then
- * the dock the request always returns to (home-rooms.md §5 Clean, §6).
+ * the dock the request always returns to.
  */
 export const roomsSummary = (t: Translate, state: WorkspaceState): string => {
   const admitted = admittedManualRoomPreview(state)?.preview;
@@ -68,7 +68,7 @@ export const roomsSummary = (t: Translate, state: WorkspaceState): string => {
 };
 
 /**
- * What the polite region says after a map tap (R7): a refused tap repeats the
+ * What the polite region says after a map tap: a refused tap repeats the
  * rows' reason on screen (the description while work runs, else the held
  * reason), an accepted one names the change; a room with no catalog name, or
  * a tap that changed nothing (the limit's notice speaks), says nothing.
@@ -90,11 +90,11 @@ export const roomTapAnnouncement = (t: Translate, before: WorkspaceState, after:
 const eventValue = (event: Event): string => (event.currentTarget as HTMLSelectElement).value;
 
 /**
- * The Rooms view (home-rooms.md §3 Rooms, §4 R1-R10, §5): the description,
+ * The Rooms view: the description,
  * the list header, the whole-clean Cleaning settings row, the check lines and
  * the room rows in catalog order. One disclosure is open at a time (`_open`:
- * "settings" or a room id). While the selection is locked (R10), every
- * control stays readable and focusable but changes nothing (R22).
+ * "settings" or a room id). While the selection is locked, every
+ * control stays readable and focusable but changes nothing.
  */
 export class MaticRoomsViewV4 extends LitElement {
   static override properties = {
@@ -113,7 +113,7 @@ export class MaticRoomsViewV4 extends LitElement {
 .list-header small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); }
 .limit { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 @media (any-pointer: coarse) { .clear { min-block-size: var(--ms-control); min-inline-size: var(--ms-control); } }
-/* The settings row: a full-row disclosure, its body below (design-system.md §4). */
+/* The settings row: a full-row disclosure, its body below. */
 .settings-row { display: grid; padding: 0; }
 .ms-disclosure { display: flex; gap: var(--ms-space-2); align-items: center; min-inline-size: 0; min-block-size: var(--ms-control); padding: var(--ms-space-2) var(--ms-space-3); border: 0; border-radius: var(--ms-radius-sm); color: inherit; background: transparent; font: inherit; font-size: var(--ms-t-md); font-weight: var(--ms-w-bold); text-align: start; cursor: pointer; }
 .ms-disclosure:focus-visible { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: -2px; }
@@ -134,7 +134,7 @@ export class MaticRoomsViewV4 extends LitElement {
 .switch-row { display: flex; gap: var(--ms-space-3); align-items: center; min-block-size: var(--ms-control); }
 .switch-copy { display: grid; flex: 1; gap: 0.125rem; min-inline-size: 0; font-size: var(--ms-t-md); }
 .switch-copy small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
-/* Check lines: the glyph carries the tone, the text keeps its colour (design-system.md §5). */
+/* Check lines: the glyph carries the tone, the text keeps its colour. */
 .check-lines { display: grid; gap: var(--ms-space-2); }
 .line { display: flex; gap: var(--ms-space-2); align-items: flex-start; margin: 0; font-size: var(--ms-t-sm); line-height: var(--ms-lh-snug); }
 .line .ms-icon { flex: none; inline-size: 1.125rem; block-size: 1.125rem; margin-block-start: 0.0625rem; }
@@ -201,7 +201,7 @@ export class MaticRoomsViewV4 extends LitElement {
   }
 
   // Escape closes the open disclosure and returns to its button before the
-  // shell sees it (shell.md §5 Escape order), from anywhere in the shell
+  // shell sees it, from anywhere in the shell
   // (the action bar, the closed Map options button after Escape 1 closed the
   // menu; Review Focus 4) unless an open top layer outside this view (a menu,
   // a dialog, an expanded launcher) is on the path. A native select keeps
@@ -226,7 +226,7 @@ export class MaticRoomsViewV4 extends LitElement {
     this._open = this._open === id ? null : id;
   }
 
-  // A held select (R22) keeps its value: the change is undone in place.
+  // A held select keeps its value: the change is undone in place.
   #select(held: boolean, current: string, apply: (value: string) => void) {
     return (event: Event): void => {
       if (held) {
@@ -248,7 +248,7 @@ export class MaticRoomsViewV4 extends LitElement {
     const mode = state.selection.cleaningMode;
     const coverage = state.selection.coverageSetting;
     // The row's value is the whole-clean setting its selects show, unless a
-    // selected room was changed on its own (home-rooms.md §5 Settings).
+    // selected room was changed on its own.
     const mixed = state.selection.roomSettings.some((room) => state.selection.roomIds.includes(room.roomId)
       && (room.cleaningMode !== mode || (mode !== "mop" && room.coverageSetting !== coverage)));
     const value = mixed
@@ -456,7 +456,7 @@ export class MaticRoomsViewV4 extends LitElement {
     const empty = rooms.length === 0;
     const busy = hasStoppableWork(state);
     const locked = !canSelectRooms(state);
-    // R22: the shared description while work runs, else an sr-only reason.
+    // The shared description while work runs, else an sr-only reason.
     const held = locked ? (busy ? "rooms-description" : "rooms-held") : null;
     const count = state.selection.roomIds.length;
     const atLimit = count >= MAX_ROOM_SEQUENCE_SIZE;

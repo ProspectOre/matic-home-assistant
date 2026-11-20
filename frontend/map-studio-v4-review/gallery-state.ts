@@ -394,9 +394,9 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         ],
       };
     case "plans": {
-      // The picker's line 3 kinds (plan.md §3): due work, a blocked run, a paused plan.
+      // The picker's line 3 kinds: due work, a blocked run, a paused plan.
       const saved = savedDailyPlan();
-      // Two rooms share mop due work, so the line joins them (plan.md §3).
+      // Two rooms share mop due work, so the line joins them.
       const daily = planWithRooms(saved, saved.rooms.map((room, index): PlanRoom => index === 0
         ? { ...room, cadenceReasons: ["mop_due", "coverage_due"] }
         : index === 1 ? { ...room, cadenceReasons: ["mop_due"] } : room));
@@ -445,7 +445,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       }), "run");
     }
     case "plan-run-parts": {
-      // Saved order with a mode change after the first room (plan.md R1 parts).
+      // Saved order with a mode change after the first room.
       const rooms = savedDailyPlan().rooms.map((room, index): PlanRoom => index === 0
         ? { ...room, cleaningMode: "vacuum_and_mop", cadenceReasons: ["mop_due"] }
         : room);
@@ -511,7 +511,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
     }
     case "plan-schedule-available":
     case "plan-schedule-joining": {
-      // Office has a shared schedule this plan doesn't use yet (room-schedule.md §4 S6, S7).
+      // Office has a shared schedule this plan doesn't use yet.
       const catalog = catalogWith([savedDailyPlan()]);
       const available = {
         ...openPlan(state, savedDailyPlan(), "edit", {
@@ -532,7 +532,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       };
     }
     case "plan-schedule-conflict": {
-      // A vacuum rotation left on a mop-only room (room-schedule.md §4 S10).
+      // A vacuum rotation left on a mop-only room.
       const plan = patchFirstRoom(savedDailyPlan(), {
         cleaningMode: "mop",
         cadence: { ...sharedCadencePolicy(), scope: "plan", mopEveryN: null, coverageEveryN: 3 },
@@ -680,7 +680,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       };
     case "map-limited":
       return { ...state, coherence: "degraded" };
-    // The home plan card's third line kinds (home-rooms.md §5 Cards): due
+    // The home plan card's third line kinds: due
     // work in two rooms, a paused plan, a blocked run.
     case "home-plan-due": {
       const saved = savedDailyPlan();
@@ -772,7 +772,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         },
       });
     }
-    // Rooms with four rooms selected (home-rooms.md §4 R3): Kitchen's mop is
+    // Rooms with four rooms selected: Kitchen's mop is
     // due, Living room's heavy duty rotation is due, and the clean runs in
     // two parts.
     case "rooms-ready":

@@ -953,7 +953,7 @@ async def test_pending_firmware_reads_the_loaded_translation(hass) -> None:
 async def test_a_skip_lasts_until_the_installed_version_or_language_changes(
     hass,
 ) -> None:
-    """The documented Skip behaviour (docs/entities.md, ha-entities.md §10)."""
+    """The documented Skip behaviour (docs/entities.md)."""
     entity, session = _update_entity(hass)
     _set_update_state(session, "available")
     with patch.object(entity, "async_write_ha_state"):

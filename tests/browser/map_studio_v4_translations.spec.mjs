@@ -113,7 +113,7 @@ test("the brush label and its accessible name take the width from placeholders",
 
   // Found by class: its accessible name is the translated text under test.
   const brush = panel.locator(".draw-brush").first();
-  // The width is an Intl centimetre unit in the host locale (map-surfaces.md §5).
+  // The width is an Intl centimetre unit in the host locale.
   await expect(brush).toHaveAttribute("aria-label", /^Pinselbreite \d+ cm, Einstellungen$/);
   await expect(brush).toContainText(/^Pinsel \d+ cm$/);
   for (const key of ["v4_brush_button", "v4_brush"]) {
@@ -123,7 +123,7 @@ test("the brush label and its accessible name take the width from placeholders",
   }
 });
 
-// map-surfaces.md §5: the scale bar stays with a translated label.
+// The scale bar stays with a translated label.
 test("the scale bar's accessible name takes its distance from a placeholder", async ({ page }) => {
   const panel = await mountPanel(page);
   await sendIntent(page, { type: "open-workflow", workflow: "draw" });
@@ -360,12 +360,12 @@ test("the room summary and selection chip take their rooms and count from placeh
   // Found by class: the summary is a plain paragraph with no role or name.
   await expect(gallery.locator(".action-summary")).toHaveText(`${list}, danach zurück zum Dock`);
   // The chip has no role or name of its own; its text is the contract. The
-  // Rooms list header carries the same count (home-rooms.md §4).
+  // Rooms list header carries the same count.
   await expect(gallery.locator(".selection-chip").getByText("Gewählt: 3 Räume", { exact: true })).toBeVisible();
   await expect(gallery.locator(".list-header").getByText("Gewählt: 3 Räume", { exact: true })).toBeVisible();
   const dock = await localizeCalls(page, "v4_clean_rooms_summary");
   expect(dock.at(-1).placeholders).toEqual({ rooms: list });
-  // Counts arrive written for the locale (home-rooms.md §8 RTL; plan.md §8).
+  // Counts arrive written for the locale.
   const chip = await localizeCalls(page, "v4_rooms_selected");
   expect(chip.at(-1).placeholders).toEqual({ count: "3" });
 });
@@ -597,7 +597,7 @@ test("the saved-map notice and the history list show one snapshot's time alike",
   await expect(panel.getByText(savedMapSentence(expected)).first()).toBeVisible();
   await showSnapshotInHistory(page);
   await expect(panel.locator('.snapshot[aria-current="true"] > span')).toHaveText(expected);
-  // One saved map: no scrubber (map-surfaces.md §4 asks for three). The
+  // One saved map: no scrubber. The
   // scrubber's dated aria-valuetext is pinned in map_studio_v4_map_surfaces.
   await expect(panel.locator('.timeline input[type="range"]')).toHaveCount(0);
 });

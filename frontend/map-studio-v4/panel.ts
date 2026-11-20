@@ -242,7 +242,7 @@ class MaticMapPanelV4 extends LitElement {
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     // Light or dark follows Home Assistant's theme; the device only when HA
-    // gives no answer (design-system.md Decision 3). Every shadow root inherits it.
+    // gives no answer. Every shadow root inherits it.
     const dark = this.hass?.themes?.darkMode;
     this.#scheme = dark === true ? "dark" : dark === false ? "light" : "";
     this.style.colorScheme = this.#scheme;

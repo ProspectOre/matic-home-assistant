@@ -131,7 +131,7 @@ export const overlayShapes = (scene: SceneModel, state: WorkspaceState, palette:
   const colours = roomColours(state);
   const selectedNames = selectedRoomNames(state);
   // Every room draws with Room names on or in Room colors; otherwise only
-  // the selected ones (home-rooms.md §5 Parity, R9).
+  // the selected ones.
   const allRooms = state.labelsVisible || colours;
   if (allRooms || selectedNames.size) {
     const slots = colours ? roomSlots(scene.metadata.rooms, meters) : null;

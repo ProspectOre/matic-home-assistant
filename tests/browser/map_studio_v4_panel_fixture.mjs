@@ -49,7 +49,7 @@ function sceneManifest(scenePoint, rooms) {
 const emptyPlans = { rooms: [], plans: [], selected_plan: null };
 
 // Opens the plan picker through the public intent. The home plan card opens
-// the default plan's Run view (home-rooms.md D1), so tests that need the
+// the default plan's Run view, so tests that need the
 // picker ask for it directly. `root` is the gallery or panel locator.
 export const openPlanPicker = (root) => root.locator("matic-map-shell-v4").first().evaluate((shell) => shell.dispatchEvent(
   new CustomEvent("matic-workspace-intent", { detail: { type: "open-workflow", workflow: "plans" }, bubbles: true, composed: true }),

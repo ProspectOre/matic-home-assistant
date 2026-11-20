@@ -510,7 +510,7 @@ export interface ViewState {
   readonly planDraft: PlanDraft;
   /** Inside the plan workflow: the saved plan's Run view or the draft's Edit view. */
   readonly planView: PlanView;
-  /** Where the open plan was opened from; Back and Escape from Run return there (plan.md §5 State). */
+  /** Where the open plan was opened from; Back and Escape from Run return there. */
   readonly planOrigin: PlanOrigin;
   /** The Edit row whose settings are open; one at a time. */
   readonly expandedRoom: string | null;
@@ -577,7 +577,7 @@ export type WorkspaceIntent =
     }
   | { readonly type: "set-use-room-schedule"; readonly value: boolean }
   | {
-    /** The whole-clean setting: the default for later rooms, written to every selected room (home-rooms.md §5 Settings). */
+    /** The whole-clean setting: the default for later rooms, written to every selected room. */
     readonly type: "set-clean-settings";
     readonly cleaningMode?: CleaningMode;
     readonly coverageSetting?: CoverageSetting;
@@ -640,7 +640,7 @@ export interface PrimaryAction {
   readonly id: string;
   readonly label: string;
   readonly kind: PrimaryActionKind;
-  /** Kind `link` only: the page the action opens; the view renders an anchor and never dispatches it (home-rooms.md D2). */
+  /** Kind `link` only: the page the action opens; the view renders an anchor and never dispatches it. */
   readonly href?: string;
   readonly enabled: boolean;
   readonly reason?: string;
@@ -652,7 +652,7 @@ export interface PrimaryAction {
   readonly reasonKey?: string;
   /** Values for `{name}` placeholders in `reason`. */
   readonly reasonPlaceholders?: Readonly<Record<string, string | number>>;
-  /** A link under the reason that opens the room the reason names (plan.md R3). */
+  /** A link under the reason that opens the room the reason names. */
   readonly jump?: {
     readonly label: string;
     readonly labelKey: string;
@@ -662,7 +662,7 @@ export interface PrimaryAction {
 }
 
 /**
- * A branch shell.md §2 marks "No button": the policy holds, the view renders
+ * A branch with no button: the policy holds, the view renders
  * nothing (the strip, canvas and sheet say the state), so it carries no copy.
  */
 export interface NoButtonAction {

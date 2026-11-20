@@ -15,7 +15,7 @@ import { css } from "lit";
 //    getComputedStyle(...).backgroundColor, and rgba(0,0,0,0) parses as black.
 //
 // 3. Light or dark is the inherited `color-scheme`: the panel sets it from
-//    Home Assistant's theme (design-system.md Decision 3), so tokens pick
+//    Home Assistant's theme, so tokens pick
 //    their value with light-dark(). (Controls already need relative colour
 //    syntax, which every browser with light-dark() has.)
 //

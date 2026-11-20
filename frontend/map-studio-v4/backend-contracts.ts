@@ -260,11 +260,11 @@ export interface AreasCatalog {
   readonly sceneUrl: string;
   readonly rooms: readonly MapRoom[];
   readonly areas: readonly SavedArea[];
-  /** Robot zones on this map; empty when an older backend omits them. */
+  /** Robot zones on this map; empty when the catalog omits them. */
   readonly zones: readonly MapZoneOverlay[];
   /**
    * The area the "Custom cleaning area" select and Clean custom area button
-   * use (`selected_area`); null when none is selected or an older backend omits it.
+   * use (`selected_area`); null when none is selected or the catalog omits it.
    */
   readonly selectedArea: string | null;
 }

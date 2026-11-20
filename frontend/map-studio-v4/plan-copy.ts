@@ -3,12 +3,12 @@ import type { PlanDraft, PlanDraftArea } from "./contracts";
 import { formatList } from "./localize";
 
 // Shared by the shell's home plan card and the plan views, so only what the
-// card needs lives here (home-rooms.md R1); the rest is in plan-cadence.ts.
+// card needs lives here; the rest is in plan-cadence.ts.
 
 /** The views' translate: key, fallback and the values for its placeholders. */
 export type Translate = (key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>) => string;
 
-/** A count as the language writes it (plan.md §8). */
+/** A count as the language writes it. */
 export const formatNumber = (locale: string, value: number): string => new Intl.NumberFormat(locale).format(value);
 
 /** A saved custom area in a plan, read from the entries the plans list sent. */
@@ -88,7 +88,7 @@ export const roomsAndAreas = (t: Translate, locale: string, rooms: number, areas
 ].join(" · ");
 
 /**
- * The due lines (plan.md §6 `v4_due_*`): one whole string per due kind, in
+ * The due lines (`v4_due_*`): one whole string per due kind, in
  * the order mop, quick, optimal, heavy duty. A rotation's level is the
  * preview room's own vacuum coverage.
  */
@@ -111,7 +111,7 @@ export const dueLines = (t: Translate, locale: string, rooms: readonly NextRunPr
   ].filter((line): line is string => Boolean(line));
 };
 
-/** A plan row's second line: room count and run order (plan.md §6 `v4_plan_row_*`). */
+/** A plan row's second line: room count and run order (`v4_plan_row_*`). */
 export const planRowLine2 = (t: Translate, locale: string, plan: SavedPlan): string => {
   const count = plan.rooms.length;
   const ordered = plan.runBehavior === "ordered";
@@ -135,7 +135,7 @@ type PlanRowLine3 = { readonly blocked: string } | { readonly due: readonly stri
 
 /**
  * A plan row's third line: the due work, or the one blocked line. A paused
- * plan shows only its chip (plan.md R2), so it has none.
+ * plan shows only its chip, so it has none.
  */
 export const planRowLine3 = (t: Translate, locale: string, plan: SavedPlan): PlanRowLine3 => {
   if (!plan.enabled) return null;
