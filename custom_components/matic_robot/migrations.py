@@ -49,9 +49,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.minor_version < MINIMUM_ENTRY_MINOR_VERSION:
         async_create_upgrade_issue(hass)
         return False
-    if entry.minor_version < 4:
-        _async_delete_maintenance_repairs(hass, entry)
-        hass.config_entries.async_update_entry(entry, minor_version=4)
+    # 0.5 saves minor version 3. No release saved 4.
     if entry.minor_version < 5:
         _async_remove_retired_entities(hass, entry, REMOVED_IN_0_6)
         hass.config_entries.async_update_entry(entry, minor_version=5)
@@ -85,11 +83,3 @@ def _async_remove_retired_entities(
         ):
             _LOGGER.info("Removing retired entity %s", entity_id)
             registry.async_remove(entity_id)
-
-
-def _async_delete_maintenance_repairs(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the maintenance Repair that 0.6 development builds stored."""
-    prefix = f"maintenance_{entry.entry_id}_"
-    for domain, issue_id in list(ir.async_get(hass).issues):
-        if domain == DOMAIN and issue_id.startswith(prefix):
-            ir.async_delete_issue(hass, domain, issue_id)

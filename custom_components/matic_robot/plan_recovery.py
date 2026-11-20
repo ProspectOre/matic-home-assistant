@@ -287,7 +287,6 @@ class PlanRecovery:
                     or run.get("outcome") != "running"
                     or not isinstance(checkpoint, dict)
                     or checkpoint.get("phase") != RunPhase.DISPATCHING
-                    or checkpoint.get("mixed_settings") is not True
                     or not _dispatching_room_leg(checkpoint)
                 ):
                     raise HomeAssistantError(

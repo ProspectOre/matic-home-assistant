@@ -97,7 +97,7 @@ def _dispatch_checkpoint(
                 "coverage_setting": ROOM.coverage_setting,
             }
         ],
-        "mixed_settings": False,
+        "mixed_settings": True,
         "cadence_by_room": {ROOM_ID: cadence_state or _cadence_state()},
         "completed_room_ids": [],
     }
@@ -336,7 +336,6 @@ async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
     )
     checkpoint = _dispatch_checkpoint()
     checkpoint["floor_token"] = plan_floor_token(floor)
-    checkpoint["mixed_settings"] = True
     checkpoint["rooms"].append(
         {
             "room_id": "room-b",

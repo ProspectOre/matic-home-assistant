@@ -14,11 +14,9 @@ from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.matic_robot import photo_tours
 from custom_components.matic_robot.client import tls
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.auth import HermesCredential
-from custom_components.matic_robot.client.hermes_collections import HermesCollections
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
@@ -140,6 +138,13 @@ def config_entry(
 @pytest.fixture
 def fast_tour_polls(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep photo tour polling deterministic without waiting minutes."""
+    # Imported here: the upgrade drill runs this harness on 0.5 code, which
+    # has neither module.
+    from custom_components.matic_robot import photo_tours
+    from custom_components.matic_robot.client.hermes_collections import (
+        HermesCollections,
+    )
+
     monkeypatch.setattr(photo_tours, "POLL_SECONDS", 0.01)
     monkeypatch.setattr(photo_tours, "LEAVE_TIMEOUT_SECONDS", 0.3)
     monkeypatch.setattr(photo_tours, "ARRIVAL_TIMEOUT_SECONDS", 0.3)

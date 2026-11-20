@@ -445,7 +445,6 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
             for r in preview["rooms"]
         ],
         run_entries(entries),
-        mixed_settings=True,
     )
     assert [
         leg.area_id if isinstance(leg, AreaLeg) else [r.room_id for r in leg]
@@ -587,7 +586,7 @@ def test_mission_boundaries_split_at_every_room_and_area_switch() -> None:
     ]
     expected_rooms_only = []
     offset = 0
-    for group in leg_groups(rooms, mixed_settings=True)[:-1]:
+    for group in leg_groups(rooms)[:-1]:
         offset += len(group)
         expected_rooms_only.append(offset)
     assert entry_mission_boundaries(room_entries) == expected_rooms_only
@@ -915,12 +914,7 @@ def test_run_entries_keep_room_only_plans_on_their_legacy_checkpoint() -> None:
 def test_plan_legs_split_rooms_at_every_area_in_entry_order() -> None:
     rooms = _rooms()
     # Without areas the legs are exactly the room groups.
-    assert plan_legs(rooms, None, mixed_settings=True) == list(
-        leg_groups(rooms, mixed_settings=True)
-    )
-    assert plan_legs(rooms, None, preserve_legacy_settings=True) == list(
-        leg_groups(rooms, preserve_legacy_settings=True)
-    )
+    assert plan_legs(rooms, None) == leg_groups(rooms)
 
     entries = [
         _run_area("rug"),
@@ -929,15 +923,15 @@ def test_plan_legs_split_rooms_at_every_area_in_entry_order() -> None:
         _run_area("mat", "vacuum_and_mop", "heavy_duty"),
         _room_entry("room-hall"),
     ]
-    legs = plan_legs(rooms, entries, mixed_settings=True)
+    legs = plan_legs(rooms, entries)
     assert legs == [
         AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
         rooms[:2],
         AreaLeg("mat", "Mat", "vacuum_and_mop", "heavy_duty", _FINGERPRINT),
         rooms[2:],
     ]
-    # Legacy settings boundaries still split the rooms between two areas.
-    assert plan_legs(rooms, entries, preserve_legacy_settings=True)[1:3] == [
+    # One mission per room still splits the rooms between two areas.
+    assert plan_legs(rooms, entries, single_room_missions=True)[1:3] == [
         rooms[:1],
         rooms[1:2],
     ]
@@ -989,10 +983,7 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
             }
             for room in rooms
         ],
-        "mixed_settings": True,
     }
-    # RC40 checkpoints without the new marker retain their existing mixed
-    # mission even when finish_current_room is enabled on the saved policy.
     assert checkpoint_legs(room_only_checkpoint) == [rooms]
     assert checkpoint_legs({**room_only_checkpoint, "single_room_missions": True}) == [
         [room] for room in rooms
@@ -1008,7 +999,6 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
             }
             for room in rooms
         ],
-        "mixed_settings": True,
         "entries": [
             _room_entry("room-kitchen"),
             _run_area("rug"),
@@ -1021,11 +1011,6 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
         AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
         rooms[1:],
     ]
-    legacy = {**checkpoint, "mixed_settings": False}
-    legacy.pop("entries")
-    assert checkpoint_legs(legacy) == list(
-        leg_groups(rooms, preserve_legacy_settings=True)
-    )
     smart_stop = {**checkpoint, "single_room_missions": True}
     assert checkpoint_legs(smart_stop) == [[room] for room in rooms[:1]] + [
         AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
@@ -1035,9 +1020,7 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
 
 def test_single_room_mission_grouping_is_opt_in_and_keeps_area_boundaries() -> None:
     rooms = _rooms()
-    assert leg_groups(rooms, mixed_settings=True, single_room_missions=True) == [
-        [room] for room in rooms
-    ]
+    assert leg_groups(rooms, single_room_missions=True) == [[room] for room in rooms]
 
 
 @pytest.mark.parametrize(

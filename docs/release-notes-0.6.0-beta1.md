@@ -36,7 +36,7 @@ Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and 
 - **Wi-Fi signal.** Turn on **Wi-Fi survey**, and the robot scans Wi-Fi every
   30 seconds while it's away from the dock. Open **Map options** and turn on
   **Wi-Fi signal** to see sampled locations, from green for strong to red for
-  weak. Rings mark older, coarser readings; blank areas are unmeasured.
+  weak. Blank areas are unmeasured.
   **Clear Wi-Fi survey** starts over, for example after you move your router.
 - **Carpet and vents.** Open **Map options** and turn on **Carpet and vents** to
   see the rugs and floor vents the robot has found, carpet in brown and vents in
@@ -237,10 +237,9 @@ and the first use of each logs a warning. Matic 0.7 removes them.
 - Each floor's Area mapping moves from the vacuum's entity options to Matic's
   own storage, and 0.6 leaves 0.5's copy in the options. Restoring the backup
   returns the mappings the backup held, and the next update moves them again.
-- Make a Home Assistant backup before installing. 0.6 stores saved maps and
-  the Wi-Fi survey in a new format that 0.5 can't read, so going back means
-  restoring that backup, which also returns both to what the backup held. The
-  survey keeps its older one-metre readings when it upgrades.
+- Make a Home Assistant backup before installing. 0.6 stores saved maps in a
+  new format that 0.5 can't read, so going back means restoring that backup,
+  which also returns them to what the backup held.
 - 0.6 converts saved custom areas to a new format when it starts. After that,
   going back to 0.5.4 hides those areas until they are redrawn, and plans that
   use them won't run there. Restoring the backup brings them back. An area 0.6

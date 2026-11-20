@@ -273,9 +273,10 @@ def stored_instant(value: Any) -> datetime | None:
 def _restarted(record: Mapping[str, Any]) -> Run:
     """Resume a stored run, or end it, checking in the order recovery always has.
 
-    Only an accepted, verifying or handoff checkpoint, or a mixed-settings
-    dispatch with its saved session fingerprint, can resume. A malformed
-    record raises, as it always has.
+    Only an accepted, verifying or handoff checkpoint, or a dispatch with its
+    saved session fingerprint, can resume. A checkpoint without
+    ``mixed_settings`` predates 0.5 and is unverified. A malformed record
+    raises, as it always has.
     """
     checkpoint = record["recovery_checkpoint"]
     unverified = Run(ended="restart_checkpoint_unverified")
@@ -283,14 +284,16 @@ def _restarted(record: Mapping[str, Any]) -> Run:
     if checkpoint.get("stop_intent") in {"immediate", "not_running"}:
         return stop_requested
     phase = checkpoint.get("phase")
-    mixed_dispatch = (
-        phase == RunPhase.DISPATCHING
-        and checkpoint.get("mixed_settings") is True
-        and is_sha256_hex(checkpoint.get("mixed_initial_session_hash"))
+    mixed_dispatch = phase == RunPhase.DISPATCHING and is_sha256_hex(
+        checkpoint.get("mixed_initial_session_hash")
     )
-    if checkpoint.get("version") != 1 or (
-        phase not in {RunPhase.ACCEPTED, RunPhase.VERIFYING, RunPhase.HANDOFF}
-        and not mixed_dispatch
+    if (
+        checkpoint.get("version") != 1
+        or checkpoint.get("mixed_settings") is not True
+        or (
+            phase not in {RunPhase.ACCEPTED, RunPhase.VERIFYING, RunPhase.HANDOFF}
+            and not mixed_dispatch
+        )
     ):
         return unverified
     verifying = phase == RunPhase.VERIFYING

@@ -59,7 +59,9 @@ stored as fingerprints. Checkpoints are excluded from entity snapshots.
 
 Recovery retains the original completion and history-verification deadlines;
 a restart does not give the run extra cleaning time. Already verified legs are
-skipped. Older checkpoints retain their original mission boundaries.
+skipped. A Smart Stop run that 0.5 started keeps one mission per room. A
+checkpoint saved before 0.5 is not resumed: its run ends as unverified and no
+command is sent.
 
 ## Interrupted dispatch or Stop
 

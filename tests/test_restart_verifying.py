@@ -158,6 +158,7 @@ async def test_verified_leg_never_dispatches_remaining_queue(hass, recovery_stat
     manager, entry, checkpoint, _ = recovery_state
     other = CleaningRoom("hall", "Hall", "mop", "standard")
     checkpoint["rooms"].append(asdict(other))
+    checkpoint["single_room_missions"] = True
     manager.repository.robot("serial")["last_run"]["room_count"] = 2
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = (

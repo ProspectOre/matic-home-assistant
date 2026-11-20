@@ -176,6 +176,7 @@ def _stored(phase: str, leg_index: int = 0, **changes) -> dict:
     """A running run's record with its checkpoint, as the store holds it."""
     checkpoint = {
         "version": 1,
+        "mixed_settings": True,
         "phase": phase,
         "leg_index": leg_index,
         "single_room_missions": True,
@@ -200,11 +201,7 @@ def _stored(phase: str, leg_index: int = 0, **changes) -> dict:
         (_stored("ready"), Run(ended="restart_checkpoint_unverified")),
         (_stored("dispatching"), Run(ended="restart_checkpoint_unverified")),
         (
-            _stored(
-                "dispatching",
-                mixed_settings=True,
-                mixed_initial_session_hash=_hash(b"generated"),
-            ),
+            _stored("dispatching", mixed_initial_session_hash=_hash(b"generated")),
             Run(RunPhase.DISPATCHING),
         ),
         (_stored("starting"), Run(ended="restart_checkpoint_unverified")),
@@ -247,6 +244,9 @@ def test_a_restarted_run_resumes_only_from_a_resumable_phase(record, resumed) ->
         (_stored("accepted", native_identity_hash="not-a-digest"), "un"),
         (_stored("accepted", completion_deadline=None), "un"),
         (_stored("accepted", version=2), "un"),
+        # No 0.5 or later release saves a checkpoint without the marker.
+        (_stored("accepted", mixed_settings=False), "un"),
+        (_stored("accepted", mixed_settings=None), "un"),
         (
             _stored("accepted", 1, completed_room_ids=["kitchen", "office"])
             | {"completed_room_count": 2},

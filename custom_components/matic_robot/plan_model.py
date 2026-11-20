@@ -261,11 +261,7 @@ def entry_mission_boundaries(
 
     def close_rooms() -> None:
         nonlocal offset
-        for group in leg_groups(
-            rooms,
-            mixed_settings=True,
-            single_room_missions=single_room_missions,
-        ):
+        for group in leg_groups(rooms, single_room_missions=single_room_missions):
             offset += len(group)
             boundaries.append(offset)
         rooms.clear()
@@ -313,8 +309,8 @@ _RUN_AREA_ENTRY_KEYS = frozenset(
 def run_entries(preview_entries: object) -> list[dict[str, str]] | None:
     """Return the run-order entries a checkpoint keeps for a plan with areas.
 
-    A plan without areas keeps its legacy checkpoint exactly (``None``): its
-    legs are ``leg_groups`` of the rooms alone.
+    A plan without areas saves none (``None``): its legs are ``leg_groups``
+    of the rooms alone.
     """
     if not isinstance(preview_entries, list) or not any(
         isinstance(entry, Mapping) and entry.get("kind") == "area"
@@ -340,8 +336,6 @@ def plan_legs(
     rooms: Sequence[CleaningRoom],
     entries: object,
     *,
-    mixed_settings: bool = False,
-    preserve_legacy_settings: bool = False,
     single_room_missions: bool = False,
 ) -> list[PlanLeg]:
     """Split a run into its native missions, in entry order.
@@ -351,14 +345,7 @@ def plan_legs(
     room entries must name ``rooms`` in the same order.
     """
     if entries is None:
-        return list(
-            leg_groups(
-                rooms,
-                mixed_settings=mixed_settings,
-                preserve_legacy_settings=preserve_legacy_settings,
-                single_room_missions=single_room_missions,
-            )
-        )
+        return list(leg_groups(rooms, single_room_missions=single_room_missions))
     if not isinstance(entries, list):
         raise ValueError("run entries are invalid")
     legs: list[PlanLeg] = []
@@ -366,14 +353,7 @@ def plan_legs(
     position = 0
 
     def close_rooms() -> None:
-        legs.extend(
-            leg_groups(
-                pending,
-                mixed_settings=mixed_settings,
-                preserve_legacy_settings=preserve_legacy_settings,
-                single_room_missions=single_room_missions,
-            )
-        )
+        legs.extend(leg_groups(pending, single_room_missions=single_room_missions))
         pending.clear()
 
     for entry in entries:
@@ -435,8 +415,6 @@ def checkpoint_legs(checkpoint: Mapping[str, Any]) -> list[PlanLeg]:
     return plan_legs(
         [CleaningRoom(**room) for room in checkpoint["rooms"]],
         checkpoint.get("entries"),
-        mixed_settings=checkpoint.get("mixed_settings") is True,
-        preserve_legacy_settings=checkpoint.get("mixed_settings") is not True,
         single_room_missions=checkpoint.get("single_room_missions") is True,
     )
 
@@ -489,37 +467,17 @@ def plan_floor_token(floor_plan: FloorPlan) -> str:
 
 
 def leg_groups(
-    rooms: Sequence[CleaningRoom],
-    *,
-    mixed_settings: bool = False,
-    preserve_legacy_settings: bool = False,
-    single_room_missions: bool = False,
+    rooms: Sequence[CleaningRoom], *, single_room_missions: bool = False
 ) -> list[list[CleaningRoom]]:
-    """Group consecutive rooms that can share one native mission.
+    """Group rooms into native missions.
 
-    Per-room goals keep effective settings transitions inside one native
-    mission. Firmware owns any required resource servicing. Old checkpoints
-    retain their original stored-setting boundaries during restart recovery.
+    Per-room goals carry each room's settings, so consecutive rooms share one
+    mission and firmware owns any resource servicing between them. A Smart
+    Stop run 0.5 started gave every room its own mission.
     """
-
-    def group_key(room: CleaningRoom) -> tuple[str, str]:
-        if preserve_legacy_settings:
-            return room.cleaning_mode, room.coverage_setting
-        return effective_room_settings(room)
-
-    groups: list[list[CleaningRoom]] = []
-    for room in rooms:
-        if single_room_missions:
-            groups.append([room])
-            continue
-        previous = groups[-1][-1] if groups else None
-        if previous is not None and (
-            mixed_settings or group_key(previous) == group_key(room)
-        ):
-            groups[-1].append(room)
-        else:
-            groups.append([room])
-    return groups
+    if single_room_missions:
+        return [[room] for room in rooms]
+    return [list(rooms)] if rooms else []
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,7 +592,7 @@ def _managed_stop_policy(value: object) -> tuple[bool, int]:
 
 
 def _has_frozen_stop_policy(value: object) -> bool:
-    """Distinguish new frozen run state from legacy checkpoints."""
+    """Whether a stored run record carries the stop policy its run froze."""
     return (
         isinstance(value, Mapping)
         and isinstance(value.get("finish_current_room"), bool)

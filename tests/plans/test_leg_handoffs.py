@@ -19,7 +19,6 @@ from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
     RoomTakenOverError,
 )
-from custom_components.matic_robot.plan_model import leg_groups
 from tests.plans.fakes import heavy_room, memory_manager, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot
 from tests.wire_builders import _session_identity
@@ -256,12 +255,8 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             AsyncMock(side_effect=block_handoff),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor.leg_groups",
-            side_effect=lambda rooms, **kwargs: leg_groups(
-                rooms,
-                mixed_settings=False,
-                preserve_legacy_settings=kwargs.get("preserve_legacy_settings", False),
-            ),
+            "custom_components.matic_robot.plan_model.leg_groups",
+            side_effect=lambda rooms, **_: [[room] for room in rooms],
         ),
     ):
         await _async_execute_rooms(
@@ -384,15 +379,11 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             AsyncMock(return_value=True),
         ),
         pytest.raises(expected_exception, match=expected_message),
-        # Preserve coverage of legacy checkpoint boundaries: new mixed runs
-        # deliberately have no separate native mission at these settings changes.
+        # One mission per room, as a recovered 0.5 Smart Stop run has: new
+        # runs have no separate native mission at these settings changes.
         patch(
-            "custom_components.matic_robot.managed_executor.leg_groups",
-            side_effect=lambda rooms, **kwargs: leg_groups(
-                rooms,
-                mixed_settings=False,
-                preserve_legacy_settings=kwargs.get("preserve_legacy_settings", False),
-            ),
+            "custom_components.matic_robot.plan_model.leg_groups",
+            side_effect=lambda rooms, **_: [[room] for room in rooms],
         ),
     ):
         await _async_execute_rooms(
