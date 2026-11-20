@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import math
-from typing import cast
+from datetime import timedelta
+from typing import Any, cast
 
-from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.components.http.auth import async_sign_path
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
 from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
@@ -24,6 +31,20 @@ from .service_schemas import (
     SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
 )
 from .viewpoints import async_save_viewpoint, current_floor_plan
+
+# A phone or other notify target fetches the photo without signing in.
+PHOTO_LINK_LIFETIME = timedelta(hours=24)
+
+
+def signed_photo(hass: HomeAssistant, photo: dict[str, Any]) -> dict[str, Any]:
+    """Sign the photo's links so each opens that one photo for a day."""
+    return photo | {
+        key: async_sign_path(
+            hass, photo[key], PHOTO_LINK_LIFETIME, use_content_user=True
+        )
+        for key in ("url", "preview_url")
+        if key in photo
+    }
 
 
 def register_photo_services(runtime: ServiceRuntime) -> None:
@@ -53,8 +74,9 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
                 ai_task_entity_id=call.data.get("ai_task_entity_id"),
                 context=call.context,
             )
+            signed = [signed_photo(hass, photo) for photo in photos]
             robots.append(
-                {"entity_id": entity_id, "photos": cast(list[JsonValueType], photos)}
+                {"entity_id": entity_id, "photos": cast(list[JsonValueType], signed)}
             )
         return {"robots": robots}
 

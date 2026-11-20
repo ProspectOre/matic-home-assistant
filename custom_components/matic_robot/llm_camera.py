@@ -160,7 +160,7 @@ def _stop(entry: MaticConfigEntry, args: dict[str, Any]) -> dict[str, str]:
 
 
 def _first_photo(response: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract the first bounded tour photo without echoing full URLs."""
+    """Extract the first tour photo without its full or signed links."""
     robots = response.get("robots")
     if not isinstance(robots, list) or not robots or not isinstance(robots[0], dict):
         return None
@@ -168,8 +168,12 @@ def _first_photo(response: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(photos, list) or not photos or not isinstance(photos[0], dict):
         return None
     photo = photos[0]
-    return {
+    found = {
         key: photo[key]
         for key in ("photo_id", "captured_at", "preview_url", "analysis")
         if key in photo
     }
+    # The signed link opens the photo without signing in; the chat signs in.
+    if isinstance(preview := found.get("preview_url"), str):
+        found["preview_url"] = preview.partition("?")[0]
+    return found
