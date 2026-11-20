@@ -21,8 +21,7 @@ export interface CanvasPalette {
 
 type PaletteKey = Exclude<keyof CanvasPalette, "forced">;
 
-// The accent strokes the selected room, so it is the resolved indicator
-// (design-system.md §7).
+// The accent strokes the selected room, so it is the resolved indicator.
 const SOURCES: Readonly<Record<PaletteKey, readonly [color: string, forced: string, fallback: Channel]>> = {
   accent: ["var(--ms-resolved-indicator, var(--ms-accent))", "Highlight", [6, 120, 206]],
   onAccent: ["var(--ms-resolved-on-indicator, var(--ms-on-accent))", "HighlightText", [255, 255, 255]],
@@ -134,7 +133,7 @@ const search = (color: Channel, toward: number, passes: (step: Channel) => boole
   return null;
 };
 
-// design-system.md §5 (MS-AXE-03): a fill keeps HA's colour and label when
+// MS-AXE-03: a fill keeps HA's colour and label when
 // they reach 4.5:1. Otherwise the first 5% step of the fill toward black
 // (toward white under a darker label), from 95% down to 50%, that reaches it
 // wins; failing that the fill stays and the label is black or white,

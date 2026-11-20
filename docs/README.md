@@ -66,6 +66,5 @@ notes for each release up to 0.5.1, with the 0.5 test records, performance
 reports, interface specification and release candidate notes, were removed
 from this folder and remain in the
 [v0.5.3 tree](https://github.com/ProspectOre/matic-home-assistant/tree/v0.5.3/docs).
-Source comments that cite files such as `ux-spec-0.5/plan.md` or
-`copy-style-0.5.md` refer to that tree. The 0.6 map design proposals are in
+The 0.6 map design proposals are in
 [an earlier commit](https://github.com/ProspectOre/matic-home-assistant/tree/c71361576978b4bf71dc818673cc9348987b4db5/docs).

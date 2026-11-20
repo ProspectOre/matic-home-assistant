@@ -12,7 +12,8 @@ import { heldReasonKey } from "./state";
 // element so the map's gesture handler still recognises the buttons.
 //
 // Points · Paint · Erase · Move map | Undo · Redo · Clear | Brush
-// (map-surfaces.md §5). The primary ("Name and save" or "Done") is the
+//
+// The primary ("Name and save" or "Done") is the
 // workflow's and lives in the action bar.
 type DrawToolsLayout = "row" | "grid";
 
@@ -35,7 +36,7 @@ export const renderDrawTools = (
   const key = heldReasonKey(state);
   const held = key ? handlers.t(key.reasonKey, key.reason) : null;
   // Every tool carries its name as a tooltip: the dock drops its labels when
-  // the canvas is too narrow for them (map-surfaces.md §5 collapse rule).
+  // the canvas is too narrow for them.
   const edit = (idle: boolean, path: string, label: string, intent: WorkspaceIntent, directional = false) => html`<button
     class="ms-btn"
     type="button"

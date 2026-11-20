@@ -336,11 +336,11 @@ export const draftForPlan = (plan: SavedPlan): WorkspaceState["planDraft"] => {
 };
 
 /**
- * Opens a plan (plan.md §5 State): Create opens in Edit; another saved plan,
+ * Opens a plan: Create opens in Edit; another saved plan,
  * or entering the plan workflow, opens in Run. Reselecting the open plan, as a
  * reload after a write does, keeps the view, the open row and the origin.
  * The home plan card passes origin "home"; Back and Escape from Run return
- * there (home-rooms.md §5 Cards; plan.md §5 State).
+ * there.
  */
 export const planSelection = (
   state: WorkspaceState,
@@ -362,7 +362,7 @@ export const planSelection = (
 };
 
 // Discarding a saved plan's edits returns to its Run view; a new plan has
-// none, so it returns to the picker (plan.md §5 Navigation).
+// none, so it returns to the picker.
 const discardPlanDraft = (state: WorkspaceState): WorkspaceState => {
   const saved = state.resources.plans.value?.plans.find((plan) => plan.id === state.planDraft.id);
   return saved
@@ -576,7 +576,7 @@ export const reduceWorkspace = (
       };
     case "toggle-room": {
       if (state.workflow === "plan") {
-        // Map taps never change the plan in Run (plan.md §5 Map).
+        // Map taps never change the plan in Run.
         if (state.planView === "run") return state;
         const { rooms, parkedRooms, areas } = state.planDraft;
         const room = rooms.find((candidate) => candidate.roomId === intent.roomId);
@@ -602,7 +602,7 @@ export const reduceWorkspace = (
       if (state.workflow === "rooms" && !canSelectRooms(state)) return state;
       const selected = state.selection.roomIds.includes(intent.roomId);
       // A refused add says why in the slot; the list's rows are described by
-      // the same line (home-rooms.md §4 R5).
+      // the same line.
       if (!selected && state.selection.roomIds.length >= MAX_ROOM_SEQUENCE_SIZE) {
         return state.workflow === "rooms"
           ? {
@@ -611,7 +611,7 @@ export const reduceWorkspace = (
           }
           : state;
       }
-      // A new room takes the whole-clean setting (home-rooms.md §5 Settings).
+      // A new room takes the whole-clean setting.
       return {
         ...state,
         selection: {
@@ -634,7 +634,7 @@ export const reduceWorkspace = (
     }
     // The rooms selection is locked while a clean runs or the map is not
     // ready: every change to it is refused, and Clear keeps the whole-clean
-    // default (home-rooms.md §5 Selection gate).
+    // default.
     case "clear-selection":
       if (state.workflow !== "rooms" || !canSelectRooms(state)
         || (state.selection.roomIds.length === 0 && state.selection.roomSettings.length === 0)) {
@@ -788,7 +788,7 @@ export const reduceWorkspace = (
       if (state.fullMap) return { ...state, fullMap: false };
       // A saved plan's Edit steps back to its Run view; Run and a new plan's
       // Edit step back to where the plan was opened from: the picker, or home
-      // for the home plan card (home-rooms.md §5 Cards).
+      // for the home plan card.
       if (state.workflow === "plan" && state.planView === "edit" && state.planDraft.id !== null) {
         return { ...state, planView: "run", expandedRoom: null };
       }
@@ -826,7 +826,7 @@ export const reduceWorkspace = (
 };
 
 /**
- * What a delete dialog names and changes (shell.md §5): the saved item, and,
+ * What a delete dialog names and changes: the saved item, and,
  * when it is the default plan or the selected custom area, the one the backend
  * promotes in its place: the first remaining in saved order, or null for none
  * (plans.py:2623-2624, 2159-2160). Undefined while the catalog does not hold it.
@@ -915,14 +915,14 @@ export class WorkspaceStore {
 
   // The one place a notice is validated. Every notice committed in place of
   // another is its own frozen object, so a repeated notice toasts and
-  // announces again (shell.md §4 rule 1); an invalid one is ignored and the
+  // announces again; an invalid one is ignored and the
   // current notice stays. A delete dialog stands only while the catalog holds
-  // the saved item it names (copy-style-0.5.md:90, 96). A reload, failed or
+  // the saved item it names. A reload, failed or
   // not, keeps the last catalog (effects.ts loadPlans, loadAreas), so only a
   // ready read without the item, or a reset that empties the catalog, closes
   // it; a dialog left with nothing to name would block the workspace unseen.
   // Every way out of the plan workflow, an effect's included, resets its view
-  // to Run with no open row (plan.md §5 State). A pending action names only a
+  // to Run with no open row. A pending action names only a
   // pending command, so every way a command settles or is cancelled clears it.
   replace(next: WorkspaceState): WorkspaceState {
     if (next === this.#state) return next;
@@ -1118,8 +1118,8 @@ export const canStartMotion = (state: WorkspaceState): boolean =>
 
 type Reason = { readonly reason: string; readonly reasonKey: string };
 
-// While a command runs, the edits that would race it are held and say why
-// (shell.md §5); choosing a tool stays open, since painting is refused anyway.
+// While a command runs, the edits that would race it are held and say why;
+// choosing a tool stays open, since painting is refused anyway.
 export const heldReasonKey = (state: WorkspaceState): Reason | null =>
   state.command === "pending" || state.planWriteBlock ? { reason: "Waiting for the current change to finish.", reasonKey: "v4_reason_stop_busy" }
     : state.command === "starting" ? { reason: "Waiting for the robot to begin.", reasonKey: "v4_reason_starting" }
@@ -1160,7 +1160,7 @@ export const hasStoppableWork = (state: WorkspaceState): boolean =>
       || state.resources.entry?.activePlan === true
       || state.resources.entry?.nativeSessionActive === true));
 
-/** Rooms can be picked only on an editable map with no robot work to stop (home-rooms.md §5). */
+/** Rooms can be picked only on an editable map with no robot work to stop. */
 export const canSelectRooms = (state: WorkspaceState): boolean => canEditCoordinates(state) && !hasStoppableWork(state);
 
 export const canStopMotion = (state: WorkspaceState): boolean =>
@@ -1247,7 +1247,7 @@ export const selectGlobalPrimaryAction = (state: WorkspaceState): PrimaryAction 
   }
   if (state.host.robotCount === 0) {
     // The one primary that is a link: it opens the integration page, so the
-    // view renders an anchor and never dispatches it (home-rooms.md D2).
+    // view renders an anchor and never dispatches it.
     return {
       id: "setup",
       label: "Open integration",
@@ -1276,7 +1276,7 @@ export const selectGlobalPrimaryAction = (state: WorkspaceState): PrimaryAction 
   return null;
 };
 
-/** The saved map on show: its time and place among the floor's snapshots (map-surfaces.md §4). */
+/** The saved map on show: its time and place among the floor's snapshots. */
 export const savedMapPosition = (state: WorkspaceState): { readonly date: string; readonly position: number; readonly count: number } | null => {
   if (state.dataMode !== "history") return null;
   const snapshots = state.resources.history.value?.floors.find((floor) => floor.id === state.selection.floorId)?.snapshots ?? [];

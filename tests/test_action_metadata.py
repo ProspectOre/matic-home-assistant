@@ -1,4 +1,4 @@
-"""Action, selector, icon and blueprint copy contract (ha-entities.md section 6)."""
+"""Action, selector, icon and blueprint copy contract."""
 
 import json
 import re

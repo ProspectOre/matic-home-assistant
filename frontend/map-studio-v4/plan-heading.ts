@@ -12,7 +12,7 @@ import { deleteSubject, initialWorkspaceState } from "./state";
 import { translate } from "./localize";
 
 /**
- * The tools after a plan's heading (plan.md §3): Run's Edit button, or the
+ * The tools after a plan's heading: Run's Edit button, or the
  * More actions menu of a saved plan's Edit. They show only inside the plan
  * workflow, so they load with its views.
  */
@@ -131,7 +131,7 @@ if (!customElements.get(PLAN_TOOLS_TAG)) customElements.define(PLAN_TOOLS_TAG, M
 type Translate = (key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>) => string;
 
 // The plan's heading: Run's plan name isolated in <bdi>, and the chip that
-// says the draft has unsaved changes (plan.md §3).
+// says the draft has unsaved changes.
 export const planTitle = (state: WorkspaceState, title: string, t: Translate) => html`${state.planView === "run" ? html`<bdi>${title}</bdi>` : title}${state.planDraft.dirty
   ? html` <span class="ms-chip">${t("v4_plan_unsaved", "Unsaved changes")}</span>` : nothing}`;
 
@@ -155,7 +155,7 @@ const named = (t: Translate, key: string, fallback: string, values?: Readonly<Re
 
 /**
  * A disabled action's reason, and in the action bar the link that opens the
- * room it names (plan.md R3). The HUD's reason is visually hidden, so a link
+ * room it names. The HUD's reason is visually hidden, so a link
  * there would be a focus stop no one sees.
  */
 export const actionReason = (t: Translate, action: PrimaryAction, link: boolean, emit: (intent: WorkspaceIntent) => void) => {
@@ -168,10 +168,10 @@ export const actionReason = (t: Translate, action: PrimaryAction, link: boolean,
 };
 
 /**
- * Edit's Cancel (plan.md §3, E2-E6): back to Run, or to the picker for a new
+ * Edit's Cancel: back to Run, or to the picker for a new
  * plan, asking first when there are edits. Only a save in flight holds it,
  * and then Save's own reason line, when shown, is Cancel's too. With Stop in
- * the strip (E6) the primary's place says when Save comes back.
+ * the strip the primary's place says when Save comes back.
  */
 export const planCancel = (
   state: WorkspaceState,
@@ -197,7 +197,7 @@ export const planCancel = (
   `;
 };
 
-// Draw's Cancel (map-surfaces.md §4 R11): Your areas for a new area (its one
+// Draw's Cancel: Your areas for a new area (its one
 // way in, owner 2026-10-13), the area's review when it opened from Redraw,
 // which also reloads the saved outline. Dirty drafts ask first through the
 // launcher's discardDraft.
@@ -221,14 +221,13 @@ const drawExit = (state: WorkspaceState): WorkspaceIntent =>
     : { type: "open-workflow", workflow: "areas" };
 
 /**
- * Where focus goes after leaving a plan view (plan.md §5 Navigation and
- * focus): Review to the room it opened, a step back from Edit to Run's Edit
+ * Where focus goes after leaving a plan view: Review to the room it opened, a step back from Edit to Run's Edit
  * button, a step back to the picker to that plan's row. Anything else, or a
  * launcher that is gone, leaves the shell to take the heading.
  */
 const planFocusTarget = (previous: WorkspaceState, state: WorkspaceState, root: ParentNode): HTMLElement | null | undefined => {
   const panel = root.querySelector(WORKFLOW_TAG)?.shadowRoot;
-  // Done or Cancel from a redraw lands on the review's Redraw (map-surfaces.md §4).
+  // Done or Cancel from a redraw lands on the review's Redraw.
   if (previous.workflow === "draw" && state.workflow === "areaReview") {
     return previous.areaDraft.id !== null
       ? root.querySelector("[data-redraw]") ?? panel?.querySelector("[data-redraw]")

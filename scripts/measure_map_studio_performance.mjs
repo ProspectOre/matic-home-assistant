@@ -173,8 +173,8 @@ try {
           await settle(page, label, measured);
         };
         const journeys = new Set();
-        // From UX4 on the home card opens the default plan's Run view
-        // (home-rooms.md D1), so Edit is one step away and every hop is
+        // From UX4 on the home card opens the default plan's Run view,
+        // so Edit is one step away and every hop is
         // measured.
         const planJourney = async () => {
           // From UX9 the plan is a home shortcut whose main button runs it;

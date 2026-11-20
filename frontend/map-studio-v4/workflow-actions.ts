@@ -41,7 +41,7 @@ const PLAN_IDENTITY: Reason = {
   reason: "Can't run this plan until Home Assistant can match its rooms to the current map.",
   reasonKey: "v4_preview_identity_unavailable",
 };
-/** Run plan's reason for a preview blocker that names no room (plan.md R4); others retry the preview. */
+/** Run plan's reason for a preview blocker that names no room; others retry the preview. */
 export const PLAN_BLOCKERS: Partial<Record<NextRunPreviewBlocker, Reason>> = {
   area_map_changed: { reason: "Can't run this plan until you review its custom areas on the current map.", reasonKey: "v4_preview_area_changed" },
   cadence_identity_unavailable: PLAN_IDENTITY,
@@ -52,7 +52,7 @@ export const PLAN_BLOCKERS: Partial<Record<NextRunPreviewBlocker, Reason>> = {
   plan_rooms_held: { reason: "Can't run this plan while every room in it is occupied.", reasonKey: "v4_preview_rooms_held" },
 };
 
-/** One room's blocking schedule reason, most specific first (plan.md R3), or null when it can run. */
+/** One room's blocking schedule reason, most specific first, or null when it can run. */
 export const roomBlockReason = (reasons: readonly CadenceReason[], room: string) => {
   const has = (...blocking: CadenceReason[]): boolean => blocking.some((reason) => reasons.includes(reason));
   return has("mop_progress_unverified", "coverage_progress_unverified", "cadence_progress_unverified")

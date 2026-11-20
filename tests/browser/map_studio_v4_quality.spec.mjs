@@ -515,7 +515,7 @@ for (const change of ["user", "robot", "access", "removed"]) {
 
 }
 
-// UX9: area review steps back to Your areas, and Your areas to the chooser.
+// Area review steps back to Your areas, and Your areas to the chooser.
 test("Back returns from area review to Your areas, then to the task chooser", async ({ page }) => {
   await page.goto("/map-studio-v4-audit");
   const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
@@ -708,7 +708,7 @@ for (const kind of ["plan", "area"]) {
       await load();
       if (plan) {
         effects.selectPlan("daily");
-        // Delete lives in Edit (plan.md §3).
+        // Delete lives in Edit.
         store.dispatch({ type: "set-plan-view", view: "edit" });
       } else {
         effects.selectArea("entryway");
@@ -719,7 +719,7 @@ for (const kind of ["plan", "area"]) {
       store.subscribe((state) => { shell.state = state; });
       document.body.append(shell);
       const dialogName = plan ? "confirmDeletePlan" : "confirmDeleteArea";
-      // A plan's Delete is in the heading's More actions (plan.md §3); an
+      // A plan's Delete is in the heading's More actions; an
       // area's is in the area review.
       const launcher = () => shell.shadowRoot.querySelector(plan ? PLAN_TOOLS_TAG : WORKFLOW_TAG)?.shadowRoot
         ?.querySelector(`[data-dialog-launcher="${dialogName}"]`) ?? null;
@@ -818,7 +818,7 @@ for (const way of ["Escape", "Cancel", "outside"]) {
       shell.addEventListener("matic-workspace-intent", (event) => store.dispatch(event.detail));
       document.body.append(shell);
       const workflow = () => shell.shadowRoot.querySelector(WORKFLOW_TAG);
-      // plan.md §3: Delete is in the heading's More actions.
+      // Delete is in the heading's More actions.
       const launcher = () => shell.shadowRoot.querySelector(PLAN_TOOLS_TAG)?.shadowRoot?.querySelector('[data-dialog-launcher="confirmDeletePlan"]') ?? null;
       for (let frame = 0; frame < 200 && !launcher(); frame += 1) await new Promise(requestAnimationFrame);
       // Opened as a person does: More actions, then its Delete.
@@ -1132,7 +1132,7 @@ for (const width of [320, 390, 820, 1280]) {
       }
       await page.screenshot({ path: testInfo.outputPath(`picker-${width}-${theme}.png`) });
       await choice.click();
-      // plan.md §3: a saved plan opens in Run, headed by its name.
+      // A saved plan opens in Run, headed by its name.
       await expect(gallery.getByRole("heading", { name: "Evening routine", level: 2 })).toBeVisible();
       await expect(gallery.getByRole("switch", { name: "Plan enabled" })).toHaveAttribute("aria-checked", "false");
       await gallery.getByRole("button", { name: "Back to plans", exact: true }).click();
@@ -1153,7 +1153,7 @@ test("Escape from the plan editor returns to the picker", async ({ page }) => {
   await expect(gallery.getByRole("heading", { name: "Your plans", exact: true })).toBeVisible();
 });
 
-// plan.md §5 Navigation: discarding a saved plan's edits returns to its Run
+// Discarding a saved plan's edits returns to its Run
 // view; Escape from Run then goes to the picker.
 test("discarding plan edits through Escape returns to the plan, then the picker", async ({ page }) => {
   await page.goto("/map-studio-v4-audit");
@@ -1163,7 +1163,7 @@ test("discarding plan edits through Escape returns to the plan, then the picker"
   await gallery.getByRole("button", { name: "Edit Daily clean", exact: true }).click();
   await gallery.getByRole("textbox", { name: "Plan name" }).fill("Unsaved change");
   await page.keyboard.press("Escape");
-  // shell.md §5: one title for every draft.
+  // One title for every draft.
   const dialog = gallery.getByRole("dialog", { name: "Discard changes?" });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Discard", exact: true }).click();

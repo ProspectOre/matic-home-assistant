@@ -74,12 +74,11 @@ const drawPointerHelp = (tool: DrawTool, coarse: boolean, t: MapHelpContext["t"]
 };
 
 /**
- * The one "How to move the map" popover (map-surfaces.md §5 Help): a
+ * The one "How to move the map" popover: a
  * non-modal dialog the canvas renders in its rail beside the "?" that opens
  * it. Rows follow the input: a coarse pointer reads Touch only, a fine one
  * Trackpad, Mouse and Keyboard; Draw swaps in the drawing rows, with the
- * keyboard recipe that used to sit in the Draw panel. Touch follows the
- * owner-updated D1 gesture model. Rows
+ * keyboard recipe. Rows
  * follow the view the map shows: in 2D and the area review the modifiers
  * and arrows move the map, so no orbit row is offered.
  */

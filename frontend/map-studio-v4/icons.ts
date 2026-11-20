@@ -72,9 +72,9 @@ export const iconPaused = mdiPause;
 export const iconCharging = mdiBatteryCharging50;
 export const iconOffline = mdiMapMarkerOff;
 export const iconClose = mdiClose;
-// Due work (design-system.md §5: the due glyph).
+// Due work: the due glyph.
 export const iconDue = mdiCalendarCheck;
-// Notice tones (design-system.md .ms-notice): info reuses iconDiagnostics.
+// Notice tones: info reuses iconDiagnostics.
 export const iconNoticeSuccess = mdiCheck;
 export const iconNoticeWarning = mdiAlert;
 export const iconNoticeError = mdiAlertCircle;
@@ -82,7 +82,7 @@ export const iconNoticeError = mdiAlertCircle;
 // Sized by CSS (.ms-icon), never by width/height attributes -- an SVG geometry
 // attribute cannot take rem units. `d` is bound, so Lit prepares one template
 // and only swaps the attribute however many icons the tree contains.
-// A directional icon (Undo, Redo, Back) mirrors under RTL (design-system.md §4).
+// A directional icon (Undo, Redo, Back) mirrors under RTL.
 export const icon = (path: string, options?: { readonly directional?: boolean }): TemplateResult => html`<svg
   class=${options?.directional ? "ms-icon ms-icon--dir" : "ms-icon"}
   viewBox="0 0 24 24"

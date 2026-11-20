@@ -2,7 +2,7 @@
 // the --primary-color etc. variables (values from home-assistant/frontend
 // src/resources/theme/color/color.globals.ts, dev branch). The harness captures use the
 // component fallbacks (#0678ce), which HA never uses. It also measures the pairs axe
-// does not (design-system.md §5): the focus ring (3:1 on the card and sunken surfaces),
+// does not: the focus ring (3:1 on the card and sunken surfaces),
 // danger text (4.5:1 on the card) and each filled button's label on its hover and
 // pressed fill (4.5:1).   usage: node tests/browser/ux-audit-tools/ha_theme_axe.mjs
 import AxeBuilder from "@axe-core/playwright";
@@ -25,7 +25,7 @@ const HA = {
 // plan-cadence-blocked and area-review-rebind show the workflow panel's
 // problem and warning boxes.
 const SCENARIOS = ["ready", "rooms", "draw", "plan-saved-intelligent", "plans", "history", "cleaning", "problem", "area-review-new", "area-review-rebind", "plan-cadence-blocked", "support", "full-map", "draw-points", "draw-redraw", "area-review-saved", "area-review-stale", "history-floors", "full-map-cleaning"];
-// The notice slot and toast in each tone, over `ready` (design-system.md: the notice-* patches).
+// The notice slot and toast in each tone, over `ready`.
 const CAPTURES = [
   ...SCENARIOS.map((scenario) => ({ id: scenario, scenario, patch: null })),
   ...["info", "success", "warning", "error"].map((tone) => ({

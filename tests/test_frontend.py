@@ -273,7 +273,7 @@ def test_outline_fill_ships_in_the_lazy_outline_chunk() -> None:
 
 
 def test_plan_focus_after_leaving_a_view_ships_in_the_lazy_workflow_chunk() -> None:
-    """Only the plan views render the controls focus returns to (plan.md §5)."""
+    """Only the plan views render the controls focus returns to."""
     startup = _startup_source()
     workflow = _STUDIO_V4_WORKFLOW_CHUNK_PATHS[0].read_text(encoding="utf-8")
     assert 'scrollIntoView({block:"nearest"})' not in startup
@@ -281,7 +281,7 @@ def test_plan_focus_after_leaving_a_view_ships_in_the_lazy_workflow_chunk() -> N
 
 
 def test_the_stepper_ships_with_the_plan_views() -> None:
-    """design-system.md §4 size gate: only room schedules use ``ms-stepper``."""
+    """Only room schedules use ``ms-stepper``."""
     workflow = _workflow_static_source()
     assert ".ms-stepper" not in _startup_source()
     assert ".ms-stepper" in workflow
@@ -290,15 +290,14 @@ def test_the_stepper_ships_with_the_plan_views() -> None:
 def test_workflow_dialog_launch_and_confirm_ship_with_their_copy() -> None:
     """Delete and reset dialogs open only from the views, which confirm them too."""
     modules = shipped_modules()
-    # dialogReturnTarget: a schedule Reset returns focus to its room
-    # (room-schedule.md §5).
+    # dialogReturnTarget: a schedule Reset returns focus to its room.
     for marker in ("cadenceResetRequest", "isWorkspaceIntent", "data-room-disclosure"):
         assert marker not in modules["shell.ts"]
         assert marker in modules["dialog-copy.ts"]
 
 
 def test_the_chip_ships_once_as_a_shared_control() -> None:
-    """plan.md §8: the shell's plan heading holds the chip, so it is shared."""
+    """The shell's plan heading holds the chip, so it is shared."""
     modules = shipped_modules()
     assert ".ms-chip {" in modules["controls.ts"]
     assert ".ms-chip" not in modules["workflow-panel.ts"]
@@ -416,8 +415,8 @@ def test_every_ms_custom_property_is_defined() -> None:
 def test_plan_row_lines_ship_without_schedule_lines() -> None:
     """Home plan shortcuts share the picker's line helpers, in the lazy views.
 
-    home-rooms.md R1; UX9 moved the home plan card into the views chunk as
-    pinned shortcuts, so neither the row lines nor the schedules ship at startup.
+    The home plan card is in the views chunk as pinned shortcuts, so neither
+    the row lines nor the schedules ship at startup.
     """
     startup = _startup_source()
     workflow = _workflow_static_source()
@@ -428,7 +427,7 @@ def test_plan_row_lines_ship_without_schedule_lines() -> None:
 
 
 def test_rooms_view_ships_in_the_lazy_workflow_chunk() -> None:
-    """The Rooms view and its copy load with the other workflow views (R25)."""
+    """The Rooms view and its copy load with the other workflow views."""
     startup = _startup_source()
     workflow = _STUDIO_V4_WORKFLOW_CHUNK_PATHS[0].read_text(encoding="utf-8")
     # The tag itself is in element-tags.ts, which startup already holds; the

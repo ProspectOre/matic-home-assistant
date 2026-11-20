@@ -56,7 +56,7 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
 // ---- 2. Schedule heading weight (MS-DS-04) ---------------------------------
 await openScenario(page, "plan-cadence-shared", { width: 390, height: 844 });
 await inject(page);
-console.log("\n== Schedule h3 weight (room-schedule.md §8: --ms-w-bold):");
+console.log("\n== Schedule h3 weight (--ms-w-bold):");
 console.log(JSON.stringify(await page.evaluate(() => {
   const a = window.__uxAudit;
   const heading = a.all().find((e) => e.matches(".schedule-head h3") && a.visible(e));

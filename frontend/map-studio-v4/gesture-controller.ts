@@ -192,7 +192,7 @@ export class GestureController {
     const state = this.#callbacks.state();
     const drawing = state.workflow === "draw" && state.map.available && !state.floor.readOnly
       && this.#callbacks.drawReady();
-    // D1 (map-surfaces.md §10): one-finger drag moves the map. Two-finger
+    // One-finger drag moves the map. Two-finger
     // vertical drag tilts in 3D; in top view it remains a pan. Space-drag
     // moves while drawing. The effective view decides in review surfaces.
     const modifier = event.shiftKey || event.button === 1 || event.button === 2;
@@ -451,7 +451,7 @@ export class GestureController {
       && this.#mode !== "pinch"
       && !this.#navigationUntilRelease
       && Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) < 7
-      // Rooms lets the reducer refuse, so a held tap can be announced (R7);
+      // Rooms lets the reducer refuse, so a held tap can be announced;
       // plan keeps its gate.
       && (this.#callbacks.state().workflow === "rooms"
         || (this.#callbacks.state().workflow === "plan" && canEditCoordinates(this.#callbacks.state())))) {

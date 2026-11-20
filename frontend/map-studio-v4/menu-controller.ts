@@ -3,8 +3,7 @@ import type { ReactiveController, ReactiveControllerHost } from "lit";
 type MenuHost = ReactiveControllerHost & HTMLElement & { readonly renderRoot: ParentNode };
 
 /**
- * A menu button's open state (plan.md §3 More actions; room-schedule.md §3
- * More for {room}): the first item takes focus on open, Escape closes it
+ * A menu button's open state (More actions, More for {room}): the first item takes focus on open, Escape closes it
  * back to its button, and focus or a press elsewhere closes it.
  */
 export class MenuController implements ReactiveController {
@@ -53,7 +52,7 @@ export class MenuController implements ReactiveController {
     if (restoreFocus) this.host.renderRoot.querySelector<HTMLElement>(`${this.root} ${this.launcher}`)?.focus();
   }
 
-  // Escape closes the menu before the shell sees it (shell.md §5 Escape order).
+  // Escape closes the menu before the shell sees it.
   // Up and Down move between items (every menuitem* role), wrapping, and Home
   // and End go to the ends;
   // items take focus only this way, so Tab leaves the menu (APG menu button).

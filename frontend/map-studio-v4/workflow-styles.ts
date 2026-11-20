@@ -50,7 +50,7 @@ export const shellWorkflowStyles = css`
     .pins-error { margin: 0; padding: var(--ms-space-3); color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 
     .action-summary { margin: 0; overflow: hidden; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); text-overflow: ellipsis; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-    /* A landscape phone keeps the bar to its button (home-rooms.md §7). */
+    /* A landscape phone keeps the bar to its button. */
     @media (max-height: 479px) { .action-summary { display: none; } }
 
     .action-jump { text-decoration: underline; }

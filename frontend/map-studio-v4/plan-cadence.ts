@@ -31,7 +31,7 @@ const coverageNeedsVacuum = (t: Translate): string =>
 
 /** A room schedule's state in one or two sentences, most urgent first. */
 /**
- * A Rooms row's third line (home-rooms.md R20): the schedule problem that
+ * A Rooms row's third line: the schedule problem that
  * keeps the row's schedule from applying, or null for due work alone.
  */
 export const cadenceProblem = (t: Translate, reasons: readonly CadenceReason[]): string | null => {
@@ -61,10 +61,10 @@ export const cadenceProblem = (t: Translate, reasons: readonly CadenceReason[]):
   return null;
 };
 
-// ---- The schedule model (room-schedule.md §3-§6) ----------------------------
+// ---- The schedule model ----------------------------
 
 type ScheduleKind = "mop" | "coverage";
-/** A room with no schedule yet counts across all plans (room-schedule.md §5 Scope). */
+/** A room with no schedule yet counts across all plans. */
 const OFF: RoomCadencePolicy = {
   scope: "shared",
   mopEveryN: null,
@@ -181,7 +181,7 @@ const mopLabel = (t: Translate, locale: string, every: number | null): string =>
 const rotationLabel = (t: Translate, locale: string, level: CoverageSetting, every: number | null): string =>
   ROTATION[level](t, every === null ? null : formatNumber(locale, every), every === 1);
 
-/** The reasons that hold the whole block, shown under its heading (plan.md R3 text). */
+/** The reasons that hold the whole block, shown under its heading. */
 const ROOM_REASONS: readonly CadenceReason[] = [
   "cadence_progress_unverified", "identity_changed", "room_not_on_current_map", "shared_schedule_unavailable", "invalid_cadence_policy",
 ];
@@ -195,7 +195,7 @@ interface Facts {
   readonly progress: RoomCadenceProgress | undefined;
   readonly reasons: readonly CadenceReason[];
   readonly savedPolicy: RoomCadencePolicy | undefined;
-  /** The saved room's own counters, kept while a private schedule is off (plans.py cadence_progress). */
+  /** The saved room's own counters, kept while a private schedule is off (plan_cadence.py cadence_progress). */
   readonly savedProgress: RoomCadenceProgress | undefined;
   /** This room's cleaning mode can use the shared schedule (cadence.py:45-46, 66-70). */
   readonly sharedFits: boolean;
@@ -238,7 +238,7 @@ const countedFlag = (f: Facts, kind: ScheduleKind): boolean =>
 
 /**
  * Saving starts fresh progress: leaving a shared schedule resets this plan's
- * own (plans.py reset_private_progress), and a new shared one starts at zero.
+ * own (plan_catalog.py reset_private_progress), and a new shared one starts at zero.
  * A join keeps the shared progress instead.
  */
 const scopeChanged = (f: Facts): boolean =>
@@ -281,7 +281,7 @@ const named = (f: Facts, kind: ScheduleKind): boolean => {
 };
 
 /**
- * The rows a mode conflict holds (room-schedule.md §4 S10): a new mop
+ * The rows a mode conflict holds: a new mop
  * schedule needs Vacuum, and a rotation needs a mode that includes vacuuming.
  * Progress Home Assistant can't confirm shows its own reason instead.
  */
@@ -498,7 +498,7 @@ interface ScheduleContext {
   readonly t: Translate;
   readonly state: WorkspaceState;
   readonly intent: (intent: WorkspaceIntent) => void;
-  /** The shared reason's id while every Edit control is held (plan.md §4 E5), else null. */
+  /** The shared reason's id while every Edit control is held, else null. */
   readonly held: string | null;
   /** The rotation level chosen while it is Off, for this room (view state). */
   readonly offLevel: CoverageSetting | null;
@@ -524,13 +524,13 @@ const scheduleInput = (state: WorkspaceState, room: PlanRoom, name: string, offL
 /** Stands in for {room} in visible text, so the name can render in <bdi>. */
 const ROOM_MARK = "\u0000";
 
-/** A sentence with the room it names isolated in <bdi> (room-schedule.md §8). */
+/** A sentence with the room it names isolated in <bdi>. */
 const withRoom = (text: string, name: string) => {
   const [before, ...after] = text.split(ROOM_MARK);
   return after.length ? html`${before}<bdi>${name}</bdi>${after.join(name)}` : text;
 };
 
-/** The Schedule block in an open Edit row (room-schedule.md §3). */
+/** The Schedule block in an open Edit row. */
 export const scheduleBlock = (context: ScheduleContext, room: PlanRoom, index: number, name: string) => {
   const { t, state, held } = context;
   const draft = state.planDraft;
@@ -556,7 +556,7 @@ export const scheduleBlock = (context: ScheduleContext, room: PlanRoom, index: n
   const line = (id: string, row: ScheduleRow) => row.reason
     ? reasonLine(id, row.reason)
     : row.status ? html`<small class="sched-status" id=${id}>${row.status}</small>` : nothing;
-  // Reset (room-schedule.md §5): a clean draft, an idle robot and a live map,
+  // Reset: a clean draft, an idle robot and a live map,
   // else held with its reason. No launcher mark: focus returns to the room.
   const block = resetBlock(t, state);
   const deleteBlock = !block ? null : state.planDraft.dirty
@@ -744,7 +744,7 @@ export const scheduleBlock = (context: ScheduleContext, room: PlanRoom, index: n
 
 /**
  * A room's cleaning mode and vacuum coverage as one whole string
- * (home-rooms.md §6 `v4_room_setting_*`); mop alone has no coverage.
+ * (`v4_room_setting_*`); mop alone has no coverage.
  */
 export const settingLabel = (t: Translate, room: Pick<PlanRoom, "cleaningMode" | "coverageSetting">): string => {
   if (room.cleaningMode === "mop") return t("v4_room_setting_mop", "Mop");
@@ -764,7 +764,7 @@ export const settingLabel = (t: Translate, room: Pick<PlanRoom, "cleaningMode" |
 
 type Schedule = (t: Translate, mop: string, cov: string) => string;
 
-/** Edit row line 3 (plan.md §6 `v4_room_schedules_*`), by kind and which counts are one. */
+/** Edit row line 3 (`v4_room_schedules_*`), by kind and which counts are one. */
 const SCHEDULES: Readonly<Record<string, Schedule>> = {
   mop: (t, mop) => t("v4_room_schedules_mop", "Mop every {mop} cleans", { mop }),
   mop_one: (t) => t("v4_room_schedules_mop_one", "Mop every clean"),
