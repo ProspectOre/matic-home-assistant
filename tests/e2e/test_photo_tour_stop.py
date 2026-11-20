@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot.client import UserCommand
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.robot_controls import RobotControls
 
@@ -91,27 +92,39 @@ async def test_a_command_that_stops_the_tour_is_not_followed_by_its_dock(
     robot: SimulatedRobot,
 ) -> None:
     tour = await _start_tour_and_wait_for_the_photo(hass, loaded_entry, robot)
-    vacuum = hass.data["entity_components"]["vacuum"].get_entity(VACUUM)
     dispatch = asyncio.Event()
-    send = vacuum._commands.async_send_user_command
+    held = asyncio.Event()
+    send = RobotControls.async_send_user_command
 
-    async def held_until_the_tour_ends(command: object) -> None:
-        await dispatch.wait()
-        await send(command)
+    async def pause_held_until_the_tour_ends(
+        controls: RobotControls, command: UserCommand
+    ) -> None:
+        if command is UserCommand.PAUSE:
+            held.set()
+            await dispatch.wait()
+        await send(controls, command)
 
     sent = len(robot.received())
     with patch.object(
-        vacuum._commands, "async_send_user_command", held_until_the_tour_ends
+        RobotControls, "async_send_user_command", pause_held_until_the_tour_ends
     ):
         pause = hass.async_create_task(
             hass.services.async_call(
                 "vacuum", "pause", {"entity_id": VACUUM}, blocking=True
             )
         )
-        # While Pause waits to be sent, the robot is still parked.
-        await _stopped(tour)
-        dispatch.set()
-        await pause
+        try:
+            async with asyncio.timeout(5):
+                await held.wait()
+            # Pause is not sent yet, so the robot is still parked at the stop.
+            assert robot.phase is Phase.PARKED
+            # A tour that docked on its way out would queue behind Pause.
+            async with asyncio.timeout(5):
+                await _stopped(tour)
+            assert robot.received()[sent:] == []
+        finally:
+            dispatch.set()
+            await pause
 
     # The tour leaves the robot to Pause instead of sending it to the dock.
     assert DOCK_PAYLOAD not in robot.received()[sent:]
