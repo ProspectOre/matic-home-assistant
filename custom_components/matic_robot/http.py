@@ -32,6 +32,7 @@ VIEWPOINTS_API_URL = "/api/matic_robot/photo_gallery/{entry_id}/viewpoints"
 VIEWPOINT_API_URL = (
     "/api/matic_robot/photo_gallery/{entry_id}/viewpoints/{viewpoint_id}"
 )
+PHOTO_STAR_API_URL = "/api/matic_robot/photo_gallery/{entry_id}/photos/{photo_id}/star"
 
 PRIVATE_NO_STORE_HEADERS = {
     "Cache-Control": "private, no-store, max-age=0",
