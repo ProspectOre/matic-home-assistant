@@ -256,11 +256,22 @@ def _references(tree: ast.Module) -> set[str]:
     return found
 
 
+def _module_statements(tree: ast.Module) -> Iterator[ast.stmt]:
+    """Yield the statements that run at import, inside `if`, `try` and `with` too."""
+    pending: list[ast.AST] = [tree]
+    while pending:
+        for child in ast.iter_child_nodes(pending.pop()):
+            if isinstance(child, ast.stmt) and not isinstance(child, DEFINITION):
+                yield child
+            if not isinstance(child, DEFINITION | ast.expr):
+                pending.append(child)
+
+
 def _class_bases(tree: ast.Module) -> Iterator[tuple[str, set[str]]]:
     """Yield each class in a module with its bases, "" for one from outside."""
     outside = set()
     renamed = {}
-    for node in tree.body:
+    for node in _module_statements(tree):
         if isinstance(node, ast.Import):
             outside |= {
                 alias.asname or alias.name.partition(".")[0]
@@ -331,7 +342,7 @@ def unused_violations(
                 )
             ):
                 unused.add(f"{path}::{name}")
-        for statement in tree.body:
+        for statement in _module_statements(tree):
             targets = (
                 statement.targets
                 if isinstance(statement, ast.Assign)

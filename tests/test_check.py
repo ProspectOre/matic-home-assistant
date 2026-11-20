@@ -296,6 +296,20 @@ def test_names_reached_by_reference_or_by_home_assistant_pass() -> None:
         ("def helper(): ...\n", ["helper"]),
         ("LIMIT_BYTES = 1\nDELAY: float = 2.0\n", ["DELAY", "LIMIT_BYTES"]),
         ("FIRST, [SECOND, *REST] = 1, [2, 3]\n", ["FIRST", "REST", "SECOND"]),
+        # A constant bound under `if`, `try` or `with` is still the module's.
+        (
+            "if LIMIT:\n    A = 1\nelse:\n    B = 2\n"
+            "try:\n    C = 3\nexcept OSError:\n    D = 4\nfinally:\n    E = 5\n"
+            "with open(__file__) as handle:\n    F = 6\n"
+            "def used():\n    local = 7\nused()\n",
+            ["A", "B", "C", "D", "E", "F"],
+        ),
+        # An in-package base imported under `if TYPE_CHECKING:` is still one.
+        (
+            "if LIMIT:\n    from .plans import Plain as Local\n"
+            "class Mine(Local):\n    def unused(self): ...\nMine()\n",
+            ["Mine.unused"],
+        ),
         ("class Plain:\n    def unused(self): ...\nPlain()\n", ["Plain.unused"]),
         ("class Unused:\n    def method(self): ...\n", ["Unused", "Unused.method"]),
         # Text that mentions a name does not use it.
