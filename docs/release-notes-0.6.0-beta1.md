@@ -215,11 +215,13 @@ and the first use of each logs a warning. Matic 0.7 removes them.
 
 ## Before you update
 
-- Update from 0.5.4. 0.6 also reads what 0.5.0 to 0.5.3 stored, but only the
-  update from 0.5.4 is tested. From 0.4 or older, install 0.5.4 first and
-  restart once; then install 0.6. If 0.6 finds a configuration older than
-  0.5's it leaves it untouched, does not start and shows a Repair asking for
-  0.5.4.
+- Update from 0.5.4 or 0.5.5. From anything older, install 0.5.4 first and
+  restart once; then install 0.6. If 0.6 finds a configuration from 0.4 or
+  cleaning plans last saved by 0.5.0 or older, it changes nothing, does not
+  start and shows a Repair asking for 0.5.4, and the release you had still
+  runs on that data. 0.5.1 to 0.5.3 save the same data versions as 0.5.4, so
+  0.6 cannot tell them apart and starts; only the updates from 0.5.4 and 0.5.5
+  are tested.
 - Run plan (`run_selected_plan`) and Clean room sequence
   (`clean_room_sequence`) now return once the robot has started the run, with
   its `run_id`, instead of when the run ends. An automation that waited for the

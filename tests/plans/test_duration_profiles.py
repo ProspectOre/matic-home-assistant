@@ -11,6 +11,7 @@ import pytest
 from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.plan_timing as plan_timing_module
+from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
@@ -575,10 +576,8 @@ def test_duration_profiles_bound_each_supported_tier_without_mixing() -> None:
         ) == list(range(index * 100 + 3, index * 100 + 10))
 
 
-async def test_duration_profile_migration_keeps_only_known_legacy_settings(
-    hass,
-) -> None:
-    """Migration preserves existing evidence, never reconstructs erased tiers."""
+def test_duration_profile_repair_keeps_only_known_legacy_settings() -> None:
+    """The load repair preserves existing evidence, never reconstructs erased tiers."""
     now = dt_util.utcnow().isoformat()
     valid = {
         "cleaning_mode": "vacuum",
@@ -603,21 +602,15 @@ async def test_duration_profile_migration_keeps_only_known_legacy_settings(
         "bad": "not-a-record",
     }
     global_history = {"valid": {"last_completed": now, "last_duration_seconds": 110}}
-    stored = {
-        "robots": {
-            "serial": {
-                "rotations": {
-                    "daily": {"rooms": records},
-                    "bad-rooms": {"rooms": []},
-                    "bad": [],
-                },
-                "rooms": deepcopy(global_history),
-            },
-            "bad-rotations": {"rotations": []},
-        }
+    robot = {
+        "rotations": {
+            "daily": {"rooms": records},
+            "bad-rooms": {"rooms": []},
+            "bad": [],
+        },
+        "rooms": deepcopy(global_history),
     }
-    manager = CleaningPlanManager(hass)
-    await manager.repository.store._async_migrate_func(1, 11, stored)
+    assert plan_state.parse_robot(robot)
     assert records["valid"]["duration_profiles"] == {
         "vacuum:quick": {
             "duration_history_seconds": [90, 100, 110],
@@ -636,10 +629,10 @@ async def test_duration_profile_migration_keeps_only_known_legacy_settings(
     )
     assert records["unknown"]["duration_profiles"] == {}
     assert records["empty"] == {}
-    assert stored["robots"]["serial"]["rooms"] == global_history
-    migrated = deepcopy(stored)
-    await manager.repository.store._async_migrate_func(1, 11, stored)
-    assert stored == migrated
+    assert robot["rooms"] == global_history
+    repaired = deepcopy(robot)
+    plan_state.parse_robot(robot)
+    assert robot == repaired
     plan_timing_module._admit_room_settings(
         unknown, CleaningRoom("room", "Room", "vacuum", "quick")
     )

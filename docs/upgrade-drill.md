@@ -9,7 +9,7 @@ files, so the stores carry over between phases and code versions the same way th
 test Home Assistant starts with empty registries, so each phase recreates the mapped Area and the
 vacuum's entity options from the previous phase's registry files.
 
-0.5.4 is the oldest release 0.6 updates from, and the one to drill:
+0.5.4 is the oldest release 0.6 updates from, and the one to drill, with 0.5.5:
 
 ```sh
 git fetch origin tag v0.5.4
@@ -30,6 +30,26 @@ The seed maps a Home Assistant Area to a room, and the drill checks that the upg
 the floor catalogs into `matic_robot.floor_catalogs.<entry>` while leaving 0.5's copy, less
 its floor scope, in the vacuum's entity options. 0.5.4 restores its floor scope when it starts
 in the downgrade phase, and the restored backup still has the catalogs.
+
+## Below the floor
+
+0.6 reads two saved versions to tell what ran last: the config entry (1.3 in
+every 0.5 release, 1.2 in 0.4) and the plan file (1.13 from 0.5.1 on, 1.12 in
+0.5.0, 1.5 in 0.4.8). An entry below 1.3 or a plan file below 1.13 stops the
+integration with a Repair asking for 0.5.4, before it writes any store. The
+other stores 0.5 keeps (firmware, map cache, map history) are version 1 in
+every 0.4 and 0.5 release and show nothing. So 0.6 cannot tell 0.5.1 to 0.5.3
+from 0.5.4, nor 0.5.0 from 0.5.4 when no plan was ever saved, and starts on
+those.
+
+`scripts/upgrade_drill.py v0.5.0` drills the refusal. When the seed leaves a
+plan file below 1.13 the script runs three phases instead: seed, then
+`refused` on this checkout (the integration does not start and raises the
+Repair; every `matic_robot.*` store file must be byte for byte as seeded),
+then restore on the same files, where 0.5.0 settles its interrupted run and
+runs the plan. 0.4.8 cannot be seeded: the simulator harness does not load on
+its code. Its refusal, with and without a plan file, is covered on written
+store files by `tests/e2e/test_minimum_upgrade.py`.
 
 ## What 0.5.4 to 0.6 does
 
@@ -56,8 +76,8 @@ in the downgrade phase, and the restored backup still has the catalogs.
 - Restoring the pre-upgrade backup brings back the 0.5.4 state exactly,
   including the interrupted run, which 0.5.4 settles the same way.
 
-The last recorded run, from v0.5.4, passed all four phases on November 14,
-2026. Run the drill again before a 0.6 release.
+The last recorded runs, on November 20, 2026: v0.5.4 and v0.5.5 passed all
+four phases and v0.5.0 passed the refusal drill. Run the drill again before a 0.6 release.
 
 ## Not covered
 

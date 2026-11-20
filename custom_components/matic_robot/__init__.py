@@ -40,9 +40,10 @@ from .floor_sync import AreaBindingSync, async_follow_slam_mission
 from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .media_source import existing_photo_attachment_source
-from .migrations import async_migrate_entry
+from .migrations import async_create_upgrade_issue, async_migrate_entry
 from .native_history_sync import NativeHistorySync, async_resume_native_reconciliation
 from .photo_library import PhotoLibrary, PhotoPlace, async_remove_photos
+from .plan_storage import PlanStoreTooOldError
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
 from .robot_health import async_delete_robot_alert_issues
@@ -118,9 +119,17 @@ async def _async_recover_after_failed_unload(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register integration services and the Map Studio frontend."""
+    """Register integration services and the Map Studio frontend.
+
+    Loading the plan file comes first: below the upgrade floor it raises
+    before any store is written, and the integration does not start.
+    """
+    try:
+        await async_register_services(hass)
+    except PlanStoreTooOldError:
+        async_create_upgrade_issue(hass)
+        return False
     await async_register_frontend(hass)
-    await async_register_services(hass)
     hass.data[DOMAIN][DATA_LLM_API] = async_register_matic_llm_api(hass)
     async_at_started(hass, async_check_blueprints)
     return True

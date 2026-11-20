@@ -1,8 +1,14 @@
 """Pre-1.0 migrations to the integration's canonical data model.
 
-0.6 migrates config entries from what 0.5.4 stores. An older entry steps
-through 0.5.4 first, which migrates it on load; 0.6 refuses it with a Repair
-instead of guessing at it.
+0.6 updates from 0.5.4. Older data steps through 0.5.4 first, which migrates
+it on load; 0.6 refuses it with a Repair and writes none of it.
+
+Two saved versions tell 0.6 what ran last. The config entry is 1.3 in every
+0.5 release and 1.2 in 0.4. The plan file is 1.13 from 0.5.1 on, 1.12 in 0.5.0
+and 1.5 in 0.4. So 0.6 refuses an entry below 1.3 here and a plan file below
+1.13 in `async_setup`, before anything else loads. It cannot tell 0.5.1 to
+0.5.3 from 0.5.4, nor 0.5.0 from 0.5.4 when no plan file was ever saved; it
+reads those like 0.5.4's, since no other store changed version within 0.5.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from .const import CONF_SERIAL_NUMBER, DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 MINIMUM_UPGRADE_VERSION = "0.5.4"
-# The config entry minor version 0.5.4 writes.
+# The config entry minor version every 0.5 release writes.
 MINIMUM_ENTRY_MINOR_VERSION = 3
 UPGRADE_ISSUE_ID = "upgrade_through_0_5_4"
 
@@ -57,7 +63,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def async_create_upgrade_issue(hass: HomeAssistant) -> None:
-    """Ask the user to install 0.5.4 first; their data stays as it was."""
+    """Ask the user to install 0.5.4 first; no store has been written."""
     ir.async_create_issue(
         hass,
         DOMAIN,

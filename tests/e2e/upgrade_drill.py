@@ -4,7 +4,8 @@ The file name keeps pytest from collecting it in the normal suite. Each phase
 runs in its own process against one Home Assistant config directory, so the
 integration's stores are real files that carry over between phases and
 between code versions. The script runs the seed, downgrade and restore phases
-from a checkout of the older release.
+from a checkout of the older release, and the refused phase from this one
+when the older release is below the upgrade floor.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from aiohttp.test_utils import TestClient
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -335,6 +337,17 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
     assert any(item.snapshot_id == _legacy_snapshot_id() for item in history.catalog())
     await _write_retention_examples(history)
     await history.async_shutdown()
+
+
+async def test_refused(hass: HomeAssistant, config_entry: MockConfigEntry) -> None:
+    """Newer release on stores below its floor: it asks for 0.5.4 and does
+    not start. The script checks that no store file changed."""
+    from custom_components.matic_robot.migrations import UPGRADE_ISSUE_ID
+
+    config_entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, UPGRADE_ISSUE_ID)
 
 
 async def test_downgrade(

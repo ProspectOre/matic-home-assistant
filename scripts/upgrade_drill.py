@@ -15,7 +15,12 @@ this checkout's simulator harness copied in. Phases share real store files:
 Afterwards the saved plan and room/area history must survive. The SLAM history
 store must migrate with automatic, kept, and trash records, reject the old
 reader without writes, and remain readable by the old release after restoring
-the matching backup. See docs/upgrade-drill.md.
+the matching backup.
+
+A release whose seed leaves a plan file below 1.13 is below the upgrade floor
+and gets the refusal drill instead: this checkout must not start and must
+leave every integration store file byte for byte, and the older release then
+runs the plan on those same files. See docs/upgrade-drill.md.
 """
 
 from __future__ import annotations
@@ -39,6 +44,8 @@ ENTRY_ID = "matic-upgrade-drill"
 SCOPE = "matic_floor_scope"
 CATALOG_KEYS = (SCOPE, "matic_floor_catalogs", "matic_unscoped_catalog")
 PHASE_OUTPUT_LIMIT = 4000
+# plan_storage.STORAGE_MINOR_VERSION, the oldest plan file this checkout reads.
+PLAN_STORE_FLOOR = 13
 
 
 class DrillFailed(RuntimeError):
@@ -188,6 +195,26 @@ def history_path(config: Path) -> Path:
     return config / ".storage" / f"matic_robot.slam_history.{ENTRY_ID}"
 
 
+def integration_stores(config: Path) -> dict[str, bytes]:
+    """Return every store file the integration owns under ``config``."""
+    return {
+        path.name: path.read_bytes()
+        for path in (config / ".storage").glob("matic_robot.*")
+    }
+
+
+def require_unchanged_stores(before: dict[str, bytes], config: Path) -> None:
+    """Raise unless the refused start left every integration store as saved."""
+    after = integration_stores(config)
+    changed = sorted(
+        name
+        for name in before.keys() | after.keys()
+        if before.get(name) != after.get(name)
+    )
+    if changed:
+        raise DrillFailed(f"refused start changed {', '.join(changed)}")
+
+
 def require_unchanged_history(before: bytes, config: Path) -> None:
     """Raise unless the old release left the v2 history file byte for byte."""
     if history_path(config).read_bytes() != before:
@@ -232,8 +259,8 @@ def compare_floor_catalogs(states: dict[str, dict[str, Any]]) -> None:
         raise DrillFailed("restored backup lost the floor catalogs")
 
 
-def compare(states: dict[str, dict[str, Any]]) -> None:
-    """Raise unless plan and legacy history survive the safe rollback flow."""
+def compare_plans(states: dict[str, dict[str, Any]]) -> None:
+    """Raise unless every phase kept the saved plans, areas and run counts."""
     seed = states["seed"]
     for phase, state in states.items():
         if state["plan"] != seed["plan"]:
@@ -253,6 +280,10 @@ def compare(states: dict[str, dict[str, Any]]) -> None:
                         f"{phase} lost {scope} completed runs for area {area_id}"
                     )
 
+
+def compare(states: dict[str, dict[str, Any]]) -> None:
+    """Raise unless plan and legacy history survive the safe rollback flow."""
+    compare_plans(states)
     legacy = states["seed"].get("slam_history")
     if legacy is not None:
         upgraded = states["upgrade"].get("slam_history", {})
@@ -349,6 +380,14 @@ def drill(tag: str, work: Path) -> dict[str, dict[str, Any]]:
         states = {}
         run_phase(older, "seed", live)
         states["seed"] = plan_state(live)
+        if states["seed"]["minor_version"] < PLAN_STORE_FLOOR:
+            stores = integration_stores(live)
+            run_phase(ROOT, "refused", live)
+            require_unchanged_stores(stores, live)
+            run_phase(older, "restore", live)
+            states["restore"] = plan_state(live)
+            compare_plans(states)
+            return states
         shutil.copytree(live, backup)
         run_phase(ROOT, "upgrade", live)
         states["upgrade"] = plan_state(live)
@@ -392,6 +431,13 @@ def main(argv: list[str] | None = None) -> int:
             f"area runs {areas} plan history {state['run_history']} "
             f"SLAM v{slam_history['version']} {retentions}"
         )
+    if "upgrade" not in states:
+        print(
+            f"passed: {args.tag} is below the upgrade floor; this checkout did "
+            "not start, left every store file unchanged, and the older release "
+            "ran its plan on them"
+        )
+        return 0
     print(
         "passed: plan/area history survived; SLAM history migrated v1→v2, the "
         "old reader left its bytes unchanged, and the restored v1 backup was usable"
