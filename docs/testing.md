@@ -12,8 +12,8 @@ real home.
 
 | Tests | Where | What they prove |
 | --- | --- | --- |
-| Python | `tests/test_*.py` | The integration's logic. A pull request needs one of them to run every line and take every branch it adds to `custom_components/matic_robot`. `tests/test_release_metadata.py` also holds versions, the documented actions and entities, and the wording of the household guides ([copy style](copy-style.md)) to what the code ships. |
-| Simulated robot | `tests/e2e` | Home Assistant, the config entry and the real client against [a simulated robot](e2e-harness.md), with nothing between them mocked. The [plan run contract](e2e-contract.md) lists the outcomes these tests hold. |
+| Python | `tests/test_*.py`, `tests/plans` | The integration's logic; `tests/plans` holds the plan manager and managed run tests, one module per owner. A pull request needs one of them to run every line and take every branch it adds to `custom_components/matic_robot`. `tests/test_release_metadata.py` also holds versions, the documented actions and entities, and the wording of the household guides ([copy style](copy-style.md)) to what the code ships. |
+| Simulated robot | `tests/e2e` | Home Assistant, the config entry and the real client against [a simulated robot](e2e-harness.md), with nothing between them mocked. The [plan run contract](e2e-contract.md) lists the outcomes these tests hold. `test_snapshots.py` pins what the integration decides for every entity of a configured robot, and its redacted diagnostics, as plain data that reads the same on every supported Home Assistant; after an intended change, rerun it with `--snapshot-update` and review the diff. |
 | Frontend modules | `tests/node` | The build tools and the Matic Map modules that need no browser (`npm run test:build`). |
 | Browser | `tests/browser` | Matic Map, built by `npm run build:map-studio-v4`, on synthetic fixtures in Chromium, Firefox and WebKit, with emulated phone sizes (`npm run test:browser`). |
 | Live browser | `tests/live` | Matic Map inside a real Home Assistant frontend paired to the simulated robot (`npx playwright test --config playwright.live.config.mjs`). |

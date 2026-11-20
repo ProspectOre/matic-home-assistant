@@ -21,13 +21,8 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.robot_commands import CleanRooms
+from tests.plans.fakes import mission_ends, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot, run_step
-from tests.test_plans import (
-    _call,
-    _mission_ends,
-    _room,
-    fast_native_history_retries,  # noqa: F401 (autouse fixture)
-)
 from tests.test_services import _execution_call
 from tests.wire_builders import _session_identity
 
@@ -421,12 +416,12 @@ async def test_room_execution_uses_its_individual_settings() -> None:
         ) as wait,
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
-            _mission_ends(robot),
+            mission_ends(robot),
         ),
     ):
         await _async_run_leg(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
@@ -496,11 +491,11 @@ async def test_room_timeout_is_failure_safe() -> None:
     ):
         await _async_run_leg(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
-            [_room("Kitchen", "room-kitchen")],
+            [plan_room("Kitchen", "room-kitchen")],
             robot.port(session_identity=robot.accepting),
             7,
             managed_user_command=sender,
@@ -547,7 +542,7 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
         ),
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
-    room = _room("Kitchen", "room-kitchen")
+    room = plan_room("Kitchen", "room-kitchen")
 
     with (
         patch(
@@ -562,7 +557,7 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
     ):
         await _async_run_leg(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
@@ -607,7 +602,7 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
         ),
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
-    room = _room("Kitchen", "room-kitchen")
+    room = plan_room("Kitchen", "room-kitchen")
 
     with (
         patch(
@@ -622,7 +617,7 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
     ):
         await _async_run_leg(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
@@ -680,11 +675,11 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
     ):
         await _async_run_leg(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",
-            [_room("Kitchen", "room-kitchen")],
+            [plan_room("Kitchen", "room-kitchen")],
             robot.port(
                 session_identity=AsyncMock(
                     side_effect=lambda: (
@@ -701,7 +696,7 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
         )
 
     manager.ledger.async_mark_suspended.assert_awaited_once_with(
-        "serial", "away", _room("Kitchen", "room-kitchen"), "low_charge"
+        "serial", "away", plan_room("Kitchen", "room-kitchen"), "low_charge"
     )
     assert manager.ledger.async_mark_resumed.await_count == 2
     manager.ledger.async_mark_ended_unverified.assert_awaited_once()
@@ -733,7 +728,7 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
         ),
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
-    room = _room("Kitchen", "room-kitchen")
+    room = plan_room("Kitchen", "room-kitchen")
     # The session is still active on the first read after the handoff, then clears.
     active_at_dock = iter((True, False))
 
@@ -754,7 +749,7 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
     ):
         await _async_run_leg(
             hass,
-            _call(hass),
+            run_plan_call(hass),
             manager,
             "vacuum.matic",
             "serial",

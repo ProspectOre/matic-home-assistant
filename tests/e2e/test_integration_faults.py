@@ -29,7 +29,7 @@ from .hermes_sim import (
     RunningSimulator,
     SimulatedRobot,
 )
-from .plan_run import state_becomes
+from .plan_run import firmware_snapshot_saved, state_becomes
 from .sim_faults import Faults
 from .sim_mission import SimFloor, parse_coverage_command, two_room_floor
 
@@ -101,19 +101,8 @@ async def test_malformed_floor_frame_costs_only_the_floor_read(
     robot_session = loaded_entry.runtime_data.session
     floor_plan = robot_session.floor.value
     assert floor_plan is not None
-    # The firmware snapshot taken after setup reads every endpoint, the floor
-    # among them; let it finish so only the heartbeat's read is counted.
-    tracker = loaded_entry.runtime_data.firmware_tracker
-    telemetry = robot_session.telemetry.value
-    version = (
-        telemetry.software_version
-        or robot_session.state.value.operational.software_version
-    )
-    entry_id = loaded_entry.entry_id
-    async with asyncio.timeout(10):
-        # The tracker announces no finished snapshot.
-        while tracker.needs_snapshot(entry_id, version, telemetry.protocol_version):  # noqa: ASYNC110
-            await asyncio.sleep(0.01)
+    # The firmware snapshot reads the floor too; only the heartbeat's read counts.
+    await firmware_snapshot_saved(hass, loaded_entry)
 
     robot.faults.corrupt("coverage_plan", frame=True)
     reads = robot.reads["coverage_plan"]
