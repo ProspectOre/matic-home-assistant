@@ -259,15 +259,21 @@ def _references(tree: ast.Module) -> set[str]:
 def _class_bases(tree: ast.Module) -> Iterator[tuple[str, set[str]]]:
     """Yield each class in a module with its bases, "" for one from outside."""
     outside = set()
+    renamed = {}
     for node in tree.body:
-        if isinstance(node, ast.Import) or (
-            isinstance(node, ast.ImportFrom)
-            and not node.level
-            and not _inside(node.module or "", PACKAGE)
-        ):
+        if isinstance(node, ast.Import):
             outside |= {
-                alias.asname or alias.name.partition(".")[0] for alias in node.names
+                alias.asname or alias.name.partition(".")[0]
+                for alias in node.names
+                if not _inside(alias.name, PACKAGE)
             }
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or _inside(node.module or "", PACKAGE):
+                renamed |= {
+                    alias.asname: alias.name for alias in node.names if alias.asname
+                }
+            else:
+                outside |= {alias.asname or alias.name for alias in node.names}
     for _, node, _ in _definitions(tree):
         if not isinstance(node, ast.ClassDef):
             continue
@@ -279,7 +285,7 @@ def _class_bases(tree: ast.Module) -> Iterator[tuple[str, set[str]]]:
             while isinstance(source, ast.Attribute):
                 source = source.value
             if isinstance(source, ast.Name):
-                name = getattr(base, "attr", source.id)
+                name = getattr(base, "attr", renamed.get(source.id, source.id))
                 bases.add("" if source.id in outside else name)
         yield node.name, bases
 

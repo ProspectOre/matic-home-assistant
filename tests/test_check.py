@@ -243,7 +243,9 @@ LIMIT: int = 3
 
 
 async def async_setup_entry():
-    return getattr(plans, "named_in_text")(_renamed, LIMIT, Saved, Flow, Local)
+    return getattr(plans, "named_in_text")(
+        _renamed, LIMIT, Saved, Flow, Local, plans.Plain
+    )
 
 
 class Saved(Store[dict]):
@@ -269,6 +271,10 @@ def called_by_a_script(): ...
 
 
 class Saved(storage.Store):
+    pass
+
+
+class Plain:
     pass
 """,
 }
@@ -300,6 +306,18 @@ def test_names_reached_by_reference_or_by_home_assistant_pass() -> None:
         (
             "class Store:\n    pass\n"
             "class Mine(Store):\n    def unused(self): ...\nMine()\n",
+            ["Mine.unused"],
+        ),
+        # Nor does one imported under another name or through its module.
+        (
+            "from .plans import Plain as Local\n"
+            "class Mine(Local):\n    def unused(self): ...\nMine()\n",
+            ["Mine.unused"],
+        ),
+        (
+            f"import {PACKAGE.replace('/', '.')}.plans\n"
+            f"class Mine({PACKAGE.replace('/', '.')}.plans.Plain):\n"
+            "    def unused(self): ...\nMine()\n",
             ["Mine.unused"],
         ),
     ],
