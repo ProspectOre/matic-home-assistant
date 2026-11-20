@@ -28,6 +28,8 @@ export function drawViewpoints(
   if (!photoMarksVisible(state)) return;
   context.save();
   context.font = "600 12px system-ui, sans-serif";
+  // Room names leave the shared context centred; names sit to the pin's right.
+  context.textAlign = "left";
   context.textBaseline = "middle";
   context.lineJoin = "round";
   for (const viewpoint of state.photoMarks!.viewpoints) {

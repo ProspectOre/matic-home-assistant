@@ -249,7 +249,7 @@ test("each viewpoint is a pin with a wedge facing its heading on the mirrored ma
       const calls = [];
       const context = new Proxy({}, {
         get: (_target, name) => (...args) => { calls.push([name, ...args.map((arg) => typeof arg === "number" ? Math.round(arg) : arg)]); },
-        set: () => true,
+        set: (_target, name, value) => { calls.push([`=${String(name)}`, value]); return true; },
       });
       const palette = { accent: [0, 0, 0], onAccent: [255, 255, 255], text: [0, 0, 0] };
       // The map mirrors X, as Matic Map does: +x metres go left on screen.
@@ -261,6 +261,8 @@ test("each viewpoint is a pin with a wedge facing its heading on the mirrored ma
       pin: shown.find(([name]) => name === "arc").slice(1, 3),
       tip: shown.filter(([name]) => name === "lineTo")[2].slice(1),
       label: shown.find(([name]) => name === "fillText").slice(1),
+      // Set inside the drawing, whatever alignment room names left on the shared context.
+      align: shown.findLast(([name], index) => name === "=textAlign" && index < shown.findIndex(([call]) => call === "fillText"))?.[1],
       otherWorkflow: draw(state({ workflow: "runs" })).length,
       otherMap: draw(state({ photoMarks: { mapSessionKey: "b".repeat(64), viewpoints: [{ id: "v1", name: "Back door", x: 1, y: 2, heading: 0 }] } })).length,
     };
@@ -269,6 +271,7 @@ test("each viewpoint is a pin with a wedge facing its heading on the mirrored ma
   // Heading 0 faces +x, which the mirrored map draws to the left: 1.2 m is 120 px.
   expect(result.tip).toEqual([80, 100]);
   expect(result.label).toEqual(["Back door", 210, 100]);
+  expect(result.align).toBe("left");
   expect(result.otherWorkflow).toBe(0);
   expect(result.otherMap).toBe(0);
 });
