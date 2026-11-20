@@ -129,11 +129,11 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
             side_effect=leg,
         ),
         patch(
-            "custom_components.matic_robot.managed_executor.leg_groups",
-            side_effect=lambda rooms, **kwargs: leg_groups(
-                rooms,
-                mixed_settings=history_state == "available",
-                preserve_legacy_settings=kwargs.get("preserve_legacy_settings", False),
+            "custom_components.matic_robot.plan_model.leg_groups",
+            side_effect=lambda rooms, **options: (
+                leg_groups(rooms, **options)
+                if history_state == "available"
+                else [[room] for room in rooms]
             ),
         ),
     ):
@@ -183,6 +183,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
     checkpoint.update(
         rooms=[asdict(first), asdict(room)],
         leg_index=1,
+        single_room_missions=True,
         completed_room_ids=[first.room_id],
         stop_intent="after_room",
     )
@@ -250,7 +251,7 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
             side_effect=leg,
         ),
         patch(
-            "custom_components.matic_robot.managed_executor.leg_groups",
+            "custom_components.matic_robot.plan_model.leg_groups",
             side_effect=lambda rooms, **_: [[room] for room in rooms],
         ),
         patch(

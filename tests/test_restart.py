@@ -93,6 +93,7 @@ async def recovery_state(hass):
     }
     checkpoint = {
         "version": 1,
+        "mixed_settings": True,
         "phase": "accepted",
         "leg_index": 0,
         "floor_token": plan_floor_token(floor),
@@ -160,7 +161,6 @@ async def _set_interrupted_mixed_dispatch(manager, entry, checkpoint):
     checkpoint.update(
         {
             "phase": "dispatching",
-            "mixed_settings": True,
             "mixed_initial_session_hash": expected_hash,
         }
     )
@@ -175,7 +175,7 @@ async def _set_interrupted_mixed_dispatch(manager, entry, checkpoint):
 
 async def test_mixed_session_checkpoint_saves_only_fingerprint(recovery_state):
     manager, _, checkpoint, _ = recovery_state
-    checkpoint.update({"phase": "dispatching", "mixed_settings": True})
+    checkpoint["phase"] = "dispatching"
     session_id = "33333333-3333-4333-8333-333333333333"
     expected_hash = hashlib.sha256(session_id.encode("ascii")).hexdigest()
 
@@ -214,7 +214,6 @@ async def test_mixed_session_checkpoint_refuses_a_custom_area_leg(
     checkpoint.update(
         {
             "phase": "dispatching",
-            "mixed_settings": True,
             "leg_index": leg_index,
             "entries": [_area_entry(), {"kind": "room", "room_id": room.room_id}],
         }
@@ -607,6 +606,7 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
             "phase": "handoff",
             "handoff_history": [],
             "leg_index": 0 if case == "bad_index" else 1,
+            "single_room_missions": True,
             "rooms": [asdict(room), asdict(next_room)],
             "completed_room_ids": [] if case == "bad_index" else [room.room_id],
             **({"stop_intent": "after_room"} if case == "stop" else {}),
@@ -1446,12 +1446,7 @@ async def test_restart_never_verifies_or_mixes_an_area_leg(hass, recovery_state,
             dt_util.utcnow() + timedelta(minutes=5)
         ).isoformat()
     else:
-        changes.update(
-            {
-                "mixed_settings": True,
-                "mixed_initial_session_hash": hashlib.sha256(b"session").hexdigest(),
-            }
-        )
+        changes["mixed_initial_session_hash"] = hashlib.sha256(b"session").hexdigest()
     await _area_leg_checkpoint(manager, checkpoint, room, **changes)
 
     with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:

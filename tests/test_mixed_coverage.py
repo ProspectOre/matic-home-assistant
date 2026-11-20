@@ -54,7 +54,6 @@ from custom_components.matic_robot.client.wire import (
 )
 from custom_components.matic_robot.plan_model import (
     CleaningRoom,
-    leg_groups,
 )
 from custom_components.matic_robot.robot_commands import RobotCommands
 from tests.session_fakes import FakeRobot, managed_clean_rooms
@@ -1008,18 +1007,6 @@ def test_mixed_rejects_invalid_inputs(overrides):
     args.update(overrides)
     with pytest.raises(ValueError):
         encode_mixed_coverage_commands(**args)
-
-
-def test_mixed_groups_keep_legacy_recovery_boundaries():
-    rooms = [
-        CleaningRoom("one", "One", "vacuum", "quick"),
-        CleaningRoom("two", "Two", "mop", "standard"),
-        CleaningRoom("three", "Three", "vacuum_and_mop", "heavy_duty"),
-    ]
-    assert leg_groups(rooms, mixed_settings=True) == [rooms]
-    assert leg_groups(rooms, mixed_settings=False, preserve_legacy_settings=True) == [
-        [r] for r in rooms
-    ]
 
 
 @pytest.fixture

@@ -28,43 +28,20 @@ from tests.plans.fakes import memory_manager, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot
 
 
-def test_leg_groups_split_only_on_settings_changes() -> None:
-    quick_a = plan_room("Living Room", "room-a")
-    quick_b = plan_room("Dining Room", "room-b")
-    standard = CleaningRoom(
-        room_id="room-c",
-        name="Master Bedroom",
-        cleaning_mode="vacuum",
-        coverage_setting="standard",
-    )
-    quick_c = plan_room("Guest Room", "room-d")
+def test_leg_groups_share_one_mission_across_settings_changes() -> None:
+    quick = plan_room("Living Room", "room-a")
+    standard = CleaningRoom("room-c", "Master Bedroom", "vacuum", "standard")
+    mop = CleaningRoom("mop-a", "Mop A", "mop", "heavy_duty")
 
-    assert leg_groups([quick_a, quick_b, standard, quick_c]) == [
-        [quick_a, quick_b],
+    assert leg_groups([quick, standard, mop]) == [[quick, standard, mop]]
+    assert leg_groups([quick, standard, mop], single_room_missions=True) == [
+        [quick],
         [standard],
-        [quick_c],
+        [mop],
     ]
-    assert leg_groups([quick_a]) == [[quick_a]]
+    assert leg_groups([quick]) == [[quick]]
     assert leg_groups([]) == []
-
-
-def test_leg_groups_ignore_unused_mop_coverage_settings() -> None:
-    mop_quick = CleaningRoom("mop-a", "Mop A", "mop", "quick")
-    mop_heavy = CleaningRoom("mop-b", "Mop B", "mop", "heavy_duty")
-    vacuum_quick = CleaningRoom("vac-a", "Vacuum A", "vacuum", "quick")
-    vacuum_heavy = CleaningRoom("vac-b", "Vacuum B", "vacuum", "heavy_duty")
-    both_heavy = CleaningRoom("both", "Both", "vacuum_and_mop", "heavy_duty")
-
-    assert leg_groups([mop_quick, mop_heavy]) == [[mop_quick, mop_heavy]]
-    assert leg_groups([mop_quick, mop_heavy], preserve_legacy_settings=True) == [
-        [mop_quick],
-        [mop_heavy],
-    ]
-    assert leg_groups([vacuum_quick, vacuum_heavy]) == [
-        [vacuum_quick],
-        [vacuum_heavy],
-    ]
-    assert leg_groups([mop_quick, both_heavy]) == [[mop_quick], [both_heavy]]
+    assert leg_groups([], single_room_missions=True) == []
 
 
 def test_rooms_resolve_live_names_ids_and_individual_settings() -> None:

@@ -34,8 +34,6 @@ from .native_completion import native_room_key
 from .plan_model import (
     AreaLeg,
     CleaningRoom,
-    PlanLeg,
-    leg_groups,
     normalize_run_provenance,
     plan_legs,
     run_entries,
@@ -190,30 +188,13 @@ async def _async_execute_rooms_reserved(
             )
             if recovery is None and validate_prepared_run is not None:
                 validate_prepared_run()
-            if recovery is not None and not (
-                isinstance(checkpoint.get("finish_current_room"), bool)
-                and "finish_current_room_threshold" in checkpoint
-            ):
-                # Upgrade a legacy checkpoint at the recovery boundary using
-                # the run-owned policy restored before this first await.
-                checkpoint.update(
-                    {
-                        "finish_current_room": finish_current_room,
-                        "finish_current_room_threshold": finish_current_room_threshold,
-                    }
-                )
-                await manager.recovery.async_set_recovery_checkpoint(
-                    serial_number, run_id, checkpoint
-                )
             finish_room_event = manager.control.finish_room_event(serial_number)
             if checkpoint.get("stop_intent") == "after_room":
                 finish_room_event.set()
-            # Older Smart Stop runs ran each room as its own mission; a
-            # recovered one keeps that grouping.
+            # A Smart Stop run 0.5 started ran each room as its own mission;
+            # a recovered one keeps that grouping.
             single_room_missions = (
-                finish_current_room
-                and recovery is not None
-                and checkpoint.get("single_room_missions") is True
+                recovery is not None and checkpoint.get("single_room_missions") is True
             )
             chosen = rooms
             leg_entries = (
@@ -221,30 +202,8 @@ async def _async_execute_rooms_reserved(
                 if recovery is not None
                 else run_entries(entries)
             )
-            mixed_settings = (
-                recovery is None or checkpoint.get("mixed_settings") is True
-            )
-            preserve_legacy_settings = (
-                recovery is not None and checkpoint.get("mixed_settings") is not True
-            )
-            # A room-only run keeps its legs exactly as before custom areas.
-            legs: list[PlanLeg] = (
-                list(
-                    leg_groups(
-                        chosen,
-                        mixed_settings=mixed_settings,
-                        preserve_legacy_settings=preserve_legacy_settings,
-                        single_room_missions=single_room_missions,
-                    )
-                )
-                if leg_entries is None
-                else plan_legs(
-                    chosen,
-                    leg_entries,
-                    mixed_settings=mixed_settings,
-                    preserve_legacy_settings=preserve_legacy_settings,
-                    single_room_missions=single_room_missions,
-                )
+            legs = plan_legs(
+                chosen, leg_entries, single_room_missions=single_room_missions
             )
             area_leg_count = sum(isinstance(leg, AreaLeg) for leg in legs)
             if recovery is None:

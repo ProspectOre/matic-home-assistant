@@ -353,14 +353,11 @@ def verifying_write(deadline: datetime) -> CheckpointWrite:
 
 def one_room_missions(monkeypatch: Any) -> None:
     """Run each room as its own mission, as a run saved before shared missions."""
-    from custom_components.matic_robot import managed_executor
+    from custom_components.matic_robot import plan_model
 
-    grouped = managed_executor.leg_groups
-
-    def split(rooms: Any, **options: Any) -> Any:
-        return grouped(rooms, **{**options, "single_room_missions": True})
-
-    monkeypatch.setattr(managed_executor, "leg_groups", split)
+    monkeypatch.setattr(
+        plan_model, "leg_groups", lambda rooms, **_: [[room] for room in rooms]
+    )
 
 
 async def managed_clean_rooms(

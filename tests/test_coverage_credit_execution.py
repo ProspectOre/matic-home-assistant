@@ -204,7 +204,7 @@ async def _real_manager(
             "leg_index": 0,
             "floor_token": plan_floor_token(floor),
             "rooms": [asdict(room) for room in rooms],
-            "mixed_settings": False,
+            "mixed_settings": True,
             "cadence_by_room": cadence,
             "completed_room_ids": [],
             "started_room_ids": [],

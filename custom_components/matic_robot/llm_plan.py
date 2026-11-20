@@ -100,7 +100,7 @@ class MaticGetPlanTool(_MaticTool):
         rooms: list[CleaningRoom] = []
         for item in preview["entries"]:
             if item["kind"] == "area":
-                groups.extend(leg_groups(rooms, mixed_settings=True))
+                groups.extend(leg_groups(rooms))
                 rooms = []
                 groups.append(item)
                 continue
@@ -112,7 +112,7 @@ class MaticGetPlanTool(_MaticTool):
                     item["coverage_setting"],
                 )
             )
-        groups.extend(leg_groups(rooms, mixed_settings=True))
+        groups.extend(leg_groups(rooms))
         rotation = preview["rotation"]
         snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
         active = snapshot.get("active_plan")

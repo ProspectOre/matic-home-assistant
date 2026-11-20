@@ -1524,7 +1524,7 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
 ) -> None:
     monkeypatch.setattr(
         "custom_components.matic_robot.plan_model.leg_groups",
-        lambda rooms, mixed_settings=False, **_kwargs: [[room] for room in rooms],
+        lambda rooms, **_kwargs: [[room] for room in rooms],
     )
     runtime = _runtime()
     runtime.cleaning_plans.catalog.plans.return_value = {
