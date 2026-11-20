@@ -2,7 +2,6 @@ import { normalizeCamera } from "./camera-preferences";
 import type { CameraPreference, LayerChoice, MapAppearance, MapQuality, MapView, WorkspaceState } from "./contracts";
 import { parseLayerChoices } from "./layer-choices";
 
-export type { CameraPreference, MapAppearance, MapQuality, MapView } from "./contracts";
 
 export interface MapPreferences {
   readonly version: 4;

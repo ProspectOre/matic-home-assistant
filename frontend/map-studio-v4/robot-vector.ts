@@ -10,7 +10,7 @@ import type { CanvasPalette, Channel } from "./theme-probe";
 // heading and with the camera in both the top and the 3D views.
 
 /** Projects robot-frame meters at a height in meters, or null off the camera. */
-export type RobotProjection = (forward: number, left: number, height: number) => MapPoint | null;
+type RobotProjection = (forward: number, left: number, height: number) => MapPoint | null;
 
 type Local = readonly [x: number, y: number];
 

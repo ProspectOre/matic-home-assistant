@@ -36,7 +36,7 @@ const floorTypesNote = (layer: WorkspaceState["floorTypes"], t: MapOptionsContex
 
 type Host = ReactiveControllerHost & HTMLElement & { readonly renderRoot: ParentNode };
 
-export type MapOptionsContext = {
+type MapOptionsContext = {
   state: WorkspaceState;
   narrow: boolean;
   t: (key: string, fallback: string, placeholders?: NoticePlaceholders) => string;

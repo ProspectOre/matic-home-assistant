@@ -22,7 +22,7 @@ const ambiguousMutationFailure = (error: unknown): boolean => {
 };
 
 /** Owns archive transport and readback for one visible, authorized history workspace. */
-export class MaticArchiveWorkspaceV4 extends LitElement {
+class MaticArchiveWorkspaceV4 extends LitElement {
   static override properties = {
     state: { attribute: false }, backend: { attribute: false }, localize: { attribute: false },
     dates: { attribute: false }, emit: { attribute: false },

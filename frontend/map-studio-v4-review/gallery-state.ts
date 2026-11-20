@@ -844,7 +844,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
   }
 };
 
-export interface GalleryPreviewOverrides {
+interface GalleryPreviewOverrides {
   readonly reasons?: Readonly<Record<string, readonly CadenceReason[]>>;
   readonly effective?: Readonly<Record<string, Pick<PlanRoom, "cleaningMode" | "coverageSetting">>>;
   readonly missionBoundaries?: readonly number[];

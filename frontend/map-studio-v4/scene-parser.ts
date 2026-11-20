@@ -18,7 +18,7 @@ import {
 } from "./backend-contracts";
 import type * as wire from "./backend-schema";
 
-export interface ParsedScene {
+interface ParsedScene {
   readonly buffer: ArrayBuffer;
   readonly pointOffset: number;
   readonly floorCount: number;
@@ -28,13 +28,13 @@ export interface ParsedScene {
   readonly tileIndex?: SceneTileIndex;
 }
 
-export interface AssembledScene {
+interface AssembledScene {
   readonly parsed: ParsedScene;
   readonly deltaHint?: SceneDeltaHint;
 }
 
 /** One page of a manifest: its position in pages, its point counts and address. */
-export interface ManifestPage {
+interface ManifestPage {
   readonly x: number;
   readonly y: number;
   readonly floor: number;

@@ -6,7 +6,7 @@ import { formatDateTime, formatDuration, formatList, translate } from "./localiz
 import { initialWorkspaceState } from "./state";
 import type { RunItem, RunItemResult, RunRecord } from "./run-history-data";
 
-export const RUN_HISTORY_TAG = "matic-run-history-v4";
+const RUN_HISTORY_TAG = "matic-run-history-v4";
 
 /**
  * Cleaning history (PRO-60): the last run explained first, then earlier runs
@@ -14,7 +14,7 @@ export const RUN_HISTORY_TAG = "matic-run-history-v4";
  * "not reported" rather than guessing; nothing here starts a clean or marks a
  * room cleaned.
  */
-export class MaticRunHistoryV4 extends LitElement {
+class MaticRunHistoryV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },

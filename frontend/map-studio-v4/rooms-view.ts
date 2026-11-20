@@ -40,7 +40,7 @@ const catalogNames = (state: WorkspaceState, roomIds: readonly string[]): string
   });
 
 /** The catalog names of the selected rooms, in selection order, never a scene id (R9). */
-export const selectedRoomNames = (state: WorkspaceState): string[] => catalogNames(state, state.selection.roomIds);
+const selectedRoomNames = (state: WorkspaceState): string[] => catalogNames(state, state.selection.roomIds);
 
 /** The grip line while rooms are selected: the count and the names (shell.md Sheet). */
 export const roomsGripLine = (t: Translate, state: WorkspaceState): string | null => {

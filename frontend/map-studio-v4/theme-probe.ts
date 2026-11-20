@@ -7,7 +7,7 @@
 // the OS theme.
 
 export type Channel = readonly [number, number, number];
-export type Rgba = readonly [red: number, green: number, blue: number, alpha: number];
+type Rgba = readonly [red: number, green: number, blue: number, alpha: number];
 
 export interface CanvasPalette {
   readonly accent: Channel;

@@ -31,7 +31,7 @@ import { chunkStatus } from "./lazy-chunk";
 export const WORKSPACE_INTENT_EVENT = "matic-workspace-intent";
 export const WORKSPACE_ACTION_EVENT = "matic-workspace-action";
 /** The "?" press, and Escape while help shows: the shell owns the popover. */
-export const MAP_HELP_EVENT = "matic-map-help";
+const MAP_HELP_EVENT = "matic-map-help";
 
 const NAVIGATION_HELP_ID = "navigation-help";
 

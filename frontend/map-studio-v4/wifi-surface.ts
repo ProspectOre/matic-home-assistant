@@ -6,7 +6,7 @@ import { WIFI_REACH_METERS, wifiConfidence, wifiKernel } from "./wifi-scale";
 type Metadata = SceneModel["metadata"];
 
 /** The estimate drawn over the floor, in map metres. */
-export interface WifiSurface {
+interface WifiSurface {
   /** The outer corner of texel (0, 0) and the side of a texel. */
   readonly x: number;
   readonly y: number;

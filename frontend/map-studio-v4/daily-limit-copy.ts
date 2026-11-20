@@ -1,12 +1,12 @@
 import type { DailyLimitHeldRoom, DailyRoomLimit } from "./backend-contracts";
 
-export type DailyLimitTranslate = (
+type DailyLimitTranslate = (
   key: string,
   fallback: string,
   placeholders?: Readonly<Record<string, string | number>>,
 ) => string;
 
-export const dailyLimitReasonCopy = (reason: string, t: DailyLimitTranslate): string => {
+const dailyLimitReasonCopy = (reason: string, t: DailyLimitTranslate): string => {
   switch (reason) {
     case "invalid_policy":
       return t("v4_daily_limit_reason_invalid_policy", "Home Assistant can't confirm this room's limit.");

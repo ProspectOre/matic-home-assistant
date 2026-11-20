@@ -1,6 +1,6 @@
 export const PERSPECTIVE_FIELD_OF_VIEW = Math.PI / 3.15;
 
-export interface SceneGeometryBounds {
+interface SceneGeometryBounds {
   readonly minX: number;
   readonly maxX: number;
   readonly minY: number;
@@ -9,7 +9,7 @@ export interface SceneGeometryBounds {
   readonly maxHeight: number;
 }
 
-export interface PerspectiveFitBounds {
+interface PerspectiveFitBounds {
   /** World-space bounds relative to the camera target. */
   readonly minX: number;
   readonly maxX: number;
@@ -19,7 +19,7 @@ export interface PerspectiveFitBounds {
   readonly maxHeight: number;
 }
 
-export interface SceneFitBounds {
+interface SceneFitBounds {
   readonly floor: SceneGeometryBounds;
   readonly all: SceneGeometryBounds;
 }

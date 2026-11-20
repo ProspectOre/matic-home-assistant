@@ -13,7 +13,7 @@ import { containsMapPoint, roomAt, roomCandidatesAt } from "./renderer-hit-test"
 import { RendererModules, type ModuleCallbacks } from "./renderer-modules";
 import { FallbackRaster, RendererOverlay, layersNeeded, roomColours } from "./renderer-overlays";
 
-export type { CameraOrigin, CameraState, MapPoint } from "./renderer-camera";
+export type { CameraState, MapPoint } from "./renderer-camera";
 export type { RendererModuleName, RendererModuleStatus } from "./renderer-modules";
 export type RendererSurfaceDetail = "limited" | "sampled" | null;
 

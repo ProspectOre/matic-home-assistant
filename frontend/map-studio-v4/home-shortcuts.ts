@@ -17,7 +17,7 @@ import { actionReason } from "./plan-heading";
  * and otherwise shows that button's reason. The tap itself goes through the
  * same action (the shell's `run`), never a new command.
  */
-export interface ShortcutHost {
+interface ShortcutHost {
   readonly state: WorkspaceState;
   readonly t: Translate;
   /** Home is held (busy, locating, map not ready): every card says why through the home reason. */
@@ -31,7 +31,7 @@ export interface ShortcutHost {
 }
 
 /** What the plan's Run view would offer now (a list being reread or that failed holds it there too). */
-export const planShortcutAction = (state: WorkspaceState, plan: SavedPlan) => selectPrimaryAction({
+const planShortcutAction = (state: WorkspaceState, plan: SavedPlan) => selectPrimaryAction({
   ...state,
   workflow: "plan",
   planView: "run",
@@ -40,7 +40,7 @@ export const planShortcutAction = (state: WorkspaceState, plan: SavedPlan) => se
 });
 
 /** What the saved area's screen would offer now. */
-export const areaShortcutAction = (state: WorkspaceState, area: SavedArea) => selectPrimaryAction({
+const areaShortcutAction = (state: WorkspaceState, area: SavedArea) => selectPrimaryAction({
   ...state,
   ...areaSelection(state, area.id),
   workflow: "areaReview",
