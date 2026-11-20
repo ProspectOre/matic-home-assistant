@@ -61,7 +61,8 @@ const list = (value: unknown, max: number): readonly unknown[] =>
 const text = (value: unknown, max = 256): string =>
   typeof value === "string" && value.length > 0 && value.length <= max ? value : fail("invalid-photo-gallery");
 
-const optionalText = (value: unknown): string | null => value === null ? null : text(value);
+// Areas are robot telemetry text, up to 512 bytes (_TELEMETRY_TEXT_MAX_BYTES).
+const optionalText = (value: unknown): string | null => value === null ? null : text(value, 512);
 
 const number = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 10_000 ? value : fail("invalid-photo-gallery");

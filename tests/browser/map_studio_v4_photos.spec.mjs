@@ -196,3 +196,26 @@ test("photos run newest first by time when single photos straddle a photo tour",
   await viewer.getByRole("button", { name: "Older" }).click();
   await expect(viewer).toHaveAccessibleName(/^Porch · /);
 });
+
+test("the gallery read accepts the server's 5,000 newest photos and long area names", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { parsePhotoGallery } from "./frontend/map-studio-v4/photo-gallery-data";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/photo-gallery-data-test.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async (route) => {
+    const { parsePhotoGallery } = await import("/photo-gallery-data-test.js");
+    // GALLERY_MAX_PHOTOS in photo_gallery_view.py.
+    const photos = (count) => Array.from({ length: count }, (_, index) => ({
+      photo_id: `p${index}`, captured_at: "2026-11-18T09:00:00+00:00", source: "home_assistant", starred: false,
+      area: "A".repeat(512), pose: null, url: `${route}/p${index}`, preview_url: `${route}/preview/p${index}`,
+    }));
+    const read = (count) => {
+      try {
+        return parsePhotoGallery({ viewpoints: [], albums: photos(count).map((photo) => ({ album: photo.photo_id, photos: [photo] })) }, "synthetic-entry").albums.length;
+      } catch (error) {
+        return error.code;
+      }
+    };
+    return [read(5_000), read(5_001)];
+  }, ROUTE);
+  expect(result).toEqual([5_000, "invalid-photo-gallery"]);
+});
