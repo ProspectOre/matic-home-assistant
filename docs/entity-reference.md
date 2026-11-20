@@ -52,8 +52,8 @@ Wi-Fi survey is off until you turn it on. While it is on and the robot is
 off the dock, the robot runs one Wi-Fi scan every 30 seconds, the same scan the
 Matic app runs while its Wi-Fi screen is open. Each signal reading is stored
 against the robot's map position and shown in Matic Map: open **Map options** and turn on
-**Wi-Fi signal**. New readings require fresh positions and no more than half a
-metre of movement during a scan, which takes about seven seconds. The map
+**Wi-Fi signal**. New readings require fresh positions and no more than one
+foot (30 cm) of movement during a scan, which takes about seven seconds. The map
 estimates the signal near each reading; blank space has not been measured. Each room's Wi-Fi signal sensor is the mean of the readings in
 that room, with its weakest reading and the number of readings as attributes;
 it is unknown until the room has a reading. Clear Wi-Fi survey deletes the

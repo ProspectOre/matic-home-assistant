@@ -37,8 +37,6 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
 from custom_components.matic_robot.const import (
-    CONF_LIVE_WORKSPACE_TRANSPORT,
-    CONF_WORKSPACE_PUSH,
     DOMAIN,
 )
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
@@ -89,7 +87,6 @@ from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import MaticSlamSceneView
 from custom_components.matic_robot.slam_view_data import (
     _map_session_key,
-    catalog_entry_projection,
     pose_projection,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
@@ -336,14 +333,13 @@ def _entry(
     domain: str = DOMAIN,
     state=ConfigEntryState.LOADED,
     entry_id: str = "entry",
-    options: dict[str, object] | None = None,
 ):
     entry = SimpleNamespace(
         domain=domain,
         state=state,
         runtime_data=runtime,
         entry_id=entry_id,
-        options={} if options is None else options,
+        options={},
     )
     return entry
 
@@ -883,7 +879,7 @@ async def test_scene_view_hides_missing_wrong_or_unloaded_entries(entry) -> None
 
 async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> None:
     runtime = _runtime()
-    loaded = _entry(runtime, options={CONF_LIVE_WORKSPACE_TRANSPORT: True})
+    loaded = _entry(runtime)
     unloaded = _entry(
         _runtime(), state=ConfigEntryState.NOT_LOADED, entry_id="unloaded"
     )
@@ -1028,51 +1024,6 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert (
         json.loads(mismatched.body)["entries"][0]["map_block_reason"]
         == "floor_plan_mismatch"
-    )
-
-
-@pytest.mark.parametrize(
-    "options",
-    [
-        {},
-        {CONF_LIVE_WORKSPACE_TRANSPORT: True},
-        {CONF_LIVE_WORKSPACE_TRANSPORT: False},
-        {CONF_LIVE_WORKSPACE_TRANSPORT: "true"},
-        {CONF_LIVE_WORKSPACE_TRANSPORT: 1},
-        {CONF_WORKSPACE_PUSH: True},
-        {CONF_WORKSPACE_PUSH: False},
-        {CONF_WORKSPACE_PUSH: "true"},
-        {CONF_WORKSPACE_PUSH: 1},
-    ],
-)
-async def test_admin_catalog_enables_workspace_push_and_ignores_legacy_options(
-    options: dict[str, object],
-) -> None:
-    runtime = _runtime()
-    loaded = _entry(runtime, options=options)
-    response = await MaticSlamCatalogView().get(_request(_hass(loaded)))
-
-    entry = json.loads(response.body)["entries"][0]
-    assert entry["live_workspace_transport_enabled"] is True
-    assert entry["scene_url"] == scene_api_url("entry")
-
-
-async def test_catalog_push_is_enabled_independent_of_saved_options() -> None:
-    runtime = _runtime()
-    loaded = _entry(runtime)
-    assert (
-        catalog_entry_projection("entry", runtime)["live_workspace_transport_enabled"]
-        is True
-    )
-    loaded.options = {CONF_WORKSPACE_PUSH: True}
-    assert (
-        catalog_entry_projection("entry", runtime)["live_workspace_transport_enabled"]
-        is True
-    )
-    loaded.options = {CONF_WORKSPACE_PUSH: False}
-    assert (
-        catalog_entry_projection("entry", runtime)["live_workspace_transport_enabled"]
-        is True
     )
 
 

@@ -27,18 +27,14 @@ def _entry(*, version: int = 1, minor_version: int = 1) -> SimpleNamespace:
     )
 
 
-def _hass() -> MagicMock:
-    return MagicMock(data={ir.DATA_REGISTRY: SimpleNamespace(issues={})})
-
-
 async def test_future_major_versions_refuse_to_downgrade() -> None:
-    hass = _hass()
+    hass = MagicMock()
     assert await async_migrate_entry(hass, _entry(version=2)) is False  # type: ignore[arg-type]
     hass.config_entries.async_update_entry.assert_not_called()
 
 
 async def test_current_minor_version_is_left_untouched() -> None:
-    hass = _hass()
+    hass = MagicMock()
     with patch("custom_components.matic_robot.migrations.er.async_get") as registry_get:
         assert await async_migrate_entry(hass, _entry(minor_version=5)) is True  # type: ignore[arg-type]
     registry_get.assert_not_called()
@@ -139,26 +135,3 @@ async def test_retired_entity_cleanup_needs_a_serial(hass) -> None:
     entry.add_to_hass(hass)
     assert await async_migrate_entry(hass, entry) is True
     assert entry.minor_version == 5
-
-
-async def test_stored_maintenance_repairs_are_deleted_once(hass) -> None:
-    """0.6 development builds stored a Repair that nothing raises any more."""
-    entry = MockConfigEntry(domain=DOMAIN, data={}, version=1, minor_version=3)
-    entry.add_to_hass(hass)
-    kept = ("maintenance_other_2026-10", f"robot_alert_{entry.entry_id}_bag_full")
-    for issue_id in (f"maintenance_{entry.entry_id}_2026-10", *kept):
-        ir.async_create_issue(
-            hass,
-            DOMAIN,
-            issue_id,
-            is_fixable=False,
-            is_persistent=True,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key="custom_area_map_changed",
-        )
-
-    assert await async_migrate_entry(hass, entry) is True
-    assert entry.minor_version == 5
-    assert {
-        issue_id for domain, issue_id in ir.async_get(hass).issues if domain == DOMAIN
-    } == set(kept)

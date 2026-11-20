@@ -206,28 +206,32 @@ def test_cells_follow_recent_scans_and_stay_bounded(hass) -> None:
 
 
 async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
+    size = CELL_SIZE_METERS
     hass_storage[f"{DOMAIN}.wifi_survey.entry"] = {
-        "version": 1,
+        "version": 3,
         "data": {
             "enabled": "yes",
             "floors": {
                 "7": [
-                    [0, 0, -50, 2, 100],
-                    [1, 0, -50.5, 1, 100.5],
-                    [0, 1, -130, 1, 100],
-                    [0, 2, -50, 0, 100],
-                    [0, 3, -50, 1, float("inf")],
-                    [0, 4, "-50", 1, 100],
-                    [0, 2_000_000, -50, 1, 100],
-                    [0, 6, -50, 1, 10**400],
-                    [0, 5, -50, 1],
+                    [0, 0, -50, 2, 100, size],
+                    [1, 0, -50.5, 1, 100.5, size],
+                    [0, 1, -130, 1, 100, size],
+                    [0, 2, -50, 0, 100, size],
+                    [0, 3, -50, 1, float("inf"), size],
+                    [0, 4, "-50", 1, 100, size],
+                    [0, 2_000_000, -50, 1, 100, size],
+                    [0, 6, -50, 1, 10**400, size],
+                    # Cells on another grid, or naming none, are not read.
+                    [0, 7, -50, 1, 100, 1.0],
+                    [0, 8, -50, 1, 100, [size]],
+                    [0, 5, -50, 1, 100],
                     "row",
                 ],
                 "x": [],
                 "²": [],
                 "9" * 5000: [],
                 "8": {},
-                "9": [[0, 0, -50, 1, 100]],
+                "9": [[0, 0, -50, 1, 100, size]],
             },
             "frames": {"7": FRAME, "8": FRAME, "9": "not-a-frame", "x": FRAME},
         },
@@ -236,8 +240,8 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
     await store.async_load()
     assert store.enabled is False
     assert [(cell["x"], cell["samples"]) for cell in store.cells(7, FRAME)] == [
-        (0.5, 2),
-        (1.5, 1),
+        (0.152, 2),
+        (0.457, 1),
     ]
     # Floor 9's cells have no valid frame, so they are dropped.
     assert store.cells(9, FRAME) == []
@@ -249,38 +253,6 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
     hass_storage[f"{DOMAIN}.wifi_survey.entry"]["data"] = ["not", "a", "survey"]
     await store.async_load()
     assert (store.enabled, store.cells(7, FRAME)) == (False, [])
-
-
-async def test_legacy_coarse_cells_keep_their_positions_across_finer_samples(
-    hass, hass_storage
-) -> None:
-    hass_storage[f"{DOMAIN}.wifi_survey.entry"] = {
-        "version": 1,
-        "data": {
-            "enabled": True,
-            "floors": {"7": [[-2, 3, -70, 4, 100]]},
-            "frames": {"7": FRAME},
-        },
-    }
-    store = WifiSurveyStore(hass, "entry")
-    await store.async_load()
-    assert store.cells(7, FRAME) == [
-        {
-            "x": -1.5,
-            "y": 3.5,
-            "size": 1.0,
-            "dbm": -70.0,
-            "samples": 4,
-            "updated_at": 100,
-        }
-    ]
-    assert store.add_sample(7, FRAME, -1.4, 3.4, -55, 200)
-    expected = store.cells(7, FRAME)
-    assert sorted(cell["size"] for cell in expected) == [CELL_SIZE_METERS, 1.0]
-    await store.async_shutdown()
-    restored = WifiSurveyStore(hass, "entry")
-    await restored.async_load()
-    assert restored.cells(7, FRAME) == expected
 
 
 def _sampling_session(

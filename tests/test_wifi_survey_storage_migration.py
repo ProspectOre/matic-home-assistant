@@ -1,4 +1,4 @@
-"""Exercise Wi-Fi survey migration and rollback with real HA Store files."""
+"""Exercise Wi-Fi survey storage versions with real HA Store files."""
 
 from __future__ import annotations
 
@@ -10,9 +10,8 @@ from homeassistant.exceptions import UnsupportedStorageVersionError
 from homeassistant.helpers.storage import Store
 
 from custom_components.matic_robot.wifi_survey import (
-    STORAGE_VERSION,
+    CELL_SIZE_METERS,
     WifiSurveyStore,
-    _WifiSurveyStorage,
     survey_frame,
 )
 
@@ -29,49 +28,36 @@ def hass_config_dir(hass_tmp_config_dir: str) -> str:
 
 
 @pytest.mark.parametrize("old_version", [1, 2])
-async def test_coarse_survey_migrates_and_requires_matching_rollback(
+async def test_a_survey_from_a_development_build_starts_empty(
     hass, old_version: int
 ) -> None:
-    entry_id = "survey-migration"
+    entry_id = "survey-versions"
     key = f"matic_robot.wifi_survey.{entry_id}"
     frame = survey_frame(b"partition")
-    rows = [[-2, 3, -70, 4, 100]]
-    if old_version == 2:
-        rows.append([-4, 6, -60, 2, 101, 0.5])
-    legacy = {
-        "enabled": True,
-        "floors": {"7": rows},
-        "frames": {"7": frame},
-    }
     writer = Store[dict[str, Any]](hass, old_version, key, private=True)
-    await writer.async_save(legacy)
+    await writer.async_save(
+        {
+            "enabled": True,
+            "floors": {"7": [[-2, 3, -70, 4, 100], [-4, 6, -60, 2, 101, 0.5]]},
+            "frames": {"7": frame},
+        }
+    )
     path = Path(hass.config.path(".storage", key))
-    backup = await hass.async_add_executor_job(path.read_bytes)
 
     survey = WifiSurveyStore(hass, entry_id)
     await survey.async_load()
-    existing = survey.cells(7, frame)
-    assert sorted(cell["size"] for cell in existing) == (
-        [1.0] if old_version == 1 else [0.5, 1.0]
-    )
+    assert (survey.enabled, survey.cells(7, frame)) == (False, [])
     assert survey.add_sample(7, frame, -1.4, 3.4, -55, 200)
-    assert all(cell in survey.cells(7, frame) for cell in existing)
-    assert any(cell["size"] == 0.3048 for cell in survey.cells(7, frame))
+    cells = survey.cells(7, frame)
+    assert [cell["size"] for cell in cells] == [CELL_SIZE_METERS]
     await survey.async_shutdown()
-    upgraded = await hass.async_add_executor_job(path.read_bytes)
+    saved = await hass.async_add_executor_job(path.read_bytes)
+
+    reloaded = WifiSurveyStore(hass, entry_id)
+    await reloaded.async_load()
+    assert reloaded.cells(7, frame) == cells
 
     old_reader = Store[dict[str, Any]](hass, old_version, key, private=True)
     with pytest.raises(UnsupportedStorageVersionError):
         await old_reader.async_load()
-    assert await hass.async_add_executor_job(path.read_bytes) == upgraded
-
-    await hass.async_add_executor_job(path.write_bytes, backup)
-    restored = Store[dict[str, Any]](hass, old_version, key, private=True)
-    assert await restored.async_load() == legacy
-
-
-@pytest.mark.parametrize("major,minor", [(0, 1), (1, 0), (1, 2), (2, 0), (2, 2)])
-async def test_migration_rejects_unknown_versions(hass, major: int, minor: int) -> None:
-    store = _WifiSurveyStorage(hass, STORAGE_VERSION, "survey-unsupported")
-    with pytest.raises(ValueError, match="unsupported Wi-Fi survey storage version"):
-        await store._async_migrate_func(major, minor, {})
+    assert await hass.async_add_executor_job(path.read_bytes) == saved

@@ -43,13 +43,6 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 3
 SAVE_DELAY_SECONDS = 30
 CELL_SIZE_METERS = 0.3048  # One foot.
-LEGACY_CELL_SIZE_METERS = 1.0
-PREVIOUS_CELL_SIZE_METERS = 0.5
-SUPPORTED_CELL_SIZES = (
-    CELL_SIZE_METERS,
-    PREVIOUS_CELL_SIZE_METERS,
-    LEGACY_CELL_SIZE_METERS,
-)
 SAMPLE_INTERVAL_SECONDS = 30
 # A scan may take several seconds. Reject readings whose location cannot be
 # bounded closely enough to be useful at the finer survey resolution.
@@ -82,32 +75,20 @@ class RoomSignal:
     samples: int
 
 
-type _CellKey = tuple[int, int, float]
+type _CellKey = tuple[int, int]
 
 
 class _WifiSurveyStorage(Store[dict[str, Any]]):
-    """Keep readings from older grids distinguishable from newer ones."""
+    """Start an empty survey over a file from before version 3.
+
+    No release saved versions 1 and 2, whose cells lie on other grids.
+    """
 
     @override
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
-        if old_major_version not in (1, 2) or old_minor_version != 1:
-            raise ValueError(
-                "unsupported Wi-Fi survey storage version "
-                f"{old_major_version}.{old_minor_version}"
-            )
-        # Validate before Home Assistant writes the migrated payload. Older
-        # Five-field rows retain their one-metre grid; version-2 rows carry
-        # their original size and must not be reinterpreted as one-foot cells.
-        stored = old_data if isinstance(old_data, dict) else {}
-        floors = _decode_floors(stored.get("floors"))
-        frames = _decode_frames(stored.get("frames"))
-        return {
-            "enabled": stored.get("enabled") is True,
-            "floors": _encode_floors(floors),
-            "frames": {str(mission): frame for mission, frame in frames.items()},
-        }
+        return {}
 
 
 class WifiSurveyStore:
@@ -189,11 +170,7 @@ class WifiSurveyStore:
             and MIN_DBM <= dbm <= MAX_DBM
         ):
             return False
-        key = (
-            math.floor(x / CELL_SIZE_METERS),
-            math.floor(y / CELL_SIZE_METERS),
-            CELL_SIZE_METERS,
-        )
+        key = (math.floor(x / CELL_SIZE_METERS), math.floor(y / CELL_SIZE_METERS))
         if self._frames.get(mission_id) != frame:
             # A new frame for this mission moves every coordinate.
             self._floors.pop(mission_id, None)
@@ -224,14 +201,14 @@ class WifiSurveyStore:
             return []
         return [
             {
-                "x": round((ix + 0.5) * size, 3),
-                "y": round((iy + 0.5) * size, 3),
-                "size": size,
+                "x": round((ix + 0.5) * CELL_SIZE_METERS, 3),
+                "y": round((iy + 0.5) * CELL_SIZE_METERS, 3),
+                "size": CELL_SIZE_METERS,
                 "dbm": round(cell.dbm, 1),
                 "samples": cell.samples,
                 "updated_at": round(cell.updated_at),
             }
-            for (ix, iy, size), cell in sorted(self._floors.get(mission_id, {}).items())
+            for (ix, iy), cell in sorted(self._floors.get(mission_id, {}).items())
         ]
 
     def room_signals(self, floor_plan: FloorPlan) -> dict[str, RoomSignal]:
@@ -247,10 +224,10 @@ class WifiSurveyStore:
         if self._frames.get(floor_plan.mission_id) == survey_frame(
             floor_plan.partition_id_wire
         ):
-            for (ix, iy, size), cell in self._floors.get(
-                floor_plan.mission_id, {}
-            ).items():
-                rows[(iy + 0.5) * size].append(((ix + 0.5) * size, cell))
+            for (ix, iy), cell in self._floors.get(floor_plan.mission_id, {}).items():
+                rows[(iy + 0.5) * CELL_SIZE_METERS].append(
+                    ((ix + 0.5) * CELL_SIZE_METERS, cell)
+                )
         signals: dict[str, RoomSignal] = {}
         for room in floor_plan.rooms:
             inside = list(_cells_inside(room.boundary, rows))
@@ -402,8 +379,15 @@ def _encode_floors(
 ) -> dict[str, list[list[float | int]]]:
     return {
         str(mission_id): [
-            [ix, iy, round(cell.dbm, 2), cell.samples, round(cell.updated_at), size]
-            for (ix, iy, size), cell in cells.items()
+            [
+                ix,
+                iy,
+                round(cell.dbm, 2),
+                cell.samples,
+                round(cell.updated_at),
+                CELL_SIZE_METERS,
+            ]
+            for (ix, iy), cell in cells.items()
         ]
         for mission_id, cells in floors.items()
     }
@@ -433,24 +417,22 @@ _MAX_TIMESTAMP = 1e11
 
 
 def _decode_cell(row: object) -> tuple[_CellKey, SignalCell] | None:
-    if not isinstance(row, list) or len(row) not in (5, 6):
+    # The sixth field is the cell size; only the current grid is read.
+    if not isinstance(row, list) or len(row) != 6 or row[5] != CELL_SIZE_METERS:
         return None
     ix, iy, dbm, samples, updated_at = row[:5]
-    size = row[5] if len(row) == 6 else LEGACY_CELL_SIZE_METERS
     if not (
         all(type(value) is int for value in (ix, iy, samples))
         and all(type(value) in (int, float) for value in (dbm, updated_at))
-        and type(size) in (int, float)
-        and size in SUPPORTED_CELL_SIZES
         and MIN_DBM <= dbm <= MAX_DBM
-        and abs(ix) <= math.ceil(MAX_MAP_COORDINATE / size)
-        and abs(iy) <= math.ceil(MAX_MAP_COORDINATE / size)
+        and abs(ix) <= math.ceil(MAX_MAP_COORDINATE / CELL_SIZE_METERS)
+        and abs(iy) <= math.ceil(MAX_MAP_COORDINATE / CELL_SIZE_METERS)
         and 0 < samples <= 2**31 - 1
         # A bound, not isfinite(): a huge stored int would overflow the float.
         and 0 <= updated_at <= _MAX_TIMESTAMP
     ):
         return None
-    return (ix, iy, float(size)), SignalCell(float(dbm), samples, float(updated_at))
+    return (ix, iy), SignalCell(float(dbm), samples, float(updated_at))
 
 
 class MaticWifiHeatmapView(HomeAssistantView):

@@ -32,7 +32,6 @@ from custom_components.matic_robot.config_flow_discovery import (
     _preferred_discovery_host,
 )
 from custom_components.matic_robot.const import (
-    CONF_LIVE_WORKSPACE_TRANSPORT,
     DOMAIN,
 )
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
@@ -1237,10 +1236,10 @@ async def test_photo_settings_require_review_of_stale_blocked_rooms(
     assert saved["reason"] == "photo_tour_rooms_unavailable"
 
 
-async def test_legacy_transport_option_does_not_enable_workspace_push(hass) -> None:
-    entry, _manager = await _options_entry(
-        hass, options={CONF_LIVE_WORKSPACE_TRANSPORT: True, "keep": "value"}
-    )
+async def test_finishing_keeps_saved_options_the_flow_does_not_edit(hass) -> None:
+    """An option an older release saved stays for a downgrade to read."""
+    options = {"live_workspace_transport": True, "keep": "value"}
+    entry, _manager = await _options_entry(hass, options=dict(options))
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
@@ -1255,7 +1254,7 @@ async def test_legacy_transport_option_does_not_enable_workspace_push(hass) -> N
     finished = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "finish"}
     )
-    assert finished["data"] == {CONF_LIVE_WORKSPACE_TRANSPORT: True, "keep": "value"}
+    assert finished["data"] == options
 
 
 def _direct_options_flow(hass, entry) -> MaticRobotOptionsFlow:
