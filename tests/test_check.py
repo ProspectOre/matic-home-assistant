@@ -295,6 +295,7 @@ def test_names_reached_by_reference_or_by_home_assistant_pass() -> None:
     [
         ("def helper(): ...\n", ["helper"]),
         ("LIMIT_BYTES = 1\nDELAY: float = 2.0\n", ["DELAY", "LIMIT_BYTES"]),
+        ("FIRST, [SECOND, *REST] = 1, [2, 3]\n", ["FIRST", "REST", "SECOND"]),
         ("class Plain:\n    def unused(self): ...\nPlain()\n", ["Plain.unused"]),
         ("class Unused:\n    def method(self): ...\n", ["Unused", "Unused.method"]),
         # Text that mentions a name does not use it.

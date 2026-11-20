@@ -340,11 +340,13 @@ def unused_violations(
                 else []
             )
             unused |= {
-                f"{path}::{target.id}"
+                f"{path}::{name.id}"
                 for target in targets
-                if isinstance(target, ast.Name)
-                and target.id not in reached
-                and not target.id.startswith("__")
+                for name in ast.walk(target)
+                if isinstance(name, ast.Name)
+                and isinstance(name.ctx, ast.Store)
+                and name.id not in reached
+                and not name.id.startswith("__")
             }
     return [
         *(
