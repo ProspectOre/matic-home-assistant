@@ -31,6 +31,11 @@ def _bfield(number: int, value: bytes) -> bytes:
     return _varint((number << 3) | 2) + _varint(len(value)) + value
 
 
+def _sint32(value: int) -> int:
+    """Zigzag-encode a signed 32-bit integer for a sint32 field."""
+    return (value << 1) ^ (value >> 31)
+
+
 def _fixed32(number: int, value: float) -> bytes:
     """Encode a 32-bit float (wire type 5) field."""
     return _varint((number << 3) | 5) + struct.pack("<f", value)

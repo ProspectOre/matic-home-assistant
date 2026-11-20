@@ -39,27 +39,8 @@ from custom_components.matic_robot.scene_encoding import (
 from custom_components.matic_robot.slam_render import (
     render_slam_map,
 )
-
-
-def _varint(value: int) -> bytes:
-    result = bytearray()
-    while value >= 0x80:
-        result.append((value & 0x7F) | 0x80)
-        value >>= 7
-    result.append(value)
-    return bytes(result)
-
-
-def _bytes_field(number: int, value: bytes) -> bytes:
-    return _varint(number << 3 | 2) + _varint(len(value)) + value
-
-
-def _varint_field(number: int, value: int) -> bytes:
-    return _varint(number << 3) + _varint(value)
-
-
-def _sint32(value: int) -> int:
-    return (value << 1) ^ (value >> 31)
+from tests.wire_builders import _bfield as _bytes_field
+from tests.wire_builders import _sint32, _varint_field
 
 
 def synthetic_slam_entry(
