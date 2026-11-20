@@ -33,10 +33,10 @@ shown on your robot's device page.
 - Photo check on alert runs a [photo tour](actions.md#photo-tours) to one
   viewpoint or room when any chosen sensor turns on or alarm goes off. Your
   phone hears at once and then sees the photo in the same notification, or
-  why there is none. Enable photo tours and set no-photo rooms in the
-  integration's settings first. Notifications use pixelated previews unless
-  full resolution is selected. Alerts during a check or its cooldown are
-  ignored.
+  why there is none; tapping the photo opens it in Matic Map. Enable photo
+  tours and set no-photo rooms in the integration's settings first.
+  Notifications use pixelated previews unless full resolution is selected.
+  Alerts during a check or its cooldown are ignored.
 
 ## Clean action
 

@@ -281,19 +281,14 @@ async def test_tour_photographs_each_room_and_docks() -> None:
 
     assert result == [
         {
-            "room": "Kitchen",
-            "photo_id": "photo-1",
-            "captured_at": "2026-10-31T01:01:00+00:00",
-            "url": "/api/matic_robot/photo/e/preview/photo-1",
-            "preview_url": "/api/matic_robot/photo/e/preview/photo-1",
-        },
-        {
-            "room": "Dining",
-            "photo_id": "photo-2",
-            "captured_at": "2026-10-31T01:02:00+00:00",
-            "url": "/api/matic_robot/photo/e/preview/photo-2",
-            "preview_url": "/api/matic_robot/photo/e/preview/photo-2",
-        },
+            "room": room,
+            "photo_id": f"photo-{n}",
+            "captured_at": f"2026-10-31T01:0{n}:00+00:00",
+            "url": f"/api/matic_robot/photo/e/preview/photo-{n}",
+            "preview_url": f"/api/matic_robot/photo/e/preview/photo-{n}",
+            "map_url": f"/matic-map?entry=e&photo=photo-{n}",
+        }
+        for n, room in ((1, "Kitchen"), (2, "Dining"))
     ]
     assert _commands(hass) == [
         ("robot", "go_to_room", {"room": "Kitchen"}),

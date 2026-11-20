@@ -56,7 +56,7 @@ blueprint:
       name: Home Assistant phone app
       description: >-
         Turn off when the notification action is not the Home Assistant phone
-        app, which shows the photo and the Send home and Open Matic Map
+        app, which shows the photo and the Send home and Open photo
         buttons.
       default: true
       selector:
@@ -229,7 +229,7 @@ actions:
           data: "{{ dict(phone_data, tag=tag) if phone_app else {} }}"
     else:
       # The first photo replaces the notification; a look-around adds the rest
-      # to the same stack.
+      # to the same stack. Each one opens its photo in Matic Map.
       - repeat:
           for_each: "{{ photos }}"
           sequence:
@@ -246,7 +246,9 @@ actions:
                   {{ dict(phone_data,
                           tag=tag if repeat.first else tag ~ '_' ~ repeat.index,
                           image=repeat.item.url,
-                          actions=[{'action': 'URI', 'title': 'Open Matic Map',
-                                    'uri': matic_map}])
+                          url=repeat.item.map_url,
+                          clickAction=repeat.item.map_url,
+                          actions=[{'action': 'URI', 'title': 'Open photo',
+                                    'uri': repeat.item.map_url}])
                      if phone_app else {} }}
   - delay: !input cooldown

@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from .area_views import MaticAreasView
-from .const import DOMAIN
+from .const import DOMAIN, MATIC_MAP_URL_PATH
 from .daily_limit_view import MaticDailyLimitView
 from .floor_layers import MaticFloorLayersView
 from .photo_gallery_view import MaticPhotoGalleryView
@@ -170,14 +170,14 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     # Keep panel_custom optional for headless installations.
     from homeassistant.components.panel_custom import async_register_panel
 
-    if "matic-map" not in hass.data.get(frontend.DATA_PANELS, {}):
+    if MATIC_MAP_URL_PATH not in hass.data.get(frontend.DATA_PANELS, {}):
         # Home Assistant added this optional panel argument in 2026.9.
         panel_options: dict[str, Any] = {}
         if "handle_safe_area" in signature(async_register_panel).parameters:
             panel_options["handle_safe_area"] = True
         await async_register_panel(
             hass,
-            frontend_url_path="matic-map",
+            frontend_url_path=MATIC_MAP_URL_PATH,
             webcomponent_name=MATIC_MAP_PANEL_ELEMENT,
             sidebar_title="Matic Map",
             sidebar_icon="matic:robot",
