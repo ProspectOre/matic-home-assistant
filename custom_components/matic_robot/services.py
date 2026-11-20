@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DATA_FIRMWARE_TRACKER, DOMAIN
 from .firmware import FirmwareTracker
-from .plans import CleaningPlanManager, async_get_plan_manager
+from .plans import async_get_plan_manager
 from .service_context import ServiceRuntime
 from .service_controls import register_controls_services
 from .service_editing import register_editing_services
@@ -18,7 +18,7 @@ from .service_photos import register_photo_services
 
 async def async_register_services(hass: HomeAssistant) -> None:
     """Initialize shared action dependencies and register each domain."""
-    manager = await async_get_plan_manager(hass, manager_factory=CleaningPlanManager)
+    manager = await async_get_plan_manager(hass)
     firmware_tracker = FirmwareTracker(hass)
     await firmware_tracker.async_load()
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = firmware_tracker

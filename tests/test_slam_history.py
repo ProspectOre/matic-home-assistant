@@ -385,7 +385,9 @@ async def test_capture_in_flight_cannot_commit_after_record_delete(hass) -> None
         release.set()
         assert await addition is False
 
-    assert [item.record_id for item in store.trash_catalog()] == [record_id]
+    assert [
+        item.record_id for item in store.catalog() if item.retention == "trash"
+    ] == [record_id]
     assert store.usage()["reserved_bytes"] == 0
     assert store.usage()["reserved_count"] == 0
     await store.async_shutdown()

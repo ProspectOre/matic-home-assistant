@@ -31,7 +31,7 @@ def test_managed_executor_does_not_reselect_prepared_cleaning_policy() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"choose", "resolve_cadence", "preview"}
+        and node.func.attr in {"rotation_candidates", "resolve_cadence", "preview"}
     ]
     assert policy_calls == []
 
@@ -43,7 +43,7 @@ def test_operations_tool_projects_saved_plan_policy_without_rebuilding_it() -> N
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"choose", "rotation_details", "resolve_cadence"}
+        and node.func.attr in {"rotation_candidates", "resolve_cadence"}
     ]
     assert policy_calls == []
 

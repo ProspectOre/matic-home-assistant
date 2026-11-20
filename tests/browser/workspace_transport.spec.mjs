@@ -334,7 +334,7 @@ test("initial authorization retries once at the steady interval and restores the
     const start = h.transport.start();
     h.snapshotResolve(value);
     await start;
-  }, [{ ...snapshot(0), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
+  }, [{ ...snapshot(0), status: { state: "stale", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
 
   expect(await page.evaluate(() => ({ snapshotCalls: window.workspaceHarness.snapshotCalls,
     subscribeCalls: window.workspaceHarness.subscribeCalls }))).toEqual({ snapshotCalls: 1, subscribeCalls: 0 });
@@ -435,7 +435,7 @@ test("authorization during an auth probe invalidates its ready response and keep
     const start = h.transport.start();
     h.snapshotResolve(authorizationSnapshot);
     await start;
-  }, [{ ...snapshot(0), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
+  }, [{ ...snapshot(0), status: { state: "stale", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
 
   await page.evaluate(() => window.workspaceHarness.deferRecoverySnapshot());
   await page.clock.fastForward(30_000);
@@ -467,7 +467,7 @@ test("reconnect supersedes a deferred auth probe with one immediate fresh snapsh
     const start = h.transport.start();
     h.snapshotResolve(authorizationSnapshot);
     await start;
-  }, [{ ...snapshot(0), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
+  }, [{ ...snapshot(0), status: { state: "stale", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
 
   await page.evaluate(() => window.workspaceHarness.deferRecoverySnapshot());
   await page.clock.fastForward(30_000);
@@ -477,7 +477,7 @@ test("reconnect supersedes a deferred auth probe with one immediate fresh snapsh
     h.setRecoverySnapshot(freshSnapshot);
     h.transport.notifyReconnect();
     h.resolveRecoverySnapshot(obsoleteSnapshot);
-  }, [snapshot(2), { ...snapshot(1), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }]);
+  }, [snapshot(2), { ...snapshot(1), status: { state: "stale", reason: "authorization", retryable: false }, payload: { available: false } }]);
 
   await page.clock.fastForward(0);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0, 2]);
@@ -666,7 +666,7 @@ for (const authorizationSource of ["snapshot", "transport error"]) {
 
     if (authorizationSource === "snapshot") {
       await page.evaluate(value => window.workspaceHarness.resolveRecoverySnapshot(value), {
-        ...snapshot(0), status: { state: "unavailable", reason: "authorization", retryable: false },
+        ...snapshot(0), status: { state: "stale", reason: "authorization", retryable: false },
         payload: { available: false },
       });
       await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").at(-1)?.snapshot.status.reason)).toBe("authorization");

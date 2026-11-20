@@ -1232,12 +1232,6 @@
     }
   },
   "selector": {
-    "cadence_scope": {
-      "options": {
-        "plan": "In this plan only",
-        "shared": "Across all plans (recommended)"
-      }
-    },
     "cleaning_mode": {
       "options": {
         "mop": "Mop",

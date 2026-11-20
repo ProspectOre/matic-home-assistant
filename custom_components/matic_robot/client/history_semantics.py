@@ -138,13 +138,6 @@ def _has_exact_one(fields: tuple[WireField, ...], number: int, wire: int) -> boo
     return len(_known(fields, number, wire)) == 1
 
 
-def _required_varint(fields: tuple[WireField, ...], number: int) -> int:
-    values = _known(fields, number, 0)
-    if len(values) != 1 or not isinstance(values[0].value, int):
-        raise DecodeError("history required varint is missing")
-    return values[0].value
-
-
 def _optional_varint(fields: tuple[WireField, ...], number: int) -> int | None:
     values = _known(fields, number, 0)
     if not values:

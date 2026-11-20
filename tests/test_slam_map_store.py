@@ -25,6 +25,7 @@ from custom_components.matic_robot.slam_map_store import (
     SlamMapStore,
 )
 from tests.hermes_fakes import watch
+from tests.slam_store_probes import saved_snapshot
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
@@ -40,7 +41,7 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     assert store.tile_count == 1
     assert tuple(store._entries.values()) == (entry,)
     assert store.revision == 1
-    assert store.decoded_tiles() == (tile,)
+    assert (await store.async_decoded_map()).tiles == (tile,)
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id == 0x1234ABCD
     assert not store.floor_plan_is_current(
@@ -69,7 +70,8 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     await hass.async_block_till_done()
     assert restored.tile_count == 1
     assert restored.revision == 2
-    assert restored.decoded_tiles()[0].mission_token != tile.mission_token
+    (restored_tile,) = (await restored.async_decoded_map()).tiles
+    assert restored_tile.mission_token != tile.mission_token
     assert restored.mission_identity is not None
     assert restored.mission_identity.mission_id == 2
 
@@ -535,7 +537,7 @@ async def test_slam_map_store_discards_refresh_after_live_revalidation(hass) -> 
     store = SlamMapStore(hass, "discard-stale-candidate-refresh-entry")
     await store.async_add(synthetic_slam_entry())
     await store.async_add_structure(synthetic_structure_entry())
-    active_token = store.decoded_tiles()[0].mission_token
+    active_token = (await store.async_decoded_map()).tiles[0].mission_token
     candidate = synthetic_slam_entry(mission_id=2)
     candidate_token = (await store.async_add(candidate)).mission_token
     store._candidates[candidate_token].blocks_active = False
@@ -569,7 +571,7 @@ async def test_slam_map_store_discards_refresh_after_live_revalidation(hass) -> 
     release.set()
     await refresh
 
-    assert store.decoded_tiles()[0].mission_token == active_token
+    assert (await store.async_decoded_map()).tiles[0].mission_token == active_token
     assert candidate_token in store._candidates
     await store.async_shutdown()
 
@@ -742,18 +744,18 @@ async def test_slam_map_store_waits_for_the_newest_pending_mission(hass) -> None
     store = SlamMapStore(hass, "newest-pending-mission-entry")
     await store.async_add(synthetic_slam_entry(mission=b"active"))
     await store.async_add_structure(synthetic_structure_entry(mission=b"active"))
-    active_token = store.decoded_tiles()[0].mission_token
+    active_token = (await store.async_decoded_map()).tiles[0].mission_token
 
     await store.async_add(synthetic_slam_entry(mission=b"older"))
     await store.async_add(synthetic_slam_entry(mission=b"newer"))
     await store.async_add_structure(synthetic_structure_entry(mission=b"older"))
 
-    assert store.decoded_tiles()[0].mission_token == active_token
+    assert (await store.async_decoded_map()).tiles[0].mission_token == active_token
     assert not store.live_session_verified
 
     await store.async_add_structure(synthetic_structure_entry(mission=b"newer"))
 
-    assert store.decoded_tiles()[0].mission_token != active_token
+    assert (await store.async_decoded_map()).tiles[0].mission_token != active_token
     assert store.live_session_verified
 
 
@@ -797,23 +799,13 @@ async def test_slam_map_store_ignores_corrupt_private_cache(hass) -> None:
     await store.async_load()
 
     assert store.tile_count == 0
-    assert store.decoded_tiles() == ()
+    assert (await store.async_decoded_map()).tiles == ()
     assert store.health.state == "degraded"
     assert store.health.invalid_tiles == 2
 
     await store._store.async_save({"tiles": "invalid", "structure_tiles": [None]})
     await store.async_load()
     assert store.health.invalid_tiles == 2
-
-
-async def test_slam_map_store_skips_corruption_after_load(hass) -> None:
-    store = SlamMapStore(hass, "runtime-corruption")
-    await store.async_load()
-    store._entries["bad"] = HermesCollectionEntry(b"bad", b"bad")
-    store._structure_entries["bad"] = HermesCollectionEntry(b"bad", b"bad")
-
-    assert store.decoded_tiles() == ()
-    assert store.decoded_structure_tiles() == ()
 
 
 async def test_slam_map_store_resets_missions_and_enforces_load_bound(hass) -> None:
@@ -884,7 +876,7 @@ async def test_slam_map_store_round_trips_integrated_pages(hass) -> None:
     await hass.async_block_till_done()
     assert store.structure_tile_count == 1
     assert tuple(store._structure_entries.values()) == (entry,)
-    assert store.decoded_structure_tiles() == (tile,)
+    assert (await store.async_decoded_map()).structure_tiles == (tile,)
 
     await store.async_add_structure(entry)
     assert store.revision == 1
@@ -1373,10 +1365,10 @@ async def test_slam_map_store_promotes_confirmed_mission_and_ignores_retired(
     store = SlamMapStore(hass, "mission-staging-entry")
     await store.async_add(synthetic_slam_entry(mission=b"active"))
     await store.async_add_structure(synthetic_structure_entry(mission=b"active"))
-    active_token = store.decoded_tiles()[0].mission_token
+    active_token = (await store.async_decoded_map()).tiles[0].mission_token
 
     await store.async_add(synthetic_slam_entry(page_x=4, mission=b"candidate"))
-    assert store.decoded_tiles()[0].mission_token == active_token
+    assert (await store.async_decoded_map()).tiles[0].mission_token == active_token
 
     await store.async_add_structure(
         synthetic_structure_entry(page_x=5, mission=b"active")
@@ -1384,7 +1376,7 @@ async def test_slam_map_store_promotes_confirmed_mission_and_ignores_retired(
     await store.async_add_structure(
         synthetic_structure_entry(page_x=4, mission=b"candidate")
     )
-    candidate_token = store.decoded_tiles()[0].mission_token
+    candidate_token = (await store.async_decoded_map()).tiles[0].mission_token
     assert candidate_token != active_token
     promoted_revision = store.revision
 
@@ -1393,7 +1385,7 @@ async def test_slam_map_store_promotes_confirmed_mission_and_ignores_retired(
         synthetic_structure_entry(page_x=8, mission=b"active")
     )
     assert store.revision == promoted_revision
-    assert store.decoded_tiles()[0].mission_token == candidate_token
+    assert (await store.async_decoded_map()).tiles[0].mission_token == candidate_token
 
 
 async def test_slam_map_store_does_not_promote_older_incomplete_candidate(
@@ -1404,20 +1396,20 @@ async def test_slam_map_store_does_not_promote_older_incomplete_candidate(
     await store.async_add(synthetic_slam_entry(mission=b"older"))
     await store.async_add(synthetic_slam_entry(mission=b"newer"))
     await store.async_add_structure(synthetic_structure_entry(mission=b"newer"))
-    newer_token = store.decoded_tiles()[0].mission_token
+    newer_token = (await store.async_decoded_map()).tiles[0].mission_token
     revision = store.revision
 
     await store.async_add_structure(synthetic_structure_entry(mission=b"older"))
     await store.async_add(synthetic_slam_entry(page_x=8, mission=b"older"))
 
     assert store.revision == revision
-    assert store.decoded_tiles()[0].mission_token == newer_token
+    assert (await store.async_decoded_map()).tiles[0].mission_token == newer_token
 
 
 async def test_slam_map_store_bounds_candidate_missions_and_pages(hass) -> None:
     store = SlamMapStore(hass, "candidate-bounds-entry")
     await store.async_add(synthetic_slam_entry(mission=b"active"))
-    active_token = store.decoded_tiles()[0].mission_token
+    active_token = (await store.async_decoded_map()).tiles[0].mission_token
     with (
         patch(
             "custom_components.matic_robot.slam_map_store.MAX_CANDIDATE_MISSIONS",
@@ -1435,7 +1427,7 @@ async def test_slam_map_store_bounds_candidate_missions_and_pages(hass) -> None:
         await store.async_add_structure(
             synthetic_structure_entry(page_x=0, mission=b"first")
         )
-        assert store.decoded_tiles()[0].mission_token == active_token
+        assert (await store.async_decoded_map()).tiles[0].mission_token == active_token
         await store.async_add(synthetic_slam_entry(page_x=10, mission=b"third"))
         await store.async_add_structure(
             synthetic_structure_entry(page_x=10, mission=b"third")
@@ -1452,7 +1444,8 @@ async def test_slam_map_store_retains_balanced_spatial_coverage(hass) -> None:
         for page_x in range(6):
             await store.async_add(synthetic_slam_entry(page_x=page_x, page_y=0))
 
-    coordinates = {(tile.page_x, tile.page_y) for tile in store.decoded_tiles()}
+    decoded = await store.async_decoded_map()
+    coordinates = {(tile.page_x, tile.page_y) for tile in decoded.tiles}
     assert coordinates == {(0, 0), (1, 0), (4, 0), (5, 0)}
     assert store.health.truncated is True
     assert store.health.dropped_photo_tiles == 2
@@ -1468,10 +1461,9 @@ async def test_slam_map_store_retains_balanced_spatial_coverage(hass) -> None:
         await paired.async_add_structure(synthetic_structure_entry(page_x=10, page_y=0))
 
     expected = {(0, 0), (10, 0)}
-    assert {(tile.page_x, tile.page_y) for tile in paired.decoded_tiles()} == expected
-    assert {
-        (tile.page_x, tile.page_y) for tile in paired.decoded_structure_tiles()
-    } == expected
+    decoded = await paired.async_decoded_map()
+    assert {(tile.page_x, tile.page_y) for tile in decoded.tiles} == expected
+    assert {(tile.page_x, tile.page_y) for tile in decoded.structure_tiles} == expected
 
 
 async def test_slam_map_store_evicts_unpaired_then_paired_pages_by_bytes(hass) -> None:
@@ -1499,10 +1491,9 @@ async def test_slam_map_store_evicts_unpaired_then_paired_pages_by_bytes(hass) -
         await store.async_add_structure(synthetic_structure_entry(page_x=0))
         await store.async_add_structure(synthetic_structure_entry(page_x=1))
 
-    assert {(tile.page_x, tile.page_y) for tile in store.decoded_tiles()} == {(0, -1)}
-    assert {(tile.page_x, tile.page_y) for tile in store.decoded_structure_tiles()} == {
-        (0, -1)
-    }
+    decoded = await store.async_decoded_map()
+    assert {(tile.page_x, tile.page_y) for tile in decoded.tiles} == {(0, -1)}
+    assert {(tile.page_x, tile.page_y) for tile in decoded.structure_tiles} == {(0, -1)}
     assert store.health.dropped_structure_tiles == 1
 
     with patch("custom_components.matic_robot.slam_map_store.MAX_STORED_BYTES", 1):
@@ -1527,7 +1518,7 @@ async def test_slam_map_store_drops_paired_pages_together_at_layer_limit(hass) -
     assert store.structure_tile_count == 1
     assert store.health.dropped_photo_tiles == 1
     assert store.health.dropped_structure_tiles == 1
-    serialized = store._serialized_data()
+    serialized = saved_snapshot(store)
     assert serialized["truncated"] is True
     assert len(serialized["tiles"]) == 1
 
@@ -1538,7 +1529,10 @@ async def test_slam_map_store_drops_paired_pages_together_at_layer_limit(hass) -
     with patch("custom_components.matic_robot.slam_map_store.MAX_TILES", 1):
         structural_first._enforce_bounds()
     assert structural_first.tile_count == 0
-    assert {tile.page_x for tile in structural_first.decoded_structure_tiles()} == {10}
+    assert {
+        tile.page_x
+        for tile in (await structural_first.async_decoded_map()).structure_tiles
+    } == {10}
 
 
 def test_slam_map_store_bounds_health_metadata_and_spatial_helpers() -> None:

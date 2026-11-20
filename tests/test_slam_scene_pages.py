@@ -189,7 +189,7 @@ async def test_scene_keeps_the_pages_of_its_last_two_revisions() -> None:
     page_ids = []
     for revision, height in ((7, 7), (8, 8), (9, 9)):
         runtime.slam_map.revision = revision
-        runtime.slam_map.decoded_tiles.return_value = (
+        runtime.slam_map.tiles = (
             decode_slam_tile(
                 synthetic_slam_entry(
                     page_x=0, page_y=0, mission_id=1, surface_height=height

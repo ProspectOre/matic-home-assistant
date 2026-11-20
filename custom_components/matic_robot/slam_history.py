@@ -263,12 +263,6 @@ class SlamHistoryStore:
         """Return immutable snapshot metadata and compressed payload references."""
         return tuple(self._snapshots)
 
-    def active_catalog(self) -> tuple[_history_format.SlamHistorySnapshot, ...]:
-        return tuple(item for item in self._snapshots if item.retention != "trash")
-
-    def trash_catalog(self) -> tuple[_history_format.SlamHistorySnapshot, ...]:
-        return tuple(item for item in self._snapshots if item.retention == "trash")
-
     @property
     def generation(self) -> int:
         return self._generation
@@ -747,16 +741,6 @@ class SlamHistoryStore:
                 raise
         self._notify()
         return response
-
-    async def async_set_policy(
-        self, paused: bool, *, request_id: str, expected_generation: int
-    ) -> HistoryAcknowledgement:
-        return await self.async_mutate(
-            "pause_capture" if paused else "resume_capture",
-            (),
-            expected_generation=expected_generation,
-            request_id=request_id,
-        )
 
     def _reserve_capture(
         self, amount: int, mission_token: str | None, created_at: datetime | None

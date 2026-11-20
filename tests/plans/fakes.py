@@ -3,6 +3,7 @@
 from contextlib import nullcontext
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -14,7 +15,11 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_run import RoomRunOutcome
-from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plan_model import (
+    CleaningRoom,
+    _rotation_details,
+    _rotation_sort_key,
+)
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.session_fakes import FakeRobot
 
@@ -34,6 +39,30 @@ def plan_room(name: str, room_id: str) -> CleaningRoom:
         name=name,
         cleaning_mode="vacuum_and_mop",
         coverage_setting="standard",
+    )
+
+
+def rotation_order(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    plan_id: str,
+    rooms: list[CleaningRoom],
+) -> list[CleaningRoom]:
+    """Rooms in the order an intelligent plan's preview would clean them."""
+    candidates = manager.planning.rotation_candidates(serial_number, plan_id, rooms)
+    return [candidate.room for candidate in sorted(candidates, key=_rotation_sort_key)]
+
+
+def rotation_explanation(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    plan_id: str,
+    rooms: list[CleaningRoom],
+) -> list[dict[str, Any]]:
+    """The explanation an intelligent plan's preview gives for that order."""
+    candidates = manager.planning.rotation_candidates(serial_number, plan_id, rooms)
+    return _rotation_details(
+        sorted(candidates, key=_rotation_sort_key), intelligent=True
     )
 
 

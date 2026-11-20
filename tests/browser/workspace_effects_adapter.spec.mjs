@@ -248,7 +248,7 @@ test("an initial unverified empty snapshot fences the retained map and recovers 
     const failedSnapshot = h.snapshotFor("synthetic-entry");
     failedSnapshot.identity.floor_mission_id = null;
     failedSnapshot.identity.floor_verified = false;
-    failedSnapshot.status = { state: "unavailable", reason: "snapshot_required", retryable: false };
+    failedSnapshot.status = { state: "stale", reason: "snapshot_required", retryable: false };
     failedSnapshot.payload.available = false;
     failedSnapshot.payload.entry = null;
     h.initialSnapshotReleased = h.resolveInitialSnapshot(failedSnapshot);
@@ -318,7 +318,7 @@ test("authorization loss revokes retained floor proof before returning", async (
     const failedSnapshot = h.snapshotFor("synthetic-entry");
     failedSnapshot.identity.floor_mission_id = null;
     failedSnapshot.identity.floor_verified = false;
-    failedSnapshot.status = { state: "unavailable", reason: "authorization", retryable: false };
+    failedSnapshot.status = { state: "stale", reason: "authorization", retryable: false };
     failedSnapshot.payload.available = false;
     failedSnapshot.payload.entry = null;
     h.callbacks[0]({ type: "snapshot", snapshot: failedSnapshot });
@@ -364,7 +364,7 @@ test("an authorization snapshot invalidates spatial caches even when its floor i
       return await new Promise(resolve => { h.catalogResolve = resolve; });
     };
     const failedSnapshot = h.snapshotFor("synthetic-entry");
-    failedSnapshot.status = { state: "unavailable", reason: "authorization", retryable: false };
+    failedSnapshot.status = { state: "stale", reason: "authorization", retryable: false };
     failedSnapshot.payload.available = false;
     failedSnapshot.payload.entry = null;
     // Keep the last floor identity intact. Authorization itself must revoke

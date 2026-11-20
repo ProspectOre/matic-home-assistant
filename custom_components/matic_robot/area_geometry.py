@@ -371,20 +371,6 @@ class AreaGeometry:
         return math.hypot(x - nearest_x, y - nearest_y) <= tolerance
 
     @classmethod
-    def _point_in_or_near_polygon(
-        cls,
-        x: float,
-        y: float,
-        boundary: list[list[float]],
-        tolerance: float,
-    ) -> bool:
-        """Return whether a point is inside or tolerably near a polygon."""
-        contained, _ = cls._point_in_or_near_polygon_with_work_limit(
-            x, y, boundary, tolerance, None
-        )
-        return contained
-
-    @classmethod
     def _point_in_or_near_polygon_with_work_limit(
         cls,
         x: float,

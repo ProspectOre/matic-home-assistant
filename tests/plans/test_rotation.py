@@ -17,7 +17,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.plan_timing import _latest_timestamp
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import memory_manager, plan_room
+from tests.plans.fakes import memory_manager, plan_room, rotation_order
 
 
 async def test_native_history_import_records_activity_not_completion(
@@ -172,7 +172,7 @@ async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> N
     study = plan_room("Study", "room-study")
     bedroom = plan_room("Bedroom", "room-bedroom")
 
-    assert manager.planning.choose("serial", "away", [kitchen, study, bedroom]) == [
+    assert rotation_order(manager, "serial", "away", [kitchen, study, bedroom]) == [
         kitchen,
         study,
         bedroom,
@@ -180,7 +180,7 @@ async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> N
     await manager.ledger.async_mark_started("serial", "away", kitchen)
     await manager.ledger.async_mark_completed("serial", "away", kitchen)
 
-    assert manager.planning.choose("serial", "away", [kitchen, study, bedroom]) == [
+    assert rotation_order(manager, "serial", "away", [kitchen, study, bedroom]) == [
         study,
         bedroom,
         kitchen,
@@ -200,7 +200,7 @@ async def test_intelligent_order_includes_external_room_cleaning(hass) -> None:
         "last_opportunity": "2026-08-31T12:00:00+00:00",
     }
 
-    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
+    assert rotation_order(manager, "serial", "away", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -220,7 +220,7 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
     await manager.ledger.async_mark_failed(
         "serial", "away", kitchen, "dispatch rejected"
     )
-    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
+    assert rotation_order(manager, "serial", "away", [kitchen, study]) == [
         kitchen,
         study,
     ]
@@ -241,7 +241,7 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
         == confirmed_at
     )
     await manager.ledger.async_mark_failed("serial", "away", kitchen, "robot error")
-    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
+    assert rotation_order(manager, "serial", "away", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -252,7 +252,7 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
     snapshot = manager.history.snapshot("serial")
     assert snapshot["failed_runs"] == 2
     assert snapshot["cancelled_runs"] == 1
-    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
+    assert rotation_order(manager, "serial", "away", [kitchen, study]) == [
         kitchen,
         study,
     ]
@@ -401,17 +401,17 @@ async def test_three_room_short_runs_cycle_after_terminal_outcomes(hass) -> None
     await manager.ledger.async_mark_started("serial", "away", kitchen)
     await manager.ledger.async_mark_resumed("serial", "away", kitchen)
     await manager.ledger.async_mark_failed("serial", "away", kitchen, "blocked")
-    assert manager.planning.choose("serial", "away", rooms)[0] == study
+    assert rotation_order(manager, "serial", "away", rooms)[0] == study
 
     await manager.ledger.async_mark_started("serial", "away", study)
     await manager.ledger.async_mark_resumed("serial", "away", study)
     await manager.ledger.async_mark_cancelled("serial", "away", study)
-    assert manager.planning.choose("serial", "away", rooms)[0] == bedroom
+    assert rotation_order(manager, "serial", "away", rooms)[0] == bedroom
 
     await manager.ledger.async_mark_started("serial", "away", bedroom)
     await manager.ledger.async_mark_resumed("serial", "away", bedroom)
     await manager.ledger.async_mark_interrupted("serial", "away", bedroom, "offline")
-    assert manager.planning.choose("serial", "away", rooms)[0] == kitchen
+    assert rotation_order(manager, "serial", "away", rooms)[0] == kitchen
     assert manager.history.snapshot("serial")["completed_runs"] == 0
 
 
@@ -421,7 +421,7 @@ async def test_fair_rotation_cycles_every_mapped_room_during_short_runs(hass) ->
     base = dt_util.utcnow() - timedelta(hours=1)
 
     for index, expected in enumerate(rooms * 2):
-        assert manager.planning.choose("serial", "away", rooms)[0] == expected
+        assert rotation_order(manager, "serial", "away", rooms)[0] == expected
         with patch(
             "custom_components.matic_robot.plans.dt_util.utcnow",
             return_value=base + timedelta(seconds=index),
@@ -444,7 +444,7 @@ async def test_new_plan_uses_global_room_completion_as_rotation_fallback(hass) -
     await manager.ledger.async_mark_started("serial", "weekday", kitchen)
     await manager.ledger.async_mark_completed("serial", "weekday", kitchen)
 
-    assert manager.planning.choose("serial", "weekend", [kitchen, study]) == [
+    assert rotation_order(manager, "serial", "weekend", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -455,7 +455,7 @@ async def test_new_plan_uses_global_room_completion_as_rotation_fallback(hass) -
     await second_manager.ledger.async_mark_failed(
         "serial", "weekday", kitchen, "synthetic blockage"
     )
-    assert second_manager.planning.choose("serial", "weekend", [kitchen, study]) == [
+    assert rotation_order(second_manager, "serial", "weekend", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -475,14 +475,14 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
     with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
         await manager.ledger.async_mark_started("serial", "weekday", kitchen)
         await manager.ledger.async_mark_completed("serial", "weekday", kitchen)
-    assert manager.planning.choose("serial", "weekend", rooms) == [study, kitchen]
+    assert rotation_order(manager, "serial", "weekend", rooms) == [study, kitchen]
 
     with patch(
         "custom_components.matic_robot.plans.dt_util.utcnow",
         return_value=base + timedelta(minutes=1),
     ):
         await manager.ledger.async_reset_history("serial", "weekend")
-    assert manager.planning.choose("serial", "weekend", rooms) == rooms
+    assert rotation_order(manager, "serial", "weekend", rooms) == rooms
 
     with patch(
         "custom_components.matic_robot.plans.dt_util.utcnow",
@@ -491,7 +491,7 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
         await manager.ledger.async_mark_started("serial", "weekday", kitchen)
         await manager.ledger.async_mark_resumed("serial", "weekday", kitchen)
         await manager.ledger.async_mark_failed("serial", "weekday", kitchen, "blocked")
-    assert manager.planning.choose("serial", "weekend", rooms) == [study, kitchen]
+    assert rotation_order(manager, "serial", "weekend", rooms) == [study, kitchen]
 
 
 async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
@@ -562,7 +562,7 @@ def test_rotation_recovers_from_corrupt_or_future_history(hass) -> None:
     robot["rooms"] = "corrupt-global-history"
     plan_state_module.parse_robot(robot)
 
-    assert manager.planning.choose("serial", "away", [kitchen, study, bedroom]) == [
+    assert rotation_order(manager, "serial", "away", [kitchen, study, bedroom]) == [
         kitchen,
         study,
         bedroom,

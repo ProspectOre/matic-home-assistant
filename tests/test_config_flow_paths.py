@@ -950,7 +950,7 @@ async def test_reauthentication_stops_after_submitted_code_fails(
     ):
         assert passkey_exchange is not None
         pending = asyncio.create_task(passkey_exchange.async_request_passkey())
-        await passkey_exchange.async_wait_until_requested()
+        await passkey_exchange._requested.wait()
         passkey_exchange.submit(123456)
         assert await pending == 123456
         raise BluetoothPairingIncompleteError("rejected")

@@ -358,7 +358,9 @@ async def test_saved_map_management_bytes(hass: HomeAssistant) -> None:
         await store.async_shutdown()
 
     record = archive["records"][0]
-    deleted_until = store.trash_catalog()[0].deleted_until
+    deleted_until = next(
+        item for item in store.catalog() if item.retention == "trash"
+    ).deleted_until
     assert deleted_until is not None
     assert renamed.body == json_bytes(RENAMED)
     assert _sizes(catalog.body).replace(

@@ -743,7 +743,7 @@ def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
 
     kitchen = session.floor.value.rooms[0]
     study = session.floor.value.rooms[1]
-    assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_value() == (
+    assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_result()[1] == (
         "2026-01-01T08:06:00+00:00",
         360,
     )
@@ -840,17 +840,17 @@ def test_room_statistics_apply_newer_verified_plan_history() -> None:
 def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
     entry = _entry(with_floor_plan=False)
     room = _floor_plan().rooms[0]
-    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
+    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_result()[1] is None
 
     entry = _entry()
     session = entry.runtime_data.session
     session.floor.set(replace(session.floor.value, rooms=()))
-    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
+    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_result()[1] is None
 
     entry = _entry()
     session = entry.runtime_data.session
     session.history.set(CleaningHistory(None, None))
-    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
+    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_result()[1] is None
 
     entry = _entry()
     study = entry.runtime_data.session.floor.value.rooms[1]
@@ -883,7 +883,7 @@ def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
             ),
         )
     )
-    assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_value() is None
+    assert not sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_result()[1]
 
 
 def _update_entity(hass, version: str | None = "v178.8"):

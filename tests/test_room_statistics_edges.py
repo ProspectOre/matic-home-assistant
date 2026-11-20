@@ -23,7 +23,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
 )
 from custom_components.matic_robot.room_statistics import (
-    completed_native_room_statistics,
+    native_room_statistics_by_session,
 )
 from custom_components.matic_robot.stores import CleaningHistory
 from tests.test_entities import _entry as entity_entry
@@ -104,14 +104,11 @@ def test_native_statistics_reject_bad_time_and_malformed_completion_evidence():
         ),
     )
 
-    assert (
-        completed_native_room_statistics(
-            records,
-            rooms,
-            now=now,
-            future_tolerance_seconds=60,
-        )
-        == {}
+    statistics = native_room_statistics_by_session(
+        records, rooms, now=now, future_tolerance_seconds=60
+    )
+    assert not any(
+        item.mode_durations for history in statistics.values() for item in history
     )
 
 
@@ -134,7 +131,7 @@ def test_native_statistics_treat_duplicate_mode_as_tombstone_but_keep_other_mode
         ),
     )
 
-    statistic = completed_native_room_statistics(
+    (statistic,) = native_room_statistics_by_session(
         records,
         (Room("living", "Living", "living", b"living", ()),),
         now=now,
@@ -480,7 +477,7 @@ def test_unrelated_history_sources_are_not_native_ineligible(source):
 
 def test_managed_history_matcher_skips_malformed_history_containers():
     ended_at = "2026-11-01T10:00:00+00:00"
-    statistic = completed_native_room_statistics(
+    (statistic,) = native_room_statistics_by_session(
         [
             _record(
                 ended_at,

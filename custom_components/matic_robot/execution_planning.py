@@ -272,35 +272,6 @@ class ExecutionPlanner:
             "binding_fingerprint": plan_area_fingerprint(area),
         }
 
-    def rotation_details(
-        self,
-        serial_number: str,
-        plan_id: str,
-        rooms: Sequence[CleaningRoom],
-    ) -> list[dict[str, Any]]:
-        """Explain the next intelligent order without changing rotation state."""
-        ordered = sorted(
-            self.rotation_candidates(serial_number, plan_id, rooms),
-            key=_rotation_sort_key,
-        )
-        return _rotation_details(ordered, intelligent=True)
-
-    def choose(
-        self,
-        serial_number: str,
-        plan_id: str,
-        rooms: list[CleaningRoom],
-    ) -> list[CleaningRoom]:
-        """Order rooms by their oldest trusted cleaning opportunity."""
-        return [
-            candidate.room
-            for candidate in sorted(
-                self.rotation_candidates(serial_number, plan_id, rooms),
-                key=_rotation_sort_key,
-            )
-            if isinstance(candidate.room, CleaningRoom)
-        ]
-
     def rotation_candidates(
         self,
         serial_number: str,
