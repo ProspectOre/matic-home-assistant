@@ -10,7 +10,7 @@ export { layerToggles, mapLegends } from "./map-layers";
 export { drawViewpoints } from "./photo-marks";
 export { drawInspectMarker, inspectAt, inspectMarker, inspectPanel, stillInspectable } from "./map-inspect";
 
-interface MapPoint {
+export interface MapPoint {
   readonly x: number;
   readonly y: number;
 }
