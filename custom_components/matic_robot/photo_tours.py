@@ -71,9 +71,13 @@ DEFAULT_COOLDOWN_SECONDS = 15 * 60
 PHOTO_TAKEN_EVENT = f"{DOMAIN}_photo_taken"
 
 _tours: dict[str, asyncio.Lock] = {}
-# The task running each robot's tour, until it starts to finish up.
+# The task running each robot's tour and the tours finishing up. Another
+# command stops a tour: cancelled before it finishes up, or kept from docking
+# while it does.
 _running: dict[str, asyncio.Task[Any]] = {}
+_finishing: set[str] = set()
 _stop_requested: set[str] = set()
+_cancelled: set[str] = set()
 _last_tour_started: dict[str, float] = {}
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,11 +123,15 @@ def stop_photo_tour(entry_id: str) -> None:
     """End the robot's tour before it sends another command.
 
     Called when someone else commands the robot, so the tour cannot send it
-    on to the next stop afterwards. A tour already finishing up is left alone.
+    on to the next stop afterwards. A tour already finishing up is not
+    interrupted, but it no longer sends the robot to the dock.
     """
     task = _running.get(entry_id)
-    if task is not None and not task.done():
-        _stop_requested.add(entry_id)
+    if task is None or task.done():
+        return
+    _stop_requested.add(entry_id)
+    if entry_id not in _finishing:
+        _cancelled.add(entry_id)
         task.cancel()
 
 
@@ -156,13 +164,14 @@ async def async_run_photo_tour(
             context=context,
         )
     except asyncio.CancelledError:
-        if entry.entry_id in _stop_requested and task.uncancel() == 0:
+        if entry.entry_id in _cancelled and task.uncancel() == 0:
             raise _error("photo_tour_stopped") from None
         raise
     finally:
-        if _running.get(entry.entry_id) is task:
-            del _running[entry.entry_id]
+        del _running[entry.entry_id]
+        _finishing.discard(entry.entry_id)
         _stop_requested.discard(entry.entry_id)
+        _cancelled.discard(entry.entry_id)
 
 
 async def _async_run_tour(
@@ -303,8 +312,7 @@ async def _async_run_tour(
             # A tour always returns to the dock when it still owns the parked
             # robot.
             active_error = sys.exc_info()[1]
-            # The tour's own dock request must not stop the tour.
-            _running.pop(entry.entry_id, None)
+            _finishing.add(entry.entry_id)
             can_dock = False
             # A command that stopped the tour decides where the robot goes.
             if arrivals and entry.entry_id not in _stop_requested:
@@ -318,7 +326,8 @@ async def _async_run_tour(
                         can_dock = await _async_still_parked(entry, arrivals[-1])
                 except Exception:
                     _LOGGER.exception("Could not verify Matic photo tour ownership")
-                if can_dock:
+                # A command can arrive while the ownership read is under way.
+                if can_dock and entry.entry_id not in _stop_requested:
                     try:
                         remaining = max(0, deadline - monotonic())
                         if remaining == 0:

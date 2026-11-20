@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot import photo_tours
 from custom_components.matic_robot.client import UserCommand
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.robot_controls import RobotControls
@@ -17,7 +18,7 @@ from custom_components.matic_robot.robot_controls import RobotControls
 from .hermes_sim import DOCK_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import poll
 from .sim_mission import SimFloor, two_room_floor
-from .test_camera_flows import VACUUM, _configure_tour
+from .test_camera_flows import VACUUM, _configure_tour, _webp
 
 pytestmark = pytest.mark.usefixtures("fast_tour_polls")
 
@@ -152,3 +153,48 @@ async def test_a_second_tour_waits_and_a_cancelled_one_stays_cancelled(
     tour.cancel()
     with pytest.raises(asyncio.CancelledError):
         await tour
+
+
+async def test_a_command_during_the_final_ownership_read_cancels_the_dock(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    robot: SimulatedRobot,
+) -> None:
+    robot.set_collection("instamatic_snaps", [])
+    robot.set_native_schedules([])
+    await _configure_tour(hass, loaded_entry)
+    robot.queue_photo(_webp((40, 90, 160)))
+    await poll(hass, loaded_entry, robot)
+    reading = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read_before_the_command_lands(*_: object) -> bool:
+        reading.set()
+        await release.wait()
+        # The read saw the robot parked before the command reached it.
+        return True
+
+    with patch.object(
+        photo_tours, "_async_still_parked", read_before_the_command_lands
+    ):
+        tour = hass.async_create_task(
+            hass.services.async_call(
+                DOMAIN,
+                "run_photo_tour",
+                {"entity_id": VACUUM, "stops": [{"room": "Kitchen"}]},
+                blocking=True,
+                return_response=True,
+            )
+        )
+        async with asyncio.timeout(5):
+            await reading.wait()
+        sent = len(robot.received())
+        await hass.services.async_call(
+            "vacuum", "pause", {"entity_id": VACUUM}, blocking=True
+        )
+        release.set()
+        result = await tour
+
+    # The photo is kept, and the robot is left to Pause.
+    assert len(result["robots"][0]["photos"]) == 1
+    assert DOCK_PAYLOAD not in robot.received()[sent:]
