@@ -59,6 +59,7 @@ async def setup_blueprint(
     *,
     photos: list[dict[str, Any]] | None = None,
     cooldown: int = 0,
+    send_home: asyncio.Event | None = None,
     **inputs: Any,
 ) -> Calls:
     """Load the blueprint with a Front door viewpoint and fake actions."""
@@ -87,6 +88,10 @@ async def setup_blueprint(
 
     async def run_photo_tour(call: ServiceCall) -> ServiceResponse:
         calls.tours.append(call)
+        if send_home is not None:
+            # Like the integration, a dock command stops the running tour.
+            await send_home.wait()
+            raise HomeAssistantError("photo_tour_stopped")
         if photos is None:
             raise HomeAssistantError("photo_tour_no_arrival")
         return {"robots": [{"entity_id": VACUUM, "photos": photos}]}
@@ -96,6 +101,8 @@ async def setup_blueprint(
 
     async def return_to_base(call: ServiceCall) -> None:
         calls.docked.append(call)
+        if send_home is not None:
+            send_home.set()
 
     hass.services.async_register(
         "matic_robot",
@@ -269,6 +276,23 @@ async def test_send_home_docks_only_for_this_automations_button(
 
     # The button works during the cooldown; only its own action counts.
     assert [call.data for call in calls.docked] == [{"entity_id": [VACUUM]}]
+
+
+async def test_send_home_during_a_check_says_it_stopped(hass: HomeAssistant) -> None:
+    calls = await setup_blueprint(hass, photos=[photo()], send_home=asyncio.Event())
+    hass.states.async_set(DOOR, "on", {"friendly_name": "Front door"})
+    await settle()
+    assert calls.notified[0]["message"] == "Matic is on its way to look."
+
+    hass.bus.async_fire("mobile_app_notification_action", {"action": SEND_HOME})
+    await hass.async_block_till_done()
+
+    assert len(calls.docked) == 1
+    assert calls.notified[-1] == {
+        "title": "Front door",
+        "message": "Photo check stopped.",
+        "data": {**PHONE, "tag": TAG},
+    }
 
 
 async def test_alerts_during_a_check_or_its_cooldown_are_ignored(

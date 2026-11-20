@@ -106,9 +106,10 @@ room when a sensor turns on or an alarm goes off. The phone hears "Matic is on
 its way to look." at once, with a **Send home** button; the same notification
 then shows the photo, captioned with your AI Task entity's answer or the place
 and time. A look-around adds its other photos to the same stack. If the robot
-is busy or no photo could be taken, the notification says so. Previews are
-pixelated unless **Send the full photo** is on, and **Break through Do Not
-Disturb** marks the notifications time sensitive and high priority.
+is busy, no photo could be taken or Send home stopped the check, the
+notification says so. Previews are pixelated unless **Send the full photo** is
+on, and **Time-sensitive notifications** marks them time sensitive on iPhone
+and high priority on Android.
 
 Administrators can also ask Assist or an MCP client: `MaticTakePhoto` returns
 a pixelated preview of one room or viewpoint, and `MaticInvestigate` adds a
@@ -118,7 +119,9 @@ every check above.
 ## Stops and errors
 
 The tour requests docking when it finishes, or after an error, only while
-the robot is still parked where the tour left it. It does not send a stop
+the robot is still parked where the tour left it. Start, Pause, Stop or Return
+to dock on the robot's Home Assistant entity ends a running tour with an error
+before it sends the robot anywhere else; photos it already took are kept. It does not send a stop
 or dock command to interrupt a task that took over. Docking is a request, not
 proof that the robot physically reached the dock.
 

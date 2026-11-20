@@ -71,6 +71,9 @@ DEFAULT_COOLDOWN_SECONDS = 15 * 60
 PHOTO_TAKEN_EVENT = f"{DOMAIN}_photo_taken"
 
 _tours: dict[str, asyncio.Lock] = {}
+# The task running each robot's tour, until it starts to finish up.
+_running: dict[str, asyncio.Task[Any]] = {}
+_stop_requested: set[str] = set()
 _last_tour_started: dict[str, float] = {}
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,6 +115,18 @@ class _Shot:
         return self.viewpoint.name if self.viewpoint is not None else self.room
 
 
+def stop_photo_tour(entry_id: str) -> None:
+    """End the robot's tour before it sends another command.
+
+    Called when someone else commands the robot, so the tour cannot send it
+    on to the next stop afterwards. A tour already finishing up is left alone.
+    """
+    task = _running.get(entry_id)
+    if task is not None and not task.done():
+        _stop_requested.add(entry_id)
+        task.cancel()
+
+
 async def async_run_photo_tour(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
@@ -122,6 +137,44 @@ async def async_run_photo_tour(
     question: str | None = None,
     ai_task_entity_id: str | None = None,
     context: Context | None = None,
+) -> list[dict[str, Any]]:
+    """Run a tour that a command from elsewhere can stop."""
+    if entry.entry_id in _running:
+        raise _error("photo_tour_running")
+    task = asyncio.current_task()
+    assert task is not None
+    _running[entry.entry_id] = task
+    try:
+        return await _async_run_tour(
+            hass,
+            entry,
+            entity_id,
+            stops,
+            full_resolution=full_resolution,
+            question=question,
+            ai_task_entity_id=ai_task_entity_id,
+            context=context,
+        )
+    except asyncio.CancelledError:
+        if entry.entry_id in _stop_requested and task.uncancel() == 0:
+            raise _error("photo_tour_stopped") from None
+        raise
+    finally:
+        if _running.get(entry.entry_id) is task:
+            del _running[entry.entry_id]
+        _stop_requested.discard(entry.entry_id)
+
+
+async def _async_run_tour(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    entity_id: str,
+    stops: list[TourStop],
+    *,
+    full_resolution: bool,
+    question: str | None,
+    ai_task_entity_id: str | None,
+    context: Context | None,
 ) -> list[dict[str, Any]]:
     """Visit each stop in turn, photograph it, then dock.
 
@@ -250,6 +303,8 @@ async def async_run_photo_tour(
             # A tour always returns to the dock when it still owns the parked
             # robot.
             active_error = sys.exc_info()[1]
+            # The tour's own dock request must not stop the tour.
+            _running.pop(entry.entry_id, None)
             can_dock = False
             if arrivals:
                 try:

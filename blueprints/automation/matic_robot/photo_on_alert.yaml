@@ -62,10 +62,11 @@ blueprint:
       selector:
         boolean:
     urgent:
-      name: Break through Do Not Disturb
+      name: Time-sensitive notifications
       description: >-
-        Shows the notification right away on iPhone (time sensitive) and
-        Android (high priority), even in a Focus or Do Not Disturb.
+        Marks the notifications time sensitive on iPhone and high priority on
+        Android so they arrive at once. Whether they sound during a Focus or
+        Do Not Disturb depends on the phone's settings for Home Assistant.
       default: false
       selector:
         boolean:
@@ -153,6 +154,7 @@ actions:
       - stop: Sent home
   - variables:
       sensor_name: "{{ trigger.to_state.name }}"
+      started: "{{ now().isoformat() }}"
       place: "{{ viewpoint | trim or room | trim }}"
       tour_stop: >-
         {{ {'viewpoint': viewpoint | trim} if viewpoint | trim
@@ -202,7 +204,12 @@ actions:
       - action: "{{ notify_service }}"
         data:
           title: "{{ sensor_name }}"
-          message: Matic couldn't get a photo of {{ place }}.
+          # Send home is the only trigger that runs during a check, and it
+          # stops the tour.
+          message: >-
+            {% set last = state_attr(this.entity_id, 'last_triggered') %}
+            {{ 'Photo check stopped.' if last and last > as_datetime(started)
+               else "Matic couldn't get a photo of " ~ place ~ '.' }}
           data: "{{ dict(phone_data, tag=tag) if phone_app else {} }}"
     else:
       # The first photo replaces the notification; a look-around adds the rest

@@ -16,6 +16,7 @@ from . import MaticConfigEntry
 from .client import MaticError, QueueAction, RobotActivity, UserCommand
 from .const import DOMAIN
 from .entity import MaticEntity
+from .photo_tours import stop_photo_tour
 from .robot_commands import validation_error
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .stores import Store
@@ -152,6 +153,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_start(self, **kwargs: object) -> None:
         """Resume a paused task or start a full-floor clean."""
+        stop_photo_tour(self._config_entry.entry_id)
         if self.session.state.value.operational.paused:
             await self._commands.async_send_user_command(UserCommand.RESUME)
             return
@@ -159,10 +161,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_pause(self, **kwargs: object) -> None:
         """Pause the current task."""
+        stop_photo_tour(self._config_entry.entry_id)
         await self._commands.async_send_user_command(UserCommand.PAUSE)
 
     async def async_stop(self, **kwargs: object) -> None:
         """Stop now or finish the active room according to the plan policy."""
+        stop_photo_tour(self._config_entry.entry_id)
         serial_number = self.session.info.serial_number
         run_id: str | None = None
         async with self._plans.control.external_command(serial_number):
@@ -198,6 +202,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
+        stop_photo_tour(self._config_entry.entry_id)
         serial_number = self.session.info.serial_number
         run_id = self._plans.ledger.active_run_id(serial_number)
         operational = self.session.state.value.operational
