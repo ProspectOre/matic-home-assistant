@@ -2184,6 +2184,10 @@
           "name": "Stops",
           "description": "Visited in this order, up to 12 photos in all. Each stop is a room or a saved viewpoint, by name or ID. At a viewpoint, a look-around count of 2 to 4 turns the robot in place and takes that many photos."
         },
+        "report_failures": {
+          "name": "Report failures in the response",
+          "description": "Instead of failing the action, return each robot whose tour could not finish with an error reason and message, and keep going with the other robots."
+        },
         "full_resolution": {
           "name": "Send the full photo",
           "description": "By default, the response and event use a pixelated preview. Set this only when full-resolution photos are appropriate for the recipients."

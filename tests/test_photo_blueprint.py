@@ -60,6 +60,7 @@ async def setup_blueprint(
     photos: list[dict[str, Any]] | None = None,
     cooldown: int = 0,
     send_home: asyncio.Event | None = None,
+    failure: str | None = None,
     **inputs: Any,
 ) -> Calls:
     """Load the blueprint with a Front door viewpoint and fake actions."""
@@ -91,9 +92,11 @@ async def setup_blueprint(
         if send_home is not None:
             # Like the integration, a dock command stops the running tour.
             await send_home.wait()
-            raise HomeAssistantError("photo_tour_stopped")
+            return failed("photo_tour_stopped")
+        if failure is not None:
+            return failed(failure)
         if photos is None:
-            raise HomeAssistantError("photo_tour_no_arrival")
+            raise HomeAssistantError("refused before the tour could report")
         return {"robots": [{"entity_id": VACUUM, "photos": photos}]}
 
     async def notify(call: ServiceCall) -> None:
@@ -124,6 +127,12 @@ async def setup_blueprint(
     return calls
 
 
+def failed(reason: str) -> dict[str, Any]:
+    """The tour's response when report_failures is set and it could not finish."""
+    error = {"reason": reason, "message": f"The integration's message for {reason}."}
+    return {"robots": [{"entity_id": VACUUM, "photos": [], "error": error}]}
+
+
 def photo(**fields: Any) -> dict[str, Any]:
     return {"viewpoint": "Front door", "url": URL, "captured_at": TAKEN, **fields}
 
@@ -149,6 +158,7 @@ async def test_phone_hears_at_once_then_sees_the_photo_in_place(
     assert calls.tours[0].data == {
         "entity_id": [VACUUM],
         "stops": [{"viewpoint": "Front door"}],
+        "report_failures": True,
         "full_resolution": False,
     }
     on_the_way, taken = calls.notified
@@ -188,6 +198,7 @@ async def test_ai_answer_is_the_caption_and_urgent_breaks_through(
     assert calls.tours[0].data == {
         "entity_id": [VACUUM],
         "stops": [{"viewpoint": "Front door"}],
+        "report_failures": True,
         "full_resolution": True,
         "question": "Is the door open?",
         "ai_task_entity_id": "ai_task.home",
@@ -228,17 +239,31 @@ async def test_plain_targets_get_text_only(hass: HomeAssistant) -> None:
     ]
 
 
-async def test_the_notification_says_when_no_photo_was_taken(
-    hass: HomeAssistant,
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("photo_tour_no_arrival", "Matic couldn't reach Front door. Is a door closed?"),
+        ("photo_tour_low_battery", "Matic's battery is too low for a photo check."),
+        ("photo_tour_cooldown", "Matic looked recently, so it didn't go again."),
+        ("viewpoint_other_floor", "Front door is on another floor."),
+        # A reason without short words keeps the integration's message.
+        ("photo_tour_timeout", "The integration's message for photo_tour_timeout."),
+        # An error the tour could not report, such as a refused call.
+        (None, "Matic couldn't get a photo of Front door."),
+    ],
+)
+async def test_the_notification_says_why_no_photo_was_taken(
+    hass: HomeAssistant, failure: str | None, message: str
 ) -> None:
-    calls = await setup_blueprint(hass, photos=None)
+    calls = await setup_blueprint(hass, photos=None, failure=failure)
 
     await open_door(hass)
 
     assert len(calls.tours) == 1
-    failed = calls.notified[-1]
-    assert failed["message"] == "Matic couldn't get a photo of Front door."
-    assert failed["data"] == {**PHONE, "tag": TAG}
+    shown = calls.notified[-1]
+    assert shown["message"] == message
+    assert len(message) < 80
+    assert shown["data"] == {**PHONE, "tag": TAG}
 
 
 @pytest.mark.parametrize(

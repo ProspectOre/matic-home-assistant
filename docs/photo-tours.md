@@ -62,6 +62,11 @@ the robot's preview, or of the full image when there is no preview. Set
 refers to the preview. Each photo also fires `matic_robot_photo_taken` with the
 same fields, with links that need a signed-in user.
 
+With `report_failures: true`, a robot whose tour could not finish is returned
+with no photos and `error`: its `reason` (for example
+`photo_tour_low_battery`) and a plain-language `message`. The other robots
+still run, and the action itself does not fail.
+
 The action's links are signed: each opens that one photo, without signing in,
 for 24 hours, so a phone or other notify target can fetch it. Browsers never
 cache them.
@@ -107,7 +112,8 @@ its way to look." at once, with a **Send home** button; the same notification
 then shows the photo, captioned with your AI Task entity's answer or the place
 and time. A look-around adds its other photos to the same stack. If the robot
 is busy, no photo could be taken or Send home stopped the check, the
-notification says so. Previews are pixelated unless **Send the full photo** is
+notification says why in a few words, such as "Matic couldn't reach Front
+door. Is a door closed?" Previews are pixelated unless **Send the full photo** is
 on, and **Time-sensitive notifications** marks them time sensitive on iPhone
 and high priority on Android.
 

@@ -13,6 +13,8 @@ from homeassistant.core import (
     ServiceResponse,
     SupportsResponse,
 )
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.translation import async_get_exception_message
 from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
@@ -47,6 +49,22 @@ def signed_photo(hass: HomeAssistant, photo: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def failed_tour(entity_id: str, err: HomeAssistantError) -> dict[str, JsonValueType]:
+    """One robot's failure, for a caller that reads it instead of an error."""
+    message = (
+        async_get_exception_message(
+            err.translation_domain, err.translation_key, err.translation_placeholders
+        )
+        if err.translation_domain and err.translation_key
+        else str(err)
+    )
+    return {
+        "entity_id": entity_id,
+        "photos": [],
+        "error": {"reason": err.translation_key, "message": message},
+    }
+
+
 def register_photo_services(runtime: ServiceRuntime) -> None:
     """Register the photo tour and viewpoint actions."""
     hass = runtime.hass
@@ -59,21 +77,33 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
         entries = [
             context._entry_for_entity(hass, entity_id) for entity_id in entity_ids
         ]
+        report = call.data["report_failures"]
         # Viewpoints are per robot: refuse a stop any robot lacks before one moves.
-        for entry in entries:
-            check_photo_tour(entry, stops)
+        try:
+            for entry in entries:
+                check_photo_tour(entry, stops)
+        except HomeAssistantError as err:
+            if not report:
+                raise
+            return {"robots": [failed_tour(entity_id, err) for entity_id in entity_ids]}
         robots: list[JsonValueType] = []
         for entity_id, entry in zip(entity_ids, entries, strict=True):
-            photos = await async_run_photo_tour(
-                hass,
-                entry,
-                entity_id,
-                stops,
-                full_resolution=call.data["full_resolution"],
-                question=call.data.get("question"),
-                ai_task_entity_id=call.data.get("ai_task_entity_id"),
-                context=call.context,
-            )
+            try:
+                photos = await async_run_photo_tour(
+                    hass,
+                    entry,
+                    entity_id,
+                    stops,
+                    full_resolution=call.data["full_resolution"],
+                    question=call.data.get("question"),
+                    ai_task_entity_id=call.data.get("ai_task_entity_id"),
+                    context=call.context,
+                )
+            except HomeAssistantError as err:
+                if not report:
+                    raise
+                robots.append(failed_tour(entity_id, err))
+                continue
             signed = [signed_photo(hass, photo) for photo in photos]
             robots.append(
                 {"entity_id": entity_id, "photos": cast(list[JsonValueType], signed)}
