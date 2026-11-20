@@ -146,10 +146,14 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     await Promise.all(Array.from({ length: PREVIEW_READS }, reader));
   }
 
-  #more(): void {
+  async #more(): Promise<void> {
     const from = this._shown;
     this._shown += PAGE;
     void this.#readPreviews(from);
+    // The last page removes the button; keep focus on the first photo it added.
+    if (this.#photos().length > this._shown) return;
+    await this.updateComplete;
+    this.renderRoot.querySelectorAll<HTMLElement>(".shot")[from]?.focus();
   }
 
   /**
@@ -295,7 +299,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     return html`<div class="stack">
       ${albums.length ? this.#sections().map(({ album, photos }) => this.#album(album, photos))
         : html`<p class="subtle">${this.#t("v4_photos_empty", "No photos yet. Press Take photo, or run a photo tour from an automation.")}</p>`}
-      ${this.#photos().length > this._shown ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}
+      ${this.#photos().length > this._shown ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => void this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}
       ${viewpoints.length ? html`<section>
         <h3>${this.#t("v4_photos_viewpoints", "Saved viewpoints")}</h3>
         <ul class="views">${viewpoints.map((viewpoint) => html`<li>${viewpoint.name}</li>`)}</ul>

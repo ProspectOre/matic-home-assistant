@@ -58,8 +58,9 @@ const record = (value: unknown): Record<string, unknown> =>
 const list = (value: unknown, max: number): readonly unknown[] =>
   Array.isArray(value) && value.length <= max ? value : fail("invalid-photo-gallery");
 
+// Limits count code points, as Python's len() does on the server.
 const text = (value: unknown, max = 256): string =>
-  typeof value === "string" && value.length > 0 && value.length <= max ? value : fail("invalid-photo-gallery");
+  typeof value === "string" && value.length > 0 && [...value].length <= max ? value : fail("invalid-photo-gallery");
 
 // Areas are robot telemetry text, up to 512 bytes (_TELEMETRY_TEXT_MAX_BYTES).
 const optionalText = (value: unknown): string | null => value === null ? null : text(value, 512);

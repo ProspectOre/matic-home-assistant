@@ -158,6 +158,7 @@ test("the grid shows sixty photos at a time and reads previews only for those sh
   await gallery.getByRole("button", { name: "Show older photos" }).click();
   await expect(gallery.locator(".shot img")).toHaveCount(65);
   await expect(gallery.getByRole("button", { name: "Show older photos" })).toHaveCount(0);
+  await expect(gallery.locator(".shot").nth(60)).toBeFocused();
   expect(new Set(await photoReads(page)).size).toBe(65);
 });
 
@@ -197,7 +198,7 @@ test("photos run newest first by time when single photos straddle a photo tour",
   await expect(viewer).toHaveAccessibleName(/^Porch · /);
 });
 
-test("the gallery read accepts the server's 5,000 newest photos and long area names", async ({ page }) => {
+test("the gallery read accepts the server's 5,000 newest photos and its longest names", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { parsePhotoGallery } from "./frontend/map-studio-v4/photo-gallery-data";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/photo-gallery-data-test.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
@@ -210,7 +211,8 @@ test("the gallery read accepts the server's 5,000 newest photos and long area na
     }));
     const read = (count) => {
       try {
-        return parsePhotoGallery({ viewpoints: [], albums: photos(count).map((photo) => ({ album: photo.photo_id, photos: [photo] })) }, "synthetic-entry").albums.length;
+        // A viewpoint name of 64 code points, each two UTF-16 units.
+        return parsePhotoGallery({ viewpoints: [{ viewpoint_id: "v1", name: "\u{1F600}".repeat(64), mission_id: 7, x: 0, y: 0, heading: 0, room_id: "r1" }], albums: photos(count).map((photo) => ({ album: photo.photo_id, photos: [photo] })) }, "synthetic-entry").albums.length;
       } catch (error) {
         return error.code;
       }
