@@ -126,6 +126,24 @@ test("Save explains what is missing and what the robot refused, and keeps the pl
   expect((await marks(panel)).draft).toBeNull();
 });
 
+test("a save that finishes after Cancel leaves the next viewpoint being placed alone", async ({ page }) => {
+  const panel = await mount(page);
+  const view = editor(panel);
+  await page.evaluate(() => { window.__viewpointHold = new Promise((resolve) => { window.__release = resolve; }); });
+  await view.getByRole("button", { name: "Add viewpoint" }).click();
+  await tap(page, panel, 0.5, 0.9);
+  await view.getByRole("textbox", { name: "Name" }).fill("Stove");
+  await view.getByRole("button", { name: "Save viewpoint" }).click();
+  await expect.poll(async () => (await writes(page)).length).toBe(1);
+  await view.getByRole("button", { name: "Cancel" }).click();
+  await view.getByRole("button", { name: "Add viewpoint" }).click();
+  await tap(page, panel, 1.3, 0.5);
+  await page.evaluate(() => window.__release());
+  await expect(view.getByRole("listitem")).toHaveText([/^Back door/, /^Stove/]);
+  near((await marks(panel)).draft.spot.x, 1.3);
+  await expect(view.getByRole("textbox", { name: "Name" })).toBeVisible();
+});
+
 test("Delete asks once more, then removes the viewpoint from the list and the map", async ({ page }) => {
   const panel = await mount(page);
   const view = editor(panel);

@@ -144,9 +144,13 @@ li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space
       const saved = await backend.saveViewpoint(entryId, {
         name, x: draft.spot.x, y: draft.spot.y, heading: draft.heading, map_session_key: marks.mapSessionKey,
       });
-      this.#returnFocus = true;
+      if (!this.isConnected) return;
       this.#changed([...this.viewpoints, saved]);
-      this.emit({ type: "edit-viewpoint", draft: null });
+      // Only the draft this save sent is done; one cancelled, moved or started since stays.
+      if (this.marks?.draft === draft) {
+        this.#returnFocus = true;
+        this.emit({ type: "edit-viewpoint", draft: null });
+      }
     } catch (error) {
       this._error = this.#refusal(error) ?? this.#t("v4_viewpoint_save_failed", "Couldn't save the viewpoint. Try again.");
     } finally {

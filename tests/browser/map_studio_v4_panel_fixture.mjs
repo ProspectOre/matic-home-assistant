@@ -300,6 +300,8 @@ export async function installPanelFixture(page, {
       if (photoGallery && path.startsWith("/api/matic_robot/photo_gallery/synthetic-entry/viewpoints")) {
         const body = options.body ? JSON.parse(options.body) : null;
         window.__viewpointWrites = [...window.__viewpointWrites ?? [], { method: options.method, path, body }];
+        // A test can hold the answer until it resolves window.__viewpointHold.
+        await window.__viewpointHold;
         const reply = window.__viewpointReply;
         if (reply) return new Response(reply.body ? JSON.stringify(reply.body) : null, { status: reply.status, headers: { "Content-Type": "application/json" } });
         if (options.method === "DELETE") return new Response(null, { status: 204 });
