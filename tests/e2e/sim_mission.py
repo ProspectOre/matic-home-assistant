@@ -15,13 +15,6 @@ import struct
 from dataclasses import dataclass
 from uuid import UUID
 
-from tests.wire_builders import _bfield as bytes_field
-from tests.wire_builders import _fixed32 as fixed32_float
-from tests.wire_builders import _fixed64 as fixed64
-from tests.wire_builders import _sint32
-from tests.wire_builders import _varint as varint
-from tests.wire_builders import _vfield as varint_field
-
 # ``active_session_key`` while no task is held: Hermes' 16-byte tombstone.
 IDLE_SESSION_KEY = bytes(16)
 
@@ -29,8 +22,34 @@ ROOM_STATUS_COMPLETED = 2
 ROOM_STATUS_PARTIAL = 1
 
 
+def varint(value: int) -> bytes:
+    """Encode an unsigned integer as a protobuf base-128 varint."""
+    result = bytearray()
+    while value > 0x7F:
+        result.append((value & 0x7F) | 0x80)
+        value >>= 7
+    result.append(value)
+    return bytes(result)
+
+
+def bytes_field(number: int, value: bytes) -> bytes:
+    return varint((number << 3) | 2) + varint(len(value)) + value
+
+
+def varint_field(number: int, value: int) -> bytes:
+    return varint(number << 3) + varint(value)
+
+
+def fixed32_float(number: int, value: float) -> bytes:
+    return varint((number << 3) | 5) + struct.pack("<f", value)
+
+
 def fixed32_int(number: int, value: int) -> bytes:
     return varint((number << 3) | 5) + struct.pack("<I", value)
+
+
+def fixed64(number: int, value: int) -> bytes:
+    return varint((number << 3) | 1) + struct.pack("<Q", value)
 
 
 def schedule_event(
@@ -604,11 +623,16 @@ def map_pages(
         + bytes_field(8, bytes_field(1, plane))
     )
     keys = [
-        bytes_field(1, varint_field(3, _sint32(x)) + varint_field(4, _sint32(y)))
+        bytes_field(1, varint_field(3, zigzag(x)) + varint_field(4, zigzag(y)))
         for x in pages_x
         for y in pages_y
     ]
     return [(key, photo) for key in keys], [(key, structure) for key in keys]
+
+
+def zigzag(value: int) -> int:
+    """Zigzag-encode a signed 32-bit integer for a sint32 field."""
+    return (value << 1) ^ (value >> 31)
 
 
 def earlier_session(floor: SimFloor, ended_at: int) -> tuple[bytes, bytes]:

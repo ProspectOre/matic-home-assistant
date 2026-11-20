@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -455,3 +456,25 @@ def test_release_below_the_floor_gets_the_refusal_drill(
         (upgrade_drill.ROOT.name, "refused"),
         ("older", "restore"),
     ]
+
+
+def test_harness_imports_only_what_the_drill_copies() -> None:
+    """The older release's tree gets the harness alone, so it must stand alone.
+
+    A function may still import one of that tree's own test modules.
+    """
+    root = Path(upgrade_drill.ROOT)
+    copied = tuple(path.replace("/", ".") for path in upgrade_drill.HARNESS)
+    outside = [
+        f"{module.relative_to(root)}: {node.module}"
+        for harness in upgrade_drill.HARNESS
+        for module in sorted((root / harness).glob("*.py"))
+        if not module.name.startswith("test_")
+        for node in ast.parse(module.read_text()).body
+        if isinstance(node, ast.ImportFrom)
+        and not node.level
+        and node.module is not None
+        and node.module.split(".")[0] == "tests"
+        and not node.module.startswith(copied)
+    ]
+    assert outside == []
