@@ -134,12 +134,12 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   override connectedCallback(): void {
     super.connectedCallback();
     // Home Assistant fires this when it navigates an open panel to a new link.
-    window.addEventListener("location-changed", this.#openLinked);
+    window.addEventListener("location-changed", this.#linkArrived);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    window.removeEventListener("location-changed", this.#openLinked);
+    window.removeEventListener("location-changed", this.#linkArrived);
     this.#reset();
   }
 
@@ -178,7 +178,7 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
       this._load = "ready";
       this.emit({ type: "show-photo-marks", marks: photoMarks(gallery) });
       const previews = this.#readPreviews(0);
-      void this.#openLinked();
+      void this.#openLinked(true);
       await previews;
     } catch {
       if (!controller.signal.aborted) this._load = "failed";
@@ -237,13 +237,19 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     return sections;
   }
 
-  /** Opens the photo a link names, with its tile in the grid, and forgets the link. */
-  readonly #openLinked = async (): Promise<void> => {
+  readonly #linkArrived = (): void => void this.#openLinked();
+
+  /**
+   * Opens the photo a link names, with its tile in the grid, and forgets the
+   * link. A photo taken since the last read reads the photos again first.
+   */
+  async #openLinked(fresh = false): Promise<void> {
     const link = photoLink();
     if (!link || link.entryId !== this.entryId || !this._gallery) return;
-    forgetPhotoLink();
     const photos = this.#photos();
     const index = photos.findIndex((photo) => photo.id === link.photoId);
+    if (index < 0 && !fresh) return this.#read();
+    forgetPhotoLink();
     this._linkMissing = index < 0;
     if (index < 0) return;
     for (let from = this._shown; from <= index; from += PAGE) {
@@ -254,7 +260,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     await this.updateComplete;
     // Closing the viewer returns focus to the photo's tile, as after a tap.
     this.#opener = this.renderRoot.querySelectorAll<HTMLElement>(".shot")[index] ?? null;
-  };
+  }
+
 
   async #show(photo: GalleryPhoto, opener?: HTMLElement): Promise<void> {
     if (opener) this.#opener = opener;

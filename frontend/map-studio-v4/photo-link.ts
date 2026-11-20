@@ -28,11 +28,11 @@ export const forgetPhotoLink = (): void => {
 
 /**
  * Opens Photos for the linked robot once its map is in or Matic Map stops
- * waiting for it; Photos then opens the photo. Home Assistant can navigate an
- * open panel to a new link, so `check` runs on each route change too.
+ * waiting for it; Photos then opens the photo, including a link that arrives
+ * while it is open. Home Assistant can navigate an open panel to a new link,
+ * so `check` runs on each route change too.
  */
 export class PhotoLinkOpener {
-  #opened = "";
   readonly #store: WorkspaceStore;
   readonly #route: (intent: WorkspaceIntent) => void;
   readonly #unsubscribe: () => void;
@@ -45,18 +45,16 @@ export class PhotoLinkOpener {
 
   check(): void {
     const link = photoLink();
-    const key = link ? `${link.entryId}\n${link.photoId}` : "";
-    if (!link || key === this.#opened) return;
     const state = this.#store.value;
-    if (!state.owner || !state.optionalUiReady) return;
+    if (!link || !state.owner || !state.optionalUiReady) return;
     if (!state.robots.some((robot) => robot.entryId === link.entryId)) {
       // A removed robot's photos are gone with it.
       if (state.robots.length) forgetPhotoLink();
       return;
     }
     if (state.selection.entryId !== link.entryId) return this.#route({ type: "select-entry", entryId: link.entryId });
-    if (state.resources.entry?.entryId !== link.entryId) return;
-    this.#opened = key;
+    // Open Photos reads the link itself.
+    if (state.resources.entry?.entryId !== link.entryId || state.workflow === "photos") return;
     this.#route({ type: "open-workflow", workflow: "photos" });
   }
 

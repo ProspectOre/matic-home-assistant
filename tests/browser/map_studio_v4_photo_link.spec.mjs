@@ -69,6 +69,45 @@ test("a link that arrives while Photos is open opens its photo", async ({ page }
   expect(await address(page)).toBe("/matic-map");
 });
 
+test("a link to a photo taken since Photos opened reads the photos again", async ({ page }) => {
+  const panel = await mount(page, null);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+  await panel.getByRole("button", { name: /^Photos See photos the robot took/ }).click();
+  const gallery = panel.locator("matic-photo-gallery-v4");
+  await expect(gallery.locator(".shot")).toHaveCount(60);
+
+  const taken = { ...shot(0), photo_id: "new", captured_at: "2026-11-19T13:00:00.000Z", area: "Porch",
+    url: `${ROUTE}/new`, preview_url: `${ROUTE}/preview/new` };
+  await page.evaluate((gallery) => {
+    window.__photoGalleryReply = gallery;
+    history.pushState(null, "", "/matic-map?entry=synthetic-entry&photo=new");
+    window.dispatchEvent(new Event("location-changed"));
+  }, { ...GALLERY, albums: [{ album: "manual", photos: [taken, ...GALLERY.albums[0].photos] }] });
+
+  await expect(gallery.getByRole("dialog")).toHaveAccessibleName(/^Porch · /);
+  await expect(gallery.getByRole("status")).toHaveCount(0);
+  expect(await address(page)).toBe("/matic-map");
+});
+
+test("the same notification opens Photos again after it was closed", async ({ page }) => {
+  const panel = await mount(page, "entry=synthetic-entry&photo=q65");
+  const gallery = panel.locator("matic-photo-gallery-v4");
+  await expect(gallery.getByRole("dialog")).toHaveAccessibleName(/^Hall · /);
+  await gallery.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  await panel.getByRole("button", { name: "Back to all tasks" }).click();
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().workflow)).toBe("none");
+
+  // Home Assistant navigates the open panel and hands it a new route.
+  await panel.evaluate((element) => {
+    history.pushState(null, "", "/matic-map?entry=synthetic-entry&photo=q65");
+    window.dispatchEvent(new Event("location-changed"));
+    element.route = { prefix: "/matic-map", path: "" };
+  });
+
+  await expect(gallery.getByRole("dialog")).toHaveAccessibleName(/^Hall · /);
+  expect(await address(page)).toBe("/matic-map");
+});
+
 test("a link to a robot that is gone is dropped without opening Photos", async ({ page }) => {
   const panel = await mount(page, "entry=removed-entry&photo=q1");
 
