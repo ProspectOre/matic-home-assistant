@@ -154,7 +154,6 @@ actions:
       - stop: Sent home
   - variables:
       sensor_name: "{{ trigger.to_state.name }}"
-      started: "{{ now().isoformat() }}"
       place: "{{ viewpoint | trim or room | trim }}"
       tour_stop: >-
         {{ {'viewpoint': viewpoint | trim} if viewpoint | trim
@@ -189,27 +188,44 @@ actions:
     target:
       entity_id: "{{ vacuum }}"
     data: >-
-      {{ dict({'stops': [tour_stop], 'full_resolution': full_resolution_notification},
+      {{ dict({'stops': [tour_stop], 'report_failures': true,
+               'full_resolution': full_resolution_notification},
               **({'question': question, 'ai_task_entity_id': ai_task_entity_id}
                  if ai_task_entity_id else {})) }}
     response_variable: tour
     continue_on_error: true
   - variables:
-      photos: >-
-        {{ tour.robots[0].photos
+      result: >-
+        {{ tour.robots[0]
            if tour is defined and tour.robots | default([]) | length > 0
-           else [] }}
+           else {'photos': []} }}
+      photos: "{{ result.photos }}"
+      # Short, plain words for the phone; anything else uses the action's own.
+      failure: >-
+        {% set reason = result.error.reason if result.error is defined else '' %}
+        {{ {
+          'photo_tour_stopped': 'Photo check stopped.',
+          'photo_tour_low_battery': "Matic's battery is too low for a photo check.",
+          'photo_tour_battery_unknown': "Matic's battery level is unknown, so it stayed docked.",
+          'photo_tour_robot_busy': 'Matic is busy, so the photo check was skipped.',
+          'photo_tour_running': 'Matic is already taking photos.',
+          'photo_tour_cooldown': "Matic looked recently, so it didn't go again.",
+          'photo_tour_schedule_conflict': 'A scheduled clean is due, so Matic stayed docked.',
+          'photo_tour_not_opted_in': "Photo checks are off in Matic's settings.",
+          'photo_tour_room_blocked': 'Photos are off in ' ~ place ~ '.',
+          'photo_tour_no_arrival': "Matic couldn't reach " ~ place ~ '. Is a door closed?',
+          'photo_tour_no_photo': "The camera didn't respond in " ~ place ~ '.',
+          'photo_tour_unreachable': "Matic isn't reachable.",
+          'viewpoint_unknown': 'There is no viewpoint called ' ~ place ~ '.',
+          'viewpoint_other_floor': place ~ ' is on another floor.',
+        }.get(reason, result.error.message if result.error is defined
+                      else "Matic couldn't get a photo of " ~ place ~ '.') }}
   - if: "{{ photos | length == 0 }}"
     then:
       - action: "{{ notify_service }}"
         data:
           title: "{{ sensor_name }}"
-          # Send home is the only trigger that runs during a check, and it
-          # stops the tour.
-          message: >-
-            {% set last = state_attr(this.entity_id, 'last_triggered') %}
-            {{ 'Photo check stopped.' if last and last > as_datetime(started)
-               else "Matic couldn't get a photo of " ~ place ~ '.' }}
+          message: "{{ failure }}"
           data: "{{ dict(phone_data, tag=tag) if phone_app else {} }}"
     else:
       # The first photo replaces the notification; a look-around adds the rest

@@ -13,8 +13,17 @@ from tests.test_services import _registered_handler, _registered_services
 SERVICE = "custom_components.matic_robot.service_photos"
 
 
-async def _run(entity_ids: list[str], check: object) -> tuple[object, AsyncMock]:
-    """Call the action; return its response or the error it raised."""
+async def _run(
+    entity_ids: list[str],
+    check: object,
+    *,
+    report_failures: bool = False,
+    tour_error: HomeAssistantError | None = None,
+) -> tuple[object, AsyncMock]:
+    """Call the action; return its response or the error it raised.
+
+    With ``tour_error``, the tour fails that way for the first robot only.
+    """
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
     call = ServiceCall(
@@ -25,10 +34,13 @@ async def _run(entity_ids: list[str], check: object) -> tuple[object, AsyncMock]
             "entity_id": entity_ids,
             "stops": [{"viewpoint": "Stove", "look_around": 1}],
             "full_resolution": False,
+            "report_failures": report_failures,
         },
     )
     taken = [{"viewpoint": "Stove", "url": "/api/matic_robot/photo/e/p"}]
     tour = AsyncMock(return_value=taken)
+    if tour_error is not None:
+        tour.side_effect = [tour_error, taken]
     with (
         patch(
             "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
@@ -83,4 +95,53 @@ async def test_no_robot_moves_when_another_lacks_a_stop() -> None:
 
     assert isinstance(raised, HomeAssistantError)
     assert raised.translation_key == "viewpoint_unknown"
+    tour.assert_not_awaited()
+
+
+def _error(reason: str) -> HomeAssistantError:
+    return HomeAssistantError(f"Message for {reason}", translation_key=reason)
+
+
+async def test_reported_failures_name_the_robot_and_the_others_carry_on() -> None:
+    response, tour = await _run(
+        ["vacuum.a", "vacuum.b"],
+        None,
+        report_failures=True,
+        tour_error=_error("photo_tour_low_battery"),
+    )
+
+    failed, done = response["robots"]
+    assert failed == {
+        "entity_id": "vacuum.a",
+        "photos": [],
+        "error": {
+            "reason": "photo_tour_low_battery",
+            "message": "Message for photo_tour_low_battery",
+        },
+    }
+    assert tour.await_count == 2
+    assert done["entity_id"] == "vacuum.b"
+    assert len(done["photos"]) == 1
+
+
+async def test_a_failure_is_raised_unless_reported() -> None:
+    raised, _tour = await _run(
+        ["vacuum.a", "vacuum.b"], None, tour_error=_error("photo_tour_low_battery")
+    )
+
+    assert isinstance(raised, HomeAssistantError)
+    assert raised.translation_key == "photo_tour_low_battery"
+
+
+async def test_a_stop_one_robot_lacks_is_reported_for_every_robot() -> None:
+    def check(entry: str, _stops: list[TourStop]) -> None:
+        if entry == "entry:vacuum.b":
+            raise _error("viewpoint_unknown")
+
+    response, tour = await _run(["vacuum.a", "vacuum.b"], check, report_failures=True)
+
+    assert [robot["error"]["reason"] for robot in response["robots"]] == [
+        "viewpoint_unknown",
+        "viewpoint_unknown",
+    ]
     tour.assert_not_awaited()

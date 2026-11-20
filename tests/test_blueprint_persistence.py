@@ -268,6 +268,7 @@ async def test_import_save_reload_and_source_trigger(
         assert calls[1].data == {
             "entity_id": [VACUUM],
             "stops": [{"room": "Kitchen"}],
+            "report_failures": True,
             "full_resolution": False,
             "question": (
                 "Is there a safety problem visible, such as water, smoke or an open "
