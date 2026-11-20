@@ -375,6 +375,10 @@
         106,
       ]),
     }),
+    'photos': dict({
+      'bytes': 0,
+      'saved': 0,
+    }),
     'robot': dict({
       'encrypted': True,
       'hardware_revision': 'sim',
