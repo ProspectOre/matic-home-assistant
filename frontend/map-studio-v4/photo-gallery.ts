@@ -1,10 +1,11 @@
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
 import type { MaticBackend } from "./backend";
 import { controls } from "./controls";
-import type { DateFormat, Localize, NoticePlaceholders, PhotoMarks, WorkspaceIntent } from "./contracts";
+import type { DateFormat, Localize, NoticePlaceholders, PhotoMarks, ViewpointDraft, WorkspaceIntent } from "./contracts";
 import { formatDateTime, translate } from "./localize";
-import type { GalleryPhoto, PhotoAlbum, PhotoGallery } from "./photo-gallery-data";
+import type { GalleryPhoto, GalleryViewpoint, PhotoAlbum, PhotoGallery } from "./photo-gallery-data";
 import { base, tokens } from "./tokens";
+import "./viewpoint-editor";
 
 export const PHOTO_GALLERY_TAG = "matic-photo-gallery-v4";
 
@@ -20,10 +21,11 @@ const SWIPE = 48;
 type Load = "loading" | "ready" | "failed";
 
 /** The saved viewpoints on the map the server named, for the map canvas. */
-const photoMarks = ({ map, viewpoints }: PhotoGallery): PhotoMarks | null => map && {
+const photoMarks = ({ map, viewpoints }: PhotoGallery, draft: ViewpointDraft | null = null): PhotoMarks | null => map && {
   mapSessionKey: map.mapSessionKey,
   viewpoints: viewpoints.filter((viewpoint) => viewpoint.missionId === map.missionId)
     .map(({ id, name, x, y, heading }) => ({ id, name, x, y, heading })),
+  draft,
 };
 
 /**
@@ -38,6 +40,7 @@ export class MaticPhotoGalleryV4 extends LitElement {
     localize: { attribute: false },
     dates: { attribute: false },
     emit: { attribute: false },
+    marks: { attribute: false },
     _load: { state: true },
     _gallery: { state: true },
     _previews: { state: true },
@@ -56,7 +59,6 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
 .shot { display: block; inline-size: 100%; aspect-ratio: 4 / 3; padding: 0; border: 1px solid var(--ms-line); border-radius: var(--ms-radius-sm); background: var(--ms-surface-sunken); overflow: hidden; cursor: pointer; }
 .shot:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 2px; }
 .shot img { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; }
-.views { display: grid; gap: var(--ms-space-1); margin: 0; padding: 0; list-style: none; font-size: var(--ms-t-sm); }
 .viewer { box-sizing: border-box; inline-size: 100vw; max-inline-size: none; block-size: 100dvh; max-block-size: none; margin: 0; padding: var(--ms-space-3); border: 0; background: rgb(0 0 0 / 0.94); color: #fff; touch-action: pan-y; }
 .viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: var(--ms-space-2); }
 .viewer::backdrop { background: rgb(0 0 0 / 0.6); }
@@ -72,6 +74,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
   dates?: DateFormat;
   /** The workflow panel's intent dispatch, which draws the viewpoints on the map. */
   emit: (intent: WorkspaceIntent) => void = () => {};
+  /** Photos' marks on the map shown now, or null when viewpoints can't be placed on it. */
+  marks: PhotoMarks | null = null;
   _load: Load = "loading";
   _gallery: PhotoGallery | null = null;
   /** Object URLs of fetched previews, by photo ID. */
@@ -301,6 +305,13 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
     </dialog>`;
   }
 
+  readonly #viewpointsChanged = (event: CustomEvent<readonly GalleryViewpoint[]>): void => {
+    if (!this._gallery) return;
+    this._gallery = { ...this._gallery, viewpoints: event.detail };
+    // A delete while placing keeps the viewpoint being placed.
+    this.emit({ type: "show-photo-marks", marks: photoMarks(this._gallery, this.marks?.draft ?? null) });
+  };
+
   protected override render() {
     if (this._load === "loading") return html`<p class="subtle" role="status">${this.#t("v4_photos_loading", "Loading photos…")}</p>`;
     if (this._load === "failed" || !this._gallery) {
@@ -312,10 +323,8 @@ h3 { margin: 0 0 var(--ms-space-2); font-size: var(--ms-t-md); font-weight: var(
       ${albums.length ? this.#sections().map(({ album, photos }) => this.#album(album, photos))
         : html`<p class="subtle">${this.#t("v4_photos_empty", "No photos yet. Press Take photo, or run a photo tour from an automation.")}</p>`}
       ${this.#photos().length > this._shown ? html`<div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => void this.#more()}>${this.#t("v4_photos_more", "Show older photos")}</button></div>` : nothing}
-      ${viewpoints.length ? html`<section>
-        <h3>${this.#t("v4_photos_viewpoints", "Saved viewpoints")}</h3>
-        <ul class="views">${viewpoints.map((viewpoint) => html`<li>${viewpoint.name}</li>`)}</ul>
-      </section>` : nothing}
+      <matic-viewpoint-editor-v4 .backend=${this.backend} .entryId=${this.entryId} .localize=${this.localize} .dates=${this.dates}
+        .emit=${this.emit} .viewpoints=${viewpoints} .marks=${this.marks} @viewpoints-changed=${this.#viewpointsChanged}></matic-viewpoint-editor-v4>
       ${this._open ? this.#viewer(this._open) : nothing}
     </div>`;
   }

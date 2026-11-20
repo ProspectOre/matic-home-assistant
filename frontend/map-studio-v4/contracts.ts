@@ -398,10 +398,18 @@ export interface ViewpointMark {
   readonly heading: number;
 }
 
+/** A viewpoint being placed: the spot once the map is tapped, and the way the camera faces. */
+export interface ViewpointDraft {
+  readonly spot: { readonly x: number; readonly y: number } | null;
+  readonly heading: number;
+}
+
 export interface PhotoMarks {
   /** The map the viewpoints belong to; they are drawn only while it is shown. */
   readonly mapSessionKey: string;
   readonly viewpoints: readonly ViewpointMark[];
+  /** A viewpoint being placed on this map; while it is set, a map tap places or aims it. */
+  readonly draft: ViewpointDraft | null;
 }
 
 export interface ReportedState {
@@ -606,6 +614,10 @@ export type WorkspaceIntent =
   | { readonly type: "show-trail"; readonly trail: string | null }
   /** Photos' saved viewpoints for the map, or null while a read is under way. */
   | { readonly type: "show-photo-marks"; readonly marks: PhotoMarks | null }
+  /** Starts, turns or ends placing a viewpoint on the map Photos shows. */
+  | { readonly type: "edit-viewpoint"; readonly draft: ViewpointDraft | null }
+  /** A map tap while a viewpoint is placed: the first sets its spot, later ones aim it. */
+  | { readonly type: "place-viewpoint"; readonly point: { readonly x: number; readonly y: number } }
   | { readonly type: "load-run-thumbnail"; readonly id: string };
 
 /** A saved plan or custom area shown on home as a one-tap shortcut. */
@@ -837,6 +849,8 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "reload-home-pins": true,
   "show-trail": true,
   "show-photo-marks": true,
+  "edit-viewpoint": true,
+  "place-viewpoint": true,
   "load-run-thumbnail": true,
 };
 

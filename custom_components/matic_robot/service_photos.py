@@ -10,7 +10,6 @@ from homeassistant.util.json import JsonValueType
 
 from . import service_context as context
 from .client import pose_observation_is_current
-from .const import CONF_PHOTO_NO_PHOTO_ROOMS
 from .photo_tours import TourStop, async_run_photo_tour, check_photo_tour
 from .robot_commands import validation_error
 from .service_context import ServiceRuntime, register_robot_action
@@ -24,7 +23,7 @@ from .service_schemas import (
     RUN_PHOTO_TOUR_SERVICE_SCHEMA,
     SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
 )
-from .viewpoints import readable_zones
+from .viewpoints import async_save_viewpoint, current_floor_plan
 
 
 def register_photo_services(runtime: ServiceRuntime) -> None:
@@ -67,25 +66,18 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
-    async def async_save_viewpoint(
+    async def async_save_action(
         call: ServiceCall, entity_ids: list[str]
     ) -> ServiceResponse:
         """Save a viewpoint from the given spot, or where the robot stands."""
         entity_id = _one_robot(entity_ids)
         entry = context._entry_for_entity(hass, entity_id)
-        session = entry.runtime_data.session
-        floor_plan = session.floor.value
-        if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
-            floor_plan
-        ):
-            raise validation_error(
-                "The robot's map is unavailable", "viewpoint_map_unavailable"
-            )
+        floor_plan = current_floor_plan(entry)
         if "x" in call.data:
             x, y = call.data["x"], call.data["y"]
             heading = math.radians(call.data["heading"])
         else:
-            pose = session.pose_on(floor_plan)
+            pose = entry.runtime_data.session.pose_on(floor_plan)
             if (
                 not pose_observation_is_current(pose, floor_plan)
                 or pose.heading is None
@@ -95,14 +87,8 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
                     "viewpoint_pose_unavailable",
                 )
             x, y, heading = pose.x, pose.y, pose.heading
-        viewpoint = await entry.runtime_data.viewpoints.async_save(
-            call.data["name"],
-            floor_plan,
-            readable_zones(entry),
-            set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ())),
-            x=x,
-            y=y,
-            heading=heading,
+        viewpoint = await async_save_viewpoint(
+            entry, floor_plan, call.data["name"], x=x, y=y, heading=heading
         )
         room = next(
             room.name for room in floor_plan.rooms if room.id == viewpoint.room_id
@@ -118,7 +104,7 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
     register_robot_action(
         hass,
         SERVICE_SAVE_PHOTO_VIEWPOINT,
-        async_save_viewpoint,
+        async_save_action,
         SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
         admin_only=True,

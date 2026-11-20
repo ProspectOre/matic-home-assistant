@@ -34,6 +34,7 @@ from .slam_history_view import (
 )
 from .slam_run_history_view import MaticRunHistoryView
 from .slam_scene import MaticSlamScenePagesView, MaticSlamSceneView
+from .viewpoint_view import MaticViewpointsView, MaticViewpointView
 from .wifi_survey import MaticWifiHeatmapView
 from .workspace_socket import async_register as async_register_workspace_socket
 
@@ -159,6 +160,8 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticRunHistoryView)
     hass.http.register_view(MaticWifiHeatmapView)
     hass.http.register_view(MaticPhotoGalleryView)
+    hass.http.register_view(MaticViewpointsView)
+    hass.http.register_view(MaticViewpointView)
     hass.http.register_view(floor_layers_view)
     hass.http.register_view(run_thumbnail_view)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)

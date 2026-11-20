@@ -23,6 +23,7 @@ import { LayerRestore, rememberLayer } from "./layer-choices";
 import { PoseMotion, POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
+import { editViewpoint, placeViewpoint } from "./viewpoint-draft";
 
 const shellTag = unsafeStatic(SHELL_TAG);
 
@@ -350,6 +351,14 @@ export class MaticMapPanelV4 extends LitElement {
     }
     if (intent.type === "show-photo-marks") {
       this.#store.dispatch({ type: "result", photoMarks: intent.marks });
+      return;
+    }
+    if (intent.type === "edit-viewpoint") {
+      this.#store.dispatch({ type: "result", photoMarks: editViewpoint(this.#store.value.photoMarks, intent.draft) });
+      return;
+    }
+    if (intent.type === "place-viewpoint") {
+      this.#store.dispatch({ type: "result", photoMarks: placeViewpoint(this.#store.value.photoMarks, intent.point) });
       return;
     }
     if (intent.type === "show-trail") {

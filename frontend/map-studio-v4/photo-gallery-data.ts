@@ -121,7 +121,8 @@ const photo = (value: unknown, entryId: string): GalleryPhoto => {
   };
 };
 
-const viewpoint = (value: unknown): GalleryViewpoint => {
+/** One viewpoint, as the gallery lists it and a save returns it. */
+export const parseGalleryViewpoint = (value: unknown): GalleryViewpoint => {
   const raw = record(value);
   return {
     id: text(raw.viewpoint_id),
@@ -151,5 +152,5 @@ export function parsePhotoGallery(value: unknown, entryId: string): PhotoGallery
     return { id: text(album.album), photos: parsed };
   });
   if (photos > MAX_PHOTOS) fail("invalid-photo-gallery");
-  return { map: galleryMap(raw.map), viewpoints: list(raw.viewpoints, MAX_VIEWPOINTS).map(viewpoint), albums };
+  return { map: galleryMap(raw.map), viewpoints: list(raw.viewpoints, MAX_VIEWPOINTS).map(parseGalleryViewpoint), albums };
 }

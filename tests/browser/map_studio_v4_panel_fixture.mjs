@@ -295,6 +295,17 @@ export async function installPanelFixture(page, {
       if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
       if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
       if (photoGallery && path === "/api/matic_robot/photo_gallery/synthetic-entry") return json(window.__photoGalleryReply ?? photoGallery);
+      // Viewpoint saves and deletes (viewpoint_view.py): recorded, then answered
+      // with window.__viewpointReply ({ status, body }) or as the server would.
+      if (photoGallery && path.startsWith("/api/matic_robot/photo_gallery/synthetic-entry/viewpoints")) {
+        const body = options.body ? JSON.parse(options.body) : null;
+        window.__viewpointWrites = [...window.__viewpointWrites ?? [], { method: options.method, path, body }];
+        const reply = window.__viewpointReply;
+        if (reply) return new Response(reply.body ? JSON.stringify(reply.body) : null, { status: reply.status, headers: { "Content-Type": "application/json" } });
+        if (options.method === "DELETE") return new Response(null, { status: 204 });
+        const { map_session_key: _key, ...saved } = body;
+        return new Response(JSON.stringify({ viewpoint_id: `v${window.__viewpointWrites.length + 10}`, mission_id: 7, room_id: "r1", ...saved }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
       if (photoGallery && path.startsWith("/api/matic_robot/photo/synthetic-entry/")) {
         window.__photoReads = [...window.__photoReads ?? [], path];
         if (window.__photoFailures?.includes(path)) return new Response(null, { status: 404 });
