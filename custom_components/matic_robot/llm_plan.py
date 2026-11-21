@@ -46,7 +46,8 @@ class MaticGetPlanTool(_MaticTool):
         "Returns a read-only preview of the next run of the selected or named "
         "saved plan: room and custom area order, each one's settings, and where "
         "a settings change, Smart Stop room boundary, or custom area splits "
-        "the run into separate cleaning passes."
+        "the run into separate cleaning passes. skipped_rooms lists saved "
+        "rooms a map edit in the Matic app removed, which the run skips."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(
@@ -169,6 +170,7 @@ class MaticGetPlanTool(_MaticTool):
                         "return_to_base": preview["return_to_base"],
                     },
                     "rotation": rotation,
+                    **_skipped_rooms(preview),
                     "settings_boundary_count": max(0, len(groups) - 1),
                     "legs": [
                         leg(index, group) for index, group in enumerate(groups, start=1)
@@ -316,7 +318,7 @@ class MaticGetPlanReadinessTool(_MaticTool):
 
         try:
             room_map = {room.id: room.name for room in floor_plan.rooms}
-            manager.planning.preview(
+            preview = manager.planning.preview(
                 serial_number,
                 room_map,
                 plan_id,
@@ -335,14 +337,33 @@ class MaticGetPlanReadinessTool(_MaticTool):
                 area_states,
                 "The saved plan is not currently valid for preview.",
             )
+        skipped = _skipped_rooms(preview)
         return _plan_readiness_result(
             "ready",
             "ready",
             plan_summary,
             area_states,
-            "The saved plan is ready for preview on the current map. Robot controls "
-            "still check whether a run can start.",
+            "The saved plan is ready for preview on the current map. "
+            + (
+                "Runs skip the rooms a map edit in the Matic app removed. "
+                if skipped
+                else ""
+            )
+            + "Robot controls still check whether a run can start.",
+            skipped,
         )
+
+
+def _skipped_rooms(preview: Mapping[str, Any]) -> dict[str, Any]:
+    """Name the saved rooms a map edit removed, which the run skips."""
+    missing = preview.get("missing_rooms") or []
+    if not missing:
+        return {}
+    return {
+        "skipped_rooms": [
+            {"id": room["room_id"], "name": room["name"]} for room in missing
+        ]
+    }
 
 
 def _plan_readiness_result(
@@ -351,6 +372,7 @@ def _plan_readiness_result(
     plan: dict[str, Any],
     areas: list[dict[str, str]],
     message: str,
+    skipped: Mapping[str, Any] | None = None,
 ) -> llm.ToolResult:
     ready = status == "ready"
     return llm.ToolResult(
@@ -363,6 +385,7 @@ def _plan_readiness_result(
                 "can_preview": ready,
                 "plan": plan,
                 "areas": areas,
+                **(skipped or {}),
                 "message": message,
             },
         )

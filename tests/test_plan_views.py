@@ -99,10 +99,22 @@ async def test_preview_error_type_names_the_blocker(
     ] == [{"rooms": [], "mission_boundaries": [], "blocker": blocker}] * 4
 
 
-async def test_plan_room_missing_from_the_map_has_settings_and_no_cadence() -> None:
+async def test_plan_room_missing_from_the_map_keeps_its_settings_and_policy() -> None:
     runtime = _plans_runtime()
+    policy = {
+        "scope": "plan",
+        "coverage_every_n": 3,
+        "periodic_coverage_setting": "heavy_duty",
+    }
     runtime.cleaning_plans.catalog.plans.return_value = {
-        "old": {"name": "Old", "rooms": [{"room_id": "room-9", "cleaning_mode": "mop"}]}
+        "old": {
+            "name": "Old",
+            "rooms": [
+                {"room_id": "room-9", "cleaning_mode": "mop"},
+                {"room_id": "room-8", "cadence": policy},
+                {"room_id": "room-7", "cleaning_mode": "mop", "cadence": policy},
+            ],
+        }
     }
     runtime.cleaning_plans.catalog.known_room_names = MagicMock(return_value={})
     runtime.cleaning_plans.cadence.daily_limit_state.side_effect = None
@@ -114,6 +126,15 @@ async def test_plan_room_missing_from_the_map_has_settings_and_no_cadence() -> N
 
     response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
 
-    assert json.loads(response.body)["plans"][0]["rooms"] == [
-        {"room_id": "room-9", "cleaning_mode": "mop", "coverage_setting": "standard"}
-    ]
+    rooms = json.loads(response.body)["plans"][0]["rooms"]
+    assert rooms[0] == {
+        "room_id": "room-9",
+        "cleaning_mode": "mop",
+        "coverage_setting": "standard",
+    }
+    # Edit carries the saved policy to the room's replacement on a re-link.
+    assert rooms[1]["cadence"]["coverage_every_n"] == 3
+    assert rooms[1]["cadence_progress"] is None
+    assert rooms[1]["cadence_reasons"] == ["room_not_on_current_map"]
+    # A coverage schedule can't apply to a mop-only room, so none is shown.
+    assert "cadence" not in rooms[2]

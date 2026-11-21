@@ -2233,7 +2233,9 @@
           "robot_unavailable": "The robot's map isn't available right now. Try again once it is connected.",
           "no_matching_rooms": "No removed room has a room with the same name on the map now. Update the plans in Matic Map instead.",
           "plan_changed": "A plan changed while this was open. Open the Repair again to see what is left to move.",
-          "rooms_left": "Moved the rooms that matched. Some plans still name rooms with no replacement on the map: open each plan in Matic Map and choose Edit to update it."
+          "rooms_left": "Moved the rooms that matched. Some plans still name rooms with no replacement on the map: open each plan in Matic Map and choose Edit to update it.",
+          "room_busy": "A run is using one of these rooms, so nothing was moved. Open the Repair again when the run is over.",
+          "schedule_unconfirmed": "A shared room schedule isn't confirmed on the current map, so nothing was moved. Open the plan in Matic Map, check the room's schedule, then open the Repair again."
         }
       }
     }

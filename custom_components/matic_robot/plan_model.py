@@ -172,6 +172,10 @@ class SharedRoomScheduleLockedError(ValueError):
     """Raised when a run or cadence mutation owns this shared room schedule."""
 
 
+class CadenceRoomBusyError(ValueError):
+    """Raised when an edit would change the schedule of a room a run owns."""
+
+
 class AmbiguousRoomError(ValueError):
     """Raised when a room reference matches more than one room."""
 

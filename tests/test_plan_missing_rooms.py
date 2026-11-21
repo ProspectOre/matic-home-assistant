@@ -21,10 +21,13 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.execution_planning import _plan_rooms
 from custom_components.matic_robot.plan_catalog import PlanCatalog
 from custom_components.matic_robot.plan_model import (
+    CadenceBindingError,
+    CadenceRoomBusyError,
     DuplicateRoomError,
     PlanAreaMissingError,
     PlanRoomMissingError,
     PlanRoomsHeldError,
+    SharedRoomScheduleLockedError,
     missing_plan_rooms,
     relink_plan_rooms,
     resolve_rooms,
@@ -398,6 +401,7 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
             info=SimpleNamespace(serial_number="serial"),
         ),
         cleaning_plans=SimpleNamespace(catalog=catalog),
+        slam_map=SimpleNamespace(floor_plan_is_current=lambda _floor: True),
     )
     entry.state = ConfigEntryState.NOT_LOADED
     flow = PlanRoomRepairFlow("entry")
@@ -431,6 +435,14 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
         form = await flow.async_step_init({})
         catalog.async_relink_plan_rooms.assert_not_awaited()
     assert (await flow.async_step_init({}))["reason"] == "plan_changed"
+    # A run that owns a room, or a schedule the map doesn't confirm, says so.
+    for error, reason in (
+        (CadenceRoomBusyError("running"), "room_busy"),
+        (SharedRoomScheduleLockedError("locked"), "room_busy"),
+        (CadenceBindingError("unbound"), "schedule_unconfirmed"),
+    ):
+        catalog.async_relink_plan_rooms.side_effect = error
+        assert (await flow.async_step_init({}))["reason"] == reason
     links = catalog.async_relink_plan_rooms.await_args
     assert links.args == ("serial", {"home": {"room-old": "room-study"}})
     # The save checks, under its locks, that the map is still the one shown.
@@ -441,6 +453,11 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
     entry.runtime_data.session.floor.value = None
     with pytest.raises(ValueError, match="map changed"):
         links.kwargs["precondition"]()
+    entry.runtime_data.session.floor.value = floor
+    entry.runtime_data.slam_map.floor_plan_is_current = lambda _floor: False
+    with pytest.raises(ValueError, match="map changed"):
+        links.kwargs["precondition"]()
+    entry.runtime_data.slam_map.floor_plan_is_current = lambda _floor: True
     entry.state = ConfigEntryState.UNLOAD_IN_PROGRESS
     with pytest.raises(ValueError, match="unloaded"):
         links.kwargs["precondition"]()

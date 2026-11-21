@@ -11,7 +11,7 @@ from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
-from .cadence import CoverageCadenceRequiresVacuumError
+from .cadence import CoverageCadenceRequiresVacuumError, normalize_cadence_policy
 from .client import CleaningMode, CoverageSetting, is_sha256_hex
 from .http import (
     PLANS_API_URL,
@@ -396,8 +396,37 @@ def _plan_rooms(floor: _Floor, plan_id: str, raw_rooms: list[object]) -> list[Pl
             )
             if cadence["cadence"] is not None or cadence.get("cadence_reasons", []):
                 projection = {**projection, **cadence}
+        elif (
+            policy := _stored_policy(room, cleaning_mode, coverage_setting)
+        ) is not None:
+            # A re-link in Edit carries the policy to the room's replacement.
+            projection = {
+                **projection,
+                "cadence": policy,
+                "cadence_progress": None,
+                "cadence_reasons": ["room_not_on_current_map"],
+            }
         rooms.append(projection)
     return rooms
+
+
+def _stored_policy(
+    room: Mapping[str, Any], cleaning_mode: str, coverage_setting: str
+) -> CadencePolicy | None:
+    """Return an off-map room's saved schedule policy, if it has a valid one."""
+    if room.get("cadence") is None:
+        return None
+    try:
+        return cast(
+            CadencePolicy,
+            normalize_cadence_policy(
+                room["cadence"],
+                cleaning_mode=cleaning_mode,
+                coverage_setting=coverage_setting,
+            ),
+        )
+    except ValueError:
+        return None
 
 
 def _area_name(floor: _Floor, area_id: str) -> str:

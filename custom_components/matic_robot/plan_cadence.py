@@ -40,6 +40,7 @@ from .managed_run import validation_error
 from .plan_model import (
     CadenceMapChangedError,
     CadenceProgressUnverifiedError,
+    CadenceRoomBusyError,
     CleaningRoom,
     RoomMapChangedError,
     SharedCadenceUnavailableError,
@@ -924,7 +925,9 @@ class PlanCadence:
                 else None
             )
             if old_binding != new_binding:
-                raise ValueError("room cadence cannot change while its plan is running")
+                raise CadenceRoomBusyError(
+                    "room cadence cannot change while its plan is running"
+                )
         if pending is not None and pending["plan_id"] == plan_id:
             room_id = pending["room_id"]
             old_plan = robot["plans"].get(plan_id, {})
@@ -955,7 +958,7 @@ class PlanCadence:
                 else None
             )
             if old_binding != new_binding:
-                raise ValueError(
+                raise CadenceRoomBusyError(
                     "room cadence cannot change while completion is being verified"
                 )
         if shared_updates and (

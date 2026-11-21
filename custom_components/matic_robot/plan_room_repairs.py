@@ -9,11 +9,15 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 
 from .client import FloorPlan
 from .const import DOMAIN
 from .plan_model import (
+    CadenceBindingError,
+    CadenceRoomBusyError,
+    SharedRoomScheduleLockedError,
     missing_plan_rooms,
     plan_floor_token,
     plan_on_another_floor,
@@ -21,6 +25,7 @@ from .plan_model import (
     room_cadence_identity,
 )
 from .repair_placeholders import repair_placeholders
+from .room_coherence import current_floor_plan
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -142,11 +147,11 @@ class PlanRoomRepairFlow(RepairsFlow):
         entry: MaticConfigEntry | None = self.hass.config_entries.async_get_entry(
             self._entry_id
         )
-        if (
-            entry is None
-            or entry.state is not ConfigEntryState.LOADED
-            or (floor_plan := entry.runtime_data.session.floor.value) is None
-        ):
+        if entry is None or entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="robot_unavailable")
+        try:
+            floor_plan = current_floor_plan(entry)
+        except ServiceValidationError:
             return self.async_abort(reason="robot_unavailable")
         catalog = entry.runtime_data.cleaning_plans.catalog
         serial_number = entry.runtime_data.session.info.serial_number
@@ -182,6 +187,10 @@ class PlanRoomRepairFlow(RepairsFlow):
                 },
                 precondition=lambda: self._require_floor(entry, shown[1]),
             )
+        except CadenceRoomBusyError, SharedRoomScheduleLockedError:
+            return self.async_abort(reason="room_busy")
+        except CadenceBindingError:
+            return self.async_abort(reason="schedule_unconfirmed")
         except ValueError:
             return self.async_abort(reason="plan_changed")
         if _stale_plans(catalog.plans(serial_number), floor_plan):
@@ -195,6 +204,9 @@ class PlanRoomRepairFlow(RepairsFlow):
         """Refuse the save once the live map is not the confirmed one."""
         if entry.state is not ConfigEntryState.LOADED:
             raise ValueError("the robot unloaded after the moves were confirmed")
-        live = entry.runtime_data.session.floor.value
-        if live is None or plan_floor_token(live) != floor_token:
+        try:
+            live = current_floor_plan(entry)
+        except ServiceValidationError as err:
+            raise ValueError("the map changed after the moves were confirmed") from err
+        if plan_floor_token(live) != floor_token:
             raise ValueError("the map changed after the moves were confirmed")
