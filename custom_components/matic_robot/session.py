@@ -31,7 +31,7 @@ from .client import (
 )
 from .const import DOMAIN
 from .heartbeat import Heartbeat
-from .repairs import repair_placeholders
+from .repair_placeholders import repair_placeholders
 from .robot_health import RobotHealth
 from .stores import CleaningHistory, LiveState, Store
 

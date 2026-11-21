@@ -19,7 +19,7 @@ from .area_binding import (
 from .area_binding_geometry import _room_geometry_index, floor_identity
 from .client import FloorPlan
 from .const import DOMAIN
-from .repairs import repair_placeholders
+from .repair_placeholders import repair_placeholders
 
 _AREA_REPAIR_LEARN_MORE_URL = (
     "https://github.com/ProspectOre/matic-home-assistant/"

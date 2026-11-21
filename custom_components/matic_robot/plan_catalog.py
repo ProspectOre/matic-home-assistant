@@ -58,6 +58,7 @@ from .plan_model import (
     _stored_entries,
     plan_area_fingerprint,
     plan_entries,
+    relink_plan_rooms,
     stored_count,
 )
 from .plan_repository import (
@@ -559,6 +560,64 @@ class PlanCatalog:
             return MANUAL_ROOM_SEQUENCE_PLAN_NAME
         return str(plan.get("name", plan_id)) if plan else plan_id
 
+    def known_room_names(self, serial_number: str) -> dict[str, str]:
+        """Return each room's name when a run last started cleaning it."""
+        return {
+            room_id: record["name"]
+            for room_id, record in self.repository.robot(serial_number)["rooms"].items()
+            if isinstance(record, Mapping) and isinstance(record.get("name"), str)
+        }
+
+    async def async_relink_plan_rooms(
+        self,
+        serial_number: str,
+        links: Mapping[str, Mapping[str, str]],
+        *,
+        floor_token: str | None,
+        room_identities: Mapping[str, str],
+        precondition: Callable[[], None],
+    ) -> None:
+        """Move plan rooms to new room IDs in one save, per plan ``links``.
+
+        Every target must be on the current map. ``precondition`` runs under
+        the write and storage locks and raises if the map is no longer the one the moves
+        were confirmed on. Each plan is read again there too, so a room that
+        is no longer in it fails the save.
+        """
+        if any(
+            target not in room_identities
+            for plan_links in links.values()
+            for target in plan_links.values()
+        ):
+            raise ValueError("re-link target is not on the current map")
+
+        async def commit(_lease: _MetadataLockLease) -> None:
+            async with self.cadence.cadence_commit(serial_number) as mutations:
+                # Under the storage lock too, which the commit waits for.
+                precondition()
+                plans = self.repository.robot(serial_number)["plans"]
+                if not set(links) <= set(plans):
+                    raise ValueError("re-link names a deleted plan")
+                for plan_id, plan_links in links.items():
+                    mutations.append(
+                        self.save_plan_transaction(
+                            serial_number,
+                            plan_id,
+                            relink_plan_rooms(plans[plan_id], plan_links),
+                            select=False,
+                            floor_token=floor_token,
+                            room_identities=room_identities,
+                        )
+                    )
+
+        await self.repository.async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.repository.plan_write_lock(serial_number),),
+            notify=True,
+            reject_on_admission_close=True,
+        )
+
     def area_name(self, serial_number: str, area_id: str | None) -> str | None:
         if area_id is None:
             return None
@@ -676,6 +735,11 @@ def _normalize_room(save: _PlanSave, edits: _CadenceEdits, raw_room: object) -> 
     room = deepcopy(dict(raw_room))
     room_id = str(room.get("room_id", ""))
     inherited = save.prior_rooms.get(room_id, {})
+    off_map = is_sha256_hex(save.floor_token) and room_id not in save.room_identities
+    if inherited and off_map:
+        # A map edit removed this room; runs skip it and it keeps its stored row.
+        edits.rooms.append(deepcopy(dict(inherited)))
+        return
     bound_identity = save.room_identities.get(room_id)
     identity = bound_identity or inherited.get("cadence_identity")
     if (

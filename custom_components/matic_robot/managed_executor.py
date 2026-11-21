@@ -87,6 +87,7 @@ class _PlanRun:
     validate_prepared_run: Callable[[], None] | None
     entries: Sequence[Mapping[str, Any]] | None
     held_rooms: Sequence[Mapping[str, str]]
+    missing_rooms: Sequence[Mapping[str, str | None]]
     on_started: Callable[[str], None] | None
     # The mission a recovered run adopts for its first remaining leg.
     recovered_dispatch: _PreparedRoomDispatch | None
@@ -150,6 +151,11 @@ class _PlanRun:
             "service": str(self.call.service),
             "started_at": self.started_at,
             "room_count": len(self.rooms),
+            **(
+                {"missing_rooms": list(self.missing_rooms)}
+                if self.missing_rooms
+                else {}
+            ),
         }
 
     async def advance(self, event: RunEvent) -> CheckpointWrite:
@@ -817,6 +823,7 @@ async def _async_execute_rooms(
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
+    missing_rooms: Sequence[Mapping[str, str | None]] = (),
     on_started: Callable[[str], None] | None = None,
 ) -> str:
     """Reserve queued cadence, execute every room and custom area, return the run_id.
@@ -880,6 +887,7 @@ async def _async_execute_rooms(
                 validate_prepared_run=validate_prepared_run,
                 entries=entries,
                 held_rooms=held_rooms,
+                missing_rooms=missing_rooms,
                 on_started=on_started,
                 recovered_dispatch=recovered_dispatch,
                 cancel_event=cancel_event,

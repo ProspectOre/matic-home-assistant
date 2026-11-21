@@ -581,6 +581,7 @@ def _workspace_runtime(plan: dict[str, object]):
             **plan,
         }
     }
+    runtime.cleaning_plans.catalog.known_room_names = MagicMock(return_value={})
     runtime.slam_map.floor_plan_is_current.return_value = True
     return runtime
 
