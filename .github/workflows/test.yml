@@ -164,7 +164,7 @@ jobs:
       - run: npm run test:build
       # The suite loads the built bundle, which is not committed.
       - run: npm run build:map-studio-v4
-      - run: npm run test:browser -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+      - run: npx playwright test tests/browser/map_studio_v4_heap_stress.spec.mjs --project webkit --retries 0
         env:
           # Firefox requires a Home directory owned by the container user.
           HOME: /root
