@@ -52,7 +52,7 @@ import { PageLifecycle } from "./page-lifecycle";
 import { WorkspaceSynchronizer } from "./workspace-synchronizer";
 import { RobotMotionController } from "./robot-motion-controller";
 import { ResourceRequests } from "./resource-requests";
-import { SpatialResources } from "./spatial-resources";
+import { SpatialResources, needsFloorList } from "./spatial-resources";
 import type { PoseMotion } from "./pose-motion";
 
 type CatalogWrites = typeof import("./catalog-writes");
@@ -276,6 +276,7 @@ export class EffectController {
       }
       if (state.activity === "cleaning" && state.optionalUiReady
         && state.resources.plans.status === "idle" && canReadFloorResources(state)) void this.loadPlans();
+      this.#spatialResources.discoverFloors();
       this.#ensureQueueActions(state);
       if (this.#roomPreview) this.#roomPreview.reconcile();
       else if (this.#projection && state.workflow === "rooms") void this.#loadRoomPreview();
@@ -613,7 +614,7 @@ export class EffectController {
     if ((resources.has("plans") || resources.has("plan_state"))
       && needsPlanCatalog(this.#store.value)) void this.loadPlans();
     if (resources.has("areas")) void this.loadAreas();
-    if (resources.has("history") && needsHistoryCatalog(this.#store.value)) {
+    if (resources.has("history") && (needsHistoryCatalog(this.#store.value) || needsFloorList(this.#store.value))) {
       void this.#spatialResources.loadHistory(entry, stamp);
     }
     if (refreshCatalogProjection
