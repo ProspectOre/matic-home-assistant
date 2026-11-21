@@ -17,9 +17,10 @@ from custom_components.matic_robot.client.history_semantics import (
     decode_history_semantics,
 )
 from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.telemetry_fields import telemetry_bytes
 from tests.client.test_coverage_receipts import history_key
 from tests.client.test_history_semantics import _payload
-from tests.wire_builders import _bfield, _fixed32
+from tests.wire_builders import _bfield, _fixed32, _vfield
 
 
 def test_canonical_projection_keeps_room_identity_and_stop_separate():
@@ -83,6 +84,22 @@ def test_large_history_requires_one_bounded_summary():
     assert decode_cleaning_session(geometry) is None
     assert decode_cleaning_session(geometry + _bfield(5, b"") * 2) is None
     assert decode_cleaning_session(b"\x00" * (MAX_HISTORY_BYTES + 1)) is None
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [b"", _bfield(1, _vfield(1, 1) + _vfield(2, 1_000_000_000))],
+    ids=["empty", "nanos-overflow"],
+)
+def test_malformed_timestamp_cannot_prove_the_run_window(timestamp: bytes) -> None:
+    payload = _payload()
+    summary = telemetry_bytes(payload, 5)
+    envelope = _bfield(5, summary)
+    session = decode_cleaning_session(
+        payload[: -len(envelope)] + _bfield(5, summary + _bfield(3, timestamp))
+    )
+    assert session is not None
+    assert session.started_at is None
 
 
 def test_projection_handles_missing_outcomes_and_duplicate_display_names():

@@ -428,6 +428,8 @@ def decode_nested_timestamp(payload: bytes, number: int) -> str | None:
             nanos = telemetry_varint(timestamp, 2)
         except DecodeError:
             nanos = 0
+        if nanos > 999_999_999:
+            return None
         value = datetime.fromtimestamp(seconds + nanos / 1_000_000_000, UTC)
     except DecodeError, OSError, OverflowError, ValueError:
         return None
