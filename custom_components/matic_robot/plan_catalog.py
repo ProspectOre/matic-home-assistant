@@ -580,7 +580,7 @@ class PlanCatalog:
         """Move plan rooms to new room IDs in one save, per plan ``links``.
 
         Every target must be on the current map. ``precondition`` runs under
-        the write locks and raises if the map is no longer the one the moves
+        the write and storage locks and raises if the map is no longer the one the moves
         were confirmed on. Each plan is read again there too, so a room that
         is no longer in it fails the save.
         """
@@ -592,11 +592,12 @@ class PlanCatalog:
             raise ValueError("re-link target is not on the current map")
 
         async def commit(_lease: _MetadataLockLease) -> None:
-            precondition()
-            plans = self.repository.robot(serial_number)["plans"]
-            if not set(links) <= set(plans):
-                raise ValueError("re-link names a deleted plan")
             async with self.cadence.cadence_commit(serial_number) as mutations:
+                # Under the storage lock too, which the commit waits for.
+                precondition()
+                plans = self.repository.robot(serial_number)["plans"]
+                if not set(links) <= set(plans):
+                    raise ValueError("re-link names a deleted plan")
                 for plan_id, plan_links in links.items():
                     mutations.append(
                         self.save_plan_transaction(

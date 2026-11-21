@@ -204,6 +204,8 @@ async def test_a_relink_after_the_map_changed_saves_nothing() -> None:
         await commit(None)
 
     def map_changed() -> None:
+        # The check runs once the storage commit holds its lock.
+        catalog.cadence.cadence_commit.return_value.__aenter__.assert_awaited_once()
         raise ValueError("the map changed")
 
     catalog.repository.async_run_owned_metadata = run
@@ -216,7 +218,7 @@ async def test_a_relink_after_the_map_changed_saves_nothing() -> None:
             room_identities={"room-kitchen": "identity"},
             precondition=map_changed,
         )
-    catalog.cadence.cadence_commit.assert_not_called()
+    catalog.save_plan_transaction.assert_not_called()
 
 
 async def test_a_relink_for_a_deleted_plan_is_refused() -> None:
