@@ -120,3 +120,35 @@ test("the robot picker tells robots with one name apart and names a robot that h
   await selector.selectOption({ label: "Downstairs · Matic" });
   await expect(selector).toHaveValue("synthetic-entry-b");
 });
+
+test("the robot picker keeps a 44 px target on a 320 px phone, with and without Full map", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  const fixture = await installPanelFixture(page, {
+    initialCatalogEntries: entries.slice(0, 2),
+    initialRobotStates: {
+      "vacuum.robot_a": { state: "idle", attributes: { matic_entry_id: "synthetic-entry", friendly_name: "Matic" } },
+      "vacuum.robot_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b", friendly_name: "Matic" } },
+    },
+  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  const selector = panel.locator("select.robot-switcher");
+  const target = async () => {
+    await expect(selector).toBeVisible();
+    const box = await selector.boundingBox();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.x + box.width).toBeLessThanOrEqual(320);
+    // Nothing else in the bar is pushed off the screen to make room.
+    const bar = await selector.evaluate((element) => Array.from(element.parentElement.children, (child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.width ? rect.right : 0;
+    }));
+    expect(Math.max(...bar)).toBeLessThanOrEqual(320);
+  };
+  await target();
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await panel.getByRole("button", { name: "Full map", exact: true }).click();
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().fullMap)).toBe(true);
+  await target();
+});
