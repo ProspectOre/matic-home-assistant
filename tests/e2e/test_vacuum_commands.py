@@ -25,7 +25,7 @@ from .hermes_sim import (
     Phase,
     SimulatedRobot,
 )
-from .plan_run import VACUUM, PlanRun
+from .plan_run import VACUUM, PlanRun, firmware_snapshot_saved
 from .sim_mission import SimFloor, SimRoom, two_room_floor
 
 # The client's bytes for these two; no capture of the official app holds them.
@@ -352,7 +352,9 @@ async def test_clean_again_repeats_the_newest_finished_clean(
     (redo,) = robot.received()[sent:]
     assert redo.endswith(newest) and redo not in plan.coverage_commands()
 
-    # The robot starts a task while its history is being read.
+    # The robot starts a task while its history is being read. The firmware
+    # snapshot reads the history too; only the command's read counts.
+    await firmware_snapshot_saved(hass, plan.entry)
     reads = robot.reads["coverage_session_history"]
     robot.faults.delay("coverage_session_history", 30)
     late = hass.async_create_task(_command_refused(hass, "redo_last_clean"))
