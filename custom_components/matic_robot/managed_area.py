@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
@@ -13,7 +14,13 @@ from homeassistant.exceptions import ServiceValidationError
 from . import managed_dispatch as dispatch_control
 from . import managed_observation as observation
 from . import managed_run
-from .client import MaticError, RobotActivity, UserCommand, native_session_hash
+from .client import (
+    MaticError,
+    RobotActivity,
+    RobotOperationalState,
+    UserCommand,
+    native_session_hash,
+)
 from .const import DOMAIN
 from .managed_run import (
     PlanCancelledError,
@@ -30,6 +37,20 @@ from .robot_port import RobotPort
 _LOGGER = logging.getLogger(__name__)
 
 _HOME_OR_IDLE = observation.HOME | {RobotActivity.READY}
+
+
+def _running_area_state(
+    robot: RobotPort, cancel_event: asyncio.Event
+) -> RobotOperationalState | None:
+    """Return the observed state unless a Stop or a robot error ended the area."""
+    if cancel_event.is_set():
+        raise PlanCancelledError
+    state = robot.observed()
+    if state is not None and state.activity is RobotActivity.ERROR:
+        raise managed_run.validation_error(
+            "The selected Matic robot reported an error", "robot_error"
+        )
+    return state
 
 
 async def _async_wait_for_area_end(
@@ -52,24 +73,12 @@ async def _async_wait_for_area_end(
         )
     unknown_reads = 0
     while True:
-        if cancel_event.is_set():
-            raise PlanCancelledError
-        state = robot.observed()
-        if state is not None and state.activity is RobotActivity.ERROR:
-            raise managed_run.validation_error(
-                "The selected Matic robot reported an error", "robot_error"
-            )
+        _running_area_state(robot, cancel_event)
         identity = await observation._async_read_session_identity(
             robot.session_identity
         )
         # A Stop or error can arrive while the identity request is in flight.
-        if cancel_event.is_set():
-            raise PlanCancelledError
-        current = robot.observed()
-        if current is not None and current.activity is RobotActivity.ERROR:
-            raise managed_run.validation_error(
-                "The selected Matic robot reported an error", "robot_error"
-            )
+        current = _running_area_state(robot, cancel_event)
         if identity is None:
             unknown_reads += 1
             if unknown_reads >= observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
@@ -91,13 +100,7 @@ async def _async_wait_for_area_end(
                     robot.active_session
                 )
                 # The robot can stop, fail or resume during this second read.
-                if cancel_event.is_set():
-                    raise PlanCancelledError
-                current = robot.observed()
-                if current is not None and current.activity is RobotActivity.ERROR:
-                    raise managed_run.validation_error(
-                        "The selected Matic robot reported an error", "robot_error"
-                    )
+                current = _running_area_state(robot, cancel_event)
                 if (
                     active is False
                     and current is not None
@@ -167,6 +170,219 @@ def _area_refused_before_start(error: BaseException) -> bool:
     }
 
 
+def _area_failure_error(
+    error: Exception, area: AreaLeg
+) -> ServiceValidationError | None:
+    """Return the service error a failed area raises, or None to re-raise it."""
+    if isinstance(error, RoomTakenOverError):
+        return managed_run.validation_error(
+            "The original native cleaning task could no longer be verified",
+            "room_taken_over",
+            {"room": area.name},
+        )
+    if isinstance(error, ServiceValidationError):
+        return None
+    if isinstance(error, RoomStartTimeoutError):
+        return managed_run.validation_error(
+            f"The robot did not begin cleaning {area.name} before the start timeout",
+            "plan_start_timeout",
+            {"room": area.name},
+        )
+    if isinstance(error, TimeoutError):
+        return managed_run.validation_error(
+            f"Timed out while cleaning {area.name}",
+            "plan_timeout",
+            {"room": area.name},
+        )
+    if isinstance(error, MaticError):
+        return managed_run.validation_error(
+            "The robot could not complete the custom area",
+            "robot_command_failed",
+        )
+    return None
+
+
+@dataclass(slots=True, kw_only=True)
+class _AreaLegRun:
+    """One custom area's owned mission, from dispatch to credit or failure."""
+
+    hass: HomeAssistant
+    call: ServiceCall
+    manager: CleaningPlanManager
+    entity_id: str
+    serial_number: str
+    area: AreaLeg
+    run_id: str
+    provenance: str
+    robot: RobotPort
+    cancel_event: asyncio.Event
+    motion_token: int
+    floor_is_current: Callable[[], bool] | None
+    on_native_identity: Callable[[bytes | None], None]
+    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
+    # Whether a start may have reached the robot, so a failure must STOP it.
+    dispatch_attempted: bool = False
+
+    @property
+    def plan_id(self) -> str:
+        return str(self.call.data["plan_id"])
+
+    def evidence_is_current(self) -> bool:
+        """Whether this run still owns the motion and floor it credits."""
+        return (
+            not self.cancel_event.is_set()
+            and self.manager.control.managed_motion_is_current(
+                self.serial_number, self.motion_token
+            )
+            and (self.floor_is_current is None or self.floor_is_current())
+        )
+
+    def fire(self, outcome: str, reason_code: str | None = None) -> None:
+        """Announce an area outcome on the event bus."""
+        data = {
+            "entity_id": self.entity_id,
+            "plan_id": self.plan_id,
+            "run_id": self.run_id,
+            "area_id": self.area.area_id,
+            "area": self.area.name,
+            "cleaning_mode": self.area.cleaning_mode,
+            "coverage_setting": self.area.coverage_setting,
+            "provenance": self.provenance,
+        }
+        if reason_code is not None:
+            data["reason_code"] = reason_code
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_area_{outcome}", data, context=self.call.context
+        )
+
+    async def async_dispatch(
+        self,
+        prepared: _PreparedRoomDispatch | None,
+        *,
+        floor_token: str,
+        expected_identity: bytes | None,
+        expected_history: frozenset[str] | None,
+        expected_revision: str | None,
+    ) -> _PreparedRoomDispatch:
+        """Start the area, or resume a recovered dispatch, and record it started."""
+        self.dispatch_attempted = prepared is not None
+        dispatch = prepared
+        if dispatch is None:
+
+            def mark_dispatch_attempted() -> None:
+                self.dispatch_attempted = True
+                self.on_native_identity(None)
+
+            dispatch = await dispatch_control._async_dispatch_leg_command(
+                self.robot,
+                self.area,
+                self.motion_token,
+                floor_token=floor_token,
+                floor_is_current=self.floor_is_current,
+                on_dispatch=mark_dispatch_attempted,
+                on_claim=lambda session_id: (
+                    self.manager.ledger.async_claim_native_session(
+                        self.serial_number, session_id, run_id=self.run_id
+                    )
+                ),
+                on_identity=self.on_native_identity,
+                expected_dispatch_identity=expected_identity,
+                expected_dispatch_history=expected_history,
+                expected_dispatch_revision=expected_revision,
+            )
+            await self.checkpoint_dispatch(dispatch)
+        await self.manager.ledger.async_mark_area_started(
+            self.serial_number, self.plan_id, self.area, run_id=self.run_id
+        )
+        if not dispatch.recovered:
+            self.fire("started")
+        return dispatch
+
+    async def async_watch(
+        self, dispatch: _PreparedRoomDispatch, *, settle_history: bool
+    ) -> None:
+        """Accept the owned start, then wait out the area's own session."""
+        try:
+            await observation._async_wait_for_owned_start(
+                self.robot,
+                int(self.call.data["start_timeout"]),
+                self.cancel_event,
+                None,
+                self.on_native_identity,
+                dispatch.native_identity_baseline,
+                dispatch.native_identity,
+                already_accepted=dispatch.recovered,
+            )
+        except TimeoutError as err:
+            raise RoomStartTimeoutError from err
+        if not await self.manager.ledger.async_mark_area_accepted(
+            self.serial_number,
+            self.plan_id,
+            self.area,
+            run_id=self.run_id,
+            acceptance_is_current=self.evidence_is_current,
+        ):
+            raise PlanCancelledError
+        budget = await managed_run._async_completion_budget(
+            dispatch,
+            int(self.call.data["completion_timeout"]),
+            self.checkpoint_dispatch,
+        )
+        async with asyncio.timeout(budget):
+            await _async_wait_for_area_end(
+                self.robot, self.cancel_event, dispatch.native_identity
+            )
+        if settle_history:
+            await _async_wait_for_area_record(self.robot, dispatch, self.cancel_event)
+
+    async def async_credit(self) -> None:
+        """Credit the area's owned end while this run still owns its evidence."""
+        if not await self.manager.ledger.async_mark_area_finished(
+            self.serial_number,
+            self.area,
+            run_id=self.run_id,
+            completed=True,
+            completion_is_current=self.evidence_is_current,
+        ):
+            raise PlanCancelledError
+        self.fire("finished")
+
+    async def async_close_failed(
+        self,
+        error: Exception,
+        *,
+        finish_room_event: asyncio.Event,
+        managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None,
+    ) -> ServiceValidationError | None:
+        """Release a failed area; return its service error, or None to re-raise."""
+        if isinstance(error, RoomTakenOverError):
+            # A replaced task was never ours to stop.
+            if dispatch_control._shutdown_suspends_run(
+                self.hass, self.manager, self.serial_number
+            ):
+                return None
+            reason_code = "native_task_taken_over"
+        else:
+            # A graceful stop cannot upgrade a failed area once it has failed.
+            finish_room_event.clear()
+            if not dispatch_control._managed_stop_fence_owned_by_run(
+                self.manager, self.serial_number, self.run_id
+            ):
+                await dispatch_control._async_cleanup_managed_motion(
+                    managed_user_command,
+                    self.motion_token,
+                    self.dispatch_attempted
+                    and managed_run._coverage_guard_cause(error) is None
+                    and not _area_refused_before_start(error),
+                )
+            reason_code = managed_run._failure_reason_code(error)
+        await self.manager.ledger.async_mark_area_finished(
+            self.serial_number, self.area, run_id=self.run_id
+        )
+        self.fire("failed", reason_code)
+        return _area_failure_error(error, self.area)
+
+
 async def _async_run_area_leg(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -198,157 +414,42 @@ async def _async_run_area_leg(
     the area then runs until that session ends. Accepted starts and normal
     owned session ends update area rotation history, never room cadence.
     """
-    plan_id = str(call.data["plan_id"])
-    event_data = {
-        "entity_id": entity_id,
-        "plan_id": plan_id,
-        "run_id": run_id,
-        "area_id": area.area_id,
-        "area": area.name,
-        "cleaning_mode": area.cleaning_mode,
-        "coverage_setting": area.coverage_setting,
-        "provenance": provenance,
-    }
-
-    def evidence_is_current() -> bool:
-        return (
-            not cancel_event.is_set()
-            and manager.control.managed_motion_is_current(serial_number, motion_token)
-            and (floor_is_current is None or floor_is_current())
-        )
-
-    dispatch = prepared_dispatch
-    dispatch_attempted = dispatch is not None
-
-    def mark_dispatch_attempted() -> None:
-        nonlocal dispatch_attempted
-        dispatch_attempted = True
-        on_native_identity(None)
-
+    leg = _AreaLegRun(
+        hass=hass,
+        call=call,
+        manager=manager,
+        entity_id=entity_id,
+        serial_number=serial_number,
+        area=area,
+        run_id=run_id,
+        provenance=provenance,
+        robot=robot,
+        cancel_event=cancel_event,
+        motion_token=motion_token,
+        floor_is_current=floor_is_current,
+        on_native_identity=on_native_identity,
+        checkpoint_dispatch=checkpoint_dispatch,
+    )
     try:
-        if dispatch is None:
-            dispatch = await dispatch_control._async_dispatch_leg_command(
-                robot,
-                area,
-                motion_token,
-                floor_token=floor_token,
-                floor_is_current=floor_is_current,
-                on_dispatch=mark_dispatch_attempted,
-                on_claim=lambda session_id: manager.ledger.async_claim_native_session(
-                    serial_number, session_id, run_id=run_id
-                ),
-                on_identity=on_native_identity,
-                expected_dispatch_identity=expected_dispatch_identity,
-                expected_dispatch_history=expected_dispatch_history,
-                expected_dispatch_revision=expected_dispatch_revision,
-            )
-            await checkpoint_dispatch(dispatch)
-        await manager.ledger.async_mark_area_started(
-            serial_number, plan_id, area, run_id=run_id
+        dispatch = await leg.async_dispatch(
+            prepared_dispatch,
+            floor_token=floor_token,
+            expected_identity=expected_dispatch_identity,
+            expected_history=expected_dispatch_history,
+            expected_revision=expected_dispatch_revision,
         )
-        if not dispatch.recovered:
-            hass.bus.async_fire(
-                f"{DOMAIN}_area_started", event_data, context=call.context
-            )
-        try:
-            await observation._async_wait_for_owned_start(
-                robot,
-                int(call.data["start_timeout"]),
-                cancel_event,
-                None,
-                on_native_identity,
-                dispatch.native_identity_baseline,
-                dispatch.native_identity,
-                already_accepted=dispatch.recovered,
-            )
-        except TimeoutError as err:
-            raise RoomStartTimeoutError from err
-        if not await manager.ledger.async_mark_area_accepted(
-            serial_number,
-            plan_id,
-            area,
-            run_id=run_id,
-            acceptance_is_current=evidence_is_current,
-        ):
-            raise PlanCancelledError
-        budget = await managed_run._async_completion_budget(
-            dispatch, int(call.data["completion_timeout"]), checkpoint_dispatch
-        )
-        async with asyncio.timeout(budget):
-            await _async_wait_for_area_end(
-                robot, cancel_event, dispatch.native_identity
-            )
-        if settle_history:
-            await _async_wait_for_area_record(robot, dispatch, cancel_event)
+        await leg.async_watch(dispatch, settle_history=settle_history)
     except PlanCancelledError, asyncio.CancelledError:
         # Stop owns its own STOP.
         raise
-    except RoomTakenOverError as err:
-        # A replaced task was never ours to stop.
-        if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
-            raise
-        await manager.ledger.async_mark_area_finished(
-            serial_number, area, run_id=run_id
-        )
-        hass.bus.async_fire(
-            f"{DOMAIN}_area_failed",
-            {**event_data, "reason_code": "native_task_taken_over"},
-            context=call.context,
-        )
-        raise managed_run.validation_error(
-            "The original native cleaning task could no longer be verified",
-            "room_taken_over",
-            {"room": area.name},
-        ) from err
     except Exception as err:
-        # A graceful stop cannot upgrade a failed area once it has failed.
-        finish_room_event.clear()
-        if not dispatch_control._managed_stop_fence_owned_by_run(
-            manager, serial_number, run_id
-        ):
-            await dispatch_control._async_cleanup_managed_motion(
-                managed_user_command,
-                motion_token,
-                dispatch_attempted
-                and managed_run._coverage_guard_cause(err) is None
-                and not _area_refused_before_start(err),
-            )
-        await manager.ledger.async_mark_area_finished(
-            serial_number, area, run_id=run_id
+        error = await leg.async_close_failed(
+            err,
+            finish_room_event=finish_room_event,
+            managed_user_command=managed_user_command,
         )
-        hass.bus.async_fire(
-            f"{DOMAIN}_area_failed",
-            {**event_data, "reason_code": managed_run._failure_reason_code(err)},
-            context=call.context,
-        )
-        if isinstance(err, ServiceValidationError):
+        if error is None:
             raise
-        if isinstance(err, RoomStartTimeoutError):
-            raise managed_run.validation_error(
-                f"The robot did not begin cleaning {area.name} before the "
-                "start timeout",
-                "plan_start_timeout",
-                {"room": area.name},
-            ) from err
-        if isinstance(err, TimeoutError):
-            raise managed_run.validation_error(
-                f"Timed out while cleaning {area.name}",
-                "plan_timeout",
-                {"room": area.name},
-            ) from err
-        if isinstance(err, MaticError):
-            raise managed_run.validation_error(
-                "The robot could not complete the custom area",
-                "robot_command_failed",
-            ) from err
-        raise
-    if not await manager.ledger.async_mark_area_finished(
-        serial_number,
-        area,
-        run_id=run_id,
-        completed=True,
-        completion_is_current=evidence_is_current,
-    ):
-        raise PlanCancelledError
-    hass.bus.async_fire(f"{DOMAIN}_area_finished", event_data, context=call.context)
+        raise error from err
+    await leg.async_credit()
     return True

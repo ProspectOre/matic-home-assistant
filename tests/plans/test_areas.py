@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.area_geometry as area_geometry_module
 import custom_components.matic_robot.plan_catalog as plan_catalog_module
@@ -22,9 +23,14 @@ from custom_components.matic_robot.area_binding_formats import (
     MAP_BINDING_VERSION,
 )
 from custom_components.matic_robot.area_binding_geometry import floor_identity
+from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.managed_area import _async_run_area_leg
+from custom_components.matic_robot.managed_run import (
+    NativeTaskEndedError,
+    _PreparedRoomDispatch,
+)
 from custom_components.matic_robot.plan_model import (
     AreaBindingUpgradeResult,
     AreaLeg,
@@ -687,3 +693,69 @@ async def test_stop_during_an_area_finishes_the_area_or_stops_now(
     else:
         assert decision == PlanStopDecision("immediate")
         assert cancel.is_set()
+
+
+@pytest.mark.parametrize("own_stop_pending", [False, True], ids=["no-stop", "own-stop"])
+async def test_failed_area_stops_only_without_its_runs_own_stop(
+    hass, own_stop_pending
+) -> None:
+    """A failed area sends cleanup STOP unless this run's STOP is settling."""
+    robot = FakeRobot()
+    manager = memory_manager(hass)
+    await manager.ledger.async_begin_run(
+        "serial", "away", "run", 0, trigger="user", service="run_selected_plan"
+    )
+    motion_token = manager.control.begin_managed_motion("serial")
+    if own_stop_pending:
+        await manager.control.async_mark_stop_pending("serial", run_id="run")
+    finish_room = asyncio.Event()
+    finish_room.set()
+    stop = AsyncMock()
+    events = []
+    hass.bus.async_listen("matic_robot_area_failed", events.append)
+    call = ServiceCall(
+        hass,
+        "matic_robot",
+        "run_selected_plan",
+        {"plan_id": "away", "start_timeout": 30, "completion_timeout": 60},
+    )
+
+    # The fake robot's session has already ended, so the area never starts.
+    with pytest.raises(NativeTaskEndedError):
+        await _async_run_area_leg(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            _AREA,
+            robot.port(),
+            asyncio.Event(),
+            motion_token,
+            stop,
+            prepared_dispatch=_PreparedRoomDispatch(
+                rooms=(),
+                history_baseline=None,
+                dispatched_at=dt_util.utcnow(),
+                native_identity=b"area",
+            ),
+            finish_room_event=finish_room,
+            floor_is_current=None,
+            floor_token=None,
+            expected_dispatch_identity=None,
+            expected_dispatch_history=None,
+            expected_dispatch_revision=None,
+            on_native_identity=MagicMock(),
+            run_id="run",
+            checkpoint_dispatch=AsyncMock(),
+            provenance="user",
+            settle_history=False,
+        )
+    await hass.async_block_till_done()
+
+    assert not finish_room.is_set()
+    if own_stop_pending:
+        stop.assert_not_awaited()
+    else:
+        stop.assert_awaited_once_with(motion_token, UserCommand.STOP)
+    assert [event.data["reason_code"] for event in events] == ["native_task_ended"]
