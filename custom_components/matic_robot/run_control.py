@@ -80,6 +80,8 @@ class RobotActor:
     # Dock watchers, a subset of reconciliation_tasks, with each one's run.
     dock_watchers: dict[asyncio.Task[object], str | None] = field(default_factory=dict)
     dock_scope_cleanups: dict[str, _ScopeCleanup] = field(default_factory=dict)
+    # Dock closures waiting for a run's plan_finished, by run.
+    run_ends: dict[str, asyncio.Future[None]] = field(default_factory=dict)
     command_admission: _CommandAdmission = _OPEN_COMMAND_ADMISSION
     generation: int = 0
     cancellation_reason: str | None = None
@@ -549,9 +551,24 @@ class RunControl:
         """Return the lifecycle reason attached to the current cancellation."""
         return self.actor(serial_number).cancellation_reason
 
+    async def async_wait_for_run_end(self, serial_number: str, run_id: str) -> None:
+        """Wait until the run's finalizer has announced its ``plan_finished``."""
+        end = self.actor(serial_number).run_ends.setdefault(
+            run_id, asyncio.get_running_loop().create_future()
+        )
+        # Waiters share the future; one cancelled waiter must not cancel it.
+        await asyncio.wait((end,))
+
+    @callback
+    def run_ended(self, serial_number: str, run_id: str) -> None:
+        """Release what waits for run ``run_id`` to end."""
+        end = self.actor(serial_number).run_ends.pop(run_id, None)
+        if end is not None:
+            end.set_result(None)
+
     @callback
     def mark_managed_stop(self, serial_number: str) -> None:
-        """Authorize an in-flight dock upgrade for a graceful managed stop."""
+        """Name a graceful managed stop as the run's cancellation reason."""
         self.actor(serial_number).cancellation_reason = "managed_stop"
 
     async def async_cancel_and_wait(

@@ -11,8 +11,9 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
    `cancelled`, `failed`, or `unverified`; `reason_code`, `cause`, and aggregate
    verified room counts explain the result without exposing the saved room list.
    A later `matic_robot_plan_docked` event
-   upgrades a cancelled or unverified stop to `stopped_docked` only after the
-   correlated final DOCK is accepted. `room_completed` is emitted only after
+   upgrades a cancelled or unverified stop to `stopped_docked` once the robot
+   is seen docked: after the correlated final DOCK, or after a Smart Stop
+   room. It always follows the run's `plan_finished`, whichever came first. `room_completed` is emitted only after
    the existing native completion guard passes. A custom area in a plan is
    its own native mission: `matic_robot_area_started` fires when it is
    dispatched and `matic_robot_area_finished` when that owned session ends;
@@ -52,7 +53,7 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
 | Departure trigger starts a plan | Trigger trace, `run_id`, first room event, and command journal | Credit only rooms with verified native completion |
 | Return-home stop | `plan_finished: cancelled`, STOP plus final DOCK with the same `run_id`, then `plan_docked: stopped_docked` | Never credit the room that was stopped |
 | Stop during a room | Cancellation/interruption event, native result, and no unverified completion credit | Preserve its recorded cleaning opportunity separately from completion |
-| Finish-current-room threshold | Policy decision, threshold/progress, and either room completion or cancelled stop | Credit only when native completion verification passes |
+| Finish-current-room threshold | Policy decision, threshold/progress, room completion, `plan_finished: cancelled` with `managed_stop`, then `plan_docked: stopped_docked` | Credit only when native completion verification passes |
 | Recharge and resume | Suspended event, native recharge/resume transition, and resumed room timeline | A resumed room can complete; an unreconciled low-charge stop is `recharge_suspended` |
 | Mixed settings | Per-room settings, owned native session, and command timeline | Preserve per-room settings; verify completion for every requested mode |
 | Custom areas in a plan | `area_started` and `area_finished` per area in run order, the robot heading back to the dock between missions, then one `plan_finished` | Each area's own owned session ends; the robot's unnamed native area summary is not used for credit |

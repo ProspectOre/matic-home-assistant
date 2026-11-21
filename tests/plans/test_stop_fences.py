@@ -1,5 +1,6 @@
 """Stop fences: the robot's own stop, docking and their persisted markers."""
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -8,7 +9,10 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.const import EVENT_PLAN_DOCKED, EVENT_PLAN_FINISHED
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import (
+    _async_execute_rooms,
+    async_finish_plan_run,
+)
 from custom_components.matic_robot.managed_run import RoomStoppedInPlaceError
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager, plan_room, run_plan_call
@@ -88,9 +92,12 @@ async def test_docked_stop_upgrades_only_after_correlated_final_command(hass) ->
     assert not await manager.ledger.async_mark_run_docked("serial", "run-1")
 
 
-async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
-    """A dock observation received before final cleanup remains durable."""
+async def test_dock_closure_follows_the_runs_plan_finished(hass) -> None:
+    """A dock seen while the run still runs closes it only after plan_finished."""
     manager = memory_manager(hass)
+    order: list[str] = []
+    for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
+        hass.bus.async_listen(event_type, lambda event: order.append(event.event_type))
     await manager.ledger.async_begin_run(
         "serial",
         "away",
@@ -101,14 +108,30 @@ async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
         provenance="user",
     )
 
-    assert await manager.ledger.async_mark_run_docked("serial", "run-1")
-    assert await manager.ledger.async_finish_run(
-        "serial", "run-1", "cancelled", "managed_stop", 0, terminal_activity="idle"
+    closure = hass.async_create_task(
+        manager.ledger.async_mark_run_docked("serial", "run-1")
     )
+    await asyncio.sleep(0)
+    assert not closure.done()
+    assert manager.ledger.run_record("serial", "run-1")["outcome"] == "running"
+
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "away", "run_id": "run-1"},
+        "cancelled",
+        "managed_stop",
+        "managed_cancellation",
+        0,
+    )
+    assert await closure
+    await hass.async_block_till_done()
     last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "stopped_docked"
-    assert last_run["reason_code"] == "stopped_docked"
     assert last_run["terminal_activity"] == "docked"
+    assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
 
 
 async def test_correlated_dock_clears_its_owned_stop_fence(hass) -> None:

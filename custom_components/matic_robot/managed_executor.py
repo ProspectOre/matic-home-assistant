@@ -53,9 +53,6 @@ from .run_machine import (
     RunEvent,
     transition,
 )
-from .stop_return import (
-    schedule_dock_confirmation,
-)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -521,23 +518,14 @@ async def _async_execute_rooms_reserved(
                     if current.activity not in home_or_returning:
                         await outer_command(motion_token, UserCommand.DOCK)
                     if needs_dock_confirmation:
-                        schedule_dock_confirmation(
+                        dispatch_control._schedule_run_dock_confirmation(
                             hass,
-                            refresh=robot.refresh,
-                            manager=manager,
-                            serial_number=serial_number,
-                            entity_id=entity_id,
-                            run_id=run_id,
-                            set_run_id=robot.set_activity_run_id,
-                            get_run_id=robot.get_activity_run_id,
-                            on_docked=partial(
-                                dispatch_control._async_mark_run_docked,
-                                manager,
-                                serial_number,
-                                run_id,
-                                entity_id,
-                                call.context,
-                            ),
+                            manager,
+                            robot,
+                            serial_number,
+                            entity_id,
+                            run_id,
+                            call.context,
                         )
                         dock_confirmation_scheduled = True
                 except ManagedMotionReplacedError as err:
@@ -794,6 +782,8 @@ async def async_finish_plan_run(
             {ATTR_ENTITY_ID: entity_id, **started, **end},
             context=context,
         )
+        # A dock closure waiting on the run follows plan_finished.
+        manager.control.run_ended(serial_number, started["run_id"])
 
 
 async def _async_execute_rooms(

@@ -295,8 +295,11 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
         else:
             if action == "shutdown":
                 hass.set_state(CoreState.stopping)
-            await manager.control.async_cancel_and_wait(
-                "serial", preserve_run=action == "shutdown"
+            # Unload runs in its own task and waits for the run to end.
+            hass.async_create_task(
+                manager.control.async_cancel_and_wait(
+                    "serial", preserve_run=action == "shutdown"
+                )
             )
         return ()
 
@@ -319,7 +322,8 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
         client.async_get_cleaning_session_records.side_effect = history
     events = []
     hass.bus.async_listen("matic_robot_plan_finished", events.append)
-    await async_recover_managed_run(hass, entry, "serial")
+    # Recovery runs as its own task, which unload awaits.
+    await hass.async_create_task(async_recover_managed_run(hass, entry, "serial"))
     await hass.async_block_till_done()
     if action == "shutdown":
         assert manager.recovery.recovery_run("serial") is not None
