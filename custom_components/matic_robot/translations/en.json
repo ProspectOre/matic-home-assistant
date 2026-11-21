@@ -933,6 +933,38 @@
         "coverage_setting": {
           "name": "Vacuum coverage",
           "description": "How thoroughly the robot vacuums this room or area."
+        },
+        "cadence": {
+          "name": "Room schedule",
+          "description": "Rooms only. Mop or run a vacuum rotation every few cleans instead of every clean. Leave empty to keep the room's current schedule."
+        }
+      }
+    },
+    "room_cadence": {
+      "fields": {
+        "scope": {
+          "name": "Count cleans",
+          "description": "In this plan only, or across all plans that use the room. Defaults to this plan."
+        },
+        "mop_every_n": {
+          "name": "Mop every",
+          "description": "Vacuum normally and also mop on every this-many counted cleans, 1 to 100. Needs the room's cleaning mode to be vacuum."
+        },
+        "coverage_every_n": {
+          "name": "Vacuum rotation every",
+          "description": "Use the rotation coverage on every this-many counted cleans, 1 to 100."
+        },
+        "periodic_coverage_setting": {
+          "name": "Rotation coverage",
+          "description": "The vacuum coverage the rotation uses."
+        },
+        "do_mop_next": {
+          "name": "Mop on the next clean",
+          "description": "Bring the mop forward once without resetting progress. Needs Mop every."
+        },
+        "do_coverage_next": {
+          "name": "Rotation on the next clean",
+          "description": "Bring the vacuum rotation forward once without resetting progress. Needs Vacuum rotation every."
         }
       }
     },
@@ -1477,6 +1509,9 @@
     "plan_area_missing": {
       "message": "A custom area in this plan was deleted. Open the plan in Matic Map, save it again, then try again."
     },
+    "plan_room_missing": {
+      "message": "These rooms in the plan are no longer on the robot's map: {rooms}. A map edit in the Matic app can remove a room or give it a new ID. Remove them from the plan in Matic Map or with the Remove room or area from plan action, then try again."
+    },
     "plan_area_limit": {
       "message": "A plan can include up to {limit} custom areas. Remove some areas and try again."
     },
@@ -1569,6 +1604,10 @@
           "continue_in_reconfigure": "Go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset."
         }
       }
+    },
+    "plan_room_missing": {
+      "title": "{name}: saved plans name rooms that are no longer on the map",
+      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs, so these plans won't run. In Matic Map, open each plan, clear the rooms shown by ID instead of by name, choose the current rooms, then save. This Repair clears once every plan names only rooms on the map."
     },
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",

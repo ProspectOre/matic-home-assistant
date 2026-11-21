@@ -50,6 +50,10 @@ from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
+from .plan_room_repairs import (
+    async_delete_plan_room_issue,
+    async_sync_plan_room_issue,
+)
 from .plans import CleaningPlanManager, async_get_plan_manager, plan_floor_token
 from .removals import async_warn_of_removals
 from .restart import async_recover_managed_run
@@ -408,6 +412,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 entry.entry_id,
                 plans.areas(serial_number),
                 floor_plan,
+            )
+            async_sync_plan_room_issue(
+                hass, entry.entry_id, plans.plans(serial_number), floor_plan
             )
 
         entry.async_on_unload(coordinator.async_add_listener(_async_sync_area_issue))
@@ -842,6 +849,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await plans.async_remove_robot(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)
     async_delete_custom_area_issue(hass, entry.entry_id)
+    async_delete_plan_room_issue(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
         DATA_FIRMWARE_TRACKER
     )

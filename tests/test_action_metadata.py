@@ -7,6 +7,8 @@ from pathlib import Path
 import yaml
 from homeassistant.util.yaml import load_yaml
 
+from custom_components.matic_robot.services import ROOM_CADENCE_SCHEMA
+
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
 BLUEPRINTS = sorted((ROOT / "blueprints/automation/matic_robot").glob("*.yaml"))
@@ -94,13 +96,21 @@ def test_room_objects_declare_their_fields() -> None:
 
 
 def test_plan_entry_objects_offer_a_room_or_an_area() -> None:
-    entry_fields = ["room", "area", "cleaning_mode", "coverage_setting"]
+    entry_fields = ["room", "area", "cleaning_mode", "coverage_setting", "cadence"]
     for key, field in (("save_plan", "rooms"), ("save_plan_room", "room")):
         selector = SERVICES[key]["fields"][field]["selector"]["object"]
         assert list(selector["fields"]) == entry_fields
         assert not any(item.get("required") for item in selector["fields"].values())
         assert selector.get("multiple", False) is (field == "rooms")
         assert selector["translation_key"] == "plan_entry"
+        cadence = selector["fields"]["cadence"]["selector"]["object"]
+        assert cadence["translation_key"] == "room_cadence"
+        # The action UI offers every field the action's schema accepts.
+        assert (
+            set(cadence["fields"])
+            == {str(key) for key in ROOM_CADENCE_SCHEMA.schema}
+            == set(STRINGS["selector"]["room_cadence"]["fields"])
+        )
     assert list(STRINGS["selector"]["plan_entry"]["fields"]) == entry_fields
     for key in ("delete_plan_room", "move_plan_room"):
         fields = SERVICES[key]["fields"]
@@ -167,3 +177,16 @@ def test_blueprints_are_named_and_every_input_is_described() -> None:
     }
     # The firmware blueprint derives the robot from its sensor, so 19 remain.
     assert inputs == 19
+
+
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [key for key, _value in pairs]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert not duplicates, f"duplicate keys: {duplicates}"
+    return dict(pairs)
+
+
+def test_strings_name_each_key_once() -> None:
+    # A repeated key silently replaces the earlier text when the JSON loads.
+    for path in (INTEGRATION / "strings.json", INTEGRATION / "translations/en.json"):
+        json.loads(path.read_text(), object_pairs_hook=_unique_keys)
