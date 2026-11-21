@@ -19,7 +19,13 @@ from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
     RoomTakenOverError,
 )
-from tests.plans.fakes import heavy_room, memory_manager, plan_room, run_plan_call
+from tests.plans.fakes import (
+    credit_rooms,
+    heavy_room,
+    memory_manager,
+    plan_room,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot
 from tests.wire_builders import _session_identity
 
@@ -227,7 +233,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
         manager.recovery.async_set_recovery_checkpoint = save_then_stop
 
     async def complete_first_leg(*args, **kwargs) -> bool:
-        kwargs["record_room_completed"](args[5][0])
+        credit_rooms(args, kwargs, args[5][:1])
         return True
 
     async def block_handoff(*_args, **_kwargs) -> bool:
@@ -357,7 +363,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             floor_token="floor",
         )
         assert dispatch.native_identity == sessions[-1]
-        list(map(kwargs["record_room_completed"], args[5]))
+        credit_rooms(args, kwargs, args[5])
         return True
 
     expected_exception = (

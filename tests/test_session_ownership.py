@@ -45,7 +45,7 @@ from custom_components.matic_robot.robot_commands import (
     RobotCommands,
 )
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import credit_rooms, memory_manager
 from tests.session_fakes import FakeRobot, run_step
 from tests.wire_builders import _session_identity
 
@@ -1985,8 +1985,7 @@ async def _run_area_plan(
     manager.recovery.async_set_recovery_checkpoint = keep_checkpoint
 
     async def verify_rooms(*args, **kwargs) -> bool:
-        for room in args[5]:
-            kwargs["record_room_completed"](room)
+        credit_rooms(args, kwargs, args[5])
         return True
 
     call = ServiceCall(

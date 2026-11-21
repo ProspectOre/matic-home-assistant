@@ -32,6 +32,7 @@ from custom_components.matic_robot.plan_model import (
     plan_floor_token,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.run_machine import count_room
 from tests.session_fakes import FakeRobot, direct_state, robot_client
 
 
@@ -192,6 +193,23 @@ def saved_area(floor_plan: FloorPlan, name: str) -> dict[str, Any]:
             floor_plan, [{"x": 0.1, "y": 0.1, "radius": 0.1}]
         ),
     }
+
+
+def credit_rooms(args: tuple, kwargs: dict, rooms: list[CleaningRoom]) -> None:
+    """Credit rooms as a patched leg's ledger would: count each, then report it."""
+    manager, serial_number = args[2], args[4]
+    for room in rooms:
+        count_room(manager.repository.robot(serial_number)["last_run"], room.room_id)
+        kwargs["record_room_completed"](room)
+
+
+async def save_run_checkpoint(
+    manager: CleaningPlanManager, checkpoint: dict[str, Any]
+) -> None:
+    """Save the checkpoint a run left, with the rooms the run had counted."""
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    stored = manager.repository.robot("serial")["last_run"]["recovery_checkpoint"]
+    stored["completed_room_ids"] = list(checkpoint["completed_room_ids"])
 
 
 def memory_manager(hass: HomeAssistant) -> CleaningPlanManager:

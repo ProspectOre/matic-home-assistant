@@ -17,6 +17,7 @@ from .map_schema import RunEntry
 from .plan_catalog import PlanCatalog
 from .plan_model import (
     _is_manual_room_sequence_plan_id,
+    stored_count,
 )
 from .plan_repository import (
     PlanRepository,
@@ -92,27 +93,15 @@ class PlanHistory:
             for rotation in robot["rotations"].values()
             for record in rotation["rooms"].values()
         ]
-        completed_runs = sum(
-            plan_timing._stored_count(item, "completed_runs") for item in records
-        )
-        failed_runs = sum(
-            plan_timing._stored_count(item, "failed_runs") for item in records
-        )
-        cancelled_runs = sum(
-            plan_timing._stored_count(item, "cancelled_runs") for item in records
-        )
+        completed_runs = sum(stored_count(item, "completed_runs") for item in records)
+        failed_runs = sum(stored_count(item, "failed_runs") for item in records)
+        cancelled_runs = sum(stored_count(item, "cancelled_runs") for item in records)
         interrupted_runs = sum(
-            plan_timing._stored_count(item, "interrupted_runs") for item in records
+            stored_count(item, "interrupted_runs") for item in records
         )
-        suspended_runs = sum(
-            plan_timing._stored_count(item, "suspended_runs") for item in records
-        )
-        unverified_runs = sum(
-            plan_timing._stored_count(item, "unverified_runs") for item in records
-        )
-        skipped_runs = sum(
-            plan_timing._stored_count(item, "skipped_runs") for item in records
-        )
+        suspended_runs = sum(stored_count(item, "suspended_runs") for item in records)
+        unverified_runs = sum(stored_count(item, "unverified_runs") for item in records)
+        skipped_runs = sum(stored_count(item, "skipped_runs") for item in records)
         last_completed = max(
             (
                 str(item["last_completed"])
@@ -164,7 +153,7 @@ class PlanHistory:
                     "name": room.get("name"),
                     "at": room.get("last_completed"),
                     "duration_seconds": room.get("last_duration_seconds"),
-                    "runs": plan_timing._stored_count(room, "completed_runs"),
+                    "runs": stored_count(room, "completed_runs"),
                 }
                 for room_id, room in robot["rooms"].items()
             },

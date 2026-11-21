@@ -52,6 +52,7 @@ from .plan_model import (
     normalize_run_outcome,
     normalize_run_provenance,
     plan_floor_token,
+    stored_count,
 )
 from .plan_repository import (
     PlanRepository,
@@ -61,7 +62,7 @@ from .run_control import (
     RunControl,
 )
 from .run_history import append_run_history, update_run_history
-from .run_machine import CheckpointWrite, running_run
+from .run_machine import CheckpointWrite, count_room, running_run
 from .verified_completion import (
     VerifiedCompletion,
     global_room,
@@ -105,7 +106,7 @@ def _skip_room_record(
     """Close a skipped room without credit and give back its rotation turn."""
     record["last_result"] = "skipped"
     record["last_skipped"] = skipped_at
-    record["skipped_runs"] = plan_timing._stored_count(record, "skipped_runs") + 1
+    record["skipped_runs"] = stored_count(record, "skipped_runs") + 1
     _restore_opportunity(record, global_room, run_id=run_id)
 
 
@@ -119,9 +120,7 @@ def _unreachable_room_record(
     """Close a room the robot could not reach, without credit, keeping it due."""
     record["last_result"] = "unreachable"
     record["last_unreachable"] = ended_at
-    record["unreachable_runs"] = (
-        plan_timing._stored_count(record, "unreachable_runs") + 1
-    )
+    record["unreachable_runs"] = stored_count(record, "unreachable_runs") + 1
     _restore_opportunity(record, global_room, run_id=run_id)
 
 
@@ -176,9 +175,7 @@ def _close_unfinished_room_records(
                 )
             else:
                 record["last_result"] = "ended_unverified"
-                record["unverified_runs"] = (
-                    plan_timing._stored_count(record, "unverified_runs") + 1
-                )
+                record["unverified_runs"] = stored_count(record, "unverified_runs") + 1
             if ended_at is not None and room_id not in skipped:
                 record["last_ended_unverified"] = ended_at
             if recovered_at is not None:
@@ -644,9 +641,7 @@ class PlanLedger:
         )
         _close_unfinished_area_records(robot, run_id=run_id, ended_at=ended_at)
         docked = last_run.get("outcome") == "stopped_docked"
-        stored_completed_count = plan_timing._stored_count(
-            last_run, "completed_room_count"
-        )
+        stored_completed_count = stored_count(last_run, "completed_room_count")
         was_completed = last_run.get("outcome") == "completed"
         completed = was_completed or (
             last_run.get("native_reconciled_completion") is True
@@ -988,10 +983,7 @@ class PlanLedger:
                         "run_id": run_id,
                         "last_opportunity": now,
                         "last_result": "running",
-                        "started_runs": plan_timing._stored_count(
-                            record, "started_runs"
-                        )
-                        + 1,
+                        "started_runs": stored_count(record, "started_runs") + 1,
                     }
                 )
             return True
@@ -1054,9 +1046,7 @@ class PlanLedger:
                             "last_completed": now,
                             "last_completed_run_id": run_id,
                             "completion_basis": "owned_session_ended",
-                            "completed_runs": plan_timing._stored_count(
-                                record, "completed_runs"
-                            )
+                            "completed_runs": stored_count(record, "completed_runs")
                             + 1,
                         }
                     )
@@ -1135,17 +1125,17 @@ class PlanLedger:
             and (running_run(robot, run_id) or {}).get("plan_id") != plan_id
         ):
             return False
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        # Counted in the room record's commit, so a crash before the plan
+        # finalizer keeps the room.
+        counted = running_run(robot)
         if (
-            isinstance(run, dict)
-            and isinstance(checkpoint, dict)
-            and run.get("plan_id") == plan_id
+            counted is not None
+            and counted.get("plan_id") == plan_id
+            and not count_room(counted, room.room_id)
         ):
-            credited = checkpoint.setdefault("completed_room_ids", [])
-            if room.room_id in credited:
-                # Already credited and saved; never increment twice.
-                return True
-            credited.append(room.room_id)
+            # Already credited and saved with its room record.
+            return True
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
         now = (
             completed_at
             if completed_at is not None
@@ -1209,14 +1199,6 @@ class PlanLedger:
             self.room(serial_number, plan_id, room),
             now=now_value,
         )
-        last_run = running_run(robot)
-        if last_run is not None and last_run.get("plan_id") == plan_id:
-            # Checkpoint verified credit with room history, so a crash before
-            # the plan finalizer cannot lose work already verified and saved.
-            last_run["completed_room_count"] = min(
-                plan_timing._stored_count(last_run, "completed_room_count") + 1,
-                plan_timing._stored_count(last_run, "room_count"),
-            )
         active = robot.get("active_plan")
         if run_id is None or (
             isinstance(active, Mapping)
@@ -1241,9 +1223,7 @@ class PlanLedger:
             record = self.room(serial_number, plan_id, room)
             record["last_result"] = "ended_unverified"
             record["last_ended_unverified"] = now_value.isoformat()
-            record["unverified_runs"] = (
-                plan_timing._stored_count(record, "unverified_runs") + 1
-            )
+            record["unverified_runs"] = stored_count(record, "unverified_runs") + 1
             active = self.repository.robot(serial_number).get("active_plan")
             if active is not None:
                 record["last_unverified_duration_seconds"] = (
@@ -1279,7 +1259,7 @@ class PlanLedger:
             record["last_result"] = "failed"
             record["last_failed"] = dt_util.utcnow().isoformat()
             record["last_error"] = reason
-            record["failed_runs"] = plan_timing._stored_count(record, "failed_runs") + 1
+            record["failed_runs"] = stored_count(record, "failed_runs") + 1
             if native_reconciliation is not None:
                 pending = native_history._validated_native_reconciliation(
                     native_reconciliation, create_expiry=True
@@ -1464,9 +1444,7 @@ class PlanLedger:
             record["last_result"] = "suspended"
             record["last_suspended"] = now_value.isoformat()
             record["last_suspend_reason"] = reason
-            record["suspended_runs"] = (
-                plan_timing._stored_count(record, "suspended_runs") + 1
-            )
+            record["suspended_runs"] = stored_count(record, "suspended_runs") + 1
             active = self.repository.robot(serial_number).get("active_plan")
             if active is not None:
                 active["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
@@ -1564,9 +1542,7 @@ class PlanLedger:
             record["last_result"] = "interrupted"
             record["last_interrupted"] = now
             record["last_error"] = reason
-            record["interrupted_runs"] = (
-                plan_timing._stored_count(record, "interrupted_runs") + 1
-            )
+            record["interrupted_runs"] = stored_count(record, "interrupted_runs") + 1
             if native_reconciliation is not None:
                 pending = native_history._validated_native_reconciliation(
                     native_reconciliation, create_expiry=True
@@ -1657,9 +1633,7 @@ class PlanLedger:
             record = self.room(serial_number, plan_id, room)
             record["last_result"] = "cancelled"
             record["last_cancelled"] = now_value.isoformat()
-            record["cancelled_runs"] = (
-                plan_timing._stored_count(record, "cancelled_runs") + 1
-            )
+            record["cancelled_runs"] = stored_count(record, "cancelled_runs") + 1
             active = self.repository.robot(serial_number).get("active_plan")
             if active is not None:
                 record["last_cancelled_duration_seconds"] = (
