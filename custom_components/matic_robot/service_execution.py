@@ -553,14 +553,10 @@ def _require_pending_smart_stop(
     run_id: str | None,
 ) -> None:
     """Refuse Stop now unless this run is finishing a room or area to stop."""
-    active_plan = manager.history.snapshot(serial_number).get("active_plan")
     if (
         not run_id
         or data.get("expected_run_id") != run_id
-        or not isinstance(active_plan, dict)
-        or active_plan.get("run_id") != run_id
-        or active_plan.get("smart_stop_pending") is not True
-        or active_plan.get("smart_stop_phase")
+        or manager.control.smart_stop_phase(serial_number)
         not in {"finishing_room", "finishing_area"}
     ):
         raise validation_error(

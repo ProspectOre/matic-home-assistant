@@ -61,7 +61,7 @@ from .run_control import (
     RunControl,
 )
 from .run_history import append_run_history, update_run_history
-from .run_machine import CheckpointWrite
+from .run_machine import CheckpointWrite, running_run
 from .verified_completion import (
     VerifiedCompletion,
     global_room,
@@ -439,12 +439,7 @@ class PlanLedger:
 
         async def commit(_lease: _MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
-                last_run = robot.get("last_run")
-                if run_id is not None and (
-                    not isinstance(last_run, dict)
-                    or last_run.get("run_id") != run_id
-                    or last_run.get("outcome") != "running"
-                ):
+                if run_id is not None and running_run(robot, run_id) is None:
                     raise ValueError("managed run no longer owns this dispatch")
                 claims = robot.setdefault("managed_native_sessions", {})
                 if claim in claims:
@@ -707,11 +702,9 @@ class PlanLedger:
     @callback
     def active_run_id(self, serial_number: str) -> str | None:
         """Return the current managed run ID without exposing user context."""
-        last_run = self.repository.robot(serial_number).get("last_run")
-        if isinstance(last_run, dict) and last_run.get("outcome") == "running":
-            run_id = last_run.get("run_id")
-            return run_id if isinstance(run_id, str) else None
-        return None
+        run = running_run(self.repository.robot(serial_number))
+        run_id = run.get("run_id") if run is not None else None
+        return run_id if isinstance(run_id, str) else None
 
     async def async_mark_run_docked(
         self,
@@ -897,13 +890,8 @@ class PlanLedger:
 
         def mutate() -> bool | None:
             robot = self.repository.robot(serial_number)
-            last_run = robot.get("last_run")
-            if (
-                not isinstance(last_run, dict)
-                or last_run.get("run_id") != run_id
-                or last_run.get("plan_id") != plan_id
-                or last_run.get("outcome") != "running"
-            ):
+            last_run = running_run(robot, run_id)
+            if last_run is None or last_run.get("plan_id") != plan_id:
                 return None
             previous = robot.get("active_plan")
             previous = previous if isinstance(previous, dict) else {}
@@ -970,14 +958,12 @@ class PlanLedger:
 
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
-            run = robot.get("last_run")
+            run = running_run(robot, run_id)
             active = robot.get("active_plan")
             if (
                 not acceptance_is_current()
-                or not isinstance(run, dict)
-                or run.get("run_id") != run_id
+                or run is None
                 or run.get("plan_id") != plan_id
-                or run.get("outcome") != "running"
                 or not isinstance(active, dict)
                 or active.get("run_id") != run_id
                 or active.get("area_id") != area.area_id
@@ -1031,15 +1017,13 @@ class PlanLedger:
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
             active = robot.get("active_plan")
-            run = robot.get("last_run")
+            run = running_run(robot, run_id)
             if (
                 not isinstance(active, dict)
                 or active.get("run_id") != run_id
                 or active.get("area_id") != area.area_id
-                or not isinstance(run, dict)
-                or run.get("run_id") != run_id
+                or run is None
                 or run.get("plan_id") != active.get("plan_id")
-                or run.get("outcome") != "running"
                 or (
                     completed
                     and (completion_is_current is None or not completion_is_current())
@@ -1146,11 +1130,9 @@ class PlanLedger:
         now_value = dt_util.utcnow()
         robot = self.repository.robot(serial_number)
         run = robot.get("last_run")
-        if run_id is not None and (
-            not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or run.get("plan_id") != plan_id
-            or run.get("outcome") != "running"
+        if (
+            run_id is not None
+            and (running_run(robot, run_id) or {}).get("plan_id") != plan_id
         ):
             return False
         checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
@@ -1227,12 +1209,8 @@ class PlanLedger:
             self.room(serial_number, plan_id, room),
             now=now_value,
         )
-        last_run = robot.get("last_run")
-        if (
-            isinstance(last_run, dict)
-            and last_run.get("outcome") == "running"
-            and last_run.get("plan_id") == plan_id
-        ):
+        last_run = running_run(robot)
+        if last_run is not None and last_run.get("plan_id") == plan_id:
             # Checkpoint verified credit with room history, so a crash before
             # the plan finalizer cannot lose work already verified and saved.
             last_run["completed_room_count"] = min(
@@ -1610,12 +1588,8 @@ class PlanLedger:
         """Remember a room the owner skipped while this run was cleaning."""
 
         def mutate() -> bool:
-            run = self.repository.robot(serial_number).get("last_run")
-            if (
-                not isinstance(run, dict)
-                or run.get("run_id") != run_id
-                or run.get("outcome") != "running"
-            ):
+            run = running_run(self.repository.robot(serial_number), run_id)
+            if run is None:
                 return False
             skipped = run.setdefault("skipped_room_ids", [])
             if room_id not in skipped:
