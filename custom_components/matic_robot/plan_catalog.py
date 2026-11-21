@@ -11,7 +11,8 @@ from collections.abc import (
     Sequence,
 )
 from copy import deepcopy
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any, TypeIs, cast
 
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -398,350 +399,51 @@ class PlanCatalog:
         """Write a validated room-native plan into the open commit."""
         robot = self.repository.robot(serial_number)
         plans = robot["plans"]
-        if plan_id not in plans and _is_manual_room_sequence_plan_id(plan_id):
-            raise ValueError("This ID is reserved for manual Map Studio room runs")
-        if plan_id not in plans and len(plans) >= MAX_SAVED_PLANS_PER_ROBOT:
-            raise SavedPlanLimitError(
-                "A Matic robot can have at most "
-                f"{MAX_SAVED_PLANS_PER_ROBOT} saved plans"
-            )
+        if plan_id not in plans:
+            _assert_plan_can_be_added(plans, plan_id)
         saved_plan = deepcopy(dict(plan))
         raw_rooms = saved_plan.get("rooms", [])
         previous_rooms: Sequence[object] = ()
-        if isinstance(raw_rooms, Sequence) and not isinstance(raw_rooms, (str, bytes)):
-            previous_plan = plans.get(plan_id, {})
-            raw_previous_rooms = (
-                previous_plan.get("rooms", [])
-                if isinstance(previous_plan, Mapping)
-                else []
-            )
-            previous_rooms = (
-                raw_previous_rooms
-                if isinstance(raw_previous_rooms, Sequence)
-                and not isinstance(raw_previous_rooms, (str, bytes))
-                else ()
-            )
-            previous_count = len(previous_rooms)
-            previous_room_ids = Counter(
-                str(room["room_id"])
-                for room in previous_rooms
-                if isinstance(room, Mapping) and room.get("room_id")
-            )
-            raw_room_ids = [
-                str(room["room_id"])
-                for room in raw_rooms
-                if isinstance(room, Mapping) and room.get("room_id")
-            ]
-            legacy_room_reduction = (
-                MAX_ROOM_SEQUENCE_SIZE
-                < len(raw_rooms)
-                <= MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE
-                and previous_count > MAX_ROOM_SEQUENCE_SIZE
-                and len(raw_rooms) < previous_count
-                and len(raw_room_ids) == len(raw_rooms)
-                and len(set(raw_room_ids)) == len(raw_room_ids)
-                and not (Counter(raw_room_ids) - previous_room_ids)
-            )
-            if len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE and not legacy_room_reduction:
-                raise RoomSequenceLimitError(
-                    f"A plan can include at most {MAX_ROOM_SEQUENCE_SIZE} rooms"
-                )
-        prior_rooms = {
-            str(room.get("room_id")): room
-            for room in previous_rooms
-            if isinstance(room, Mapping) and room.get("room_id")
-        }
-        normalized_rooms: list[dict[str, Any]] = []
-        shared_updates: list[tuple[str, dict[str, Any]]] = []
-        reset_private_progress: set[str] = set()
-        binding_error: CadenceBindingError | None = None
-        shared_cadence = self.repository.robot(serial_number).get(
-            "shared_room_cadence", {}
+        if _is_room_sequence(raw_rooms):
+            previous_rooms = _stored_rooms(plans.get(plan_id, {}))
+            _assert_room_count_allowed(raw_rooms, previous_rooms)
+        save = _PlanSave(
+            robot=robot,
+            plan_id=plan_id,
+            floor_token=floor_token,
+            room_identities=room_identities or {},
+            prior_rooms=_rooms_by_id(previous_rooms),
+            shared_cadence=robot.get("shared_room_cadence", {}),
         )
-        room_identities = room_identities or {}
-
+        edits = _CadenceEdits()
         for raw_room in saved_plan.get("rooms", []):
-            if not isinstance(raw_room, Mapping):
-                raise ValueError("plan contains an invalid room")
-            room = deepcopy(dict(raw_room))
-            room_id = str(room.get("room_id", ""))
-            inherited = prior_rooms.get(room_id, {})
-            identity = room_identities.get(room_id) or inherited.get("cadence_identity")
-            if (
-                room_identities.get(room_id)
-                and inherited.get("cadence_identity")
-                and room_identities[room_id] != inherited["cadence_identity"]
-            ):
-                reset_private_progress.add(room_id)
-            prior_cadence = (
-                self.repository.robot(serial_number)["plan_room_cadence"]
-                .get(plan_id, {})
-                .get(room_id)
-            )
-            if (
-                identity is not None
-                and isinstance(prior_cadence, Mapping)
-                and prior_cadence.get("identity") != identity
-            ):
-                # Legacy progress without a map binding cannot be adopted by
-                # the first verified floor identity during an edit.
-                reset_private_progress.add(room_id)
-            old_policy = inherited.get("cadence")
-            try:
-                normalized_old_policy = (
-                    normalize_cadence_policy(
-                        old_policy,
-                        cleaning_mode=str(inherited.get("cleaning_mode", "vacuum")),
-                        coverage_setting=str(
-                            inherited.get("coverage_setting", "standard")
-                        ),
-                    )
-                    if old_policy is not None
-                    else None
-                )
-            except CoverageCadenceRequiresVacuumError:
-                # Keep the previous shared-policy comparison meaningful when
-                # repairing only the room's incompatible cleaning mode.
-                normalized_old_policy = normalize_cadence_policy(
-                    old_policy,
-                    cleaning_mode="vacuum",
-                    coverage_setting=str(inherited.get("coverage_setting", "standard")),
-                )
-            except ValueError:
-                normalized_old_policy = None
-            # An omitted field must not silently discard an inherited policy
-            # that is inapplicable to the selected mode. Explicitly clear it
-            # or choose a compatible mode before saving the plan.
-            cadence_value = room.get("cadence", normalized_old_policy)
-            if cadence_value is not None:
-                policy = normalize_cadence_policy(
-                    cadence_value,
-                    cleaning_mode=str(room.get("cleaning_mode", "vacuum")),
-                    coverage_setting=str(room.get("coverage_setting", "standard")),
-                )
-                schedule = shared_cadence.get(room_id)
-                policy_marker = {
-                    key: value for key, value in policy.items() if key != "scope"
-                }
-                old_marker = (
-                    {
-                        key: value
-                        for key, value in normalized_old_policy.items()
-                        if key != "scope"
-                    }
-                    if normalized_old_policy is not None
-                    else None
-                )
-                if (
-                    policy["scope"] == "shared"
-                    and isinstance(schedule, Mapping)
-                    and isinstance(schedule.get("policy"), Mapping)
-                    and (not identity or schedule.get("identity") in {None, identity})
-                    and (
-                        not isinstance(old_policy, Mapping)
-                        or old_policy.get("scope") != "shared"
-                        or policy_marker == old_marker
-                    )
-                ):
-                    policy = normalize_cadence_policy(
-                        {"scope": "shared", **schedule["policy"]},
-                        cleaning_mode=str(room.get("cleaning_mode", "vacuum")),
-                        coverage_setting=str(room.get("coverage_setting", "standard")),
-                    )
-                elif (
-                    policy["scope"] == "plan"
-                    and isinstance(old_policy, Mapping)
-                    and old_policy.get("scope") == "shared"
-                ):
-                    reset_private_progress.add(room_id)
-                active_shared = policy["scope"] == "shared" and (
-                    policy["mop_every_n"] is not None
-                    or policy["coverage_every_n"] is not None
-                )
-                if active_shared:
-                    bound_identity = room_identities.get(room_id)
-                    has_verified_binding = is_sha256_hex(floor_token) and is_sha256_hex(
-                        bound_identity
-                    )
-                    schedule_identity = (
-                        schedule.get("identity")
-                        if isinstance(schedule, Mapping)
-                        else None
-                    )
-                    schedule_floor = (
-                        schedule.get("floor_token")
-                        if isinstance(schedule, Mapping)
-                        else None
-                    )
-                    schedule_policy = (
-                        schedule.get("policy")
-                        if isinstance(schedule, Mapping)
-                        else None
-                    )
-                    previously_bound_shared_room = (
-                        isinstance(old_policy, Mapping)
-                        and old_policy.get("scope") == "shared"
-                        and is_sha256_hex(inherited.get("cadence_identity"))
-                        and inherited.get("cadence_identity") == schedule_identity
-                    )
-                    schedule_is_bound = (
-                        is_sha256_hex(schedule_identity)
-                        and is_sha256_hex(schedule_floor)
-                        and floor_token is None
-                        and bound_identity is None
-                        and previously_bound_shared_room
-                        and isinstance(schedule_policy, Mapping)
-                        and dict(schedule_policy)
-                        == {
-                            key: value
-                            for key, value in policy.items()
-                            if key != "scope"
-                        }
-                    )
-                    if not has_verified_binding and not schedule_is_bound:
-                        binding_error = CadenceBindingError(
-                            "active shared room cadence requires a verified floor "
-                            "and room binding"
-                        )
-                elif policy["scope"] == "shared" and not isinstance(schedule, Mapping):
-                    # A disabled shared policy is retained in the plan for
-                    # compatibility, but it does not create an unbound shared
-                    # schedule that a later run could mistake for durable state.
-                    shared_updates = [
-                        item for item in shared_updates if item[0] != room_id
-                    ]
-                room["cadence"] = policy
-                if identity is not None:
-                    room["cadence_identity"] = identity
-                if policy["scope"] == "shared" and (
-                    active_shared or isinstance(schedule, Mapping)
-                ):
-                    policy_marker = {
-                        key: value for key, value in policy.items() if key != "scope"
-                    }
-                    schedule_policy = (
-                        schedule.get("policy")
-                        if isinstance(schedule, Mapping)
-                        else None
-                    )
-                    schedule_identity = (
-                        schedule.get("identity")
-                        if isinstance(schedule, Mapping)
-                        else None
-                    )
-                    schedule_floor = (
-                        schedule.get("floor_token")
-                        if isinstance(schedule, Mapping)
-                        else None
-                    )
-                    if (
-                        not isinstance(schedule_policy, Mapping)
-                        or dict(schedule_policy) != policy_marker
-                        or (identity is not None and schedule_identity != identity)
-                        or (floor_token is not None and schedule_floor != floor_token)
-                    ):
-                        shared_updates.append((room_id, policy))
-            normalized_rooms.append(room)
-        saved_plan["rooms"] = normalized_rooms
+            _normalize_room(save, edits, raw_room)
+        saved_plan["rooms"] = edits.rooms
         saved_plan["entries"] = self.normalized_plan_entries(
-            robot, saved_plan.get("entries"), normalized_rooms
+            robot, saved_plan.get("entries"), edits.rooms
         )
-        retained_room_ids = {room["room_id"] for room in normalized_rooms}
-        reset_private_progress.update(set(prior_rooms) - retained_room_ids)
-        changed_plan_rooms = {
-            room_id
-            for room_id in set(prior_rooms).union(
-                room["room_id"] for room in normalized_rooms
-            )
-            if (
-                prior_rooms.get(room_id, {}).get("cadence"),
-                prior_rooms.get(room_id, {}).get("cadence_identity"),
-            )
-            != next(
-                (
-                    (room.get("cadence"), room.get("cadence_identity"))
-                    for room in normalized_rooms
-                    if room["room_id"] == room_id
-                ),
-                None,
-            )
-        }
-        changed_plan_rooms.update(reset_private_progress)
-        changed_shared_rooms = {room_id for room_id, _policy in shared_updates}
+        edits.reset_private_progress.update(
+            set(save.prior_rooms) - {room["room_id"] for room in edits.rooms}
+        )
+        changed_plan_rooms = _changed_plan_rooms(save.prior_rooms, edits.rooms)
+        changed_plan_rooms.update(edits.reset_private_progress)
         self.cadence.assert_cadence_edit_allowed(
             serial_number,
             plan_id,
             saved_plan,
-            shared_updates,
+            edits.shared_updates,
             changed_plan_rooms=changed_plan_rooms,
         )
-        if binding_error is not None:
-            raise binding_error
-        private_records = (
-            self.repository.robot(serial_number)
-            .setdefault("plan_room_cadence", {})
-            .setdefault(plan_id, {})
-        )
-        for room_id in reset_private_progress:
-            private_records.pop(room_id, None)
-        for room_id, policy in shared_updates:
-            room_identity = room_identities.get(room_id)
-            if room_identity is None:
-                room_identity = next(
-                    (
-                        raw.get("cadence_identity")
-                        for raw in normalized_rooms
-                        if raw.get("room_id") == room_id
-                    ),
-                    None,
-                )
-            schedules = self.repository.robot(serial_number).setdefault(
-                "shared_room_cadence", {}
-            )
-            schedule = schedules.get(room_id)
-            if not isinstance(schedule, dict):
-                schedule = {
-                    "progress": {"mop": 0, "coverage": 0},
-                    "identity": room_identity,
-                    "native_since": dt_util.utcnow().isoformat(),
-                }
-                schedules[room_id] = schedule
-            elif (
-                room_identity is not None and schedule.get("identity") != room_identity
-            ):
-                # A reused room ID on a different native floor identity starts
-                # a new shared schedule and cannot inherit ambiguous progress.
-                schedule["progress"] = {"mop": 0, "coverage": 0}
-                schedule["identity"] = room_identity
-                schedule["native_since"] = dt_util.utcnow().isoformat()
-                schedule.pop("accounting", None)
-                schedule.pop("native_events", None)
-                schedule.pop("native_binding", None)
-                schedule.pop("accounting_unverified", None)
-            elif floor_token is not None and schedule.get("floor_token") != floor_token:
-                # A verified floor rebind must not carry progress from an
-                # older map whose room identity happened to remain stable.
-                schedule["progress"] = {"mop": 0, "coverage": 0}
-                schedule["native_since"] = dt_util.utcnow().isoformat()
-                schedule.pop("accounting", None)
-                schedule.pop("native_events", None)
-                schedule.pop("native_binding", None)
-                schedule.pop("accounting_unverified", None)
-            schedule["policy"] = {
-                key: value for key, value in policy.items() if key != "scope"
-            }
-            if floor_token is not None:
-                schedule["floor_token"] = floor_token
-            schedule["revision"] = min(
-                2_147_483_647, plan_timing._stored_count(schedule, "revision") + 1
-            )
+        if edits.binding_error is not None:
+            raise edits.binding_error
+        _write_cadence_edits(save, edits)
         plans[plan_id] = saved_plan
         if select or robot.get("selected_plan") is None:
             robot["selected_plan"] = plan_id
         return _CadenceMutation(
             plan_id,
             frozenset(changed_plan_rooms),
-            frozenset(changed_shared_rooms),
+            frozenset(room_id for room_id, _policy in edits.shared_updates),
         )
 
     @staticmethod
@@ -862,3 +564,375 @@ class PlanCatalog:
             return None
         area = self.repository.robot(serial_number)["areas"].get(area_id)
         return str(area.get("name", area_id)) if area else area_id
+
+
+@dataclass(frozen=True, slots=True)
+class _PlanSave:
+    """What one plan save reads and writes for every room."""
+
+    robot: dict[str, Any]
+    plan_id: str
+    floor_token: str | None
+    room_identities: Mapping[str, str]
+    prior_rooms: Mapping[str, Mapping[str, Any]]
+    shared_cadence: Mapping[str, Any]
+
+
+@dataclass(slots=True)
+class _CadenceEdits:
+    """What the normalized rooms change beside the plan itself."""
+
+    rooms: list[dict[str, Any]] = field(default_factory=list)
+    shared_updates: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    reset_private_progress: set[str] = field(default_factory=set)
+    binding_error: CadenceBindingError | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RoomCadence:
+    """One room with a cadence, and what it had before this save."""
+
+    room_id: str
+    room: dict[str, Any]
+    inherited: Mapping[str, Any]
+    identity: Any
+    old_policy: dict[str, Any] | None
+    schedule: Any
+
+    @property
+    def was_shared(self) -> bool:
+        """Return whether the stored room followed the shared schedule."""
+        stored = self.inherited.get("cadence")
+        return isinstance(stored, Mapping) and stored.get("scope") == "shared"
+
+    @property
+    def schedule_fields(self) -> Mapping[str, Any]:
+        """Return the shared schedule, empty when the room has none."""
+        return self.schedule if isinstance(self.schedule, Mapping) else {}
+
+
+def _assert_plan_can_be_added(plans: Mapping[str, Any], plan_id: str) -> None:
+    """Reject a new plan with a reserved ID or beyond the per-robot limit."""
+    if _is_manual_room_sequence_plan_id(plan_id):
+        raise ValueError("This ID is reserved for manual Map Studio room runs")
+    if len(plans) >= MAX_SAVED_PLANS_PER_ROBOT:
+        raise SavedPlanLimitError(
+            f"A Matic robot can have at most {MAX_SAVED_PLANS_PER_ROBOT} saved plans"
+        )
+
+
+def _is_room_sequence(value: object) -> TypeIs[Sequence[object]]:
+    """Return whether a plan's rooms are a list rather than text."""
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+def _stored_rooms(previous_plan: object) -> Sequence[object]:
+    """Return the rooms of the plan being replaced."""
+    rooms = previous_plan.get("rooms", []) if isinstance(previous_plan, Mapping) else []
+    return rooms if _is_room_sequence(rooms) else ()
+
+
+def _rooms_by_id(rooms: Sequence[object]) -> dict[str, Mapping[str, Any]]:
+    """Return the well-formed stored rooms by room ID."""
+    return {
+        str(room.get("room_id")): room
+        for room in rooms
+        if isinstance(room, Mapping) and room.get("room_id")
+    }
+
+
+def _room_ids(rooms: Sequence[object]) -> list[str]:
+    """Return the ID of each well-formed room, in order."""
+    return [
+        str(room["room_id"])
+        for room in rooms
+        if isinstance(room, Mapping) and room.get("room_id")
+    ]
+
+
+def _assert_room_count_allowed(
+    raw_rooms: Sequence[object], previous_rooms: Sequence[object]
+) -> None:
+    """Hold a plan to the room limit unless it shrinks an older, larger one."""
+    raw_room_ids = _room_ids(raw_rooms)
+    legacy_room_reduction = (
+        MAX_ROOM_SEQUENCE_SIZE < len(raw_rooms) <= MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE
+        and len(previous_rooms) > MAX_ROOM_SEQUENCE_SIZE
+        and len(raw_rooms) < len(previous_rooms)
+        and len(raw_room_ids) == len(raw_rooms)
+        and len(set(raw_room_ids)) == len(raw_room_ids)
+        and not (Counter(raw_room_ids) - Counter(_room_ids(previous_rooms)))
+    )
+    if len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE and not legacy_room_reduction:
+        raise RoomSequenceLimitError(
+            f"A plan can include at most {MAX_ROOM_SEQUENCE_SIZE} rooms"
+        )
+
+
+def _normalize_room(save: _PlanSave, edits: _CadenceEdits, raw_room: object) -> None:
+    """Add one normalized room and the cadence rows its edit touches."""
+    if not isinstance(raw_room, Mapping):
+        raise ValueError("plan contains an invalid room")
+    room = deepcopy(dict(raw_room))
+    room_id = str(room.get("room_id", ""))
+    inherited = save.prior_rooms.get(room_id, {})
+    bound_identity = save.room_identities.get(room_id)
+    identity = bound_identity or inherited.get("cadence_identity")
+    if (
+        bound_identity
+        and inherited.get("cadence_identity")
+        and bound_identity != inherited["cadence_identity"]
+    ):
+        edits.reset_private_progress.add(room_id)
+    prior_cadence = save.robot["plan_room_cadence"].get(save.plan_id, {}).get(room_id)
+    if (
+        identity is not None
+        and isinstance(prior_cadence, Mapping)
+        and prior_cadence.get("identity") != identity
+    ):
+        # Legacy progress without a map binding cannot be adopted by
+        # the first verified floor identity during an edit.
+        edits.reset_private_progress.add(room_id)
+    old_policy = _inherited_policy(inherited)
+    # An omitted field must not silently discard an inherited policy
+    # that is inapplicable to the selected mode. Explicitly clear it
+    # or choose a compatible mode before saving the plan.
+    cadence_value = room.get("cadence", old_policy)
+    if cadence_value is not None:
+        policy = _room_policy(room, cadence_value)
+        cadence = _RoomCadence(
+            room_id=room_id,
+            room=room,
+            inherited=inherited,
+            identity=identity,
+            old_policy=old_policy,
+            schedule=save.shared_cadence.get(room_id),
+        )
+        _apply_room_cadence(save, edits, cadence, policy)
+    edits.rooms.append(room)
+
+
+def _room_policy(room: Mapping[str, Any], value: object) -> dict[str, Any]:
+    """Normalize a cadence policy against the room's cleaning settings."""
+    return normalize_cadence_policy(
+        value,
+        cleaning_mode=str(room.get("cleaning_mode", "vacuum")),
+        coverage_setting=str(room.get("coverage_setting", "standard")),
+    )
+
+
+def _inherited_policy(inherited: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the stored room's policy, or None when it has none or is invalid."""
+    old_policy = inherited.get("cadence")
+    if old_policy is None:
+        return None
+    try:
+        return _room_policy(inherited, old_policy)
+    except CoverageCadenceRequiresVacuumError:
+        # Keep the previous shared-policy comparison meaningful when
+        # repairing only the room's incompatible cleaning mode.
+        return normalize_cadence_policy(
+            old_policy,
+            cleaning_mode="vacuum",
+            coverage_setting=str(inherited.get("coverage_setting", "standard")),
+        )
+    except ValueError:
+        return None
+
+
+def _without_scope(policy: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the part of a policy a shared schedule stores."""
+    return {key: value for key, value in policy.items() if key != "scope"}
+
+
+def _apply_room_cadence(
+    save: _PlanSave,
+    edits: _CadenceEdits,
+    cadence: _RoomCadence,
+    policy: dict[str, Any],
+) -> None:
+    """Settle one room's policy and what it asks of the shared schedule."""
+    room, room_id, schedule = cadence.room, cadence.room_id, cadence.schedule
+    if _adopts_shared_schedule(cadence, policy):
+        policy = _room_policy(room, {"scope": "shared", **schedule["policy"]})
+    elif policy["scope"] == "plan" and cadence.was_shared:
+        edits.reset_private_progress.add(room_id)
+    active_shared = policy["scope"] == "shared" and (
+        policy["mop_every_n"] is not None or policy["coverage_every_n"] is not None
+    )
+    if active_shared:
+        if not _shared_binding_holds(save, cadence, policy):
+            edits.binding_error = CadenceBindingError(
+                "active shared room cadence requires a verified floor and room binding"
+            )
+    elif policy["scope"] == "shared" and not isinstance(schedule, Mapping):
+        # A disabled shared policy is retained in the plan for
+        # compatibility, but it does not create an unbound shared
+        # schedule that a later run could mistake for durable state.
+        edits.shared_updates = [
+            item for item in edits.shared_updates if item[0] != room_id
+        ]
+    room["cadence"] = policy
+    if cadence.identity is not None:
+        room["cadence_identity"] = cadence.identity
+    if (
+        policy["scope"] == "shared"
+        and (active_shared or isinstance(schedule, Mapping))
+        and _shared_schedule_differs(save, cadence, policy)
+    ):
+        edits.shared_updates.append((room_id, policy))
+
+
+def _adopts_shared_schedule(cadence: _RoomCadence, policy: Mapping[str, Any]) -> bool:
+    """Return whether a room joining a shared schedule takes its policy."""
+    schedule, identity = cadence.schedule, cadence.identity
+    return (
+        policy["scope"] == "shared"
+        and isinstance(schedule, Mapping)
+        and isinstance(schedule.get("policy"), Mapping)
+        and (not identity or schedule.get("identity") in {None, identity})
+        and (
+            not cadence.was_shared
+            or (
+                cadence.old_policy is not None
+                and _without_scope(policy) == _without_scope(cadence.old_policy)
+            )
+        )
+    )
+
+
+def _shared_binding_holds(
+    save: _PlanSave, cadence: _RoomCadence, policy: Mapping[str, Any]
+) -> bool:
+    """Return whether an active shared policy has a verified or kept binding."""
+    bound_identity = save.room_identities.get(cadence.room_id)
+    if is_sha256_hex(save.floor_token) and is_sha256_hex(bound_identity):
+        return True
+    fields = cadence.schedule_fields
+    schedule_identity = fields.get("identity")
+    schedule_policy = fields.get("policy")
+    stored_identity = cadence.inherited.get("cadence_identity")
+    return (
+        is_sha256_hex(schedule_identity)
+        and is_sha256_hex(fields.get("floor_token"))
+        and save.floor_token is None
+        and bound_identity is None
+        and cadence.was_shared
+        and is_sha256_hex(stored_identity)
+        and stored_identity == schedule_identity
+        and isinstance(schedule_policy, Mapping)
+        and dict(schedule_policy) == _without_scope(policy)
+    )
+
+
+def _shared_schedule_differs(
+    save: _PlanSave, cadence: _RoomCadence, policy: Mapping[str, Any]
+) -> bool:
+    """Return whether the room's policy or binding changes its shared schedule."""
+    fields = cadence.schedule_fields
+    schedule_policy = fields.get("policy")
+    return (
+        not isinstance(schedule_policy, Mapping)
+        or dict(schedule_policy) != _without_scope(policy)
+        or (cadence.identity is not None and fields.get("identity") != cadence.identity)
+        or (
+            save.floor_token is not None
+            and fields.get("floor_token") != save.floor_token
+        )
+    )
+
+
+def _changed_plan_rooms(
+    prior_rooms: Mapping[str, Mapping[str, Any]], rooms: Sequence[Mapping[str, Any]]
+) -> set[str]:
+    """Return the rooms whose stored policy or identity the save changes."""
+    return {
+        room_id
+        for room_id in set(prior_rooms).union(room["room_id"] for room in rooms)
+        if (
+            prior_rooms.get(room_id, {}).get("cadence"),
+            prior_rooms.get(room_id, {}).get("cadence_identity"),
+        )
+        != next(
+            (
+                (room.get("cadence"), room.get("cadence_identity"))
+                for room in rooms
+                if room["room_id"] == room_id
+            ),
+            None,
+        )
+    }
+
+
+def _write_cadence_edits(save: _PlanSave, edits: _CadenceEdits) -> None:
+    """Drop the reset private progress and write the shared schedules."""
+    private_records = save.robot.setdefault("plan_room_cadence", {}).setdefault(
+        save.plan_id, {}
+    )
+    for room_id in edits.reset_private_progress:
+        private_records.pop(room_id, None)
+    for room_id, policy in edits.shared_updates:
+        room_identity = save.room_identities.get(room_id)
+        if room_identity is None:
+            room_identity = next(
+                (
+                    room.get("cadence_identity")
+                    for room in edits.rooms
+                    if room.get("room_id") == room_id
+                ),
+                None,
+            )
+        _write_shared_schedule(
+            save.robot.setdefault("shared_room_cadence", {}),
+            room_id,
+            policy,
+            room_identity=room_identity,
+            floor_token=save.floor_token,
+        )
+
+
+def _write_shared_schedule(
+    schedules: dict[str, Any],
+    room_id: str,
+    policy: Mapping[str, Any],
+    *,
+    room_identity: str | None,
+    floor_token: str | None,
+) -> None:
+    """Store one room's shared policy, restarting progress on a new binding."""
+    schedule = schedules.get(room_id)
+    if not isinstance(schedule, dict):
+        schedule = {
+            "progress": {"mop": 0, "coverage": 0},
+            "identity": room_identity,
+            "native_since": dt_util.utcnow().isoformat(),
+        }
+        schedules[room_id] = schedule
+    elif room_identity is not None and schedule.get("identity") != room_identity:
+        # A reused room ID on a different native floor identity starts
+        # a new shared schedule and cannot inherit ambiguous progress.
+        _restart_shared_progress(schedule, room_identity)
+    elif floor_token is not None and schedule.get("floor_token") != floor_token:
+        # A verified floor rebind must not carry progress from an
+        # older map whose room identity happened to remain stable.
+        _restart_shared_progress(schedule)
+    schedule["policy"] = _without_scope(policy)
+    if floor_token is not None:
+        schedule["floor_token"] = floor_token
+    schedule["revision"] = min(
+        2_147_483_647, plan_timing._stored_count(schedule, "revision") + 1
+    )
+
+
+def _restart_shared_progress(
+    schedule: dict[str, Any], identity: str | None = None
+) -> None:
+    """Zero a shared schedule's progress, under a new identity when given."""
+    schedule["progress"] = {"mop": 0, "coverage": 0}
+    if identity is not None:
+        schedule["identity"] = identity
+    schedule["native_since"] = dt_util.utcnow().isoformat()
+    schedule.pop("accounting", None)
+    schedule.pop("native_events", None)
+    schedule.pop("native_binding", None)
+    schedule.pop("accounting_unverified", None)
