@@ -54,6 +54,23 @@ interface SpatialReadRecoveryOwner {
   attempt: SpatialReadRecoveryAttempt;
 }
 
+/**
+ * A home with several floors keeps its floor list loaded while its live map
+ * shows, and a list already loaded stays current when the home is down to one.
+ */
+export const needsFloorList = (state: WorkspaceState, entry: MapEntry | null = state.resources.entry): boolean =>
+  state.optionalUiReady && state.map.available && state.dataMode === "live"
+  && entry !== null && (entry.historyFloorCount > 1 || state.resources.history.value !== null);
+
+/** The reads of one floor list: a live generation of one robot at one floor count. */
+interface FloorListReads {
+  readonly key: string;
+  reading: number;
+  loaded: boolean;
+  attempts: number;
+  retryAt: number;
+}
+
 const mapChangedNotice = notice("info", "v4_notice_map_changed", "The map changed, so choose what to clean again.");
 
 /** Owns admitted spatial frames, their read lifecycles and recovery. */
@@ -71,6 +88,7 @@ export class SpatialResources {
   #floorTypesTimer: number | null = null;
   #entryIdentity = "";
   #spatialRecovery: SpatialReadRecoveryState | null = null;
+  #floorList: FloorListReads | null = null;
 
   constructor(store: WorkspaceStore, backend: MaticBackend, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialResourceCallbacks) {
     this.#store = store;
@@ -116,14 +134,48 @@ export class SpatialResources {
   }
   async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
     if (!this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return;
-    const history = await this.#spatialHistory();
-    if (!history) {
-      this.#historyUnavailable(entry, stamp);
-      return;
+    const reads = this.#floorListReads(entry, stamp);
+    reads.reading += 1;
+    try {
+      const history = await this.#spatialHistory();
+      if (!history) {
+        this.#historyUnavailable(entry, stamp);
+        return;
+      }
+      if (this.#callbacks.pageActive() && !this.#callbacks.disposed() && this.#coherence.accepts(stamp)) {
+        await history.loadHistory(entry, stamp);
+        if (this.#coherence.accepts(stamp) && this.#store.value.resources.history.status === "ready") {
+          reads.loaded = true;
+          reads.attempts = 0;
+        }
+      }
+    } finally {
+      reads.reading -= 1;
     }
-    if (this.#callbacks.pageActive() && !this.#callbacks.disposed() && this.#coherence.accepts(stamp)) {
-      await history.loadHistory(entry, stamp);
-    }
+  }
+
+  /**
+   * Reads the floor list of a home with several floors once its live map
+   * shows, and again when the robot changes floor or the floor count changes.
+   * A failed read is tried twice more, 1 and 2 seconds apart at the earliest.
+   */
+  discoverFloors(): void {
+    const state = this.#store.value;
+    const entry = state.resources.entry;
+    const stamp = this.#coherence.current();
+    if (!entry || !stamp || !needsFloorList(state) || !this.#callbacks.pageActive()) return;
+    const reads = this.#floorListReads(entry, stamp);
+    if (reads.reading > 0 || (reads.loaded && state.resources.history.status === "ready")
+      || reads.attempts >= 3 || Date.now() < reads.retryAt) return;
+    reads.attempts += 1;
+    reads.retryAt = Date.now() + 1_000 * 2 ** (reads.attempts - 1);
+    void this.loadHistory(entry, stamp);
+  }
+
+  #floorListReads(entry: MapEntry, stamp: ResourceStamp): FloorListReads {
+    const key = `${stamp.generation}:${entry.entryId}:${entry.historyFloorCount}`;
+    if (this.#floorList?.key !== key) this.#floorList = { key, reading: 0, loaded: false, attempts: 0, retryAt: 0 };
+    return this.#floorList;
   }
 
   async selectFloor(floorId: string): Promise<void> {
@@ -484,6 +536,7 @@ export class SpatialResources {
     const degraded = entry.health === "problem" || entry.health === "limited";
     const state = this.#store.value;
     const loadHistory = needsHistoryCatalog(state)
+      || (retainedScene !== null && needsFloorList(state, entry))
       || (!coherent && !retainedScene && state.resources.scene.problem !== "history-source-missing");
     this.#store.dispatch({
       type: "transition",

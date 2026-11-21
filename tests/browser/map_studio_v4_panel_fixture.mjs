@@ -182,7 +182,8 @@ export async function installPanelFixture(page, {
     let catalogReads = 0;
     let deferredCatalogs = 0;
     const pendingCatalogs = [];
-    const history = { entry_id: "synthetic-entry", live_available: true, floors: [
+    let historyReads = 0;
+    let history = { entry_id: "synthetic-entry", live_available: true, floors: [
       { id: "current", active: true, read_only: false, live_available: true, label: "Home", ordinal: null, snapshots: [] },
       { id: "saved-1", active: false, read_only: true, live_available: false, label: "Loft", ordinal: 2,
         snapshots: [{ id: "saved-shot", created_at: "2026-09-25T12:00:00Z", revision: 6, point_count: 1,
@@ -328,7 +329,10 @@ export async function installPanelFixture(page, {
         const webp = "UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vuUAAA=";
         return new Response(Uint8Array.from(atob(webp), (char) => char.charCodeAt(0)), { headers: { "Content-Type": "image/webp" } });
       }
-      if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
+      if (/slam_history\/synthetic(?:-b)?$/.test(path)) {
+        historyReads += 1;
+        return json(entryB ? entryBHistory : history);
+      }
       // No live trail is stored before a run records a point.
       if (path.endsWith("runs/synthetic-entry?trail=live")) return new Response(null, { status: 404 });
       if (/areas\/synthetic(?:-b)?$/.test(path)) {
@@ -412,13 +416,17 @@ export async function installPanelFixture(page, {
     const invalidationSubscribers = new Set();
     let workspaceSequence = 0;
     let announcedScene = null;
+    // The invalidation the server sends when `resource` reaches `revision`.
+    const announce = (resource, revision) => {
+      workspaceSequence += 1;
+      const invalidation = { epoch: "synthetic-workspace-epoch", sequence: workspaceSequence,
+        coherence_generation: 1, revisions: { workspace: workspaceSequence, [resource]: revision }, resources: [resource] };
+      for (const send of invalidationSubscribers) send({ type: "invalidate", invalidation });
+    };
     // The scene invalidation the server sends when the map changes.
     const announceScene = (revision) => {
-      workspaceSequence += 1;
       announcedScene = revision;
-      const invalidation = { epoch: "synthetic-workspace-epoch", sequence: workspaceSequence,
-        coherence_generation: 1, revisions: { workspace: workspaceSequence, scene: revision }, resources: ["scene"] };
-      for (const send of invalidationSubscribers) send({ type: "invalidate", invalidation });
+      announce("scene", revision);
     };
     const wirePose = (entryId, position) => ({
       position, heading: null, source: position ? "exact_pose" : "current_area",
@@ -627,6 +635,12 @@ export async function installPanelFixture(page, {
       // Push the robot's position, and any other wire fields, to every open workspace subscription.
       pushPose: (position, fields = {}) => { for (const subscriber of poseSubscribers) subscriber(position, fields); },
       announceScene,
+      // The saved-map list changed on the server.
+      announceHistory: () => announce("history", workspaceSequence + 1),
+      get openSubscriptions() { return invalidationSubscribers.size; },
+      get historyReads() { return historyReads; },
+      getHistory: () => structuredClone(history),
+      setHistory: (value) => { history = structuredClone(value); },
       userDataCalls,
       // Reject the next frontend user data message of `type` once.
       failNextUserData: (type) => { userDataFailures.push(type); },
