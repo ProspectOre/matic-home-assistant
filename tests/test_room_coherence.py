@@ -24,11 +24,11 @@ from custom_components.matic_robot.managed_reconciliation import (
 )
 from custom_components.matic_robot.managed_run import _NativeReconciliation
 from custom_components.matic_robot.plan_model import CleaningRoom, room_cadence_identity
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_coherence import (
     current_floor_plan,
     current_room_cadence_identity,
 )
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot
 
 
@@ -141,8 +141,7 @@ async def test_late_reconciliation_credits_identity_from_registered_current_floo
             completed_rooms=(room.name,),
         ),
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.ledger.async_mark_native_completed = AsyncMock(return_value=True)
     hass.states.async_set(entity_id, "docked")
 

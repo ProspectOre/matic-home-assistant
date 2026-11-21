@@ -41,6 +41,7 @@ from custom_components.matic_robot.service_plans import (
 from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
 )
+from tests.plans.fakes import memory_manager
 from tests.test_services import _registered_handler, _registered_services
 
 SERIAL = "serial"
@@ -94,8 +95,7 @@ def _room_entry(room_id: str) -> dict:
 
 
 async def _manager(hass, floor: FloorPlan | None = None) -> CleaningPlanManager:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = floor or _floor()
     await manager.catalog.async_save_area(SERIAL, "rug", _area(floor))
     await manager.catalog.async_save_area(SERIAL, "mat", _area(floor, "Mat", 2.0))

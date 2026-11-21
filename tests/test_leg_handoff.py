@@ -1,7 +1,6 @@
 """The next leg starts while the robot drives home, without docking first."""
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,8 +13,8 @@ from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.leg_handoff import async_dispatch_on_return
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import PlanStart
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.test_unreachable_room import KITCHEN, STUDY, _events, _session
 from tests.wire_builders import _session_identity
@@ -115,8 +114,7 @@ class _Robot:
 
 
 async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "finish_current_room": True
     }

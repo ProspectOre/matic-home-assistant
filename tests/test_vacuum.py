@@ -39,14 +39,14 @@ from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from tests.client.test_mission import _labeled as _labeled_floor
 from tests.client.test_mission import _state as _mission_client_state
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import managed_clean_rooms
 from tests.test_entities import _entry
 
 
 async def test_queued_return_cannot_dock_newer_motion(hass) -> None:
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial = "synthetic-serial"
     entity = vacuum.MaticVacuum(entry)
@@ -123,8 +123,7 @@ async def test_numeric_floor_label_preserves_map_command_guard(command, coherent
 
 async def test_managed_clean_token_is_required_until_external_replacement(hass) -> None:
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     token = manager.control.begin_managed_motion("synthetic-serial")
@@ -197,8 +196,7 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
 ) -> None:
     """A queued native command cannot outlive its exact coherent map."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor_plan = entry.runtime_data.session.floor.value
     assert floor_plan is not None
@@ -256,8 +254,7 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
 async def test_queued_room_clean_uses_fresh_map_after_geometry_update(hass, change):
     """Native room targets survive geometry-only updates while awaiting dispatch."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.session.floor.value
     assert floor is not None
@@ -357,8 +354,7 @@ async def test_return_to_base_stops_resumable_firmware_task(
     entry.runtime_data.session.state.set(
         replace(state, operational=replace(state.operational, **operational_changes))
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
 
@@ -375,8 +371,7 @@ async def test_return_to_base_stops_resumable_firmware_task(
 async def test_return_to_base_stops_idle_robot_with_managed_plan(hass) -> None:
     """Persisted managed ownership also uses OEM STOP for the final return."""
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     lock = manager.control.lock("synthetic-serial")
@@ -397,8 +392,7 @@ async def test_return_to_base_stops_idle_robot_with_managed_plan(hass) -> None:
 @pytest.mark.parametrize("action", ["async_stop", "async_return_to_base"])
 async def test_entity_stop_persists_original_run_owner(hass, action):
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     await manager.ledger.async_begin_run(
         "synthetic-serial",
@@ -441,8 +435,7 @@ async def test_stop_dispatch_preserves_managed_stop_reason(
 ) -> None:
     """A dispatched STOP keeps the managed cancellation classification."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     await manager.catalog.async_save_plan(
@@ -492,8 +485,7 @@ async def test_stop_dispatch_preserves_managed_stop_reason(
 
 async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> None:
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     entity.entity_id = "vacuum.test"
@@ -558,8 +550,7 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
 async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
     """Commands queued behind STOP cannot bypass its newly created fence."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     lock = manager.control.command_lock("synthetic-serial")
@@ -600,8 +591,7 @@ async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
 async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None:
     """An admitted policy decision and checkpoint finish across teardown."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     checkpoint_started = asyncio.Event()
@@ -658,8 +648,7 @@ async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None
 async def test_stop_retains_run_id_when_run_finishes_during_checkpoint(hass) -> None:
     """The accepted Stop owns its run correlation across checkpoint waits."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     await manager.ledger.async_begin_run(
@@ -721,8 +710,7 @@ async def test_stop_retains_run_id_when_run_finishes_during_checkpoint(hass) -> 
 async def test_late_stop_after_teardown_does_not_mutate_managed_run(hass) -> None:
     """A rejected late Stop cannot alter the run it is meant to preserve."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     serial_number = "synthetic-serial"
@@ -751,8 +739,7 @@ async def test_late_stop_after_teardown_does_not_mutate_managed_run(hass) -> Non
 async def test_after_room_stop_keeps_managed_owner(hass) -> None:
     """The graceful policy checkpoints intent without replacing the active run."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     serial_number = "synthetic-serial"
@@ -778,8 +765,7 @@ async def test_after_room_stop_keeps_managed_owner(hass) -> None:
 async def test_queued_stop_rechecks_teardown_before_stop_policy(hass) -> None:
     """A Stop queued before teardown is rejected before changing plan state."""
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     serial_number = "synthetic-serial"
@@ -816,8 +802,7 @@ async def test_queued_stop_rechecks_teardown_before_stop_policy(hass) -> None:
 async def test_admitted_coverage_finishes_after_teardown_fence(hass) -> None:
     """Teardown drains an external command admitted before the fence."""
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     client = entry.runtime_data.session.client
@@ -847,8 +832,7 @@ async def test_admitted_coverage_finishes_after_teardown_fence(hass) -> None:
 
 async def test_command_admission_closure_rejects_late_managed_dispatch(hass) -> None:
     """A managed task that reaches command admission after unload cannot dispatch."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     token = manager.control.begin_managed_motion("synthetic-serial")
     await manager.control.async_close_command_admission_and_wait("synthetic-serial")
     dispatch = AsyncMock()
@@ -868,8 +852,7 @@ async def test_stop_cancels_undispatched_direct_motion(
     hass, command: str, waiting_check: int
 ) -> None:
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     entered = asyncio.Event()
@@ -904,8 +887,7 @@ async def test_stop_cancels_undispatched_direct_motion(
 async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -> None:
     """A queued direct room clean cannot replace a Stop issued while it waits."""
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     serial_number = "synthetic-serial"
@@ -937,8 +919,7 @@ async def test_after_room_stop_supersedes_queued_direct_motion(
 ) -> None:
     """A graceful Stop preserves its run and fences older direct motion."""
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     room = CleaningRoom("room-2", "Study", "vacuum", "quick")
@@ -1015,8 +996,7 @@ async def test_sink_summon_keeps_the_plan_driving_the_task_it_joins(
     entry.runtime_data.session.state.set(
         replace(state, operational=replace(state.operational, **held_task))
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     token = manager.control.begin_managed_motion(serial_number)
@@ -1040,8 +1020,7 @@ async def test_sink_summon_refuses_when_the_task_ends_while_queued(hass) -> None
     session.state.set(
         replace(state, operational=replace(state.operational, cleaning=True))
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     token = manager.control.begin_managed_motion(serial_number)
@@ -1080,8 +1059,7 @@ async def test_sink_summon_refuses_when_the_task_ends_while_queued(hass) -> None
 async def test_sink_summon_without_a_task_replaces_a_docked_plan(hass) -> None:
     """A plan docked between rooms holds no task, so the summon is new motion."""
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     token = manager.control.begin_managed_motion(serial_number)
@@ -1105,8 +1083,7 @@ async def test_sink_summon_decides_ownership_after_the_lookup(hass) -> None:
     session.state.set(
         replace(state, operational=replace(state.operational, cleaning=True))
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     token = manager.control.begin_managed_motion(serial_number)
@@ -1136,8 +1113,7 @@ async def test_sink_summon_that_cannot_go_keeps_a_docked_plan(
         )
     else:
         entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     token = manager.control.begin_managed_motion(serial_number)
@@ -1153,8 +1129,7 @@ async def test_sink_summon_that_cannot_go_keeps_a_docked_plan(
 async def test_sink_summon_without_a_task_cancels_a_recovering_plan(hass) -> None:
     """A plan reconnecting after a restart is replaced like any direct motion."""
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     await manager.ledger.async_begin_run(
@@ -1179,8 +1154,7 @@ async def test_go_to_room_keeps_the_plan_driving_the_task_it_joins(hass) -> None
     entry.runtime_data.session.state.set(
         replace(state, operational=replace(state.operational, cleaning=True))
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     token = manager.control.begin_managed_motion(serial_number)
@@ -1202,8 +1176,7 @@ async def test_go_to_room_without_a_task_owns_motion_only_when_it_goes(
 ) -> None:
     """An unknown room is refused before it can replace a docked plan."""
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     serial_number = "synthetic-serial"
     token = manager.control.begin_managed_motion(serial_number)
@@ -1232,8 +1205,7 @@ _AREA_SESSION = "55555555-5555-4555-8555-555555555555"
 
 def _plan_area_vacuum(hass, area: dict | None = None):
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entry.runtime_data.session.client.async_start_custom_coverage = AsyncMock()
     floor = entry.runtime_data.session.floor.value

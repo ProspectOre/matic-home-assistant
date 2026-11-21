@@ -23,9 +23,8 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from homeassistant.exceptions import ServiceValidationError
@@ -41,9 +40,9 @@ from custom_components.matic_robot.area_binding import (
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_views import _project_areas
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.service_plans import _validated_area_command
 from tests import legacy_bindings
+from tests.plans.fakes import memory_manager
 
 GOLDEN = Path(__file__).parent / "fixtures" / "area_binding_pins_ba7fb875.json"
 SERIAL = "pin-robot"
@@ -171,8 +170,7 @@ def _frameless(circles: list[dict[str, float]]) -> dict[str, Any]:
 
 
 async def _upgrade(hass, areas: dict[str, Any], floor_plan: FloorPlan):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot(SERIAL)["areas"].update(deepcopy(areas))
     plan_state.parse_robot(manager.repository.robot(SERIAL))
     result = await manager.catalog.async_upgrade_area_bindings(SERIAL, floor_plan)

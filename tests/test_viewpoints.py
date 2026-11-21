@@ -28,7 +28,6 @@ from custom_components.matic_robot.client import (
 )
 from custom_components.matic_robot.llm_camera import MaticTakePhotoTool
 from custom_components.matic_robot.photo_tours import TourStop
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.service_schemas import (
     PHOTO_TOUR_STOP_SCHEMA,
@@ -36,6 +35,7 @@ from custom_components.matic_robot.service_schemas import (
     SAVE_PHOTO_VIEWPOINT_SERVICE_SCHEMA,
 )
 from custom_components.matic_robot.viewpoints import Viewpoint, Viewpoints
+from tests.plans.fakes import memory_manager
 from tests.test_camera_ai import _llm_context, _prepare_camera_tool
 from tests.test_entities import _entry as _vacuum_entry
 
@@ -307,8 +307,7 @@ async def test_navigation_refuses_when_the_task_ends_while_queued(
             state, operational=replace(state.operational, paused=True, cleaning=False)
         )
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     command_lock = manager.control.command_lock("synthetic-serial")
     await command_lock.acquire()

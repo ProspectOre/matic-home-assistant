@@ -46,6 +46,7 @@ from custom_components.matic_robot.robot_commands import (
     RobotCommands,
 )
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, run_step
 from tests.wire_builders import _session_identity
 
@@ -82,8 +83,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     hass, multi_room, replacement, suspension
 ):
     robot = FakeRobot()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     suspended = asyncio.Event()
     started = asyncio.Event()
     original_suspend = manager.ledger.async_mark_suspended
@@ -315,8 +315,7 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
 ):
     robot = FakeRobot()
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     sender = AsyncMock()
     rooms = [ROOM]
     if multi_room:
@@ -410,8 +409,7 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
     robot = FakeRobot()
     from custom_components.matic_robot.client.commands import UserCommand
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     started, suspended = asyncio.Event(), asyncio.Event()
     original_resume = manager.ledger.async_mark_resumed
     original_suspend = manager.ledger.async_mark_suspended
@@ -504,8 +502,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     robot = FakeRobot()
     from custom_components.matic_robot.client.commands import UserCommand
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     sender, history = AsyncMock(), AsyncMock(return_value=())
     dispatched = []
     bound = asyncio.Event()
@@ -623,8 +620,7 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
     robot = FakeRobot()
     from custom_components.matic_robot.client.commands import UserCommand
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     identity = ORIGINAL
     started, command_returned = asyncio.Event(), asyncio.Event()
     original_resume = manager.ledger.async_mark_resumed
@@ -721,8 +717,7 @@ async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
 ):
     robot = FakeRobot()
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     command, sender = AsyncMock(), AsyncMock()
     robot.on_start = command
     rooms = [ROOM]
@@ -768,8 +763,7 @@ async def test_final_dock_cannot_interrupt_an_independent_native_task(
     from custom_components.matic_robot.client.commands import UserCommand
     from custom_components.matic_robot.managed_dispatch import _guard_native_commands
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     token = manager.control.begin_managed_motion("serial")
     sender = AsyncMock()
     guarded = _guard_native_commands(
@@ -1432,8 +1426,7 @@ async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
     robot = FakeRobot()
     from tests.test_entities import _entry
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     session_id = UUID("77777777-7777-4777-8777-777777777777")
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_dispatch.uuid4", lambda: session_id
@@ -1752,8 +1745,7 @@ async def test_cancelled_managed_dispatch_stops_only_its_exact_session(hass, rep
     from custom_components.matic_robot.client.commands import UserCommand
     from custom_components.matic_robot.managed_executor import _async_execute_rooms
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     current_identity = b""
     transmitted = asyncio.Event()
     recovery_started = asyncio.Event()
@@ -1827,8 +1819,7 @@ async def test_local_replacement_between_owner_read_and_stop_suppresses_stop(has
     from custom_components.matic_robot.client.commands import UserCommand
     from custom_components.matic_robot.managed_dispatch import _guard_native_commands
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     token = manager.control.begin_managed_motion("serial")
     expected_identity = _session_identity(UUID("66666666-6666-4666-8666-666666666666"))
     identity_read = asyncio.Event()
@@ -1960,8 +1951,7 @@ class _AreaRobot:
 
 
 def _area_manager(hass, *, finish_current_room: bool = False) -> CleaningPlanManager:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "name": "Areas",
         "rooms": [],

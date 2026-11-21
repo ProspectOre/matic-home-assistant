@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import timedelta
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -29,6 +28,7 @@ from custom_components.matic_robot.native_history import (
 )
 from custom_components.matic_robot.plan_model import plan_floor_token
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
 from tests.wire_builders import _field
 
 
@@ -440,8 +440,7 @@ async def test_grouped_native_marker_survives_store_reload(hass) -> None:
 async def test_single_room_completion_api_refuses_grouped_marker(hass) -> None:
     floor = _floor_plan()
     pending = _marker(floor)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.data = {"robots": {"serial": _robot(pending)}}
     plan_state.parse_robot(manager.repository.robot("serial"))
     dispatched_at = dt_util.parse_datetime(pending["dispatched_at"])
@@ -487,8 +486,7 @@ async def test_mop_first_group_reconciles_later_vacuum_coverage(hass, proof_case
     )
 
     floor = _floor_plan()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     rooms = [
         CleaningRoom("room-kitchen", "Kitchen", "mop", "standard"),
         CleaningRoom("room-study", "Study", "vacuum", "standard"),

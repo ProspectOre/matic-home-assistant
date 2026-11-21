@@ -124,6 +124,7 @@ from custom_components.matic_robot.services import (
     async_register_services,
 )
 from custom_components.matic_robot.stores import LiveState, Store
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, robot_client, robot_port, verifying_write
 
 
@@ -586,8 +587,7 @@ async def test_clean_action_checks_oem_stop_fence() -> None:
 
 
 async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     managed_token = manager.control.begin_managed_motion("serial")
     floor_plan = _area_floor_plan()
     await manager.catalog.async_save_area(
@@ -653,8 +653,7 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
     hass,
 ) -> None:
     """A room-like native record cannot credit cadence for an area command."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     client = robot_client(
@@ -761,8 +760,7 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
 
 
 async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     await manager.catalog.async_save_area(
         "serial",
@@ -849,8 +847,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
 async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
     hass, mismatch
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     saved_floor_plan = _area_floor_plan()
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
@@ -926,8 +923,7 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
 
 
 async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     await manager.catalog.async_save_area(
         "serial",
@@ -1051,8 +1047,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
 
 async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> None:
     """A STOP queued first fences a custom-area clean waiting on its lock."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     await manager.catalog.async_save_area(
         "serial",
@@ -1111,8 +1106,7 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
     hass,
 ) -> None:
     """A custom-area request queued before graceful Stop cannot replace its run."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _area_floor_plan()
     await manager.catalog.async_save_area(
         "serial",
@@ -1206,8 +1200,7 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
     from tests.test_entities import _entry as entity_entry
 
     serial_number = "synthetic-serial"
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     run_id = "run-id"
     token = manager.control.begin_managed_motion(serial_number)
     await manager.ledger.async_begin_run(
@@ -1334,8 +1327,7 @@ async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
     from tests.test_entities import _entry as entity_entry
 
     serial_number = "synthetic-serial"
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         serial_number,
         "plan",
@@ -1404,8 +1396,7 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
     from tests.test_entities import _entry as entity_entry
 
     serial_number = "synthetic-serial"
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         serial_number,
         "plan",
@@ -1489,8 +1480,7 @@ async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
     from tests.test_entities import _entry as entity_entry
 
     serial_number = "synthetic-serial"
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         serial_number,
         "plan",
@@ -1577,8 +1567,7 @@ async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> No
     from tests.test_entities import _entry as entity_entry
 
     serial_number = "synthetic-serial"
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         serial_number,
         "plan",
@@ -1677,8 +1666,7 @@ async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> No
 async def test_clean_area_translates_client_failure_without_protocol_details(
     hass,
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     await manager.catalog.async_save_area(
         "serial",
@@ -1730,8 +1718,7 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
 
 
 async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     services = await _registered_services(hass, manager)
     floor_plan = FloorPlan(
         42,
@@ -1851,8 +1838,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         async_get_user=AsyncMock(return_value=SimpleNamespace(is_admin=True))
     )
     admin_context = Context(user_id="preview-admin")
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     second_room = Room(
@@ -2201,8 +2187,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     hass, use_room_schedule, override_room_schedule, requested_mode
 ) -> None:
     """Only a manual run using the room schedule may advance shared progress."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     identity = _plan_cadence_bindings(
@@ -2410,8 +2395,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
 
 
 async def test_manual_room_run_identity_preserves_legacy_saved_plan_ids(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.catalog.release_manual_room_sequence_plan_id("serial", "unreserved")
     # A saved plan that predates the private namespace remains editable.
     manager.repository.robot("serial")["plans"][MANUAL_ROOM_SEQUENCE_PLAN_ID] = {
@@ -2494,8 +2478,7 @@ async def test_manual_room_reservation_skips_persisted_run_owners(hass) -> None:
 async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
     hass,
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "home",
@@ -2768,8 +2751,7 @@ async def test_late_native_completion_uses_current_room_cadence_identity(hass) -
             completed_rooms=(room.name,),
         ),
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.ledger.async_mark_native_completed = AsyncMock(return_value=True)
     robot.show("docked")
     with (
@@ -2802,8 +2784,7 @@ async def test_late_native_completion_uses_current_room_cadence_identity(hass) -
 async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
     hass,
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     cancel = asyncio.Event()
     cancel.set()
     manager.control.prepare_run = MagicMock(return_value=cancel)
@@ -2862,8 +2843,7 @@ async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
 async def test_cleaning_service_rejects_invalid_cadence_resolution(
     hass, service: str
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "home",
@@ -2944,8 +2924,7 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
     hass, rooms, message: str
 ) -> None:
     """Never dispatch data that failed authoritative preview materialization."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "home",
@@ -3000,8 +2979,7 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
 
 
 async def test_all_daily_limited_rooms_block_saved_and_manual_dispatch(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     identity = room_cadence_identity(floor_plan, room.id)
@@ -3103,8 +3081,7 @@ async def test_all_daily_limited_rooms_block_saved_and_manual_dispatch(hass) -> 
 
 
 async def test_legacy_oversized_plan_cannot_be_previewed_or_dispatched(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_rooms = tuple(
         Room(
             f"room-{index}",
@@ -3172,8 +3149,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
     hass,
 ) -> None:
     """A preview failure after executor settlement remains recoverable."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "home",
@@ -3274,8 +3250,7 @@ async def test_run_without_preview_revalidates_after_stop_settlement(
     hass, run_behavior: str, changed_input: str
 ) -> None:
     """A run started without a preview rejects changed authority before dispatch."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     await manager.catalog.async_save_plan(
         "serial",
@@ -3379,8 +3354,7 @@ async def test_run_without_preview_revalidates_after_stop_settlement(
 
 
 async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     study = CleaningRoom("room-study", "Study", "vacuum", "quick")
     office = CleaningRoom("room-office", "Office", "mop", "heavy_duty")
     await manager.catalog.async_save_plan(
@@ -3711,8 +3685,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
 
 
 async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["upstairs"] = {
         "name": "Upstairs",
         "finish_current_room": True,
@@ -3821,8 +3794,7 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
 
 
 async def test_managed_actions_ignore_inactive_stop(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "disabled",
@@ -3880,8 +3852,7 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
 async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
     hass, include_unmanaged
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     services = await _registered_services(hass, manager)
     session = _session(discard_current_room=MagicMock())
     entry = SimpleNamespace(runtime_data=SimpleNamespace(session=session))
@@ -3941,8 +3912,7 @@ def test_service_cadence_schema_preserves_valid_integer_intervals(
 async def test_save_plan_service_rejects_one_shot_without_interval(
     hass, flag: str
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     services = await _registered_services(hass, manager)
@@ -3988,8 +3958,7 @@ async def test_save_plan_service_rejects_one_shot_without_interval(
 async def test_delete_room_schedule_service_uses_current_binding_and_exact_token(
     hass,
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     entry = SimpleNamespace(
@@ -4151,8 +4120,7 @@ async def test_delete_room_schedule_service_rejects_room_missing_from_current_ma
 
 
 async def test_save_plan_returns_manager_normalized_shared_cadence(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     entry = SimpleNamespace(
@@ -4214,8 +4182,7 @@ async def test_save_plan_returns_manager_normalized_shared_cadence(hass) -> None
 
 
 async def test_plan_crud_is_complete(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     services = await _registered_services(hass, manager)
     context = (
         "vacuum.test",
@@ -4271,8 +4238,7 @@ async def test_plan_crud_is_complete(hass) -> None:
 
 
 async def test_save_plan_allows_only_strict_legacy_room_reductions(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     rooms = [
         {
             "room_id": f"room-{index}",
@@ -4362,8 +4328,7 @@ async def test_save_plan_allows_only_strict_legacy_room_reductions(hass) -> None
 async def test_save_plan_recovers_malformed_persisted_room_container(
     hass, legacy_rooms
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["damaged"] = {
         "name": "Damaged legacy plan",
         "rooms": legacy_rooms,
@@ -4407,8 +4372,7 @@ async def test_save_plan_recovers_malformed_persisted_room_container(
 
 
 async def test_save_plan_reports_the_per_robot_plan_limit(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"].update(
         {
             f"plan-{index}": {"name": f"Plan {index}", "rooms": []}
@@ -4450,8 +4414,7 @@ async def test_save_plan_reports_the_per_robot_plan_limit(hass) -> None:
 
 
 async def test_save_plan_translates_cadence_edit_blocked_during_run(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
     await manager.catalog.async_save_plan(
@@ -4515,8 +4478,7 @@ async def test_save_plan_translates_cadence_edit_blocked_during_run(hass) -> Non
 
 
 async def test_delete_plan_translates_running_plan_lock(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial", "home", {"name": "Home", "rooms": []}
     )
@@ -4546,8 +4508,7 @@ async def test_delete_plan_translates_running_plan_lock(hass) -> None:
 
 
 async def test_plan_edits_reject_unknown_rooms_and_plans(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     services = await _registered_services(hass, manager)
     context = ("vacuum.test", SimpleNamespace(), "serial", {"room-kitchen": "Kitchen"})
     bad_room = ServiceCall(
@@ -5348,8 +5309,7 @@ async def test_firmware_snapshot_requires_exactly_one_robot() -> None:
 
 
 async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial", "disabled", {"name": "Disabled", "enabled": False, "rooms": []}
     )
@@ -5387,8 +5347,7 @@ async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> No
 
 
 async def test_save_plan_rejects_names_that_produce_no_plan_id(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     services = await _registered_services(hass, manager)
     context = ("vacuum.test", SimpleNamespace(), "serial", {"room-kitchen": "Kitchen"})
     call = ServiceCall(
@@ -5422,8 +5381,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
 ) -> None:
     """The ten-minute OEM stop can finish a room after the runner saw an error."""
     robot = FakeRobot()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()
     events = []
@@ -5490,8 +5448,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
 async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None:
     """Watching the robot stop disproves the completion its record claims."""
     robot = FakeRobot()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     dispatched_at = dt_util.utcnow() - timedelta(seconds=30)
     manager.repository.robot("serial")["pending_native_reconciliation"] = {
@@ -5706,8 +5663,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     reconciliation = _NativeReconciliation(
         "away", room.room_id, room.name, now - timedelta(seconds=5)
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     created: list[str] = []
 
     def create_background_task(coro, name: str) -> asyncio.Task:
@@ -5739,8 +5695,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     assert len(created) == 2
 
     hass.states.async_set("vacuum.test", "cleaning")
-    manager_with_fence = CleaningPlanManager(hass)
-    manager_with_fence.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager_with_fence = memory_manager(hass)
     manager_with_fence.control.mark_stop_pending("serial")
     native_active = AsyncMock(return_value=False)
     fresh_state = AsyncMock(
@@ -5905,8 +5860,7 @@ async def test_wait_returns_reached_state_while_cancel_stays_pending(hass) -> No
 
 @pytest.mark.parametrize("waiting_stage", ["preflight", "lock", "persist"])
 async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _area_floor_plan()
     await manager.catalog.async_save_area(
         "serial",
@@ -6184,8 +6138,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
     from tests.test_entities import _entry as entity_entry
 
     serial = "synthetic-serial"
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry = entity_entry()
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum_platform.MaticVacuum(entry)
@@ -6316,8 +6269,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
 @pytest.mark.parametrize("active_run", [None, "replacement-run", "motion-replaced"])
 async def test_stop_expected_run_mismatch_has_no_effect(hass, active_run) -> None:
     """A stale observer cannot Stop a newer run or unmanaged cleaning."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     if active_run:
         await manager.ledger.async_begin_run(
             "serial",

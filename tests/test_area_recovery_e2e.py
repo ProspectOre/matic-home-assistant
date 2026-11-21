@@ -7,7 +7,6 @@ import json
 import math
 from copy import deepcopy
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -40,6 +39,7 @@ from custom_components.matic_robot.service_plans import (
     _validated_area_command,
 )
 from tests import legacy_bindings
+from tests.plans.fakes import memory_manager
 from tests.test_area_frame_witnesses import (
     _area as _witness_area,
 )
@@ -190,8 +190,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     hass: HomeAssistant,
 ) -> None:
     """A stale version 4 binding stays blocked until explicit validated rebind."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     original_map = _dense_floor_plan()
     current_map = _map_with_unrelated_room(original_map)
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
@@ -513,8 +512,7 @@ async def test_area_commit_rejects_floor_or_runtime_drift_while_store_queued(
     hass: HomeAssistant, drift: str
 ) -> None:
     """A queued save cannot outlive the runtime or floor it was authored for."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     runtime = _runtime()
     runtime.client.async_send_command = AsyncMock()
     runtime.cleaning_plans = manager
@@ -565,8 +563,7 @@ async def test_concurrent_area_creates_cannot_overwrite_same_slug(
     hass: HomeAssistant,
 ) -> None:
     """Commit-time catalog checks reject the second create for a slug."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     runtime = _runtime()
     runtime.cleaning_plans = manager
     entry = _entry(runtime)
@@ -601,8 +598,7 @@ async def test_concurrent_area_renames_enforce_casefold_name_uniqueness(
     hass: HomeAssistant,
 ) -> None:
     """Distinct area IDs cannot commit duplicate casefolded names."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("synthetic-serial")["areas"].update(
         {"first-zone": {"name": "First"}, "second-zone": {"name": "Second"}}
     )
@@ -661,8 +657,7 @@ async def test_queued_area_update_does_not_recreate_deleted_area(
     hass: HomeAssistant,
 ) -> None:
     """A queued update preserves 404 semantics when its area is deleted first."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     runtime = _runtime()
     saved_area = {
         "schema_version": AREA_SCHEMA_VERSION,
@@ -726,8 +721,7 @@ async def test_v5_area_survives_unrelated_room_addition_but_not_room_translation
     hass: HomeAssistant,
 ) -> None:
     """Anchors preserve safe remote edits and reject movement of the bound room."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     original_map = _dense_floor_plan()
     current_map = _map_with_unrelated_room(original_map)
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]

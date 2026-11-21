@@ -23,6 +23,7 @@ ROOM_STATUS_PARTIAL = 1
 
 
 def varint(value: int) -> bytes:
+    """Encode an unsigned integer as a protobuf base-128 varint."""
     result = bytearray()
     while value > 0x7F:
         result.append((value & 0x7F) | 0x80)
@@ -622,14 +623,15 @@ def map_pages(
         + bytes_field(8, bytes_field(1, plane))
     )
     keys = [
-        bytes_field(1, varint_field(3, _zigzag(x)) + varint_field(4, _zigzag(y)))
+        bytes_field(1, varint_field(3, zigzag(x)) + varint_field(4, zigzag(y)))
         for x in pages_x
         for y in pages_y
     ]
     return [(key, photo) for key in keys], [(key, structure) for key in keys]
 
 
-def _zigzag(value: int) -> int:
+def zigzag(value: int) -> int:
+    """Zigzag-encode a signed 32-bit integer for a sint32 field."""
     return (value << 1) ^ (value >> 31)
 
 

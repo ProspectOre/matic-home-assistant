@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client import FloorPlan, Room
 from custom_components.matic_robot.plan_model import (
@@ -12,15 +9,14 @@ from custom_components.matic_robot.plan_model import (
     checkpoint_legs,
     plan_area_fingerprint,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager
 from tests import legacy_bindings
+from tests.plans.fakes import memory_manager
 
 
 async def test_conversion_moves_recovery_checkpoint_to_the_new_fingerprint(
     hass,
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor_plan = FloorPlan(
         42,
         "synthetic-partition",

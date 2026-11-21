@@ -92,8 +92,8 @@ from custom_components.matic_robot.plan_model import (
     plan_floor_token,
     room_cadence_identity,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_controls import RobotControls
+from tests.plans.fakes import memory_manager, saved_area
 from tests.session_fakes import fake_session
 
 _INTERNAL_TERMS = re.compile(
@@ -936,8 +936,7 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
             Room("hall", "Hall", "hall", b"hall", ()),
         ),
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room_map = {room.id: room.name for room in floor_plan.rooms}
     await manager.catalog.async_save_plan(
         "synthetic-serial",
@@ -1133,8 +1132,7 @@ async def test_plan_tool_projects_real_manager_cadence_preview(hass) -> None:
         b"partition",
         (Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),),
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "synthetic-serial",
         "home",
@@ -1202,19 +1200,6 @@ async def test_plan_tool_projects_real_manager_cadence_preview(hass) -> None:
         await MaticGetPlanTool().async_call(
             hass, llm.ToolInput("MaticGetPlan", {}), _context()
         )
-
-
-def _saved_area(floor_plan: FloorPlan, name: str) -> dict[str, Any]:
-    return {
-        "schema_version": AREA_SCHEMA_VERSION,
-        "name": name,
-        "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
-        "cleaning_mode": "vacuum",
-        "coverage_setting": "standard",
-        "map_binding": binding_for_area(
-            floor_plan, [{"x": 0.1, "y": 0.1, "radius": 0.1}]
-        ),
-    }
 
 
 def _area_entry(area_id: str, cleaning_mode: str = "vacuum") -> dict[str, str]:
@@ -1588,11 +1573,10 @@ async def test_plan_tool_previews_custom_areas_in_run_order(hass) -> None:
             Room("study", "Study", "study", b"study", ((1, 0), (2, 0), (2, 1))),
         ),
     )
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     serial = "synthetic-serial"
-    await manager.catalog.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
-    await manager.catalog.async_save_area(serial, "mat", _saved_area(floor_plan, "Mat"))
+    await manager.catalog.async_save_area(serial, "rug", saved_area(floor_plan, "Rug"))
+    await manager.catalog.async_save_area(serial, "mat", saved_area(floor_plan, "Mat"))
     await manager.catalog.async_save_plan(
         serial,
         "mixed",

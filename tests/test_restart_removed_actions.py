@@ -6,13 +6,6 @@ import pytest
 
 from custom_components.matic_robot.restart import async_recover_managed_run
 
-from .test_restart import recovery_state as recovery_fixture
-
-
-@pytest.fixture
-async def recovery_state(hass):
-    return await recovery_fixture.__wrapped__(hass)
-
 
 @pytest.mark.parametrize(
     ("stored_action", "cleaning_order"),

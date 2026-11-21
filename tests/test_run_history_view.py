@@ -17,10 +17,10 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
 )
 from custom_components.matic_robot.plan_model import MANUAL_ROOM_SEQUENCE_PLAN_ID
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import LIVE_TRAIL_ID, RunTrails
 from custom_components.matic_robot.slam_run_history_view import MaticRunHistoryView
 from custom_components.matic_robot.slam_view_data import observe_trail
+from tests.plans.fakes import memory_manager
 from tests.test_slam_scene import (
     _browser_session_key,
     _entry,
@@ -177,8 +177,7 @@ def test_each_pose_on_the_current_map_feeds_the_trail_recorder() -> None:
 async def test_manager_history_freezes_runs_and_follows_a_late_dock(
     hass: HomeAssistant,
 ) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.ledger.async_begin_run(
         "serial",
         f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_x",

@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 from copy import deepcopy
 from datetime import timedelta
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.util import dt as dt_util
@@ -20,6 +18,8 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.native_history import _import_native_room_activity
 from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
+from tests.test_room_statistics import _import_history
 
 
 def _floor() -> FloorPlan:
@@ -52,16 +52,9 @@ def _session(
 
 
 async def _manager(hass, robot: dict) -> CleaningPlanManager:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.data = {"robots": {"robot": robot}}
     return manager
-
-
-async def _import_history(manager, serial_number, floor_plan, records, **kwargs):
-    return await manager.ledger.async_import_native_history(
-        serial_number, floor_plan, records, **kwargs
-    )
 
 
 def _hash(key: bytes) -> str:

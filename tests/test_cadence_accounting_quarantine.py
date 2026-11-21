@@ -14,7 +14,8 @@ from custom_components.matic_robot.plan_model import (
     room_cadence_identity,
 )
 from custom_components.matic_robot.plan_views import MaticPlansView
-from tests.test_cadence_manager import _floor, _manager
+from tests.plans.fakes import memory_manager
+from tests.test_cadence_manager import _floor
 from tests.test_completion_ledger import _snapshot
 from tests.test_slam_scene import _entry, _hass, _request, _runtime
 
@@ -34,7 +35,7 @@ async def _configured(hass, count=1):
             for index in range(count)
         ),
     )
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     identities = {
         room.id: room_cadence_identity(floor, room.id) for room in floor.rooms
     }
@@ -179,7 +180,7 @@ async def test_plans_view_holds_unverified_shared_progress_until_both_modes_rese
     runtime = _runtime()
     floor = runtime.session.floor.value
     room_id = floor.rooms[0].id
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     runtime.cleaning_plans = manager
     await manager.catalog.async_save_plan(
         "synthetic-serial",

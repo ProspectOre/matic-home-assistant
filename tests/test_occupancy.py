@@ -33,6 +33,7 @@ from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
 )
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, robot_client, robot_port
 from tests.test_services import (
     _area_floor_plan,
@@ -95,8 +96,7 @@ def _sensor(
 
 
 async def _manager(hass, **plan: object) -> CleaningPlanManager:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "home",
@@ -316,8 +316,7 @@ def test_save_plan_schema_accepts_occupancy_settings() -> None:
 
 
 async def test_save_plan_stores_occupancy_settings_for_its_rooms(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     services = await _registered_services(hass, manager)
     call = ServiceCall(
         hass,

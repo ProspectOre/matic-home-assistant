@@ -31,6 +31,7 @@ from custom_components.matic_robot.robot_commands import CleanRooms
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from tests.plans.fakes import (
     OWNED_SESSION,
+    kitchen_leg_ends,
     leg_manager,
     leg_record,
     leg_rooms,
@@ -583,16 +584,7 @@ async def test_leg_takeover_during_verification_interrupts(hass) -> None:
     robot = FakeRobot()
     manager = leg_manager()
 
-    async def send_command(_call) -> None:
-        robot.show("cleaning", current_area="Kitchen")
-
-        async def end_leg() -> None:
-            await asyncio.sleep(0)
-            robot.show("returning", current_area="Kitchen", low_charge=False)
-
-        hass.async_create_task(end_leg(), eager_start=True)
-
-    robot.on_start = send_command
+    robot.on_start = kitchen_leg_ends(hass, robot)
 
     async def takeover(*_args, **_kwargs) -> None:
         robot.show("cleaning", current_area="Den")
@@ -624,16 +616,7 @@ async def test_leg_without_history_reader_credits_nothing(hass) -> None:
     robot = FakeRobot()
     manager = leg_manager()
 
-    async def send_command(_call) -> None:
-        robot.show("cleaning", current_area="Kitchen")
-
-        async def end_leg() -> None:
-            await asyncio.sleep(0)
-            robot.show("returning", current_area="Kitchen", low_charge=False)
-
-        hass.async_create_task(end_leg(), eager_start=True)
-
-    robot.on_start = send_command
+    robot.on_start = kitchen_leg_ends(hass, robot)
 
     completed = await _async_run_leg(
         hass,

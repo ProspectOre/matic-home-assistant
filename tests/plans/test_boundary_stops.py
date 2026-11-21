@@ -14,6 +14,7 @@ from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.plan_model import CleaningRoom, PlanStopDecision
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import (
+    kitchen_leg_ends,
     leg_manager,
     leg_record,
     memory_manager,
@@ -145,16 +146,7 @@ async def test_leg_partial_record_credits_only_verified_subset(
     rooms = [plan_room("Kitchen", "room-kitchen"), plan_room("Office", "room-office")]
     manager = leg_manager()
 
-    async def send_command(_call) -> None:
-        robot.show("cleaning", current_area="Kitchen")
-
-        async def end_leg() -> None:
-            await asyncio.sleep(0)
-            robot.show("returning", current_area="Kitchen", low_charge=False)
-
-        hass.async_create_task(end_leg(), eager_start=True)
-
-    robot.on_start = send_command
+    robot.on_start = kitchen_leg_ends(hass, robot)
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:

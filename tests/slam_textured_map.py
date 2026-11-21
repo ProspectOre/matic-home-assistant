@@ -8,7 +8,8 @@ import numpy as np
 
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.client.slam_tiles import SURFACE_BYTES
-from tests.test_slam_map import _bytes_field, _sint32, _varint_field
+from tests.wire_builders import _bfield as _bytes_field
+from tests.wire_builders import _sint32, _varint_field
 
 
 def _mission(mission_id: int) -> bytes:

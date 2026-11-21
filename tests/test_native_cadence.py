@@ -26,6 +26,7 @@ from custom_components.matic_robot.plans import (
     room_cadence_identity,
 )
 from tests.client.test_coverage_receipts import history_key
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot
 from tests.test_cadence_manager import _floor
 
@@ -168,8 +169,7 @@ def test_correction_replays_later_managed_completion():
 
 
 async def test_option_activation_is_durable_and_idempotent(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.ledger.async_set_native_cleanings_enabled("serial", True)
     first = deepcopy(manager.repository.robot("serial")["native_cleanings"])
     await manager.ledger.async_set_native_cleanings_enabled("serial", True)
@@ -203,8 +203,7 @@ async def test_managed_claim_window_retains_latest_sessions(hass, monkeypatch):
     from custom_components.matic_robot import plan_state
 
     monkeypatch.setattr(plan_state, "MAX_MANAGED_NATIVE_SESSION_CLAIMS", 2)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     sessions = [str(UUID(int=index)) for index in (40, 41, 42)]
 
     for session in sessions:
@@ -275,8 +274,7 @@ def test_invalid_native_admission_is_fail_closed(kind):
 
 async def test_canonical_manager_import_resolves_protocol_uuid_not_local_room_id(hass):
     floor, record, _schedule, _robot = scenario()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     assert await manager.ledger.async_import_native_history("serial", floor, [record])
     stats = manager.repository.robot("serial")["rooms"]["room-a"]
     assert stats["last_opportunity"] == record.session.ended_at
@@ -299,8 +297,7 @@ async def test_canonical_manager_import_resolves_protocol_uuid_not_local_room_id
 async def test_closed_metadata_admission_cannot_silently_claim_a_dispatch(hass):
     from custom_components.matic_robot.plans import MetadataAdmissionClosedError
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.repository.async_close_metadata_admission_and_wait("serial")
     with pytest.raises(MetadataAdmissionClosedError):
         await manager.ledger.async_claim_native_session("serial", str(UUID(int=9)))
@@ -383,8 +380,7 @@ def test_delayed_records_use_verified_saved_floor_bindings():
 
 async def test_malformed_revision_retracts_cached_canonical_statistics(hass):
     floor, record, _schedule, _robot = scenario()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.ledger.async_import_native_history("serial", floor, [record])
     assert manager.repository.robot("serial")["rooms"]["room-a"]["robot_last_completed"]
     rejected = replace(record, session=CleaningSession(None, None, None, (), (), None))

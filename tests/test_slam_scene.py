@@ -91,6 +91,7 @@ from custom_components.matic_robot.slam_view_data import (
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
 from tests import runtime_fakes
+from tests.plans.fakes import memory_manager, saved_area
 from tests.test_slam_map import synthetic_slam_entry
 
 
@@ -2667,19 +2668,6 @@ async def test_history_scene_read_rechecks_entry_runtime_and_store(
     assert response.body != b"synthetic-private-scene"
 
 
-def _saved_area(floor_plan: FloorPlan, name: str) -> dict[str, object]:
-    return {
-        "schema_version": AREA_SCHEMA_VERSION,
-        "name": name,
-        "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
-        "cleaning_mode": "vacuum",
-        "coverage_setting": "standard",
-        "map_binding": binding_for_area(
-            floor_plan, [{"x": 0.1, "y": 0.1, "radius": 0.1}]
-        ),
-    }
-
-
 def _area_entry(area_id: str) -> dict[str, str]:
     return {
         "kind": "area",
@@ -2703,11 +2691,10 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     )
     floor_plan = replace(floor_plan, rooms=(*floor_plan.rooms, second_room))
     runtime.session.floor.value = floor_plan
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     serial = "synthetic-serial"
-    await manager.catalog.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
-    await manager.catalog.async_save_area(serial, "mat", _saved_area(floor_plan, "Mat"))
+    await manager.catalog.async_save_area(serial, "rug", saved_area(floor_plan, "Rug"))
+    await manager.catalog.async_save_area(serial, "mat", saved_area(floor_plan, "Mat"))
     await manager.catalog.async_save_plan(
         serial,
         "mixed",
@@ -2866,7 +2853,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         "mission_boundaries": [],
         "blocker": "area_missing",
     }
-    await manager.catalog.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
+    await manager.catalog.async_save_area(serial, "rug", saved_area(floor_plan, "Rug"))
     response = await MaticPlansView().get(_request(hass_view), "entry")
     plans = {plan["id"]: plan for plan in json.loads(response.body)["plans"]}
     assert plans["mixed"]["next_run_preview"]["blocker"] == "area_map_changed"
@@ -2878,10 +2865,9 @@ async def test_area_delete_keeps_the_area_and_plans_a_delete_would_empty(
 ) -> None:
     runtime = _runtime()
     floor_plan = runtime.session.floor.value
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     serial = "synthetic-serial"
-    await manager.catalog.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
+    await manager.catalog.async_save_area(serial, "rug", saved_area(floor_plan, "Rug"))
     for plan_id, name in (("spots", "Spots"), ("rug-only", "Rug only")):
         await manager.catalog.async_save_plan(
             serial,

@@ -13,46 +13,15 @@ from custom_components.matic_robot.area_binding import (
     AreaBindingStatus,
     area_binding_allows_review,
     area_binding_status,
-    binding_for_area,
 )
-from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_binding_repairs import (
     async_delete_custom_area_issue,
     async_sync_custom_area_issue,
     custom_area_issue_id,
 )
-from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
+from custom_components.matic_robot.client.models import FloorPlan, MappedFloor
 from custom_components.matic_robot.const import DOMAIN
-
-
-def _room(
-    room_id: str,
-    name: str,
-    boundary: tuple[tuple[float, float], ...],
-) -> Room:
-
-    return Room(room_id, name, f"protocol-{room_id}", room_id.encode(), boundary)
-
-
-def _floor_plan() -> FloorPlan:
-
-    return FloorPlan(
-        42,
-        "synthetic-partition",
-        b"synthetic-partition",
-        (
-            _room(
-                "kitchen",
-                "Kitchen",
-                ((-0.0, 0.0), (2.0, 0.0), (2.0, 1.5), (0.0, 1.5)),
-            ),
-            _room(
-                "study",
-                "Study",
-                ((2.0, 0.0), (3.0, 0.0), (3.0, 1.0), (2.0, 1.0)),
-            ),
-        ),
-    )
+from tests.test_area_binding import _floor_plan, _scoped_area
 
 
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
@@ -62,22 +31,6 @@ def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
         patch.object(geometry, "_translation_room_anchors", return_value=[]),
     ):
         return _scoped_area(floor_plan)
-
-
-def _scoped_area(
-    floor_plan: FloorPlan | None = None,
-    circles: list[dict[str, float]] | None = None,
-) -> dict[str, object]:
-
-    plan = floor_plan or _floor_plan()
-
-    saved_circles = circles or [{"x": 0.5, "y": 0.5, "radius": 0.1}]
-
-    return {
-        "schema_version": AREA_SCHEMA_VERSION,
-        "circles": saved_circles,
-        "map_binding": binding_for_area(plan, saved_circles),
-    }
 
 
 def test_area_issue_sync_deduplicates_updates_and_exposes_only_stale_count() -> None:

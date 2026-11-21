@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockModule, mock_integration
 
 
@@ -50,3 +53,11 @@ def _enable_custom_integrations(request: pytest.FixtureRequest) -> None:
         hass = request.getfixturevalue("hass")
         mock_integration(hass, MockModule("bluetooth_adapters"))
         mock_integration(hass, MockModule("zeroconf"))
+
+
+@pytest.fixture
+async def recovery_state(hass: HomeAssistant) -> tuple[Any, ...]:
+    """A run that a restart interrupted: manager, entry, checkpoint and room."""
+    from tests.plans.fakes import interrupted_run
+
+    return await interrupted_run(hass)
