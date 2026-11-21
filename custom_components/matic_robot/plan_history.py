@@ -17,6 +17,7 @@ from .map_schema import RunEntry
 from .plan_catalog import PlanCatalog
 from .plan_model import (
     _is_manual_room_sequence_plan_id,
+    plan_setting,
     stored_count,
 )
 from .plan_repository import (
@@ -113,7 +114,7 @@ class PlanHistory:
         plans = {
             plan_id: {
                 "name": plan.get("name", plan_id),
-                "enabled": plan.get("enabled", True),
+                "enabled": plan_setting(plan, "enabled"),
                 "room_count": len(plan.get("rooms", [])),
             }
             for plan_id, plan in robot["plans"].items()
