@@ -17,7 +17,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import pytest
 from homeassistant.helpers.storage import Store
 
 from custom_components.matic_robot.client.models import FloorPlan, Room
@@ -35,7 +34,7 @@ from custom_components.matic_robot.plan_storage import (
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import rotation_explanation
 
-GOLDEN = Path(__file__).parent / "fixtures" / "plan_state_pins_2c7aa210.json"
+GOLDEN = Path(__file__).parents[1] / "fixtures" / "plan_state_pins_2c7aa210.json"
 SERIAL = "pin-robot"
 NOW = datetime(2026, 10, 20, 12, tzinfo=UTC)
 GROUND = FloorPlan(
@@ -56,17 +55,6 @@ IDENTITIES = {
     room.room_id: room_cadence_identity(GROUND, room.room_id) for room in ROOMS
 }
 MANUAL = f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
-
-
-@pytest.fixture
-def hass_storage() -> dict[str, Any]:
-    """Use versioned JSON files in the per-test Home Assistant config."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    return hass_tmp_config_dir
 
 
 def _room(room: CleaningRoom, cadence: dict[str, Any] | None = None) -> dict:

@@ -18,18 +18,6 @@ from custom_components.matic_robot.plan_storage import (
 from custom_components.matic_robot.plans import CleaningPlanManager
 
 
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Give the real storage API an isolated on-disk configuration directory."""
-    return hass_tmp_config_dir
-
-
-@pytest.fixture
-def hass_storage() -> dict:
-    """Opt out of the plugin's in-memory Store mock for these disk tests."""
-    return {}
-
-
 class _FailingEncoder(JSONEncoder):
     """Cause HA's JSON preparation stage to raise SerializationError."""
 
@@ -60,9 +48,6 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     hass, failure: str
 ) -> None:
     """No room/cadence credit or listener success escapes a failed disk commit."""
-    # The local hass_storage fixture opts out of the plugin's mock. Exercise the
-    # real versioned JSON file and Store writer for these tests.
-
     manager = CleaningPlanManager(hass)
     store = _new_store(hass)
     manager.repository.store = store

@@ -14,14 +14,8 @@ from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 
 from .hermes_sim import Phase, SimulatedRobot
 from .plan_run import VACUUM, PlanRun, expect_finished
-from .sim_mission import SimFloor, two_room_floor
 
 ROOMS = {ATTR_ENTITY_ID: VACUUM, "rooms": [{"room": "Kitchen"}, {"room": "Study"}]}
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 async def _start(hass: HomeAssistant, plan: PlanRun) -> str:

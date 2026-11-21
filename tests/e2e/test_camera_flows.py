@@ -22,18 +22,12 @@ from custom_components.matic_robot.photo_library import MANUAL_ALBUM, PhotoSourc
 
 from .hermes_sim import DOCK_PAYLOAD, SimulatedRobot
 from .plan_run import poll
-from .sim_mission import SimFloor, two_room_floor
 
 pytestmark = pytest.mark.usefixtures("fast_tour_polls")
 
 VACUUM = "vacuum.simulated_matic"
 PHOTO_EVENT = f"{DOMAIN}_photo_taken"
 SNAP_PAYLOAD = bytes.fromhex("12043a024200")
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 def _webp(color: tuple[int, int, int]) -> bytes:

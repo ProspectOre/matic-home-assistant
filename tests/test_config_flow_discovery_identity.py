@@ -40,14 +40,7 @@ from custom_components.matic_robot.const import (
     CONF_SERIAL_NUMBER,
 )
 
-
-@pytest.fixture(autouse=True)
-def _local_bluetooth_adapter(monkeypatch) -> None:
-    """Pass the flow's adapter pre-check; tests that need a failure override it."""
-    monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.async_has_local_bluetooth_adapter",
-        lambda _hass: True,
-    )
+pytestmark = pytest.mark.usefixtures("local_bluetooth_adapter")
 
 
 def _certificate(
