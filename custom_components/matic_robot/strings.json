@@ -2148,21 +2148,7 @@
     },
     "plan_room_missing": {
       "title": "{name}: saved plans name rooms that are no longer on the map",
-      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs. These plans skip those rooms and clean the rest. In Matic Map, open each plan and choose Edit: move a removed room to its replacement, or take it out of the plan, then save. When a room with the same name is on the map again, Submit moves it for you. This Repair clears once every plan names only rooms on the map.",
-      "fix_flow": {
-        "step": {
-          "init": {
-            "title": "Move plan rooms to their new rooms",
-            "description": "These rooms are on {name}'s map again under the same names, with new IDs:\n\n{rooms}\n\nEach plan room moves to the new room and keeps its cleaning mode, coverage and schedule settings. Its schedule progress starts over, because the robot gives no proof that the new room is the old one. Other removed rooms stay as they are.",
-            "submit": "Move rooms"
-          }
-        },
-        "abort": {
-          "robot_unavailable": "The robot's map isn't available right now. Try again once it is connected.",
-          "no_matching_rooms": "No removed room has a room with the same name on the map now. Update the plans in Matic Map instead.",
-          "plan_changed": "A plan changed while this was open. Open the Repair again to see what is left to move."
-        }
-      }
+      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs. These plans skip those rooms and clean the rest. In Matic Map, open each plan and choose Edit: move a removed room to its replacement, or take it out of the plan, then save. This Repair clears once every plan names only rooms on the map."
     },
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
@@ -2194,6 +2180,23 @@
     "photo_storage_failed": {
       "title": "Robot photos can't be saved",
       "description": "Home Assistant could not write a new photo from the robot to {folder}. The photo stays on the robot and is saved on the next read. Check that Home Assistant can write to that folder. This Repair clears when a photo is saved."
+    },
+    "plan_room_relink": {
+      "title": "{name}: saved plans name rooms that are no longer on the map",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Move plan rooms to their new rooms",
+            "description": "These plans skip rooms that a map edit in the Matic app removed or gave new IDs. These rooms are on {name}'s map again under the same names:\n\n{rooms}\n\nEach plan room moves to the new room and keeps its cleaning mode, coverage and schedule settings. Its schedule progress starts over, because the robot gives no proof that the new room is the old one. Any other removed room stays as it is: open the plan in Matic Map and choose Edit to update it.",
+            "submit": "Move rooms"
+          }
+        },
+        "abort": {
+          "robot_unavailable": "The robot's map isn't available right now. Try again once it is connected.",
+          "no_matching_rooms": "No removed room has a room with the same name on the map now. Update the plans in Matic Map instead.",
+          "plan_changed": "A plan changed while this was open. Open the Repair again to see what is left to move."
+        }
+      }
     }
   },
   "services": {

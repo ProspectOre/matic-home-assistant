@@ -98,6 +98,7 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
     issue = issues.async_get_issue(DOMAIN, issue_id)
     assert issue is not None
     assert issue.is_fixable
+    assert issue.translation_key == "plan_room_relink"
     assert issue.translation_placeholders["plans"] == "Weekly"
 
     # The plan cleans the kitchen and names the two rooms it skipped.
@@ -129,6 +130,7 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
     issue = issues.async_get_issue(DOMAIN, issue_id)
     assert issue is not None
     assert not issue.is_fixable
+    assert issue.translation_key == "plan_room_missing"
     flow = await async_create_fix_flow(hass, issue_id, issue.data)
     flow.hass = hass
     assert (await flow.async_step_init())["reason"] == "no_matching_rooms"

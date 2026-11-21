@@ -39,15 +39,18 @@ def async_sync_plan_room_issue(
     if not stale:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
         return
+    fixable = bool(plan_room_links(plans, floor_plan, known_names))
     ir.async_create_issue(
         hass,
         DOMAIN,
         issue_id,
-        is_fixable=bool(plan_room_links(plans, floor_plan, known_names)),
+        is_fixable=fixable,
         data={"entry_id": entry_id},
         is_persistent=False,
         severity=ir.IssueSeverity.WARNING,
-        translation_key="plan_room_missing",
+        # Home Assistant gives a fixable Repair its flow's text instead of a
+        # description, so the two cases have their own keys.
+        translation_key="plan_room_relink" if fixable else "plan_room_missing",
         translation_placeholders={
             **repair_placeholders(hass, entry_id),
             "plans": ", ".join(
