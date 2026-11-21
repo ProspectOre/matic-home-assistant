@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -310,32 +311,12 @@ class RobotCommands:
         self.require_daily_room_dispatch(floor_plan, rooms, tracked=managed)
         floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self._session.info.serial_number
-        fence = await self._async_admit_motion(serial_number, direct=not managed)
-        lease = (
-            self._plans.control.managed_command(serial_number, motion_token)
-            if motion_token is not None
-            else self._plans.control.external_motion(
-                serial_number,
-                expected_generation=fence.generation,
-                expected_stop_generation=fence.stop_generation,
-            )
-        )
-        async with lease as taken_generation:
-            if taken_generation is not None:
-                fence = replace(fence, generation=taken_generation)
-            elif (
-                fence.stop_generation is not None
-                and self._plans.control.motion_generation(serial_number)
-                == fence.generation
-            ):
-                # Only a newer Stop request refused this direct start.
-                self._require_fence(fence)
-            await self.async_ensure_stop_settled(serial_number)
-            self._require_fence(fence)
+        fence = await self.async_admit_motion(motion_token)
+        async with self.motion_lease(fence) as fence:
             floor_plan = self.current_floor_plan(floor_token)
 
             def require_current_dispatch() -> None:
-                self._require_fence(fence)
+                self.require_fence(fence)
                 current_floor = self.current_floor_plan(floor_token)
                 self.require_daily_room_dispatch(current_floor, rooms, tracked=managed)
                 if managed:
@@ -405,7 +386,7 @@ class RobotCommands:
 
     async def _async_start_mixed_coverage(
         self,
-        fence: _MotionFence,
+        fence: MotionFence,
         floor_plan: FloorPlan,
         rooms: list[Room],
         room_coverage: list[CoverageSetting],
@@ -459,7 +440,7 @@ class RobotCommands:
                 session_id=session_id,
                 expected_idle_revision=expected_idle_revision,
                 require_current=require_current,
-                require_owned=partial(self._require_fence, fence),
+                require_owned=partial(self.require_fence, fence),
                 prepare_stop=prepare_stop,
                 rollback_stop=rollback_stop,
                 on_recovery_stop_transmitted=recovery_stop_transmitted,
@@ -484,28 +465,69 @@ class RobotCommands:
                 translation_key="coverage_start_unconfirmed",
             ) from err
 
-    async def _async_admit_motion(
-        self, serial_number: str, *, direct: bool
-    ) -> _MotionFence:
-        """Admit a start before its lease: no pending Stop, no newer command.
+    async def async_admit_motion(self, motion_token: int | None = None) -> MotionFence:
+        """Admit a motion command before its lease: no pending Stop, no newer one.
 
-        A direct start is also fenced by Stop requests; a plan's is not.
+        ``motion_token`` admits a plan run's leg, which Stop requests do not
+        fence; without it the command is direct, and a newer Stop request
+        supersedes it.
         """
+        serial_number = self._session.info.serial_number
         control = self._plans.control
-        fence = _MotionFence(
+        fence = MotionFence(
             serial_number,
             control.motion_generation(serial_number),
-            control.stop_request_generation(serial_number) if direct else None,
+            control.stop_request_generation(serial_number),
+            motion_token,
         )
         admission_epoch = control.command_admission_epoch(serial_number)
+        control.require_command_admission(serial_number)
         await self.async_ensure_stop_settled(serial_number)
-        self._require_fence(fence)
+        self.require_fence(fence)
         control.require_command_admission(serial_number, expected_epoch=admission_epoch)
         return fence
 
-    def _require_fence(self, fence: _MotionFence) -> None:
+    @asynccontextmanager
+    async def motion_lease(
+        self, fence: MotionFence, *, take_motion: bool = True
+    ) -> AsyncIterator[MotionFence]:
+        """Hold an admitted command's lease and check it again under the lease.
+
+        A plan leg holds its run's lease. A direct command takes motion from
+        any plan, and the fence it yields carries the generation it took. With
+        ``take_motion`` false a direct command only holds the command lock: it
+        joins the robot's task, or takes motion itself once its target checks.
+        """
+        control = self._plans.control
+        serial_number = fence.serial_number
+        taking = fence.motion_token is None and take_motion
+        lease: AbstractAsyncContextManager[int | None]
+        if fence.motion_token is not None:
+            lease = control.managed_command(serial_number, fence.motion_token)
+        elif taking:
+            lease = control.external_motion(
+                serial_number,
+                expected_generation=fence.generation,
+                expected_stop_generation=fence.stop_generation,
+            )
+        else:
+            lease = control.external_command(serial_number)
+        async with lease as taken_generation:
+            if taken_generation is not None:
+                fence = replace(fence, generation=taken_generation)
+            elif (
+                taking and control.motion_generation(serial_number) == fence.generation
+            ):
+                # Only a newer Stop request refused this direct command.
+                self.require_fence(fence)
+            await self.async_ensure_stop_settled(serial_number)
+            self.require_fence(fence)
+            yield fence
+
+    def require_fence(self, fence: MotionFence) -> None:
+        """Reject a command a newer one, or for a direct one a Stop, superseded."""
         self.require_motion_generation(fence.serial_number, fence.generation)
-        if fence.stop_generation is not None:
+        if fence.motion_token is None:
             self.require_stop_request_generation(
                 fence.serial_number, fence.stop_generation
             )
@@ -536,10 +558,8 @@ class RobotCommands:
         still be the geometry the run was prepared with, on the current map.
         """
         serial_number = self._session.info.serial_number
-        fence = await self._async_admit_motion(serial_number, direct=False)
-        async with self._plans.control.managed_command(serial_number, motion_token):
-            await self.async_ensure_stop_settled(serial_number)
-            self._require_fence(fence)
+        fence = await self.async_admit_motion(motion_token)
+        async with self.motion_lease(fence):
             floor_plan = self.current_floor_plan(expected_floor_token)
             area = self._plans.catalog.areas(serial_number).get(area_id)
             if not isinstance(area, dict):
@@ -562,7 +582,7 @@ class RobotCommands:
             ]
 
             def require_current_dispatch() -> None:
-                self._require_fence(fence)
+                self.require_fence(fence)
                 self.current_floor_plan(expected_floor_token)
                 self._require_run_not_cancelled(serial_number)
 
@@ -701,15 +721,17 @@ class RobotCommands:
 
 
 @dataclass(frozen=True, slots=True)
-class _MotionFence:
-    """The generations a start was admitted under; a newer one supersedes it.
+class MotionFence:
+    """The generations a motion command was admitted under.
 
-    ``stop_generation`` is set only for a direct start.
+    A newer motion generation supersedes it. A direct command, one without the
+    plan run's ``motion_token``, is also superseded by a newer Stop request.
     """
 
     serial_number: str
     generation: int
-    stop_generation: int | None
+    stop_generation: int
+    motion_token: int | None
 
 
 def _mixed_room_settings(

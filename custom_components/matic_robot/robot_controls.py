@@ -69,22 +69,10 @@ class RobotControls(RobotCommands):
         serial_number = self._session.info.serial_number
         if command is UserCommand.RESUME:
             self._require_no_pending_stop_dispatch(serial_number)
-        generation = self._plans.control.motion_generation(serial_number)
-        stop_request_generation = self._plans.control.stop_request_generation(
-            serial_number
-        )
-        admission_epoch = self._plans.control.command_admission_epoch(serial_number)
-        self._plans.control.require_command_admission(serial_number)
-        await self.async_ensure_stop_settled(serial_number)
-        self._plans.control.require_command_admission(
-            serial_number, expected_epoch=admission_epoch
-        )
-        async with self._plans.control.external_command(serial_number):
+        fence = await self.async_admit_motion()
+        async with self.motion_lease(fence, take_motion=False):
             if command is UserCommand.RESUME:
                 self._require_no_pending_stop_dispatch(serial_number)
-            await self.async_ensure_stop_settled(serial_number)
-            self.require_motion_generation(serial_number, generation)
-            self.require_stop_request_generation(serial_number, stop_request_generation)
             await self.async_dispatch_admitted_command(command, run_id=None)
 
     async def async_dispatch_admitted_command(
@@ -225,20 +213,7 @@ class RobotControls(RobotCommands):
         task_changed: Callable[[], HomeAssistantError],
     ) -> None:
         """Send one navigation command under the sink summon's ownership rules."""
-        serial_number = self._session.info.serial_number
-        request_generation = self._plans.control.motion_generation(serial_number)
-        request_stop_generation = self._plans.control.stop_request_generation(
-            serial_number
-        )
-        request_admission_epoch = self._plans.control.command_admission_epoch(
-            serial_number
-        )
-        await self.async_ensure_stop_settled(serial_number)
-        self.require_motion_generation(serial_number, request_generation)
-        self.require_stop_request_generation(serial_number, request_stop_generation)
-        self._plans.control.require_command_admission(
-            serial_number, expected_epoch=request_admission_epoch
-        )
+        fence = await self.async_admit_motion()
         # Resolve the destination before taking any lease, so a floor without a
         # sink, an unknown room or a stale map never replaces the ownership of a
         # docked plan.
@@ -249,21 +224,7 @@ class RobotControls(RobotCommands):
         # the visit and resumes it on Resume. Only navigation without a task
         # starts new motion, which takes ownership like any other direct clean.
         joins_task = self.holds_task()
-        lease = (
-            self._plans.control.external_command(serial_number)
-            if joins_task
-            else self._plans.control.external_motion(
-                serial_number,
-                expected_generation=request_generation,
-                expected_stop_generation=request_stop_generation,
-            )
-        )
-        async with lease as generation:
-            await self.async_ensure_stop_settled(serial_number)
-            self.require_motion_generation(
-                serial_number, request_generation if joins_task else generation
-            )
-            self.require_stop_request_generation(serial_number, request_stop_generation)
+        async with self.motion_lease(fence, take_motion=not joins_task):
             floor_plan = self.current_floor_plan(floor_token)
             if joins_task and not self.holds_task():
                 # The task ended while this command waited, so only the motion
