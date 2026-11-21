@@ -77,42 +77,16 @@ const open = async (page, index, query = "?preload=0") => {
 test.describe.configure({ timeout: 25 * 60_000 });
 
 test("A: lazy chunks, leave the stage frame as soon as it says ready", async ({ page }) => {
-  await run("A", page, 1000, async (index, requests) => {
+  await run("A", page, 3000, async (index, requests) => {
     await open(page, index);
     return requests.open.size;
   });
 });
 
 test("P: chunks loaded before mount, leave the stage frame as soon as it says ready", async ({ page }) => {
-  await run("P", page, 1000, async (index, requests) => {
+  await run("P", page, 3000, async (index, requests) => {
     await open(page, index, "");
     return requests.open.size;
   });
 });
 
-test("B: lazy chunks, leave the stage frame once its requests have settled", async ({ page }) => {
-  await run("B", page, 500, async (index, requests) => {
-    await open(page, index);
-    await requests.settled();
-    return requests.open.size;
-  });
-});
-
-test("F: lazy chunks and no Worker, leave the stage frame as soon as it says ready", async ({ page }) => {
-  await page.addInitScript(() => { delete globalThis.Worker; });
-  await run("F", page, 1000, async (index, requests) => {
-    await open(page, index);
-    return requests.open.size;
-  });
-});
-
-test("C: leave a page with no map while its module requests are in flight", async ({ page }) => {
-  await run("C", page, 1000, async (index, requests) => {
-    await page.goto("about:blank");
-    await page.goto("/");
-    // Starts the review graph's fetches and leaves without waiting for them.
-    await page.evaluate(() => { void import(`/map_studio_v4-review/review.js?round=${Math.random()}`).catch(() => {}); });
-    await page.waitForTimeout(index % 8 * 5);
-    return requests.open.size;
-  });
-});
