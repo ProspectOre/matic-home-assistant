@@ -39,6 +39,7 @@ PLAN_CORE = frozenset(
     for name in (
         "cadence",
         "cadence_accounting",
+        "cadence_resolution",
         "completion_ledger",
         "const",
         "coverage_accounting",
