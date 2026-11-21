@@ -149,10 +149,11 @@ def test_both_finished_markers_are_supported(finished_variant: int) -> None:
     assert decoded.stop_reason == "finished"
 
 
-def test_user_cancelled_can_coexist_with_completed_modes() -> None:
+def test_stop_by_user_can_coexist_with_completed_modes() -> None:
     decoded = decode_history_semantics(_payload(stop=_bfield(8, _bfield(1, b""))))
     assert decoded is not None
-    assert decoded.stop_reason == "user_cancelled"
+    # The same name the legacy summary gives this variant.
+    assert (decoded.stop_reason_code, decoded.stop_reason) == (8, "stopped")
     assert decoded.completion_kind == "completed"
 
 
@@ -173,7 +174,7 @@ def test_mixed_mode_completion_is_conservative(
 def test_missing_stop_reason_is_conservative_bot_cancelled() -> None:
     decoded = decode_history_semantics(_payload(stop=None))
     assert decoded is not None
-    assert decoded.stop_reason == "bot_cancelled"
+    assert (decoded.stop_reason_code, decoded.stop_reason) == (None, "bot_cancelled")
 
 
 def test_rejects_duplicate_mission_identity() -> None:
@@ -304,9 +305,21 @@ def test_stop_reason_rejects_ambiguous_and_malformed_values() -> None:
     )
     assert decode_history_semantics(_payload(stop=_bfield(5, b"invalid"))) is None
     assert decode_history_semantics(_payload(stop=_bfield(5, b""))) is None
+    # A oneof holds one variant, so a second beside a named one is not a finish.
+    assert (
+        decode_history_semantics(
+            _payload(stop=_bfield(5, _bfield(2, b"")) + _bfield(7, b""))
+        )
+        is None
+    )
+    assert decode_history_semantics(_payload(stop=_vfield(7, 1))) is None
+    # An unnamed variant reads unknown with its tag, as in a legacy summary.
     decoded = decode_history_semantics(_payload(stop=_bfield(11, b"unknown")))
     assert decoded is not None
-    assert decoded.stop_reason is None
+    assert (decoded.stop_reason_code, decoded.stop_reason) == (11, "unknown")
+    unset = decode_history_semantics(_payload(stop=b""))
+    assert unset is not None
+    assert (unset.stop_reason_code, unset.stop_reason) == (None, None)
 
 
 def test_schedule_label_rejects_invalid_utf8_and_excessive_length() -> None:

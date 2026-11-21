@@ -102,7 +102,7 @@ def test_identity_signals_are_one_rule() -> None:
         ("partial", {}, frozenset(), False),
         ("completed", {}, frozenset(), False),
         # A stop by the owner or the robot is not an inaccessible area.
-        ("unattempted", {"stop_reason": "user_cancelled"}, frozenset(), False),
+        ("unattempted", {"stop_reason": "stopped"}, frozenset(), False),
         ("unattempted", {"stop_reason": "bot_cancelled"}, frozenset(), False),
         ("unattempted", {"stop_reason": None}, frozenset(), False),
         # Another room in the same record is not this dispatch.
@@ -289,7 +289,7 @@ async def test_unreachable_room_is_skipped_and_the_plan_moves_on(hass) -> None:
     }
 
 
-@pytest.mark.parametrize("stop_reason", ["user_cancelled", "bot_cancelled", None])
+@pytest.mark.parametrize("stop_reason", ["stopped", "bot_cancelled", None])
 async def test_owned_mission_ending_before_start_is_not_a_takeover(
     hass, stop_reason
 ) -> None:

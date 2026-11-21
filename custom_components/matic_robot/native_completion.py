@@ -259,7 +259,7 @@ def match_single_room_unreachable(
     return tuple(matches)
 
 
-_CANCELLED_STOP_REASONS = frozenset({"user_cancelled", "bot_cancelled", "stopped"})
+_CANCELLED_STOP_REASONS = frozenset({"stopped", "bot_cancelled"})
 
 
 def has_cancelled_single_room_record(

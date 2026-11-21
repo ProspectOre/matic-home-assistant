@@ -61,9 +61,7 @@ async def test_native_retraction_preserves_a_later_managed_completion(hass):
     )
     assert schedule["progress"] == {"mop": 2, "coverage": 2}
 
-    cancelled = replace(
-        native, session=replace(native.session, stop_reason="user_cancelled")
-    )
+    cancelled = replace(native, session=replace(native.session, stop_reason="stopped"))
     await manager.ledger.async_import_native_history("serial", floor, [cancelled])
 
     assert schedule["progress"] == {"mop": 1, "coverage": 1}

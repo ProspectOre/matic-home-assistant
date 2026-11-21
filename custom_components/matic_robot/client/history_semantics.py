@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
-from uuid import UUID
 
 from google.protobuf.message import DecodeError
 
-from .models import CleaningModeResult
-from .wire import WireField, WireFieldBudget, decode_fields
+from .models import MODE_STATUSES, CleaningModeResult
+from .stop_reason import decode_stop_variant, stop_reason_name
+from .wire import WireField, WireFieldBudget, decode_fields, uuid_from_fixed64
 
 # Large native records repeat opaque geometry in their goal envelopes.
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
@@ -35,6 +35,7 @@ class SemanticHistory:
     mission_id: int
     partition_id: str
     initiator: str
+    stop_reason_code: int | None
     stop_reason: str | None
     completion_kind: str | None
     mode_results: tuple[CleaningModeResult, ...]
@@ -104,7 +105,7 @@ def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
         if not _has_exact_one(summary_fields, 9, 2):
             return None
         stop_payload = _optional_message(summary_fields, 10)
-        stop_reason = _decode_stop_reason(stop_payload, budget)
+        stop_reason_code, stop_reason = _decode_stop_reason(stop_payload, budget)
         mode_results = _decode_modern_rooms(summary_fields, budget)
         if mode_results is None:
             return None
@@ -113,6 +114,7 @@ def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
             mission_id=mission,
             partition_id=partitions[0],
             initiator=initiator,
+            stop_reason_code=stop_reason_code,
             stop_reason=stop_reason,
             completion_kind=completion_kind,
             mode_results=mode_results,
@@ -190,13 +192,12 @@ def _optional_message(
 def _decode_uuid(fields: tuple[HistoryField, ...], words: tuple[int, int]) -> str:
     high = _required_fixed64(fields, words[0])
     low = _required_fixed64(fields, words[1])
-    value = (high << 64) | low
-    if value == 0:
+    if not any(high) and not any(low):
         raise DecodeError("history UUID is zero")
-    return str(UUID(int=value))
+    return uuid_from_fixed64(high, low)
 
 
-def _required_fixed64(fields: tuple[HistoryField, ...], number: int) -> int:
+def _required_fixed64(fields: tuple[HistoryField, ...], number: int) -> memoryview:
     values = _known(fields, number, 1)
     if (
         len(values) != 1
@@ -204,7 +205,7 @@ def _required_fixed64(fields: tuple[HistoryField, ...], number: int) -> int:
         or len(values[0].value) != 8
     ):
         raise DecodeError("history fixed64 is missing")
-    return int(struct.unpack("<Q", values[0].value)[0])
+    return values[0].value
 
 
 def _required_fixed32(fields: tuple[HistoryField, ...], number: int) -> int:
@@ -269,25 +270,24 @@ def _decode_schedule(payload: memoryview, budget: WireFieldBudget) -> None:
         raise DecodeError("history schedule label is malformed")
 
 
+# Each named variant carries one empty OEM marker: finished {5:{1:{}}} or
+# {5:{2:{}}}, cancelled by the user {8:{1:{}}}.
+_STOP_REASON_MARKERS = {5: (1, 2), 8: (1,)}
+
+
 def _decode_stop_reason(
     payload: memoryview | None, budget: WireFieldBudget
-) -> str | None:
+) -> tuple[int | None, str | None]:
     if payload is None:
-        return "bot_cancelled"
-    fields = _fields(payload, budget)
-    # OEM enum oneof: finished={5:{1:{}}} or {5:{2:{}}};
-    # user_cancelled={8:{1:{}}}.
-    finished = _optional_message(fields, 5)
-    cancelled = _optional_message(fields, 8)
-    if finished is not None and cancelled is not None:
-        raise DecodeError("history stop reason is ambiguous")
-    if finished is not None:
-        _require_empty_marker(finished, (1, 2), budget)
-        return "finished"
-    if cancelled is not None:
-        _require_empty_marker(cancelled, (1,), budget)
-        return "user_cancelled"
-    return None
+        return None, "bot_cancelled"
+    variant = decode_stop_variant(payload, field_budget=budget)
+    if variant is None:
+        return None, None
+    markers = _STOP_REASON_MARKERS.get(variant.number)
+    if markers is not None:
+        assert isinstance(variant.value, memoryview)
+        _require_empty_marker(variant.value, markers, budget)
+    return variant.number, stop_reason_name(variant.number)
 
 
 def _require_empty_marker(
@@ -349,7 +349,7 @@ def _decode_modern_rooms(
             mode_summary = _fields(_required_message(mode_entry, 2), budget)
             status = _optional_varint(mode_summary, 5)
             status = 0 if status is None else status
-            if status not in (0, 1, 2):
+            if status not in MODE_STATUSES:
                 results.append(
                     CleaningModeResult(
                         name, "vacuum" if mode == 0 else "mop", None, None, room_id
@@ -366,7 +366,7 @@ def _decode_modern_rooms(
                 CleaningModeResult(
                     name,
                     "vacuum" if mode == 0 else "mop",
-                    {0: "unattempted", 1: "partial", 2: "completed"}[status],
+                    MODE_STATUSES[status],
                     duration,
                     room_id,
                 )

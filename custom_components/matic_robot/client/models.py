@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from .stop_reason import stop_reason_name
+
 # Labels backed by physical observations and the OEM 1.182.1 decoder replay.
 # Keep raw Hermes codes alongside names; this is not a firmware-wide guarantee.
 # https://github.com/ProspectOre/matic-home-assistant/issues/382
@@ -335,6 +337,10 @@ class CleaningSchedule:
         return f"{hours:02d}:{minutes:02d}"
 
 
+# AreaModeSummary status (field 5), read the same in legacy and modern records.
+MODE_STATUSES = {0: "unattempted", 1: "partial", 2: "completed"}
+
+
 @dataclass(frozen=True, slots=True)
 class CleaningModeResult:
     """One room's native result for one cleaning mode."""
@@ -344,13 +350,6 @@ class CleaningModeResult:
     status: str | None
     duration_seconds: int | None
     room_id: str | None = None
-
-
-# Only values matched to a known run are named (2026-10-30, v181.10): a Stop
-# from the Matic app records 8, and a clean that ended on its own records 5.
-# The app's other reasons (lost, replaced by a schedule, skipped and so on)
-# and the stop's source need their own captures before they are named.
-SESSION_STOP_REASONS = {5: "finished", 8: "stopped"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,12 +376,10 @@ class CleaningSession:
     completion_kind: str | None = None
 
     def __post_init__(self) -> None:
-        """Keep legacy stop-code construction compatible with named reasons."""
+        """Name the stop reason from its code when only the code is given."""
         if self.stop_reason is None and self.stop_reason_code is not None:
             object.__setattr__(
-                self,
-                "stop_reason",
-                SESSION_STOP_REASONS.get(self.stop_reason_code, "unknown"),
+                self, "stop_reason", stop_reason_name(self.stop_reason_code)
             )
 
     @property

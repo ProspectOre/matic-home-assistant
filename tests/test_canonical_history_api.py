@@ -15,8 +15,12 @@ from custom_components.matic_robot.client.history_semantics import (
     MAX_HISTORY_BYTES,
     decode_history_semantics,
 )
-from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.models import (
+    CleaningSessionRecord,
+    HermesCollectionEntry,
+)
 from custom_components.matic_robot.client.telemetry_fields import telemetry_bytes
+from custom_components.matic_robot.run_history import native_entry
 from tests.client.test_coverage_receipts import history_key
 from tests.client.test_history_semantics import _payload
 from tests.wire_builders import _bfield, _fixed32, _vfield
@@ -32,6 +36,9 @@ def test_canonical_projection_keeps_room_identity_and_stop_separate():
     cancelled = decode_cleaning_session(_payload(stop=_bfield(8, _bfield(1, b""))))
     assert cancelled is not None
     assert cancelled.completed is False
+    # Matic Map, the event and the sensor read the documented name.
+    assert (cancelled.stop_reason_code, cancelled.stop_reason) == (8, "stopped")
+    assert native_entry(CleaningSessionRecord(b"key", cancelled))["ending"] == "stopped"
     assert not cancelled.completed_rooms
     assert cancelled.mode_results[0].status == "completed"
     unknown = decode_cleaning_session(_payload(start_child=7))

@@ -18,12 +18,13 @@ from .history_semantics import (
     decode_history_semantics,
 )
 from .models import (
-    SESSION_STOP_REASONS,
+    MODE_STATUSES,
     CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
     HermesCollectionEntry,
 )
+from .stop_reason import decode_stop_variant
 from .telemetry_fields import (
     bounded_fields,
     decode_text_from_fields,
@@ -155,7 +156,7 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         return None
     semantics = decode_history_semantics(payload)
     if semantics is not None:
-        return _canonical_cleaning_session(semantics, started_at, ended_at, fields)
+        return _canonical_cleaning_session(semantics, started_at, ended_at)
     if len(payload) > _CLEANING_SESSION_MAX_BYTES:
         return None
     # Modern pages are governed by the strict OEM-replayed decoder. If the
@@ -186,7 +187,7 @@ def _legacy_cleaning_session(
         CleaningModeResult(
             room=name,
             cleaning_mode="vacuum" if mode == 6 else "mop",
-            status={0: "unattempted", 1: "partial", 2: "completed", None: None}[status],
+            status=None if status is None else MODE_STATUSES[status],
             duration_seconds=results.durations[(mode, name)],
         )
         for (mode, name), status in results.statuses.items()
@@ -197,7 +198,6 @@ def _legacy_cleaning_session(
             room_durations[result.room] = (
                 room_durations.get(result.room, 0) + result.duration_seconds
             )
-    stop_reason_code = decode_stop_reason_code(fields)
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
@@ -214,12 +214,7 @@ def _legacy_cleaning_session(
             name for name in vacuum_completed_rooms if name in mop_completed_rooms
         ),
         mode_results=mode_results,
-        stop_reason_code=stop_reason_code,
-        stop_reason=(
-            SESSION_STOP_REASONS.get(stop_reason_code, "unknown")
-            if stop_reason_code is not None
-            else None
-        ),
+        stop_reason_code=_legacy_stop_reason_code(fields),
     )
 
 
@@ -245,7 +240,7 @@ def _legacy_room_results(fields: tuple[WireField, ...]) -> _LegacyRoomResults | 
                 durations[key] = None
                 continue
             status = _omittable_varint(detail_fields, 5)
-            statuses[key] = status if status in (0, 1, 2) else None
+            statuses[key] = status if status in MODE_STATUSES else None
             durations[key] = _legacy_room_duration(detail_fields)
     return _LegacyRoomResults(tuple(rooms), frozenset(modes), statuses, durations)
 
@@ -352,7 +347,6 @@ def _canonical_cleaning_session(
     semantics: SemanticHistory,
     started_at: str | None,
     ended_at: str | None,
-    summary_fields: tuple[WireField, ...] = (),
 ) -> CleaningSession:
     """Project verified modern history without conflating stop and completion."""
     results = semantics.mode_results
@@ -396,7 +390,6 @@ def _canonical_cleaning_session(
         if semantics.completion_kind is not None
         else None
     )
-    stop_reason_code = decode_stop_reason_code(summary_fields)
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
@@ -409,9 +402,7 @@ def _canonical_cleaning_session(
         mop_completed_rooms=mop,
         combined_completed_rooms=tuple(name for name in vacuum if name in mop),
         mode_results=results,
-        stop_reason_code=(
-            stop_reason_code if semantics.stop_reason is not None else None
-        ),
+        stop_reason_code=semantics.stop_reason_code,
         mission_id=semantics.mission_id,
         partition_id=semantics.partition_id,
         initiator=semantics.initiator,
@@ -420,18 +411,16 @@ def _canonical_cleaning_session(
     )
 
 
-def decode_stop_reason_code(summary_fields: tuple[WireField, ...]) -> int | None:
-    """Return the oneof tag of the session's stop reason, if it has one."""
+def _legacy_stop_reason_code(summary_fields: tuple[WireField, ...]) -> int | None:
+    """Return a legacy summary's stop reason tag; None if unset or malformed."""
     reasons = [field for field in summary_fields if field.number == 10]
     if len(reasons) != 1 or not isinstance(reasons[0].value, bytes):
         return None
     try:
-        variants = telemetry_fields(reasons[0].value)
+        variant = decode_stop_variant(reasons[0].value)
     except DecodeError:
         return None
-    if len(variants) != 1 or variants[0].wire_type != 2:
-        return None
-    return variants[0].number
+    return None if variant is None else variant.number
 
 
 def decode_nested_timestamp(payload: bytes, number: int) -> str | None:
