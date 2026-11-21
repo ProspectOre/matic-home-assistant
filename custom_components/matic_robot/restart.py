@@ -753,7 +753,10 @@ async def _async_credit_verified_rooms(
                 ),
             ):
                 return "restart_recovery_superseded"
-            restarted, _ = transition(restarted, RoomVerified(room.room_id))
+            counted = recovery.manager.recovery.counted_room_ids(
+                recovery.serial_number, run["run_id"]
+            )
+            restarted, _ = transition(restarted, RoomVerified(counted))
             rejoined.robot.confirm_room_completed(room.name)
             fire_room_event(
                 recovery.hass,

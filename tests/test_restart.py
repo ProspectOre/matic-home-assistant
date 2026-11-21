@@ -27,10 +27,7 @@ from custom_components.matic_robot.managed_observation import (
     NativeRoomVerdict,
     _async_wait_for_owned_start,
 )
-from custom_components.matic_robot.managed_run import (
-    PlanCancelledError,
-    RoomRunOutcome,
-)
+from custom_components.matic_robot.managed_run import PlanCancelledError, RoomRunOutcome
 from custom_components.matic_robot.plan_model import (
     AreaLeg,
     CleaningRoom,
@@ -42,6 +39,7 @@ from custom_components.matic_robot.restart import (
     async_recover_managed_run,
 )
 from custom_components.matic_robot.robot_commands import CleanPlanArea
+from tests.plans.fakes import save_run_checkpoint
 from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
@@ -544,7 +542,7 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
             CannotConnectError("unavailable")
         )
     manager.repository.robot("serial")["last_run"]["room_count"] = 2
-    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await save_run_checkpoint(manager, checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
         b"replacement" if case == "replacement" else b""
     )
@@ -634,7 +632,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
     if phase != "accepted":
         runtime.client.async_get_cleaning_session_identity.return_value = b""
         entry.robot.show("idle")
-    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await save_run_checkpoint(manager, checkpoint)
     before_count = manager.history.snapshot("serial")["last_run"][
         "completed_room_count"
     ]
@@ -1268,7 +1266,7 @@ async def _area_leg_checkpoint(manager, checkpoint, room, **changes):
             **changes,
         }
     )
-    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await save_run_checkpoint(manager, checkpoint)
     await manager.ledger.async_mark_area_started(
         "serial",
         "plan",
@@ -1420,7 +1418,7 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
             "handoff_history": [],
         }
     )
-    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await save_run_checkpoint(manager, checkpoint)
     client = entry.runtime_data.client
     identity = client.async_get_cleaning_session_identity
     entry.robot.show("docked")

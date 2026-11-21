@@ -23,7 +23,7 @@ from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from . import daily_room_limit, native_history, plan_schema, plan_timing
+from . import daily_room_limit, native_history, plan_schema
 from .cadence import (
     CoverageCadenceRequiresVacuumError,
     normalize_cadence_policy,
@@ -48,6 +48,7 @@ from .plan_model import (
     SharedRoomScheduleStaleError,
     _bounded_stop_threshold,
     _managed_stop_policy,
+    stored_count,
 )
 from .plan_repository import PlanRepository, _MetadataLockLease
 
@@ -412,8 +413,8 @@ class PlanCadence:
             record = records.get(room_id, {}) if isinstance(records, Mapping) else {}
             progress = record.get("progress", {}) if isinstance(record, Mapping) else {}
         return {
-            "mop": plan_timing._stored_count(progress, "mop"),
-            "coverage": plan_timing._stored_count(progress, "coverage"),
+            "mop": stored_count(progress, "mop"),
+            "coverage": stored_count(progress, "coverage"),
         }
 
     def shared_cadence_delete_token(

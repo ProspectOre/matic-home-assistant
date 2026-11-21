@@ -12,7 +12,7 @@ from typing import Any
 from homeassistant.util import dt as dt_util
 
 from .client import CleaningMode, CoverageSetting
-from .plan_model import CleaningRoom
+from .plan_model import CleaningRoom, stored_count
 
 DURATION_HISTORY_MAX_SAMPLES = 7
 
@@ -23,16 +23,6 @@ DURATION_PROFILE_KEYS = tuple(
 )
 
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
-
-
-def _stored_count(record: object, key: str) -> int:
-    """Return a nonnegative persisted counter or zero."""
-    value = record.get(key) if isinstance(record, Mapping) else None
-    return (
-        value
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-        else 0
-    )
 
 
 def _admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> None:
@@ -119,7 +109,7 @@ def _duration_history(record: Mapping[str, Any]) -> list[int]:
         if history:
             return history
 
-    samples = _stored_count(record, "duration_samples")
+    samples = stored_count(record, "duration_samples")
     average = record.get("average_duration_seconds")
     if (
         samples < DURATION_CONFIDENCE_MIN_SAMPLES
@@ -171,7 +161,7 @@ def _duration_profiles(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         normalized: dict[str, Any] = {
             "duration_history_seconds": history,
             "duration_samples": max(
-                len(history), _stored_count(profile, "duration_samples")
+                len(history), stored_count(profile, "duration_samples")
             ),
         }
         completed = _latest_timestamp_value(profile.get("last_completed"))
@@ -231,7 +221,7 @@ def _record_duration_sample(
         history = [*previous.get("duration_history_seconds", []), duration]
         profiles[key] = {
             "duration_history_seconds": history[-DURATION_HISTORY_MAX_SAMPLES:],
-            "duration_samples": _stored_count(previous, "duration_samples") + 1,
+            "duration_samples": stored_count(previous, "duration_samples") + 1,
             "last_completed": completed_at,
         }
     record["duration_profiles"] = profiles

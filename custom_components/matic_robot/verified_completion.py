@@ -19,8 +19,8 @@ from homeassistant.util import dt as dt_util
 
 from . import daily_room_limit
 from .cadence_accounting import apply_verified_cadence
-from .plan_model import CleaningRoom
-from .plan_timing import _record_duration_sample, _stored_count
+from .plan_model import CleaningRoom, stored_count
+from .plan_timing import _record_duration_sample
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,14 +83,14 @@ def record_verified_completion(
     rotation_record["last_completed"] = completion.completed_at
     rotation_record["last_result"] = "completed"
     rotation_record["completed_runs"] = (
-        _stored_count(rotation_record, "completed_runs") + 1
+        stored_count(rotation_record, "completed_runs") + 1
     )
     room = global_room(robot, completion.room_id, completion.name)
     room["name"] = completion.name
     room["last_completed"] = completion.completed_at
     if duration is not None:
         room["last_duration_seconds"] = duration
-    room["completed_runs"] = _stored_count(room, "completed_runs") + 1
+    room["completed_runs"] = stored_count(room, "completed_runs") + 1
     if completion.settings is None:
         return
     apply_verified_cadence(
