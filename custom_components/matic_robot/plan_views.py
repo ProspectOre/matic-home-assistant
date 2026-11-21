@@ -39,6 +39,7 @@ from .plan_model import (
     leg_boundaries,
     plan_entries,
     plan_floor_token,
+    plan_setting,
     preview_legs,
     room_cadence_identity,
 )
@@ -422,15 +423,15 @@ def _saved_plan(
     return {
         "id": plan_id,
         "name": str(plan.get("name", plan_id)),
-        "enabled": bool(plan.get("enabled", True)),
-        "run_behavior": str(plan.get("run_behavior", "intelligent")),
+        "enabled": bool(plan_setting(plan, "enabled")),
+        "run_behavior": str(plan_setting(plan, "run_behavior")),
         "rooms": rooms,
         "room_order": [str(room_id) for room_id in plan.get("room_order", [])],
         "entries": entries,
-        "return_to_base": bool(plan.get("return_to_base", True)),
-        "finish_current_room": bool(plan.get("finish_current_room", False)),
+        "return_to_base": bool(plan_setting(plan, "return_to_base")),
+        "finish_current_room": bool(plan_setting(plan, "finish_current_room")),
         "finish_current_room_threshold": int(
-            plan.get("finish_current_room_threshold", 50)
+            plan_setting(plan, "finish_current_room_threshold")
         ),
         "occupancy_aware": plan.get("occupancy_aware") is True,
         "occupancy_sensors": plan_occupancy_sensors(plan),

@@ -16,6 +16,7 @@ from .client import (
     is_sha256_hex,
 )
 from .const import MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE, MAX_ROOM_SEQUENCE_SIZE
+from .plan_model import PLAN_SETTING_DEFAULTS
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
@@ -253,7 +254,9 @@ _ROOM_SEQUENCE_FIELDS = {
         [SAVED_ROOM_SCHEMA],
         probatio.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
     ),
-    probatio.Optional("return_to_base", default=True): cv.boolean,
+    probatio.Optional(
+        "return_to_base", default=PLAN_SETTING_DEFAULTS["return_to_base"]
+    ): cv.boolean,
     probatio.Optional("use_room_schedule", default=False): cv.boolean,
     probatio.Optional("override_room_schedule", default=False): cv.boolean,
 }
@@ -320,21 +323,30 @@ SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
         probatio.Required("name"): probatio.All(
             cv.string, probatio.Length(min=1, max=128)
         ),
-        probatio.Optional("enabled", default=True): cv.boolean,
-        probatio.Optional("run_behavior", default="intelligent"): probatio.In(
-            ("intelligent", "ordered")
-        ),
+        probatio.Optional(
+            "enabled", default=PLAN_SETTING_DEFAULTS["enabled"]
+        ): cv.boolean,
+        probatio.Optional(
+            "run_behavior", default=PLAN_SETTING_DEFAULTS["run_behavior"]
+        ): probatio.In(("intelligent", "ordered")),
         probatio.Required("rooms"): probatio.All(
             cv.ensure_list,
             [saved_plan_entry],
             probatio.Length(min=1, max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
         ),
-        probatio.Optional("return_to_base", default=True): cv.boolean,
-        probatio.Optional("finish_current_room", default=False): cv.boolean,
-        probatio.Optional("finish_current_room_threshold", default=50): probatio.All(
-            probatio.Coerce(int), probatio.Range(min=0, max=100)
-        ),
-        probatio.Optional("occupancy_aware", default=False): cv.boolean,
+        probatio.Optional(
+            "return_to_base", default=PLAN_SETTING_DEFAULTS["return_to_base"]
+        ): cv.boolean,
+        probatio.Optional(
+            "finish_current_room", default=PLAN_SETTING_DEFAULTS["finish_current_room"]
+        ): cv.boolean,
+        probatio.Optional(
+            "finish_current_room_threshold",
+            default=PLAN_SETTING_DEFAULTS["finish_current_room_threshold"],
+        ): probatio.All(probatio.Coerce(int), probatio.Range(min=0, max=100)),
+        probatio.Optional(
+            "occupancy_aware", default=PLAN_SETTING_DEFAULTS["occupancy_aware"]
+        ): cv.boolean,
         probatio.Optional("occupancy_sensors", default=dict): probatio.All(
             {
                 probatio.All(cv.string, probatio.Length(min=1, max=128)): (
@@ -343,12 +355,12 @@ SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
             },
             probatio.Length(max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
         ),
-        probatio.Optional("start_timeout", default=120): probatio.All(
-            probatio.Coerce(int), probatio.Range(min=10, max=600)
-        ),
-        probatio.Optional("completion_timeout", default=21600): probatio.All(
-            probatio.Coerce(int), probatio.Range(min=60, max=43200)
-        ),
+        probatio.Optional(
+            "start_timeout", default=PLAN_SETTING_DEFAULTS["start_timeout"]
+        ): probatio.All(probatio.Coerce(int), probatio.Range(min=10, max=600)),
+        probatio.Optional(
+            "completion_timeout", default=PLAN_SETTING_DEFAULTS["completion_timeout"]
+        ): probatio.All(probatio.Coerce(int), probatio.Range(min=60, max=43200)),
         probatio.Optional("select", default=True): cv.boolean,
     }
 )
