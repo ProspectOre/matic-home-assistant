@@ -188,6 +188,10 @@ export class RendererController {
     this.#overlay.setPalette(palette);
   }
 
+  setLastSeenLabel(label: string): void {
+    this.#overlay.setLastSeenLabel(label);
+  }
+
   setCursor(point: MapPoint | null): void {
     this.#overlay.setCursor(point);
   }

@@ -178,6 +178,8 @@ export class RendererOverlay {
   #cursor: MapPoint | null = null;
   #marker: MapPoint | null = null;
   palette: CanvasPalette = DEFAULT_PALETTE;
+  /** The translated label beside the last-seen marker; the host sets it from Home Assistant's language. */
+  #lastSeenLabel = "Last seen during last clean";
   #labelOffsets = new Map<string, readonly [x: number, y: number]>();
 
   constructor(canvas: HTMLCanvasElement, camera: RendererCamera, modules: RendererModules, raster: FallbackRaster, host: OverlayHost) {
@@ -196,6 +198,12 @@ export class RendererOverlay {
   setPalette(palette: CanvasPalette): void {
     this.palette = palette;
     this.#host.requestRender(true);
+  }
+
+  setLastSeenLabel(label: string): void {
+    if (label === this.#lastSeenLabel) return;
+    this.#lastSeenLabel = label;
+    this.#host.requestRender(false);
   }
 
   setCursor(point: MapPoint | null): void {
@@ -272,7 +280,7 @@ export class RendererOverlay {
     const pose = state.resources.pose.value;
     if (state.seen) {
       this.#modules.layers?.drawLastSeenDuringRun(context, state, palette,
-        (x, y, height, clip) => camera.projectMeters(x, y, height, clip));
+        (x, y, height, clip) => camera.projectMeters(x, y, height, clip), this.#lastSeenLabel);
     }
     if (canShowExactPose(state) && pose?.position) {
       // Pose coordinates share the floor-plan's meter space. Scene geometry is

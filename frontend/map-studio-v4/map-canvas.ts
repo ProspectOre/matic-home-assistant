@@ -402,6 +402,7 @@ export class MaticMapCanvasV4 extends LitElement {
       },
     });
     this.#renderer.setState(this.state);
+    this.#setCanvasLabels();
     this.dispatchEvent(new CustomEvent(POSE_MOTION_EVENT, {
       bubbles: true,
       composed: true,
@@ -446,12 +447,18 @@ export class MaticMapCanvasV4 extends LitElement {
 
   protected override updated(changed: PropertyValues<this>): void {
     if (changed.has("scheme") && changed.get("scheme") !== undefined) this.#schedulePalette();
+    if (changed.has("localize")) this.#setCanvasLabels();
     if (!changed.has("state")) return;
     this.#gestures?.observeState(this.state);
     this.outlineEditor?.observeState(this.state);
     this.#renderer?.setState(this.state);
     this.#follow();
     this.#renderer?.setInspectMarker(this.#renderer.layers?.inspectMarker(this.state, this.#inspected) ?? null);
+  }
+
+  // Text drawn on the canvas is translated here, where the page's language is known.
+  #setCanvasLabels(): void {
+    this.#renderer?.setLastSeenLabel(this.#t("v4_last_seen_during_run", "Last seen during last clean"));
   }
 
   #inspectAt(point: MapPoint | null): void {
