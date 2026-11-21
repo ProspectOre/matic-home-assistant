@@ -222,8 +222,10 @@ async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
     assert _run_provenance(unknown) == "external_unknown"
 
     manager = SimpleNamespace(
-        ledger=SimpleNamespace(async_mark_run_docked=AsyncMock()),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
+        ledger=SimpleNamespace(
+            async_mark_run_docked=AsyncMock(),
+            run_record=MagicMock(return_value=None),
+        ),
     )
     stop_fence_token = 19
     await _async_mark_run_docked(
@@ -256,15 +258,13 @@ async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
     if finish_requested:
         finish_event.set()
     manager = SimpleNamespace(
-        ledger=SimpleNamespace(async_mark_run_docked=AsyncMock()),
+        ledger=SimpleNamespace(
+            async_mark_run_docked=AsyncMock(),
+            run_record=MagicMock(return_value={"outcome": "running"}),
+        ),
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value=None),
             finish_room_event=MagicMock(return_value=finish_event),
-        ),
-        history=SimpleNamespace(
-            snapshot=MagicMock(
-                return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
-            )
         ),
     )
 
@@ -276,15 +276,13 @@ async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
 async def test_dock_upgrade_allows_managed_stop_running_failure(hass) -> None:
     """The managed STOP reason authorizes the early dock upgrade."""
     manager = SimpleNamespace(
-        ledger=SimpleNamespace(async_mark_run_docked=AsyncMock()),
+        ledger=SimpleNamespace(
+            async_mark_run_docked=AsyncMock(),
+            run_record=MagicMock(return_value={"outcome": "running"}),
+        ),
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value="managed_stop"),
             finish_room_event=MagicMock(return_value=asyncio.Event()),
-        ),
-        history=SimpleNamespace(
-            snapshot=MagicMock(
-                return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
-            )
         ),
     )
 

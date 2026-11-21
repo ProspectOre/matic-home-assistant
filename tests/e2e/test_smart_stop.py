@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from itertools import accumulate
 
 import pytest
@@ -15,7 +16,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.http import plans_api_url
 
 from .hermes_sim import DOCK_PAYLOAD, STOP_PAYLOAD, Phase, SimulatedRobot
-from .plan_run import VACUUM, PlanRun, expect_finished
+from .plan_run import VACUUM, PlanRun, active_plan, expect_finished
 from .sim_mission import SimFloor, parse_coverage_command
 
 
@@ -129,3 +130,36 @@ async def test_the_preview_shows_the_missions_the_run_sends(
     assert sent == [2]
     assert preview["blocker"] is None
     assert preview["mission_boundaries"] == list(accumulate(sent))[:-1]
+
+
+async def test_restart_during_smart_stop_finishes_the_room_then_docks(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant, floor: SimFloor
+) -> None:
+    await _start_smart_stop_plan(plan)
+    await _stop(hass)
+    # The robot has the request to drop Study before Home Assistant restarts.
+    async with asyncio.timeout(10):
+        while len(plan.coverage_commands()) < 2:
+            await plan.poll()
+    sent = len(robot.received())
+
+    assert await hass.config_entries.async_reload(plan.entry.entry_id)
+    await plan.wait_for_recovery()
+    # The recovered run still finishes the Kitchen and skips Study.
+    async with asyncio.timeout(10):
+        while (active := active_plan(hass)).get("smart_stop_phase") is None:
+            await plan.poll()
+    assert active["room"] == "Kitchen"
+    assert active["smart_stop_phase"] == "finishing_room"
+    assert robot.phase is Phase.CLEANING
+    assert robot.session is not None
+    assert robot.session.rooms == [floor.rooms[0].id]
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+
+    finished = await plan.wait_for_finished()
+    expect_finished(finished, "stopped_docked", "stopped_docked", 1, "docked")
+    # Recovery rejoined the mission and sent the robot nothing.
+    assert robot.received()[sent:] == []

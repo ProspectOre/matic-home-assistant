@@ -34,7 +34,7 @@ tests/test_mixed_coverage.py 2062
 tests/test_photo_tours.py 1431
 tests/test_plan_entries.py 1055
 tests/test_restart.py 1459
-tests/test_services.py 6206
+tests/test_services.py 6204
 tests/test_session_ownership.py 2585
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1816

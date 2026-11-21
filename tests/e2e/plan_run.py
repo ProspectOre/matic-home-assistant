@@ -103,6 +103,13 @@ async def state_becomes(hass: HomeAssistant, entity_id: str, state: str) -> None
         unsubscribe()
 
 
+def active_plan(hass: HomeAssistant) -> dict[str, Any]:
+    """Return the cleaning history sensor's public ``active_plan``."""
+    history = hass.states.get("sensor.simulated_matic_cleaning_history")
+    assert history is not None
+    return history.attributes["active_plan"]
+
+
 class PlanRun:
     """A ``clean_room_sequence`` call running while the test drives the robot.
 
@@ -213,6 +220,15 @@ class PlanRun:
         """Take one sighting of the robot and let listeners react."""
         await sighting(self.entry, self.robot)
         await asyncio.sleep(0.05)
+
+    async def wait_for_recovery(self) -> None:
+        """Poll until restart recovery rejoins the run's own native mission."""
+        plans = self.entry.runtime_data.cleaning_plans
+        async with asyncio.timeout(10):
+            while (plans.recovery.recovery_run(self.robot.serial_number) or {}).get(
+                "recovery_reason"
+            ) != "same_native_mission_verified":
+                await self.poll()
 
     async def outcome(self) -> dict[str, Any]:
         """Poll until the run ends and return its plan_finished event."""
