@@ -2645,16 +2645,18 @@ test.describe("Map Studio v0.4 foundation", () => {
       readOnly: true, exactPose: false, catalog: "error", floor: "current", mode: "live" });
   });
 
+  // One floor: a home with several reads its floor list once optional UI is ready (map_studio_v4_floor_discovery.spec.mjs).
   test("a healthy live map leaves saved history deferred until requested", async ({ page }) => {
     await loadEffectHarness(page);
     const reads = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const initial = createGalleryState("ready");
+      const ready = createGalleryState("ready"), saved = ready.resources.history.value, entry = { ...ready.resources.entry, historyFloorCount: 1 };
+      const initial = { ...ready, resources: { ...ready.resources, entry, history: { status: "idle", value: null, problem: null } } };
       const store = new WorkspaceStore(initial);
       let historyReads = 0;
       const effects = new EffectController(store, {
-        catalog: async () => [initial.resources.entry],
-        history: async () => { historyReads++; return initial.resources.history.value; },
+        catalog: async () => [entry],
+        history: async () => { historyReads++; return { ...saved, floors: saved.floors.slice(0, 1) }; },
         scene: async (_url, revision, floorCoherent) => ({ revision, floorCoherent, scene: initial.resources.scene.value }),
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },
         plans: async () => initial.resources.plans.value,
@@ -2663,7 +2665,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       try {
         effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId });
         await effects.refreshCatalog(true);
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => store.subscribe((state) => state.optionalUiReady && setTimeout(resolve, 0)));
         const before = historyReads;
         await effects.openWorkflow("history");
         return { before, after: historyReads };
