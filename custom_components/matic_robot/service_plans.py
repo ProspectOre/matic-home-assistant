@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 
 from .area_binding import AreaBindingStatus, area_binding_status
+from .cadence import normalize_cadence_policy
 from .client import CleaningMode, CoverageSetting, FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
 from .managed_run import validation_error
@@ -267,19 +268,21 @@ def _resolve_saved_plan(
 def _normalize_saved_room(
     room: dict[str, Any],
     room_map: dict[str, str],
-    kept: Collection[str] = (),
+    kept: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve one mapped room and preserve its individual preferences.
 
-    ``kept`` holds the off-map room IDs the saved plan already has: a map edit
-    removed them, runs skip them, and a save may keep them by ID.
+    ``kept`` holds the saved rows of the off-map rooms the plan already has: a
+    map edit removed them and runs skip them. A save may keep one by ID, but
+    its settings stay as saved until it is moved to a room on the map.
     """
     raw = dict(room)
-    if (identifier := str(raw["room"])) in kept:
+    stored = (kept or {}).get(identifier := str(raw["room"]))
+    if stored is not None:
         room_map = {**room_map, identifier: identifier}
     raw["room_id"] = _resolve_room_id(identifier, room_map)
     resolved = resolve_rooms([raw], room_map)[0]
-    return {
+    normalized = {
         "room_id": resolved.room_id,
         "cleaning_mode": resolved.cleaning_mode,
         "coverage_setting": resolved.coverage_setting,
@@ -289,6 +292,30 @@ def _normalize_saved_room(
             else {}
         ),
     }
+    if stored is not None and not _same_room_settings(normalized, stored):
+        raise validation_error(
+            f"Room {identifier} is not on the map, so its settings can't change",
+            "plan_room_off_map_settings",
+        )
+    return normalized
+
+
+def _same_room_settings(room: Mapping[str, Any], stored: Mapping[str, Any]) -> bool:
+    """Return whether a submitted room repeats a saved row's settings."""
+    mode = str(stored.get("cleaning_mode", CleaningMode.VACUUM.value))
+    coverage = str(stored.get("coverage_setting", CoverageSetting.OPTIMAL.value))
+    if (room["cleaning_mode"], room["coverage_setting"]) != (mode, coverage):
+        return False
+    if "cadence" not in room:
+        return True
+    try:
+        return normalize_cadence_policy(
+            room["cadence"], cleaning_mode=mode, coverage_setting=coverage
+        ) == normalize_cadence_policy(
+            stored.get("cadence"), cleaning_mode=mode, coverage_setting=coverage
+        )
+    except ValueError:
+        return False
 
 
 def _normalize_saved_area(

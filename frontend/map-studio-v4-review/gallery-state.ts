@@ -449,7 +449,8 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       // new ID: the run skips it and Edit offers the room now on the map.
       const recreated = requireFixture(syntheticPlans().rooms[3], "room");
       const rooms = [...savedDailyPlan().rooms, {
-        roomId: "room-gone", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: ["room_not_on_current_map"],
+        roomId: "room-gone", cleaningMode: "vacuum", coverageSetting: "quick",
+        cadence: { ...sharedCadencePolicy(), scope: "plan", mopEveryN: null, coverageEveryN: 3 }, cadenceReasons: [],
       } satisfies PlanRoom];
       return openPlan(state, planWithRooms(savedDailyPlan(), rooms, {
         nextRunPreview: previewFor(savedDailyPlan().rooms, {

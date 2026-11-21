@@ -135,6 +135,6 @@ async def test_plan_room_missing_from_the_map_keeps_its_settings_and_policy() ->
     # Edit carries the saved policy to the room's replacement on a re-link.
     assert rooms[1]["cadence"]["coverage_every_n"] == 3
     assert rooms[1]["cadence_progress"] is None
-    assert rooms[1]["cadence_reasons"] == ["room_not_on_current_map"]
+    assert rooms[1]["cadence_reasons"] == []
     # A coverage schedule can't apply to a mop-only room, so none is shown.
     assert "cadence" not in rooms[2]

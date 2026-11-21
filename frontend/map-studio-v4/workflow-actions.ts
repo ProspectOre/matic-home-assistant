@@ -71,8 +71,11 @@ export const roomBlockReason = (reasons: readonly CadenceReason[], room: string)
 
 /** The first blocking room in saved order, with its reason and a link to it. */
 export const roomBlocker = (state: WorkspaceState, plan: SavedPlan) => {
-  const blocking = draftForPlan(plan).rooms.find(({ cadenceReasons = [] }) => roomBlockReason(cadenceReasons, ""));
-  const room = blocking && state.resources.plans.value?.rooms.find((candidate) => candidate.roomId === blocking.roomId)?.name;
+  // A room off the map has no name here and runs skip it, so it never blocks.
+  const names = new Map(state.resources.plans.value?.rooms.map((room) => [room.roomId, room.name]));
+  const blocking = draftForPlan(plan).rooms.find(({ roomId, cadenceReasons = [] }) =>
+    names.has(roomId) && roomBlockReason(cadenceReasons, ""));
+  const room = blocking && names.get(blocking.roomId);
   return blocking && room
     ? { ...roomBlockReason(blocking.cadenceReasons ?? [], room), jump: { label: "Review {room}", labelKey: "v4_review_room", labelPlaceholders: { room }, roomId: blocking.roomId } }
     : null;

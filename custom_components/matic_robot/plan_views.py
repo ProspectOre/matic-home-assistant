@@ -404,7 +404,7 @@ def _plan_rooms(floor: _Floor, plan_id: str, raw_rooms: list[object]) -> list[Pl
                 **projection,
                 "cadence": policy,
                 "cadence_progress": None,
-                "cadence_reasons": ["room_not_on_current_map"],
+                "cadence_reasons": [],
             }
         rooms.append(projection)
     return rooms

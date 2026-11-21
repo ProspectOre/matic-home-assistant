@@ -34,6 +34,8 @@ test("a re-created plan room is skipped in Run and moved in Edit", async ({ page
   const stale = list.locator("li", { has: page.locator("[data-room-missing]") });
   await expect(stale).toContainText("Bedroom");
   await expect(stale).toContainText("Removed or renumbered in the Matic app · Runs skip it");
+  // Its saved settings show, but stay as they are until it moves.
+  await expect(stale.locator("[data-room-disclosure]")).toHaveCount(0);
   await stale.getByRole("button", { name: "Use the new Bedroom", exact: true }).click();
 
   await expect(list.locator("[data-room-missing]")).toHaveCount(0);
@@ -42,6 +44,6 @@ test("a re-created plan room is skipped in Run and moved in Edit", async ({ page
   expect(draft.dirty).toBe(true);
   const moved = draft.rooms.at(-1);
   expect(moved.roomId).not.toBe("room-gone");
-  expect(moved).toMatchObject({ cleaningMode: "vacuum", coverageSetting: "quick" });
+  expect(moved).toMatchObject({ cleaningMode: "vacuum", coverageSetting: "quick", cadence: { coverageEveryN: 3 } });
   expect(draft.rooms.filter((room) => room.roomId === moved.roomId)).toHaveLength(1);
 });

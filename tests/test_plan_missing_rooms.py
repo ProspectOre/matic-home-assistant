@@ -40,6 +40,7 @@ from custom_components.matic_robot.plan_room_repairs import (
 )
 from custom_components.matic_robot.plan_views import MaticPlansView
 from custom_components.matic_robot.service_execution import _require_unchanged_plan
+from custom_components.matic_robot.service_plans import _normalize_saved_room
 from tests.test_plan_entries import _floor, _room
 from tests.test_slam_scene import _entry, _hass, _request
 from tests.test_view_wire import _plans_runtime
@@ -533,3 +534,25 @@ async def test_a_plan_with_every_room_held_still_names_the_removed_ones() -> Non
     assert previews["weekday"]["missing_rooms"] == [
         {"room_id": "room-2", "name": "Study", "match_room_id": None}
     ]
+
+
+def test_a_removed_room_keeps_its_saved_settings_through_a_save() -> None:
+    policy = {
+        "scope": "plan",
+        "coverage_every_n": 3,
+        "periodic_coverage_setting": "heavy_duty",
+    }
+    stored = {"room_id": "room-gone", "coverage_setting": "quick", "cadence": policy}
+    kept = {"room-gone": stored}
+    same = {"room": "room-gone", "cleaning_mode": "vacuum", "coverage_setting": "quick"}
+
+    assert _normalize_saved_room(same, {}, kept)["room_id"] == "room-gone"
+    assert _normalize_saved_room({**same, "cadence": dict(policy)}, {}, kept)
+    for changed in (
+        {**same, "coverage_setting": "standard"},
+        {**same, "cadence": {**policy, "coverage_every_n": 4}},
+        {**same, "cadence": {"scope": "nowhere"}},
+    ):
+        with pytest.raises(ServiceValidationError) as raised:
+            _normalize_saved_room(changed, {}, kept)
+        assert raised.value.translation_key == "plan_room_off_map_settings"

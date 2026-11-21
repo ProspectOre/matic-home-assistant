@@ -518,12 +518,13 @@ export class MaticPlanViewsV4 extends LitElement {
    * custom areas, and `last` the run's last place.
    */
   #editRow(roomId: string, name: string, room: PlanRoom | null, index: number, position: number, last: number, ordered: boolean, atLimit: boolean, held: string | null) {
-    const open = room !== null && this.state.expandedRoom === roomId;
+    const missing = room !== null && !this.state.resources.plans.value?.rooms.some((candidate) => candidate.roomId === roomId);
+    // A removed room keeps its saved settings until it moves or leaves the plan.
+    const open = room !== null && !missing && this.state.expandedRoom === roomId;
     const gate = this.#gate(held);
     const limited = room === null && atLimit;
     const schedule = room ? scheduleLine(this.#t, this.state.locale, room.cadence) : null;
     const blocked = room?.cadenceReasons?.some((reason) => BLOCKING.includes(reason));
-    const missing = room !== null && !this.state.resources.plans.value?.rooms.some((candidate) => candidate.roomId === roomId);
     const relink = missing ? this.#relinkTarget(roomId) : null;
     // While the mop schedule is on, the mode stays Vacuum.
     const modeLocked = Boolean(room?.cadence?.mopEveryN);
@@ -537,7 +538,12 @@ export class MaticPlanViewsV4 extends LitElement {
         @click=${(event: Event) => { if (held || limited) event.preventDefault(); }}
         @change=${() => this.#intent({ type: "toggle-room", roomId })}
       ></label>
-      ${room ? html`<button
+      ${room && missing ? html`<span class="edit-name row-lines" data-room-missing-row=${roomId}>
+          <bdi>${name}</bdi>
+          <small>${settingLabel(this.#t, room)}</small>
+          <small class="problem" data-room-missing>${this.#missingRoomProblem()}</small>
+          ${schedule ? html`<small>${schedule}</small>` : nothing}
+        </span>` : room ? html`<button
           class="edit-disclosure"
           type="button"
           data-room-disclosure=${roomId}
@@ -551,7 +557,6 @@ export class MaticPlanViewsV4 extends LitElement {
           <span class="row-lines">
             <bdi>${name}</bdi>
             <small>${settingLabel(this.#t, room)}</small>
-            ${missing ? html`<small class="problem" data-room-missing>${this.#missingRoomProblem()}</small>` : nothing}
             ${schedule ? html`<small>${schedule}</small>` : nothing}
             ${this.#overlapsNoGo("room", roomId) ? html`<small data-zone-overlap>${this.#t("v4_zone_overlap", "Overlaps a no-go zone · Matic skips that part")}</small>` : nothing}
             ${blocked ? html`<span class="ms-chip chip-attention">${this.#t("v4_needs_attention", "Needs attention")}</span>` : nothing}

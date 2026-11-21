@@ -1965,6 +1965,9 @@
     "plan_area_missing": {
       "message": "A custom area in this plan was deleted. Open the plan in Matic Map, save it again, then try again."
     },
+    "plan_room_off_map_settings": {
+      "message": "A room that is no longer on the robot's map keeps its saved settings. Move it to its new room or take it out of the plan to change them."
+    },
     "plan_room_missing": {
       "message": "None of the plan's rooms are on the robot's map any more: {rooms}. A map edit in the Matic app can remove a room or give it a new ID. Open the plan in Matic Map, choose the rooms to clean, then try again."
     },
