@@ -735,6 +735,11 @@ def _normalize_room(save: _PlanSave, edits: _CadenceEdits, raw_room: object) -> 
     room = deepcopy(dict(raw_room))
     room_id = str(room.get("room_id", ""))
     inherited = save.prior_rooms.get(room_id, {})
+    off_map = is_sha256_hex(save.floor_token) and room_id not in save.room_identities
+    if inherited and off_map:
+        # A map edit removed this room; runs skip it and it keeps its stored row.
+        edits.rooms.append(deepcopy(dict(inherited)))
+        return
     bound_identity = save.room_identities.get(room_id)
     identity = bound_identity or inherited.get("cadence_identity")
     if (

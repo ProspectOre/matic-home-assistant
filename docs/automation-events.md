@@ -45,8 +45,10 @@ room and plan events too, with a `plan_id` starting `__matic_manual_room_sequenc
 
 `missing_rooms` lists the plan rooms a map edit in the Matic app removed,
 which the run skips. Each has `room_id`, `name` (its name when a run last
-started cleaning it, or `null` if no run has) and `match_room_id` (the one room now on the map with that
-name, or `null`).
+started cleaning it, or `null` if no run has) and `match_room_id` (the one
+room now on the map with that name, or `null`). It is not saved with the
+run, so `plan_finished` for a run Home Assistant resumed after a restart
+leaves it out; `plan_started` for that run had it.
 
 The run events are every event from Plan started to Cleaning finished in the
 table above. Each one also:

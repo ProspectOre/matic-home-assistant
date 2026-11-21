@@ -76,7 +76,14 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
                     "periodic_coverage_setting": "heavy_duty",
                 },
             },
-            {"room": "Hall"},
+            {
+                "room": "Hall",
+                "cadence": {
+                    "scope": "shared",
+                    "coverage_every_n": 2,
+                    "periodic_coverage_setting": "heavy_duty",
+                },
+            },
         ],
     )
     serial = session.info.serial_number
@@ -140,6 +147,7 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
 
     # The plan keeps the hall while it is paused; a room it never had is
     # still refused.
+    before_pause = catalog.plan(serial, PLAN)
     await plan.call(
         DOMAIN,
         "save_plan",
@@ -156,6 +164,12 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
         old_hall,
     ]
     assert paused["rooms"][1]["cadence"]["coverage_every_n"] == 3
+    # The hall's shared schedule stays bound to the room it was set for.
+    hall = catalog.plan(serial, PLAN)["rooms"][2]
+    assert hall == next(
+        room for room in before_pause["rooms"] if room["room_id"] == old_hall
+    )
+    assert hall["cadence"]["scope"] == "shared"
     with pytest.raises(ServiceValidationError):
         await plan.call(
             DOMAIN,
