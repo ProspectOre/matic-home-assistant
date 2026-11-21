@@ -310,6 +310,16 @@ def test_names_reached_by_reference_or_by_home_assistant_pass() -> None:
             "class Mine(Local):\n    def unused(self): ...\nMine()\n",
             ["Mine.unused"],
         ),
+        # A method under `if` in a class body belongs to that class.
+        (
+            "from homeassistant.helpers import storage\n"
+            "class Mine(storage.Store):\n"
+            "    if LIMIT:\n        def reached_by_the_base(self): ...\n"
+            "class Plain:\n"
+            "    if LIMIT:\n        def unused(self): ...\n"
+            "Mine()\nPlain()\n",
+            ["Plain.unused"],
+        ),
         ("class Plain:\n    def unused(self): ...\nPlain()\n", ["Plain.unused"]),
         ("class Unused:\n    def method(self): ...\n", ["Unused", "Unused.method"]),
         # Text that mentions a name does not use it.

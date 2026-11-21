@@ -209,17 +209,21 @@ def size_violations(
 
 
 def _definitions(tree: ast.Module) -> Iterator[tuple[str, DEFINITION, ast.AST]]:
-    """Yield each function and class: qualified name, node and enclosing node."""
-    pending: list[tuple[str, ast.AST]] = [("", tree)]
+    """Yield each function and class: qualified name, node and enclosing scope.
+
+    The scope is the nearest function, class or module, whatever statements
+    lie between.
+    """
+    pending: list[tuple[str, ast.AST, ast.AST]] = [("", tree, tree)]
     while pending:
-        scope, node = pending.pop()
+        scope, owner, node = pending.pop()
         for child in ast.iter_child_nodes(node):
             if isinstance(child, DEFINITION):
                 name = f"{scope}.{child.name}" if scope else child.name
-                yield name, child, node
-                pending.append((name, child))
+                yield name, child, owner
+                pending.append((name, child, child))
             elif not isinstance(child, ast.expr):
-                pending.append((scope, child))
+                pending.append((scope, owner, child))
 
 
 def function_lengths(trees: Mapping[str, ast.Module]) -> dict[str, int]:
