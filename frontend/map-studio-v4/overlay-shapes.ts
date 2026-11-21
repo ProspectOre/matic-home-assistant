@@ -186,19 +186,12 @@ export const overlayShapes = (scene: SceneModel, state: WorkspaceState, palette:
   const trail = trailVisible(state) ? state.trail : null;
   if (trail) {
     const rings: Ring[] = [];
+    // The recorder breaks the path where the robot went unseen or jumped
+    // (trail-path.ts), so each segment is drawn whole; a lone point is a dot.
     for (const segment of trail.segments) {
-      let start = 0;
-      for (let index = 1; index <= segment.length; index += 1) {
-        const [x, y] = segment[index] ?? [Infinity, Infinity];
-        const [previousX, previousY] = segment[index - 1]!;
-        // A long gap contains no evidence of the path between observations;
-        // an observation with no neighbour within a metre is drawn as a dot.
-        if (Math.hypot(x - previousX, y - previousY) <= 1) continue;
-        const run = segment.slice(start, index);
-        rings.push(fromMeters(run));
-        for (const chevron of chevrons(run)) rings.push(fromMeters(chevron));
-        start = index;
-      }
+      if (!segment.length) continue;
+      rings.push(fromMeters(segment));
+      for (const chevron of chevrons(segment)) rings.push(fromMeters(chevron));
     }
     for (const [colour, width] of [[palette.onAccent, 4], [palette.accent, 2]] as const) {
       shapes.push({ kind: "stroke", rings, closed: false, colour, alpha: 1, width, dashed: false, height: 0 });

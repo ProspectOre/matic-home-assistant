@@ -22,6 +22,7 @@ from homeassistant.util import dt as dt_util
 from .client import CleaningSession, CleaningSessionRecord
 from .const import DOMAIN
 from .map_schema import RunEntry, RunItem, RunOutcome, TrailPoint
+from .trail_path import TRAIL_STEP_METERS, starts_segment, thin_segments
 
 RUN_HISTORY_LIMIT = 50
 MAX_HISTORY_ROOMS = 64
@@ -32,9 +33,7 @@ TRAIL_SAVE_DELAY_SECONDS = 30
 MAX_TRAILS = 20
 MAX_LIVE_TRAIL_POINTS = 4_000
 MAX_SAVED_TRAIL_POINTS = 600
-MAX_TRAIL_SEGMENTS = 8
 MIN_SAVED_TRAIL_POINTS = 3
-TRAIL_STEP_METERS = 0.15
 MAX_TRAIL_COORDINATE = 10_000.0
 # Year 2100 in epoch seconds: a later pose time is a damaged record.
 MAX_TRAIL_TIME = 4_102_444_800
@@ -442,7 +441,12 @@ class _LiveTrail:
     run_id: str | None
     map_key: str
     started_at: str
-    points: list[TrailPoint] = field(default_factory=list)
+    segments: list[list[TrailPoint]] = field(default_factory=list)
+    # The robot's time of the newest pose, kept or not: a gap is measured from it.
+    seen: float | None = None
+
+    def point_count(self) -> int:
+        return sum(map(len, self.segments))
 
 
 class RunTrails:
@@ -463,6 +467,7 @@ class RunTrails:
         self._trails: list[dict[str, Any]] = []
         self._live: _LiveTrail | None = None
         self._closed = False
+        self._save_pending = False
 
     async def async_load(self) -> None:
         """Load saved trails, dropping any that fail validation."""
@@ -479,12 +484,19 @@ class RunTrails:
             and _valid_trail(live)
             and isinstance(live.get("key"), str)
         ):
+            segments = [
+                [tuple(point) for point in segment]
+                for segment in live["segments"]
+                if segment
+            ]
+            last = segments[-1][-1] if segments else ()
             self._live = _LiveTrail(
                 live["key"],
                 live["run_id"],
                 live["map_key"],
                 live["started_at"],
-                [tuple(point) for point in live["segments"][0]],
+                segments,
+                last[2] if len(last) == 3 else None,
             )
 
     async def async_shutdown(self) -> None:
@@ -524,17 +536,25 @@ class RunTrails:
             return
         if self._live is None:
             self._live = _LiveTrail(key, run_id, map_key, dt_util.utcnow().isoformat())
-        points = self._live.points
-        if points and math.dist(points[-1][:2], point) < TRAIL_STEP_METERS:
+        live = self._live
+        seen = (
+            observed_at
+            if observed_at is not None and _valid_time(observed_at)
+            else None
+        )
+        last = live.segments[-1][-1] if live.segments else None
+        if last is not None and math.dist(last[:2], point) < TRAIL_STEP_METERS:
+            live.seen = seen if seen is not None else live.seen
             return
         x, y = round(point[0], 2), round(point[1], 2)
-        points.append(
-            (x, y, round(observed_at))
-            if observed_at is not None and _valid_time(observed_at)
-            else (x, y)
-        )
-        if len(points) > MAX_LIVE_TRAIL_POINTS:
-            self._live.points = [*points[:-1:2], points[-1]]
+        kept: TrailPoint = (x, y, round(seen)) if seen is not None else (x, y)
+        if last is None or starts_segment(last, live.seen, kept, seen):
+            live.segments.append([])
+        live.segments[-1].append(kept)
+        live.seen = seen if seen is not None else live.seen
+        if live.point_count() > MAX_LIVE_TRAIL_POINTS:
+            # Half the points, the most shape-defining, and the newest.
+            live.segments = thin_segments(live.segments, MAX_LIVE_TRAIL_POINTS // 2 + 1)
         self._schedule_save()
 
     def live(self, map_key: str | None) -> list[list[TrailPoint]] | None:
@@ -542,7 +562,7 @@ class RunTrails:
         live = self._live
         if live is None or map_key is None or live.map_key != map_key:
             return None
-        return [list(live.points)]
+        return [list(segment) for segment in live.segments]
 
     def trail_id(
         self,
@@ -602,10 +622,9 @@ class RunTrails:
 
     def _finish(self, live: _LiveTrail) -> None:
         """Save a finished trail; one too short to show is dropped."""
-        if len(live.points) < MIN_SAVED_TRAIL_POINTS:
+        if live.point_count() < MIN_SAVED_TRAIL_POINTS:
             self._schedule_save()
             return
-        segment = _thin(live.points, MAX_SAVED_TRAIL_POINTS)
         ended_at = dt_util.utcnow().isoformat()
         existing = next(
             (
@@ -619,12 +638,13 @@ class RunTrails:
         )
         if existing is not None:
             self._trails.remove(existing)
-            segments = [*existing["segments"], segment][-MAX_TRAIL_SEGMENTS:]
-            budget = MAX_SAVED_TRAIL_POINTS // len(segments)
             existing.update(
                 {
                     "ended_at": ended_at,
-                    "segments": [_thin(item, budget) for item in segments],
+                    "segments": thin_segments(
+                        [*existing["segments"], *live.segments],
+                        MAX_SAVED_TRAIL_POINTS,
+                    ),
                 }
             )
             trail = existing
@@ -635,15 +655,23 @@ class RunTrails:
                 "map_key": live.map_key,
                 "started_at": live.started_at,
                 "ended_at": ended_at,
-                "segments": [segment],
+                "segments": thin_segments(live.segments, MAX_SAVED_TRAIL_POINTS),
             }
         self._trails = [*self._trails, trail][-MAX_TRAILS:]
         self._schedule_save()
 
     def _schedule_save(self) -> None:
-        if self._closed:
+        # Store moves a pending write back on every call, and poses arrive
+        # several times a second: keep the first deadline, so a moving robot's
+        # trail is written every TRAIL_SAVE_DELAY_SECONDS, with what it holds then.
+        if self._closed or self._save_pending:
             return
-        self._store.async_delay_save(self._data, TRAIL_SAVE_DELAY_SECONDS)
+        self._save_pending = True
+        self._store.async_delay_save(self._checkpoint, TRAIL_SAVE_DELAY_SECONDS)
+
+    def _checkpoint(self) -> dict[str, Any]:
+        self._save_pending = False
+        return self._data()
 
     def _data(self) -> dict[str, Any]:
         live = self._live
@@ -657,7 +685,7 @@ class RunTrails:
                     "map_key": live.map_key,
                     "started_at": live.started_at,
                     "ended_at": live.started_at,
-                    "segments": [live.points],
+                    "segments": live.segments,
                 }
                 if live is not None
                 else None
@@ -701,19 +729,10 @@ def _valid_trail(value: object) -> bool:
             _timestamp(value.get(key)) is not None for key in ("started_at", "ended_at")
         )
         and isinstance(segments, list)
-        and 0 < len(segments) <= MAX_TRAIL_SEGMENTS
+        and 0 < len(segments) <= MAX_LIVE_TRAIL_POINTS
         and all(
-            isinstance(segment, list)
-            and len(segment) <= MAX_LIVE_TRAIL_POINTS
-            and all(_valid_point(point) for point in segment)
+            isinstance(segment, list) and all(_valid_point(point) for point in segment)
             for segment in segments
         )
+        and sum(map(len, segments)) <= MAX_LIVE_TRAIL_POINTS
     )
-
-
-def _thin(points: Sequence[TrailPoint], limit: int) -> list[TrailPoint]:
-    """Keep evenly spaced points, always including both ends."""
-    if len(points) <= limit:
-        return list(points)
-    step = (len(points) - 1) / (limit - 1)
-    return [points[round(index * step)] for index in range(limit)]

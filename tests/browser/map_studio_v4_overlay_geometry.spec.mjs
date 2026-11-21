@@ -124,7 +124,8 @@ test("a robot-made zone is outlined in dashes of five pixels with gaps of four",
 });
 
 test("the travel path is the accent on a light edge, stops at a gap and marks a lone observation", async ({ page }) => {
-  const trail = { id: "live", mapSessionKey: "session", segments: [[[0.4, 3], [1, 3], [3, 3]]] };
+  // The recorder starts a segment after a 2 m jump (trail-path.ts).
+  const trail = { id: "live", mapSessionKey: "session", segments: [[[0.4, 3], [1, 3]], [[3, 3]]] };
   const [core, halo, gap, dot, dotHalo] = await sample(page, [], { trail },
     [[35, 150], [35, 149], [100, 150], [150, 150], [150, 152]]);
   for (const path of ["webgl", "canvas"]) {
