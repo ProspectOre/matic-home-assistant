@@ -16,6 +16,7 @@ from .http import (
     runtime_for_entry,
 )
 from .plan_model import (
+    RoomMapChangedError,
     SharedRoomScheduleLockedError,
     plan_floor_token,
     room_cadence_identity,
@@ -111,16 +112,10 @@ class MaticDailyLimitView(HomeAssistantView):
             return self._json_error(HTTPStatus.CONFLICT, "room_reserved")
         except MetadataAdmissionClosedError:
             return self._json_error(HTTPStatus.CONFLICT, "runtime_unloading")
-        except ValueError as err:
-            reason: DailyLimitRefusal = (
-                "map_rechecking" if "map changed" in str(err) else "invalid_request"
-            )
-            status = (
-                HTTPStatus.CONFLICT
-                if reason == "map_rechecking"
-                else HTTPStatus.BAD_REQUEST
-            )
-            return self._json_error(status, reason)
+        except RoomMapChangedError:
+            return self._json_error(HTTPStatus.CONFLICT, "map_rechecking")
+        except ValueError:
+            return self._json_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return self.json(state, headers=PRIVATE_NO_STORE_HEADERS)
 
     def _json_error(

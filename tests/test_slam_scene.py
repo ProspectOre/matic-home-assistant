@@ -60,6 +60,7 @@ from custom_components.matic_robot.http import (
 from custom_components.matic_robot.plan_model import (
     AreaFramePointLimitError,
     AreaInUseError,
+    CadenceProgressUnverifiedError,
     RoomSequenceLimitError,
     plan_floor_token,
     room_cadence_identity,
@@ -74,13 +75,13 @@ from custom_components.matic_robot.session import RobotSession, Store
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_decoded_map import DecodedMap
 from custom_components.matic_robot.slam_history import HistoryReadCapacityError
+from custom_components.matic_robot.slam_history_format import HistoryRequestError
 from custom_components.matic_robot.slam_history_view import (
     MaticSlamHistoryExportView,
     MaticSlamHistoryImportView,
     MaticSlamHistoryManageView,
     MaticSlamHistorySceneView,
     MaticSlamHistoryView,
-    _history_error,
     _history_record_metadata,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
@@ -1651,8 +1652,8 @@ async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
             "room_order": ["room-1"],
         }
     }
-    runtime.cleaning_plans.planning.preview.side_effect = ValueError(
-        "room cadence progress is unverified; reset mop before use"
+    runtime.cleaning_plans.planning.preview.side_effect = (
+        CadenceProgressUnverifiedError("reset mop before use")
     )
     runtime.slam_map.floor_plan_is_current.return_value = True
 
@@ -2947,7 +2948,7 @@ async def test_history_management_and_archive_views_report_bounded_input_errors(
         "entry",
     )
     assert malformed_export.status == HTTPStatus.BAD_REQUEST
-    runtime.slam_history.async_export.side_effect = ValueError(
+    runtime.slam_history.async_export.side_effect = HistoryRequestError(
         "history-generation-conflict"
     )
     conflict = await export.post(
@@ -2972,7 +2973,7 @@ async def test_history_management_and_archive_views_report_bounded_input_errors(
         "entry",
     )
     assert malformed_import.status == HTTPStatus.BAD_REQUEST
-    runtime.slam_history.async_import.side_effect = ValueError(
+    runtime.slam_history.async_import.side_effect = HistoryRequestError(
         "history-request-too-large"
     )
     too_large = await import_view.post(
@@ -3022,9 +3023,7 @@ async def test_history_management_and_archive_views_report_bounded_input_errors(
     ).status == HTTPStatus.NOT_FOUND
 
 
-def test_history_record_trash_metadata_omits_scene_url_and_errors_map_statuses() -> (
-    None
-):
+def test_history_record_trash_metadata_omits_scene_url() -> None:
     record = runtime_fakes.saved_map(
         record_id="a" * 32,
         snapshot_id="b" * 24,
@@ -3039,13 +3038,3 @@ def test_history_record_trash_metadata_omits_scene_url_and_errors_map_statuses()
     metadata = _history_record_metadata("entry", record)
     assert metadata["scene_url"] is None
     assert metadata["compressed_bytes"] == 3
-    for error, expected in (
-        ("history-generation-conflict", HTTPStatus.CONFLICT),
-        ("history-request-id-reused", HTTPStatus.CONFLICT),
-        ("history-record-not-found", HTTPStatus.NOT_FOUND),
-        ("history-request-too-large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE),
-        ("invalid-history-name", HTTPStatus.BAD_REQUEST),
-    ):
-        response = _history_error(ValueError(error))
-        assert response.status == expected
-        assert json.loads(response.body) == {"error": error}
