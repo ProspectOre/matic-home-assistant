@@ -1,8 +1,6 @@
 custom_components/matic_robot/bluetooth_pairing.py::async_request_bluetooth_credential 347
-custom_components/matic_robot/client/cleaning_session.py::decode_cleaning_session 203
 custom_components/matic_robot/daily_room_limit.py::daily_state 201
 custom_components/matic_robot/execution_planning.py::ExecutionPlanner.preview 172
-custom_components/matic_robot/firmware.py::FirmwareTracker.async_record_snapshot 167
 custom_components/matic_robot/managed_area.py::_async_run_area_leg 185
 custom_components/matic_robot/managed_dispatch.py::_async_dispatch_leg_command 152
 custom_components/matic_robot/managed_executor.py::_async_execute_rooms_reserved 674
@@ -11,7 +9,6 @@ custom_components/matic_robot/native_cadence.py::import_native_cadence 202
 custom_components/matic_robot/photo_tours.py::_async_run_tour 173
 custom_components/matic_robot/plan_cadence.py::PlanCadence.resolve_cadence 213
 custom_components/matic_robot/plan_history.py::PlanHistory.snapshot 151
-custom_components/matic_robot/plan_state.py::_normalize_robot 180
 custom_components/matic_robot/restart.py::async_recover_managed_run 428
 custom_components/matic_robot/robot_commands.py::RobotCommands.async_clean_rooms 220
 custom_components/matic_robot/stop_return.py::async_dock_when_stop_settles 189
