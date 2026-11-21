@@ -19,12 +19,6 @@ from custom_components.matic_robot.client.models import RobotPose
 from custom_components.matic_robot.client.snaps import decode_instamatic_snap
 
 from .hermes_sim import Phase, SimulatedRobot
-from .sim_mission import SimFloor, two_room_floor
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 async def _pose(client: MaticHermesClient) -> RobotPose:

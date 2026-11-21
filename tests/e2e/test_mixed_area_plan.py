@@ -6,7 +6,6 @@ import asyncio
 import traceback
 from typing import Any
 
-import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.matic_robot.area_binding import (
@@ -17,16 +16,11 @@ from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import Phase, SimulatedRobot
 from .plan_run import PlanRun, expect_finished
-from .sim_mission import SimFloor, message, messages, read_fields, two_room_floor
+from .sim_mission import SimFloor, message, messages, read_fields
 
 PLAN = "room-area-room"
 AREA_ID = "entry-rug"
 AREA_NAME = "Entry rug"
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 async def _poll_until(plan: PlanRun, predicate: Any) -> None:

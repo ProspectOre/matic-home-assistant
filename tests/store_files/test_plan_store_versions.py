@@ -31,18 +31,6 @@ TIER = {
 }
 
 
-@pytest.fixture
-def hass_storage() -> dict[str, Any]:
-    """Use versioned JSON files in the per-test Home Assistant config."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep migration input and output isolated from other tests."""
-    return hass_tmp_config_dir
-
-
 def _stored_before_0_5() -> dict[str, Any]:
     """A robot without the keys 0.5 added."""
     return {

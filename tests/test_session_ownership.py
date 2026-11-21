@@ -852,6 +852,10 @@ async def test_state_transition_requires_a_new_identity_read(
     assert reads >= 2
 
 
+async def _wait_forever(*_args, **_kwargs):
+    await asyncio.Event().wait()
+
+
 @pytest.mark.parametrize(
     ("start_state", "transitions", "suspended_outcome"),
     [
@@ -884,11 +888,8 @@ async def test_owned_resume_uses_observed_resume_when_terminal_arrives_during_sa
             )
         await hass.async_block_till_done()
 
-        async def wait_forever(*_args, **_kwargs):
-            await asyncio.Event().wait()
-
         monkeypatch.setattr(
-            managed_observation_module, "_async_wait_for_robot_activity", wait_forever
+            managed_observation_module, "_async_wait_for_robot_activity", _wait_forever
         )
         if suspended_outcome is not None:
             assert (await observer.next())[0] is suspended_outcome
@@ -1053,9 +1054,6 @@ async def test_repeated_pause_during_suspension_save_does_not_leave_stale_pause(
     )
     await manager.ledger.async_mark_started("serial", "test-plan", ROOM)
 
-    async def wait_forever(*_args, **_kwargs):
-        await asyncio.Event().wait()
-
     try:
         robot.show("paused", current_area=ROOM.name)
         await hass.async_block_till_done()
@@ -1076,7 +1074,7 @@ async def test_repeated_pause_during_suspension_save_does_not_leave_stale_pause(
         await persist_task
 
         monkeypatch.setattr(
-            managed_observation_module, "_async_wait_for_robot_activity", wait_forever
+            managed_observation_module, "_async_wait_for_robot_activity", _wait_forever
         )
         await _async_wait_for_owned_resume(
             robot.port(session_identity=AsyncMock(return_value=ORIGINAL)),
@@ -1140,9 +1138,6 @@ async def test_resume_from_initial_pause_does_not_suppress_a_second_pause(
     )
     await manager.ledger.async_mark_started("serial", "test-plan", ROOM)
 
-    async def wait_forever(*_args, **_kwargs):
-        await asyncio.Event().wait()
-
     try:
         block_saves = True
         persist_task = asyncio.create_task(
@@ -1158,7 +1153,7 @@ async def test_resume_from_initial_pause_does_not_suppress_a_second_pause(
         await persist_task
 
         monkeypatch.setattr(
-            managed_observation_module, "_async_wait_for_robot_activity", wait_forever
+            managed_observation_module, "_async_wait_for_robot_activity", _wait_forever
         )
         await _async_wait_for_owned_resume(
             robot.port(session_identity=AsyncMock(return_value=ORIGINAL)),

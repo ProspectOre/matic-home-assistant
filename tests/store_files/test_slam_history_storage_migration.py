@@ -27,18 +27,6 @@ from custom_components.matic_robot.slam_history import (
 from tests.test_slam_map import synthetic_slam_entry
 
 
-@pytest.fixture
-def hass_storage() -> dict[str, Any]:
-    """Use versioned JSON files in Home Assistant's temporary config."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep versioned history files isolated from the shared test config."""
-    return hass_tmp_config_dir
-
-
 def _scene(mission_id: int = 0x1234ABCD) -> bytes:
     return encode_slam_scene(
         (decode_slam_tile(synthetic_slam_entry(mission_id=mission_id)),)

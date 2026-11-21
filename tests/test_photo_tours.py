@@ -1155,15 +1155,16 @@ async def test_schedule_refresh_must_be_fresh_and_complete(failure) -> None:
     assert raised.value.translation_key == "photo_tour_schedule_conflict"
 
 
+async def _photograph_kitchen(_hass, _entry, _entity, _room, arrivals, _album):
+    arrivals.append("Kitchen")
+    return _photo(1)
+
+
 async def test_dock_cleanup_errors_do_not_mask_tour_failures(monkeypatch) -> None:
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
-        arrivals.append("Kitchen")
-        return _photo(1)
-
-    monkeypatch.setattr(photo_tours, "_async_photograph", photograph)
+    monkeypatch.setattr(photo_tours, "_async_photograph", _photograph_kitchen)
     monkeypatch.setattr(photo_tours, "_async_check_schedule", AsyncMock())
     monkeypatch.setattr(
         photo_tours, "_async_still_parked", AsyncMock(return_value=True)
@@ -1208,11 +1209,7 @@ async def test_dock_cleanup_verification_failure_is_bounded_and_safe(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
-        arrivals.append("Kitchen")
-        return _photo(1)
-
-    monkeypatch.setattr(photo_tours, "_async_photograph", photograph)
+    monkeypatch.setattr(photo_tours, "_async_photograph", _photograph_kitchen)
     monkeypatch.setattr(photo_tours, "_async_check_schedule", AsyncMock())
     monkeypatch.setattr(
         photo_tours,
@@ -1232,11 +1229,7 @@ async def test_dock_failure_is_suppressed_when_an_error_is_already_active(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
-        arrivals.append("Kitchen")
-        return _photo(1)
-
-    monkeypatch.setattr(photo_tours, "_async_photograph", photograph)
+    monkeypatch.setattr(photo_tours, "_async_photograph", _photograph_kitchen)
     monkeypatch.setattr(photo_tours, "_async_check_schedule", AsyncMock())
     monkeypatch.setattr(
         photo_tours, "_async_still_parked", AsyncMock(return_value=True)
@@ -1270,11 +1263,7 @@ async def test_full_resolution_tour_uses_authenticated_photo_url(monkeypatch) ->
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
-        arrivals.append("Kitchen")
-        return _photo(1)
-
-    monkeypatch.setattr(photo_tours, "_async_photograph", photograph)
+    monkeypatch.setattr(photo_tours, "_async_photograph", _photograph_kitchen)
     monkeypatch.setattr(photo_tours, "_async_check_schedule", AsyncMock())
     monkeypatch.setattr(
         photo_tours, "_async_still_parked", AsyncMock(return_value=True)
@@ -1399,15 +1388,11 @@ async def test_dock_deadline_expiry_after_ownership_check_is_reported(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
-        arrivals.append("Kitchen")
-        return _photo(1)
-
     async def still_parked(_entry, _area):
         clock[0] = photo_tours.MAX_TOUR_SECONDS
         return True
 
-    monkeypatch.setattr(photo_tours, "_async_photograph", photograph)
+    monkeypatch.setattr(photo_tours, "_async_photograph", _photograph_kitchen)
     monkeypatch.setattr(photo_tours, "_async_check_schedule", AsyncMock())
     monkeypatch.setattr(photo_tours, "_async_still_parked", still_parked)
 
@@ -1424,10 +1409,6 @@ async def test_cleanup_uses_remaining_absolute_tour_deadline(
     hass = _hass()
     entry = _entry([], _Photos())
 
-    async def photograph(_hass, _entry, _entity, _room, arrivals, _album):
-        arrivals.append("Kitchen")
-        return _photo(1)
-
     async def still_parked(_entry, _area):
         clock[0] += 45
         return True
@@ -1435,7 +1416,7 @@ async def test_cleanup_uses_remaining_absolute_tour_deadline(
     async def dock(*_args, **_kwargs):
         clock[0] += 40
 
-    monkeypatch.setattr(photo_tours, "_async_photograph", photograph)
+    monkeypatch.setattr(photo_tours, "_async_photograph", _photograph_kitchen)
     monkeypatch.setattr(photo_tours, "_async_check_schedule", AsyncMock())
     monkeypatch.setattr(photo_tours, "_async_still_parked", still_parked)
     hass.services.async_call.side_effect = dock

@@ -29,7 +29,7 @@ from custom_components.matic_robot.const import (
 
 from .hermes_sim import RunningSimulator, SimulatedRobot, start_simulator
 from .plan_run import PlanRun
-from .sim_mission import SimFloor
+from .sim_mission import SimFloor, two_room_floor
 
 
 @pytest.fixture
@@ -40,8 +40,8 @@ def hass_config_dir(hass_tmp_config_dir: str) -> str:
 
 @pytest.fixture
 def floor() -> SimFloor | None:
-    """The floor the robot has mapped; a module overrides this to map one."""
-    return None
+    """The floor the robot has mapped; a module returns None for no map."""
+    return two_room_floor()
 
 
 @pytest.fixture

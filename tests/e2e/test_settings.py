@@ -11,12 +11,7 @@ from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import SimulatedRobot
 from .plan_run import VACUUM, PlanRun
-from .sim_mission import SimFloor, two_room_floor
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
+from .sim_mission import SimFloor
 
 
 async def _menu(hass: HomeAssistant, plan: PlanRun, choice: str) -> dict:

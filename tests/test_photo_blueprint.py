@@ -5,7 +5,6 @@ each test reads the payload a phone, or a plain notify target, would receive.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +21,8 @@ from homeassistant.core import (
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
 from homeassistant.util.yaml import load_yaml
+
+pytestmark = pytest.mark.usefixtures("detach_triggers")
 
 BLUEPRINTS = Path(__file__).parents[1] / "blueprints/automation/matic_robot"
 PATH = BLUEPRINTS / "photo_on_alert.yaml"
@@ -42,14 +43,6 @@ PHOTO_BUTTONS = [
     {"action": "URI", "title": "Open photo", "uri": OPEN},
     {"action": SEND_ANOTHER, "title": "Send another"},
 ]
-
-
-@pytest.fixture(autouse=True)
-async def detach_triggers(hass: HomeAssistant) -> AsyncIterator[None]:
-    yield
-    await hass.services.async_call(
-        "automation", "turn_off", {"entity_id": AUTOMATION}, blocking=True
-    )
 
 
 class Calls:
