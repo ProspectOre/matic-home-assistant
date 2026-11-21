@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant, callback
@@ -11,6 +12,10 @@ from .area_binding_geometry import floor_identity
 from .area_binding_repairs import async_sync_custom_area_issue
 from .client import FloorPlan
 from .const import DOMAIN
+from .plan_room_repairs import (
+    async_delete_plan_room_issue,
+    async_sync_plan_room_issue,
+)
 from .session import RobotSession
 from .slam_map_store import SlamMapIdentity, SlamMapStore
 
@@ -24,6 +29,23 @@ FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
 FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS = 30
 FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS = 300
+
+
+@callback
+def async_sync_map_repairs(
+    hass: HomeAssistant,
+    entry_id: str,
+    plans: CleaningPlanManager,
+    serial_number: str,
+    floor_plan: FloorPlan | None,
+) -> None:
+    """Judge the saved custom areas and plans against the live map."""
+    async_sync_custom_area_issue(
+        hass, entry_id, plans.catalog.areas(serial_number), floor_plan
+    )
+    async_sync_plan_room_issue(
+        hass, entry_id, plans.catalog.plans(serial_number), floor_plan
+    )
 
 
 def floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
@@ -219,6 +241,11 @@ class AreaBindingSync:
     @callback
     def async_start(self) -> None:
         """Follow the floor and the saved areas until the entry unloads."""
+        # The plan-room Repair is not stored: it holds only while the entry
+        # is loaded and its map can be judged, and returns on the next load.
+        self._entry.async_on_unload(
+            partial(async_delete_plan_room_issue, self._hass, self._entry.entry_id)
+        )
         for store in (self._session.floor, self._session.heartbeat.displayed_mission):
             self._entry.async_on_unload(store.subscribe(self._async_sync))
         self._entry.async_on_unload(
@@ -244,10 +271,11 @@ class AreaBindingSync:
         ):
             assert floor_plan is not None
             self._async_schedule_upgrade(floor_plan)
-        async_sync_custom_area_issue(
+        async_sync_map_repairs(
             self._hass,
             self._entry.entry_id,
-            self._plans.catalog.areas(self._serial_number),
+            self._plans,
+            self._serial_number,
             floor_plan,
         )
 
