@@ -275,22 +275,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "Use a managed room sequence to respect room daily limits",
                 "daily_room_limit_requires_managed",
             )
-        request_generation = self._plans.control.motion_generation(serial_number)
-        request_stop_generation = self._plans.control.stop_request_generation(
-            serial_number
-        )
-        request_admission_epoch = self._plans.control.command_admission_epoch(
-            serial_number
-        )
-        await self._commands.async_ensure_stop_settled(serial_number)
-        self._commands.require_motion_generation(serial_number, request_generation)
-        self._commands.require_stop_request_generation(
-            serial_number, request_stop_generation
-        )
-        self._plans.control.require_command_admission(
-            serial_number, expected_epoch=request_admission_epoch
-        )
-        if self._commands.holds_task():
+        commands = self._commands
+        fence = await commands.async_admit_motion()
+        if commands.holds_task():
             raise validation_error(
                 "The robot is busy; clean again starts only from the dock or idle",
                 "redo_robot_busy",
@@ -311,17 +298,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
         latest = max(finished, key=lambda item: item.session.ended_at or "")
         # Like any direct clean, the new clean takes ownership from a plan.
-        async with self._plans.control.external_motion(
-            serial_number,
-            expected_generation=request_generation,
-            expected_stop_generation=request_stop_generation,
-        ) as generation:
-            await self._commands.async_ensure_stop_settled(serial_number)
-            self._commands.require_motion_generation(serial_number, generation)
-            self._commands.require_stop_request_generation(
-                serial_number, request_stop_generation
-            )
-            if self._commands.holds_task():
+        async with commands.motion_lease(fence):
+            if commands.holds_task():
                 raise validation_error(
                     "The robot started a task before clean again was sent",
                     "redo_robot_busy",

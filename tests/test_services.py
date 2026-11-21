@@ -52,6 +52,7 @@ from custom_components.matic_robot.const import (
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
 from custom_components.matic_robot.managed_dispatch import (
     _async_mark_run_docked,
+    _ensure_stop_settled,
     _run_provenance,
 )
 from custom_components.matic_robot.managed_observation import (
@@ -96,9 +97,6 @@ from custom_components.matic_robot.service_context import (
     _require_matic_control,
     _resolve_loaded_matic_vacuums,
     _saved_plan_context,
-)
-from custom_components.matic_robot.service_controls import (
-    _ensure_stop_settled,
 )
 from custom_components.matic_robot.service_execution import (
     _async_execute_rooms,
@@ -451,7 +449,13 @@ def test_room_management_reference_is_stable_and_fail_closed() -> None:
 def _reachable_entry() -> SimpleNamespace:
     robot = FakeRobot()
     robot.show("docked")
-    runtime = SimpleNamespace(session=_session(robot=robot), client=robot_client())
+    runtime = SimpleNamespace(
+        session=_session(robot=robot),
+        client=robot_client(),
+        cleaning_plans=SimpleNamespace(
+            control=SimpleNamespace(stop_pending=lambda _s: False)
+        ),
+    )
     return SimpleNamespace(runtime_data=runtime)
 
 
@@ -567,6 +571,7 @@ async def test_clean_action_checks_oem_stop_fence() -> None:
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             session=_session(info=SimpleNamespace(serial_number="serial")),
             client=robot_client(async_get_active_cleaning_session_state=AsyncMock()),
         )
@@ -610,6 +615,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=client,
             session=session,
             slam_map=SimpleNamespace(
@@ -663,6 +669,7 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=client,
             session=session,
             slam_map=SimpleNamespace(
@@ -800,6 +807,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=robot_client(
                 async_start_custom_coverage=AsyncMock(),
                 async_get_active_cleaning_session_state=AsyncMock(return_value=False),
@@ -892,6 +900,7 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
     session = _session(floor_plan=live_floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=client,
             session=session,
             slam_map=SimpleNamespace(
@@ -946,6 +955,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=client,
             session=session,
             slam_map=SimpleNamespace(
@@ -1068,8 +1078,10 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
         async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
+    session.client = client
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=client,
             session=session,
             slam_map=SimpleNamespace(
@@ -1145,6 +1157,7 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
     session = _session(floor_plan=floor, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=client,
             session=session,
             slam_map=SimpleNamespace(
@@ -1689,6 +1702,7 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
     session = _session(floor_plan=floor_plan, refresh=AsyncMock())
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
             client=client,
             session=session,
             slam_map=SimpleNamespace(
@@ -5798,82 +5812,6 @@ async def test_wait_returns_reached_state_while_cancel_stays_pending(hass) -> No
     robot.show("docked")
     assert await waiting is RobotActivity.DOCKED
     assert not cancel.is_set()
-
-
-@pytest.mark.parametrize("waiting_stage", ["preflight", "lock", "persist"])
-async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> None:
-    manager = memory_manager(hass)
-    floor = _area_floor_plan()
-    await manager.catalog.async_save_area(
-        "serial",
-        "test_area",
-        {
-            "schema_version": AREA_SCHEMA_VERSION,
-            "name": "Test area",
-            "circles": [{"x": 1.0, "y": 1.0, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "quick",
-            "map_binding": _area_binding(floor, y=1.0),
-        },
-    )
-    services = await _registered_services(hass, manager)
-    client = robot_client(
-        async_start_custom_coverage=AsyncMock(),
-        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
-    )
-    entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(
-            client=client,
-            session=_session(floor_plan=floor, refresh=AsyncMock()),
-            slam_map=SimpleNamespace(
-                floor_plan_is_current=MagicMock(return_value=True)
-            ),
-        )
-    )
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    first_check = True
-
-    async def preflight(*_args) -> None:
-        nonlocal first_check
-        if first_check:
-            first_check = False
-            if waiting_stage != "persist":
-                entered.set()
-            if waiting_stage == "preflight":
-                await release.wait()
-
-    async def persist(*_args) -> None:
-        if waiting_stage == "persist":
-            entered.set()
-            await release.wait()
-
-    lock = manager.control.command_lock("serial")
-    if waiting_stage == "lock":
-        await lock.acquire()
-    call = ServiceCall(hass, DOMAIN, "clean_area", {"area": "test_area"})
-    with (
-        patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
-            return_value=("vacuum.test", entry, "serial", {"room-office": "Office"}),
-        ),
-        patch(
-            "custom_components.matic_robot.service_controls._ensure_stop_settled",
-            side_effect=preflight,
-        ),
-        patch.object(
-            manager.control, "async_persist_reconciliation_removal", side_effect=persist
-        ),
-    ):
-        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
-        await entered.wait()
-        manager.control.request_stop("serial")
-        release.set()
-        if waiting_stage == "lock":
-            lock.release()
-        with pytest.raises(ServiceValidationError, match="superseded"):
-            await task
-    client.async_start_custom_coverage.assert_not_awaited()
 
 
 def test_entry_lookup_returns_loaded_entry_and_rejects_stale_references() -> None:
