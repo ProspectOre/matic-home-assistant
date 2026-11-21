@@ -39,8 +39,21 @@ and review.
 
 It also holds every code file to 1,000 lines. `scripts/oversize_files.txt`
 records each older, larger file at the size it may not exceed, so put new code
-and new tests in a new file. [Architecture](docs/architecture.md) maps the
-modules.
+and new tests in a new file.
+
+Every function in the integration is held to 150 lines, from `def` to its last
+line. `scripts/long_functions.txt` records each longer one, by file and
+qualified name, at its exact length: put additions in a new function, and
+when you shorten one, lower its number or delete its line.
+
+A function, class or module constant in the integration that only tests refer
+to fails the check: delete it with the tests of it. Names are matched without
+their module, and a string holding exactly the name counts as a use. Methods
+of a class that inherits from outside the integration, classes registered with
+a keyword such as `domain=`, and the names Home Assistant reads from a module
+(`HOOKS` in `scripts/check.py`) are reached without a reference. `TEST_ONLY`
+there lists any other exception with its reason.
+[Architecture](docs/architecture.md) maps the modules.
 
 ## Privacy
 

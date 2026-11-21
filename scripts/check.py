@@ -24,10 +24,11 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Container, Iterable, Mapping
+from collections.abc import Container, Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 ROOT = Path(__file__).parents[1]
 PACKAGE = "custom_components.matic_robot"
@@ -50,9 +51,41 @@ PLAN_CORE = frozenset(
 )
 # Home Assistant loads an entity platform through its async_setup_entry.
 PLATFORM = re.compile(r"^async def async_setup_entry\(", re.MULTILINE)
-CEILING = 1000
-# Larger files that predate the ceiling, each with the size it may not exceed.
-BASELINE = Path("scripts/oversize_files.txt")
+
+
+class Limit(NamedTuple):
+    """A line ceiling and the record of what was larger when it was set."""
+
+    ceiling: int
+    record: Path
+    # What to do with code that would take a recorded entry past its size.
+    additions: str
+    # Whether an entry that shrank must have its recorded size lowered.
+    exact: bool
+
+
+FILES = Limit(1000, Path("scripts/oversize_files.txt"), "a new file", exact=False)
+FUNCTIONS = Limit(150, Path("scripts/long_functions.txt"), "a new function", exact=True)
+# Names Home Assistant reads from an integration's modules.
+HOOKS = frozenset(
+    {
+        "CONFIG_SCHEMA",
+        "PARALLEL_UPDATES",
+        "async_attach_trigger",
+        "async_create_fix_flow",
+        "async_get_config_entry_diagnostics",
+        "async_get_media_source",
+        "async_get_tools",
+        "async_get_triggers",
+        "async_remove_entry",
+        "async_setup",
+        "async_setup_entry",
+        "async_unload_entry",
+    }
+)
+# Names only tests reference that stay anyway, each with the reason.
+TEST_ONLY: dict[str, str] = {}
+DEFINITION = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 CODE_SUFFIXES = {".js", ".mjs", ".py", ".ts"}
 GENERATED = "custom_components/matic_robot/client/proto/"
 SOURCE = PACKAGE.replace(".", "/")
@@ -74,6 +107,11 @@ def module_name(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+@cache
+def _tree(path: Path) -> ast.Module:
+    return ast.parse(path.read_bytes())
+
+
 def imported(root: Path, path: Path, removed: Container[str] = ()) -> set[str]:
     """Return the modules a Python file imports, relative imports resolved.
 
@@ -81,7 +119,7 @@ def imported(root: Path, path: Path, removed: Container[str] = ()) -> set[str]:
     """
     package = path.parent.parts
     found = set()
-    for node in ast.walk(ast.parse((root / path).read_bytes())):
+    for node in ast.walk(_tree(root / path)):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -145,23 +183,196 @@ def layer_violations(root: Path = ROOT) -> list[str]:
     return found
 
 
-def size_violations(sizes: Mapping[str, int], baseline: Mapping[str, int]) -> list[str]:
-    """Return files over the ceiling or their recorded size, and stale records."""
+def size_violations(
+    sizes: Mapping[str, int], baseline: Mapping[str, int], limit: Limit = FILES
+) -> list[str]:
+    """Return entries over the ceiling or their recorded size, and stale records."""
+    ceiling, record, additions, exact = limit
     found = []
-    for path, lines in sorted(sizes.items()):
-        if path in baseline and lines > baseline[path]:
+    for name, lines in sorted(sizes.items()):
+        recorded = baseline.get(name)
+        if recorded is None and lines > ceiling:
+            found.append(f"{name}: {lines} lines, over the {ceiling} ceiling; split it")
+        elif recorded is not None and lines > recorded:
             found.append(
-                f"{path}: {lines} lines, over its recorded {baseline[path]}; "
-                "put additions in a new file"
+                f"{name}: {lines} lines, over its recorded {recorded}; "
+                f"put additions in {additions}"
             )
-        elif path not in baseline and lines > CEILING:
-            found.append(f"{path}: {lines} lines, over the {CEILING} ceiling; split it")
+        elif recorded is not None and exact and ceiling < lines < recorded:
+            found.append(f"{record}: {name} is down to {lines} lines; record it")
     found.extend(
-        f"{BASELINE}: {path} is within the ceiling or gone; delete its line"
-        for path in sorted(baseline)
-        if sizes.get(path, 0) <= CEILING
+        f"{record}: {name} is within the ceiling or gone; delete its line"
+        for name in sorted(baseline)
+        if sizes.get(name, 0) <= ceiling
     )
     return found
+
+
+def _definitions(tree: ast.Module) -> Iterator[tuple[str, DEFINITION, ast.AST]]:
+    """Yield each function and class: qualified name, node and enclosing scope.
+
+    The scope is the nearest function, class or module, whatever statements
+    lie between.
+    """
+    pending: list[tuple[str, ast.AST, ast.AST]] = [("", tree, tree)]
+    while pending:
+        scope, owner, node = pending.pop()
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, DEFINITION):
+                name = f"{scope}.{child.name}" if scope else child.name
+                yield name, child, owner
+                pending.append((name, child, child))
+            elif not isinstance(child, ast.expr):
+                pending.append((scope, owner, child))
+
+
+def function_lengths(trees: Mapping[str, ast.Module]) -> dict[str, int]:
+    """Return each function's line count, keyed `path::qualified.name`."""
+    lengths: dict[str, int] = {}
+    for path, tree in trees.items():
+        for name, node, _ in _definitions(tree):
+            if not isinstance(node, ast.ClassDef) and node.end_lineno:
+                key = f"{path}::{name}"
+                lines = node.end_lineno - node.lineno + 1
+                lengths[key] = max(lines, lengths.get(key, 0))
+    return lengths
+
+
+def _references(tree: ast.Module) -> set[str]:
+    """Return the names a module reads, as code or as a string naming one."""
+    found = set()
+    pending: list[ast.AST] = [tree]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            found.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            # An import under another name is used under that name.
+            found.update(alias.name for alias in node.names if alias.asname)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # `__all__` and getattr name what they use; other text does not.
+            found.add(node.value)
+        # A docstring that mentions a name does not use it.
+        if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)):
+            pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _module_statements(tree: ast.Module) -> Iterator[ast.stmt]:
+    """Yield the statements that run at import, inside `if`, `try` and `with` too."""
+    pending: list[ast.AST] = [tree]
+    while pending:
+        for child in ast.iter_child_nodes(pending.pop()):
+            if isinstance(child, ast.stmt) and not isinstance(child, DEFINITION):
+                yield child
+            if not isinstance(child, DEFINITION | ast.expr):
+                pending.append(child)
+
+
+def _class_bases(tree: ast.Module) -> Iterator[tuple[str, set[str]]]:
+    """Yield each class in a module with its bases, "" for one from outside."""
+    outside = set()
+    renamed = {}
+    for node in _module_statements(tree):
+        if isinstance(node, ast.Import):
+            outside |= {
+                alias.asname or alias.name.partition(".")[0]
+                for alias in node.names
+                if not _inside(alias.name, PACKAGE)
+            }
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or _inside(node.module or "", PACKAGE):
+                renamed |= {
+                    alias.asname: alias.name for alias in node.names if alias.asname
+                }
+            else:
+                outside |= {alias.asname or alias.name for alias in node.names}
+    for _, node, _ in _definitions(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = set()
+        for base in node.bases:
+            while isinstance(base, ast.Subscript):
+                base = base.value
+            source = base
+            while isinstance(source, ast.Attribute):
+                source = source.value
+            if isinstance(source, ast.Name):
+                name = getattr(base, "attr", renamed.get(source.id, source.id))
+                bases.add("" if source.id in outside else name)
+        yield node.name, bases
+
+
+def unused_violations(
+    trees: Mapping[str, ast.Module],
+    scripts: Iterable[ast.Module],
+    kept: Mapping[str, str] = TEST_ONLY,
+) -> list[str]:
+    """Return integration names no integration module or script refers to.
+
+    Functions, classes and module constants are matched by bare name, so a
+    name defined twice passes when either is used. Four kinds are reached
+    without a reference: a method of a class with a base outside the
+    integration, through that base; a class defined with a keyword such as
+    `domain=`, which registers it; a name in HOOKS, by Home Assistant; a
+    `__dunder__`, by Python.
+    """
+    used: set[str] = set()
+    for tree in (*trees.values(), *scripts):
+        used |= _references(tree)
+    bases: dict[str, set[str]] = {}
+    for tree in trees.values():
+        for name, found in _class_bases(tree):
+            bases.setdefault(name, set()).update(found)
+
+    def inherits_outside(name: str, seen: frozenset[str] = frozenset()) -> bool:
+        return name not in bases or any(
+            inherits_outside(base, seen | {name}) for base in bases[name] - seen
+        )
+
+    reached = used | HOOKS
+    unused = set()
+    for path, tree in trees.items():
+        for name, node, parent in _definitions(tree):
+            if (
+                node.name not in reached
+                and not node.name.startswith("__")
+                and not (isinstance(node, ast.ClassDef) and node.keywords)
+                and not (
+                    isinstance(parent, ast.ClassDef)
+                    and any(inherits_outside(base) for base in bases[parent.name])
+                )
+            ):
+                unused.add(f"{path}::{name}")
+        for statement in _module_statements(tree):
+            targets = (
+                statement.targets
+                if isinstance(statement, ast.Assign)
+                else [statement.target]
+                if isinstance(statement, ast.AnnAssign)
+                else []
+            )
+            unused |= {
+                f"{path}::{name.id}"
+                for target in targets
+                for name in ast.walk(target)
+                if isinstance(name, ast.Name)
+                and isinstance(name.ctx, ast.Store)
+                and name.id not in reached
+                and not name.id.startswith("__")
+            }
+    return [
+        *(
+            f"{key}: only tests refer to it; delete it and their uses of it"
+            for key in sorted(unused - kept.keys())
+        ),
+        *(
+            f"scripts/check.py: TEST_ONLY lists {key}, which is used or gone"
+            for key in sorted(kept.keys() - unused)
+        ),
+    ]
 
 
 def _git(*arguments: str) -> list[str]:
@@ -182,9 +393,31 @@ def _code_sizes() -> dict[str, int]:
     }
 
 
-def _baseline() -> dict[str, int]:
-    rows = (line.split() for line in (ROOT / BASELINE).read_text().splitlines())
-    return {path: int(lines) for path, lines in rows}
+def _baseline(limit: Limit = FILES) -> dict[str, int]:
+    rows = (line.split() for line in (ROOT / limit.record).read_text().splitlines())
+    return {name: int(lines) for name, lines in rows}
+
+
+def _trees(directory: str) -> dict[str, ast.Module]:
+    """Return the syntax tree of each hand-written Python file in a directory."""
+    return {
+        name: _tree(path)
+        for path in sorted((ROOT / directory).rglob("*.py"))
+        if not (name := path.relative_to(ROOT).as_posix()).startswith(GENERATED)
+    }
+
+
+def structure_violations() -> list[str]:
+    """Return every broken layer, size, length and unused-name rule."""
+    integration = _trees(SOURCE)
+    return [
+        *layer_violations(),
+        *size_violations(_code_sizes(), _baseline()),
+        *size_violations(
+            function_lengths(integration), _baseline(FUNCTIONS), FUNCTIONS
+        ),
+        *unused_violations(integration, _trees("scripts").values()),
+    ]
 
 
 def nearest_base() -> str | None:
@@ -367,7 +600,7 @@ def main(arguments: list[str] | None = None) -> int:
         ],
         "privacy": [[python, "scripts/check_public_tree.py"]],
     }
-    structure = [*layer_violations(), *size_violations(_code_sizes(), _baseline())]
+    structure = structure_violations()
     for violation in structure:
         print(violation)
     failed = ["structure"] if structure else []
