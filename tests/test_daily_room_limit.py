@@ -15,7 +15,7 @@ from homeassistant.exceptions import ServiceValidationError, Unauthorized
 from homeassistant.helpers.http import KEY_HASS
 from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot import daily_room_limit, native_history
+from custom_components.matic_robot import daily_room_limit, native_history, plan_model
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
     CleaningSession,
@@ -1306,7 +1306,7 @@ async def test_daily_limit_view_rejects_invalid_limit_without_writing(limit):
     [
         (SharedRoomScheduleLockedError(), HTTPStatus.CONFLICT, "room_reserved"),
         (MetadataAdmissionClosedError(), HTTPStatus.CONFLICT, "runtime_unloading"),
-        (ValueError("map changed"), HTTPStatus.CONFLICT, "map_rechecking"),
+        (plan_model.RoomMapChangedError(), HTTPStatus.CONFLICT, "map_rechecking"),
         (ValueError("bad value"), HTTPStatus.BAD_REQUEST, "invalid_request"),
     ],
 )

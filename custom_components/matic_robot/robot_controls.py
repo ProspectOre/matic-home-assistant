@@ -28,7 +28,11 @@ from .client import (
 from .const import CONF_PHOTO_NO_PHOTO_ROOMS, DOMAIN
 from .managed_run import validation_error
 from .photo_library import MANUAL_ALBUM
-from .plan_model import plan_floor_token, resolve_room_reference
+from .plan_model import (
+    AmbiguousRoomError,
+    plan_floor_token,
+    resolve_room_reference,
+)
 from .robot_commands import RobotCommands, enum_option
 
 if TYPE_CHECKING:
@@ -317,13 +321,13 @@ def _resolve_one_room(identifier: str, floor_plan: FloorPlan) -> Room:
         room_id, _room_name = resolve_room_reference(
             identifier, {room.id: room.name for room in floor_plan.rooms}
         )
+    except AmbiguousRoomError as err:
+        raise validation_error(
+            f"More than one room matches {identifier}",
+            "ambiguous_room",
+            {"room": identifier},
+        ) from err
     except ValueError as err:
-        if str(err).startswith("ambiguous room"):
-            raise validation_error(
-                f"More than one room matches {identifier}",
-                "ambiguous_room",
-                {"room": identifier},
-            ) from err
         raise validation_error(
             f"Unknown Matic room(s): {identifier}",
             "unknown_rooms",

@@ -31,7 +31,7 @@ from custom_components.matic_robot.http import (
     HISTORY_IMPORT_API_URL,
     HISTORY_MANAGE_API_URL,
 )
-from custom_components.matic_robot.plan_model import plan_floor_token
+from custom_components.matic_robot.plan_model import PlanDisabledError, plan_floor_token
 from custom_components.matic_robot.plan_views import MaticPlansView
 from custom_components.matic_robot.slam_history import SlamHistoryStore
 from custom_components.matic_robot.slam_history_view import (
@@ -163,7 +163,7 @@ def _plans_runtime() -> Any:
 
     def preview(_serial, _rooms, plan_id, **_kwargs):
         if plan_id not in previews:
-            raise ValueError("plan is disabled")
+            raise PlanDisabledError("plan is disabled")
         return previews[plan_id]
 
     runtime.cleaning_plans.planning.preview = MagicMock(side_effect=preview)

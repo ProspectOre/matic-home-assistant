@@ -38,7 +38,7 @@ tests/test_services.py 6206
 tests/test_session_ownership.py 2585
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1816
-tests/test_slam_scene.py 3051
+tests/test_slam_scene.py 3040
 tests/test_stop_return.py 1479
 tests/test_vacuum.py 1377
 tests/test_workspace_socket.py 1262
