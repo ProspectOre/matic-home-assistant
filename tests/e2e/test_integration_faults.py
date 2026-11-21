@@ -80,6 +80,8 @@ async def test_state_stream_recovers_from_a_fault_mid_stream(
     robot: SimulatedRobot,
     fault: Callable[[Faults], None],
 ) -> None:
+    # The firmware snapshot reads kabuki_state too, and could take the fault.
+    await firmware_snapshot_saved(hass, loaded_entry)
     await _pushed_battery(hass, robot, 0.9)
     subscriptions = robot.reads["kabuki_state"]
 

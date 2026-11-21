@@ -13,7 +13,7 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 
 from .hermes_sim import Phase, SimulatedRobot
-from .plan_run import VACUUM, PlanRun, expect_finished
+from .plan_run import VACUUM, PlanRun, expect_finished, firmware_snapshot_saved
 
 ROOMS = {ATTR_ENTITY_ID: VACUUM, "rooms": [{"room": "Kitchen"}, {"room": "Study"}]}
 
@@ -141,6 +141,8 @@ async def test_a_run_the_robot_has_outlives_its_cancelled_caller(
 async def test_cancelling_the_caller_before_the_robot_has_the_run_cancels_it(
     plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
 ) -> None:
+    # The firmware snapshot reads active_session_key too; only the start's counts.
+    await firmware_snapshot_saved(hass, plan.entry)
     # The start waits on the robot's session read, so nothing is sent yet.
     reads = robot.reads["active_session_key"]
     robot.faults.stall("active_session_key")
