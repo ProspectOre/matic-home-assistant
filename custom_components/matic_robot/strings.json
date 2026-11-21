@@ -555,7 +555,7 @@
     "v4_preview_no_rooms": "Can't run this plan until it has at least one room.",
     "v4_preview_area_changed": "Can't run this plan until you review its custom areas on the current map.",
     "v4_preview_invalid": "Can't run this plan until you open Edit and save it again.",
-    "v4_preview_room_missing": "Can't run this plan until you remove the rooms that are no longer on the map. Open Edit to remove them.",
+    "v4_preview_room_missing": "None of this plan's rooms are on the map any more. Open Edit to move them to their new rooms or choose other rooms.",
     "v4_preview_rooms_held": "Can't run this plan while every room in it is occupied.",
     "v4_plan_held_room": "{room} ({sensor})",
     "v4_plan_held_rooms": "Held while occupied: {rooms}. They stay first in line for the next run.",
@@ -643,7 +643,7 @@
     "v4_plan_areas_rotation_hint": "Smart Order chooses the longest-waiting rooms and areas first. Saved order follows your list.",
     "v4_plan_area_every_run": "Custom area · Every run",
     "v4_plan_area_missing": "Not found · Remove it from this plan",
-    "v4_plan_room_missing": "Removed or renumbered in the Matic app · Remove it from this plan",
+    "v4_plan_room_missing": "Removed or renumbered in the Matic app · Runs skip it",
     "v4_plan_room_missing_name": "Room not on the map",
     "v4_area_include_named": "Include {area}",
     "v4_area_settings_named": "Settings for {area}",
@@ -999,7 +999,10 @@
     "v4_area_preview_failed": "The map preview isn't available, so you can't review or save this area. Reload the page to try again.",
     "v4_draw_overlay_action_unavailable": "Wait for map drawing to load before reviewing or saving this area.",
     "v4_task_view_2d": "This task uses 2D. Return to Home to view the map in 3D.",
-    "v4_map_simplified_detail": "Showing a simplified map because full graphics support is unavailable."
+    "v4_map_simplified_detail": "Showing a simplified map because full graphics support is unavailable.",
+    "v4_plan_missing_rooms": "Not on the map, so this run skips: {rooms}. Edit the plan to update them.",
+    "v4_plan_room_relink": "Use the new {room}",
+    "v4_plan_room_relink_note": "Keeps its settings and schedule. Schedule progress starts over. If its occupancy sensor comes from an area, map the new room to that area in the vacuum's settings."
   },
   "config": {
     "flow_title": "{name}",
@@ -1962,8 +1965,11 @@
     "plan_area_missing": {
       "message": "A custom area in this plan was deleted. Open the plan in Matic Map, save it again, then try again."
     },
+    "plan_room_off_map_settings": {
+      "message": "A room that is no longer on the robot's map keeps its saved settings. Move it to its new room or take it out of the plan to change them."
+    },
     "plan_room_missing": {
-      "message": "These rooms in the plan are no longer on the robot's map: {rooms}. A map edit in the Matic app can remove a room or give it a new ID. Open the plan in Matic Map, remove the rooms marked as not on the map, then try again."
+      "message": "None of the plan's rooms are on the robot's map any more: {rooms}. A map edit in the Matic app can remove a room or give it a new ID. Open the plan in Matic Map, choose the rooms to clean, then try again."
     },
     "plan_area_limit": {
       "message": "A plan can include up to {limit} custom areas. Remove some areas and try again."
@@ -2183,7 +2189,7 @@
     },
     "plan_room_missing": {
       "title": "{name}: saved plans name rooms that are no longer on the map",
-      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs, so these plans won't run. In Matic Map, open each plan, choose Edit, remove the rooms marked as not on the map, then save. This Repair clears once every plan names only rooms on the map."
+      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs. These plans skip those rooms and clean the rest. In Matic Map, open each plan and choose Edit: move a removed room to its replacement, or take it out of the plan, then save. This Repair clears once every plan names only rooms on the map."
     },
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
@@ -2215,6 +2221,26 @@
     "photo_storage_failed": {
       "title": "Robot photos can't be saved",
       "description": "Home Assistant could not write a new photo from the robot to {folder}. The photo stays on the robot and is saved on the next read. Check that Home Assistant can write to that folder. This Repair clears when a photo is saved."
+    },
+    "plan_room_relink": {
+      "title": "{name}: saved plans name rooms that are no longer on the map",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Move plan rooms to their new rooms",
+            "description": "These plans skip rooms that a map edit in the Matic app removed or gave new IDs. These rooms are on {name}'s map again under the same names:\n\n{rooms}\n\nEach plan room moves to the new room and keeps its cleaning mode, coverage and schedule settings. Its schedule progress starts over, because the robot gives no proof that the new room is the old one. Any other removed room stays as it is: open the plan in Matic Map and choose Edit to update it.",
+            "submit": "Move rooms"
+          }
+        },
+        "abort": {
+          "robot_unavailable": "The robot's map isn't available right now. Try again once it is connected.",
+          "no_matching_rooms": "No removed room has a room with the same name on the map now. Update the plans in Matic Map instead.",
+          "plan_changed": "A plan changed while this was open. Open the Repair again to see what is left to move.",
+          "rooms_left": "Moved the rooms that matched. Some plans still name rooms with no replacement on the map: open each plan in Matic Map and choose Edit to update it.",
+          "room_busy": "A run is using one of these rooms, so nothing was moved. Open the Repair again when the run is over.",
+          "schedule_unconfirmed": "A shared room schedule isn't confirmed on the current map, so nothing was moved. Open the plan in Matic Map, check the room's schedule, then open the Repair again."
+        }
+      }
     }
   },
   "services": {

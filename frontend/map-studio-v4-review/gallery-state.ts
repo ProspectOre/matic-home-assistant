@@ -445,13 +445,17 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       }), "run");
     }
     case "plan-run-room-missing": {
-      // A map edit in the Matic app removed the plan's last room.
+      // A map edit in the Matic app re-created the plan's last room with a
+      // new ID: the run skips it and Edit offers the room now on the map.
+      const recreated = requireFixture(syntheticPlans().rooms[3], "room");
       const rooms = [...savedDailyPlan().rooms, {
-        roomId: "room-gone", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: ["room_not_on_current_map"],
+        roomId: "room-gone", cleaningMode: "vacuum", coverageSetting: "quick",
+        cadence: { ...sharedCadencePolicy(), scope: "plan", mopEveryN: null, coverageEveryN: 3 }, cadenceReasons: [],
       } satisfies PlanRoom];
       return openPlan(state, planWithRooms(savedDailyPlan(), rooms, {
-        nextRunPreview: previewFor([], { blocker: "room_missing" }),
-        nextRunEstimateSeconds: null,
+        nextRunPreview: previewFor(savedDailyPlan().rooms, {
+          missingRooms: [{ roomId: "room-gone", name: recreated.name, matchRoomId: recreated.roomId }],
+        }),
       }), "run");
     }
     case "plan-run-parts": {

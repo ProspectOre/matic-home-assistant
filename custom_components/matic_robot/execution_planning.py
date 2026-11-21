@@ -28,10 +28,12 @@ from .plan_model import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
+    PlanRoomMissingError,
     PlanRoomsHeldError,
     _rotation_details,
     _rotation_sort_key,
     _RotationCandidate,
+    missing_plan_rooms,
     plan_area_fingerprint,
     plan_entries,
     plan_setting,
@@ -76,7 +78,7 @@ class ExecutionPlanner:
         rotation, so they stay first in line for the next one.
         """
         plan = self.catalog.plan(serial_number, plan_id)
-        targets, area_projections = self._plan_targets(
+        targets, area_projections, missing = self._plan_targets(
             serial_number, plan, room_map, floor_plan
         )
         if room_identities is None and floor_plan is not None:
@@ -158,6 +160,7 @@ class ExecutionPlanner:
             "rotation": _rotation_details(candidates, intelligent=use_intelligent),
             "room_count": len(effective),
             **({"held_rooms": held} if held else {}),
+            **self._missing_rooms(serial_number, plan, room_map, missing),
             **({"daily_limit_held_rooms": daily_held} if daily_held else {}),
             "return_to_base": bool(plan_setting(plan, "return_to_base")),
             "finish_current_room": bool(plan_setting(plan, "finish_current_room")),
@@ -168,40 +171,57 @@ class ExecutionPlanner:
             "completion_timeout": int(plan_setting(plan, "completion_timeout")),
         }
 
+    def _missing_rooms(
+        self,
+        serial_number: str,
+        plan: Mapping[str, Any],
+        room_map: Mapping[str, str],
+        missing: frozenset[str],
+    ) -> dict[str, Any]:
+        """Name the rooms a map edit took out of this run, when there are any."""
+        if not missing:
+            return {}
+        known = self.catalog.known_room_names(serial_number)
+        return {"missing_rooms": missing_plan_rooms(plan, room_map, known)}
+
     def _plan_targets(
         self,
         serial_number: str,
         plan: Mapping[str, Any],
         room_map: Mapping[str, str],
         floor_plan: FloorPlan | None,
-    ) -> tuple[list[CleaningRoom | AreaLeg], dict[str, dict[str, Any]]]:
+    ) -> tuple[list[CleaningRoom | AreaLeg], dict[str, dict[str, Any]], frozenset[str]]:
         """Resolve a plan's entries, in saved order, against the live map.
 
-        Returns the targets and each area's projection by area ID.
+        Returns the targets, each area's projection by area ID, and the rooms
+        a map edit removed, which the targets leave out.
         """
         entries = plan_entries(plan)
         has_areas = any(entry["kind"] == "area" for entry in entries)
-        room_by_id = {
-            room.room_id: room
-            for room in _plan_rooms(plan, room_map, require_rooms=not has_areas)
-        }
+        rooms, missing = _plan_rooms(plan, room_map, require_rooms=not has_areas)
+        room_by_id = {room.room_id: room for room in rooms}
         area_projections = {
             entry["area_id"]: self.preview_area(serial_number, entry, floor_plan)
             for entry in entries
             if entry["kind"] == "area"
         }
-        return [
-            AreaLeg(
-                entry["area_id"],
-                area_projections[entry["area_id"]]["name"],
-                entry["cleaning_mode"],
-                entry["coverage_setting"],
-                area_projections[entry["area_id"]]["binding_fingerprint"],
-            )
-            if entry["kind"] == "area"
-            else room_by_id[entry["room_id"]]
-            for entry in entries
-        ], area_projections
+        return (
+            [
+                AreaLeg(
+                    entry["area_id"],
+                    area_projections[entry["area_id"]]["name"],
+                    entry["cleaning_mode"],
+                    entry["coverage_setting"],
+                    area_projections[entry["area_id"]]["binding_fingerprint"],
+                )
+                if entry["kind"] == "area"
+                else room_by_id[entry["room_id"]]
+                for entry in entries
+                if entry["kind"] == "area" or entry["room_id"] not in missing
+            ],
+            area_projections,
+            missing,
+        )
 
     def preview_area(
         self,
@@ -351,10 +371,12 @@ def _hold_rooms(
 
 def _plan_rooms(
     plan: Mapping[str, Any], room_map: Mapping[str, str], *, require_rooms: bool
-) -> list[CleaningRoom]:
+) -> tuple[list[CleaningRoom], frozenset[str]]:
     """Resolve an enabled plan's stored rooms against the live map.
 
-    A plan with custom areas may have no rooms at all.
+    Rooms a map edit removed are left out and returned by ID, so the rest of
+    the plan still runs. A plan with custom areas may have no rooms at all;
+    one left with nothing to clean raises ``PlanRoomMissingError``.
     """
     if not plan_setting(plan, "enabled"):
         raise PlanDisabledError("plan is disabled")
@@ -363,4 +385,11 @@ def _plan_rooms(
         raise EmptyPlanError("plan has no rooms")
     if not isinstance(raw, list) or any(not isinstance(room, Mapping) for room in raw):
         raise ValueError("plan contains an invalid room")
-    return resolve_rooms(raw, dict(room_map))
+    try:
+        return resolve_rooms(raw, dict(room_map)), frozenset()
+    except PlanRoomMissingError as err:
+        missing = frozenset(err.room_ids)
+        present = [room for room in raw if room.get("room_id") not in missing]
+        if require_rooms and not present:
+            raise
+        return resolve_rooms(present, dict(room_map)), missing

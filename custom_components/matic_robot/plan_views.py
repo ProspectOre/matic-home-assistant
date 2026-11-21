@@ -11,7 +11,7 @@ from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
-from .cadence import CoverageCadenceRequiresVacuumError
+from .cadence import CoverageCadenceRequiresVacuumError, normalize_cadence_policy
 from .client import CleaningMode, CoverageSetting, is_sha256_hex
 from .http import (
     PLANS_API_URL,
@@ -37,8 +37,10 @@ from .plan_model import (
     RoomSequenceLimitError,
     SharedCadenceUnavailableError,
     leg_boundaries,
+    missing_plan_rooms,
     plan_entries,
     plan_floor_token,
+    plan_on_another_floor,
     plan_setting,
     preview_legs,
     room_cadence_identity,
@@ -50,6 +52,7 @@ from .plan_schema import (
     DailyLimit,
     DailyLimitHeldRoom,
     HeldRoom,
+    MissingRoom,
     NextRunPreview,
     PlanAreaEntry,
     PlanBlocker,
@@ -85,6 +88,7 @@ class _HeldRooms(TypedDict, total=False):
 
     daily_limit_held_rooms: list[DailyLimitHeldRoom]
     held_rooms: list[HeldRoom]
+    missing_rooms: list[MissingRoom]
 
 
 @dataclass
@@ -216,7 +220,24 @@ def _held_out(preview: Mapping[str, Any]) -> _HeldRooms:
         held["daily_limit_held_rooms"] = preview["daily_limit_held_rooms"]
     if "held_rooms" in preview:
         held["held_rooms"] = preview["held_rooms"]
+    if "missing_rooms" in preview:
+        held["missing_rooms"] = preview["missing_rooms"]
     return held
+
+
+def _missing_rooms(floor: _Floor, plan: Mapping[str, object]) -> _HeldRooms:
+    """Name the plan's rooms the map lost, for a preview that stops early."""
+    floors = len(floor.floor_plan.mapped_floors)
+    if not missing_plan_rooms(plan, floor.room_map, {}) or plan_on_another_floor(
+        plan, floor.room_map, floors
+    ):
+        return {}
+    missing = missing_plan_rooms(
+        plan,
+        floor.room_map,
+        floor.manager.catalog.known_room_names(floor.serial_number),
+    )
+    return {"missing_rooms": missing}
 
 
 def _next_run_preview(
@@ -248,9 +269,8 @@ def _next_run_preview(
             return {
                 "rooms": [],
                 "entries": [],
-                "mission_boundaries": [],
-                "blocker": "daily_limit_reached",
-                "daily_limit_held_rooms": preview["daily_limit_held_rooms"],
+                **_blocked("daily_limit_reached"),
+                **_held_out(preview),
             }
         if not preview_entries:
             raise EmptyPlanError("plan has no rooms")
@@ -268,9 +288,12 @@ def _next_run_preview(
                 }
                 for room_id, hold in held_rooms.items()
             ],
+            **_missing_rooms(floor, plan),
         }
+    except PlanRoomMissingError:
+        return {**_blocked("room_missing"), **_missing_rooms(floor, plan)}
     except (KeyError, TypeError, ValueError) as err:
-        return _blocked(_blocker(err))
+        return {**_blocked(_blocker(err)), **_missing_rooms(floor, plan)}
     return {
         "rooms": rooms,
         "entries": steps,
@@ -373,8 +396,37 @@ def _plan_rooms(floor: _Floor, plan_id: str, raw_rooms: list[object]) -> list[Pl
             )
             if cadence["cadence"] is not None or cadence.get("cadence_reasons", []):
                 projection = {**projection, **cadence}
+        elif (
+            policy := _stored_policy(room, cleaning_mode, coverage_setting)
+        ) is not None:
+            # A re-link in Edit carries the policy to the room's replacement.
+            projection = {
+                **projection,
+                "cadence": policy,
+                "cadence_progress": None,
+                "cadence_reasons": [],
+            }
         rooms.append(projection)
     return rooms
+
+
+def _stored_policy(
+    room: Mapping[str, Any], cleaning_mode: str, coverage_setting: str
+) -> CadencePolicy | None:
+    """Return an off-map room's saved schedule policy, if it has a valid one."""
+    if room.get("cadence") is None:
+        return None
+    try:
+        return cast(
+            CadencePolicy,
+            normalize_cadence_policy(
+                room["cadence"],
+                cleaning_mode=cleaning_mode,
+                coverage_setting=coverage_setting,
+            ),
+        )
+    except ValueError:
+        return None
 
 
 def _area_name(floor: _Floor, area_id: str) -> str:

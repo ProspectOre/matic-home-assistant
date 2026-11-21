@@ -11,31 +11,13 @@ from homeassistant.components.repairs import (
     RepairsFlowResult,
 )
 from homeassistant.components.repairs.const import FlowType
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import device_registry as dr
 
 from .blueprint_update import BLUEPRINT_ISSUE_ID, async_update_blueprints
 from .const import DOMAIN
-
-FALLBACK_ROBOT_NAME = "Matic (Unofficial)"
-
-
-@callback
-def repair_placeholders(hass: HomeAssistant, entry_id: str) -> dict[str, str]:
-    """Name the robot and link its device page in a Repair."""
-    devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry_id)
-    if devices:
-        device = devices[0]
-        return {
-            "name": device.name_by_user or device.name or FALLBACK_ROBOT_NAME,
-            "device_url": f"/config/devices/device/{device.id}",
-        }
-    entry = hass.config_entries.async_get_entry(entry_id)
-    return {
-        "name": entry.title if entry is not None else FALLBACK_ROBOT_NAME,
-        "device_url": f"/config/integrations/integration/{DOMAIN}",
-    }
+from .plan_room_repairs import PlanRoomRepairFlow, plan_room_issue_id
+from .repair_placeholders import repair_placeholders
 
 
 class RobotIdentityRepairFlow(RepairsFlow):
@@ -93,4 +75,6 @@ async def async_create_fix_flow(
     if issue_id == BLUEPRINT_ISSUE_ID:
         return BlueprintRepairFlow()
     assert data is not None
+    if issue_id == plan_room_issue_id(str(data["entry_id"])):
+        return PlanRoomRepairFlow(str(data["entry_id"]))
     return RobotIdentityRepairFlow(str(data["entry_id"]))

@@ -157,6 +157,19 @@ class HeldRoom(TypedDict):
     sensor: str
 
 
+class MissingRoom(TypedDict):
+    """A plan room a map edit removed; the run cleans the rest without it.
+
+    `name` is the room's name when a run last started cleaning it, so a room
+    no run has cleaned has none. `match_room_id` is the one room now on the
+    map with that name, offered for a re-link.
+    """
+
+    room_id: str
+    name: str | None
+    match_room_id: str | None
+
+
 class NextRunPreview(TypedDict):
     """The next run in order; a blocked preview names its `blocker`."""
 
@@ -165,6 +178,7 @@ class NextRunPreview(TypedDict):
     mission_boundaries: list[int]
     daily_limit_held_rooms: NotRequired[list[DailyLimitHeldRoom]]
     held_rooms: NotRequired[list[HeldRoom]]
+    missing_rooms: NotRequired[list[MissingRoom]]
     preview_token: NotRequired[str]
     blocker: PlanBlocker | None
 
