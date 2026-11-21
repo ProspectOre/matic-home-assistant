@@ -26,7 +26,7 @@ from .managed_executor import _async_execute_rooms
 from .managed_run import (
     validation_error,
 )
-from .plan_model import CleaningRoom, plan_floor_token
+from .plan_model import CleaningRoom, PlanRoomMissingError, plan_floor_token
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
 from .room_coherence import current_floor_plan as _current_floor_plan
@@ -199,6 +199,8 @@ def _require_unchanged_plan(
         current_floor = _current_floor_plan(entry)
         current_room_map = {room.id: room.name for room in current_floor.rooms}
         _current_floor, _current_preview, current_token = preview_plan(current_room_map)
+    except PlanRoomMissingError as err:
+        raise _plan_request_error(err) from err
     except (KeyError, TypeError, ValueError) as err:
         raise validation_error(
             "The saved plan can no longer run", "invalid_plan"

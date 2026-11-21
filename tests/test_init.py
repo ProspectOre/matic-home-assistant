@@ -322,8 +322,8 @@ async def test_setup_starts_the_session_before_forwarding_platforms(
         ) as collect_history,
         patch("custom_components.matic_robot.session_listeners.async_listen") as listen,
         patch(
-            "custom_components.matic_robot.floor_sync.async_sync_custom_area_issue"
-        ) as sync_area_issue,
+            "custom_components.matic_robot.floor_sync.async_sync_map_repairs"
+        ) as repairs,
         patch(
             "custom_components.matic_robot.dt_util.now",
             return_value=datetime(2026, 7, 14, tzinfo=UTC),
@@ -418,7 +418,7 @@ async def test_setup_starts_the_session_before_forwarding_platforms(
     assert trail_callback.func is observe_trail
     assert trail_callback.args == (runtime,)
     assert trail_callback in robot_session.state._listeners
-    sync_area_issue.assert_called_once_with(hass, "entry", {}, floor_plan)
+    repairs.assert_called_once_with(hass, "entry", plans, ANY, floor_plan)
 
 
 @pytest.mark.parametrize("walls", [True, False], ids=["walls", "neighbourhood"])

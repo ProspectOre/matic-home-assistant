@@ -44,7 +44,11 @@ export class CameraFollowController {
     this.#host = host;
   }
 
-  update(pose: PoseModel | null, mode: "off" | "follow" | "ride", reducedMotion: boolean): void {
+  /**
+   * Aims the camera at `pose`. With the frame `time` it eases there in that
+   * frame, so the camera and the robot move together; otherwise on the next.
+   */
+  update(pose: PoseModel | null, mode: "off" | "follow" | "ride", reducedMotion: boolean, time?: number): void {
     if (mode === "off") {
       if (this.#mode !== "off") this.cancel(true);
       return;
@@ -82,9 +86,6 @@ export class CameraFollowController {
       this.cancel(false);
       return;
     }
-    const deadZone = Math.max(0.35, camera.distance * (mode === "ride" ? 0.025 : 0.1));
-    const dx = world[0] - camera.targetX;
-    const dz = world[1] - camera.targetZ;
     let yaw = camera.yaw;
     let pitch = camera.pitch;
     let distance = camera.distance;
@@ -99,8 +100,8 @@ export class CameraFollowController {
       yaw,
       pitch,
       distance,
-      targetX: Math.hypot(dx, dz) > deadZone ? world[0] : camera.targetX,
-      targetZ: Math.hypot(dx, dz) > deadZone ? world[1] : camera.targetZ,
+      targetX: world[0],
+      targetZ: world[1],
       orthographic: mode === "ride" ? false : camera.orthographic,
     };
     if (reducedMotion) {
@@ -109,7 +110,8 @@ export class CameraFollowController {
       this.#host.requestRender();
       return;
     }
-    this.#scheduleFrame();
+    if (time === undefined) this.#scheduleFrame();
+    else if (this.#step(time)) this.#scheduleFrame();
   }
 
   /** Gesture cancellation keeps the camera where the user took control. */
@@ -140,26 +142,32 @@ export class CameraFollowController {
     if (this.#frame !== null || this.#host.disposed()) return;
     this.#frame = window.requestAnimationFrame((time) => {
       this.#frame = null;
-      const target = this.#target;
-      if (!target || this.#mode === "off" || !this.#host.state()?.pageActive) return;
-      const current = this.#host.camera();
-      const elapsed = this.#lastTime ? Math.min(64, Math.max(0, time - this.#lastTime)) : 16;
-      this.#lastTime = time;
-      const alpha = 1 - Math.exp(-elapsed / 150);
-      const remaining = Math.max(Math.abs(target.targetX - current.targetX),
-        Math.abs(target.targetZ - current.targetZ), Math.abs(angle(target.yaw - current.yaw)) * 2,
-        Math.abs(target.pitch - current.pitch), Math.abs(target.distance - current.distance));
-      this.#host.setCamera({
-        ...target,
-        yaw: angle(current.yaw + angle(target.yaw - current.yaw) * alpha),
-        pitch: current.pitch + (target.pitch - current.pitch) * alpha,
-        distance: current.distance + (target.distance - current.distance) * alpha,
-        targetX: current.targetX + (target.targetX - current.targetX) * alpha,
-        targetZ: current.targetZ + (target.targetZ - current.targetZ) * alpha,
-      });
-      this.#host.setFitActive(false);
-      this.#host.requestRender();
-      if (remaining > 0.01) this.#scheduleFrame();
+      if (this.#step(time)) this.#scheduleFrame();
     });
+  }
+
+  /** Eases the camera toward the target for the frame at `time`; true until it arrives. */
+  #step(time: number): boolean {
+    const target = this.#target;
+    if (!target || this.#mode === "off" || !this.#host.state()?.pageActive) return false;
+    const current = this.#host.camera();
+    const elapsed = this.#lastTime ? Math.min(64, Math.max(0, time - this.#lastTime)) : 16;
+    if (this.#lastTime && elapsed === 0) return true;
+    this.#lastTime = time;
+    const alpha = 1 - Math.exp(-elapsed / 150);
+    const remaining = Math.max(Math.abs(target.targetX - current.targetX),
+      Math.abs(target.targetZ - current.targetZ), Math.abs(angle(target.yaw - current.yaw)) * 2,
+      Math.abs(target.pitch - current.pitch), Math.abs(target.distance - current.distance));
+    this.#host.setCamera({
+      ...target,
+      yaw: angle(current.yaw + angle(target.yaw - current.yaw) * alpha),
+      pitch: current.pitch + (target.pitch - current.pitch) * alpha,
+      distance: current.distance + (target.distance - current.distance) * alpha,
+      targetX: current.targetX + (target.targetX - current.targetX) * alpha,
+      targetZ: current.targetZ + (target.targetZ - current.targetZ) * alpha,
+    });
+    this.#host.setFitActive(false);
+    this.#host.requestRender();
+    return remaining > 0.01;
   }
 }

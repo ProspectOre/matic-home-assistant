@@ -35,6 +35,7 @@ type PlanBlocker = Literal[
     "invalid_plan",
     "plan_rooms_held",
     "daily_limit_reached",
+    "room_missing",
 ]
 type DailyLimitReason = Literal[
     "invalid_policy",
