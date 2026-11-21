@@ -130,7 +130,7 @@ class PlanRoomRepairFlow(RepairsFlow):
     def __init__(self, entry_id: str) -> None:
         self._entry_id = entry_id
         # The moves and map the user was shown; a submit saves only those.
-        self._shown: tuple[dict[str, dict[str, str]], str | None] | None = None
+        self._shown: tuple[dict[str, dict[str, str]], str] | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -174,7 +174,15 @@ class PlanRoomRepairFlow(RepairsFlow):
                     room.id: room_cadence_identity(floor_plan, room.id)
                     for room in floor_plan.rooms
                 },
+                precondition=lambda: self._require_floor(entry, shown[1]),
             )
         except ValueError:
             return self.async_abort(reason="plan_changed")
         return self.async_create_entry(data={})
+
+    @staticmethod
+    def _require_floor(entry: MaticConfigEntry, floor_token: str) -> None:
+        """Refuse the save once the live map is not the confirmed one."""
+        live = entry.runtime_data.session.floor.value
+        if live is None or plan_floor_token(live) != floor_token:
+            raise ValueError("the map changed after the moves were confirmed")

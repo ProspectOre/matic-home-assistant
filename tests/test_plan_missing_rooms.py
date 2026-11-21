@@ -192,7 +192,31 @@ async def test_a_relink_to_a_room_off_the_map_is_refused() -> None:
             {"home": {"room-study": "room-gone"}},
             floor_token=None,
             room_identities={"room-kitchen": "identity"},
+            precondition=lambda: None,
         )
+
+
+async def test_a_relink_after_the_map_changed_saves_nothing() -> None:
+    catalog = MagicMock()
+    catalog.repository.robot.return_value = {"plans": {"home": {"rooms": []}}}
+
+    async def run(_serial, commit, **_options):
+        await commit(None)
+
+    def map_changed() -> None:
+        raise ValueError("the map changed")
+
+    catalog.repository.async_run_owned_metadata = run
+    with pytest.raises(ValueError, match="map changed"):
+        await PlanCatalog.async_relink_plan_rooms(
+            catalog,
+            "serial",
+            {"home": {"room-study": "room-kitchen"}},
+            floor_token=None,
+            room_identities={"room-kitchen": "identity"},
+            precondition=map_changed,
+        )
+    catalog.cadence.cadence_commit.assert_not_called()
 
 
 async def test_a_relink_for_a_deleted_plan_is_refused() -> None:
@@ -210,6 +234,7 @@ async def test_a_relink_for_a_deleted_plan_is_refused() -> None:
             {"home": {"room-study": "room-kitchen"}},
             floor_token=None,
             room_identities={"room-kitchen": "identity"},
+            precondition=lambda: None,
         )
 
 
@@ -347,6 +372,14 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
     assert (await flow.async_step_init({}))["reason"] == "plan_changed"
     links = catalog.async_relink_plan_rooms.await_args
     assert links.args == ("serial", {"home": {"room-old": "room-study"}})
+    # The save checks, under its locks, that the map is still the one shown.
+    links.kwargs["precondition"]()
+    entry.runtime_data.session.floor.value = replace(floor, rooms=floor.rooms[:1])
+    with pytest.raises(ValueError, match="map changed"):
+        links.kwargs["precondition"]()
+    entry.runtime_data.session.floor.value = None
+    with pytest.raises(ValueError, match="map changed"):
+        links.kwargs["precondition"]()
 
 
 async def test_matic_map_hears_which_rooms_a_run_skips() -> None:

@@ -575,11 +575,14 @@ class PlanCatalog:
         *,
         floor_token: str | None,
         room_identities: Mapping[str, str],
+        precondition: Callable[[], None],
     ) -> None:
         """Move plan rooms to new room IDs in one save, per plan ``links``.
 
-        Every target must be on the current map. Each plan is read again under
-        the write lock, so a room that is no longer in it fails the save.
+        Every target must be on the current map. ``precondition`` runs under
+        the write locks and raises if the map is no longer the one the moves
+        were confirmed on. Each plan is read again there too, so a room that
+        is no longer in it fails the save.
         """
         if any(
             target not in room_identities
@@ -589,6 +592,7 @@ class PlanCatalog:
             raise ValueError("re-link target is not on the current map")
 
         async def commit(_lease: _MetadataLockLease) -> None:
+            precondition()
             plans = self.repository.robot(serial_number)["plans"]
             if not set(links) <= set(plans):
                 raise ValueError("re-link names a deleted plan")
