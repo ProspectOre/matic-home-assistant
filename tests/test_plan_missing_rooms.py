@@ -314,3 +314,26 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
     assert (await flow.async_step_init({}))["reason"] == "plan_changed"
     links = catalog.async_relink_plan_rooms.await_args
     assert links.args == ("serial", {"home": {"room-old": "room-study"}})
+
+
+async def test_matic_map_hears_which_rooms_a_run_skips() -> None:
+    runtime = _plans_runtime()
+    planning = runtime.cleaning_plans.planning
+    preview = planning.preview
+    skipped = {"room_id": "room-9", "name": "Study", "match_room_id": "room-2"}
+    planning.preview = MagicMock(
+        side_effect=lambda *args, **kwargs: {
+            **preview(*args, **kwargs),
+            "missing_rooms": [skipped],
+        }
+    )
+
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+
+    ready = [
+        plan["next_run_preview"]
+        for plan in json.loads(response.body)["plans"]
+        if plan["next_run_preview"]["blocker"] is None
+    ]
+    assert ready
+    assert all(preview["missing_rooms"] == [skipped] for preview in ready)
