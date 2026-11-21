@@ -245,14 +245,20 @@ test("a moving robot redraws the scene at a camera frame's cost, and a robot tha
     const still = await measure(10, () => motion.push({ ...last, ageSeconds: 0.1 }));
     return { moving, still };
   });
-  expect(result.moving.length).toBeGreaterThanOrEqual(25);
-  test.info().annotations.push({ type: "motion frame counts", description: JSON.stringify(result.moving[0]) });
+  // A frame can start before the sample that ends a pause arrived and hold the
+  // robot where it is; such a frame draws nothing.
+  const drawing = result.moving.filter((frame) => frame.drawCalls > 0);
+  expect(drawing.length).toBeGreaterThanOrEqual(25);
+  test.info().annotations.push({ type: "motion frame counts", description: JSON.stringify(drawing[0]) });
   // The robot is a mesh in the scene, so each frame that moves it redraws the
   // scene as a camera frame does, and uploads nothing.
-  for (const frame of result.moving) {
+  for (const frame of drawing) {
     expect(frame).toMatchObject({ drawCalls: CAMERA_FRAME.drawCalls, overlayRedraws: 1, layoutReads: 0, typedArrays: 0,
       bufferUploads: 0, programCalls: 0 });
     expect(frame.glCalls).toBeLessThanOrEqual(CAMERA_FRAME.glCalls);
+  }
+  for (const frame of result.moving.filter((frame) => frame.drawCalls === 0)) {
+    expect(frame).toMatchObject({ overlayRedraws: 0, bufferUploads: 0, programCalls: 0, layoutReads: 0 });
   }
   expect(result.still, "samples where the robot already is draw nothing").toEqual([]);
 });

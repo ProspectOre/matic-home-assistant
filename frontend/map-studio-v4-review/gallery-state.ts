@@ -444,6 +444,16 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         nextRunEstimateSeconds: null,
       }), "run");
     }
+    case "plan-run-room-missing": {
+      // A map edit in the Matic app removed the plan's last room.
+      const rooms = [...savedDailyPlan().rooms, {
+        roomId: "room-gone", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: ["room_not_on_current_map"],
+      } satisfies PlanRoom];
+      return openPlan(state, planWithRooms(savedDailyPlan(), rooms, {
+        nextRunPreview: previewFor([], { blocker: "room_missing" }),
+        nextRunEstimateSeconds: null,
+      }), "run");
+    }
     case "plan-run-parts": {
       // Saved order with a mode change after the first room.
       const rooms = savedDailyPlan().rooms.map((room, index): PlanRoom => index === 0

@@ -334,12 +334,13 @@ export class MaticPlanViewsV4 extends LitElement {
         const part = boundaries.indexOf(index);
         return this.#runRow(step.name, settingLabel(this.#t, step), ordered ? index + 1 : null, part < 0 ? {} : { part: part + 2 });
       })
-      : withPlanAreas(plan, draftForPlan(plan).rooms.map((room) => this.#runRow(
-        catalog.rooms.find((candidate) => candidate.roomId === room.roomId)?.name ?? room.roomId,
-        settingLabel(this.#t, room),
-        null,
-        { blocked: room.roomId === blockedRoom },
-      )), (area) => this.#runRow(area.name, settingLabel(this.#t, area), null, {
+      : withPlanAreas(plan, draftForPlan(plan).rooms.map((room) => {
+        const name = catalog.rooms.find((candidate) => candidate.roomId === room.roomId)?.name;
+        return this.#runRow(name ?? this.#missingRoomName(), settingLabel(this.#t, room), null, {
+          blocked: room.roomId === blockedRoom,
+          problem: name === undefined ? this.#missingRoomProblem() : null,
+        });
+      }), (area) => this.#runRow(area.name, settingLabel(this.#t, area), null, {
         problem: problem && blocker === "area_map_changed" ? this.#areaProblem(area.areaId) : null,
       }));
     const end = draft.finishCurrentRoom
@@ -371,7 +372,9 @@ export class MaticPlanViewsV4 extends LitElement {
       ${problem ? html`<p class="problem">${this.#t(problem.reasonKey, problem.reason)}</p>
         ${blocker === "area_map_changed"
           ? html`<button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "areas" })}>${this.#t("v4_your_areas", "Your areas")}</button>`
-          : html`<button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "plan" })}>${this.#t("v4_retry", "Try again")}</button>`}` : nothing}
+          : blocker === "room_missing"
+            ? html`<button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "set-plan-view", view: "edit", roomId: null })}>${this.#t("v4_edit", "Edit")}</button>`
+            : html`<button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "plan" })}>${this.#t("v4_retry", "Try again")}</button>`}` : nothing}
       ${ready && ordered ? html`<ol class="run-list" role="list">${rows}</ol>` : html`<ul class="run-list" role="list">${rows}</ul>`}
       ${this.#switch()}
       ${end ? html`<p class="quiet">${end}</p>` : nothing}
@@ -516,6 +519,7 @@ export class MaticPlanViewsV4 extends LitElement {
     const limited = room === null && atLimit;
     const schedule = room ? scheduleLine(this.#t, this.state.locale, room.cadence) : null;
     const blocked = room?.cadenceReasons?.some((reason) => BLOCKING.includes(reason));
+    const missing = room !== null && !this.state.resources.plans.value?.rooms.some((candidate) => candidate.roomId === roomId);
     // While the mop schedule is on, the mode stays Vacuum.
     const modeLocked = Boolean(room?.cadence?.mopEveryN);
     return html`<li class="ms-row edit-row" data-selected=${room ? "true" : nothing}>
@@ -542,6 +546,7 @@ export class MaticPlanViewsV4 extends LitElement {
           <span class="row-lines">
             <bdi>${name}</bdi>
             <small>${settingLabel(this.#t, room)}</small>
+            ${missing ? html`<small class="problem" data-room-missing>${this.#missingRoomProblem()}</small>` : nothing}
             ${schedule ? html`<small>${schedule}</small>` : nothing}
             ${this.#overlapsNoGo("room", roomId) ? html`<small data-zone-overlap>${this.#t("v4_zone_overlap", "Overlaps a no-go zone · Matic skips that part")}</small>` : nothing}
             ${blocked ? html`<span class="ms-chip chip-attention">${this.#t("v4_needs_attention", "Needs attention")}</span>` : nothing}
@@ -624,6 +629,15 @@ export class MaticPlanViewsV4 extends LitElement {
   #overlapsNoGo(kind: "room" | "area", id: string): boolean {
     return (this.state.resources.areas.value?.zones ?? []).some((zone) =>
       zone.kind === "no_go" && (kind === "room" ? zone.roomIds : zone.areaIds).includes(id));
+  }
+
+  /** A saved room the robot's map no longer has: a map edit removed it or gave it a new ID. */
+  #missingRoomName(): string {
+    return this.#t("v4_plan_room_missing_name", "Room not on the map");
+  }
+
+  #missingRoomProblem(): string {
+    return this.#t("v4_plan_room_missing", "Removed or renumbered in the Matic app · Remove it from this plan");
   }
 
   /**
@@ -773,7 +787,7 @@ export class MaticPlanViewsV4 extends LitElement {
     const gate = this.#gate(held);
     const ordered = draft.runBehavior === "ordered";
     const atLimit = draft.rooms.length >= MAX_ROOM_SEQUENCE_SIZE;
-    const nameOf = (roomId: string): string => catalog.rooms.find((room) => room.roomId === roomId)?.name ?? roomId;
+    const nameOf = (roomId: string): string => catalog.rooms.find((room) => room.roomId === roomId)?.name ?? this.#missingRoomName();
     // The run in order, rooms and custom areas, then the rooms left out.
     const steps = draftSteps(draft);
     const last = steps.length - 1;

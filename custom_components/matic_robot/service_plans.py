@@ -23,6 +23,7 @@ from .plan_model import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
+    PlanRoomMissingError,
     PlanRoomsHeldError,
     RoomSequenceLimitError,
     plan_floor_token,
@@ -209,6 +210,13 @@ def _plan_request_error(err: ValueError) -> ServiceValidationError:
     if isinstance(err, PlanAreaMissingError):
         return validation_error(
             "A custom area in the plan no longer exists", "plan_area_missing"
+        )
+    if isinstance(err, PlanRoomMissingError):
+        rooms = ", ".join(err.room_ids)
+        return validation_error(
+            f"Plan rooms are no longer on the robot's map: {rooms}",
+            "plan_room_missing",
+            {"rooms": rooms},
         )
     if isinstance(err, PlanAreaMapChangedError):
         return validation_error(

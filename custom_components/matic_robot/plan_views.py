@@ -27,6 +27,7 @@ from .plan_model import (
     CleaningRoom,
     PlanAreaMapChangedError,
     PlanAreaMissingError,
+    PlanRoomMissingError,
     PlanRoomsHeldError,
     RoomSequenceLimitError,
     leg_boundaries,
@@ -133,6 +134,8 @@ def _blocker(err: KeyError | TypeError | ValueError) -> PlanBlocker:
         return "plan_room_limit"
     if isinstance(err, PlanAreaMissingError):
         return "area_missing"
+    if isinstance(err, PlanRoomMissingError):
+        return "room_missing"
     if isinstance(err, PlanAreaMapChangedError):
         return "area_map_changed"
     if isinstance(err, CoverageCadenceRequiresVacuumError):

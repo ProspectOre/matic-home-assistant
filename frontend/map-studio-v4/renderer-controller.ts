@@ -732,25 +732,29 @@ export class RendererController {
     this.#frame = null;
     if (this.#disposed || this.#state?.pageActive === false) return;
     if (this.#governor.begin(time, this.#state?.quality === "auto" && this.#mode === "webgl2")) this.#sceneDirty = true;
-    // The frame that draws the end of a step asks for no other.
-    const moving = this.#move(time) && this.#motion?.moving(time) === true;
+    // The frame that draws the newest sample asks for no other.
+    const moving = this.#move(time);
     const drawn = this.#sceneDirty || this.#overlayDirty ? this.#render() : null;
     if (this.#governor.end(time, drawn === true, drawn === null) || moving) this.#requestFrame();
   };
 
-  /** Moves the robot, and a camera following it, to where the motion is at `time`. */
+  /**
+   * Moves the robot, and a camera following it, to where the motion is at
+   * `time`. True while the motion has further to go, through a rest too.
+   */
   #move(time: number): boolean {
     const stored = this.#stored;
-    if (!stored || !this.#motion || !canShowExactPose(stored)) return false;
+    if (!stored?.resources.pose.value || !this.#motion || !canShowExactPose(stored)) return false;
     const posed = this.#posed(stored, time);
-    if (posed.resources.pose.value === this.#state?.resources.pose.value) return false;
+    const moving = this.#motion.moving();
+    if (posed.resources.pose.value === this.#state?.resources.pose.value) return moving;
     this.#state = posed;
     this.#overlayDirty = true;
     // The robot's mesh is part of the scene; the 2D canvas draws it otherwise.
     if (this.#robot()) this.#sceneDirty = true;
     const follow = this.#pendingFollow;
-    if (follow) this.#cameraFollow?.update(posed.resources.pose.value, follow.mode, follow.reducedMotion);
-    return true;
+    if (follow) this.#cameraFollow?.update(posed.resources.pose.value, follow.mode, follow.reducedMotion, time);
+    return moving;
   }
 
   /** Draws what is dirty; true when that drew the scene from a camera that moved. */
