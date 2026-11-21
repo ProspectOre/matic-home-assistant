@@ -262,9 +262,7 @@ async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_run_docked=AsyncMock(),
-            run_record=MagicMock(
-                return_value={"run_id": "run-1", "outcome": "running"}
-            ),
+            run_record=MagicMock(return_value={"outcome": "running"}),
         ),
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value=None),
@@ -282,9 +280,7 @@ async def test_dock_upgrade_allows_managed_stop_running_failure(hass) -> None:
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_run_docked=AsyncMock(),
-            run_record=MagicMock(
-                return_value={"run_id": "run-1", "outcome": "running"}
-            ),
+            run_record=MagicMock(return_value={"outcome": "running"}),
         ),
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value="managed_stop"),
