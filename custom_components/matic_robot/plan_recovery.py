@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import (
-    Mapping,
     Sequence,
 )
 from copy import deepcopy
@@ -40,7 +39,7 @@ from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
 )
-from .run_machine import RunPhase
+from .run_machine import RunPhase, recovery_run, run_checkpoint, running_run
 
 if TYPE_CHECKING:
     from .run_control import RunControl
@@ -64,15 +63,6 @@ class _RunFinalizer(Protocol):
     ) -> bool: ...
 
 
-def recovery_run_state(robot: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Select private recovery state for the current unfinished run."""
-    run = robot.get("last_run")
-    if isinstance(run, dict) and run.get("outcome") == "running":
-        if isinstance(run.get("recovery_checkpoint"), dict):
-            return run
-    return None
-
-
 class PlanRecovery:
     """Persist restart evidence through the repository's ownership transactions."""
 
@@ -88,7 +78,7 @@ class PlanRecovery:
 
     def recovery_run(self, serial_number: str) -> dict[str, Any] | None:
         """Return a private snapshot of the current restart checkpoint."""
-        run = recovery_run_state(self.repository.robot(serial_number))
+        run = recovery_run(self.repository.robot(serial_number))
         return deepcopy(run) if run is not None else None
 
     async def async_set_recovery_checkpoint(
@@ -181,15 +171,9 @@ class PlanRecovery:
 
         async def commit(_lease: _MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
-                run = robot.get("last_run")
-                checkpoint = (
-                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
-                )
+                checkpoint = run_checkpoint(robot, run_id)
                 if (
-                    not isinstance(run, dict)
-                    or run.get("run_id") != run_id
-                    or run.get("outcome") != "running"
-                    or not isinstance(checkpoint, dict)
+                    checkpoint is None
                     or checkpoint.get("phase") != RunPhase.DISPATCHING
                     or checkpoint.get("floor_token") != plan_floor_token(floor_plan)
                     or receipt.floor_hash != coverage_floor_hash(floor_plan)
@@ -250,19 +234,11 @@ class PlanRecovery:
         self, serial_number: str, run_id: str | None
     ) -> CoverageReceipt | None:
         """Read the current run's bounded receipt without exposing native IDs."""
-        run = self.repository.robot(serial_number).get("last_run")
-        if (
-            run_id is None
-            or not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or run.get("outcome") != "running"
-        ):
+        if run_id is None:
             return None
-        checkpoint = run.get("recovery_checkpoint")
+        checkpoint = run_checkpoint(self.repository.robot(serial_number), run_id)
         evidence = coverage_evidence_from_storage(
-            checkpoint.get("coverage_evidence")
-            if isinstance(checkpoint, dict)
-            else None
+            checkpoint.get("coverage_evidence") if checkpoint is not None else None
         )
         return evidence.receipt if evidence is not None else None
 
@@ -277,15 +253,11 @@ class PlanRecovery:
                     raise ValueError(
                         "mixed session identity must be a SHA-256 fingerprint"
                     )
-                run = self.repository.robot(serial_number).get("last_run")
-                checkpoint = (
-                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
+                checkpoint = run_checkpoint(
+                    self.repository.robot(serial_number), run_id
                 )
                 if (
-                    not isinstance(run, dict)
-                    or run.get("run_id") != run_id
-                    or run.get("outcome") != "running"
-                    or not isinstance(checkpoint, dict)
+                    checkpoint is None
                     or checkpoint.get("phase") != RunPhase.DISPATCHING
                     or not _dispatching_room_leg(checkpoint)
                 ):
@@ -308,15 +280,9 @@ class PlanRecovery:
             return
 
         def owned_checkpoint() -> dict[str, Any] | None:
-            run = self.repository.robot(serial_number).get("last_run")
-            checkpoint = (
-                run.get("recovery_checkpoint") if isinstance(run, dict) else None
-            )
+            checkpoint = run_checkpoint(self.repository.robot(serial_number), run_id)
             if (
-                not isinstance(run, dict)
-                or run.get("run_id") != run_id
-                or run.get("outcome") != "running"
-                or not isinstance(checkpoint, dict)
+                checkpoint is None
                 or checkpoint.get("phase") != RunPhase.DISPATCHING
                 or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
                 or checkpoint.get("stop_intent") not in {None, "after_room"}
@@ -459,11 +425,8 @@ class PlanRecovery:
 
         async def commit(_lease: _MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
-                last_run = robot.get("last_run")
-                if (
-                    not isinstance(last_run, dict)
-                    or last_run.get("outcome") != "running"
-                ):
+                last_run = running_run(robot)
+                if last_run is None:
                     return False
                 last_run["recovery_status"] = status[:32]
                 last_run["recovery_reason"] = reason[:64]

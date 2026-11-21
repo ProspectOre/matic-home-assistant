@@ -42,6 +42,7 @@ from .room_identity import room_cadence_identity as room_cadence_identity
 from .run_control import (
     RunControl,
 )
+from .run_machine import recovery_run, running_run
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,9 +80,9 @@ class CleaningPlanManager:
                 continue
             recovered = plan_state.parse_robot(robot) or recovered
             last_run = robot.get("last_run")
-            if isinstance(last_run, dict) and last_run.get("outcome") == "running":
-                if not isinstance(last_run.get("recovery_checkpoint"), dict):
-                    last_run.update(
+            if (running := running_run(robot)) is not None:
+                if not isinstance(running.get("recovery_checkpoint"), dict):
+                    running.update(
                         {
                             "outcome": "unverified",
                             "reason_code": "home_assistant_restart",
@@ -92,7 +93,7 @@ class CleaningPlanManager:
                     )
                     recovered = True
                 else:
-                    last_run.update(
+                    running.update(
                         {
                             "reason_code": "home_assistant_restart",
                             "cause": "home_assistant",
@@ -130,11 +131,7 @@ class CleaningPlanManager:
                         fence_remaining = remaining
                         recovered = True
             active = robot.get("active_plan")
-            recoverable = (
-                isinstance(last_run, dict)
-                and last_run.get("outcome") == "running"
-                and isinstance(last_run.get("recovery_checkpoint"), dict)
-            )
+            recoverable = recovery_run(robot) is not None
             if recoverable and isinstance(last_run, dict):
                 checkpoint = last_run["recovery_checkpoint"]
                 if checkpoint.get("stop_intent") == "after_room":
