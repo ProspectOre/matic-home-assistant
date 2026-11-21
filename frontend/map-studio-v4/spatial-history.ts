@@ -121,8 +121,20 @@ export class SpatialHistory {
     }
   }
 
-  async selectFloor(floorId: string): Promise<void> {
-    if (!floorSelectionAllowed(this.#store.value, floorId)) return;
+  /**
+   * The page is still shown and its view is the one `before` held; `withSnapshot`
+   * also holds the saved map. A selection made while this module loaded is
+   * dropped when it is not.
+   */
+  #unchanged(before: WorkspaceState, withSnapshot: boolean): boolean {
+    const { generation, selection } = this.#store.value;
+    return !this.#callbacks.disposed() && this.#callbacks.pageActive() && generation === before.generation
+      && selection.entryId === before.selection.entryId && selection.floorId === before.selection.floorId
+      && (!withSnapshot || selection.historyId === before.selection.historyId);
+  }
+
+  async selectFloor(floorId: string, before?: WorkspaceState): Promise<void> {
+    if ((before && !this.#unchanged(before, false)) || !floorSelectionAllowed(this.#store.value, floorId)) return;
     const history = this.#store.value.resources.history.value;
     const entry = this.#store.value.resources.entry;
     if (!history || !entry) return;
@@ -194,8 +206,8 @@ export class SpatialHistory {
     if (snapshot) await this.#loadHistoryScene(snapshot, stamp);
   }
 
-  async selectHistory(snapshotId: string | null): Promise<void> {
-    if (!historySelectionAllowed(this.#store.value, snapshotId)) return;
+  async selectHistory(snapshotId: string | null, before?: WorkspaceState): Promise<void> {
+    if ((before && !this.#unchanged(before, true)) || !historySelectionAllowed(this.#store.value, snapshotId)) return;
     const history = this.#store.value.resources.history.value;
     const entry = this.#store.value.resources.entry;
     if (!history || !entry) return;

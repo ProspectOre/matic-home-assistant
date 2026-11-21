@@ -182,24 +182,14 @@ export class SpatialResources {
     const before = this.#store.value;
     if (!floorSelectionAllowed(before, floorId)) return;
     this.#callbacks.invalidateUnsentWrites();
-    const history = await this.#spatialHistory();
-    const current = this.#store.value;
-    if (!history || this.#callbacks.disposed() || !this.#callbacks.pageActive()
-      || current.generation !== before.generation || current.selection.entryId !== before.selection.entryId
-      || current.selection.floorId !== before.selection.floorId) return;
-    await history.selectFloor(floorId);
+    await (await this.#spatialHistory())?.selectFloor(floorId, before);
   }
 
   async selectHistory(snapshotId: string | null): Promise<void> {
     const before = this.#store.value;
     if (!historySelectionAllowed(before, snapshotId)) return;
     this.#callbacks.invalidateUnsentWrites();
-    const history = await this.#spatialHistory();
-    const current = this.#store.value;
-    if (!history || this.#callbacks.disposed() || !this.#callbacks.pageActive()
-      || current.generation !== before.generation || current.selection.entryId !== before.selection.entryId
-      || current.selection.floorId !== before.selection.floorId || current.selection.historyId !== before.selection.historyId) return;
-    await history.selectHistory(snapshotId);
+    await (await this.#spatialHistory())?.selectHistory(snapshotId, before);
   }
 
   async resumeHistory(suspended: WorkspaceState): Promise<void> {
@@ -208,13 +198,8 @@ export class SpatialResources {
       || this.#store.value.selection.entryId !== suspended.selection.entryId
       || this.#store.value.selection.floorId !== suspended.selection.floorId
       || this.#store.value.selection.historyId !== suspended.selection.historyId) return;
-    const history = await this.#spatialHistory();
-    const current = this.#store.value;
-    if (history && !this.#callbacks.disposed() && this.#callbacks.pageActive()
-      && current.generation === suspended.generation
-      && current.selection.entryId === suspended.selection.entryId
-      && current.selection.floorId === suspended.selection.floorId
-      && current.selection.historyId === suspended.selection.historyId) await history.resume(suspended);
+    // resume() checks the same again once the module has loaded.
+    await (await this.#spatialHistory())?.resume(suspended);
   }
 
   #spatialHistory(): Promise<InstanceType<typeof import("./spatial-history").SpatialHistory> | null> {
