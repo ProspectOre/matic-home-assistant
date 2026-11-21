@@ -2,7 +2,6 @@ custom_components/matic_robot/area_binding_geometry.py 1629
 custom_components/matic_robot/client/hermes_commands.py 1034
 custom_components/matic_robot/config_flow.py 1632
 custom_components/matic_robot/managed_observation.py 1096
-custom_components/matic_robot/native_history.py 1215
 custom_components/matic_robot/plan_cadence.py 1165
 custom_components/matic_robot/plan_ledger.py 1734
 custom_components/matic_robot/sensor.py 1191

@@ -16,14 +16,14 @@ from custom_components.matic_robot.client.models import (
     FloorPlan,
     Room,
 )
-from custom_components.matic_robot.native_history import (
-    _native_room_statistic_matches_managed_history,
-)
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
 )
 from custom_components.matic_robot.room_statistics import (
     native_room_statistics_by_session,
+)
+from custom_components.matic_robot.room_statistics_store import (
+    _native_room_statistic_matches_managed_history,
 )
 from custom_components.matic_robot.stores import CleaningHistory
 from tests.plans.fakes import memory_manager
@@ -387,6 +387,43 @@ async def test_new_positive_session_is_not_blocked_by_later_negative_timestamp(h
     assert room["robot_last_completed"] == improved_at
     assert room["robot_last_duration_seconds"] == 240
     assert room["robot_last_invalidated_at"] == retracted_at
+
+
+@pytest.mark.asyncio
+async def test_replayed_session_ignores_rejected_modes_stored_in_a_bad_shape(hass):
+    floor = _floor(("living", "Living"))
+    manager = memory_manager(hass)
+    ended_at = (dt_util.utcnow() - timedelta(minutes=5)).isoformat()
+    replayed = _record(
+        ended_at,
+        CleaningModeResult("Living", "vacuum", "completed", 240),
+        CleaningModeResult("Living", "mop", "completed", 300),
+        key=b"replayed-session",
+    )
+    manager.repository.data = {
+        "robots": {
+            "robot": {
+                "robot_room_statistics_floor_id": floor.mission_id,
+                "rooms": {
+                    "living": {
+                        "robot_last_completed": ended_at,
+                        "robot_last_duration_seconds": 240,
+                        "robot_last_completed_mode_durations": {"vacuum": 240},
+                        "robot_last_session_hash": hashlib.sha256(
+                            b"replayed-session"
+                        ).hexdigest(),
+                        "robot_last_floor_id": floor.mission_id,
+                        "robot_last_conflicted_modes": "mop",
+                    }
+                },
+            }
+        }
+    }
+
+    assert await _import_history(manager, "robot", floor, [replayed])
+    room = _stored_room(manager, "robot")
+    assert room["robot_last_completed_mode_durations"] == {"vacuum": 240, "mop": 300}
+    assert room["robot_last_conflicted_modes"] == []
 
 
 def test_sensor_helpers_reject_timezone_less_records_and_classify_restored_values():
