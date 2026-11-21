@@ -64,6 +64,7 @@ import {
 import "./map-canvas";
 import { translate } from "./localize";
 import { shelfRow } from "./shelf-row";
+import { homeRetry, liveMapFailed } from "./home-retry";
 import type { RendererModuleStatus } from "./renderer-controller";
 
 import { needsDraftConfirmation } from "./draft-navigation";
@@ -1170,21 +1171,18 @@ export class MaticMapShellV4 extends LitElement {
         break;
     }
     const held = kind !== "ready";
-    const retry = kind === "map-unavailable" || kind === "map-limited" ? html`
-      <div class="home-actions">
-        <button class="ms-btn ms-btn--secondary" type="button"
-          aria-disabled=${state.rechecking ? "true" : nothing}
-          @click=${() => { if (!this.state.rechecking) this.#dispatchAction("recheck-status"); }}
-        >${t("v4_retry", "Try again")}</button>
-      </div>` : nothing;
+    const failed = liveMapFailed(state);
+    const retry = failed || kind === "map-unavailable" || kind === "map-limited"
+      ? homeRetry(state, t, () => this.#dispatchAction("recheck-status")) : nothing;
     const priorityMaps = held ? maps(kind === "map-unavailable") : nothing;
     const queue = kind === "busy" ? this.#queueControls(state) : nothing;
     const pins = state.homePins.pins;
     const waiting = (status: string) => status === "idle" || status === "loading";
-    const pending = waiting(state.homePins.status) || state.homePins.status === "ready" && pins.some((pin) =>
+    // A failed map never loads the catalogs a pinned shortcut waits for.
+    const pending = !failed && (waiting(state.homePins.status) || state.homePins.status === "ready" && pins.some((pin) =>
       pin.kind === "plan"
         ? waiting(state.resources.plans.status) && !state.resources.plans.value?.plans.some((plan) => plan.id === pin.id)
-        : waiting(state.resources.areas.status) && !state.resources.areas.value?.areas.some((area) => area.id === pin.id));
+        : waiting(state.resources.areas.status) && !state.resources.areas.value?.areas.some((area) => area.id === pin.id)));
     const plans = readyPlans(state);
     const noRooms = plans !== null && plans.rooms.length === 0;
     const roomsDisabled = held || noRooms;

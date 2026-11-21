@@ -24,6 +24,7 @@ from .workspace_schema import PoseUpdate
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
+    from .slam_history_format import SlamHistorySnapshot
     from .slam_scene import MaticSlamSceneView
 
 _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
@@ -126,6 +127,35 @@ def pose_projection(
     }
 
 
+def floor_choices(
+    runtime: MaticRuntimeData,
+) -> tuple[str | None, tuple[str, ...], tuple[SlamHistorySnapshot, ...]]:
+    """Return the current floor, the other floors and the imported maps.
+
+    The history view lists them and the catalog counts them, so Matic Map can
+    tell from the count that a home has more than one floor.
+    """
+    floor_plan = runtime.session.floor.value
+    identity = runtime.slam_map.mission_identity
+    current = (
+        identity.mission_token
+        if identity is not None and runtime.slam_map.floor_plan_is_current(floor_plan)
+        else None
+    )
+    missions = dict.fromkeys(
+        mission_token for mission_token, _ in runtime.slam_history.catalogs_by_mission()
+    )
+    for floor in floor_plan.mapped_floors if floor_plan is not None else ():
+        missions.setdefault(floor.mission_token)
+    imported = tuple(
+        snapshot
+        for snapshot in runtime.slam_history.catalog()
+        if snapshot.imported and snapshot.retention != "trash"
+    )
+    others = tuple(token for token in missions if token != current)
+    return current, others, imported
+
+
 def catalog_entry_projection(
     entry_id: str,
     runtime: MaticRuntimeData,
@@ -171,6 +201,7 @@ def catalog_entry_projection(
         map_block_reason = "floor_plan_mismatch"
     serial_number = runtime.session.info.serial_number
     plan_snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
+    _, saved_floors, imported = floor_choices(runtime)
     return {
         "entry_id": entry_id,
         "scene_url": scene_api_url(entry_id),
@@ -184,7 +215,7 @@ def catalog_entry_projection(
             if map_identity is not None
             else ()
         ),
-        "history_floor_count": len(runtime.slam_history.catalogs_by_mission()),
+        "history_floor_count": 1 + len(saved_floors) + bool(imported),
         "map_revision": (
             scene_view.available_revision(entry_id, runtime)
             if scene_view is not None
