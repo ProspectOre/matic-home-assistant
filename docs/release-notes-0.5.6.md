@@ -10,5 +10,10 @@ The Repair clears once every plan names only rooms on the map.
 plan holds even when the room is no longer on the map, so a stale room can be
 taken out of a plan without saving the whole plan again.
 
+**Save plan** and **Save room to plan** now show each room's schedule settings
+(mop every N cleans, vacuum rotation, and which plans share the count) in the
+action editor. The actions already accepted them; they were missing from the
+form.
+
 Back up Home Assistant, update Matic to `v0.5.6` in HACS, and restart Home
 Assistant. Home Assistant 2026.10 or later is required.

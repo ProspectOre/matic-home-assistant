@@ -7,6 +7,8 @@ from pathlib import Path
 import yaml
 from homeassistant.util.yaml import load_yaml
 
+from custom_components.matic_robot.services import ROOM_CADENCE_SCHEMA
+
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
 BLUEPRINTS = sorted((ROOT / "blueprints/automation/matic_robot").glob("*.yaml"))
@@ -94,13 +96,21 @@ def test_room_objects_declare_their_fields() -> None:
 
 
 def test_plan_entry_objects_offer_a_room_or_an_area() -> None:
-    entry_fields = ["room", "area", "cleaning_mode", "coverage_setting"]
+    entry_fields = ["room", "area", "cleaning_mode", "coverage_setting", "cadence"]
     for key, field in (("save_plan", "rooms"), ("save_plan_room", "room")):
         selector = SERVICES[key]["fields"][field]["selector"]["object"]
         assert list(selector["fields"]) == entry_fields
         assert not any(item.get("required") for item in selector["fields"].values())
         assert selector.get("multiple", False) is (field == "rooms")
         assert selector["translation_key"] == "plan_entry"
+        cadence = selector["fields"]["cadence"]["selector"]["object"]
+        assert cadence["translation_key"] == "room_cadence"
+        # The action UI offers every field the action's schema accepts.
+        assert (
+            set(cadence["fields"])
+            == {str(key) for key in ROOM_CADENCE_SCHEMA.schema}
+            == set(STRINGS["selector"]["room_cadence"]["fields"])
+        )
     assert list(STRINGS["selector"]["plan_entry"]["fields"]) == entry_fields
     for key in ("delete_plan_room", "move_plan_room"):
         fields = SERVICES[key]["fields"]
