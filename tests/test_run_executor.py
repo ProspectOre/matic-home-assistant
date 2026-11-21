@@ -13,7 +13,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_observation import _LegOutcomeObserver
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import memory_manager, plan_room, run_plan_call
+from tests.plans.fakes import credit_rooms, memory_manager, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
@@ -31,7 +31,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
 
     async def fake_leg(*args, **kwargs):
         args[6].confirm_room_completed(args[5][0].name)
-        kwargs["record_room_completed"](args[5][0])
+        credit_rooms(args, kwargs, args[5][:1])
         return True
 
     with patch(

@@ -61,7 +61,7 @@ from .run_control import (
     RunControl,
 )
 from .run_history import append_run_history, update_run_history
-from .run_machine import CheckpointWrite, running_run
+from .run_machine import CheckpointWrite, count_room, running_run
 from .verified_completion import (
     VerifiedCompletion,
     global_room,
@@ -1135,17 +1135,17 @@ class PlanLedger:
             and (running_run(robot, run_id) or {}).get("plan_id") != plan_id
         ):
             return False
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        # Counted in the room record's commit, so a crash before the plan
+        # finalizer keeps the room.
+        counted = running_run(robot)
         if (
-            isinstance(run, dict)
-            and isinstance(checkpoint, dict)
-            and run.get("plan_id") == plan_id
+            counted is not None
+            and counted.get("plan_id") == plan_id
+            and not count_room(counted, room.room_id)
         ):
-            credited = checkpoint.setdefault("completed_room_ids", [])
-            if room.room_id in credited:
-                # Already credited and saved; never increment twice.
-                return True
-            credited.append(room.room_id)
+            # Already credited and saved with its room record.
+            return True
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
         now = (
             completed_at
             if completed_at is not None
@@ -1209,14 +1209,6 @@ class PlanLedger:
             self.room(serial_number, plan_id, room),
             now=now_value,
         )
-        last_run = running_run(robot)
-        if last_run is not None and last_run.get("plan_id") == plan_id:
-            # Checkpoint verified credit with room history, so a crash before
-            # the plan finalizer cannot lose work already verified and saved.
-            last_run["completed_room_count"] = min(
-                plan_timing._stored_count(last_run, "completed_room_count") + 1,
-                plan_timing._stored_count(last_run, "room_count"),
-            )
         active = robot.get("active_plan")
         if run_id is None or (
             isinstance(active, Mapping)

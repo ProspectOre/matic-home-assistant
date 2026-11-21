@@ -96,8 +96,10 @@ def test_an_empty_identity_is_not_checkpointed() -> None:
 
 
 def test_a_verified_room_waits_for_the_next_save() -> None:
-    """The leg's own records save first; the next leg's position carries it."""
-    run, write = transition(Run(RunPhase.ACCEPTED), RoomVerified("kitchen"))
+    """The ledger saved the room; the run takes the stored tally, saving nothing."""
+    run, write = transition(
+        Run(RunPhase.ACCEPTED), RoomVerified(frozenset({"kitchen"}))
+    )
     assert write == CheckpointWrite({}, save=False)
     assert run.completed_room_ids == {"kitchen"}
     assert run.phase is RunPhase.ACCEPTED
@@ -294,7 +296,7 @@ def test_a_settled_room_is_saved_with_the_next_position() -> None:
     assert run.position()["settled_room_ids"] == ["kitchen"]
     assert "settled_room_ids" not in Run().position()
     assert not run.all_settled({"kitchen", "office", "study"}, ())
-    run, _ = transition(run, RoomVerified("office"))
+    run, _ = transition(run, RoomVerified(frozenset({"study", "office"})))
     assert run.all_settled({"kitchen", "office", "study"}, ())
     assert not run.all_settled({"kitchen", "office", "study"}, {1})
     assert run.end_reason == "all_rooms_settled"

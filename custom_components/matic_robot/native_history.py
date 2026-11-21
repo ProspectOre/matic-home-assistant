@@ -45,6 +45,7 @@ from .plan_timing import (
 from .room_statistics import native_statistics_have_ambiguous_floor
 from .room_statistics_store import import_native_room_statistics
 from .run_history import repair_run_history
+from .run_machine import count_room
 from .verified_completion import VerifiedCompletion, record_verified_completion
 
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = max(64, MAX_ROOM_SEQUENCE_SIZE)
@@ -517,24 +518,16 @@ def _repair_native_reconciled_run(
         or last_run.get("plan_id") != plan_id
     ):
         return
-    room_count = _stored_count(last_run, "room_count")
-    completed_count = _stored_count(last_run, "completed_room_count")
-    if completed_count < room_count:
-        completed_count += 1
-        last_run["completed_room_count"] = completed_count
-        if last_run.get("outcome") == "running" and "session_hash" not in pending:
-            last_run["native_reconciled_completion"] = True
-        checkpoint = last_run.get("recovery_checkpoint")
-        if isinstance(checkpoint, dict):
-            completed_ids = checkpoint.setdefault("completed_room_ids", [])
-            if (
-                isinstance(completed_ids, list)
-                and pending["room_id"] not in completed_ids
-            ):
-                completed_ids.append(pending["room_id"])
+    if (
+        count_room(last_run, pending["room_id"])
+        and last_run.get("outcome") == "running"
+        and "session_hash" not in pending
+    ):
+        last_run["native_reconciled_completion"] = True
     if (
         "session_hash" not in pending
-        and completed_count >= room_count
+        and _stored_count(last_run, "completed_room_count")
+        >= _stored_count(last_run, "room_count")
         and last_run.get("outcome")
         in {
             "cancelled",

@@ -4,7 +4,8 @@ The executor feeds an event to ``transition`` and applies the writes it
 returns to the run's recovery checkpoint; nothing else sets a run's phase or
 queue position. The checkpoint stays the one durable record, in the format
 restart recovery reads. After a restart, ``Restarted`` decides from that
-record whether the run resumes and in which phase.
+record whether the run resumes and in which phase. The rooms a run completed
+are its stored tally, which only ``count_room`` writes.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from enum import StrEnum
 from typing import Any
 
 from .client import is_sha256_hex
-from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs
+from .plan_model import AreaLeg, CleaningRoom, _stored_count, checkpoint_legs
 
 # Reason codes of a run whose every room and area has a result.
 RUN_SETTLED_REASONS = frozenset({"all_rooms_verified", "all_rooms_settled"})
@@ -113,9 +114,9 @@ class DispatchRecorded:
 
 @dataclass(frozen=True, slots=True)
 class RoomVerified:
-    """The robot's own history credited a room."""
+    """The robot's own history credited a room; ``counted`` is the stored tally."""
 
-    room_id: str
+    counted: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,14 +227,13 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
                     "history_baseline": _digests(event.history_baseline),
                 }
             )
-        case RoomVerified(room_id):
-            # Saved with the next leg's position, after the leg's own records.
-            return replace(
-                run, completed_room_ids=run.completed_room_ids | {room_id}
-            ), CheckpointWrite({}, save=False)
+        case RoomVerified(counted):
+            # The ledger saved the room with its record.
+            return replace(run, completed_room_ids=counted), CheckpointWrite(
+                {}, save=False
+            )
         case RoomSettled(room_id):
             # Saved at once: the last leg has no next position to carry it.
-            # The credits go too, since this save replaces the stored checkpoint.
             settled = replace(run, settled_room_ids=run.settled_room_ids | {room_id})
             return settled, CheckpointWrite(
                 {
@@ -268,6 +268,26 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
         },
         drop=("verification_deadline",),
     )
+
+
+def count_room(run: dict[str, Any], room_id: str) -> bool:
+    """Count a completed room in a stored run once; False when already counted.
+
+    The only writer of ``completed_room_count`` and the checkpoint's
+    ``completed_room_ids``. A finished run has no checkpoint, so only its
+    count moves. The count never exceeds the run's room count.
+    """
+    checkpoint = run.get("recovery_checkpoint")
+    if isinstance(checkpoint, dict):
+        counted = checkpoint.setdefault("completed_room_ids", [])
+        if room_id in counted:
+            return False
+        counted.append(room_id)
+    run["completed_room_count"] = min(
+        _stored_count(run, "completed_room_count") + 1,
+        _stored_count(run, "room_count"),
+    )
+    return True
 
 
 def running_run(

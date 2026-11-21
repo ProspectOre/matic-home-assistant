@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 
 from .client import CleaningMode, CoverageSetting
 from .plan_model import CleaningRoom
+from .plan_model import _stored_count as _stored_count
 
 DURATION_HISTORY_MAX_SAMPLES = 7
 
@@ -23,16 +24,6 @@ DURATION_PROFILE_KEYS = tuple(
 )
 
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
-
-
-def _stored_count(record: object, key: str) -> int:
-    """Return a nonnegative persisted counter or zero."""
-    value = record.get(key) if isinstance(record, Mapping) else None
-    return (
-        value
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-        else 0
-    )
 
 
 def _admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> None:
