@@ -628,9 +628,8 @@ async def test_three_robot_workspace_websocket_isolation_replay_and_reload(
             row = snapshot["payload"]["entry"]
             assert row["entry_id"] == entry.entry_id
             assert row["selected_floor_ordinal"] == (2 if index == 1 else 1)
-            assert row["history_floor_count"] == len(
-                entry.runtime_data.slam_history.catalogs_by_mission()
-            )
+            # Every mapped floor counts, with or without a saved map.
+            assert row["history_floor_count"] == len(floors_by_robot[index])
             initial_history_revisions.append(snapshot["revisions"]["history"])
             subscription_id = 2 * index + 2
             handshake = await _subscribe(first_ws, subscription_id, entry.entry_id)
@@ -741,7 +740,7 @@ async def test_three_robot_workspace_websocket_isolation_replay_and_reload(
             assert not history.capture_paused
             assert not history.capacity_blocked
             assert readback["revisions"]["history"] > initial_history_revisions[index]
-            assert row["history_floor_count"] == len(history.catalogs_by_mission())
+            assert row["history_floor_count"] == len(floors_by_robot[index])
             identity = entry.runtime_data.slam_map.mission_identity
             if identity is not None:
                 assert row["history_count"] == len(

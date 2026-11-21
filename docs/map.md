@@ -24,6 +24,10 @@ floor. The **?** on the map lists the mouse, touch or keyboard controls for the
 input you're using, plus the drawing controls while you draw. Click a room on
 either view to select it; the map and the room list stay in step.
 
+In a home with more than one mapped floor, the floor menu on the map lists them
+and the live map follows the robot to the floor it is on. If the map doesn't
+load, **Try again** reads it again.
+
 With more than one robot, the menu beside the title switches between them.
 Robots with the same name show their area first, or their device name, or
 their entity ID when nothing else tells them apart.

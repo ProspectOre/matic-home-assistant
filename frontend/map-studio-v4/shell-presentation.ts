@@ -1,6 +1,7 @@
 import type { DateFormat, Localize, NoticePlaceholders, WorkspaceState } from "./contracts";
 import { iconCharging, iconCleaning, iconHistory, iconOffline, iconPaused, iconPlan, iconRobot } from "./icons";
 import { translate } from "./localize";
+import { liveMapFailed } from "./home-retry";
 import { hasStoppableWork, isReadOnlyWorkspace, isSelectedRobotUnavailable, savedMapPosition } from "./state";
 
 export interface StatusPresentation {
@@ -19,6 +20,12 @@ export interface StatusPresentation {
 // How managed_executor.py matches a firmware room phrase to a room's ID or
 // name: case, spacing and a leading "the" aside.
 const roomKey = (name: string | null): string => name?.toLowerCase().replace(/\s+/gu, " ").trim().replace(/^the /u, "") ?? "";
+
+// A live map that failed to load with no saved map to stand in reads as
+// unavailable, like a map Home Assistant holds back.
+const noMapToShow = (state: WorkspaceState): boolean =>
+  state.coherence === "unavailable" || state.coherence === "blocked"
+  || (liveMapFailed(state) && !state.map.available);
 
 export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateFormat): StatusPresentation => {
   const t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
@@ -76,7 +83,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
     && (state.activity === "idle" || state.activity === "docked" || state.activity === "unknown")) {
     return {
       title: t("v4_task_in_progress", "Run in progress"),
-      detail: state.coherence === "unavailable" || state.coherence === "blocked"
+      detail: noMapToShow(state)
         ? t("v4_task_map_unavailable", "The live map is unavailable; the current clean continues.")
         : state.activity === "docked"
         ? t("v4_task_docked", "Robot docked; the clean has not finished.")
@@ -88,7 +95,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
   if (state.activity === "starting" || (state.command === "starting" && (state.activity === "idle" || state.activity === "docked" || state.activity === "unknown"))) {
     return { title: t("v4_action_starting", "Starting"), detail: t("v4_action_starting_detail", "Waiting for the robot to begin"), icon: iconRobot, notable: true };
   }
-  const mapUnavailable = state.coherence === "unavailable" || state.coherence === "blocked";
+  const mapUnavailable = noMapToShow(state);
   const battery = state.batteryPercent === null ? "" : t("v4_battery", "{percent}% battery", { percent: state.batteryPercent });
   if (state.activity === "cleaning") {
     // Row 11: the room the robot reports, when it is a room on this floor.
@@ -181,7 +188,7 @@ export const homeState = (state: WorkspaceState): HomeKind => {
     || state.activity === "stopping" || state.command === "settling"
     || state.resources.entry?.stopSettlePending === true) return "busy";
   if (state.activity === "paused") return "paused";
-  if (state.coherence === "unavailable" || state.coherence === "blocked") return "map-unavailable";
+  if (noMapToShow(state)) return "map-unavailable";
   if (state.coherence === "degraded") return "map-limited";
   if (state.coherence === "verifying" || state.coherence === "booting") return "locating";
   return "ready";

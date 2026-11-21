@@ -41,7 +41,11 @@ def _synthetic_workspace_hass() -> tuple[SimpleNamespace, str]:
     floor_plan = SimpleNamespace(
         mission_id=42,
         partition_id_wire=b"synthetic-partition",
-        mapped_floors=(SimpleNamespace(mission_id=42, label="Main floor"),),
+        mapped_floors=(
+            SimpleNamespace(
+                mission_id=42, label="Main floor", mission_token="synthetic-mission"
+            ),
+        ),
     )
     health = SimpleNamespace(
         state="ready",
