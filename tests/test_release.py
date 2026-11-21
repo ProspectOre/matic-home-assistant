@@ -137,14 +137,18 @@ def test_check_refuses_a_tag_the_checkout_contradicts(
 
 def test_every_relative_guide_link_in_the_notes_is_rewritten() -> None:
     """A link the rewrite missed would be dead on the release page."""
-    body = "[a](map.md) [b](./map.md#x) [c](../README.md) [d](release-notes-0.5.0.md)"
+    body = (
+        "[a](map.md) [b](./map.md#x) [c](../README.md) [d](release-notes-0.5.0.md) "
+        "[e](https://example.com/guide.md)"
+    )
     assert release.guide_links(body, "D") == (
         "[a](D/map.md) [b](D/./map.md#x) [c](D/../README.md) "
-        "[d](D/release-notes-0.5.0.md)"
+        "[d](D/release-notes-0.5.0.md) [e](https://example.com/guide.md)"
     )
     for path in (release.ROOT / "docs").glob("release-notes-*.md"):
         rewritten = release.guide_links(path.read_text(encoding="utf-8"), "D")
         assert not re.search(r"\]\((?![a-z]+:|#|D/)[^)]*\.md", rewritten), path
+        assert "D/http" not in rewritten, path
 
 
 def test_check_refuses_an_existing_tag_and_missing_notes(checkout: Path) -> None:
