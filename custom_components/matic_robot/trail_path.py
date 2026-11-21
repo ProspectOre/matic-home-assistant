@@ -25,7 +25,17 @@ def starts_segment(
     last: TrailPoint, last_seen: float | None, point: TrailPoint, seen: float | None
 ) -> bool:
     """Return whether a kept pose begins a new segment instead of extending one."""
-    return math.dist(last[:2], point[:2]) > TRAIL_JUMP_METERS or (
+    return is_jump(last, point) or went_unseen(last_seen, seen)
+
+
+def is_jump(last: TrailPoint, point: TrailPoint) -> bool:
+    """Return whether one step is too long to be travel."""
+    return math.dist(last[:2], point[:2]) > TRAIL_JUMP_METERS
+
+
+def went_unseen(last_seen: float | None, seen: float | None) -> bool:
+    """Return whether the robot was unseen too long for the path between to be known."""
+    return (
         last_seen is not None
         and seen is not None
         and seen - last_seen > TRAIL_GAP_SECONDS

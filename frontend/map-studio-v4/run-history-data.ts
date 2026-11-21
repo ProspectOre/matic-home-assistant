@@ -8,7 +8,7 @@ import type * as wire from "./backend-schema";
 import type { RobotActivity, WorkspaceNotice } from "./contracts";
 import type { WorkspaceStore } from "./state";
 import type { LastSeenDuringRun } from "./contracts";
-import { TRAIL_STEP_METERS, startsSegment, thinSegments } from "./trail-path";
+import { TRAIL_STEP_METERS, startsSegment, thinSegments, wentUnseen } from "./trail-path";
 
 type RunEnding =
   | "running" | "finished" | "stopped" | "smart_stop" | "replaced" | "low_battery"
@@ -243,7 +243,8 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   const lastSeen = trailSeen.has(trail) ? trailSeen.get(trail)! : last?.[2] ?? null;
   const seen = pose.observedAt;
   const [x, y] = pose.position;
-  if (last && Math.hypot(x - last[0], y - last[1]) < TRAIL_STEP_METERS) {
+  // A pose after a gap starts the next segment however close it is.
+  if (last && Math.hypot(x - last[0], y - last[1]) < TRAIL_STEP_METERS && !wentUnseen(lastSeen, seen ?? null)) {
     trailSeen.set(trail, seen ?? lastSeen);
     return;
   }

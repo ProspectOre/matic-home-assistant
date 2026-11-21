@@ -12,7 +12,7 @@ import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
-from typing import Any
+from typing import Any, override
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
@@ -22,13 +22,21 @@ from homeassistant.util import dt as dt_util
 from .client import CleaningSession, CleaningSessionRecord
 from .const import DOMAIN
 from .map_schema import RunEntry, RunItem, RunOutcome, TrailPoint
-from .trail_path import TRAIL_STEP_METERS, starts_segment, thin_segments
+from .trail_path import (
+    TRAIL_STEP_METERS,
+    is_jump,
+    starts_segment,
+    thin_segments,
+    went_unseen,
+)
 
 RUN_HISTORY_LIMIT = 50
 MAX_HISTORY_ROOMS = 64
 MAX_NAME_LENGTH = 128
 
 TRAIL_STORAGE_VERSION = 1
+# Minor 2 records breaks where they happen; minor 1 broke only when drawn.
+TRAIL_STORAGE_MINOR_VERSION = 2
 TRAIL_SAVE_DELAY_SECONDS = 30
 MAX_TRAILS = 20
 MAX_LIVE_TRAIL_POINTS = 4_000
@@ -449,6 +457,50 @@ class _LiveTrail:
         return sum(map(len, self.segments))
 
 
+class _TrailStore(Store[dict[str, Any]]):
+    """Trail storage that splits minor-1 trails where their drawing broke."""
+
+    @override
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Split minor-1 segments at each jump, which the map left undrawn.
+
+        Home Assistant refuses a newer major version before calling this.
+        """
+        trails = old_data.get("trails")
+        live = old_data.get("live")
+        return {
+            **old_data,
+            "trails": [_split_jumps(trail) for trail in trails]
+            if isinstance(trails, list)
+            else trails,
+            "live": _split_jumps(live),
+        }
+
+
+def _split_jumps(trail: Any) -> Any:
+    """Return a minor-1 trail with each segment cut where one step jumps."""
+    # Load drops a trail that fails validation, so leave one as it is.
+    if not isinstance(trail, dict) or not isinstance(trail.get("segments"), list):
+        return trail
+    segments: list[list[Any]] = []
+    for segment in trail["segments"]:
+        if not isinstance(segment, list) or not all(map(_valid_point, segment)):
+            return trail
+        piece: list[Any] = []
+        for point in segment:
+            if piece and is_jump(piece[-1], point):
+                segments.append(piece)
+                piece = []
+            piece.append(point)
+        segments.append(piece)
+    return {**trail, "segments": segments}
+
+
 class RunTrails:
     """Record verified robot positions per run and keep a bounded set.
 
@@ -458,11 +510,12 @@ class RunTrails:
     """
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
-        self._store = Store[dict[str, Any]](
+        self._store = _TrailStore(
             hass,
             TRAIL_STORAGE_VERSION,
             f"{DOMAIN}.run_trails.{entry_id}",
             private=True,
+            minor_version=TRAIL_STORAGE_MINOR_VERSION,
         )
         self._trails: list[dict[str, Any]] = []
         self._live: _LiveTrail | None = None
@@ -543,7 +596,12 @@ class RunTrails:
             else None
         )
         last = live.segments[-1][-1] if live.segments else None
-        if last is not None and math.dist(last[:2], point) < TRAIL_STEP_METERS:
+        # A pose after a gap starts the next segment however close it is.
+        if (
+            last is not None
+            and math.dist(last[:2], point) < TRAIL_STEP_METERS
+            and not went_unseen(live.seen, seen)
+        ):
             live.seen = seen if seen is not None else live.seen
             return
         x, y = round(point[0], 2), round(point[1], 2)

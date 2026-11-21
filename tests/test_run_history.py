@@ -635,7 +635,7 @@ async def test_trails_reload_and_reject_damaged_storage(
     ]
     hass_storage["matic_robot.run_trails.entry"] = {
         "version": 1,
-        "minor_version": 1,
+        "minor_version": 2,
         "key": "matic_robot.run_trails.entry",
         "data": {
             "trails": [good, *bad],
@@ -665,6 +665,41 @@ async def test_trails_reload_and_reject_damaged_storage(
     assert reloaded._data() == {"trails": [], "live": None}
 
     await trails.async_remove()
+    assert trails._data() == {"trails": [], "live": None}
+
+
+async def test_older_trails_split_where_the_map_left_a_jump_undrawn(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    older = {
+        "id": "t1",
+        "run_id": "run-1",
+        "map_key": MAP,
+        "started_at": STARTED,
+        "ended_at": ENDED,
+        "segments": [[[0, 0], [0.5, 0], [3, 0], [3.5, 0]], [[9, 9]]],
+    }
+    hass_storage["matic_robot.run_trails.entry"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "matic_robot.run_trails.entry",
+        "data": {
+            "trails": [older, "junk", {**older, "segments": "x"}],
+            "live": {**older, "segments": ["x"]},
+        },
+    }
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    assert trails._data() == {
+        "trails": [
+            {**older, "segments": [[[0, 0], [0.5, 0]], [[3, 0], [3.5, 0]], [[9, 9]]]}
+        ],
+        "live": None,
+    }
+
+    hass_storage["matic_robot.run_trails.entry"]["data"] = {"trails": "junk"}
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
     assert trails._data() == {"trails": [], "live": None}
 
 

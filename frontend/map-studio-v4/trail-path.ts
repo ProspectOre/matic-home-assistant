@@ -10,8 +10,11 @@ const TRAIL_GAP_SECONDS = 8;
 
 /** Whether a kept pose begins a new segment: a jump, or a stretch the robot went unseen. */
 export const startsSegment = (last: TrailPoint, lastSeen: number | null, point: TrailPoint, seen: number | null): boolean =>
-  Math.hypot(point[0] - last[0], point[1] - last[1]) > TRAIL_JUMP_METERS
-  || (lastSeen !== null && seen !== null && seen - lastSeen > TRAIL_GAP_SECONDS);
+  Math.hypot(point[0] - last[0], point[1] - last[1]) > TRAIL_JUMP_METERS || wentUnseen(lastSeen, seen);
+
+/** Whether the robot was unseen too long for the path between to be known. */
+export const wentUnseen = (lastSeen: number | null, seen: number | null): boolean =>
+  lastSeen !== null && seen !== null && seen - lastSeen > TRAIL_GAP_SECONDS;
 
 /** Squared distance from a point to the segment between its kept neighbours. */
 const weight = (point: TrailPoint, first: TrailPoint, last: TrailPoint): number => {
