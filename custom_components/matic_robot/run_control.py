@@ -551,13 +551,20 @@ class RunControl:
         """Return the lifecycle reason attached to the current cancellation."""
         return self.actor(serial_number).cancellation_reason
 
-    async def async_wait_for_run_end(self, serial_number: str, run_id: str) -> None:
-        """Wait until the run's finalizer has announced its ``plan_finished``."""
-        end = self.actor(serial_number).run_ends.setdefault(
+    @callback
+    def run_ending(self, serial_number: str, run_id: str) -> asyncio.Future[None]:
+        """Hold run ``run_id``'s dock closures until its ``plan_finished``."""
+        return self.actor(serial_number).run_ends.setdefault(
             run_id, asyncio.get_running_loop().create_future()
         )
-        # Waiters share the future; one cancelled waiter must not cancel it.
-        await asyncio.wait((end,))
+
+    async def async_wait_for_run_end(
+        self, serial_number: str, run_id: str, running: bool
+    ) -> None:
+        """Wait for a running or ending run's ``plan_finished``; else return."""
+        if running or run_id in self.actor(serial_number).run_ends:
+            # Waiters share the future; one cancelled waiter must not cancel it.
+            await asyncio.wait((self.run_ending(serial_number, run_id),))
 
     @callback
     def run_ended(self, serial_number: str, run_id: str) -> None:

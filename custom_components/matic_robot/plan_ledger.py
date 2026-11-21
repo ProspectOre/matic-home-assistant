@@ -713,8 +713,8 @@ class PlanLedger:
         A running run closes after its ``plan_finished``, which ``plan_docked``
         so always follows. A failed run only has its matching fence cleared.
         """
-        if running_run(self.repository.robot(serial_number), run_id) is not None:
-            await self.control.async_wait_for_run_end(serial_number, run_id)
+        live = running_run(self.repository.robot(serial_number), run_id) is not None
+        await self.control.async_wait_for_run_end(serial_number, run_id, live)
         outcome = (self.run_record(serial_number, run_id) or {}).get("outcome")
         if outcome == "failed" and stop_fence_token is not None:
             return await self.control.async_clear_stop_pending_if_token(

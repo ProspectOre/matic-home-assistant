@@ -758,6 +758,8 @@ async def async_finish_plan_run(
         "terminal_activity": terminal_activity,
         "completed_room_count": completed_room_count,
     }
+    # A dock closure seen once the end is stored waits for plan_finished.
+    manager.control.run_ending(serial_number, started["run_id"])
     try:
         await manager.ledger.async_finish_run(
             serial_number,

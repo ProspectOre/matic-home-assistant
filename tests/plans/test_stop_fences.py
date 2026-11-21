@@ -366,3 +366,48 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
         assert manager.control.stop_pending("stale") is False
     manager.repository.store.async_load.assert_awaited_once()
     manager.repository.store.async_save.assert_awaited_once()
+
+
+async def test_dock_closure_waits_for_plan_finished_after_the_end_is_stored(
+    hass,
+) -> None:
+    """A dock seen after the end is stored but before plan_finished still follows it."""
+    manager = memory_manager(hass)
+    order: list[str] = []
+    for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
+        hass.bus.async_listen(event_type, lambda event: order.append(event.event_type))
+    await manager.ledger.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    finish_run = manager.ledger.async_finish_run
+    closures: list[asyncio.Task[bool]] = []
+
+    async def finish_then_dock(*args, **kwargs) -> None:
+        await finish_run(*args, **kwargs)
+        closures.append(
+            hass.async_create_task(
+                manager.ledger.async_mark_run_docked("serial", "run-1")
+            )
+        )
+
+    manager.ledger.async_finish_run = finish_then_dock
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "away", "run_id": "run-1"},
+        "cancelled",
+        "managed_stop",
+        "managed_cancellation",
+        0,
+    )
+    assert await closures[0]
+    await hass.async_block_till_done()
+    assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
