@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .plan_model import COVERAGE_SETTINGS
+from .plan_model import COVERAGE_SETTINGS, CadencePolicyError
 
 MAX_CADENCE_INTERVAL = 100
 
 
-class CoverageCadenceRequiresVacuumError(ValueError):
+class CoverageCadenceRequiresVacuumError(CadencePolicyError):
     """A vacuum-strength schedule cannot change a mop-only run."""
 
 
@@ -25,10 +25,10 @@ def normalize_cadence_policy(
     if value is None:
         value = {}
     if not isinstance(value, Mapping):
-        raise ValueError("room cadence must be an object")
+        raise CadencePolicyError("room cadence must be an object")
     scope = value.get("scope", "plan")
     if not isinstance(scope, str) or scope not in {"plan", "shared"}:
-        raise ValueError("room cadence scope must be plan or shared")
+        raise CadencePolicyError("room cadence scope must be plan or shared")
     mop_interval = validate_cadence_interval(value.get("mop_every_n"), "mop_every_n")
     coverage_interval = validate_cadence_interval(
         value.get("coverage_every_n"), "coverage_every_n"
@@ -40,11 +40,13 @@ def normalize_cadence_policy(
         not isinstance(periodic_coverage, str)
         or periodic_coverage not in COVERAGE_SETTINGS
     ):
-        raise ValueError(
+        raise CadencePolicyError(
             "periodic coverage is required when coverage cadence is enabled"
         )
     if mop_interval is not None and cleaning_mode != "vacuum":
-        raise ValueError("mop cadence requires vacuum as the normal cleaning mode")
+        raise CadencePolicyError(
+            "mop cadence requires vacuum as the normal cleaning mode"
+        )
     if (
         not isinstance(coverage_setting, str)
         or coverage_setting not in COVERAGE_SETTINGS
@@ -52,18 +54,18 @@ def normalize_cadence_policy(
         raise ValueError("room coverage setting is invalid")
     do_mop_next = value.get("do_mop_next", False)
     if not isinstance(do_mop_next, bool):
-        raise ValueError("do_mop_next must be a boolean")
+        raise CadencePolicyError("do_mop_next must be a boolean")
     do_coverage_next = value.get("do_coverage_next", False)
     if not isinstance(do_coverage_next, bool):
-        raise ValueError("do_coverage_next must be a boolean")
+        raise CadencePolicyError("do_coverage_next must be a boolean")
     if not cadence_enabled:
         do_mop_next = False
         do_coverage_next = False
     else:
         if do_mop_next and mop_interval is None:
-            raise ValueError("do_mop_next requires mop_every_n")
+            raise CadencePolicyError("do_mop_next requires mop_every_n")
         if do_coverage_next and coverage_interval is None:
-            raise ValueError("do_coverage_next requires coverage_every_n")
+            raise CadencePolicyError("do_coverage_next requires coverage_every_n")
     if coverage_interval is not None and cleaning_mode == "mop":
         raise CoverageCadenceRequiresVacuumError(
             "coverage cadence requires vacuum or vacuum_and_mop "
@@ -175,7 +177,9 @@ def validate_cadence_interval(value: object, field: str) -> int | None:
         or not isinstance(value, int)
         or not 1 <= value <= MAX_CADENCE_INTERVAL
     ):
-        raise ValueError(f"{field} must be between 1 and {MAX_CADENCE_INTERVAL}")
+        raise CadencePolicyError(
+            f"{field} must be between 1 and {MAX_CADENCE_INTERVAL}"
+        )
     return value
 
 
