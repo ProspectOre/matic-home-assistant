@@ -35,11 +35,12 @@ from .native_completion import (
     match_single_room_completions,
     match_single_room_unreachable,
     native_room_key,
+    records_for_dispatch,
     session_overlaps_dispatch,
 )
 from .native_history import OEM_STOP_RECONCILIATION_SECONDS
 from .plan_model import CleaningRoom
-from .robot_port import RobotPort
+from .robot_port import RobotPort, SessionHistory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ HOME = frozenset({RobotActivity.DOCKED, RobotActivity.CHARGING})
 
 
 async def _async_verify_leg_completion(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
+    reader: SessionHistory,
     baseline: frozenset[bytes] | None,
     rooms: Sequence[CleaningRoom],
     dispatched_at: datetime,
@@ -77,6 +78,7 @@ async def _async_verify_leg_completion(
     on_verified_session: Callable[[str], None] | None = None,
     skipped_room_ids: Collection[str] = (),
     on_unreached: Callable[[str], None] | None = None,
+    session_hash: str | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
@@ -84,8 +86,9 @@ async def _async_verify_leg_completion(
     every leg room the record marks completed with a positive duration, and
     ``on_unreached`` gets each room the record shows the robot could not
     reach. A missing or ambiguous record returns ``None`` and credits nothing.
+    With ``session_hash`` only the mission's own record counts.
     """
-    if baseline is None:
+    if baseline is None and session_hash is None:
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     required_room_ids = set(targets.values()) - set(skipped_room_ids)
@@ -105,7 +108,7 @@ async def _async_verify_leg_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await reader(session_hash=session_hash)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic leg evidence unavailable (%s)", type(err).__name__
@@ -118,10 +121,13 @@ async def _async_verify_leg_completion(
                 )
                 now = dt_util.utcnow()
                 matches: list[CleaningSessionRecord] = []
-                for record in records:
+                candidates = records_for_dispatch(records, baseline, session_hash)
+                if not candidates and (candidates is None or session_hash):
+                    # An unreadable new record, or no owned one yet, drops
+                    # earlier evidence: the rooms stay unverified and due.
+                    evidence = None
+                for record in candidates or ():
                     session = record.session
-                    if record.key in baseline:
-                        continue
                     if not session_overlaps_dispatch(session, dispatched_at, now):
                         continue
                     names = [name.strip().casefold() for name in session.rooms]
@@ -458,19 +464,6 @@ async def _async_active_session_state(
     return None
 
 
-async def _async_session_history_baseline(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
-) -> frozenset[bytes] | None:
-    """Capture opaque native keys before dispatch without exposing their values."""
-    try:
-        return frozenset(record.key for record in await reader())
-    except MaticError as err:
-        _LOGGER.debug(
-            "Native Matic completion baseline unavailable (%s)", type(err).__name__
-        )
-        return None
-
-
 class NativeRoomVerdict(StrEnum):
     """What native history proves about one owned single-room mission."""
 
@@ -480,7 +473,7 @@ class NativeRoomVerdict(StrEnum):
 
 
 async def _async_adjudicate_room_end(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
+    reader: SessionHistory,
     baseline: frozenset[bytes] | None,
     room: CleaningRoom,
     dispatched_at: datetime,
@@ -491,14 +484,16 @@ async def _async_adjudicate_room_end(
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
     on_verified_completion: Callable[[str, int], None] | None = None,
+    session_hash: str | None = None,
 ) -> NativeRoomVerdict:
     """Settle an ended single-room mission from one new native record.
 
     Completion needs one new, completed, overlapping record for the room.
     Unreachable needs one new, overlapping record the robot finished with the
     room unattempted. Anything else, including ambiguity, earns no verdict.
+    With ``session_hash`` only the mission's own record counts.
     """
-    if baseline is None:
+    if baseline is None and session_hash is None:
         return NativeRoomVerdict.UNVERIFIED
     try:
         async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
@@ -509,7 +504,7 @@ async def _async_adjudicate_room_end(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader()
+                    records = await reader(session_hash=session_hash)
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic completion evidence unavailable (%s)",
@@ -525,6 +520,7 @@ async def _async_adjudicate_room_end(
                 matches = match_single_room_completions(
                     records,
                     baseline=baseline,
+                    session_hash=session_hash,
                     room_name=room.name,
                     cleaning_mode=room.cleaning_mode,
                     dispatched_at=dispatched_at,
@@ -533,6 +529,7 @@ async def _async_adjudicate_room_end(
                 unreachable = match_single_room_unreachable(
                     records,
                     baseline=baseline,
+                    session_hash=session_hash,
                     room_name=room.name,
                     cleaning_mode=room.cleaning_mode,
                     dispatched_at=dispatched_at,
@@ -554,6 +551,7 @@ async def _async_adjudicate_room_end(
                 if has_cancelled_single_room_record(
                     records,
                     baseline=baseline,
+                    session_hash=session_hash,
                     room_name=room.name,
                     dispatched_at=dispatched_at,
                     now=now,

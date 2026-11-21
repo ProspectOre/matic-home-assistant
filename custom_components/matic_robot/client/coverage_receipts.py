@@ -21,7 +21,7 @@ from .coverage_goals import (
     coverage_readback_matches,
 )
 from .models import FloorPlan
-from .wire import WireFieldBudget, decode_fields
+from .wire import WireFieldBudget, decode_fields, uuid_from_fixed64
 
 _MAX_ROOMS = 512
 _MAX_FIELDS = 96 * 1024
@@ -87,8 +87,7 @@ def _uuid_hash(payload: bytes) -> str:
         raise DecodeError("receipt UUID has an invalid fixed64 pair")
     high, low = values[1], values[2]
     assert isinstance(high, bytes) and isinstance(low, bytes)
-    value = (int.from_bytes(high, "little") << 64) | int.from_bytes(low, "little")
-    return _hash(str(UUID(int=value)).encode("ascii"))
+    return _hash(uuid_from_fixed64(high, low).encode("ascii"))
 
 
 def native_session_hash(payload: bytes, *, active: bool = False) -> str | None:

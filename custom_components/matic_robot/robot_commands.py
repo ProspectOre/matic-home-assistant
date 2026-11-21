@@ -56,6 +56,8 @@ class CleanRooms:
     motion_token: int
     session_id: UUID
     floor_token: str
+    # The inactive session marker a handoff saved; the robot must still show it.
+    idle_revision: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -69,6 +71,8 @@ class CleanPlanArea:
     motion_token: int
     session_id: UUID
     floor_token: str
+    # The inactive session marker a handoff saved; the robot must still show it.
+    idle_revision: str | None = None
 
 
 type PlanStart = CleanRooms | CleanPlanArea
@@ -131,6 +135,7 @@ class RobotCommands:
                 motion_token=command.motion_token,
                 expected_floor_token=command.floor_token,
                 managed_session_id=command.session_id,
+                expected_idle_revision=command.idle_revision,
             )
             return
         params["ordered"] = command.ordered
@@ -145,6 +150,7 @@ class RobotCommands:
             motion_token=command.motion_token,
             expected_floor_token=command.floor_token,
             managed_session_id=command.session_id,
+            expected_idle_revision=command.idle_revision,
         )
 
     async def async_clean(
@@ -280,6 +286,7 @@ class RobotCommands:
         motion_token: int | None = None,
         expected_floor_token: str | None = None,
         managed_session_id: UUID | None = None,
+        expected_idle_revision: str | None = None,
         room_coverage: list[CoverageSetting] | None = None,
         room_modes: list[CleaningMode] | None = None,
     ) -> None:
@@ -414,6 +421,7 @@ class RobotCommands:
                         room_modes,
                         first_room_name=rooms[0].name,
                         session_id=managed_session_id,
+                        expected_idle_revision=expected_idle_revision,
                         require_current=require_current_dispatch,
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
@@ -430,10 +438,8 @@ class RobotCommands:
                         ),
                     )
                 except CoverageGuardError as err:
-                    raise ServiceValidationError(
-                        coverage_guard_message(err),
-                        translation_domain=DOMAIN,
-                        translation_key=err.reason_code,
+                    raise validation_error(
+                        coverage_guard_message(err), err.reason_code
                     ) from err
                 except (MaticError, TimeoutError) as err:
                     raise HomeAssistantError(
@@ -454,12 +460,12 @@ class RobotCommands:
                         ordered=ordered,
                         require_settings_readback=True,
                         session_id=managed_session_id,
+                        expected_idle_revision=expected_idle_revision,
                         require_current=require_current_dispatch,
                     )
                 else:
-                    # Direct HA starts have no managed cadence accounting. Own
-                    # their UUID before transmission so later history cannot
-                    # mistake them for an app-started cleaning.
+                    # Direct starts have no cadence accounting. Claim their UUID
+                    # first so later history cannot take them for app cleans.
                     direct_session_id = uuid4()
                     await self._plans.ledger.async_claim_native_session(
                         serial_number, str(direct_session_id)
@@ -501,6 +507,7 @@ class RobotCommands:
         motion_token: int,
         expected_floor_token: str,
         managed_session_id: UUID,
+        expected_idle_revision: str | None = None,
     ) -> None:
         """Start one managed plan's custom area as its own owned mission.
 
@@ -558,13 +565,12 @@ class RobotCommands:
                     cleaning_mode=cleaning_mode,
                     coverage_setting=coverage_setting,
                     session_id=managed_session_id,
+                    expected_idle_revision=expected_idle_revision,
                     require_current=require_current_dispatch,
                 )
             except CoverageGuardError as err:
-                raise ServiceValidationError(
-                    coverage_guard_message(err),
-                    translation_domain=DOMAIN,
-                    translation_key=err.reason_code,
+                raise validation_error(
+                    coverage_guard_message(err), err.reason_code
                 ) from err
             except (MaticError, ValueError) as err:
                 raise HomeAssistantError(

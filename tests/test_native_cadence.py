@@ -82,9 +82,7 @@ def test_replay_revision_disabled_and_retention():
     assert robot == baseline
     assert not import_native_cadence(robot, floor, [])
     robot["native_cleanings"]["enabled"] = False
-    cancelled = replace(
-        record, session=replace(record.session, stop_reason="user_cancelled")
-    )
+    cancelled = replace(record, session=replace(record.session, stop_reason="stopped"))
     assert import_native_cadence(robot, floor, [cancelled])
     assert schedule["progress"] == {"mop": 0, "coverage": 0}
     assert import_native_cadence(robot, floor, [record])
@@ -99,7 +97,7 @@ def test_replay_revision_disabled_and_retention():
         {"mission_id": 99},
         {"partition_id": "other"},
         {"initiator": None},
-        {"stop_reason": "user_cancelled"},
+        {"stop_reason": "stopped"},
         {"completion_kind": "incomplete"},
         {"started_at": None},
         {"ended_at": "invalid"},
@@ -394,9 +392,7 @@ def test_delayed_records_use_verified_saved_floor_bindings():
     # schedule's previously verified mission/partition/room identity.
     assert import_native_cadence(robot, other, [record])
     assert schedule["progress"]["mop"] == 1
-    cancelled = replace(
-        record, session=replace(record.session, stop_reason="user_cancelled")
-    )
+    cancelled = replace(record, session=replace(record.session, stop_reason="stopped"))
     assert import_native_cadence(robot, other, [cancelled])
     assert schedule["progress"]["mop"] == 0
     # A newly loaded inventory can establish the binding before this floor

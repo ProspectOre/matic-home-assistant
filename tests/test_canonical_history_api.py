@@ -11,13 +11,16 @@ from custom_components.matic_robot.client.cleaning_session import (
     _native_history_collection_revision,
     decode_cleaning_session,
 )
-from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.history_semantics import (
     MAX_HISTORY_BYTES,
     decode_history_semantics,
 )
-from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.models import (
+    CleaningSessionRecord,
+    HermesCollectionEntry,
+)
 from custom_components.matic_robot.client.telemetry_fields import telemetry_bytes
+from custom_components.matic_robot.run_history import native_entry
 from tests.client.test_coverage_receipts import history_key
 from tests.client.test_history_semantics import _payload
 from tests.wire_builders import _bfield, _fixed32, _vfield
@@ -33,6 +36,9 @@ def test_canonical_projection_keeps_room_identity_and_stop_separate():
     cancelled = decode_cleaning_session(_payload(stop=_bfield(8, _bfield(1, b""))))
     assert cancelled is not None
     assert cancelled.completed is False
+    # Matic Map, the event and the sensor read the documented name.
+    assert (cancelled.stop_reason_code, cancelled.stop_reason) == (8, "stopped")
+    assert native_entry(CleaningSessionRecord(b"key", cancelled))["ending"] == "stopped"
     assert not cancelled.completed_rooms
     assert cancelled.mode_results[0].status == "completed"
     unknown = decode_cleaning_session(_payload(start_child=7))
@@ -135,10 +141,14 @@ async def test_corrupt_revision_keeps_exact_key_for_credit_retraction():
     )
     records, revision = await client.async_get_cleaning_session_snapshot()
     assert len(records) == 1 and records[0].key == history_key()
+    assert records[0].decoded is False
     assert records[0].session.completed is None
     assert revision != _native_history_collection_revision(())
-    with pytest.raises(MaticError, match="undecodable"):
-        await client.async_get_cleaning_session_snapshot(strict=True)
+    # The key still names the session, so a strict read is complete.
+    assert await client.async_get_cleaning_session_snapshot(strict=True) == (
+        records,
+        revision,
+    )
 
 
 async def test_non_room_and_unknown_modern_records_keep_strict_baselines():
@@ -169,9 +179,7 @@ def test_conflicting_modern_envelopes_remain_undecodable():
 async def test_managed_baseline_accepts_an_opaque_non_room_session():
     from functools import partial
 
-    from custom_components.matic_robot.managed_observation import (
-        _async_session_history_baseline,
-    )
+    from tests.session_fakes import robot_port
 
     client = MaticHermesClient("192.0.2.1", 16320)
     client.async_get_tracked_collection_entries = AsyncMock(
@@ -179,7 +187,7 @@ async def test_managed_baseline_accepts_an_opaque_non_room_session():
             HermesCollectionEntry(history_key(), _payload(modern_payload=b"")),
         )
     )
-    baseline = await _async_session_history_baseline(
-        partial(client.async_get_cleaning_session_records, strict=True)
-    )
+    baseline = await robot_port(
+        session_history=partial(client.async_get_cleaning_session_records, strict=True)
+    ).history_keys()
     assert baseline is not None and set(baseline) == {history_key()}

@@ -17,6 +17,7 @@ from .map_schema import RunEntry
 from .plan_catalog import PlanCatalog
 from .plan_model import (
     _is_manual_room_sequence_plan_id,
+    stored_count,
 )
 from .plan_repository import (
     PlanRepository,
@@ -25,6 +26,7 @@ from .run_control import (
     RunControl,
 )
 from .run_history import history_entries
+from .run_machine import running_run
 
 
 class PlanHistory:
@@ -48,17 +50,16 @@ class PlanHistory:
         """
         robot = self.repository.robot(serial_number)
         active = robot.get("active_plan")
-        run = robot.get("last_run")
+        run = running_run(robot)
         if (
             not isinstance(active, Mapping)
-            or not isinstance(run, Mapping)
+            or run is None
             or not isinstance(active.get("room_id"), str)
             or not active["room_id"]
             or not isinstance(active.get("run_id"), str)
             or not active["run_id"]
             or run.get("run_id") != active["run_id"]
             or run.get("plan_id") != active.get("plan_id")
-            or run.get("outcome") != "running"
             or self.control.cancellation_reason(serial_number) == "motion_replaced"
             or active.get("status") not in {"running", "suspended"}
             or not isinstance(active.get("cleaning_started"), str)
@@ -92,27 +93,15 @@ class PlanHistory:
             for rotation in robot["rotations"].values()
             for record in rotation["rooms"].values()
         ]
-        completed_runs = sum(
-            plan_timing._stored_count(item, "completed_runs") for item in records
-        )
-        failed_runs = sum(
-            plan_timing._stored_count(item, "failed_runs") for item in records
-        )
-        cancelled_runs = sum(
-            plan_timing._stored_count(item, "cancelled_runs") for item in records
-        )
+        completed_runs = sum(stored_count(item, "completed_runs") for item in records)
+        failed_runs = sum(stored_count(item, "failed_runs") for item in records)
+        cancelled_runs = sum(stored_count(item, "cancelled_runs") for item in records)
         interrupted_runs = sum(
-            plan_timing._stored_count(item, "interrupted_runs") for item in records
+            stored_count(item, "interrupted_runs") for item in records
         )
-        suspended_runs = sum(
-            plan_timing._stored_count(item, "suspended_runs") for item in records
-        )
-        unverified_runs = sum(
-            plan_timing._stored_count(item, "unverified_runs") for item in records
-        )
-        skipped_runs = sum(
-            plan_timing._stored_count(item, "skipped_runs") for item in records
-        )
+        suspended_runs = sum(stored_count(item, "suspended_runs") for item in records)
+        unverified_runs = sum(stored_count(item, "unverified_runs") for item in records)
+        skipped_runs = sum(stored_count(item, "skipped_runs") for item in records)
         last_completed = max(
             (
                 str(item["last_completed"])
@@ -129,27 +118,11 @@ class PlanHistory:
             }
             for plan_id, plan in robot["plans"].items()
         }
-        last_run = robot.get("last_run")
-        checkpoint = (
-            last_run.get("recovery_checkpoint")
-            if isinstance(last_run, Mapping) and last_run.get("outcome") == "running"
-            else None
-        )
-        pending_smart_stop = bool(
-            isinstance(last_run, Mapping)
-            and isinstance(last_run.get("run_id"), str)
-            and isinstance(checkpoint, Mapping)
-            and checkpoint.get("stop_intent") == "after_room"
-            and self.control.finish_room_event(serial_number).is_set()
-            and self.control.cancellation_reason(serial_number) != "motion_replaced"
-        )
+        smart_stop = self.control.smart_stop_phase(serial_number)
         active_plan = deepcopy(robot.get("active_plan"))
-        if (
-            pending_smart_stop
-            and isinstance(last_run, Mapping)
-            and isinstance(last_run.get("run_id"), str)
-            and not isinstance(active_plan, dict)
-        ):
+        if smart_stop is not None and not isinstance(active_plan, dict):
+            # Smart Stop docks after the run's last room or area ended.
+            last_run = robot["last_run"]
             active_plan = {
                 "run_id": last_run["run_id"],
                 "plan_id": last_run.get("plan_id"),
@@ -160,21 +133,9 @@ class PlanHistory:
             active_plan["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
                 active_plan, dt_util.utcnow()
             )
-            active_plan["smart_stop_pending"] = bool(
-                pending_smart_stop
-                and isinstance(last_run, Mapping)
-                and active_plan.get("run_id") == last_run.get("run_id")
-            )
-            if active_plan["smart_stop_pending"]:
-                active_plan["smart_stop_phase"] = (
-                    "verifying_completion"
-                    if active_plan.get("status") == "verifying"
-                    else "finishing_room"
-                    if isinstance(active_plan.get("room_id"), str)
-                    else "finishing_area"
-                    if isinstance(active_plan.get("area_id"), str)
-                    else "returning_to_dock"
-                )
+            active_plan["smart_stop_pending"] = smart_stop is not None
+            if smart_stop is not None:
+                active_plan["smart_stop_phase"] = smart_stop
         public_last_run = deepcopy(robot.get("last_run"))
         if isinstance(public_last_run, dict):
             public_last_run.pop("recovery_checkpoint", None)
@@ -192,7 +153,7 @@ class PlanHistory:
                     "name": room.get("name"),
                     "at": room.get("last_completed"),
                     "duration_seconds": room.get("last_duration_seconds"),
-                    "runs": plan_timing._stored_count(room, "completed_runs"),
+                    "runs": stored_count(room, "completed_runs"),
                 }
                 for room_id, room in robot["rooms"].items()
             },

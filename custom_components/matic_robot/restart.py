@@ -21,8 +21,10 @@ from .client import (
     CleaningSessionRecord,
     CoverageReceipt,
     MaticError,
+    NativeHistoryIncompleteError,
     UserCommand,
     is_sha256_hex,
+    native_session_hash,
     uuid_string,
 )
 from .const import DOMAIN
@@ -322,6 +324,55 @@ class _Rejoined:
     robot: RobotPort
 
 
+async def _async_handoff_change(
+    robot: RobotPort, checkpoint: dict[str, Any]
+) -> str | None:
+    """Return why a saved leg handoff no longer holds; None while it does."""
+    handoff_history = checkpoint.get("handoff_history")
+    if not isinstance(handoff_history, list) or not all(
+        is_sha256_hex(key) for key in handoff_history
+    ):
+        return "restart_handoff_history_unavailable"
+    if "handoff_revision" in checkpoint and (
+        not is_sha256_hex(revision := checkpoint["handoff_revision"])
+        or await robot.handoff_revision() != revision
+    ):
+        return "restart_native_mission_changed_or_ended"
+    expected = frozenset(handoff_history)
+    keys = await robot.session_keys(
+        session_hash=checkpoint.get("session_hash"), expected_hashes=expected
+    )
+    if {hashlib.sha256(key).hexdigest() for key in keys} != expected:
+        return "restart_handoff_history_changed"
+    return None
+
+
+async def _async_recovered_history(
+    robot: RobotPort, checkpoint: dict[str, Any], identity: bytes
+) -> tuple[frozenset[bytes] | None, str | None] | None:
+    """Return a restarted dispatch's history baseline and session fingerprint.
+
+    None means the checkpoint cannot resume. A dispatch that saved its own
+    session must still be the robot's active one, and needs no baseline.
+    """
+    session_hash = checkpoint.get("session_hash")
+    if session_hash is not None and not is_sha256_hex(session_hash):
+        return None
+    active_hash = native_session_hash(identity, active=True) if identity else None
+    if session_hash is not None and active_hash not in {None, session_hash}:
+        return None
+    hashes = checkpoint.get("history_baseline")
+    if not isinstance(hashes, list):
+        return (None, session_hash) if hashes is None and session_hash else None
+    records = await robot.session_history(session_hash=session_hash)
+    baseline = frozenset(
+        record.key
+        for record in records
+        if hashlib.sha256(record.key).hexdigest() in hashes
+    )
+    return baseline, session_hash or active_hash
+
+
 async def async_recover_managed_run(
     hass: HomeAssistant, entry: MaticConfigEntry, serial_number: str
 ) -> None:
@@ -356,6 +407,9 @@ async def async_recover_managed_run(
         if _shutdown_suspends_run(hass, manager, serial_number):
             reason = "home_assistant_shutdown"
         raise
+    except NativeHistoryIncompleteError:
+        # Unlike a failed read, this holds until the robot drops the entry.
+        reason = "restart_history_incomplete"
     except (
         HomeAssistantError,
         MaticError,
@@ -525,18 +579,10 @@ async def _async_resume_handoff(recovery: _Recovery, rejoined: _Rejoined) -> str
     """Settle the leg a shutdown interrupted between legs, then run the rest."""
     manager, serial_number = recovery.manager, recovery.serial_number
     identity = rejoined.identity
-    handoff_history = recovery.checkpoint.get("handoff_history")
-    if not isinstance(handoff_history, list) or not all(
-        isinstance(key, str) and len(key) == 64 for key in handoff_history
-    ):
-        return "restart_handoff_history_unavailable"
-    records = await recovery.runtime.client.async_get_cleaning_session_records(
-        strict=True
-    )
-    if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
-        handoff_history
-    ):
-        return "restart_handoff_history_changed"
+    if (
+        changed := await _async_handoff_change(rejoined.robot, recovery.checkpoint)
+    ) is not None:
+        return changed
     await manager.recovery.async_mark_recovery_status(
         serial_number, "running", reason="handoff_checkpoint_verified"
     )
@@ -571,15 +617,10 @@ async def _async_resume_mission(recovery: _Recovery, rejoined: _Rejoined) -> str
     checkpoint, identity = recovery.checkpoint, rejoined.identity
     dispatched_at = stored_instant(checkpoint["dispatched_at"])
     assert dispatched_at is not None
-    records = await recovery.runtime.client.async_get_cleaning_session_records()
-    hashes = checkpoint.get("history_baseline")
-    if not isinstance(hashes, list):
+    recovered = await _async_recovered_history(rejoined.robot, checkpoint, identity)
+    if recovered is None:
         return _CHECKPOINT_UNVERIFIED
-    baseline = frozenset(
-        record.key
-        for record in records
-        if hashlib.sha256(record.key).hexdigest() in hashes
-    )
+    baseline, session_hash = recovered
     # Recheck after I/O: Stop, takeover, and map transitions win recovery.
     if (
         recovery.lost_ownership()
@@ -608,6 +649,7 @@ async def _async_resume_mission(recovery: _Recovery, rejoined: _Rejoined) -> str
                 native_identity=identity,
                 recovered=True,
                 completion_deadline=stored_instant(checkpoint["completion_deadline"]),
+                session_hash=session_hash,
             ),
         )
     # The mission end was observed and saved before shutdown. Only its
@@ -616,7 +658,7 @@ async def _async_resume_mission(recovery: _Recovery, rejoined: _Rejoined) -> str
     # authorizes after a verifying checkpoint.
     assert isinstance(leg, list)
     return await _async_verify_ended_leg(
-        recovery, rejoined, leg, baseline, dispatched_at
+        recovery, rejoined, leg, baseline, dispatched_at, session_hash
     )
 
 
@@ -624,8 +666,9 @@ async def _async_verify_ended_leg(
     recovery: _Recovery,
     rejoined: _Rejoined,
     leg: list[CleaningRoom],
-    baseline: frozenset[bytes],
+    baseline: frozenset[bytes] | None,
     dispatched_at: datetime,
+    session_hash: str | None,
 ) -> str:
     """Read the ended leg's history within its saved budget and credit it."""
     manager, serial_number = recovery.manager, recovery.serial_number
@@ -639,8 +682,12 @@ async def _async_verify_ended_leg(
         serial_number, "verifying", reason="native_end_previously_observed"
     )
 
-    async def read_history() -> tuple[CleaningSessionRecord, ...]:
-        records = await runtime.client.async_get_cleaning_session_records()
+    async def read_history(
+        *, session_hash: str | None = None
+    ) -> tuple[CleaningSessionRecord, ...]:
+        # A new entry without a session identity must hold credit, not
+        # vanish from the read.
+        records = await rejoined.robot.session_history(session_hash=session_hash)
         if (
             recovery.lost_ownership()
             or not recovery.completion_is_current()
@@ -663,6 +710,7 @@ async def _async_verify_ended_leg(
         cancel_event=recovery.cancel,
         timeout_seconds=remaining,
         on_verified_session=completion_sessions.append,
+        session_hash=session_hash,
     )
     verified_coverage = await async_confirm_completed_coverage(
         manager.recovery.coverage_receipt(serial_number, recovery.run["run_id"]),
@@ -705,7 +753,10 @@ async def _async_credit_verified_rooms(
                 ),
             ):
                 return "restart_recovery_superseded"
-            restarted, _ = transition(restarted, RoomVerified(room.room_id))
+            counted = recovery.manager.recovery.counted_room_ids(
+                recovery.serial_number, run["run_id"]
+            )
+            restarted, _ = transition(restarted, RoomVerified(counted))
             rejoined.robot.confirm_room_completed(room.name)
             fire_room_event(
                 recovery.hass,

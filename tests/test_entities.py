@@ -2097,13 +2097,9 @@ def test_photorealistic_camera_withholds_mismatched_floor_overlays() -> None:
 
 async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
     entry = _entry()
+    session_id = "11111111-1111-4111-8111-111111111111"
 
-    await managed_clean_rooms(
-        entry,
-        ["room-2"],
-        token=7,
-        session_id="11111111-1111-4111-8111-111111111111",
-    )
+    await managed_clean_rooms(entry, ["room-2"], token=7, session_id=session_id)
 
     coverage_call = entry.runtime_data.session.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-2"]
@@ -2114,7 +2110,8 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
             "coverage_setting": CoverageSetting.STANDARD,
             "ordered": False,
             "require_settings_readback": True,
-            "session_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "expected_idle_revision": None,
+            "session_id": UUID(session_id),
         },
     )
     entry.runtime_data.cleaning_plans.control.managed_command.assert_called_once_with(

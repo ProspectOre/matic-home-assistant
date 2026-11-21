@@ -18,6 +18,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
+from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.wire_builders import _session_identity
@@ -104,7 +105,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         robot.show("returning")
         return RoomRunOutcome.HANDOFF_CANDIDATE, None
 
-    async def history():
+    async def history(**_: object):
         if not ended:
             return ()
         results = tuple(
@@ -116,7 +117,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         names = tuple(r.name for r in rooms)
         return (
             CleaningSessionRecord(
-                b"synthetic-record",
+                history_key(commands[-1].session_id),
                 CleaningSession(
                     started_at,
                     dt_util.utcnow().isoformat(),
@@ -300,10 +301,13 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     confirmed = []
     ended = False
 
+    session_key = b""
+
     async def send(command):
-        nonlocal identity, started_at
+        nonlocal identity, started_at, session_key
         assert command.rooms == (rooms[0].room_id,)
         identity = _session_identity(command.session_id)
+        session_key = history_key(command.session_id)
         started_at = dt_util.utcnow().isoformat()
         robot.show("cleaning", current_area=rooms[0].name)
 
@@ -315,14 +319,14 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
         robot.show("idle")
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
-    async def history():
+    async def history(**_: object):
         if not ended:
             return ()
         if manager.history.snapshot("serial")["active_plan"]["status"] == "verifying":
             decisions.append(manager.control.request_stop("serial", stop_now=True))
         return (
             CleaningSessionRecord(
-                b"synthetic-stop-record",
+                session_key,
                 CleaningSession(
                     started_at,
                     dt_util.utcnow().isoformat(),

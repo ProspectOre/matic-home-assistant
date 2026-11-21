@@ -793,7 +793,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
 
         hass.async_create_task(finish(), eager_start=True)
 
-    async def history():
+    async def history(**_: object):
         nonlocal reads
         reads += 1
         if reads == 1:

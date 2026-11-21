@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,27 +11,30 @@ from datetime import UTC, datetime
 from google.protobuf.message import DecodeError
 
 from .coverage_receipts import native_session_hash
-from .exceptions import MaticError
+from .exceptions import NativeHistoryIncompleteError
 from .history_semantics import (
     MAX_HISTORY_BYTES,
     SemanticHistory,
     decode_history_semantics,
+    room_duration_seconds,
 )
 from .models import (
-    SESSION_STOP_REASONS,
+    MODE_STATUSES,
     CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
     HermesCollectionEntry,
 )
+from .stop_reason import decode_stop_variant
 from .telemetry_fields import (
     bounded_fields,
     decode_text_from_fields,
     telemetry_bytes,
     telemetry_fields,
-    telemetry_varint,
 )
-from .wire import WireField, decode_fields, field_bytes
+from .wire import WireField, decode_fields, field_bytes, seconds_nanos
+
+_LOGGER = logging.getLogger(__name__)
 
 _SESSION_COMPLETED_STATUS = 0
 _ROOM_MODE_COMPLETED_STATUS = 2
@@ -68,22 +72,40 @@ def _native_history_collection_revision(
 def decode_cleaning_session_records(
     entries: tuple[HermesCollectionEntry, ...], *, strict: bool = False
 ) -> tuple[CleaningSessionRecord, ...]:
-    """Decode opaque-keyed history entries, optionally requiring full coverage."""
+    """Decode opaque-keyed history entries.
+
+    An undecodable value with a valid session key becomes a placeholder.
+    ``strict`` raises if an entry had to be left out for lacking a session
+    identity.
+    """
     records: list[CleaningSessionRecord] = []
-    invalid = False
+    undecodable = unidentified = 0
     for entry in entries:
         session = decode_cleaning_session(entry.value)
-        if not entry.key or session is None:
-            invalid = True
-            if not entry.key or native_session_hash(entry.key) is None:
-                continue
-            # Keep a rejected record's exact identity as a tombstone. Its
-            # disappearance from retention differs from a correction that no
-            # longer supports an earlier completion credit.
-            session = CleaningSession(None, None, None, (), (), None)
-        records.append(CleaningSessionRecord(entry.key, session))
-    if strict and invalid:
-        raise MaticError("Native history is incomplete or undecodable")
+        if entry.key and session is not None:
+            records.append(CleaningSessionRecord(entry.key, session))
+            continue
+        if not entry.key or native_session_hash(entry.key) is None:
+            unidentified += 1
+            continue
+        # Keep a rejected record's exact identity as a placeholder. Its
+        # disappearance from retention differs from a correction that no
+        # longer supports an earlier completion credit.
+        undecodable += 1
+        records.append(CleaningSessionRecord.undecodable(entry.key))
+    if undecodable or unidentified:
+        # Counts only: keys and values stay private.
+        _LOGGER.debug(
+            "Native history read kept %d undecodable and dropped %d "
+            "unidentified of %d entries",
+            undecodable,
+            unidentified,
+            len(entries),
+        )
+    if strict and unidentified:
+        raise NativeHistoryIncompleteError(
+            "Native history has an entry without a session identity"
+        )
     return tuple(records)
 
 
@@ -134,7 +156,7 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         return None
     semantics = decode_history_semantics(payload)
     if semantics is not None:
-        return _canonical_cleaning_session(semantics, started_at, ended_at, fields)
+        return _canonical_cleaning_session(semantics, started_at, ended_at)
     if len(payload) > _CLEANING_SESSION_MAX_BYTES:
         return None
     # Modern pages are governed by the strict OEM-replayed decoder. If the
@@ -165,7 +187,7 @@ def _legacy_cleaning_session(
         CleaningModeResult(
             room=name,
             cleaning_mode="vacuum" if mode == 6 else "mop",
-            status={0: "unattempted", 1: "partial", 2: "completed", None: None}[status],
+            status=None if status is None else MODE_STATUSES[status],
             duration_seconds=results.durations[(mode, name)],
         )
         for (mode, name), status in results.statuses.items()
@@ -176,7 +198,6 @@ def _legacy_cleaning_session(
             room_durations[result.room] = (
                 room_durations.get(result.room, 0) + result.duration_seconds
             )
-    stop_reason_code = decode_stop_reason_code(fields)
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
@@ -193,12 +214,7 @@ def _legacy_cleaning_session(
             name for name in vacuum_completed_rooms if name in mop_completed_rooms
         ),
         mode_results=mode_results,
-        stop_reason_code=stop_reason_code,
-        stop_reason=(
-            SESSION_STOP_REASONS.get(stop_reason_code, "unknown")
-            if stop_reason_code is not None
-            else None
-        ),
+        stop_reason_code=_legacy_stop_reason_code(fields),
     )
 
 
@@ -224,7 +240,7 @@ def _legacy_room_results(fields: tuple[WireField, ...]) -> _LegacyRoomResults | 
                 durations[key] = None
                 continue
             status = _omittable_varint(detail_fields, 5)
-            statuses[key] = status if status in (0, 1, 2) else None
+            statuses[key] = status if status in MODE_STATUSES else None
             durations[key] = _legacy_room_duration(detail_fields)
     return _LegacyRoomResults(tuple(rooms), frozenset(modes), statuses, durations)
 
@@ -255,7 +271,7 @@ def _legacy_room_duration(detail_fields: tuple[WireField, ...]) -> int | None:
     if not durations:
         return None
     try:
-        return _omittable_varint(telemetry_fields(durations[0]), 1)
+        return room_duration_seconds(telemetry_fields(durations[0]))
     except DecodeError:
         return None
 
@@ -331,7 +347,6 @@ def _canonical_cleaning_session(
     semantics: SemanticHistory,
     started_at: str | None,
     ended_at: str | None,
-    summary_fields: tuple[WireField, ...] = (),
 ) -> CleaningSession:
     """Project verified modern history without conflating stop and completion."""
     results = semantics.mode_results
@@ -375,7 +390,6 @@ def _canonical_cleaning_session(
         if semantics.completion_kind is not None
         else None
     )
-    stop_reason_code = decode_stop_reason_code(summary_fields)
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
@@ -388,9 +402,7 @@ def _canonical_cleaning_session(
         mop_completed_rooms=mop,
         combined_completed_rooms=tuple(name for name in vacuum if name in mop),
         mode_results=results,
-        stop_reason_code=(
-            stop_reason_code if semantics.stop_reason is not None else None
-        ),
+        stop_reason_code=semantics.stop_reason_code,
         mission_id=semantics.mission_id,
         partition_id=semantics.partition_id,
         initiator=semantics.initiator,
@@ -399,18 +411,16 @@ def _canonical_cleaning_session(
     )
 
 
-def decode_stop_reason_code(summary_fields: tuple[WireField, ...]) -> int | None:
-    """Return the oneof tag of the session's stop reason, if it has one."""
+def _legacy_stop_reason_code(summary_fields: tuple[WireField, ...]) -> int | None:
+    """Return a legacy summary's stop reason tag; None if unset or malformed."""
     reasons = [field for field in summary_fields if field.number == 10]
     if len(reasons) != 1 or not isinstance(reasons[0].value, bytes):
         return None
     try:
-        variants = telemetry_fields(reasons[0].value)
+        variant = decode_stop_variant(reasons[0].value)
     except DecodeError:
         return None
-    if len(variants) != 1 or variants[0].wire_type != 2:
-        return None
-    return variants[0].number
+    return None if variant is None else variant.number
 
 
 def decode_nested_timestamp(payload: bytes, number: int) -> str | None:
@@ -422,13 +432,9 @@ def decode_nested_timestamp(payload: bytes, number: int) -> str | None:
             max_bytes=_CLEANING_SESSION_MAX_BYTES,
             max_fields=_CLEANING_SESSION_MAX_FIELDS,
         )
-        timestamp = telemetry_bytes(wrapper, 1)
-        seconds = telemetry_varint(timestamp, 1)
-        try:
-            nanos = telemetry_varint(timestamp, 2)
-        except DecodeError:
-            nanos = 0
-        if nanos > 999_999_999:
+        seconds, nanos = seconds_nanos(telemetry_fields(telemetry_bytes(wrapper, 1)))
+        # Zero seconds is a robot clock that was never set.
+        if not seconds:
             return None
         value = datetime.fromtimestamp(seconds + nanos / 1_000_000_000, UTC)
     except DecodeError, OSError, OverflowError, ValueError:

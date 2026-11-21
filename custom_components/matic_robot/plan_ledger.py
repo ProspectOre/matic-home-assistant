@@ -52,6 +52,7 @@ from .plan_model import (
     normalize_run_outcome,
     normalize_run_provenance,
     plan_floor_token,
+    stored_count,
 )
 from .plan_repository import (
     PlanRepository,
@@ -61,7 +62,7 @@ from .run_control import (
     RunControl,
 )
 from .run_history import append_run_history, update_run_history
-from .run_machine import CheckpointWrite
+from .run_machine import CheckpointWrite, count_room, running_run
 from .verified_completion import (
     VerifiedCompletion,
     global_room,
@@ -105,7 +106,7 @@ def _skip_room_record(
     """Close a skipped room without credit and give back its rotation turn."""
     record["last_result"] = "skipped"
     record["last_skipped"] = skipped_at
-    record["skipped_runs"] = plan_timing._stored_count(record, "skipped_runs") + 1
+    record["skipped_runs"] = stored_count(record, "skipped_runs") + 1
     _restore_opportunity(record, global_room, run_id=run_id)
 
 
@@ -119,9 +120,7 @@ def _unreachable_room_record(
     """Close a room the robot could not reach, without credit, keeping it due."""
     record["last_result"] = "unreachable"
     record["last_unreachable"] = ended_at
-    record["unreachable_runs"] = (
-        plan_timing._stored_count(record, "unreachable_runs") + 1
-    )
+    record["unreachable_runs"] = stored_count(record, "unreachable_runs") + 1
     _restore_opportunity(record, global_room, run_id=run_id)
 
 
@@ -176,9 +175,7 @@ def _close_unfinished_room_records(
                 )
             else:
                 record["last_result"] = "ended_unverified"
-                record["unverified_runs"] = (
-                    plan_timing._stored_count(record, "unverified_runs") + 1
-                )
+                record["unverified_runs"] = stored_count(record, "unverified_runs") + 1
             if ended_at is not None and room_id not in skipped:
                 record["last_ended_unverified"] = ended_at
             if recovered_at is not None:
@@ -439,12 +436,7 @@ class PlanLedger:
 
         async def commit(_lease: _MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
-                last_run = robot.get("last_run")
-                if run_id is not None and (
-                    not isinstance(last_run, dict)
-                    or last_run.get("run_id") != run_id
-                    or last_run.get("outcome") != "running"
-                ):
+                if run_id is not None and running_run(robot, run_id) is None:
                     raise ValueError("managed run no longer owns this dispatch")
                 claims = robot.setdefault("managed_native_sessions", {})
                 if claim in claims:
@@ -649,9 +641,7 @@ class PlanLedger:
         )
         _close_unfinished_area_records(robot, run_id=run_id, ended_at=ended_at)
         docked = last_run.get("outcome") == "stopped_docked"
-        stored_completed_count = plan_timing._stored_count(
-            last_run, "completed_room_count"
-        )
+        stored_completed_count = stored_count(last_run, "completed_room_count")
         was_completed = last_run.get("outcome") == "completed"
         completed = was_completed or (
             last_run.get("native_reconciled_completion") is True
@@ -707,11 +697,9 @@ class PlanLedger:
     @callback
     def active_run_id(self, serial_number: str) -> str | None:
         """Return the current managed run ID without exposing user context."""
-        last_run = self.repository.robot(serial_number).get("last_run")
-        if isinstance(last_run, dict) and last_run.get("outcome") == "running":
-            run_id = last_run.get("run_id")
-            return run_id if isinstance(run_id, str) else None
-        return None
+        run = running_run(self.repository.robot(serial_number))
+        run_id = run.get("run_id") if run is not None else None
+        return run_id if isinstance(run_id, str) else None
 
     async def async_mark_run_docked(
         self,
@@ -897,13 +885,8 @@ class PlanLedger:
 
         def mutate() -> bool | None:
             robot = self.repository.robot(serial_number)
-            last_run = robot.get("last_run")
-            if (
-                not isinstance(last_run, dict)
-                or last_run.get("run_id") != run_id
-                or last_run.get("plan_id") != plan_id
-                or last_run.get("outcome") != "running"
-            ):
+            last_run = running_run(robot, run_id)
+            if last_run is None or last_run.get("plan_id") != plan_id:
                 return None
             previous = robot.get("active_plan")
             previous = previous if isinstance(previous, dict) else {}
@@ -970,14 +953,12 @@ class PlanLedger:
 
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
-            run = robot.get("last_run")
+            run = running_run(robot, run_id)
             active = robot.get("active_plan")
             if (
                 not acceptance_is_current()
-                or not isinstance(run, dict)
-                or run.get("run_id") != run_id
+                or run is None
                 or run.get("plan_id") != plan_id
-                or run.get("outcome") != "running"
                 or not isinstance(active, dict)
                 or active.get("run_id") != run_id
                 or active.get("area_id") != area.area_id
@@ -1002,10 +983,7 @@ class PlanLedger:
                         "run_id": run_id,
                         "last_opportunity": now,
                         "last_result": "running",
-                        "started_runs": plan_timing._stored_count(
-                            record, "started_runs"
-                        )
-                        + 1,
+                        "started_runs": stored_count(record, "started_runs") + 1,
                     }
                 )
             return True
@@ -1031,15 +1009,13 @@ class PlanLedger:
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
             active = robot.get("active_plan")
-            run = robot.get("last_run")
+            run = running_run(robot, run_id)
             if (
                 not isinstance(active, dict)
                 or active.get("run_id") != run_id
                 or active.get("area_id") != area.area_id
-                or not isinstance(run, dict)
-                or run.get("run_id") != run_id
+                or run is None
                 or run.get("plan_id") != active.get("plan_id")
-                or run.get("outcome") != "running"
                 or (
                     completed
                     and (completion_is_current is None or not completion_is_current())
@@ -1070,9 +1046,7 @@ class PlanLedger:
                             "last_completed": now,
                             "last_completed_run_id": run_id,
                             "completion_basis": "owned_session_ended",
-                            "completed_runs": plan_timing._stored_count(
-                                record, "completed_runs"
-                            )
+                            "completed_runs": stored_count(record, "completed_runs")
                             + 1,
                         }
                     )
@@ -1146,24 +1120,22 @@ class PlanLedger:
         now_value = dt_util.utcnow()
         robot = self.repository.robot(serial_number)
         run = robot.get("last_run")
-        if run_id is not None and (
-            not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or run.get("plan_id") != plan_id
-            or run.get("outcome") != "running"
+        if (
+            run_id is not None
+            and (running_run(robot, run_id) or {}).get("plan_id") != plan_id
         ):
             return False
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        # Counted in the room record's commit, so a crash before the plan
+        # finalizer keeps the room.
+        counted = running_run(robot)
         if (
-            isinstance(run, dict)
-            and isinstance(checkpoint, dict)
-            and run.get("plan_id") == plan_id
+            counted is not None
+            and counted.get("plan_id") == plan_id
+            and not count_room(counted, room.room_id)
         ):
-            credited = checkpoint.setdefault("completed_room_ids", [])
-            if room.room_id in credited:
-                # Already credited and saved; never increment twice.
-                return True
-            credited.append(room.room_id)
+            # Already credited and saved with its room record.
+            return True
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
         now = (
             completed_at
             if completed_at is not None
@@ -1227,18 +1199,6 @@ class PlanLedger:
             self.room(serial_number, plan_id, room),
             now=now_value,
         )
-        last_run = robot.get("last_run")
-        if (
-            isinstance(last_run, dict)
-            and last_run.get("outcome") == "running"
-            and last_run.get("plan_id") == plan_id
-        ):
-            # Checkpoint verified credit with room history, so a crash before
-            # the plan finalizer cannot lose work already verified and saved.
-            last_run["completed_room_count"] = min(
-                plan_timing._stored_count(last_run, "completed_room_count") + 1,
-                plan_timing._stored_count(last_run, "room_count"),
-            )
         active = robot.get("active_plan")
         if run_id is None or (
             isinstance(active, Mapping)
@@ -1263,9 +1223,7 @@ class PlanLedger:
             record = self.room(serial_number, plan_id, room)
             record["last_result"] = "ended_unverified"
             record["last_ended_unverified"] = now_value.isoformat()
-            record["unverified_runs"] = (
-                plan_timing._stored_count(record, "unverified_runs") + 1
-            )
+            record["unverified_runs"] = stored_count(record, "unverified_runs") + 1
             active = self.repository.robot(serial_number).get("active_plan")
             if active is not None:
                 record["last_unverified_duration_seconds"] = (
@@ -1301,7 +1259,7 @@ class PlanLedger:
             record["last_result"] = "failed"
             record["last_failed"] = dt_util.utcnow().isoformat()
             record["last_error"] = reason
-            record["failed_runs"] = plan_timing._stored_count(record, "failed_runs") + 1
+            record["failed_runs"] = stored_count(record, "failed_runs") + 1
             if native_reconciliation is not None:
                 pending = native_history._validated_native_reconciliation(
                     native_reconciliation, create_expiry=True
@@ -1325,6 +1283,7 @@ class PlanLedger:
         duration_seconds: int | None = None,
         room_identity: str | None = None,
         verified_coverage_receipt: CoverageReceipt | None = None,
+        floor_plan: FloorPlan | None = None,
     ) -> bool:
         """Credit a native completion that arrived after managed cleanup.
 
@@ -1333,7 +1292,7 @@ class PlanLedger:
         only to the exact pending dispatch captured by that runner and is
         therefore safe against later or superseding native sessions.
         """
-        changed = False
+        changed: list[bool] = []
 
         async def commit(_lease: _MetadataLockLease) -> bool:
             async with self.native_history_commit(serial_number):
@@ -1346,12 +1305,9 @@ class PlanLedger:
                     duration_seconds=duration_seconds,
                     room_identity=room_identity,
                     verified_coverage_receipt=verified_coverage_receipt,
-                    changed=lambda: _set_true(),
+                    floor_plan=floor_plan,
+                    changed=lambda: changed.append(True),
                 )
-
-        def _set_true() -> None:
-            nonlocal changed
-            changed = True
 
         def notify_if_changed(_result: bool) -> None:
             if changed:
@@ -1376,6 +1332,7 @@ class PlanLedger:
         duration_seconds: int | None = None,
         room_identity: str | None = None,
         verified_coverage_receipt: CoverageReceipt | None = None,
+        floor_plan: FloorPlan | None = None,
         changed: Callable[[], None] | None = None,
     ) -> bool:
         """Reconcile late completion inside its native-history commit."""
@@ -1397,6 +1354,7 @@ class PlanLedger:
             pending["plan_id"] != plan_id
             or pending["room_id"] != room.room_id
             or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
+            or not native_history.native_marker_on_floor(pending, floor_plan)
         ):
             return False
         if native_history._native_reconciliation_was_committed(robot, pending):
@@ -1486,9 +1444,7 @@ class PlanLedger:
             record["last_result"] = "suspended"
             record["last_suspended"] = now_value.isoformat()
             record["last_suspend_reason"] = reason
-            record["suspended_runs"] = (
-                plan_timing._stored_count(record, "suspended_runs") + 1
-            )
+            record["suspended_runs"] = stored_count(record, "suspended_runs") + 1
             active = self.repository.robot(serial_number).get("active_plan")
             if active is not None:
                 active["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
@@ -1586,9 +1542,7 @@ class PlanLedger:
             record["last_result"] = "interrupted"
             record["last_interrupted"] = now
             record["last_error"] = reason
-            record["interrupted_runs"] = (
-                plan_timing._stored_count(record, "interrupted_runs") + 1
-            )
+            record["interrupted_runs"] = stored_count(record, "interrupted_runs") + 1
             if native_reconciliation is not None:
                 pending = native_history._validated_native_reconciliation(
                     native_reconciliation, create_expiry=True
@@ -1610,12 +1564,8 @@ class PlanLedger:
         """Remember a room the owner skipped while this run was cleaning."""
 
         def mutate() -> bool:
-            run = self.repository.robot(serial_number).get("last_run")
-            if (
-                not isinstance(run, dict)
-                or run.get("run_id") != run_id
-                or run.get("outcome") != "running"
-            ):
+            run = running_run(self.repository.robot(serial_number), run_id)
+            if run is None:
                 return False
             skipped = run.setdefault("skipped_room_ids", [])
             if room_id not in skipped:
@@ -1683,9 +1633,7 @@ class PlanLedger:
             record = self.room(serial_number, plan_id, room)
             record["last_result"] = "cancelled"
             record["last_cancelled"] = now_value.isoformat()
-            record["cancelled_runs"] = (
-                plan_timing._stored_count(record, "cancelled_runs") + 1
-            )
+            record["cancelled_runs"] = stored_count(record, "cancelled_runs") + 1
             active = self.repository.robot(serial_number).get("active_plan")
             if active is not None:
                 record["last_cancelled_duration_seconds"] = (

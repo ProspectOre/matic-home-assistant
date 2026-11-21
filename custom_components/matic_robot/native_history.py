@@ -34,17 +34,18 @@ from .plan_model import (
     CleaningRoom,
     plan_floor_token,
     room_cadence_identity,
+    stored_count,
 )
 from .plan_timing import (
     _admit_room_settings,
     _duration_profile_key,
     _duration_profiles,
     _latest_timestamp,
-    _stored_count,
 )
 from .room_statistics import native_statistics_have_ambiguous_floor
 from .room_statistics_store import import_native_room_statistics
 from .run_history import repair_run_history
+from .run_machine import count_room
 from .verified_completion import VerifiedCompletion, record_verified_completion
 
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = max(64, MAX_ROOM_SEQUENCE_SIZE)
@@ -219,8 +220,8 @@ def _validated_native_reconciliation(
     if evidence is not None and room_id in dict(evidence.room_regions):
         result["coverage_evidence"] = evidence.as_storage()
     if "session_hash" in value or "rooms" in value:
-        # A grouped marker carries an observed native session and floor. Keep
-        # its first-room fields so older stores can still load the envelope.
+        # A session-bound marker carries its native session and floor. A grouped
+        # marker keeps its first-room fields so older stores can still load it.
         for key in ("session_hash", "floor_token"):
             if not is_sha256_hex(value.get(key)):
                 return None
@@ -352,6 +353,21 @@ def _native_reconciliation_remaining_seconds(
     return (expires_at - dt_util.utcnow()).total_seconds()
 
 
+def native_marker_on_floor(
+    pending: Mapping[str, Any], floor_plan: FloorPlan | None
+) -> bool:
+    """Return whether a marker may be credited against this floor.
+
+    A session-bound marker keeps the floor it was dispatched on; a room with
+    the same id on another floor is a different room and earns nothing.
+    """
+    if "floor_token" not in pending:
+        return True
+    return floor_plan is not None and pending["floor_token"] == plan_floor_token(
+        floor_plan
+    )
+
+
 def _reconcile_pending_native_history(
     robot: dict[str, Any],
     floor_plan: FloorPlan,
@@ -369,9 +385,9 @@ def _reconcile_pending_native_history(
     if _native_reconciliation_expired(pending):
         robot.pop("pending_native_reconciliation", None)
         return True
+    if not native_marker_on_floor(pending, floor_plan):
+        return False
     if "rooms" in pending:
-        if pending["floor_token"] != plan_floor_token(floor_plan):
-            return False
         changed = False
         records = tuple(records)
         for child in pending["rooms"]:
@@ -502,24 +518,16 @@ def _repair_native_reconciled_run(
         or last_run.get("plan_id") != plan_id
     ):
         return
-    room_count = _stored_count(last_run, "room_count")
-    completed_count = _stored_count(last_run, "completed_room_count")
-    if completed_count < room_count:
-        completed_count += 1
-        last_run["completed_room_count"] = completed_count
-        if last_run.get("outcome") == "running" and "session_hash" not in pending:
-            last_run["native_reconciled_completion"] = True
-        checkpoint = last_run.get("recovery_checkpoint")
-        if isinstance(checkpoint, dict):
-            completed_ids = checkpoint.setdefault("completed_room_ids", [])
-            if (
-                isinstance(completed_ids, list)
-                and pending["room_id"] not in completed_ids
-            ):
-                completed_ids.append(pending["room_id"])
+    if (
+        count_room(last_run, pending["room_id"])
+        and last_run.get("outcome") == "running"
+        and "session_hash" not in pending
+    ):
+        last_run["native_reconciled_completion"] = True
     if (
         "session_hash" not in pending
-        and completed_count >= room_count
+        and stored_count(last_run, "completed_room_count")
+        >= stored_count(last_run, "room_count")
         and last_run.get("outcome")
         in {
             "cancelled",

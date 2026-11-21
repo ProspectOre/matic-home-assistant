@@ -104,6 +104,29 @@ async def test_cancelling_the_caller_before_the_return_cancels_the_run(
     assert tasks[0].cancelled()
 
 
+@pytest.mark.parametrize("wait", [False, True])
+async def test_a_run_the_robot_has_outlives_its_cancelled_caller(wait: bool) -> None:
+    control = _control()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    ended = asyncio.Event()
+
+    async def run(on_started: Callable[[str], None]) -> str:
+        on_started("run-6")
+        started.set()
+        await release.wait()
+        ended.set()
+        return "run-6"
+
+    caller = asyncio.create_task(control.async_start_run(HASS, run, "run", wait=wait))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    release.set()
+    await asyncio.wait_for(ended.wait(), 1)
+
+
 async def test_a_run_nobody_awaits_logs_its_end(caplog) -> None:
     caplog.set_level(logging.DEBUG, logger="custom_components.matic_robot.run_control")
     control = _control()

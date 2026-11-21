@@ -4,7 +4,8 @@ The executor feeds an event to ``transition`` and applies the writes it
 returns to the run's recovery checkpoint; nothing else sets a run's phase or
 queue position. The checkpoint stays the one durable record, in the format
 restart recovery reads. After a restart, ``Restarted`` decides from that
-record whether the run resumes and in which phase.
+record whether the run resumes and in which phase. The rooms a run completed
+are its stored tally, which only ``count_room`` writes.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from enum import StrEnum
 from typing import Any
 
 from .client import is_sha256_hex
-from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs
+from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, stored_count
 
 # Reason codes of a run whose every room and area has a result.
 RUN_SETTLED_REASONS = frozenset({"all_rooms_verified", "all_rooms_settled"})
@@ -108,13 +109,14 @@ class DispatchRecorded:
     completion_deadline: datetime | None
     native_identity: bytes | None
     history_baseline: frozenset[bytes] | None
+    session_hash: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class RoomVerified:
-    """The robot's own history credited a room."""
+    """The robot's own history credited a room; ``counted`` is the stored tally."""
 
-    room_id: str
+    counted: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,10 +147,13 @@ class LegVerified:
 
     ``history`` is the robot's session history at this boundary, or None when
     it could not be read, which leaves the next leg unable to start.
+    ``revision`` fingerprints the robot's inactive session marker, which the
+    next start must still match; None when it could not be read.
     """
 
     next_leg_index: int
     history: frozenset[bytes] | None
+    revision: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,17 +223,17 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
                     "native_identity_hash": _digest(event.native_identity)
                     if event.native_identity
                     else None,
+                    "session_hash": event.session_hash,
                     "history_baseline": _digests(event.history_baseline),
                 }
             )
-        case RoomVerified(room_id):
-            # Saved with the next leg's position, after the leg's own records.
-            return replace(
-                run, completed_room_ids=run.completed_room_ids | {room_id}
-            ), CheckpointWrite({}, save=False)
+        case RoomVerified(counted):
+            # The ledger saved the room with its record.
+            return replace(run, completed_room_ids=counted), CheckpointWrite(
+                {}, save=False
+            )
         case RoomSettled(room_id):
             # Saved at once: the last leg has no next position to carry it.
-            # The credits go too, since this save replaces the stored checkpoint.
             settled = replace(run, settled_room_ids=run.settled_room_ids | {room_id})
             return settled, CheckpointWrite(
                 {
@@ -256,9 +261,62 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
             return _restarted(record), CheckpointWrite({}, save=False)
     moved, write = _moved(run, RunPhase.HANDOFF, event.next_leg_index)
     return moved, CheckpointWrite(
-        {**write.fields, "handoff_history": _digests(event.history)},
+        {
+            **write.fields,
+            "handoff_revision": event.revision,
+            "handoff_history": _digests(event.history),
+        },
         drop=("verification_deadline",),
     )
+
+
+def count_room(run: dict[str, Any], room_id: str) -> bool:
+    """Count a completed room in a stored run once; False when already counted.
+
+    The only writer of ``completed_room_count`` and the checkpoint's
+    ``completed_room_ids``. A finished run has no checkpoint, so only its
+    count moves. The count never exceeds the run's room count.
+    """
+    checkpoint = run.get("recovery_checkpoint")
+    if isinstance(checkpoint, dict):
+        counted = checkpoint.setdefault("completed_room_ids", [])
+        if room_id in counted:
+            return False
+        counted.append(room_id)
+    run["completed_room_count"] = min(
+        stored_count(run, "completed_room_count") + 1,
+        stored_count(run, "room_count"),
+    )
+    return True
+
+
+def running_run(
+    robot: Mapping[str, Any], run_id: str | None = None
+) -> dict[str, Any] | None:
+    """Return the stored run while it runs; with ``run_id``, only that run."""
+    run = robot.get("last_run")
+    if (
+        isinstance(run, dict)
+        and run.get("outcome") == "running"
+        and (run_id is None or run.get("run_id") == run_id)
+    ):
+        return run
+    return None
+
+
+def run_checkpoint(robot: Mapping[str, Any], run_id: str) -> dict[str, Any] | None:
+    """Return the recovery checkpoint of the running run ``run_id``."""
+    run = running_run(robot, run_id)
+    checkpoint = run.get("recovery_checkpoint") if run is not None else None
+    return checkpoint if isinstance(checkpoint, dict) else None
+
+
+def recovery_run(robot: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the running run when it has a checkpoint to recover from."""
+    run = running_run(robot)
+    if run is not None and isinstance(run.get("recovery_checkpoint"), dict):
+        return run
+    return None
 
 
 def stored_instant(value: Any) -> datetime | None:

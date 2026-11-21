@@ -27,7 +27,7 @@ from custom_components.matic_robot.run_machine import (
     RunPhase,
     transition,
 )
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import credit_rooms, memory_manager, save_run_checkpoint
 from tests.session_fakes import FakeRobot, robot_port
 
 
@@ -112,8 +112,7 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
         )
         await _async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
         seen.append(manager.recovery.recovery_run("serial")["recovery_checkpoint"])
-        for target in args[5]:
-            kwargs["record_room_completed"](target)
+        credit_rooms(args, kwargs, args[5])
         return True
 
     with (
@@ -180,7 +179,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
         completed_room_ids=[first.room_id],
         stop_intent="after_room",
     )
-    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await save_run_checkpoint(manager, checkpoint)
     run = manager.recovery.recovery_run("serial")
     prepared = _PreparedRoomDispatch(
         (room,), frozenset(), dt_util.utcnow(), native_identity=b"synthetic-session"
@@ -190,7 +189,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
         assert args[5] == [room]
         assert kwargs["prepared_dispatch"] == prepared
         assert kwargs["finish_room_event"].is_set()
-        kwargs["record_room_completed"](room)
+        credit_rooms(args, kwargs, [room])
         return True
 
     with patch(
@@ -232,8 +231,7 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         )
         await kwargs["checkpoint_dispatch"](dispatch)
         await _async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
-        for room in args[5]:
-            kwargs["record_room_completed"](room)
+        credit_rooms(args, kwargs, args[5])
         return True
 
     with (
@@ -292,9 +290,14 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         ("accepted", 1, ["kitchen"]),
     ]
     assert "handoff_history" not in saves[3]
-    # The same fields release/0.6 saved and reads, so either version resumes.
-    assert set(saves[3]) == set(_release_0_6_checkpoint("accepted"))
-    assert set(saves[4]) == set(_release_0_6_checkpoint("handoff"))
+    # The fields release/0.6 saved and reads, so either version resumes, plus
+    # the dispatch's own session and the handoff's idle revision, which 0.5.5
+    # saves under the same names.
+    assert set(saves[3]) == set(_release_0_6_checkpoint("accepted")) | {"session_hash"}
+    assert set(saves[4]) == set(_release_0_6_checkpoint("handoff")) | {
+        "session_hash",
+        "handoff_revision",
+    }
     assert saves[4]["handoff_history"] == [hashlib.sha256(b"after").hexdigest()]
     assert saves[2]["native_identity_hash"] == hashlib.sha256(b"session").hexdigest()
     assert saves[2]["history_baseline"] == [hashlib.sha256(b"before").hexdigest()]

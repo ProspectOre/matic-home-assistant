@@ -92,7 +92,7 @@ async def test_leg_partial_verification_does_not_start_next_leg(
     robot.on_start = kitchen_leg_ends(hass, robot)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
@@ -339,7 +339,7 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
                 return b""
         return await robot.owned()
 
-    async def history():
+    async def history(**_: object):
         nonlocal history_reads
         history_reads += 1
         if history_reads == 1:
@@ -347,7 +347,11 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
         assert session_reads >= 3, (
             "history verification began before native session ended"
         )
-        return (leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+        return (
+            leg_record(
+                ("Kitchen", "Office"), ("Kitchen", "Office"), key=robot.history_key()
+            ),
+        )
 
     robot.on_start = send_command
     result = await _async_run_leg(
@@ -444,12 +448,16 @@ async def test_leg_resumes_native_session_after_handoff(hass, monkeypatch):
             return True
         return False
 
-    async def history():
+    async def history(**_: object):
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
-        return (leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+        return (
+            leg_record(
+                ("Kitchen", "Office"), ("Kitchen", "Office"), key=robot.history_key()
+            ),
+        )
 
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_observation._async_wait_for_active_session_resolution",
@@ -535,12 +543,16 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
     )
     reads = 0
 
-    async def history():
+    async def history(**_: object):
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
-        return (leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+        return (
+            leg_record(
+                ("Kitchen", "Office"), ("Kitchen", "Office"), key=robot.history_key()
+            ),
+        )
 
     assert await _async_run_leg(
         hass,
@@ -605,14 +617,14 @@ async def test_terminal_history_has_its_own_budget(
         )
     reads = 0
 
-    async def history():
+    async def history(**_: object):
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
         await asyncio.sleep(0.05)
         names = tuple(room.name for room in rooms)
-        return (leg_record(names, names),)
+        return (leg_record(names, names, key=robot.history_key()),)
 
     sender = AsyncMock()
     completed = await _async_run_leg(
@@ -649,7 +661,7 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
     )
     cancelled = False
 
-    async def slow_reader():
+    async def slow_reader(**_: object):
         nonlocal cancelled
         try:
             await asyncio.sleep(1)

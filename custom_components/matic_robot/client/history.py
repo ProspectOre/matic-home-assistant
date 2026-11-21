@@ -17,6 +17,7 @@ from .wire import (
     decode_fields,
     field_bytes,
     field_varints,
+    seconds_nanos,
     uuid_string,
 )
 
@@ -190,16 +191,10 @@ def _decode_mode_durations(payload: bytes) -> tuple[float, float]:
 
 
 def _decode_duration(payload: bytes) -> float:
-    fields = decode_fields(payload)
-    seconds = field_varints(fields, 1)
-    nanos = field_varints(fields, 2)
-    if len(seconds) > 1 or len(nanos) > 1 or len(fields) != len(seconds) + len(nanos):
-        raise DecodeError("monthly recap duration has an invalid shape")
-    second_value = seconds[0] if seconds else 0
-    nano_value = nanos[0] if nanos else 0
-    if second_value > MAX_RECAP_DURATION_SECONDS or nano_value > 999_999_999:
+    seconds, nanos = seconds_nanos(decode_fields(payload))
+    if seconds > MAX_RECAP_DURATION_SECONDS:
         raise DecodeError("monthly recap duration is outside safe bounds")
-    return second_value + nano_value / 1_000_000_000
+    return seconds + nanos / 1_000_000_000
 
 
 def _decode_favorite_room(payload: bytes) -> str | None:

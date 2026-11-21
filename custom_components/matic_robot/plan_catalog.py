@@ -18,7 +18,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from . import area_binding_geometry as binding_geometry
-from . import native_history, plan_timing
+from . import native_history
 from .area_binding import (
     AreaBindingStatus,
     area_binding_needs_geometry_index,
@@ -59,11 +59,13 @@ from .plan_model import (
     plan_area_fingerprint,
     plan_entries,
     relink_plan_rooms,
+    stored_count,
 )
 from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
 )
+from .run_machine import running_run
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,11 +97,9 @@ class PlanCatalog:
             serial_number, set()
         )
         unavailable = set(reservations)
-        last_run = robot.get("last_run")
-        if (
-            isinstance(last_run, Mapping)
-            and last_run.get("outcome") == "running"
-            and _is_manual_room_sequence_plan_id(last_run.get("plan_id"))
+        last_run = running_run(robot)
+        if last_run is not None and _is_manual_room_sequence_plan_id(
+            last_run.get("plan_id")
         ):
             unavailable.add(str(last_run["plan_id"]))
         for owner in (
@@ -973,9 +973,7 @@ def _write_shared_schedule(
     schedule["policy"] = _without_scope(policy)
     if floor_token is not None:
         schedule["floor_token"] = floor_token
-    schedule["revision"] = min(
-        2_147_483_647, plan_timing._stored_count(schedule, "revision") + 1
-    )
+    schedule["revision"] = min(2_147_483_647, stored_count(schedule, "revision") + 1)
 
 
 def _restart_shared_progress(

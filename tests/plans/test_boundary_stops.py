@@ -14,6 +14,7 @@ from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.plan_model import CleaningRoom, PlanStopDecision
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import (
+    credit_rooms,
     kitchen_leg_ends,
     leg_manager,
     leg_record,
@@ -59,13 +60,15 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     record: CleaningSessionRecord | None = None
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads, record
         reads += 1
         if reads == 1:
             return ()
         if record is None:
-            record = leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
+            record = leg_record(
+                ("Kitchen", "Office"), ("Kitchen", "Office"), key=robot.history_key()
+            )
         return (record,)
 
     started_events = []
@@ -149,12 +152,16 @@ async def test_leg_partial_record_credits_only_verified_subset(
     robot.on_start = kitchen_leg_ends(hass, robot)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
-        return (leg_record(("Kitchen",), ("Kitchen",), completed=False),)
+        return (
+            leg_record(
+                ("Kitchen",), ("Kitchen",), completed=False, key=robot.history_key()
+            ),
+        )
 
     sender = AsyncMock()
     completed = await _async_run_leg(
@@ -201,12 +208,16 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
     robot.on_start = send_command
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
-        return (leg_record(("Kitchen",), ("Kitchen",), completed=False),)
+        return (
+            leg_record(
+                ("Kitchen",), ("Kitchen",), completed=False, key=robot.history_key()
+            ),
+        )
 
     sender = AsyncMock()
 
@@ -376,7 +387,7 @@ async def test_new_smart_stop_run_shares_one_native_mission(hass) -> None:
         checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
         assert checkpoint["single_room_missions"] is False
         observed.append(args[5])
-        list(map(kwargs["record_room_completed"], args[5]))
+        credit_rooms(args, kwargs, args[5])
         return True
 
     with (

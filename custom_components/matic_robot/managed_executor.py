@@ -164,6 +164,7 @@ async def _async_execute_rooms_reserved(
                     dispatch.completion_deadline,
                     dispatch.native_identity,
                     dispatch.history_baseline,
+                    dispatch.session_hash,
                 )
             )
             if on_started is not None:
@@ -196,10 +197,10 @@ async def _async_execute_rooms_reserved(
                 **({"missing_rooms": list(missing_rooms)} if missing_rooms else {}),
             }
 
-        def record_room_completion(room: CleaningRoom) -> None:
-            # Its write is empty: the next leg's position saves the room.
+        def record_room_completion(_room: CleaningRoom) -> None:
             nonlocal run
-            run, _ = transition(run, RoomVerified(room.room_id))
+            counted = manager.recovery.counted_room_ids(serial_number, run_id)
+            run = transition(run, RoomVerified(counted))[0]
 
         try:
             # Publish ownership before the first suspending check. Otherwise
@@ -306,11 +307,13 @@ async def _async_execute_rooms_reserved(
                     raise PlanCancelledError
                 prepared_dispatch, recovered_dispatch = recovered_dispatch, None
                 expected_dispatch_history = None
+                expected_dispatch_revision = None
                 refused_on_return = False
                 if index > 0 and prepared_dispatch is None:
                     handoff_history = checkpoint.get("handoff_history")
                     if isinstance(handoff_history, list):
                         expected_dispatch_history = frozenset(handoff_history)
+                        expected_dispatch_revision = checkpoint.get("handoff_revision")
                     else:
                         # No durable evidence boundary means we cannot prove
                         # that an intervening native mission did not complete.
@@ -325,6 +328,7 @@ async def _async_execute_rooms_reserved(
                             leg: list[CleaningRoom] = leg,
                             index: int = index,
                             history: frozenset[str] | None = expected_dispatch_history,
+                            revision: str | None = expected_dispatch_revision,
                         ) -> _PreparedRoomDispatch:
                             await advance(LegDispatching(index))
                             return await dispatch_control._async_dispatch_leg_command(
@@ -342,6 +346,7 @@ async def _async_execute_rooms_reserved(
                                 on_identity=on_identity,
                                 expected_dispatch_identity=b"",
                                 expected_dispatch_history=history,
+                                expected_dispatch_revision=revision,
                             )
 
                         async def back_to_handoff(index: int = index) -> None:
@@ -395,6 +400,9 @@ async def _async_execute_rooms_reserved(
                     # already established that the session is inactive, and
                     # dispatch accepts either this identity or its clearing.
                     expected_dispatch_identity = completed_identity or b""
+                    if expected_dispatch_revision is None:
+                        expected_dispatch_revision = await robot.handoff_revision()
+                        checkpoint["handoff_revision"] = expected_dispatch_revision
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
@@ -419,6 +427,7 @@ async def _async_execute_rooms_reserved(
                         floor_token=floor_token,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
+                        expected_dispatch_revision=expected_dispatch_revision,
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         checkpoint_dispatch=save_dispatch,
@@ -428,6 +437,11 @@ async def _async_execute_rooms_reserved(
                     )
                     await advance(AreaFinished(index, last_leg=index + 1 == len(legs)))
                 else:
+                    resumed = (
+                        manager.history.snapshot(serial_number).get("active_plan") or {}
+                        if recovery is not None and index == run.leg_index
+                        else {}
+                    )
                     completion_verified = await leg_execution._async_run_leg(
                         hass,
                         call,
@@ -445,32 +459,15 @@ async def _async_execute_rooms_reserved(
                         floor_token=floor_token,
                         expected_dispatch_identity=expected_dispatch_identity,
                         expected_dispatch_history=expected_dispatch_history,
+                        expected_dispatch_revision=expected_dispatch_revision,
                         on_native_identity=bind_native_identity,
                         run_id=run_id,
                         record_room_completed=record_room_completion,
                         checkpoint_dispatch=save_dispatch,
                         advance=advance,
                         provenance=run_provenance,
-                        recovered_suspend_reason=(
-                            (
-                                manager.history.snapshot(serial_number).get(
-                                    "active_plan"
-                                )
-                                or {}
-                            ).get("suspend_reason")
-                            if recovery is not None and index == run.leg_index
-                            else None
-                        ),
-                        recovered_room_id=(
-                            (
-                                manager.history.snapshot(serial_number).get(
-                                    "active_plan"
-                                )
-                                or {}
-                            ).get("room_id")
-                            if recovery is not None and index == run.leg_index
-                            else None
-                        ),
+                        recovered_suspend_reason=resumed.get("suspend_reason"),
+                        recovered_room_id=resumed.get("room_id"),
                     )
                 expected_dispatch_identity = None
                 if not completion_verified:
@@ -490,10 +487,11 @@ async def _async_execute_rooms_reserved(
                     # bounded handoff wait so restart recovery can resume the
                     # queue instead of treating the prior verifying leg as
                     # the only recoverable work.
-                    handoff_keys = await observation._async_session_history_baseline(
-                        robot.session_history
+                    revision = await robot.handoff_revision()
+                    handoff_keys = await robot.history_keys(
+                        handoff=True, session_hash=checkpoint.get("session_hash")
                     )
-                    await advance(LegVerified(index + 1, handoff_keys))
+                    await advance(LegVerified(index + 1, handoff_keys, revision))
             # Every room has a result and every custom area's own mission ended.
             all_entries_done = (
                 run.completed_room_ids | run.settled_room_ids

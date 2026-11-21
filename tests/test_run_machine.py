@@ -64,7 +64,8 @@ def test_moving_to_a_leg_saves_its_position(event, phase) -> None:
 def test_a_dispatch_starts_then_is_accepted_with_its_deadline() -> None:
     run = Run(RunPhase.DISPATCHING)
     started, write = transition(
-        run, DispatchRecorded(SENT, None, b"session", frozenset({b"y", b"x"}))
+        run,
+        DispatchRecorded(SENT, None, b"session", frozenset({b"y", b"x"}), "a" * 64),
     )
     assert started.phase is RunPhase.STARTING
     assert write == CheckpointWrite(
@@ -73,11 +74,14 @@ def test_a_dispatch_starts_then_is_accepted_with_its_deadline() -> None:
             "dispatched_at": SENT.isoformat(),
             "completion_deadline": None,
             "native_identity_hash": _hash(b"session"),
+            "session_hash": "a" * 64,
             "history_baseline": sorted([_hash(b"x"), _hash(b"y")]),
         }
     )
     deadline = SENT + timedelta(hours=6)
-    accepted, write = transition(started, DispatchRecorded(SENT, deadline, None, None))
+    accepted, write = transition(
+        started, DispatchRecorded(SENT, deadline, None, None, None)
+    )
     assert accepted == Run(RunPhase.ACCEPTED)
     assert write.fields["phase"] == "accepted"
     assert write.fields["completion_deadline"] == deadline.isoformat()
@@ -86,14 +90,16 @@ def test_a_dispatch_starts_then_is_accepted_with_its_deadline() -> None:
 
 
 def test_an_empty_identity_is_not_checkpointed() -> None:
-    _, write = transition(Run(), DispatchRecorded(SENT, None, b"", frozenset()))
+    _, write = transition(Run(), DispatchRecorded(SENT, None, b"", frozenset(), None))
     assert write.fields["native_identity_hash"] is None
     assert write.fields["history_baseline"] == []
 
 
 def test_a_verified_room_waits_for_the_next_save() -> None:
-    """The leg's own records save first; the next leg's position carries it."""
-    run, write = transition(Run(RunPhase.ACCEPTED), RoomVerified("kitchen"))
+    """The ledger saved the room; the run takes the stored tally, saving nothing."""
+    run, write = transition(
+        Run(RunPhase.ACCEPTED), RoomVerified(frozenset({"kitchen"}))
+    )
     assert write == CheckpointWrite({}, save=False)
     assert run.completed_room_ids == {"kitchen"}
     assert run.phase is RunPhase.ACCEPTED
@@ -129,18 +135,22 @@ def test_a_write_sets_and_drops_checkpoint_fields() -> None:
 
 
 @pytest.mark.parametrize(
-    ("history", "stored"),
-    [(frozenset({b"b", b"a"}), sorted([_hash(b"a"), _hash(b"b")])), (None, None)],
+    ("history", "stored", "revision"),
+    [
+        (frozenset({b"b", b"a"}), sorted([_hash(b"a"), _hash(b"b")]), "c" * 64),
+        (None, None, None),
+    ],
 )
-def test_a_verified_leg_hands_off_to_the_next(history, stored) -> None:
+def test_a_verified_leg_hands_off_to_the_next(history, stored, revision) -> None:
     run = Run(RunPhase.ACCEPTED, 0, frozenset({"kitchen"}))
-    moved, write = transition(run, LegVerified(1, history))
+    moved, write = transition(run, LegVerified(1, history, revision))
     assert moved == Run(RunPhase.HANDOFF, 1, frozenset({"kitchen"}))
     assert write == CheckpointWrite(
         {
             "leg_index": 1,
             "phase": "handoff",
             "completed_room_ids": ["kitchen"],
+            "handoff_revision": revision,
             "handoff_history": stored,
         },
         drop=("verification_deadline",),
@@ -286,7 +296,7 @@ def test_a_settled_room_is_saved_with_the_next_position() -> None:
     assert run.position()["settled_room_ids"] == ["kitchen"]
     assert "settled_room_ids" not in Run().position()
     assert not run.all_settled({"kitchen", "office", "study"}, ())
-    run, _ = transition(run, RoomVerified("office"))
+    run, _ = transition(run, RoomVerified(frozenset({"study", "office"})))
     assert run.all_settled({"kitchen", "office", "study"}, ())
     assert not run.all_settled({"kitchen", "office", "study"}, {1})
     assert run.end_reason == "all_rooms_settled"

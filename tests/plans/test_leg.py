@@ -218,7 +218,7 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
 
     hass.async_create_task(end_leg(), eager_start=True)
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         return (leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
 
     confirmed: list[str] = []
@@ -321,12 +321,16 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
     robot.on_start = send_command
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
-        return (leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+        return (
+            leg_record(
+                ("Kitchen", "Office"), ("Kitchen", "Office"), key=robot.history_key()
+            ),
+        )
 
     completed = await _async_run_leg(
         hass,
@@ -378,12 +382,16 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
     robot.on_start = send_command
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
-        return (leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+        return (
+            leg_record(
+                ("Kitchen", "Office"), ("Kitchen", "Office"), key=robot.history_key()
+            ),
+        )
 
     completed = await _async_run_leg(
         hass,

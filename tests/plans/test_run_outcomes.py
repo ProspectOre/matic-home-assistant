@@ -392,7 +392,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
     room = plan_room("Study", "room-study")
     reads = 0
 
-    async def history():
+    async def history(**_: object):
         nonlocal reads
         reads += 1
         if reads == 1 or scenario != "complete":
@@ -400,7 +400,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         now = dt_util.utcnow()
         return (
             CleaningSessionRecord(
-                b"synthetic-session",
+                robot.history_key(),
                 CleaningSession(
                     (now - timedelta(seconds=5)).isoformat(),
                     now.isoformat(),
@@ -457,7 +457,8 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
                 "vacuum.matic",
                 "serial",
                 [room],
-                floor_token="floor",
+                # A late marker bound to its session keeps a real floor token.
+                floor_token="b" * 64,
                 robot=robot.port(
                     session_history=history,
                     session_identity=robot.accepting,

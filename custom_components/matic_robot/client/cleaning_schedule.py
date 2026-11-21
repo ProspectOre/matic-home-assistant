@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import struct
-from uuid import UUID
-
 from google.protobuf.message import DecodeError
 
 from .models import (
@@ -23,6 +20,7 @@ from .wire import (
     WireFieldBudgetExceeded,
     WireFieldLimitExceeded,
     decode_fields,
+    uuid_from_fixed64,
 )
 
 _SCHEDULE_MAX_BYTES = 64 * 1024
@@ -247,8 +245,7 @@ def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
             if field.wire_type == 1 and isinstance(field.value, bytes)
         }
         if set(fixed) >= {1, 2} and len(fixed[1]) == len(fixed[2]) == 8:
-            low, high = struct.unpack("<QQ", fixed[1] + fixed[2])
-            candidate = str(UUID(int=(low << 64) | high))
+            candidate = uuid_from_fixed64(fixed[1], fixed[2])
             if candidate not in seen:
                 if len(found) >= _SCHEDULE_MAX_UUIDS:
                     raise DecodeError("schedule has too many room identifiers")

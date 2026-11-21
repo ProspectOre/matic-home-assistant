@@ -196,7 +196,7 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
         if multi:
             assert isinstance(kwargs["resume_event"], asyncio.Event)
         else:
-            assert "resume_event" not in kwargs
+            assert kwargs["resume_event"] is None
         hass.set_state(CoreState.stopping)
         raise asyncio.CancelledError
 
