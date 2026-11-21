@@ -265,6 +265,12 @@ def point(
     return coordinates[1], coordinates[2]
 
 
+def uuid_from_fixed64(high: bytes | memoryview, low: bytes | memoryview) -> str:
+    """Join Matic's two little-endian fixed64 words into a UUID string."""
+    value = (int.from_bytes(high, "little") << 64) | int.from_bytes(low, "little")
+    return str(UUID(int=value))
+
+
 def uuid_string(
     payload: bytes,
     *,
@@ -297,8 +303,7 @@ def uuid_string(
         None,
     )
     if high is not None and low is not None:
-        value = (int.from_bytes(high, "little") << 64) | int.from_bytes(low, "little")
-        return str(UUID(int=value))
+        return uuid_from_fixed64(high, low)
     if max_depth > 0:
         for field in fields:
             if field.wire_type != 2 or not isinstance(field.value, bytes):

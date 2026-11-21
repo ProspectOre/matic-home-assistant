@@ -56,7 +56,6 @@ from .mission import decode_mission_client_state
 from .models import (
     ROBOT_ALERT_OPTIONS,
     ROBOT_ALERTS,
-    SESSION_STOP_REASONS,
     CleaningModeResult,
     CleaningPhase,
     CleaningSchedule,
@@ -108,7 +107,6 @@ __all__ = [
     "MAX_TILE_ENTRY_BYTES",
     "ROBOT_ALERTS",
     "ROBOT_ALERT_OPTIONS",
-    "SESSION_STOP_REASONS",
     "TILE_HEIGHT",
     "TILE_SIDE",
     "VOXEL_SCALE_METERS",
