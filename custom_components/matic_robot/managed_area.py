@@ -33,6 +33,7 @@ from .plan_model import (
 )
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
+from .run_control import evidence_is_current
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -229,12 +230,12 @@ class _AreaLegRun:
 
     def evidence_is_current(self) -> bool:
         """Whether this run still owns the motion and floor it credits."""
-        return (
-            not self.cancel_event.is_set()
-            and self.manager.control.managed_motion_is_current(
-                self.serial_number, self.motion_token
-            )
-            and (self.floor_is_current is None or self.floor_is_current())
+        return evidence_is_current(
+            self.manager.control,
+            self.serial_number,
+            self.motion_token,
+            self.cancel_event,
+            self.floor_is_current,
         )
 
     def fire(self, outcome: str, reason_code: str | None = None) -> None:
