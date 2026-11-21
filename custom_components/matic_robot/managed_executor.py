@@ -170,10 +170,10 @@ async def _async_execute_rooms_reserved(
                 "room_count": len(chosen),
             }
 
-        def record_room_completion(room: CleaningRoom) -> None:
-            # Its write is empty: the next leg's position saves the room.
+        def record_room_completion(_room: CleaningRoom) -> None:
             nonlocal run
-            run, _ = transition(run, RoomVerified(room.room_id))
+            counted = manager.recovery.counted_room_ids(serial_number, run_id)
+            run = transition(run, RoomVerified(counted))[0]
 
         try:
             # Publish ownership before the first suspending check. Otherwise
