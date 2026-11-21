@@ -37,8 +37,9 @@ when the robot recorded none. Who pressed Stop is not reported yet.
 started. A plan of Kitchen, a custom area and Hall, in Saved order, sends Plan
 started, Room started and Room finished for Kitchen, Plan area started and
 finished for the area, the room pair for Hall, then one Plan finished with `outcome: completed`.
-Other outcomes: `stopped_docked`, `recharge_suspended`, `cancelled`, `failed`,
-`unverified`. One-time room cleans from Matic Map or Clean room sequence send
+Other outcomes: `recharge_suspended`, `cancelled`, `failed`, `unverified`. A
+stopped run, Smart Stop included, ends with `cancelled`; when the robot then
+docks, Plan docked follows with `outcome: stopped_docked`. One-time room cleans from Matic Map or Clean room sequence send
 room and plan events too, with a `plan_id` starting `__matic_manual_room_sequence__`.
 
 ## Run events in automations, the logbook and the dashboard

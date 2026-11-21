@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -110,6 +111,30 @@ class PlanCancelledError(HomeAssistantError):
     def __init__(self, *args: object, suspend_reason: str | None = None) -> None:
         super().__init__(*args)
         self.suspend_reason = suspend_reason
+
+
+async def async_unless_cancelled[T](
+    awaitable: Awaitable[T], cancel_event: asyncio.Event | None
+) -> T:
+    """Await ``awaitable``, ending it at once when ``cancel_event`` is set.
+
+    A history read waits for its session's record up to the client's
+    collection bound, which a stop or unload must not wait out.
+    """
+    if cancel_event is None:
+        return await awaitable
+    work = asyncio.ensure_future(awaitable)
+    cancelled = asyncio.ensure_future(cancel_event.wait())
+    try:
+        await asyncio.wait((work, cancelled), return_when=asyncio.FIRST_COMPLETED)
+        if work.done():
+            return work.result()
+        raise PlanCancelledError
+    finally:
+        cancelled.cancel()
+        work.cancel()
+        # The work releases what it holds, such as a stream, before the run goes on.
+        await asyncio.gather(work, return_exceptions=True)
 
 
 class NativeHistoryBaselineUnavailableError(HomeAssistantError):

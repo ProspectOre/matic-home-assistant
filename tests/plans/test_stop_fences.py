@@ -1,14 +1,20 @@
 """Stop fences: the robot's own stop, docking and their persisted markers."""
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from homeassistant.core import callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.const import EVENT_PLAN_DOCKED, EVENT_PLAN_FINISHED
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import (
+    _async_execute_rooms,
+    async_finish_plan_run,
+)
 from custom_components.matic_robot.managed_run import RoomStoppedInPlaceError
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager, plan_room, run_plan_call
@@ -88,9 +94,14 @@ async def test_docked_stop_upgrades_only_after_correlated_final_command(hass) ->
     assert not await manager.ledger.async_mark_run_docked("serial", "run-1")
 
 
-async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
-    """A dock observation received before final cleanup remains durable."""
+async def test_dock_closure_follows_the_runs_plan_finished(hass) -> None:
+    """A dock seen while the run still runs closes it only after plan_finished."""
     manager = memory_manager(hass)
+    order: list[str] = []
+    for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
+        hass.bus.async_listen(
+            event_type, callback(lambda e: order.append(e.event_type))
+        )
     await manager.ledger.async_begin_run(
         "serial",
         "away",
@@ -101,14 +112,30 @@ async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
         provenance="user",
     )
 
-    assert await manager.ledger.async_mark_run_docked("serial", "run-1")
-    assert await manager.ledger.async_finish_run(
-        "serial", "run-1", "cancelled", "managed_stop", 0, terminal_activity="idle"
+    closure = hass.async_create_task(
+        manager.ledger.async_mark_run_docked("serial", "run-1")
     )
+    await asyncio.sleep(0)
+    assert not closure.done()
+    assert manager.ledger.run_record("serial", "run-1")["outcome"] == "running"
+
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "away", "run_id": "run-1"},
+        "cancelled",
+        "managed_stop",
+        "managed_cancellation",
+        0,
+    )
+    assert await closure
+    await hass.async_block_till_done()
     last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "stopped_docked"
-    assert last_run["reason_code"] == "stopped_docked"
     assert last_run["terminal_activity"] == "docked"
+    assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
 
 
 async def test_correlated_dock_clears_its_owned_stop_fence(hass) -> None:
@@ -343,3 +370,188 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
         assert manager.control.stop_pending("stale") is False
     manager.repository.store.async_load.assert_awaited_once()
     manager.repository.store.async_save.assert_awaited_once()
+
+
+async def test_dock_closure_waits_for_plan_finished_after_the_end_is_stored(
+    hass,
+) -> None:
+    """A dock seen after the end is stored but before plan_finished still follows it."""
+    manager = memory_manager(hass)
+    order: list[str] = []
+    for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
+        hass.bus.async_listen(
+            event_type, callback(lambda e: order.append(e.event_type))
+        )
+    await manager.ledger.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    finish_run = manager.ledger.async_finish_run
+    closures: list[asyncio.Task[bool]] = []
+
+    async def finish_then_dock(*args, **kwargs) -> None:
+        await finish_run(*args, **kwargs)
+        closures.append(
+            hass.async_create_task(
+                manager.ledger.async_mark_run_docked("serial", "run-1")
+            )
+        )
+
+    manager.ledger.async_finish_run = finish_then_dock
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "away", "run_id": "run-1"},
+        "cancelled",
+        "managed_stop",
+        "managed_cancellation",
+        0,
+    )
+    assert await closures[0]
+    await hass.async_block_till_done()
+    assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
+
+
+async def test_dock_closure_is_released_when_the_finalizer_is_cancelled(
+    hass,
+) -> None:
+    """A second cancel on the finalizer's yield still announces, then closes."""
+    manager = memory_manager(hass)
+    order: list[str] = []
+    for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
+        hass.bus.async_listen(
+            event_type, callback(lambda e: order.append(e.event_type))
+        )
+    await manager.ledger.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    closure = hass.async_create_task(
+        manager.ledger.async_mark_run_docked("serial", "run-1")
+    )
+    finish_run = manager.ledger.async_finish_run
+
+    async def finish_then_cancel(*args, **kwargs) -> None:
+        await finish_run(*args, **kwargs)
+        finalizer.cancel()
+
+    manager.ledger.async_finish_run = finish_then_cancel
+    finalizer = hass.async_create_task(
+        async_finish_plan_run(
+            hass,
+            manager,
+            "serial",
+            "vacuum.matic",
+            {"plan_id": "away", "run_id": "run-1"},
+            "cancelled",
+            "managed_stop",
+            "managed_cancellation",
+            0,
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await finalizer
+    assert await asyncio.wait_for(closure, 1)
+    await hass.async_block_till_done()
+    assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
+
+
+async def _finish(hass, manager, outcome: str, reason_code: str) -> None:
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "away", "run_id": "run-1"},
+        outcome,
+        reason_code,
+        "managed_cancellation",
+        0,
+    )
+
+
+async def _begin(manager) -> None:
+    await manager.ledger.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason_code", "fenced"),
+    [
+        ("completed", "all_rooms_verified", False),
+        ("failed", "robot_error", False),
+        ("failed", "robot_error", True),
+    ],
+)
+async def test_dock_closure_keeps_the_end_a_live_run_reached(
+    hass, outcome: str, reason_code: str, fenced: bool
+) -> None:
+    """A dock seen while the run ran never overwrites how the run ended."""
+    manager = memory_manager(hass)
+    await _begin(manager)
+    token = None
+    if fenced:
+        await manager.control.async_mark_stop_pending("serial", run_id="run-1")
+        token = manager.control.stop_fence_token("serial")
+    closure = hass.async_create_task(
+        manager.ledger.async_mark_run_docked("serial", "run-1", stop_fence_token=token)
+    )
+    await asyncio.sleep(0)
+    assert not closure.done()
+
+    await _finish(hass, manager, outcome, reason_code)
+
+    assert await closure is fenced
+    assert manager.ledger.run_record("serial", "run-1")["outcome"] == outcome
+    assert manager.control.stop_fence_token("serial") is None
+
+
+async def test_dock_closure_does_not_wait_when_the_end_failed_to_save(
+    hass,
+) -> None:
+    """An announced run whose record still reads running releases its closure."""
+    manager = memory_manager(hass)
+    await _begin(manager)
+    manager.ledger.async_finish_run = AsyncMock()
+    await _finish(hass, manager, "cancelled", "managed_stop")
+    assert manager.ledger.run_record("serial", "run-1")["outcome"] == "running"
+
+    closing = manager.ledger.async_mark_run_docked("serial", "run-1")
+    assert not await asyncio.wait_for(closing, 1)
+
+
+async def test_a_cancelled_dock_closure_leaves_the_others_waiting(hass) -> None:
+    """Cancelling one waiter neither cancels the shared end nor breaks the finalizer."""
+    manager = memory_manager(hass)
+    await _begin(manager)
+    first, second = (
+        hass.async_create_task(manager.ledger.async_mark_run_docked("serial", "run-1"))
+        for _ in range(2)
+    )
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    await _finish(hass, manager, "cancelled", "managed_stop")
+
+    assert await asyncio.wait_for(second, 1)

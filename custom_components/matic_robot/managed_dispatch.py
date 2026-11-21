@@ -43,6 +43,7 @@ from .run_control import ManagedMotionReplacedError
 from .stop_return import (
     async_clear_ownerless_stop_if_settled,
     schedule_dock_after_stop,
+    schedule_dock_confirmation,
 )
 
 if TYPE_CHECKING:
@@ -128,6 +129,31 @@ def _schedule_managed_dock_after_stop(
             entity_id,
             context,
             stop_fence_token,
+        ),
+    )
+
+
+def _schedule_run_dock_confirmation(
+    hass: HomeAssistant,
+    manager: CleaningPlanManager,
+    robot: RobotPort,
+    serial_number: str,
+    entity_id: str,
+    run_id: str,
+    context: Context | None,
+) -> None:
+    """Close a run its Smart Stop ended once the robot is seen docked."""
+    schedule_dock_confirmation(
+        hass,
+        refresh=robot.refresh,
+        manager=manager,
+        serial_number=serial_number,
+        entity_id=entity_id,
+        run_id=run_id,
+        set_run_id=robot.set_activity_run_id,
+        get_run_id=robot.get_activity_run_id,
+        on_docked=partial(
+            _async_mark_run_docked, manager, serial_number, run_id, entity_id, context
         ),
     )
 
@@ -464,18 +490,6 @@ async def _async_mark_run_docked(
     """Bridge the stop watcher to durable run closure for service calls."""
     if run_id is None:
         return False
-    outcome = (manager.ledger.run_record(serial_number, run_id) or {}).get("outcome")
-    if (
-        outcome == "running"
-        and manager.control.cancellation_reason(serial_number) != "managed_stop"
-    ):
-        return False
-    if outcome == "failed" and stop_fence_token is not None:
-        # A failed room stays failed after physically returning home. Only
-        # clear its captured STOP fence; never upgrade outcome or credit.
-        return await manager.control.async_clear_stop_pending_if_token(
-            serial_number, stop_fence_token, run_id=run_id
-        )
     return await manager.ledger.async_mark_run_docked(
         serial_number,
         run_id,
