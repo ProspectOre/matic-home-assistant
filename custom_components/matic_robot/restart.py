@@ -36,7 +36,7 @@ from .managed_dispatch import (
     _shutdown_suspends_run,
 )
 from .managed_executor import _async_execute_rooms, async_finish_plan_run
-from .managed_leg import fire_room_event
+from .managed_leg import fire_room_event, withheld_room_ids
 from .managed_observation import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
     _async_verify_leg_completion,
@@ -733,14 +733,17 @@ def _withheld_room_ids(recovery: _Recovery, leg: list[CleaningRoom]) -> set[str]
     The owner's skips, and on a Smart Stop each room the robot never started:
     the robot dropped those from its mission.
     """
-    run_id, checkpoint = recovery.run["run_id"], recovery.checkpoint
-    withheld = set(
-        recovery.manager.ledger.skipped_room_ids(recovery.serial_number, run_id)
-    )
+    checkpoint = recovery.checkpoint
     started = checkpoint.get("started_room_ids")
-    if checkpoint.get("stop_intent") == "after_room" and isinstance(started, list):
-        withheld |= {room.room_id for room in leg if room.room_id not in started}
-    return withheld
+    return withheld_room_ids(
+        recovery.manager.ledger.skipped_room_ids(
+            recovery.serial_number, recovery.run["run_id"]
+        ),
+        leg,
+        started
+        if checkpoint.get("stop_intent") == "after_room" and isinstance(started, list)
+        else None,
+    )
 
 
 async def _async_credit_verified_rooms(
