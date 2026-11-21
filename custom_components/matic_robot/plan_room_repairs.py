@@ -129,6 +129,8 @@ class PlanRoomRepairFlow(RepairsFlow):
 
     def __init__(self, entry_id: str) -> None:
         self._entry_id = entry_id
+        # The moves and map the user was shown; a submit saves only those.
+        self._shown: tuple[dict[str, dict[str, str]], str | None] | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -148,7 +150,9 @@ class PlanRoomRepairFlow(RepairsFlow):
         )
         if not links:
             return self.async_abort(reason="no_matching_rooms")
-        if user_input is None:
+        shown = (links, plan_floor_token(floor_plan))
+        if user_input is None or shown != self._shown:
+            self._shown = shown
             names = {room.id: room.name for room in floor_plan.rooms}
             return self.async_show_form(
                 step_id="init",
@@ -165,7 +169,7 @@ class PlanRoomRepairFlow(RepairsFlow):
             await catalog.async_relink_plan_rooms(
                 serial_number,
                 links,
-                floor_token=plan_floor_token(floor_plan),
+                floor_token=shown[1],
                 room_identities={
                     room.id: room_cadence_identity(floor_plan, room.id)
                     for room in floor_plan.rooms

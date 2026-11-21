@@ -590,6 +590,8 @@ class PlanCatalog:
 
         async def commit(_lease: _MetadataLockLease) -> None:
             plans = self.repository.robot(serial_number)["plans"]
+            if not set(links) <= set(plans):
+                raise ValueError("re-link names a deleted plan")
             async with self.cadence.cadence_commit(serial_number) as mutations:
                 for plan_id, plan_links in links.items():
                     mutations.append(

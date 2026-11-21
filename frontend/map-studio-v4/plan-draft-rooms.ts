@@ -31,7 +31,7 @@ export const togglePlanRoom = (state: WorkspaceState, roomId: string): Workspace
  * the old room, so the save starts it over.
  */
 export const relinkPlanRoom = (state: WorkspaceState, roomId: string, toRoomId: string): WorkspaceState => {
-  const { rooms, parkedRooms } = state.planDraft;
+  const { rooms, parkedRooms, occupancySensors } = state.planDraft;
   if (state.workflow !== "plan" || state.planView !== "edit"
     || !rooms.some((room) => room.roomId === roomId)
     || rooms.some((room) => room.roomId === toRoomId)) return state;
@@ -46,6 +46,9 @@ export const relinkPlanRoom = (state: WorkspaceState, roomId: string, toRoomId: 
         return { ...settings, roomId: toRoomId };
       }),
       parkedRooms: parkedRooms.filter((room) => room.roomId !== toRoomId),
+      // The room's occupancy sensor moves with it; a parked target's goes.
+      occupancySensors: Object.fromEntries(Object.entries(occupancySensors)
+        .filter(([id]) => id !== toRoomId).map(([id, sensor]) => [id === roomId ? toRoomId : id, sensor])),
     },
   };
 };

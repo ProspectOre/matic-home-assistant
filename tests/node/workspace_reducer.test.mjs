@@ -300,8 +300,11 @@ test("a removed plan room moves only in Edit, onto a room the plan lacks", () =>
   store.dispatch({ type: "relink-room", roomId: "room-gone", toRoomId: "room-new" });
   assert.equal(store.value, before, "Run never changes the plan");
 
-  const editing = new WorkspaceStore(edit("edit"));
-  const kept = editing.value.planDraft.rooms[0].roomId;
+  const editState = edit("edit");
+  const kept = editState.planDraft.rooms[0].roomId;
+  const editing = new WorkspaceStore({ ...editState, planDraft: { ...editState.planDraft, occupancySensors: {
+    [kept]: "binary_sensor.kept", "room-gone": "binary_sensor.moved", "room-new": "binary_sensor.parked",
+  } } });
   for (const intent of [
     { type: "relink-room", roomId: "room-absent", toRoomId: "room-new" },
     { type: "relink-room", roomId: "room-gone", toRoomId: kept },
@@ -314,7 +317,9 @@ test("a removed plan room moves only in Edit, onto a room the plan lacks", () =>
   editing.dispatch({ type: "toggle-room", roomId: "room-new" });
   assert.deepEqual(editing.value.planDraft.parkedRooms.map((room) => room.roomId), ["room-new"]);
   editing.dispatch({ type: "relink-room", roomId: "room-gone", toRoomId: "room-new" });
-  const { rooms, parkedRooms, dirty } = editing.value.planDraft;
+  const { rooms, parkedRooms, occupancySensors, dirty } = editing.value.planDraft;
   assert.deepEqual(rooms.at(-1), { roomId: "room-new", cleaningMode: "vacuum", coverageSetting: "quick" });
   assert.deepEqual([parkedRooms, dirty], [[], true]);
+  // The room's sensor moves with it, so Save, which sends only the plan's rooms' sensors, keeps it.
+  assert.deepEqual(occupancySensors, { [kept]: "binary_sensor.kept", "room-new": "binary_sensor.moved" });
 });

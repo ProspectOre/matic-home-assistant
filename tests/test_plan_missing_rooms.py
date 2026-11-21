@@ -194,6 +194,24 @@ async def test_a_relink_to_a_room_off_the_map_is_refused() -> None:
         )
 
 
+async def test_a_relink_for_a_deleted_plan_is_refused() -> None:
+    catalog = MagicMock()
+    catalog.repository.robot.return_value = {"plans": {}}
+
+    async def run(_serial, commit, **_options):
+        await commit(None)
+
+    catalog.repository.async_run_owned_metadata = run
+    with pytest.raises(ValueError, match="deleted plan"):
+        await PlanCatalog.async_relink_plan_rooms(
+            catalog,
+            "serial",
+            {"home": {"room-study": "room-kitchen"}},
+            floor_token=None,
+            room_identities={"room-kitchen": "identity"},
+        )
+
+
 def test_a_map_edit_during_start_names_the_missing_rooms() -> None:
     preview = MagicMock(side_effect=PlanRoomMissingError(["room-study"]))
 
@@ -310,7 +328,21 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
         return_value={"name": "Matic"},
     ):
         form = await flow.async_step_init()
-    assert form["description_placeholders"]["rooms"] == f"- Home: {study.name}"
+        assert form["description_placeholders"]["rooms"] == f"- Home: {study.name}"
+        # A plan that gained a removed room after the form opened is shown
+        # before anything is saved.
+        catalog.plans.return_value["away"] = {
+            "name": "Away",
+            "rooms": [_room("room-old")],
+        }
+        form = await flow.async_step_init({})
+        catalog.async_relink_plan_rooms.assert_not_awaited()
+        assert form["description_placeholders"]["rooms"] == (
+            f"- Home: {study.name}\n- Away: {study.name}"
+        )
+        del catalog.plans.return_value["away"]
+        form = await flow.async_step_init({})
+        catalog.async_relink_plan_rooms.assert_not_awaited()
     assert (await flow.async_step_init({}))["reason"] == "plan_changed"
     links = catalog.async_relink_plan_rooms.await_args
     assert links.args == ("serial", {"home": {"room-old": "room-study"}})
