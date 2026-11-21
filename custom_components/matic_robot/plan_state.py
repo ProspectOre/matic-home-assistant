@@ -9,7 +9,7 @@ runtime writers rely on. The file stays at 1.13, which 0.5.4 reads.
 from __future__ import annotations
 
 import math
-from typing import Any, cast
+from typing import Any
 
 from .cadence_accounting import (
     validated_cadence_snapshots as _validated_cadence_snapshots,
@@ -123,6 +123,27 @@ def _sync_verified_global_room_history(robot: dict[str, Any]) -> bool:
 
 def _normalize_robot(robot: dict[str, Any]) -> bool:
     """Repair malformed storage containers without inventing room history."""
+    changed = _ensure_containers(robot)
+    changed = _normalize_native_completion_dedup(robot) or changed
+    changed = _normalize_native_session_claims(robot) or changed
+    changed = _drop_malformed_records(robot) or changed
+    changed = _normalize_plan_room_cadence(robot["plan_room_cadence"]) or changed
+    changed = _normalize_shared_room_cadence(robot["shared_room_cadence"]) or changed
+    changed = _normalize_rotations(robot["rotations"]) or changed
+    changed = _drop_values_not(str, robot["rotation_resets"]) or changed
+    changed = _normalize_selection(robot, "selected_plan", "plans") or changed
+    changed = _normalize_selection(robot, "selected_area", "areas") or changed
+    changed = _normalize_active_plan(robot) or changed
+    changed = _normalize_last_run(robot) or changed
+    pending = robot.get("pending_native_reconciliation")
+    if pending is not None and _validated_native_reconciliation(pending) is None:
+        robot.pop("pending_native_reconciliation", None)
+        changed = True
+    return _sync_verified_global_room_history(robot) or changed
+
+
+def _ensure_containers(robot: dict[str, Any]) -> bool:
+    """Replace each top-level container that is not a dictionary."""
     changed = False
     for key in (
         "rotations",
@@ -138,96 +159,122 @@ def _normalize_robot(robot: dict[str, Any]) -> bool:
         if not isinstance(robot.get(key), dict):
             robot[key] = {}
             changed = True
+    return changed
+
+
+def _normalize_native_completion_dedup(robot: dict[str, Any]) -> bool:
+    """Keep the newest well-formed native completion keys."""
     dedup = robot.get("native_completion_dedup")
-    if not isinstance(dedup, list):
-        robot["native_completion_dedup"] = []
-        changed = True
-    else:
-        normalized_dedup = [
-            key
-            for key in dedup[-NATIVE_COMPLETION_DEDUP_MAX_KEYS:]
-            if is_sha256_hex(key)
-        ]
-        if normalized_dedup != dedup:
-            robot["native_completion_dedup"] = normalized_dedup
-            changed = True
-    claims = robot.get("managed_native_sessions")
-    normalized_claims = (
-        {
-            key: value
-            for key, value in claims.items()
-            if is_sha256_hex(key) and isinstance(value, dict)
-        }
-        if isinstance(claims, dict)
-        else {}
+    normalized = (
+        [key for key in dedup[-NATIVE_COMPLETION_DEDUP_MAX_KEYS:] if is_sha256_hex(key)]
+        if isinstance(dedup, list)
+        else []
     )
-    normalized_claims = dict(
-        list(normalized_claims.items())[-MAX_MANAGED_NATIVE_SESSION_CLAIMS:]
-    )
-    if claims != normalized_claims:
-        robot["managed_native_sessions"] = normalized_claims
-        changed = True
+    if isinstance(dedup, list) and normalized == dedup:
+        return False
+    robot["native_completion_dedup"] = normalized
+    return True
+
+
+def _normalize_native_session_claims(robot: dict[str, Any]) -> bool:
+    """Keep the newest well-formed claims on native sessions."""
+    claims = robot["managed_native_sessions"]
+    normalized = {
+        key: value
+        for key, value in claims.items()
+        if is_sha256_hex(key) and isinstance(value, dict)
+    }
+    normalized = dict(list(normalized.items())[-MAX_MANAGED_NATIVE_SESSION_CLAIMS:])
+    if claims == normalized:
+        return False
+    robot["managed_native_sessions"] = normalized
+    return True
+
+
+def _drop_values_not(kind: type, records: dict[str, Any]) -> bool:
+    """Remove every value that is not of the stored kind."""
+    malformed = [key for key, value in records.items() if not isinstance(value, kind)]
+    for key in malformed:
+        records.pop(key)
+    return bool(malformed)
+
+
+def _drop_malformed_records(robot: dict[str, Any]) -> bool:
+    """Remove room, plan and area records that are not dictionaries."""
+    changed = False
     for key in ("rooms", "plans", "areas", "area_history"):
-        records = robot[key]
-        for record_id, record in tuple(records.items()):
-            if not isinstance(record, dict):
-                records.pop(record_id)
-                changed = True
-    for plan_id, room_records in tuple(robot["plan_room_cadence"].items()):
+        changed = _drop_values_not(dict, robot[key]) or changed
+    return changed
+
+
+def _normalize_cadence_progress(record: dict[str, Any]) -> bool:
+    """Store a cadence record's progress as its two counts."""
+    progress = record.get("progress")
+    normalized = {
+        "mop": _stored_count(progress, "mop"),
+        "coverage": _stored_count(progress, "coverage"),
+    }
+    if progress == normalized:
+        return False
+    record["progress"] = normalized
+    return True
+
+
+def _normalize_plan_room_cadence(cadence: dict[str, Any]) -> bool:
+    """Repair each plan's per-room cadence records."""
+    changed = False
+    for plan_id, room_records in tuple(cadence.items()):
         if not isinstance(room_records, dict):
-            robot["plan_room_cadence"].pop(plan_id)
+            cadence.pop(plan_id)
             changed = True
             continue
-        for room_id, record in tuple(room_records.items()):
-            if not isinstance(record, dict):
-                room_records.pop(room_id)
-                changed = True
-                continue
-            progress = record.get("progress")
-            normalized = {
-                "mop": _stored_count(progress, "mop"),
-                "coverage": _stored_count(progress, "coverage"),
-            }
-            if progress != normalized:
-                record["progress"] = normalized
-                changed = True
-            raw_unverified = record.get("unverified_modes")
-            normalized_unverified = (
-                [
-                    mode
-                    for mode in ("mop", "coverage")
-                    if isinstance(raw_unverified, list) and mode in raw_unverified
-                ]
-                if isinstance(raw_unverified, list)
-                else []
-            )
-            if normalized_unverified:
-                if normalized_unverified != raw_unverified:
-                    record["unverified_modes"] = normalized_unverified
-                    changed = True
-            elif "unverified_modes" in record:
-                record.pop("unverified_modes")
-                changed = True
+        changed = _drop_values_not(dict, room_records) or changed
+        for record in room_records.values():
+            changed = _normalize_cadence_progress(record) or changed
+            changed = _normalize_unverified_modes(record) or changed
             identity = record.get("identity")
             if identity is not None and (
                 not isinstance(identity, str) or len(identity) != 64
             ):
                 record.pop("identity", None)
                 changed = True
-    for room_id, record in tuple(robot["shared_room_cadence"].items()):
+    return changed
+
+
+def _normalize_unverified_modes(record: dict[str, Any]) -> bool:
+    """Keep the known unverified modes in canonical order, or no list at all."""
+    raw = record.get("unverified_modes")
+    normalized = (
+        [mode for mode in ("mop", "coverage") if mode in raw]
+        if isinstance(raw, list)
+        else []
+    )
+    if not normalized:
+        if "unverified_modes" not in record:
+            return False
+        record.pop("unverified_modes")
+    elif normalized == raw:
+        return False
+    else:
+        record["unverified_modes"] = normalized
+    return True
+
+
+def _normalize_shared_room_cadence(cadence: dict[str, Any]) -> bool:
+    """Drop shared cadence records without a policy and repair the rest."""
+    changed = False
+    for room_id, record in tuple(cadence.items()):
         if not isinstance(record, dict) or not isinstance(record.get("policy"), dict):
-            robot["shared_room_cadence"].pop(room_id)
+            cadence.pop(room_id)
             changed = True
             continue
-        progress = record.get("progress")
-        normalized = {
-            "mop": _stored_count(progress, "mop"),
-            "coverage": _stored_count(progress, "coverage"),
-        }
-        if progress != normalized:
-            record["progress"] = normalized
-            changed = True
-    rotations = robot["rotations"]
+        changed = _normalize_cadence_progress(record) or changed
+    return changed
+
+
+def _normalize_rotations(rotations: dict[str, Any]) -> bool:
+    """Give each rotation a room map and drop malformed room and area records."""
+    changed = False
     for plan_id, rotation in tuple(rotations.items()):
         if not isinstance(rotation, dict):
             rotation = {"rooms": {}}
@@ -236,68 +283,64 @@ def _normalize_robot(robot: dict[str, Any]) -> bool:
         for kind in ("rooms", "areas"):
             if kind == "areas" and kind not in rotation:
                 continue
-            records = rotation.get(kind)
-            if not isinstance(records, dict):
-                records = {}
-                rotation[kind] = records
+            if not isinstance(rotation.get(kind), dict):
+                rotation[kind] = {}
                 changed = True
-            for record_id, record in tuple(records.items()):
-                if not isinstance(record, dict):
-                    records.pop(record_id)
-                    changed = True
-    reset_values = robot["rotation_resets"]
-    for plan_id, value in tuple(reset_values.items()):
-        if not isinstance(value, str):
-            reset_values.pop(plan_id)
-            changed = True
-    selected_plan = robot.get("selected_plan")
-    if not isinstance(selected_plan, str) or selected_plan not in robot["plans"]:
-        robot["selected_plan"] = next(iter(robot["plans"]), None)
-        changed = True
-    selected_area = robot.get("selected_area")
-    if not isinstance(selected_area, str) or selected_area not in robot["areas"]:
-        robot["selected_area"] = next(iter(robot["areas"]), None)
-        changed = True
-    active = robot.get("active_plan")
-    if active is not None and (
-        not isinstance(active, dict)
-        or not isinstance(active.get("plan_id"), str)
-        # A plan's custom area is active by its area ID, not a room.
-        or not isinstance(active.get("room_id", active.get("area_id")), str)
-    ):
-        robot["active_plan"] = None
-        changed = True
-    elif "active_plan" not in robot:
-        robot["active_plan"] = None
-        changed = True
-    last_run = robot.get("last_run")
-    if last_run is not None and (
-        not isinstance(last_run, dict)
-        or not isinstance(last_run.get("run_id"), str)
-        or not isinstance(last_run.get("plan_id"), str)
-    ):
-        robot["last_run"] = None
-        changed = True
-    elif "last_run" not in robot:
-        robot["last_run"] = None
-        changed = True
-    elif isinstance(last_run, dict):
-        last_run_value = cast(dict[str, Any], last_run)
-        checkpoint = last_run_value.get("recovery_checkpoint")
-        if isinstance(checkpoint, dict):
-            if "cadence_by_room" in checkpoint:
-                normalized_cadence = _validated_cadence_snapshots(
-                    checkpoint["cadence_by_room"]
-                )
-                if normalized_cadence is None:
-                    checkpoint.pop("cadence_by_room", None)
-                    changed = True
-                elif checkpoint["cadence_by_room"] != normalized_cadence:
-                    checkpoint["cadence_by_room"] = normalized_cadence
-                    changed = True
-    pending = robot.get("pending_native_reconciliation")
-    if pending is not None and _validated_native_reconciliation(pending) is None:
-        robot.pop("pending_native_reconciliation", None)
-        changed = True
-    changed = _sync_verified_global_room_history(robot) or changed
+            changed = _drop_values_not(dict, rotation[kind]) or changed
     return changed
+
+
+def _normalize_selection(robot: dict[str, Any], key: str, records: str) -> bool:
+    """Point a selection that names no stored record at the first one."""
+    selected = robot.get(key)
+    if isinstance(selected, str) and selected in robot[records]:
+        return False
+    robot[key] = next(iter(robot[records]), None)
+    return True
+
+
+def _normalize_active_plan(robot: dict[str, Any]) -> bool:
+    """Clear an active plan that does not name a plan and a room or area."""
+    active = robot.get("active_plan")
+    if active is None:
+        if "active_plan" in robot:
+            return False
+    elif (
+        isinstance(active, dict)
+        and isinstance(active.get("plan_id"), str)
+        # A plan's custom area is active by its area ID, not a room.
+        and isinstance(active.get("room_id", active.get("area_id")), str)
+    ):
+        return False
+    robot["active_plan"] = None
+    return True
+
+
+def _normalize_last_run(robot: dict[str, Any]) -> bool:
+    """Clear a last run without its identifiers; repair its cadence checkpoint."""
+    last_run = robot.get("last_run")
+    if last_run is None:
+        if "last_run" in robot:
+            return False
+    elif (
+        isinstance(last_run, dict)
+        and isinstance(last_run.get("run_id"), str)
+        and isinstance(last_run.get("plan_id"), str)
+    ):
+        return _normalize_checkpoint_cadence(last_run.get("recovery_checkpoint"))
+    robot["last_run"] = None
+    return True
+
+
+def _normalize_checkpoint_cadence(checkpoint: object) -> bool:
+    """Replace or drop a recovery checkpoint's stored cadence snapshots."""
+    if not isinstance(checkpoint, dict) or "cadence_by_room" not in checkpoint:
+        return False
+    normalized = _validated_cadence_snapshots(checkpoint["cadence_by_room"])
+    if normalized is None:
+        checkpoint.pop("cadence_by_room", None)
+        return True
+    if checkpoint["cadence_by_room"] == normalized:
+        return False
+    checkpoint["cadence_by_room"] = normalized
+    return True

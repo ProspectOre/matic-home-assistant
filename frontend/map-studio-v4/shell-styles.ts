@@ -357,7 +357,7 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .mobile-sheet .action-bar { flex: none; margin-block-start: 0; padding-block-start: var(--ms-space-2); }
     .narrow .title { font-size: var(--ms-t-md); }
     .narrow .context-switcher { max-inline-size: 7rem; }
-    .narrow .robot-switcher { flex: 1 1 auto; min-inline-size: 0; max-inline-size: none; }
+    .narrow .robot-switcher { flex: 1 1 auto; min-inline-size: var(--ms-control); max-inline-size: none; }
     .narrow .full-map-hud { inset-inline-start: var(--ms-space-3); inset-block-end: max(var(--ms-space-3), var(--ms-safe-bottom)); inline-size: auto; max-inline-size: none; }
     .narrow .hud-exit { min-inline-size: var(--ms-control); padding-inline: var(--ms-space-2); }
     .narrow .hud-exit .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; clip-path: inset(50%); white-space: nowrap; }

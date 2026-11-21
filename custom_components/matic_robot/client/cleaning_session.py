@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from google.protobuf.message import DecodeError
@@ -18,22 +20,29 @@ from .models import (
     HermesCollectionEntry,
 )
 from .telemetry_fields import (
-    _TELEMETRY_NESTED_MAX_FIELDS,
-    TELEMETRY_NESTED_MAX_BYTES,
     bounded_fields,
-    decode_text_field,
+    decode_text_from_fields,
     telemetry_bytes,
+    telemetry_fields,
     telemetry_varint,
 )
-from .wire import (
-    WireField,
-)
+from .wire import WireField, field_bytes
 
 _SESSION_COMPLETED_STATUS = 0
 _ROOM_MODE_COMPLETED_STATUS = 2
 _CLEANING_SESSION_MAX_BYTES = 256 * 1024
 _CLEANING_SESSION_MAX_FIELDS = 1024
 _CLEANING_SESSION_MAX_ROOMS = 256
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyRoomResults:
+    """What a legacy summary's vacuum (6) and mop (7) room maps recorded."""
+
+    rooms: tuple[str, ...]
+    modes: frozenset[int]
+    statuses: dict[tuple[int, str], int | None]
+    durations: dict[tuple[int, str], int | None]
 
 
 def _native_history_collection_revision(
@@ -108,137 +117,30 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         if len(modern) != 1 or modern[0].wire_type != 2:
             return None
         return CleaningSession(started_at, ended_at, None, (), (), None)
-    rooms: list[str] = []
-    seen_rooms: set[str] = set()
-    statuses: dict[tuple[int, str], int | None] = {}
-    durations: dict[tuple[int, str], int | None] = {}
-    modes: set[int] = set()
-    for group in fields:
-        if group.number not in (6, 7) or not isinstance(group.value, bytes):
-            continue
-        modes.add(group.number)
-        try:
-            room_fields = bounded_fields(
-                group.value,
-                max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-                max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-            )
-        except DecodeError:
-            continue
-        for room_field in room_fields:
-            if room_field.number != 1 or not isinstance(room_field.value, bytes):
-                continue
-            try:
-                details = telemetry_bytes(room_field.value, 2)
-                detail_fields = bounded_fields(
-                    details,
-                    max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-                    max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-                )
-            except DecodeError:
-                continue
-            name = decode_text_field(details, 3)
-            if name is None:
-                continue
-            if name not in seen_rooms:
-                if len(rooms) >= _CLEANING_SESSION_MAX_ROOMS:
-                    return None
-                seen_rooms.add(name)
-                rooms.append(name)
-            key = (group.number, name)
-            if key in statuses:
-                # Duplicate map entries cannot supply unambiguous room proof.
-                statuses[key] = None
-                durations[key] = None
-                continue
-            status_fields = [field for field in detail_fields if field.number == 5]
-            status = 0 if not status_fields else None
-            if (
-                len(status_fields) == 1
-                and status_fields[0].wire_type == 0
-                and isinstance(status_fields[0].value, int)
-                and status_fields[0].value in (0, 1, 2)
-            ):
-                status = status_fields[0].value
-            statuses[key] = status
-            durations[key] = None
-            try:
-                duration = telemetry_bytes(details, 4)
-                seconds_fields = [
-                    field
-                    for field in bounded_fields(
-                        duration,
-                        max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-                        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-                    )
-                    if field.number == 1
-                ]
-                if not seconds_fields:
-                    durations[key] = 0
-                elif (
-                    len(seconds_fields) == 1
-                    and seconds_fields[0].wire_type == 0
-                    and isinstance(seconds_fields[0].value, int)
-                ):
-                    durations[key] = seconds_fields[0].value
-            except DecodeError:
-                pass
+    return _legacy_cleaning_session(started_at, ended_at, fields)
 
-    duration_seconds = None
-    if started_at is not None and ended_at is not None:
-        duration_seconds = max(
-            0,
-            round(
-                (
-                    datetime.fromisoformat(ended_at)
-                    - datetime.fromisoformat(started_at)
-                ).total_seconds()
-            ),
-        )
-    status_fields = [field for field in fields if field.number == 5]
-    completion_status = 0 if not status_fields else None
-    if (
-        len(status_fields) == 1
-        and status_fields[0].wire_type == 0
-        and isinstance(status_fields[0].value, int)
-    ):
-        completion_status = status_fields[0].value
-    # SessionSummary groups 6/7 contain vacuum/mop AreaModeSummary maps.
-    # Within each map value field 5 is status (0/1/2); field 6 is a setting,
-    # not another mode. Omitted status is protobuf's unattempted default.
-    room_completion: dict[str, bool | None] = {}
-    for name in rooms:
-        results = [statuses.get((mode, name)) for mode in modes]
-        if all(status == _ROOM_MODE_COMPLETED_STATUS for status in results):
-            room_completion[name] = True
-        elif any(status in (0, 1) for status in results):
-            room_completion[name] = False
-        else:
-            room_completion[name] = None
-    completed_rooms = tuple(name for name in rooms if room_completion.get(name) is True)
-    vacuum_completed_rooms = tuple(
-        name
-        for name in rooms
-        if completion_status == _SESSION_COMPLETED_STATUS
-        and statuses.get((6, name)) == _ROOM_MODE_COMPLETED_STATUS
-    )
-    mop_completed_rooms = tuple(
-        name
-        for name in rooms
-        if completion_status == _SESSION_COMPLETED_STATUS
-        and statuses.get((7, name)) == _ROOM_MODE_COMPLETED_STATUS
-    )
-    combined_completed_rooms = tuple(
-        name for name in vacuum_completed_rooms if name in mop_completed_rooms
-    )
+
+def _legacy_cleaning_session(
+    started_at: str | None,
+    ended_at: str | None,
+    fields: tuple[WireField, ...],
+) -> CleaningSession | None:
+    """Project a summary older than the semantic decoder from its room maps."""
+    results = _legacy_room_results(fields)
+    if results is None:
+        return None
+    completion_status = _omittable_varint(fields, 5)
+    room_completion = _legacy_room_completion(results)
+    vacuum_completed_rooms = _legacy_mode_completed_rooms(results, 6, completion_status)
+    mop_completed_rooms = _legacy_mode_completed_rooms(results, 7, completion_status)
     mode_results = tuple(
         CleaningModeResult(
             room=name,
             cleaning_mode="vacuum" if mode == 6 else "mop",
             status={0: "unattempted", 1: "partial", 2: "completed", None: None}[status],
-            duration_seconds=durations[(mode, name)],
+            duration_seconds=results.durations[(mode, name)],
         )
-        for (mode, name), status in statuses.items()
+        for (mode, name), status in results.statuses.items()
     )
     room_durations: dict[str, int] = {}
     for result in mode_results:
@@ -246,29 +148,22 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
             room_durations[result.room] = (
                 room_durations.get(result.room, 0) + result.duration_seconds
             )
-    completed: bool | None
-    if completion_status not in (None, _SESSION_COMPLETED_STATUS):
-        completed = False
-    elif completion_status is None or not room_completion:
-        completed = None
-    elif any(value is False for value in room_completion.values()):
-        completed = False
-    elif any(value is None for value in room_completion.values()):
-        completed = None
-    else:
-        completed = True
     stop_reason_code = decode_stop_reason_code(fields)
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
-        duration_seconds=duration_seconds,
-        rooms=tuple(rooms),
+        duration_seconds=_elapsed_seconds(started_at, ended_at),
+        rooms=results.rooms,
         room_durations=tuple(room_durations.items()),
-        completed=completed,
-        completed_rooms=completed_rooms,
+        completed=_legacy_session_completed(completion_status, room_completion),
+        completed_rooms=tuple(
+            name for name in results.rooms if room_completion[name] is True
+        ),
         vacuum_completed_rooms=vacuum_completed_rooms,
         mop_completed_rooms=mop_completed_rooms,
-        combined_completed_rooms=combined_completed_rooms,
+        combined_completed_rooms=tuple(
+            name for name in vacuum_completed_rooms if name in mop_completed_rooms
+        ),
         mode_results=mode_results,
         stop_reason_code=stop_reason_code,
         stop_reason=(
@@ -277,6 +172,131 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
             else None
         ),
     )
+
+
+def _legacy_room_results(fields: tuple[WireField, ...]) -> _LegacyRoomResults | None:
+    """Read each room's result per mode; None past the room ceiling."""
+    rooms: dict[str, None] = {}
+    statuses: dict[tuple[int, str], int | None] = {}
+    durations: dict[tuple[int, str], int | None] = {}
+    modes: set[int] = set()
+    for group in fields:
+        if group.number not in (6, 7) or not isinstance(group.value, bytes):
+            continue
+        modes.add(group.number)
+        for name, detail_fields in _legacy_group_rooms(group.value):
+            if name not in rooms:
+                if len(rooms) >= _CLEANING_SESSION_MAX_ROOMS:
+                    return None
+                rooms[name] = None
+            key = (group.number, name)
+            if key in statuses:
+                # Duplicate map entries cannot supply unambiguous room proof.
+                statuses[key] = None
+                durations[key] = None
+                continue
+            status = _omittable_varint(detail_fields, 5)
+            statuses[key] = status if status in (0, 1, 2) else None
+            durations[key] = _legacy_room_duration(detail_fields)
+    return _LegacyRoomResults(tuple(rooms), frozenset(modes), statuses, durations)
+
+
+def _legacy_group_rooms(
+    group: bytes,
+) -> Iterator[tuple[str, tuple[WireField, ...]]]:
+    """Yield the name and detail fields of each readable entry in one mode's map."""
+    try:
+        room_fields = telemetry_fields(group)
+    except DecodeError:
+        return
+    for room_field in room_fields:
+        if room_field.number != 1 or not isinstance(room_field.value, bytes):
+            continue
+        try:
+            detail_fields = telemetry_fields(telemetry_bytes(room_field.value, 2))
+        except DecodeError:
+            continue
+        name = decode_text_from_fields(detail_fields, 3)
+        if name is not None:
+            yield name, detail_fields
+
+
+def _legacy_room_duration(detail_fields: tuple[WireField, ...]) -> int | None:
+    """Return the seconds a mode spent in a room, if its duration is readable."""
+    durations = field_bytes(detail_fields, 4)
+    if not durations:
+        return None
+    try:
+        return _omittable_varint(telemetry_fields(durations[0]), 1)
+    except DecodeError:
+        return None
+
+
+def _omittable_varint(fields: tuple[WireField, ...], number: int) -> int | None:
+    """Read a varint protobuf omits at zero; None if repeated or not a varint."""
+    matches = [field for field in fields if field.number == number]
+    if not matches:
+        return 0
+    if (
+        len(matches) == 1
+        and matches[0].wire_type == 0
+        and isinstance(matches[0].value, int)
+    ):
+        return matches[0].value
+    return None
+
+
+def _legacy_room_completion(results: _LegacyRoomResults) -> dict[str, bool | None]:
+    """Judge each room across the modes the session ran."""
+    # SessionSummary groups 6/7 contain vacuum/mop AreaModeSummary maps.
+    # Within each map value field 5 is status (0/1/2); field 6 is a setting,
+    # not another mode. Omitted status is protobuf's unattempted default.
+    room_completion: dict[str, bool | None] = {}
+    for name in results.rooms:
+        statuses = [results.statuses.get((mode, name)) for mode in results.modes]
+        if all(status == _ROOM_MODE_COMPLETED_STATUS for status in statuses):
+            room_completion[name] = True
+        elif any(status in (0, 1) for status in statuses):
+            room_completion[name] = False
+        else:
+            room_completion[name] = None
+    return room_completion
+
+
+def _legacy_mode_completed_rooms(
+    results: _LegacyRoomResults, mode: int, completion_status: int | None
+) -> tuple[str, ...]:
+    """Return the rooms one mode completed in a session that itself completed."""
+    if completion_status != _SESSION_COMPLETED_STATUS:
+        return ()
+    return tuple(
+        name
+        for name in results.rooms
+        if results.statuses.get((mode, name)) == _ROOM_MODE_COMPLETED_STATUS
+    )
+
+
+def _legacy_session_completed(
+    completion_status: int | None, room_completion: dict[str, bool | None]
+) -> bool | None:
+    """Combine the session's own status with its rooms' verdicts."""
+    if completion_status not in (None, _SESSION_COMPLETED_STATUS):
+        return False
+    if completion_status is None or not room_completion:
+        return None
+    if any(value is False for value in room_completion.values()):
+        return False
+    if any(value is None for value in room_completion.values()):
+        return None
+    return True
+
+
+def _elapsed_seconds(started_at: str | None, ended_at: str | None) -> int | None:
+    """Return the whole seconds between two decoded timestamps, never negative."""
+    if started_at is None or ended_at is None:
+        return None
+    elapsed = datetime.fromisoformat(ended_at) - datetime.fromisoformat(started_at)
+    return max(0, round(elapsed.total_seconds()))
 
 
 def _canonical_cleaning_session(
@@ -322,17 +342,6 @@ def _canonical_cleaning_session(
         for name, values in by_room.items()
         if successful_stop and all(item.status == "completed" for item in values)
     )
-    duration = None
-    if started_at is not None and ended_at is not None:
-        duration = max(
-            0,
-            round(
-                (
-                    datetime.fromisoformat(ended_at)
-                    - datetime.fromisoformat(started_at)
-                ).total_seconds()
-            ),
-        )
     completed = (
         successful_stop and semantics.completion_kind == "completed"
         if semantics.completion_kind is not None
@@ -342,7 +351,7 @@ def _canonical_cleaning_session(
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
-        duration_seconds=duration,
+        duration_seconds=_elapsed_seconds(started_at, ended_at),
         rooms=rooms,
         room_durations=tuple(durations.items()),
         completed=completed,
@@ -368,11 +377,7 @@ def decode_stop_reason_code(summary_fields: tuple[WireField, ...]) -> int | None
     if len(reasons) != 1 or not isinstance(reasons[0].value, bytes):
         return None
     try:
-        variants = bounded_fields(
-            reasons[0].value,
-            max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-            max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-        )
+        variants = telemetry_fields(reasons[0].value)
     except DecodeError:
         return None
     if len(variants) != 1 or variants[0].wire_type != 2:

@@ -45,7 +45,7 @@ test("@safety Smart Stop cannot send an immediate override while checking or ret
   expect(result.calls).toEqual([]);
 });
 
-test("@safety active selected vacuum remains stoppable when its catalog is unavailable", async ({ page }) => {
+test("@safety active selected vacuum remains stoppable when its catalog is unavailable @household", async ({ page }) => {
   await loadStopHarness(page);
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, canStopMotion, initialWorkspaceState, selectPrimaryAction } =
@@ -126,7 +126,7 @@ test("@safety active selected vacuum remains stoppable when its catalog is unava
   expect(result.calls).toHaveLength(1);
 });
 
-test("@safety stale catalog work cannot stop idle B, while active B stops only B", async ({ page }) => {
+test("@safety stale catalog work cannot stop idle B, while active B stops only B @household", async ({ page }) => {
   await loadStopHarness(page);
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, canStopMotion, createGalleryState, selectPrimaryAction } =

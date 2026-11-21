@@ -124,7 +124,7 @@ for (const narrow of [false, true]) {
   });
 }
 
-test("selected robot changes its retained outcome without another HA state update", async ({ page }) => {
+test("selected robot changes its retained outcome without another HA state update @household", async ({ page }) => {
   const { installPanelFixture } = await import("./map_studio_v4_panel_fixture.mjs");
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialRobotStates: {
     "vacuum.one": { state: "docked", attributes: { matic_entry_id: "synthetic-entry", friendly_name: "One" } },

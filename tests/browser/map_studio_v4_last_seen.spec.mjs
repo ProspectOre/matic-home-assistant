@@ -51,7 +51,7 @@ test("last-seen trail annotations require the latest finished run and a matching
       closePath() {}, setLineDash() {}, stroke() {}, strokeText(text) { canvasLabels.push(text); },
       fillText(text) { canvasLabels.push(text); } };
     drawLastSeenDuringRun(context, state,
-    { text: [0, 0, 0], onAccent: [255, 255, 255] }, () => ({ x: 100, y: 100 }));
+    { text: [0, 0, 0], onAccent: [255, 255, 255] }, () => ({ x: 100, y: 100 }), "Zuletzt gesehen");
     const wrongSession = lastSeenDuringLatestRun(history, trail, "entry", "b".repeat(64));
     const wrongEntry = lastSeenDuringLatestRun(history, trail, "other-entry", session);
     const emptyTrail = parseRunTrail({ trail: "trail-1", map_session_key: session, segments: [[], []] });
@@ -102,7 +102,7 @@ test("last-seen trail annotations require the latest finished run and a matching
   expect(result.isDisplayable).toBe(true);
   expect(result.accessibleDescription).toContain("Last clean: last seen");
   expect(result.liveAccessibleDescription).not.toContain("Last seen during last clean");
-  expect(result.canvasLabels).toEqual(["Last seen during last clean", "Last seen during last clean"]);
+  expect(result.canvasLabels).toEqual(["Zuletzt gesehen", "Zuletzt gesehen"]);
   expect(result.canFollowFromHistorical).toBe(false);
   expect(result.canRideFromHistorical).toBe(false);
   expect(result.wrongSession).toBeNull();
@@ -284,3 +284,47 @@ test(`visible initial map loads the historical marker without a visibility trans
   expect(result.seen).toEqual({ entryId: "entry", mapSessionKey: "d".repeat(64), position: [1.25, 2.5] });
 });
 }
+
+test("the map draws the last-seen label in Home Assistant's language", async ({ page }) => {
+  const bundle = await build({
+    stdin: {
+      contents: 'import "./frontend/map-studio-v4/map-canvas"; export { createGalleryState } from "./frontend/map-studio-v4-review/gallery-state";',
+      resolveDir: process.cwd(),
+    },
+    bundle: true, format: "esm", write: false,
+  });
+  await page.route("**/seen-label.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.addInitScript(() => {
+    window.__canvasText = new Set();
+    const fill = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text, ...rest) {
+      window.__canvasText.add(text);
+      return fill.call(this, text, ...rest);
+    };
+  });
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { createGalleryState } = await import("/seen-label.js");
+    const base = createGalleryState("ready");
+    const entry = base.resources.entry;
+    const canvas = document.createElement("matic-map-canvas-v4");
+    Object.assign(canvas.style, { display: "block", width: "800px", height: "600px" });
+    canvas.localize = (key) => key.endsWith(".v4_last_seen_during_run") ? "Zuletzt beim letzten Reinigen gesehen" : key;
+    canvas.state = { ...base, optionalUiReady: true, pageActive: true, activity: "docked", dataMode: "live", managedLock: false,
+      selection: { ...base.selection, entryId: entry.entryId, floorId: "current" },
+      floor: { ...base.floor, readOnly: false },
+      map: { ...base.map, exactPose: false },
+      seen: { entryId: entry.entryId, mapSessionKey: entry.mapSessionKey, position: [1, 1] },
+      resources: { ...base.resources, entry: { ...entry, mapFloorCoherent: true, mapSessionVerified: true },
+        pose: { status: "ready", value: { ...base.resources.pose.value, position: null, mapSessionKey: entry.mapSessionKey }, problem: null } } };
+    document.body.append(canvas);
+    window.__seenCanvas = canvas;
+  });
+  const drawn = () => page.evaluate(() => [...window.__canvasText].filter((text) => /seen|gesehen|vu/iu.test(text)));
+  await expect.poll(drawn).toEqual(["Zuletzt beim letzten Reinigen gesehen"]);
+  await page.evaluate(() => {
+    window.__canvasText.clear();
+    window.__seenCanvas.localize = (key) => key.endsWith(".v4_last_seen_during_run") ? "Vu pendant le dernier nettoyage" : key;
+  });
+  await expect.poll(drawn).toEqual(["Vu pendant le dernier nettoyage"]);
+});

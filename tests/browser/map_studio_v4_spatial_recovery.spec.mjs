@@ -50,7 +50,7 @@ async function routeMotionSelector(page) {
   }));
 }
 
-test("@safety pose and scene update failures share one bounded recovery retry", async ({ page }) => {
+test("@safety pose and scene update failures share one bounded recovery retry @household", async ({ page }) => {
   const anchor = new Date("2026-09-30T12:00:00Z");
   await pauseClockAt(page, anchor);
   await routeMotionSelector(page);

@@ -7,6 +7,7 @@ import hashlib
 import secrets
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -208,122 +209,20 @@ class FirmwareTracker:
             previous = robot.get("snapshot")
             current = deepcopy(dict(snapshot))
             comparison = _compare_snapshots(previous, current)
-            version = current.get("firmware_version")
-            if not isinstance(version, str) or not version.strip():
-                # Endpoint readings without a firmware identity cannot establish
-                # release provenance or become the next release's baseline.
-                return {
-                    **comparison,
-                    "discarded": True,
-                    "reason": "firmware_version_unavailable",
-                }
-            current_generation = self.occurrence_generation(robot_id)
-            if occurrence_generation is None:
-                occurrence_generation = current_generation
-            if (
-                not isinstance(occurrence_generation, int)
-                or isinstance(occurrence_generation, bool)
-                or occurrence_generation < 0
-            ):
-                return {
-                    **comparison,
-                    "discarded": True,
-                    "reason": "snapshot_generation_invalid",
-                }
-            if occurrence_generation != current_generation:
-                return {
-                    **comparison,
-                    "discarded": True,
-                    "reason": "snapshot_occurrence_superseded",
-                }
-            observed_version = robot.get("observed_version")
-            observed_protocol = robot.get("observed_protocol")
-            if (
-                isinstance(observed_version, str)
-                and observed_version.strip()
-                and observed_version != version
-            ):
-                return {
-                    **comparison,
-                    "discarded": True,
-                    "reason": "snapshot_superseded",
-                }
-            if (
-                observed_version == version
-                and observed_protocol is not None
-                and current.get("protocol_version") is not None
-                and current.get("protocol_version") != observed_protocol
-            ):
-                return {
-                    **comparison,
-                    "discarded": True,
-                    "reason": "snapshot_superseded",
-                }
-            if (
-                observed_version == version
-                and observed_protocol is not None
-                and current.get("protocol_version") is None
-            ):
-                # A transiently absent protocol reading must not erase the
-                # last authenticated identity or keep the release pending.
-                current["protocol_version"] = observed_protocol
-            now = dt_util.utcnow()
-            current_is_future = reports.is_future_timestamp(
-                current.get("captured_at"), now
-            )
-            previous_is_future = bool(
-                previous
-                and reports.is_future_timestamp(previous.get("captured_at"), now)
-            )
-            if current_is_future or (
-                previous
-                and not previous_is_future
-                and current.get("captured_at", "") < previous.get("captured_at", "")
-            ):
-                # A slower overlapping sweep must not roll evidence backward.
-                return {**comparison, "discarded": True}
-            history = robot.setdefault("history", [])
-            force_new_occurrence = bool(
-                observed_version == version and robot.get("occurrence_pending")
-            )
-            baseline = reports.prepare_release(
+            reason = _snapshot_identity_rejection(
                 robot,
                 current,
-                force_new_occurrence=force_new_occurrence,
+                occurrence_generation,
+                self.occurrence_generation(robot_id),
             )
-            release_comparison = _compare_snapshots(baseline, current)
-            report_changed = reports.update_report(robot, current, now)
-            robot["snapshot"] = current
-            if observed_version == version:
-                robot.pop("snapshot_pending", None)
-                robot.pop("occurrence_pending", None)
-            report = robot["firmware_report"]
-            if report["failed_endpoints"]:
-                robot["compatibility_status"] = (
-                    "regression" if report["attention_required"] else "pending"
-                )
-            elif not baseline:
-                robot["compatibility_status"] = "baseline"
-            else:
-                robot["compatibility_status"] = "compatible"
-            robot["last_comparison"] = {
-                "changed_endpoints": len(release_comparison["changed_endpoints"]),
-                "content_changed_endpoints": len(
-                    release_comparison["content_changed_endpoints"]
-                ),
-                "wire_shape_changed_endpoints": len(
-                    release_comparison["wire_shape_changed_endpoints"]
-                ),
-                "new_wire_shape_count": sum(
-                    len(shapes)
-                    for shapes in release_comparison["new_wire_shapes"].values()
-                ),
-                "wire_shape_candidate_endpoints": release_comparison[
-                    "wire_shape_changed_endpoints"
-                ],
-            }
-            history.append(current)
-            del history[:-MAX_HISTORY]
+            if reason is not None:
+                return {**comparison, "discarded": True, "reason": reason}
+            _keep_observed_protocol(robot, current)
+            now = dt_util.utcnow()
+            if _rolls_evidence_back(previous, current, now):
+                # A slower overlapping sweep must not roll evidence backward.
+                return {**comparison, "discarded": True}
+            release_comparison, report_changed = _store_snapshot(robot, current, now)
             await self._store.async_save(candidate)
             self._data = candidate
         self._notify(robot_id)
@@ -336,29 +235,7 @@ class FirmwareTracker:
         if snapshot_release_changed or report_changed:
             self.hass.bus.async_fire(
                 EVENT_FIRMWARE_ANALYZED,
-                {
-                    "entry_id": robot_id,
-                    "firmware_version": current.get("firmware_version"),
-                    "protocol_version": current.get("protocol_version"),
-                    "compatibility_status": robot["compatibility_status"],
-                    "analysis_version": current.get("analysis_version"),
-                    "structural_endpoints": current.get("structural_endpoints"),
-                    "wire_shape_count": current.get("wire_shape_count"),
-                    "availability_changed_endpoints": len(
-                        release_comparison["changed_endpoints"]
-                    ),
-                    "content_changed_endpoints": len(
-                        release_comparison["content_changed_endpoints"]
-                    ),
-                    "wire_shape_changed_endpoints": release_comparison[
-                        "wire_shape_changed_endpoints"
-                    ],
-                    "new_wire_shape_count": sum(
-                        len(shapes)
-                        for shapes in release_comparison["new_wire_shapes"].values()
-                    ),
-                    "new_wire_shapes": release_comparison["new_wire_shapes"],
-                },
+                _analyzed_event(robot_id, robot, current, release_comparison),
             )
         return comparison
 
@@ -672,6 +549,157 @@ class FirmwareTracker:
     def _notify(self, robot_id: str) -> None:
         for listener in list(self._listeners.get(robot_id, set())):
             listener()
+
+
+def _snapshot_identity_rejection(
+    robot: Mapping[str, Any],
+    current: Mapping[str, Any],
+    occurrence_generation: int | None,
+    current_generation: int,
+) -> str | None:
+    """Return why a snapshot cannot stand for the robot's observed release."""
+    version = current.get("firmware_version")
+    if not isinstance(version, str) or not version.strip():
+        # Endpoint readings without a firmware identity cannot establish
+        # release provenance or become the next release's baseline.
+        return "firmware_version_unavailable"
+    if occurrence_generation is None:
+        occurrence_generation = current_generation
+    if (
+        not isinstance(occurrence_generation, int)
+        or isinstance(occurrence_generation, bool)
+        or occurrence_generation < 0
+    ):
+        return "snapshot_generation_invalid"
+    if occurrence_generation != current_generation:
+        return "snapshot_occurrence_superseded"
+    observed_version = robot.get("observed_version")
+    observed_protocol = robot.get("observed_protocol")
+    if (
+        isinstance(observed_version, str)
+        and observed_version.strip()
+        and observed_version != version
+    ):
+        return "snapshot_superseded"
+    if (
+        observed_version == version
+        and observed_protocol is not None
+        and current.get("protocol_version") is not None
+        and current.get("protocol_version") != observed_protocol
+    ):
+        return "snapshot_superseded"
+    return None
+
+
+def _keep_observed_protocol(robot: Mapping[str, Any], current: dict[str, Any]) -> None:
+    """Fill a snapshot's missing protocol from the release it was observed on."""
+    observed_protocol = robot.get("observed_protocol")
+    if (
+        robot.get("observed_version") == current.get("firmware_version")
+        and observed_protocol is not None
+        and current.get("protocol_version") is None
+    ):
+        # A transiently absent protocol reading must not erase the
+        # last authenticated identity or keep the release pending.
+        current["protocol_version"] = observed_protocol
+
+
+def _rolls_evidence_back(
+    previous: Mapping[str, Any] | None, current: Mapping[str, Any], now: datetime
+) -> bool:
+    """Return whether a snapshot is dated ahead of now or behind the stored one."""
+    current_is_future = reports.is_future_timestamp(current.get("captured_at"), now)
+    previous_is_future = bool(
+        previous and reports.is_future_timestamp(previous.get("captured_at"), now)
+    )
+    return bool(
+        current_is_future
+        or (
+            previous
+            and not previous_is_future
+            and current.get("captured_at", "") < previous.get("captured_at", "")
+        )
+    )
+
+
+def _store_snapshot(
+    robot: dict[str, Any], current: dict[str, Any], now: datetime
+) -> tuple[dict[str, Any], bool]:
+    """Make a snapshot the robot's latest evidence.
+
+    Returns its comparison with the release baseline and whether the
+    firmware report changed.
+    """
+    history = robot.setdefault("history", [])
+    observed = robot.get("observed_version") == current.get("firmware_version")
+    baseline = reports.prepare_release(
+        robot,
+        current,
+        force_new_occurrence=bool(observed and robot.get("occurrence_pending")),
+    )
+    release_comparison = _compare_snapshots(baseline, current)
+    report_changed = reports.update_report(robot, current, now)
+    robot["snapshot"] = current
+    if observed:
+        robot.pop("snapshot_pending", None)
+        robot.pop("occurrence_pending", None)
+    report = robot["firmware_report"]
+    if report["failed_endpoints"]:
+        robot["compatibility_status"] = (
+            "regression" if report["attention_required"] else "pending"
+        )
+    elif not baseline:
+        robot["compatibility_status"] = "baseline"
+    else:
+        robot["compatibility_status"] = "compatible"
+    robot["last_comparison"] = {
+        "changed_endpoints": len(release_comparison["changed_endpoints"]),
+        "content_changed_endpoints": len(
+            release_comparison["content_changed_endpoints"]
+        ),
+        "wire_shape_changed_endpoints": len(
+            release_comparison["wire_shape_changed_endpoints"]
+        ),
+        "new_wire_shape_count": _new_wire_shape_count(release_comparison),
+        "wire_shape_candidate_endpoints": release_comparison[
+            "wire_shape_changed_endpoints"
+        ],
+    }
+    history.append(current)
+    del history[:-MAX_HISTORY]
+    return release_comparison, report_changed
+
+
+def _new_wire_shape_count(release_comparison: Mapping[str, Any]) -> int:
+    """Count the wire shapes a release added across its endpoints."""
+    return sum(len(shapes) for shapes in release_comparison["new_wire_shapes"].values())
+
+
+def _analyzed_event(
+    robot_id: str,
+    robot: Mapping[str, Any],
+    current: Mapping[str, Any],
+    release_comparison: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the event that announces a recorded snapshot's analysis."""
+    return {
+        "entry_id": robot_id,
+        "firmware_version": current.get("firmware_version"),
+        "protocol_version": current.get("protocol_version"),
+        "compatibility_status": robot["compatibility_status"],
+        "analysis_version": current.get("analysis_version"),
+        "structural_endpoints": current.get("structural_endpoints"),
+        "wire_shape_count": current.get("wire_shape_count"),
+        "availability_changed_endpoints": len(release_comparison["changed_endpoints"]),
+        "content_changed_endpoints": len(
+            release_comparison["content_changed_endpoints"]
+        ),
+        "wire_shape_changed_endpoints": release_comparison[
+            "wire_shape_changed_endpoints"
+        ],
+        "new_wire_shape_count": _new_wire_shape_count(release_comparison),
+        "new_wire_shapes": release_comparison["new_wire_shapes"],
+    }
 
 
 def _compare_snapshots(
