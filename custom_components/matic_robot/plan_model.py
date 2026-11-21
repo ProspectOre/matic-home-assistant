@@ -8,7 +8,7 @@ import struct
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, TypedDict, cast
 
 from .client import CleaningMode, CoverageSetting, FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
@@ -26,6 +26,39 @@ def stored_count(record: object, key: str) -> int:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0
         else 0
     )
+
+
+class PlanSettings(TypedDict):
+    """The settings of a saved plan that an omitted value takes as a default."""
+
+    enabled: bool
+    run_behavior: Literal["intelligent", "ordered"]
+    return_to_base: bool
+    finish_current_room: bool
+    finish_current_room_threshold: int
+    occupancy_aware: bool
+    start_timeout: int
+    completion_timeout: int
+
+
+# The one definition of each default: the save action's schema, every reader
+# of a saved plan and, through scripts/contract_types.py, Matic Map use it.
+PLAN_SETTING_DEFAULTS: Final[PlanSettings] = {
+    "enabled": True,
+    "run_behavior": "intelligent",
+    "return_to_base": True,
+    "finish_current_room": False,
+    "finish_current_room_threshold": 50,
+    "occupancy_aware": False,
+    "start_timeout": 120,
+    "completion_timeout": 21600,
+}
+
+
+def plan_setting(plan: Mapping[str, Any], name: str) -> Any:
+    """Return a saved plan's setting, or its default when the plan omits it."""
+    defaults: Mapping[str, object] = PLAN_SETTING_DEFAULTS
+    return plan.get(name, defaults[name])
 
 
 MANUAL_ROOM_SEQUENCE_PLAN_ID = "__matic_manual_room_sequence__"
@@ -607,16 +640,16 @@ def _bounded_stop_threshold(value: object) -> int:
     try:
         return max(0, min(100, int(cast(Any, value))))
     except TypeError, ValueError:
-        return 50
+        return PLAN_SETTING_DEFAULTS["finish_current_room_threshold"]
 
 
 def _managed_stop_policy(value: object) -> tuple[bool, int]:
     """Read one saved or frozen managed-run stop policy."""
     if not isinstance(value, Mapping):
-        return False, 50
+        value = {}
     return (
-        bool(value.get("finish_current_room", False)),
-        _bounded_stop_threshold(value.get("finish_current_room_threshold", 50)),
+        bool(plan_setting(value, "finish_current_room")),
+        _bounded_stop_threshold(plan_setting(value, "finish_current_room_threshold")),
     )
 
 

@@ -2,6 +2,7 @@ import { clamp } from "./shared-primitives";
 import { normalizeCamera, liveCameraKey, cameraPreferences } from "./camera-preferences";
 import { isMapTask, taskPresentation } from "./task-presentation";
 import { needsDraftConfirmation } from "./draft-navigation";
+import { PLAN_SETTING_DEFAULTS as planDefaults } from "./backend-schema";
 import {
   DRAW_BRUSH_MAX_METERS,
   DRAW_BRUSH_MIN_METERS,
@@ -171,13 +172,12 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   planDraft: {
     id: null,
     name: "",
-    enabled: true,
-    runBehavior: "intelligent",
+    enabled: planDefaults.enabled,
+    runBehavior: planDefaults.run_behavior,
     rooms: [],
-    returnToBase: true,
-    finishCurrentRoom: false,
-    finishCurrentRoomThreshold: 50,
-    occupancyAware: false,
+    returnToBase: planDefaults.return_to_base,
+    finishCurrentRoom: planDefaults.finish_current_room, finishCurrentRoomThreshold: planDefaults.finish_current_room_threshold,
+    occupancyAware: planDefaults.occupancy_aware,
     occupancySensors: {},
     dirty: false,
     parkedRooms: [],

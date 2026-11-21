@@ -36,6 +36,7 @@ from .plan_model import (
     missing_plan_rooms,
     plan_area_fingerprint,
     plan_entries,
+    plan_setting,
     resolve_rooms,
     room_cadence_identity,
 )
@@ -109,7 +110,7 @@ class ExecutionPlanner:
             raise PlanRoomsHeldError("occupancy holds every room in the plan")
 
         use_intelligent = (
-            plan.get("run_behavior", "intelligent") == "intelligent"
+            plan_setting(plan, "run_behavior") == "intelligent"
             if intelligent is None
             else intelligent
         )
@@ -144,7 +145,7 @@ class ExecutionPlanner:
             "plan_id": plan["id"],
             "plan_name": plan.get("name", plan["id"]),
             "intelligent": use_intelligent,
-            "run_behavior": plan.get("run_behavior", "intelligent"),
+            "run_behavior": plan_setting(plan, "run_behavior"),
             "rotation_basis": (
                 "least_recent_opportunity" if use_intelligent else "saved_order"
             ),
@@ -161,13 +162,13 @@ class ExecutionPlanner:
             **({"held_rooms": held} if held else {}),
             **self._missing_rooms(serial_number, plan, room_map, missing),
             **({"daily_limit_held_rooms": daily_held} if daily_held else {}),
-            "return_to_base": bool(plan.get("return_to_base", True)),
-            "finish_current_room": bool(plan.get("finish_current_room", False)),
+            "return_to_base": bool(plan_setting(plan, "return_to_base")),
+            "finish_current_room": bool(plan_setting(plan, "finish_current_room")),
             "finish_current_room_threshold": int(
-                plan.get("finish_current_room_threshold", 50)
+                plan_setting(plan, "finish_current_room_threshold")
             ),
-            "start_timeout": int(plan.get("start_timeout", 120)),
-            "completion_timeout": int(plan.get("completion_timeout", 21600)),
+            "start_timeout": int(plan_setting(plan, "start_timeout")),
+            "completion_timeout": int(plan_setting(plan, "completion_timeout")),
         }
 
     def _missing_rooms(
@@ -377,7 +378,7 @@ def _plan_rooms(
     the plan still runs. A plan with custom areas may have no rooms at all;
     one left with nothing to clean raises ``PlanRoomMissingError``.
     """
-    if not plan.get("enabled", True):
+    if not plan_setting(plan, "enabled"):
         raise PlanDisabledError("plan is disabled")
     raw = plan.get("rooms", [])
     if require_rooms and (not isinstance(raw, list) or not raw):

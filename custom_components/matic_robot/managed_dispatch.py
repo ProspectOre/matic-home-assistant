@@ -434,11 +434,10 @@ def _suspended_run_reason(
     manager: CleaningPlanManager, serial_number: str
 ) -> str | None:
     """Capture a low-charge suspension before room cleanup clears its marker."""
-    snapshot = manager.history.snapshot
-    active = snapshot(serial_number).get("active_plan")
-    if isinstance(active, dict) and (
-        active.get("status") == "suspended"
-        and active.get("suspend_reason") == "low_charge"
+    active = manager.ledger.active_target(serial_number) or {}
+    if (active.get("status"), active.get("suspend_reason")) == (
+        "suspended",
+        "low_charge",
     ):
         return "low_charge"
     return None
@@ -465,22 +464,13 @@ async def _async_mark_run_docked(
     """Bridge the stop watcher to durable run closure for service calls."""
     if run_id is None:
         return False
-    snapshot_reader = manager.history.snapshot
-    snapshot = snapshot_reader(serial_number)
-    last_run = snapshot.get("last_run") if isinstance(snapshot, dict) else None
-    if isinstance(last_run, dict) and (
-        last_run.get("run_id") == run_id and last_run.get("outcome") == "running"
-    ):
-        cancellation_reader = manager.control.cancellation_reason
-        cancellation_reason = cancellation_reader(serial_number)
-        if cancellation_reason != "managed_stop":
-            return False
+    outcome = (manager.ledger.run_record(serial_number, run_id) or {}).get("outcome")
     if (
-        isinstance(last_run, dict)
-        and last_run.get("run_id") == run_id
-        and last_run.get("outcome") == "failed"
-        and stop_fence_token is not None
+        outcome == "running"
+        and manager.control.cancellation_reason(serial_number) != "managed_stop"
     ):
+        return False
+    if outcome == "failed" and stop_fence_token is not None:
         # A failed room stays failed after physically returning home. Only
         # clear its captured STOP fence; never upgrade outcome or credit.
         return await manager.control.async_clear_stop_pending_if_token(

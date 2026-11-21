@@ -26,7 +26,13 @@ from .managed_executor import _async_execute_rooms
 from .managed_run import (
     validation_error,
 )
-from .plan_model import CleaningRoom, PlanRoomMissingError, plan_floor_token
+from .plan_model import (
+    PLAN_SETTING_DEFAULTS,
+    CleaningRoom,
+    PlanRoomMissingError,
+    plan_floor_token,
+    plan_setting,
+)
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
 from .room_coherence import current_floor_plan as _current_floor_plan
@@ -166,9 +172,9 @@ async def _async_run_selected_plan(
 
     data = {
         "plan_id": plan["id"],
-        "start_timeout": int(plan.get("start_timeout", 120)),
-        "completion_timeout": int(plan.get("completion_timeout", 21600)),
-        "return_to_base": bool(plan.get("return_to_base", True)),
+        "start_timeout": int(plan_setting(plan, "start_timeout")),
+        "completion_timeout": int(plan_setting(plan, "completion_timeout")),
+        "return_to_base": bool(plan_setting(plan, "return_to_base")),
     }
     run = partial(
         _async_execute,
@@ -342,8 +348,8 @@ async def _async_clean_room_sequence(
     )
     data = {
         "plan_id": internal_plan_id,
-        "start_timeout": 120,
-        "completion_timeout": 21600,
+        "start_timeout": PLAN_SETTING_DEFAULTS["start_timeout"],
+        "completion_timeout": PLAN_SETTING_DEFAULTS["completion_timeout"],
         "return_to_base": bool(call.data["return_to_base"]),
     }
     execute = partial(

@@ -12,7 +12,12 @@ from homeassistant.helpers import issue_registry as ir
 
 from .client import FloorPlan
 from .const import DOMAIN
-from .plan_model import missing_plan_rooms, plan_floor_token, room_cadence_identity
+from .plan_model import (
+    missing_plan_rooms,
+    plan_floor_token,
+    plan_setting,
+    room_cadence_identity,
+)
 from .repair_placeholders import repair_placeholders
 
 if TYPE_CHECKING:
@@ -116,7 +121,7 @@ def _stale_plans(plans: Mapping[str, Any], floor_plan: FloorPlan) -> list[str]:
     one_floor = len(floor_plan.mapped_floors) <= 1
     stale: list[str] = []
     for plan_id, plan in plans.items():
-        if not isinstance(plan, Mapping) or not plan.get("enabled", True):
+        if not isinstance(plan, Mapping) or not plan_setting(plan, "enabled"):
             continue
         room_ids = _plan_room_ids(plan)
         if room_ids - live and (one_floor or room_ids & live):
