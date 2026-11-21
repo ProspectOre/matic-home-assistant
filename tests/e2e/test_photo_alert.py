@@ -21,7 +21,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from .hermes_sim import Phase, SimulatedRobot
 from .plan_run import poll
-from .sim_mission import SimFloor, two_room_floor
 from .test_camera_flows import VACUUM, _configure_tour, _webp
 
 pytestmark = pytest.mark.usefixtures("fast_tour_polls")
@@ -31,11 +30,6 @@ PATH = (
 )
 DOOR = "binary_sensor.front_door"
 AUTOMATION = "automation.photo_check"
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 class Phone:

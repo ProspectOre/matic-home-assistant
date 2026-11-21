@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 
@@ -17,8 +18,9 @@ from tests.test_config_flow_paths import (
     TEST_CREDENTIAL,
     TEST_GRANT,
     _flow,
-    _local_bluetooth_adapter,  # noqa: F401 - autouse: no real adapter lookup
 )
+
+pytestmark = pytest.mark.usefixtures("local_bluetooth_adapter")
 
 
 async def test_reconfigure_verifies_pinned_robot_before_saving(hass) -> None:

@@ -15,18 +15,6 @@ from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 SERIAL = "synthetic-command-lifecycle-robot"
 
 
-@pytest.fixture
-def hass_storage() -> dict:
-    """Use the real Store with an isolated storage mapping."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep Store files in pytest's isolated config directory."""
-    return hass_tmp_config_dir
-
-
 async def test_queued_external_command_rejects_old_epoch_after_reopen(hass) -> None:
     """A queued request cannot dispatch after teardown reopens the phase."""
     manager = CleaningPlanManager(hass)

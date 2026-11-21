@@ -23,12 +23,7 @@ from custom_components.matic_robot.slam_view_data import catalog_entry_projectio
 
 from .hermes_sim import STOP_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import VACUUM, poll
-from .sim_mission import SimFloor, two_room_floor
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
+from .sim_mission import SimFloor
 
 
 @pytest.fixture(autouse=True)

@@ -22,15 +22,9 @@ from custom_components.matic_robot.viewpoints import Viewpoint, Viewpoints
 
 from .hermes_sim import SimulatedRobot
 from .plan_run import poll
-from .sim_mission import SimFloor, two_room_floor
 from .test_camera_flows import VACUUM, _configure_tour, _webp
 
 pytestmark = pytest.mark.usefixtures("fast_tour_polls")
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 @pytest.fixture(autouse=True)

@@ -22,18 +22,6 @@ ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
 SESSION_IDENTITY = b"synthetic-pause-session"
 
 
-@pytest.fixture
-def hass_storage() -> dict:
-    """Use an isolated Store mapping for suspension accounting assertions."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep Store files in the test config directory."""
-    return hass_tmp_config_dir
-
-
 async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
     """A low-charge terminal inside a paused episode cannot queue a second suspend."""
     robot = FakeRobot()

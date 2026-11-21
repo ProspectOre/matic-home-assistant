@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.components.diagnostics import (
@@ -21,12 +20,6 @@ from custom_components.matic_robot.const import (
 
 from .hermes_sim import SimulatedRobot
 from .plan_run import PlanRun, expect_finished
-from .sim_mission import SimFloor, two_room_floor
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 async def test_the_download_describes_the_robot_without_naming_it(

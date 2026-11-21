@@ -33,7 +33,7 @@ from custom_components.matic_robot.const import DOMAIN
 from .conftest import entry_data
 from .hermes_sim import RunningSimulator, SimulatedRobot
 from .plan_run import PlanRun, expect_finished
-from .sim_mission import SimFloor, two_room_floor
+from .sim_mission import two_room_floor
 
 ENTRY_ID = "matic-upgrade-drill"
 PLAN = "evening"
@@ -192,11 +192,6 @@ def hass_storage() -> dict[str, Any]:
 @pytest.fixture
 def hass_config_dir() -> str:
     return os.environ["MATIC_DRILL_CONFIG"]
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 @pytest.fixture

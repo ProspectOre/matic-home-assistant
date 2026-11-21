@@ -1,6 +1,5 @@
 """Runtime coverage for the four cleaning automation blueprints."""
 
-from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -15,21 +14,14 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.yaml import load_yaml
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
+pytestmark = pytest.mark.usefixtures("detach_triggers")
+
 ROOT = Path(__file__).parents[1] / "blueprints/automation/matic_robot"
 VACUUM = "vacuum.matic_test"
 BATTERY = "sensor.matic_test_battery"
 PET = "binary_sensor.litter_box_occupied"
 PEOPLE = ["person.alex", "person.sam"]
 AUTOMATION = "automation.blueprint_under_test"
-
-
-@pytest.fixture(autouse=True)
-async def detach_triggers(hass: HomeAssistant) -> AsyncIterator[None]:
-    """Turn the automation off so its time triggers do not outlive the test."""
-    yield
-    await hass.services.async_call(
-        "automation", "turn_off", {"entity_id": AUTOMATION}, blocking=True
-    )
 
 
 async def setup_blueprint(

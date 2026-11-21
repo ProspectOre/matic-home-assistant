@@ -34,8 +34,8 @@ def hass_storage() -> dict[str, Any]:
 
 
 @pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    return hass_tmp_config_dir
+def floor() -> None:
+    """The stores under test hold no map, so the robot has mapped nothing."""
 
 
 def _plans(minor_version: int) -> dict[str, Any]:
