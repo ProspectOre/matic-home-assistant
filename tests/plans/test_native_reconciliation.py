@@ -589,6 +589,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(
@@ -602,7 +603,6 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
         recovery=SimpleNamespace(coverage_receipt=MagicMock(return_value=None)),
     )
     now = dt_util.utcnow()

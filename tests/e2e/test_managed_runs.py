@@ -20,8 +20,14 @@ import custom_components.matic_robot.managed_observation as managed_observation_
 from custom_components.matic_robot import stop_return
 from custom_components.matic_robot.client import native_session_hash
 
-from .hermes_sim import DOCK_PAYLOAD, STOP_PAYLOAD, Phase, SimulatedRobot
-from .plan_run import PlanRun, expect_finished
+from .hermes_sim import (
+    DOCK_PAYLOAD,
+    RESUME_PAYLOAD,
+    STOP_PAYLOAD,
+    Phase,
+    SimulatedRobot,
+)
+from .plan_run import PlanRun, active_plan, expect_finished
 
 
 async def test_all_rooms_verify_from_native_history(
@@ -187,12 +193,7 @@ async def test_restart_rejoins_the_same_native_mission(
     assert await hass.config_entries.async_reload(plan.entry.entry_id)
     assert plan.task is not None and plan.task.done()
     assert plan.finished == []
-    plans = plan.entry.runtime_data.cleaning_plans
-    async with asyncio.timeout(10):
-        while (plans.recovery.recovery_run(robot.serial_number) or {}).get(
-            "recovery_reason"
-        ) != "same_native_mission_verified":
-            await plan.poll()
+    await plan.wait_for_recovery()
     robot.finish_room()
     robot.finish_session()
     await plan.poll()
@@ -230,12 +231,7 @@ async def test_restart_resumes_a_tracked_run_by_its_own_session(
     robot.add_foreign_history()
 
     assert await hass.config_entries.async_reload(plan.entry.entry_id)
-    plans = plan.entry.runtime_data.cleaning_plans
-    async with asyncio.timeout(10):
-        while (plans.recovery.recovery_run(robot.serial_number) or {}).get(
-            "recovery_reason"
-        ) != "same_native_mission_verified":
-            await plan.poll()
+    await plan.wait_for_recovery()
     # The run's own session ends with Study unfinished.
     robot.finish_session()
     await plan.poll()
@@ -267,3 +263,35 @@ async def test_restart_after_the_mission_ended_stays_unverified(
         0,
         "docked",
     )
+
+
+async def test_restart_keeps_a_paused_room_suspended_until_resume(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+) -> None:
+    await plan.start()
+    await plan.call(VACUUM_DOMAIN, "pause")
+    async with asyncio.timeout(10):
+        while active_plan(hass)["status"] != "suspended":
+            await plan.poll()
+    sent = len(robot.received())
+
+    assert await hass.config_entries.async_reload(plan.entry.entry_id)
+    await plan.wait_for_recovery()
+    # The recovered leg holds the Kitchen suspended until the robot resumes.
+    async with asyncio.timeout(10):
+        while active_plan(hass)["status"] != "suspended":
+            await plan.poll()
+    active = active_plan(hass)
+    assert (active["room"], active["suspend_reason"]) == ("Kitchen", "paused")
+    assert robot.phase is Phase.PAUSED
+    await plan.call(VACUUM_DOMAIN, "start")
+    robot.finish_room()
+    await plan.poll()
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+
+    finished = await plan.wait_for_finished()
+    expect_finished(finished, "completed", "all_rooms_verified", 2, "docked")
+    assert robot.received()[sent:] == [RESUME_PAYLOAD]
