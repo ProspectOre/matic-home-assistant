@@ -21,12 +21,6 @@ from custom_components.matic_robot import stop_return
 
 from .hermes_sim import DOCK_PAYLOAD, STOP_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import PlanRun, expect_finished
-from .sim_mission import SimFloor, two_room_floor
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 async def test_all_rooms_verify_from_native_history(

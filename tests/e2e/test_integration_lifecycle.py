@@ -47,6 +47,11 @@ LOW_CHARGE = "binary_sensor.simulated_matic_low_charge"
 CHARGING = "binary_sensor.simulated_matic_charging"
 
 
+@pytest.fixture
+def floor() -> None:
+    """Setup, reload and removal are tested on a robot that has mapped nothing."""
+
+
 async def _vacuum(hass: HomeAssistant, service: str) -> None:
     await hass.services.async_call(
         VACUUM_DOMAIN, service, {ATTR_ENTITY_ID: VACUUM}, blocking=True

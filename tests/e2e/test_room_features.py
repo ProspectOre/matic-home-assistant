@@ -15,15 +15,10 @@ from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import RESUME_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import VACUUM, PlanRun, expect_finished
-from .sim_mission import SimFloor, two_room_floor
+from .sim_mission import SimFloor
 
 STUDY_OCCUPANCY = "binary_sensor.study_occupancy"
 ROBOT_ALERT = "sensor.simulated_matic_robot_alert"
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 def _room_id(entry: MockConfigEntry, name: str) -> str:

@@ -23,12 +23,7 @@ from custom_components.matic_robot.slam_view_data import catalog_entry_projectio
 
 from .hermes_sim import STOP_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import VACUUM, poll
-from .sim_mission import SimFloor, two_room_floor
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
+from .sim_mission import SimFloor, map_pages
 
 
 @pytest.fixture(autouse=True)
@@ -56,11 +51,17 @@ def _map_verified(entry: MockConfigEntry) -> bool:
     )
 
 
-async def _map_ready(entry: MockConfigEntry) -> None:
-    """Wait for the map to verify; setup returns before both layers arrive."""
+async def _map_ready(entry: MockConfigEntry, floor: SimFloor) -> None:
+    """Wait for every map page; a layer that arrives ahead unbalances the map."""
+    photo, structure = map_pages(floor)
+    store = entry.runtime_data.slam_map
     async with asyncio.timeout(10):
         # The map store announces no verified map.
-        while not _map_verified(entry):  # noqa: ASYNC110
+        while not (  # noqa: ASYNC110
+            store.tile_count == len(photo)
+            and store.structure_tile_count == len(structure)
+            and _map_verified(entry)
+        ):
             await asyncio.sleep(0.01)
 
 
@@ -95,7 +96,7 @@ async def test_assist_cleans_a_room_reports_it_and_stops(
     floor: SimFloor,
 ) -> None:
     await _assist_ready(hass)
-    await _map_ready(loaded_entry)
+    await _map_ready(loaded_entry, floor)
     assist = await _api(hass, llm.LLM_API_ASSIST, "conversation")
 
     started = await _call(assist, "MaticCleanRooms", rooms=["Study"])
@@ -115,10 +116,13 @@ async def test_assist_cleans_a_room_reports_it_and_stops(
 
 
 async def test_assist_explains_why_the_robot_cannot_start(
-    hass: HomeAssistant, loaded_entry: MockConfigEntry, robot: SimulatedRobot
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    robot: SimulatedRobot,
+    floor: SimFloor,
 ) -> None:
     await _assist_ready(hass)
-    await _map_ready(loaded_entry)
+    await _map_ready(loaded_entry, floor)
     assist = await _api(hass, llm.LLM_API_ASSIST, "conversation")
 
     refused = await _call(assist, "MaticCleanRooms", rooms=["Garage"])

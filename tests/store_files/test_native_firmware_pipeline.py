@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import pytest
 from homeassistant.components.config import automation as automation_config
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -20,24 +19,12 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION, FirmwareTracker
 from custom_components.matic_robot.sensor import MaticFirmwareCompatibilitySensor
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 BLUEPRINT = ROOT / "blueprints/automation/matic_robot/firmware_intelligence.yaml"
 ROBOT_ID = "synthetic-firmware-entry"
 VACUUM = "vacuum.firmware_test"
 SENSOR = "sensor.firmware_test_compatibility"
 NOTIFY = "notify.native_pipeline_local_sink"
-
-
-@pytest.fixture
-def hass_storage() -> dict[str, Any]:
-    """Persist the production tracker in the per-test Home Assistant config."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep tracker Store writes isolated from other tests."""
-    return hass_tmp_config_dir
 
 
 def _snapshot(version: str, *, status: str, captured_at: datetime) -> dict[str, Any]:
