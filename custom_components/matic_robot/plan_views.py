@@ -37,6 +37,7 @@ from .plan_model import (
     RoomSequenceLimitError,
     SharedCadenceUnavailableError,
     leg_boundaries,
+    missing_plan_rooms,
     plan_entries,
     plan_floor_token,
     plan_setting,
@@ -50,6 +51,7 @@ from .plan_schema import (
     DailyLimit,
     DailyLimitHeldRoom,
     HeldRoom,
+    MissingRoom,
     NextRunPreview,
     PlanAreaEntry,
     PlanBlocker,
@@ -85,6 +87,7 @@ class _HeldRooms(TypedDict, total=False):
 
     daily_limit_held_rooms: list[DailyLimitHeldRoom]
     held_rooms: list[HeldRoom]
+    missing_rooms: list[MissingRoom]
 
 
 @dataclass
@@ -216,7 +219,19 @@ def _held_out(preview: Mapping[str, Any]) -> _HeldRooms:
         held["daily_limit_held_rooms"] = preview["daily_limit_held_rooms"]
     if "held_rooms" in preview:
         held["held_rooms"] = preview["held_rooms"]
+    if "missing_rooms" in preview:
+        held["missing_rooms"] = preview["missing_rooms"]
     return held
+
+
+def _missing_rooms(floor: _Floor, plan: Mapping[str, object]) -> _HeldRooms:
+    """Name the plan's rooms the map lost, for a preview that stops early."""
+    missing = missing_plan_rooms(
+        plan,
+        floor.room_map,
+        floor.manager.catalog.known_room_names(floor.serial_number),
+    )
+    return {"missing_rooms": missing} if missing else {}
 
 
 def _next_run_preview(
@@ -248,9 +263,8 @@ def _next_run_preview(
             return {
                 "rooms": [],
                 "entries": [],
-                "mission_boundaries": [],
-                "blocker": "daily_limit_reached",
-                "daily_limit_held_rooms": preview["daily_limit_held_rooms"],
+                **_blocked("daily_limit_reached"),
+                **_held_out(preview),
             }
         if not preview_entries:
             raise EmptyPlanError("plan has no rooms")
@@ -268,7 +282,10 @@ def _next_run_preview(
                 }
                 for room_id, hold in held_rooms.items()
             ],
+            **_missing_rooms(floor, plan),
         }
+    except PlanRoomMissingError:
+        return {**_blocked("room_missing"), **_missing_rooms(floor, plan)}
     except (KeyError, TypeError, ValueError) as err:
         return _blocked(_blocker(err))
     return {

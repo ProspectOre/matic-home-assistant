@@ -568,6 +568,8 @@ export type WorkspaceIntent =
     }
   | { readonly type: "redo-draft" }
   | { readonly type: "toggle-room"; readonly roomId: string }
+  /** Moves a plan room a map edit removed to the room now on the map with its name. */
+  | { readonly type: "relink-room"; readonly roomId: string; readonly toRoomId: string }
   | { readonly type: "clear-selection" }
   | {
       readonly type: "patch-room-settings";
@@ -826,6 +828,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-draft-circles": true,
   "redo-draft": true,
   "toggle-room": true,
+  "relink-room": true,
   "clear-selection": true,
   "patch-room-settings": true,
   "set-use-room-schedule": true,

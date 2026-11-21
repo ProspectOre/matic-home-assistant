@@ -12,6 +12,7 @@ from typing import Any, Final, Literal, TypedDict, cast
 
 from .client import CleaningMode, CoverageSetting, FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
+from .plan_schema import MissingRoom
 from .room_identity import room_cadence_identity as room_cadence_identity
 
 _PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v2\0"
@@ -739,3 +740,76 @@ def resolve_rooms(
     if missing:
         raise PlanRoomMissingError(missing)
     return rooms
+
+
+def missing_plan_rooms(
+    plan: Mapping[str, Any],
+    room_map: Mapping[str, str],
+    known_names: Mapping[str, str],
+) -> list[MissingRoom]:
+    """Describe a plan's rooms that the map no longer has.
+
+    ``name`` is the last name the integration saw for the room, if any.
+    ``match_room_id`` is a room now on the map with that name, offered for a
+    re-link when exactly one such room exists, the plan does not already hold
+    it, and no other missing room shares the name.
+    """
+    room_ids = _plan_room_ids(plan.get("rooms", []))
+    missing = [room_id for room_id in room_ids if room_id not in room_map]
+    names = {room_id: known_names.get(room_id) for room_id in missing}
+    claims: dict[str, int] = {}
+    for name in names.values():
+        if name:
+            claims[name.casefold()] = claims.get(name.casefold(), 0) + 1
+    by_name: dict[str, list[str]] = {}
+    for room_id, room_name in room_map.items():
+        by_name.setdefault(room_name.casefold(), []).append(room_id)
+    result: list[MissingRoom] = []
+    for room_id in missing:
+        name = names[room_id]
+        key = name.casefold() if name else ""
+        matches = by_name.get(key, []) if claims.get(key) == 1 else []
+        match = matches[0] if len(matches) == 1 and matches[0] not in room_ids else None
+        result.append(MissingRoom(room_id=room_id, name=name, match_room_id=match))
+    return result
+
+
+def relink_plan_rooms(
+    plan: Mapping[str, Any], links: Mapping[str, str]
+) -> dict[str, Any]:
+    """Return a copy of a stored plan with rooms moved to new room IDs.
+
+    Each room keeps its cleaning settings and schedule policy. Its schedule
+    progress belongs to the old room ID, so the save starts it over.
+    """
+    room_ids = set(_plan_room_ids(plan.get("rooms", [])))
+    targets = list(links.values())
+    if not set(links) <= room_ids or len(set(targets)) != len(targets):
+        raise ValueError("re-link does not match the plan")
+    if set(targets) & (room_ids - set(links)):
+        raise DuplicateRoomError("re-link target is already in the plan")
+    relinked = dict(plan)
+    rooms: list[dict[str, Any]] = []
+    for room in plan["rooms"]:
+        moved = dict(room)
+        if moved["room_id"] in links:
+            moved["room_id"] = links[moved["room_id"]]
+            moved.pop("cadence_identity", None)
+        rooms.append(moved)
+    relinked["rooms"] = rooms
+    relinked["entries"] = [
+        {**entry, "room_id": links.get(entry["room_id"], entry["room_id"])}
+        if entry["kind"] == "room"
+        else dict(entry)
+        for entry in plan_entries(plan)
+    ]
+    if isinstance(plan.get("room_order"), list):
+        relinked["room_order"] = [
+            links.get(room_id, room_id) for room_id in plan["room_order"]
+        ]
+    if isinstance(plan.get("occupancy_sensors"), Mapping):
+        relinked["occupancy_sensors"] = {
+            links.get(room_id, room_id): sensor
+            for room_id, sensor in plan["occupancy_sensors"].items()
+        }
+    return relinked

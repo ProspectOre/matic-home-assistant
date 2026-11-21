@@ -25,7 +25,7 @@ from .client import (
     wire_shape,
 )
 from .const import DOMAIN, EVENT_FIRMWARE_ANALYZED, EVENT_FIRMWARE_CHANGED
-from .repairs import repair_placeholders
+from .repair_placeholders import repair_placeholders
 
 if TYPE_CHECKING:
     from .session import RobotSession

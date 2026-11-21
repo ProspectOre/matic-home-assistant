@@ -11,7 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from .client import ROBOT_ALERTS, RobotOperationalState
 from .const import DOMAIN
-from .repairs import repair_placeholders
+from .repair_placeholders import repair_placeholders
 
 _LOGGER = logging.getLogger(__name__)
 ERROR_CONFIRMATION_SAMPLES = 2

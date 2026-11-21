@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-// A saved plan room that a map edit in the Matic app removed: Run says why
-// the plan can't run, Edit marks the room, and taking it out lets it save.
+// A saved plan room that a map edit in the Matic app re-created with a new
+// ID: Run cleans the rest and names the skipped room, and Edit moves it to
+// the room now on the map with its name, keeping its settings.
 
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
 
@@ -21,24 +22,26 @@ async function loadGallery(page, scenario) {
   return gallery;
 }
 
-test("a plan room no longer on the map is named in Run and removed in Edit", async ({ page }) => {
+test("a re-created plan room is skipped in Run and moved in Edit", async ({ page }) => {
   const gallery = await loadGallery(page, "plan-run-room-missing");
-  const notOnMap = "Removed or renumbered in the Matic app · Remove it from this plan";
-  const rows = gallery.locator("ul.run-list > li");
-  await expect(rows).toHaveCount(4);
-  await expect(rows.nth(3)).toContainText("Room not on the map");
-  await expect(rows.nth(3)).toContainText(notOnMap);
-  await expect(gallery.getByText(
-    "Can't run this plan until you remove the rooms that are no longer on the map. Open Edit to remove them.",
-  ).first()).toBeVisible();
+  await expect(gallery.locator("ul.run-list > li, ol.run-list > li")).toHaveCount(3);
+  await expect(gallery.locator("[data-missing-rooms]")).toHaveText(
+    "Not on the map, so this run skips: Bedroom. Edit the plan to update them.",
+  );
 
-  await gallery.locator(".problem + button", { hasText: "Edit" }).click();
-  expect(await gallery.evaluate((element) => element.getWorkspaceSnapshot().planView)).toBe("edit");
+  await gallery.getByRole("button", { name: /^Edit / }).click();
   const list = gallery.getByRole("list", { name: "Rooms", exact: true });
-  const stale = list.getByRole("button", { name: "Settings for Room not on the map", exact: true });
-  await expect(stale).toContainText(notOnMap);
-  await list.getByRole("checkbox", { name: "Include Room not on the map", exact: true }).click();
-  await expect(list.getByText("Room not on the map")).toHaveCount(0);
+  const stale = list.locator("li", { has: page.locator("[data-room-missing]") });
+  await expect(stale).toContainText("Bedroom");
+  await expect(stale).toContainText("Removed or renumbered in the Matic app · Runs skip it");
+  await stale.getByRole("button", { name: "Use the new Bedroom", exact: true }).click();
+
+  await expect(list.locator("[data-room-missing]")).toHaveCount(0);
+  await expect(list.locator("[data-room-relink]")).toHaveCount(0);
   const draft = await gallery.evaluate((element) => element.getWorkspaceSnapshot().planDraft);
-  expect(draft.rooms.map((room) => room.roomId)).not.toContain("room-gone");
+  expect(draft.dirty).toBe(true);
+  const moved = draft.rooms.at(-1);
+  expect(moved.roomId).not.toBe("room-gone");
+  expect(moved).toMatchObject({ cleaningMode: "vacuum", coverageSetting: "quick" });
+  expect(draft.rooms.filter((room) => room.roomId === moved.roomId)).toHaveLength(1);
 });

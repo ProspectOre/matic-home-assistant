@@ -318,10 +318,21 @@ export interface NextRunHeldRoom {
   readonly sensor: string;
 }
 
+/**
+ * A plan room a map edit removed; the run cleans the rest without it.
+ * `name` is its last known name; `matchRoomId` is the one room now on the map with that name.
+ */
+export interface NextRunMissingRoom {
+  readonly roomId: string;
+  readonly name: string | null;
+  readonly matchRoomId: string | null;
+}
+
 export interface NextRunPreview {
   readonly dailyLimitHeldRooms?: readonly DailyLimitHeldRoom[];
   readonly rooms: readonly NextRunPreviewRoom[];
   readonly heldRooms?: readonly NextRunHeldRoom[];
+  readonly missingRooms?: readonly NextRunMissingRoom[];
   /** Every step in run order, rooms and custom areas. Synthetic fixtures may leave it out; the steps are then `rooms`. */
   readonly steps?: readonly NextRunPreviewStep[];
   /** Offsets into `steps` when sent, else `rooms`. */

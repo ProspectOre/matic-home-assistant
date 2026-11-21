@@ -60,6 +60,31 @@ from .stop_return import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _fire_held_rooms(
+    hass: HomeAssistant,
+    call: ServiceCall,
+    entity_id: str,
+    held_rooms: Sequence[Mapping[str, str]],
+    run: Mapping[str, Any],
+) -> None:
+    """Announce each room an occupancy sensor holds out of the run."""
+    for held in held_rooms:
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_held",
+            {
+                ATTR_ENTITY_ID: entity_id,
+                "plan_id": run["plan_id"],
+                "room_id": held["room_id"],
+                "room": held["name"],
+                "run_id": run["run_id"],
+                "provenance": run["provenance"],
+                "reason_code": held["reason"],
+                "sensor": held["sensor"],
+            },
+            context=call.context,
+        )
+
+
 async def _async_execute_rooms_reserved(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -81,6 +106,7 @@ async def _async_execute_rooms_reserved(
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
+    missing_rooms: Sequence[Mapping[str, str | None]] = (),
     on_started: Callable[[str], None] | None = None,
 ) -> None:
     """Execute every resolved room and custom area with safe cancellation.
@@ -168,6 +194,7 @@ async def _async_execute_rooms_reserved(
                 "service": str(call.service),
                 "started_at": run_started_at,
                 "room_count": len(chosen),
+                **({"missing_rooms": list(missing_rooms)} if missing_rooms else {}),
             }
 
         def record_room_completion(_room: CleaningRoom) -> None:
@@ -226,21 +253,7 @@ async def _async_execute_rooms_reserved(
                     {ATTR_ENTITY_ID: entity_id, **started()},
                     context=call.context,
                 )
-                for held in held_rooms:
-                    hass.bus.async_fire(
-                        f"{DOMAIN}_room_held",
-                        {
-                            ATTR_ENTITY_ID: entity_id,
-                            "plan_id": call.data["plan_id"],
-                            "room_id": held["room_id"],
-                            "room": held["name"],
-                            "run_id": run_id,
-                            "provenance": run_provenance,
-                            "reason_code": held["reason"],
-                            "sensor": held["sensor"],
-                        },
-                        context=call.context,
-                    )
+                _fire_held_rooms(hass, call, entity_id, held_rooms, started())
             if mapped_room_names:
                 mapped_keys = [native_room_key(name) for name in mapped_room_names]
                 ambiguous = [
@@ -816,6 +829,7 @@ async def _async_execute_rooms(
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
+    missing_rooms: Sequence[Mapping[str, str | None]] = (),
     on_started: Callable[[str], None] | None = None,
 ) -> str:
     """Reserve queued cadence synchronously, execute the run, return its run_id."""
@@ -878,6 +892,7 @@ async def _async_execute_rooms(
             validate_prepared_run=validate_prepared_run,
             entries=entries,
             held_rooms=held_rooms,
+            missing_rooms=missing_rooms,
             on_started=on_started,
         )
     finally:

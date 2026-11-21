@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from uuid import UUID
 
 import pytest
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_STARTED
 from custom_components.matic_robot.plan_room_repairs import plan_room_issue_id
+from custom_components.matic_robot.repairs import async_create_fix_flow
 
 from .hermes_sim import SimulatedRobot
 from .plan_run import PlanRun
@@ -34,7 +35,23 @@ def _edited(floor: SimFloor) -> SimFloor:
     return SimFloor(floor.mission_id, floor.partition_id, (kitchen, new_study))
 
 
-async def test_a_plan_with_removed_rooms_names_them_and_raises_a_repair(
+async def _clean(plan: PlanRun, robot: SimulatedRobot, start: Any) -> None:
+    """Run one managed clean of a single room through to the dock."""
+    plan.finished.clear()
+    await start
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    assert plan.task is not None
+    async with asyncio.timeout(30):
+        while not plan.task.done() or not plan.finished:
+            await plan.poll()
+    await plan.task
+    assert plan.finished[-1]["outcome"] == "completed"
+
+
+async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
     hass: HomeAssistant, plan: PlanRun, robot: SimulatedRobot, floor: SimFloor
 ) -> None:
     runtime = plan.entry.runtime_data
@@ -47,11 +64,24 @@ async def test_a_plan_with_removed_rooms_names_them_and_raises_a_repair(
         "save_plan",
         plan_id=PLAN,
         name="Weekly",
-        rooms=[{"room": "Kitchen"}, {"room": "Study"}, {"room": "Hall"}],
+        run_behavior="ordered",
+        rooms=[
+            {"room": "Kitchen"},
+            {
+                "room": "Study",
+                "cadence": {
+                    "coverage_every_n": 3,
+                    "periodic_coverage_setting": "heavy_duty",
+                },
+            },
+            {"room": "Hall"},
+        ],
     )
     serial = session.info.serial_number
-    saved = runtime.cleaning_plans.catalog.plan(serial, PLAN)["rooms"]
-    old_study, old_hall = (str(room["room_id"]) for room in saved[1:])
+    catalog = runtime.cleaning_plans.catalog
+    kitchen, old_study, old_hall = (
+        str(room["room_id"]) for room in catalog.plan(serial, PLAN)["rooms"]
+    )
     issues = ir.async_get(hass)
     issue_id = plan_room_issue_id(plan.entry.entry_id)
     assert issues.async_get_issue(DOMAIN, issue_id) is None
@@ -62,21 +92,49 @@ async def test_a_plan_with_removed_rooms_names_them_and_raises_a_repair(
         while len(session.floor.value.rooms) != 2:
             await plan.poll()
     await hass.async_block_till_done()
-
+    new_study = next(
+        room.id for room in session.floor.value.rooms if room.name == "Study"
+    )
     issue = issues.async_get_issue(DOMAIN, issue_id)
     assert issue is not None
+    assert issue.is_fixable
+    assert issue.translation_key == "plan_room_relink"
     assert issue.translation_placeholders["plans"] == "Weekly"
 
-    commands = len(plan.coverage_commands())
-    with pytest.raises(ServiceValidationError) as raised:
-        await plan.call(DOMAIN, "run_selected_plan", plan=PLAN)
-    assert raised.value.translation_key == "plan_room_missing"
-    assert raised.value.translation_placeholders == {
-        "rooms": f"{old_study}, {old_hall}"
-    }
-    assert len(plan.coverage_commands()) == commands
+    # The plan cleans the kitchen and names the two rooms it skipped.
+    started: list[dict[str, Any]] = []
+    hass.bus.async_listen(
+        EVENT_PLAN_STARTED, lambda event: started.append(dict(event.data))
+    )
+    await _clean(plan, robot, plan.start_service("run_selected_plan", plan=PLAN))
+    assert plan.room_id == kitchen
+    assert started[-1]["room_count"] == 1
+    assert started[-1]["missing_rooms"] == [
+        {"room_id": old_study, "name": "Study", "match_room_id": new_study},
+        {"room_id": old_hall, "name": "Hall", "match_room_id": None},
+    ]
+    assert plan.finished[-1]["missing_rooms"] == started[-1]["missing_rooms"]
 
-    # Saving the plan with the rooms on the map clears the Repair.
+    # The Repair moves the study, settings and all, once the user confirms.
+    flow = await async_create_fix_flow(hass, issue_id, issue.data)
+    flow.hass = hass
+    form = await flow.async_step_init()
+    assert form["description_placeholders"]["rooms"] == "- Weekly: Study"
+    assert (await flow.async_step_init({}))["type"] == "create_entry"
+    await hass.async_block_till_done()
+    rooms = catalog.plan(serial, PLAN)["rooms"]
+    assert [room["room_id"] for room in rooms] == [kitchen, new_study, old_hall]
+    assert rooms[1]["cadence"]["coverage_every_n"] == 3
+
+    # The hall has no replacement: the Repair stays, with nothing to move.
+    issue = issues.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert not issue.is_fixable
+    assert issue.translation_key == "plan_room_missing"
+    flow = await async_create_fix_flow(hass, issue_id, issue.data)
+    flow.hass = hass
+    assert (await flow.async_step_init())["reason"] == "no_matching_rooms"
+
     await plan.call(
         DOMAIN,
         "save_plan",
