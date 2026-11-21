@@ -11,6 +11,7 @@ from homeassistant.core import CoreState
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.models import (
+    CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
 )
@@ -214,6 +215,49 @@ async def test_multiroom_verification_deduplicates_prior_credit(
     assert [event.data["room_id"] for event in events] == (
         ["hall"] if proof == "complete" else []
     )
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_recovery_settles_a_room_the_robot_could_not_reach(hass, recovery_state):
+    """A room the record shows unattempted settles without credit, as live."""
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["rooms"].append(
+        asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
+    )
+    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    now = dt_util.utcnow()
+    record = CleaningSessionRecord(
+        b"finished",
+        CleaningSession(
+            (now - timedelta(seconds=30)).isoformat(),
+            now.isoformat(),
+            30,
+            ("Kitchen", "Hall"),
+            (("Kitchen", 30), ("Hall", 0)),
+            False,
+            ("Kitchen",),
+            ("Kitchen",),
+            mode_results=(
+                CleaningModeResult("Kitchen", "vacuum", "completed", 30),
+                CleaningModeResult("Hall", "vacuum", "unattempted", 0),
+            ),
+            stop_reason="finished",
+        ),
+    )
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        record,
+    )
+    skipped = []
+    hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    run = manager.history.snapshot("serial")["last_run"]
+    assert (run["outcome"], run["reason_code"]) == ("completed", "all_rooms_settled")
+    assert run["completed_room_count"] == 1
+    assert [
+        (event.data["room_id"], event.data["reason_code"]) for event in skipped
+    ] == [("hall", "room_unreachable")]
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
