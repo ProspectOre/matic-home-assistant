@@ -30,6 +30,7 @@ from .map_schema import (
 from .scene_encoding import (
     MAX_SCENE_BYTES,
 )
+from .slam_history_format import HistoryRequestError
 
 STORAGE_VERSION = 2
 MAX_ACTIVE_HISTORY_READS = 2
@@ -441,7 +442,7 @@ class SlamHistoryStore:
             or len(set(record_ids)) != len(record_ids)
             or (action not in {"pause_capture", "resume_capture"} and not record_ids)
         ):
-            raise ValueError("invalid-history-mutation")
+            raise HistoryRequestError("invalid-history-mutation")
         fingerprint = json.dumps(
             [action, sorted(record_ids), name, allow_kept], separators=(",", ":")
         )
@@ -449,17 +450,17 @@ class SlamHistoryStore:
             prior = self._requests.get(request_id)
             if prior is not None:
                 if prior[0] != fingerprint:
-                    raise ValueError("history-request-id-reused")
+                    raise HistoryRequestError("history-request-id-reused")
                 return prior[1].copy()
             if self._closed:
-                raise ValueError("history-store-closed")
+                raise HistoryRequestError("history-store-closed")
             if expected_generation != self._generation:
-                raise ValueError("history-generation-conflict")
+                raise HistoryRequestError("history-generation-conflict")
             selected = [
                 item for item in self._snapshots if item.record_id in set(record_ids)
             ]
             if len(selected) != len(set(record_ids)):
-                raise ValueError("history-record-not-found")
+                raise HistoryRequestError("history-record-not-found")
             timestamp = (now or datetime.now(UTC)).astimezone(UTC)
             by_id = {item.record_id: item for item in self._snapshots}
             before = list(self._snapshots)
@@ -469,7 +470,7 @@ class SlamHistoryStore:
             if action == "keep":
                 for item in selected:
                     if item.retention == "trash":
-                        raise ValueError("history-record-in-trash")
+                        raise HistoryRequestError("history-record-in-trash")
                     by_id[item.record_id] = replace(
                         item,
                         retention="kept",
@@ -480,20 +481,22 @@ class SlamHistoryStore:
             elif action == "unkeep":
                 for item in selected:
                     if item.retention != "kept":
-                        raise ValueError("history-record-not-kept")
+                        raise HistoryRequestError("history-record-not-kept")
                     by_id[item.record_id] = replace(item, retention="automatic")
             elif action == "rename":
                 clean_name = _history_format._valid_name(name)
                 for item in selected:
                     if item.retention == "trash":
-                        raise ValueError("history-record-in-trash")
+                        raise HistoryRequestError("history-record-in-trash")
                     by_id[item.record_id] = replace(item, name=clean_name)
             elif action == "delete":
                 for item in selected:
                     if item.retention == "kept" and not allow_kept:
-                        raise ValueError("history-kept-record-requires-explicit-delete")
+                        raise HistoryRequestError(
+                            "history-kept-record-requires-explicit-delete"
+                        )
                     if item.retention == "trash":
-                        raise ValueError("history-record-already-deleted")
+                        raise HistoryRequestError("history-record-already-deleted")
                     by_id[item.record_id] = replace(
                         item,
                         retention="trash",
@@ -507,7 +510,7 @@ class SlamHistoryStore:
                         or item.deleted_until is None
                         or item.deleted_until <= timestamp
                     ):
-                        raise ValueError("history-trash-expired")
+                        raise HistoryRequestError("history-trash-expired")
                     by_id[item.record_id] = replace(
                         item,
                         retention=item.deleted_retention or "automatic",
@@ -516,7 +519,7 @@ class SlamHistoryStore:
                     )
             elif action == "permanent_delete":
                 if any(item.retention != "trash" for item in selected):
-                    raise ValueError("history-record-not-in-trash")
+                    raise HistoryRequestError("history-record-not-in-trash")
                 self._snapshots = [
                     item
                     for item in self._snapshots
@@ -527,7 +530,7 @@ class SlamHistoryStore:
             elif action == "resume_capture":
                 self._capture_paused = False
             else:
-                raise ValueError("invalid-history-action")
+                raise HistoryRequestError("invalid-history-action")
             if action not in {"permanent_delete", "pause_capture", "resume_capture"}:
                 self._snapshots = [by_id[item.record_id] for item in self._snapshots]
             if action in {"permanent_delete", "unkeep"}:
@@ -635,24 +638,24 @@ class SlamHistoryStore:
             or isinstance(expected_generation, bool)
             or not isinstance(expected_generation, int)
         ):
-            raise ValueError("invalid-history-export-selection")
+            raise HistoryRequestError("invalid-history-export-selection")
         async with self._mutation_lock:
             if expected_generation != self._generation:
-                raise ValueError("history-generation-conflict")
+                raise HistoryRequestError("history-generation-conflict")
             selected = [
                 item for item in self._snapshots if item.record_id in set(record_ids)
             ]
             if len(selected) != len(set(record_ids)) or any(
                 item.retention == "trash" for item in selected
             ):
-                raise ValueError("history-record-not-found")
+                raise HistoryRequestError("history-record-not-found")
             archive_records: list[HistoryArchiveRecord] = []
             encoded_size = 0
             for item in selected:
                 encoded = base64.b64encode(item.compressed).decode("ascii")
                 encoded_size += len(encoded)
                 if encoded_size > _history_format.MAX_ARCHIVE_BYTES:
-                    raise ValueError("history-archive-too-large")
+                    raise HistoryRequestError("history-archive-too-large")
                 archive_records.append(
                     {
                         "source_id": item.record_id,
@@ -672,7 +675,7 @@ class SlamHistoryStore:
                 len(json.dumps(result, separators=(",", ":")).encode())
                 > _history_format.MAX_ARCHIVE_BYTES
             ):
-                raise ValueError("history-archive-too-large")
+                raise HistoryRequestError("history-archive-too-large")
             return result
 
     async def async_import(
@@ -691,7 +694,7 @@ class SlamHistoryStore:
             or not isinstance(expected_generation, int)
             or not isinstance(archive, Mapping)
         ):
-            raise ValueError("invalid-history-archive")
+            raise HistoryRequestError("invalid-history-archive")
         fingerprint = await self._hass.async_add_executor_job(
             _history_format._archive_fingerprint, archive
         )
@@ -699,10 +702,10 @@ class SlamHistoryStore:
             prior = self._requests.get(request_id)
             if prior is not None:
                 if prior[0] != fingerprint:
-                    raise ValueError("history-request-id-reused")
+                    raise HistoryRequestError("history-request-id-reused")
                 return prior[1].copy()
             if self._closed or expected_generation != self._generation:
-                raise ValueError("history-generation-conflict")
+                raise HistoryRequestError("history-generation-conflict")
         prepared = await self._hass.async_add_executor_job(
             _history_format._import_records, archive.get("records"), self._group_salt
         )
@@ -710,16 +713,16 @@ class SlamHistoryStore:
             prior = self._requests.get(request_id)
             if prior is not None:
                 if prior[0] != fingerprint:
-                    raise ValueError("history-request-id-reused")
+                    raise HistoryRequestError("history-request-id-reused")
                 return prior[1].copy()
             if self._closed or expected_generation != self._generation:
-                raise ValueError("history-generation-conflict")
+                raise HistoryRequestError("history-generation-conflict")
             if (
                 len(self._snapshots) + len(prepared) > _history_format.MAX_HISTORY_ITEMS
                 or sum(len(item.compressed) for item in self._snapshots + prepared)
                 > _history_format.MAX_HISTORY_COMPRESSED_BYTES
             ):
-                raise ValueError("history-quota-exceeded")
+                raise HistoryRequestError("history-quota-exceeded")
             before = list(self._snapshots)
             self._snapshots.extend(prepared)
             self._generation += 1

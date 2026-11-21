@@ -24,12 +24,18 @@ from .occupancy import (
     plan_occupancy_sensors,
 )
 from .plan_model import (
+    CadenceMapChangedError,
+    CadencePolicyError,
+    CadenceProgressUnverifiedError,
     CleaningRoom,
+    EmptyPlanError,
     PlanAreaMapChangedError,
     PlanAreaMissingError,
+    PlanDisabledError,
     PlanRoomMissingError,
     PlanRoomsHeldError,
     RoomSequenceLimitError,
+    SharedCadenceUnavailableError,
     leg_boundaries,
     plan_entries,
     plan_floor_token,
@@ -128,32 +134,28 @@ def _blocked(blocker: PlanBlocker) -> NextRunPreview:
     return {"rooms": [], "mission_boundaries": [], "blocker": blocker}
 
 
+# First match wins: a subclass precedes its base.
+_BLOCKERS: tuple[tuple[type[ValueError], PlanBlocker], ...] = (
+    (RoomSequenceLimitError, "plan_room_limit"),
+    (PlanAreaMissingError, "area_missing"),
+    (PlanRoomMissingError, "room_missing"),
+    (PlanAreaMapChangedError, "area_map_changed"),
+    (PlanDisabledError, "plan_disabled"),
+    (EmptyPlanError, "plan_has_no_rooms"),
+    (CadenceMapChangedError, "cadence_identity_changed"),
+    (SharedCadenceUnavailableError, "shared_schedule_unavailable"),
+    (CadenceProgressUnverifiedError, "cadence_progress_unverified"),
+    (CoverageCadenceRequiresVacuumError, "coverage_requires_vacuum"),
+    (CadencePolicyError, "invalid_cadence_policy"),
+)
+
+
 def _blocker(err: KeyError | TypeError | ValueError) -> PlanBlocker:
-    """Name why a preview failed, from its error type or else its message."""
-    if isinstance(err, RoomSequenceLimitError):
-        return "plan_room_limit"
-    if isinstance(err, PlanAreaMissingError):
-        return "area_missing"
-    if isinstance(err, PlanRoomMissingError):
-        return "room_missing"
-    if isinstance(err, PlanAreaMapChangedError):
-        return "area_map_changed"
-    if isinstance(err, CoverageCadenceRequiresVacuumError):
-        return "coverage_requires_vacuum"
-    message = str(err).casefold()
-    if "disabled" in message:
-        return "plan_disabled"
-    if "no rooms" in message:
-        return "plan_has_no_rooms"
-    if "different map" in message or "identity" in message:
-        return "cadence_identity_changed"
-    if "shared room cadence" in message and "unavailable" in message:
-        return "shared_schedule_unavailable"
-    if "progress is unverified" in message:
-        return "cadence_progress_unverified"
-    if "cadence" in message:
-        return "invalid_cadence_policy"
-    return "invalid_plan"
+    """Name why a preview failed from its error type."""
+    return next(
+        (blocker for kind, blocker in _BLOCKERS if isinstance(err, kind)),
+        "invalid_plan",
+    )
 
 
 def _occupancy_holds(
@@ -250,7 +252,7 @@ def _next_run_preview(
                 "daily_limit_held_rooms": preview["daily_limit_held_rooms"],
             }
         if not preview_entries:
-            raise ValueError("plan has no rooms")
+            raise EmptyPlanError("plan has no rooms")
         rooms, steps = _preview_steps(preview_entries)
         boundaries = leg_boundaries(preview_legs(preview_entries))
     except PlanRoomsHeldError:

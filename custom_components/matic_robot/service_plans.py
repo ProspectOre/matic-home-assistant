@@ -14,6 +14,7 @@ from .const import MAX_ROOM_SEQUENCE_SIZE
 from .managed_run import validation_error
 from .occupancy import occupancy_holds
 from .plan_model import (
+    AmbiguousRoomError,
     CadenceBindingError,
     CleaningRoom,
     DuplicatePlanAreaError,
@@ -315,13 +316,13 @@ def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
     """Resolve one live room ID or unambiguous display name."""
     try:
         room_id, _room_name = resolve_room_reference(identifier, room_map)
+    except AmbiguousRoomError as err:
+        raise validation_error(
+            f"Ambiguous Matic room: {identifier}",
+            "ambiguous_room",
+            {"room": identifier},
+        ) from err
     except ValueError as err:
-        if str(err).startswith("ambiguous "):
-            raise validation_error(
-                f"Ambiguous Matic room: {identifier}",
-                "ambiguous_room",
-                {"room": identifier},
-            ) from err
         raise validation_error(
             f"Unknown Matic room: {identifier}",
             "unknown_rooms",
