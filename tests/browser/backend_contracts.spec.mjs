@@ -288,6 +288,38 @@ test("plan catalog reads occupancy settings and held rooms", async ({ page }) =>
   });
 });
 
+test("plan catalog reads removed rooms up to the saved-plan room limit", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async payload => {
+    const { parsePlansCatalog } = await import("/backend-contracts.js");
+    const parse = (missing) => {
+      const candidate = structuredClone(payload);
+      candidate.plans[0].next_run_preview = {
+        rooms: [], mission_boundaries: [], blocker: "room_missing", missing_rooms: missing,
+      };
+      try { return parsePlansCatalog(candidate).plans[0].nextRunPreview.missingRooms; } catch (error) { return error.code; }
+    };
+    const room = (index) => ({ room_id: `room-${index}`, name: null, match_room_id: null });
+    return {
+      named: parse([{ room_id: "room-old", name: "Study", match_room_id: "room-new" }, room(1)]),
+      atLimit: parse(Array.from({ length: 256 }, (_, index) => room(index))).length,
+      overLimit: parse(Array.from({ length: 257 }, (_, index) => room(index))),
+      notList: parse({}),
+      noId: parse([{ name: "Study", match_room_id: null }]),
+    };
+  }, plansPayload());
+  expect(result).toEqual({
+    named: [
+      { roomId: "room-old", name: "Study", matchRoomId: "room-new" },
+      { roomId: "room-1", name: null, matchRoomId: null },
+    ],
+    atLimit: 256,
+    overLimit: "invalid-plan-preview-missing",
+    notList: "invalid-plan-preview-missing",
+    noId: "invalid-plan-preview-missing",
+  });
+});
+
 test("native plan catalog accepts room names up to 256 UTF-8 bytes", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async payload => {

@@ -383,6 +383,24 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
     with pytest.raises(ValueError, match="map changed"):
         links.kwargs["precondition"]()
 
+    # A re-link that leaves no removed room finishes, so the Repair clears.
+    entry.runtime_data.session.floor.value = floor
+    home = catalog.plans.return_value["home"]
+    catalog.async_relink_plan_rooms = AsyncMock(
+        side_effect=lambda *_, **__: home.update(
+            rooms=[_room("room-kitchen"), _room("room-study")]
+        )
+    )
+    flow = PlanRoomRepairFlow("entry")
+    flow.hass = MagicMock()
+    flow.hass.config_entries.async_get_entry.return_value = entry
+    with patch(
+        "custom_components.matic_robot.plan_room_repairs.repair_placeholders",
+        return_value={"name": "Matic"},
+    ):
+        await flow.async_step_init()
+    assert (await flow.async_step_init({}))["type"] == "create_entry"
+
 
 async def test_matic_map_hears_which_rooms_a_run_skips() -> None:
     runtime = _plans_runtime()

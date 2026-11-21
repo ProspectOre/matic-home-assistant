@@ -49,7 +49,7 @@ export const PLAN_BLOCKERS: Partial<Record<NextRunPreviewBlocker, Reason>> = {
   plan_has_no_rooms: { reason: "Can't run this plan until it has at least one room.", reasonKey: "v4_preview_no_rooms" },
   plan_room_limit: { reason: "Can't run this plan until it has 100 rooms or fewer.", reasonKey: "v4_preview_room_limit" },
   invalid_plan: { reason: "Can't run this plan until you open Edit and save it again.", reasonKey: "v4_preview_invalid" },
-  room_missing: { reason: "Can't run this plan until you remove the rooms that are no longer on the map. Open Edit to remove them.", reasonKey: "v4_preview_room_missing" },
+  room_missing: { reason: "None of this plan's rooms are on the map any more. Open Edit to move them to their new rooms or choose other rooms.", reasonKey: "v4_preview_room_missing" },
   plan_rooms_held: { reason: "Can't run this plan while every room in it is occupied.", reasonKey: "v4_preview_rooms_held" },
 };
 

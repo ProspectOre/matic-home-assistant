@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.setup import async_setup_component
 
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_STARTED
 from custom_components.matic_robot.plan_room_repairs import plan_room_issue_id
@@ -116,11 +117,12 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
     assert plan.finished[-1]["missing_rooms"] == started[-1]["missing_rooms"]
 
     # The Repair moves the study, settings and all, once the user confirms.
-    flow = await async_create_fix_flow(hass, issue_id, issue.data)
-    flow.hass = hass
-    form = await flow.async_step_init()
+    assert await async_setup_component(hass, "repairs", {})
+    repairs = hass.data["repairs"]["flow_manager"]
+    form = await repairs.async_init(DOMAIN, context={"issue_id": issue_id})
     assert form["description_placeholders"]["rooms"] == "- Weekly: Study"
-    assert (await flow.async_step_init({}))["type"] == "create_entry"
+    done = await repairs.async_configure(form["flow_id"], {})
+    assert done["reason"] == "rooms_left"
     await hass.async_block_till_done()
     rooms = catalog.plan(serial, PLAN)["rooms"]
     assert [room["room_id"] for room in rooms] == [kitchen, new_study, old_hall]

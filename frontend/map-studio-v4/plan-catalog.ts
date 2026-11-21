@@ -181,7 +181,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     };
   });
   const rawMissing = preview.missing_rooms;
-  if (rawMissing !== undefined && (!Array.isArray(rawMissing) || rawMissing.length > MAX_ROOM_SEQUENCE_SIZE)) {
+  if (rawMissing !== undefined && (!Array.isArray(rawMissing) || rawMissing.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE)) {
     throw new ContractError("invalid-plan-preview-missing");
   }
   const missingRooms = rawMissing?.map((candidate): NextRunMissingRoom => {

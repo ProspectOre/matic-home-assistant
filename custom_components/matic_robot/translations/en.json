@@ -555,7 +555,7 @@
     "v4_preview_no_rooms": "Can't run this plan until it has at least one room.",
     "v4_preview_area_changed": "Can't run this plan until you review its custom areas on the current map.",
     "v4_preview_invalid": "Can't run this plan until you open Edit and save it again.",
-    "v4_preview_room_missing": "Can't run this plan until you remove the rooms that are no longer on the map. Open Edit to remove them.",
+    "v4_preview_room_missing": "None of this plan's rooms are on the map any more. Open Edit to move them to their new rooms or choose other rooms.",
     "v4_preview_rooms_held": "Can't run this plan while every room in it is occupied.",
     "v4_plan_held_room": "{room} ({sensor})",
     "v4_plan_held_rooms": "Held while occupied: {rooms}. They stay first in line for the next run.",
@@ -2232,7 +2232,8 @@
         "abort": {
           "robot_unavailable": "The robot's map isn't available right now. Try again once it is connected.",
           "no_matching_rooms": "No removed room has a room with the same name on the map now. Update the plans in Matic Map instead.",
-          "plan_changed": "A plan changed while this was open. Open the Repair again to see what is left to move."
+          "plan_changed": "A plan changed while this was open. Open the Repair again to see what is left to move.",
+          "rooms_left": "Moved the rooms that matched. Some plans still name rooms with no replacement on the map: open each plan in Matic Map and choose Edit to update it."
         }
       }
     }

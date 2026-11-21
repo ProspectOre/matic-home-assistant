@@ -183,6 +183,10 @@ class PlanRoomRepairFlow(RepairsFlow):
             )
         except ValueError:
             return self.async_abort(reason="plan_changed")
+        if _stale_plans(catalog.plans(serial_number), floor_plan):
+            # Finishing with an entry would make Home Assistant delete the
+            # Repair that still names the rooms with no replacement.
+            return self.async_abort(reason="rooms_left")
         return self.async_create_entry(data={})
 
     @staticmethod
