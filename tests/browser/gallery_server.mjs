@@ -1,4 +1,4 @@
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readdirSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,19 @@ const scripts = new Map([
 
 ]);
 
+const chunkRoot = join(repositoryRoot, "custom_components", "matic_robot", "map_studio_v4", "chunks");
+
+/**
+ * Every chunk of the built panel. The stage frame loads them all before it
+ * mounts: the panel fetches most of them only as a view first needs one, so a
+ * frame that said "ready" was still fetching, and a test or a hash change
+ * that left it then cancelled those requests.
+ */
+const lazyChunks = () => readdirSync(chunkRoot)
+  .filter((name) => name.endsWith(".js"))
+  .sort()
+  .map((name) => `/map_studio_v4/chunks/${name}`);
+
 /**
  * The synthetic test and review server: the audit/review harness and the
  * owner walkthrough stage, plus the bundles they load. It never talks to Home
@@ -22,7 +35,8 @@ const scripts = new Map([
  */
 export function createGalleryServer() {
   return createServer((request, response) => {
-    const path = new URL(request.url || "/", "http://127.0.0.1").pathname;
+    const url = new URL(request.url || "/", "http://127.0.0.1");
+    const path = url.pathname;
     if (path === "/map-studio-v4-audit" || path === "/map-studio-v4-review") {
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
@@ -72,7 +86,10 @@ export function createGalleryServer() {
           .catch(() => {
             throw new Error("The review bundle has no stage. Run npm run build:map-studio-v4, then reload.");
           })
-          .then((stage) => stage.${frame ? "mountStageFrame" : "mountStagePage"}(document))
+          .then(async (stage) => {
+            await Promise.all(${JSON.stringify(frame && url.searchParams.get("preload") !== "0" ? lazyChunks() : [])}.map((chunk) => import(chunk)));
+            return stage.${frame ? "mountStageFrame" : "mountStagePage"}(document);
+          })
           .catch((error) => {
             const alert = document.createElement("p");
             alert.setAttribute("role", "alert");
