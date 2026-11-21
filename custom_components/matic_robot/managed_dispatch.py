@@ -18,9 +18,15 @@ from homeassistant.util import dt as dt_util
 
 from . import managed_observation as observation
 from . import managed_run
-from .client import MaticError, UserCommand, uuid_string
+from .client import (
+    MaticError,
+    NativeHistoryIncompleteError,
+    UserCommand,
+    uuid_string,
+)
 from .managed_run import (
     NativeHistoryBaselineUnavailableError,
+    NativeHistoryIncompleteBaselineError,
     RoomTakenOverError,
     _PreparedRoomDispatch,
 )
@@ -138,8 +144,9 @@ async def _async_dispatch_leg_command(
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
 ) -> _PreparedRoomDispatch:
-    """Start one owned leg mission with its completion-history baseline.
+    """Start one owned leg mission and keep what its completion is judged by.
 
     A custom area leg is its own mission, started with the same ownership.
     """
@@ -149,21 +156,9 @@ async def _async_dispatch_leg_command(
         raise managed_run.validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    history_baseline = await observation._async_session_history_baseline(
-        robot.session_history
+    history_baseline = await _async_dispatch_history_baseline(
+        robot, tracked=on_claim is not None, expected_hashes=expected_dispatch_history
     )
-    if history_baseline is None:
-        # Without a baseline, completion could never be attributed to this
-        # mission, so it is not started.
-        raise NativeHistoryBaselineUnavailableError(
-            "The robot's cleaning history could not be read. "
-            "Try again before starting this plan."
-        )
-    if expected_dispatch_history is not None and (
-        frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
-        != expected_dispatch_history
-    ):
-        raise RoomTakenOverError("Native history changed during the handoff boundary")
     identity_baseline: bytes | None = None
     for attempt in range(observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
         identity_baseline = await observation._async_read_session_identity(
@@ -198,6 +193,7 @@ async def _async_dispatch_leg_command(
             motion_token=motion_token,
             session_id=managed_session_id,
             floor_token=floor_token,
+            idle_revision=expected_dispatch_revision,
         )
     else:
         mixed = len({effective_room_settings(room) for room in leg}) > 1
@@ -213,6 +209,7 @@ async def _async_dispatch_leg_command(
             motion_token=motion_token,
             session_id=managed_session_id,
             floor_token=floor_token,
+            idle_revision=expected_dispatch_revision,
         )
     if on_claim is not None:
         # The claim is durable before the start is sent. Native history may
@@ -276,8 +273,48 @@ async def _async_dispatch_leg_command(
     if on_identity is not None:
         on_identity(identity)
     return _PreparedRoomDispatch(
-        leg, history_baseline, dispatched_at, identity_baseline, identity
+        leg,
+        history_baseline,
+        dispatched_at,
+        identity_baseline,
+        identity,
+        session_hash=hashlib.sha256(str(managed_session_id).encode()).hexdigest(),
     )
+
+
+async def _async_dispatch_history_baseline(
+    robot: RobotPort, *, tracked: bool, expected_hashes: frozenset[str] | None
+) -> frozenset[bytes] | None:
+    """Read the history keys a dispatch is judged by; None when it needs none.
+
+    A new tracked mission claims its session ID before the start and reads
+    that exact identity back, so it verifies its result without old history,
+    which can then be empty, slow or unreadable. An untracked dispatch and a
+    handoff still read it, and a handoff's keys must match ``expected_hashes``.
+    """
+    if tracked and expected_hashes is None:
+        return None
+    try:
+        baseline = await robot.history_keys(
+            handoff=expected_hashes is not None,
+            expected_hashes=expected_hashes,
+            raise_incomplete=True,
+        )
+    except NativeHistoryIncompleteError as err:
+        raise NativeHistoryIncompleteBaselineError from err
+    if baseline is None:
+        # Without a baseline, completion could never be attributed to this
+        # mission, so it is not started.
+        raise NativeHistoryBaselineUnavailableError(
+            "The robot's cleaning history could not be read. "
+            "Try again before starting this plan."
+        )
+    if expected_hashes is not None and (
+        frozenset(hashlib.sha256(key).hexdigest() for key in baseline)
+        != expected_hashes
+    ):
+        raise RoomTakenOverError("Native history changed during the handoff boundary")
+    return baseline
 
 
 def _identity_matches_session(identity: bytes, session_id: UUID) -> bool:

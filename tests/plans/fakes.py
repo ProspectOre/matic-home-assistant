@@ -159,10 +159,11 @@ def leg_record(
     completed_rooms: tuple[str, ...],
     *,
     completed: bool | None = True,
+    key: bytes = b"leg-evidence",
 ) -> CleaningSessionRecord:
     ended = dt_util.utcnow()
     return CleaningSessionRecord(
-        b"leg-evidence",
+        key,
         CleaningSession(
             (ended - timedelta(seconds=120)).isoformat(),
             ended.isoformat(),

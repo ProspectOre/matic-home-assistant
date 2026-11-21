@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +13,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot.client import native_session_hash
 from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
@@ -21,13 +23,19 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_reconciliation import (
     _async_reconcile_native_stop,
+    _native_reconciliation_data,
 )
 from custom_components.matic_robot.managed_run import _NativeReconciliation
-from custom_components.matic_robot.plan_model import CleaningRoom, room_cadence_identity
+from custom_components.matic_robot.plan_model import (
+    CleaningRoom,
+    plan_floor_token,
+    room_cadence_identity,
+)
 from custom_components.matic_robot.room_coherence import (
     current_floor_plan,
     current_room_cadence_identity,
 )
+from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot
 
@@ -164,3 +172,73 @@ async def test_late_reconciliation_credits_identity_from_registered_current_floo
     assert manager.ledger.async_mark_native_completed.await_args.kwargs[
         "room_identity"
     ] == (room_cadence_identity(floor_plan, room.room_id))
+
+
+@pytest.mark.parametrize("floor_changed", [False, True])
+async def test_late_reconciliation_credits_only_the_dispatch_floor(hass, floor_changed):
+    robot = FakeRobot()
+    entry, entity_id, floor_plan = await _registered_robot(hass)
+    room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
+    now = dt_util.utcnow()
+    key = history_key()
+    reconciliation = _NativeReconciliation(
+        "synthetic-plan",
+        room.room_id,
+        room.name,
+        now - timedelta(seconds=10),
+        room.cleaning_mode,
+        "synthetic-run",
+        room.coverage_setting,
+        native_session_hash(key),
+        plan_floor_token(floor_plan),
+    )
+    record = CleaningSessionRecord(
+        key,
+        CleaningSession(
+            (now - timedelta(seconds=12)).isoformat(),
+            now.isoformat(),
+            12,
+            (room.name,),
+            ((room.name, 12),),
+            True,
+            completed_rooms=(room.name,),
+        ),
+    )
+    manager = memory_manager(hass)
+    await manager.ledger.async_mark_started("synthetic-serial", "synthetic-plan", room)
+    await manager.ledger.async_mark_failed(
+        "synthetic-serial",
+        "synthetic-plan",
+        room,
+        "The selected Matic robot reported an error",
+        native_reconciliation=_native_reconciliation_data(reconciliation),
+    )
+    if floor_changed:
+        # The same room id on a newly active floor is a different room.
+        entry.runtime_data.session.floor.value = replace(
+            floor_plan,
+            partition_protocol_id="synthetic-other",
+            partition_id_wire=b"other",
+        )
+    hass.states.async_set(entity_id, "docked")
+
+    with patch(
+        "custom_components.matic_robot.managed_reconciliation.OEM_STOP_RECONCILIATION_POLL_SECONDS",
+        0,
+    ):
+        await _async_reconcile_native_stop(
+            hass,
+            manager,
+            "synthetic-serial",
+            entity_id,
+            room,
+            reconciliation,
+            None,
+            robot.port(session_history=AsyncMock(return_value=(record,))),
+            None,
+        )
+
+    snapshot = manager.history.snapshot("synthetic-serial")
+    credited = snapshot["plan_history"]["synthetic-plan"]["rooms"][room.room_id]
+    assert (credited["last_result"] == "completed") is not floor_changed
+    assert snapshot["native_reconciliation_pending"] is floor_changed

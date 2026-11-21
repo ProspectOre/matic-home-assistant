@@ -14,6 +14,7 @@ from custom_components.matic_robot.leg_handoff import async_dispatch_on_return
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.robot_commands import PlanStart
+from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.test_unreachable_room import KITCHEN, STUDY, _events, _session
@@ -63,7 +64,7 @@ class _Robot:
     async def read_identity(self) -> bytes:
         return self.identity
 
-    async def history(self) -> tuple[CleaningSessionRecord, ...]:
+    async def history(self, **_: object) -> tuple[CleaningSessionRecord, ...]:
         return tuple(self.records)
 
     def show(self, state: str, **attributes) -> None:
@@ -84,6 +85,7 @@ class _Robot:
                 self.show("docked")
             raise MaticError("refused")
         self.identity = _session_identity(command.session_id)
+        self.session_key = history_key(command.session_id)
         if state == "returning" and self.fail_after_taking:
             # The robot starts the room, then the settings readback fails.
             self.show("cleaning")
@@ -97,7 +99,7 @@ class _Robot:
     async def _give_up(self) -> None:
         await asyncio.sleep(0.01)
         self.records.append(
-            CleaningSessionRecord(b"kitchen", _session("Kitchen", "unattempted"))
+            CleaningSessionRecord(self.session_key, _session("Kitchen", "unattempted"))
         )
         self.identity = b""
         # The robot never docks on its own here: only the next leg moves it on.
@@ -107,13 +109,15 @@ class _Robot:
         await asyncio.sleep(0.01)
         self.show("returning", current_area=STUDY.name)
         self.records.append(
-            CleaningSessionRecord(b"study", _session("Study", "completed"))
+            CleaningSessionRecord(self.session_key, _session("Study", "completed"))
         )
         self.identity = b""
         self.show("docked")
 
 
-async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
+async def _run(
+    hass, robot: _Robot, sender: AsyncMock | None = None, **readers: object
+) -> list:
     manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "finish_current_room": True
@@ -146,6 +150,7 @@ async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
                 session_identity=robot.read_identity,
                 active_session=AsyncMock(return_value=None),
                 session_history=robot.history,
+                **readers,
             ),
             managed_user_command=sender or AsyncMock(),
         ),
@@ -172,6 +177,22 @@ async def test_refused_next_room_waits_for_the_dock(hass) -> None:
 
     assert robot.dispatch_states == ["docked", "returning", "docked"]
     assert [e["room_id"] for e in _events(events, "room_completed")] == ["room-study"]
+
+
+async def test_every_start_after_a_handoff_checks_the_saved_idle_revision(
+    hass,
+) -> None:
+    robot = _Robot(hass, refuse_while_returning=True)
+    revision = AsyncMock(return_value="a" * 64)
+    await _run(hass, robot, idle_session_revision=revision)
+
+    # Read once at the handoff; the start after the refusal reuses it.
+    revision.assert_awaited_once()
+    assert [start.idle_revision for start in robot.fake.started] == [
+        None,
+        "a" * 64,
+        "a" * 64,
+    ]
 
 
 def _robot(state: str | None, identity: bytes | None):

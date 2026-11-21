@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from datetime import UTC, datetime
 from google.protobuf.message import DecodeError
 
 from .coverage_receipts import native_session_hash
-from .exceptions import MaticError
+from .exceptions import NativeHistoryIncompleteError
 from .history_semantics import (
     MAX_HISTORY_BYTES,
     SemanticHistory,
@@ -31,6 +32,8 @@ from .telemetry_fields import (
     telemetry_varint,
 )
 from .wire import WireField, decode_fields, field_bytes
+
+_LOGGER = logging.getLogger(__name__)
 
 _SESSION_COMPLETED_STATUS = 0
 _ROOM_MODE_COMPLETED_STATUS = 2
@@ -68,22 +71,40 @@ def _native_history_collection_revision(
 def decode_cleaning_session_records(
     entries: tuple[HermesCollectionEntry, ...], *, strict: bool = False
 ) -> tuple[CleaningSessionRecord, ...]:
-    """Decode opaque-keyed history entries, optionally requiring full coverage."""
+    """Decode opaque-keyed history entries.
+
+    An undecodable value with a valid session key becomes a placeholder.
+    ``strict`` raises if an entry had to be left out for lacking a session
+    identity.
+    """
     records: list[CleaningSessionRecord] = []
-    invalid = False
+    undecodable = unidentified = 0
     for entry in entries:
         session = decode_cleaning_session(entry.value)
-        if not entry.key or session is None:
-            invalid = True
-            if not entry.key or native_session_hash(entry.key) is None:
-                continue
-            # Keep a rejected record's exact identity as a tombstone. Its
-            # disappearance from retention differs from a correction that no
-            # longer supports an earlier completion credit.
-            session = CleaningSession(None, None, None, (), (), None)
-        records.append(CleaningSessionRecord(entry.key, session))
-    if strict and invalid:
-        raise MaticError("Native history is incomplete or undecodable")
+        if entry.key and session is not None:
+            records.append(CleaningSessionRecord(entry.key, session))
+            continue
+        if not entry.key or native_session_hash(entry.key) is None:
+            unidentified += 1
+            continue
+        # Keep a rejected record's exact identity as a placeholder. Its
+        # disappearance from retention differs from a correction that no
+        # longer supports an earlier completion credit.
+        undecodable += 1
+        records.append(CleaningSessionRecord.undecodable(entry.key))
+    if undecodable or unidentified:
+        # Counts only: keys and values stay private.
+        _LOGGER.debug(
+            "Native history read kept %d undecodable and dropped %d "
+            "unidentified of %d entries",
+            undecodable,
+            unidentified,
+            len(entries),
+        )
+    if strict and unidentified:
+        raise NativeHistoryIncompleteError(
+            "Native history has an entry without a session identity"
+        )
     return tuple(records)
 
 

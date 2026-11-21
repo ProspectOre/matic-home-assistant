@@ -32,6 +32,7 @@ from custom_components.matic_robot.run_machine import (
 )
 from custom_components.matic_robot.session import RobotSession
 from custom_components.matic_robot.stores import CleaningHistory, LiveState, Store
+from tests.client.test_coverage_receipts import history_key
 from tests.wire_builders import _session_identity
 
 SYNTHETIC_INFO = RobotInfo(
@@ -179,9 +180,15 @@ def fake_session(
 def robot_client(**methods: Any) -> SimpleNamespace:
     """Return a fake client with ``methods`` and the rest a run's port binds.
 
-    Its activity journal keeps only the run scope.
+    Its activity journal keeps only the run scope, and its history keys are
+    those of ``async_get_cleaning_session_records``.
     """
     scope: dict[str, str | None] = {"run_id": None}
+
+    async def history_keys(**_: Any) -> frozenset[bytes]:
+        records = await methods["async_get_cleaning_session_records"](strict=True)
+        return frozenset(record.key for record in records)
+
     return SimpleNamespace(
         **{
             "activity_journal": SimpleNamespace(
@@ -191,6 +198,8 @@ def robot_client(**methods: Any) -> SimpleNamespace:
             "async_confirm_coverage_receipt": AsyncMock(return_value=False),
             "async_get_active_cleaning_session_state": AsyncMock(return_value=False),
             "async_get_state": AsyncMock(return_value=None),
+            "async_get_cleaning_session_keys": history_keys,
+            "async_get_idle_cleaning_session_revision": AsyncMock(return_value=None),
             **methods,
         }
     )
@@ -276,6 +285,10 @@ class FakeRobot:
             return self.running
         return _session_identity(self.started[-1].session_id)
 
+    def history_key(self) -> bytes:
+        """Return the history key of the latest start's session."""
+        return history_key(self.started[-1].session_id)
+
     async def owned(self) -> bytes:
         """Read the session of the latest start, whatever the robot shows."""
         return _session_identity(self.started[-1].session_id) if self.started else b""
@@ -302,6 +315,11 @@ class FakeRobot:
 
     def port(self, **readers: Any) -> RobotPort:
         """Return a port to this robot; it has no history, or ``readers``."""
+        history = readers.get("session_history", AsyncMock(return_value=()))
+
+        async def session_keys(**_: Any) -> frozenset[bytes]:
+            return frozenset(record.key for record in await history())
+
         return RobotPort(
             **{
                 "start": self.start,
@@ -311,7 +329,9 @@ class FakeRobot:
                 "refresh": AsyncMock(),
                 "active_session": AsyncMock(return_value=False),
                 "fresh_state": AsyncMock(return_value=None),
-                "session_history": AsyncMock(return_value=()),
+                "session_history": history,
+                "session_keys": session_keys,
+                "idle_session_revision": AsyncMock(return_value=None),
                 "session_identity": AsyncMock(return_value=b""),
                 "coverage_verifier": AsyncMock(return_value=False),
                 "confirm_room_completed": MagicMock(),

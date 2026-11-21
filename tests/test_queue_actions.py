@@ -325,12 +325,12 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
     robot.on_start = kitchen_leg_ends(hass, robot)
     reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal reads
         reads += 1
         if reads == 1:
             return ()
-        return (leg_record(("Kitchen",), ("Kitchen",)),)
+        return (leg_record(("Kitchen",), ("Kitchen",), key=robot.history_key()),)
 
     completed = await _async_run_leg(
         hass,

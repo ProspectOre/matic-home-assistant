@@ -25,7 +25,6 @@ from custom_components.matic_robot.managed_observation import (
     SESSION_HISTORY_ATTEMPTS,
     NativeRoomVerdict,
     _async_adjudicate_room_end,
-    _async_session_history_baseline,
 )
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
@@ -620,14 +619,14 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
     )
     history_reads = 0
 
-    async def history() -> tuple[CleaningSessionRecord, ...]:
+    async def history(**_: object) -> tuple[CleaningSessionRecord, ...]:
         nonlocal history_reads
         history_reads += 1
         if history_reads == 1:
             return (old,)
         ended = dt_util.utcnow()
         new = CleaningSessionRecord(
-            b"new-key",
+            robot.history_key(),
             CleaningSession(
                 (ended - timedelta(seconds=5)).isoformat(),
                 ended.isoformat(),
@@ -710,10 +709,10 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
     room = plan_room("Kitchen", "room-kitchen")
     now = dt_util.utcnow()
 
-    async def failing_reader() -> tuple[CleaningSessionRecord, ...]:
+    async def failing_reader(**_: object) -> tuple[CleaningSessionRecord, ...]:
         raise MaticError("synthetic unavailable")
 
-    assert await _async_session_history_baseline(failing_reader) is None
+    assert await robot.port(session_history=failing_reader).history_keys() is None
     assert (
         await _async_adjudicate_room_end(
             failing_reader, frozenset(), room, now, robot=robot.port()
@@ -800,7 +799,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     cancel_event = asyncio.Event()
 
-    async def cancel_during_retry() -> tuple[CleaningSessionRecord, ...]:
+    async def cancel_during_retry(**_: object) -> tuple[CleaningSessionRecord, ...]:
         asyncio.get_running_loop().call_soon(cancel_event.set)
         return ()
 

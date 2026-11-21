@@ -95,6 +95,36 @@ def room_completion_duration(
     return durations[0] if len(durations) == 1 else None
 
 
+def records_for_dispatch(
+    records: Iterable[CleaningSessionRecord],
+    baseline: Collection[bytes] | None,
+    session_hash: str | None = None,
+) -> tuple[CleaningSessionRecord, ...] | None:
+    """Return the records a dispatch may claim, or None while that is unsafe.
+
+    With ``session_hash``, only the dispatch's own record counts: a read can
+    hold part of the retained history, and a missing old key must not make an
+    unrelated record part of the run. Otherwise every record outside
+    ``baseline`` counts, and None means one of them cannot be decoded. It may
+    be the dispatched session itself, so nothing is attributed until it is.
+    """
+    if session_hash is None:
+        if baseline is None:
+            return tuple(records)
+        new = tuple(record for record in records if record.key not in baseline)
+        return None if any(not record.decoded for record in new) else new
+    if baseline is not None and any(
+        native_session_hash(key) == session_hash for key in baseline
+    ):
+        return None
+    owned = tuple(
+        record for record in records if native_session_hash(record.key) == session_hash
+    )
+    if len(owned) > 1 or any(not record.decoded for record in owned):
+        return None
+    return owned
+
+
 def match_single_room_completions(
     records: Iterable[CleaningSessionRecord],
     *,
@@ -103,14 +133,13 @@ def match_single_room_completions(
     dispatched_at: datetime,
     now: datetime,
     baseline: Collection[bytes] | None = None,
+    session_hash: str | None = None,
     legacy_policy: LegacyCompletionPolicy = "aggregate",
 ) -> tuple[NativeRoomCompletion, ...]:
     """Return at most two matching records to distinguish unique from ambiguous."""
     target = native_room_key(room_name)
     matches: list[NativeRoomCompletion] = []
-    for record in records:
-        if baseline is not None and record.key in baseline:
-            continue
+    for record in records_for_dispatch(records, baseline, session_hash) or ():
         session = record.session
         if not session_overlaps_dispatch(session, dispatched_at, now):
             continue
@@ -211,13 +240,12 @@ def match_single_room_unreachable(
     dispatched_at: datetime,
     now: datetime,
     baseline: Collection[bytes] | None = None,
+    session_hash: str | None = None,
 ) -> tuple[CleaningSessionRecord, ...]:
     """Return at most two one-room records proving the robot could not reach it."""
     target = native_room_key(room_name)
     matches: list[CleaningSessionRecord] = []
-    for record in records:
-        if baseline is not None and record.key in baseline:
-            continue
+    for record in records_for_dispatch(records, baseline, session_hash) or ():
         session = record.session
         if not session_overlaps_dispatch(session, dispatched_at, now):
             continue
@@ -241,6 +269,7 @@ def has_cancelled_single_room_record(
     dispatched_at: datetime,
     now: datetime,
     baseline: Collection[bytes] | None = None,
+    session_hash: str | None = None,
 ) -> bool:
     """Report a new record proving this room's mission was cancelled.
 
@@ -249,11 +278,10 @@ def has_cancelled_single_room_record(
     """
     target = native_room_key(room_name)
     return any(
-        (baseline is None or record.key not in baseline)
-        and record.session.stop_reason in _CANCELLED_STOP_REASONS
+        record.session.stop_reason in _CANCELLED_STOP_REASONS
         and session_overlaps_dispatch(record.session, dispatched_at, now)
         and tuple(native_room_key(name) for name in record.session.rooms) == (target,)
-        for record in records
+        for record in records_for_dispatch(records, baseline, session_hash) or ()
     )
 
 

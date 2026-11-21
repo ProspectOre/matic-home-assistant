@@ -85,3 +85,78 @@ async def test_unload_stops_a_background_run_and_restart_recovers_it(
     assert plans.recovery.recovery_run(serial)["run_id"] == run_id
     assert await hass.config_entries.async_setup(plan.entry.entry_id)
     assert len(plan.coverage_commands()) == 1
+
+
+def _call_and_wait(hass: HomeAssistant) -> asyncio.Task[Any]:
+    """Call the action with ``wait``, as an automation step would."""
+    return hass.async_create_task(
+        hass.services.async_call(
+            DOMAIN,
+            "clean_room_sequence",
+            {**ROOMS, "wait": True},
+            blocking=True,
+            return_response=True,
+        )
+    )
+
+
+async def test_a_run_the_robot_has_outlives_its_cancelled_caller(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+) -> None:
+    finished: list[dict[str, Any]] = []
+    hass.bus.async_listen(
+        EVENT_PLAN_FINISHED, lambda event: finished.append(dict(event.data))
+    )
+    call = _call_and_wait(hass)
+    async with asyncio.timeout(10):
+        await robot.wait_for_phase(Phase.CLEANING)
+    plans = plan.entry.runtime_data.cleaning_plans
+    serial = robot.serial_number
+    async with asyncio.timeout(10):
+        # The robot has the run once its dispatch is saved.
+        while "session_hash" not in (
+            (plans.recovery.recovery_run(serial) or {}).get("recovery_checkpoint", {})
+        ):
+            await plan.poll()
+    await plan.poll()
+    # The automation that called it stops.
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    robot.finish_room()
+    await plan.poll()
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    async with asyncio.timeout(30):
+        while not finished:
+            await plan.poll()
+    (event,) = finished
+    expect_finished(event, "completed", "all_rooms_verified", 2, "docked")
+    assert len(plan.coverage_commands()) == 1
+
+
+async def test_cancelling_the_caller_before_the_robot_has_the_run_cancels_it(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+) -> None:
+    # The start waits on the robot's session read, so nothing is sent yet.
+    reads = robot.reads["active_session_key"]
+    robot.faults.stall("active_session_key")
+    call = _call_and_wait(hass)
+    async with asyncio.timeout(10):
+        while robot.reads["active_session_key"] == reads:
+            await plan.poll()
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    robot.faults.clear()
+    plans = plan.entry.runtime_data.cleaning_plans
+    serial = robot.serial_number
+    async with asyncio.timeout(10):
+        while plans.control.actor(serial).run_task is not None:
+            await plan.poll()
+    await plan.poll()
+    assert plan.coverage_commands() == []
+    assert robot.phase is not Phase.CLEANING

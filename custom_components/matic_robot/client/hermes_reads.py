@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import struct
 from collections.abc import (
     AsyncGenerator,
 )
 from dataclasses import replace
+from uuid import UUID
 
 from google.protobuf.message import DecodeError
 
@@ -18,11 +20,13 @@ from .cleaning_session import (
     decode_cleaning_session,
     decode_cleaning_session_records,
 )
+from .coverage_receipts import native_session_hash
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
     EndpointUnsupportedError,
+    NativeHistoryIncompleteError,
     ProtocolError,
     TransportError,
 )
@@ -290,14 +294,58 @@ class HermesReads(HermesCollections):
             return None
         return confirmed.native_session_activity(identity_cleared=True)
 
+    async def async_get_idle_cleaning_session_revision(self) -> str | None:
+        """Fingerprint the observed UUID-valued inactive session marker."""
+        payload = await self.async_get_property("active_session_key", max_bytes=96)
+        if len(payload) != 16 or UUID(bytes=payload).version != 4:
+            return None
+        return hashlib.sha256(payload).hexdigest()
+
+    async def async_get_cleaning_session_keys(
+        self,
+        *,
+        session_hash: str | None = None,
+        expected_hashes: frozenset[str] | None = None,
+    ) -> frozenset[bytes]:
+        """Read opaque history keys for a handoff, independently of results.
+
+        The read waits through idle gaps for ``session_hash`` and every key in
+        ``expected_hashes``, so a slow snapshot does not look like a change.
+        """
+        missing = set(expected_hashes or ())
+        found_session = session_hash is None
+
+        def ready(entry: HermesCollectionEntry) -> bool:
+            nonlocal found_session
+            if missing:
+                missing.discard(hashlib.sha256(entry.key).hexdigest())
+            if not found_session:
+                found_session = native_session_hash(entry.key) == session_hash
+            return found_session and not missing
+
+        limit = 64
+        entries = await self.async_get_tracked_collection_entries(
+            "coverage_session_history",
+            limit=limit,
+            wait_for_entry=ready if missing or not found_session else None,
+            retain_values=False,
+        )
+        keys = frozenset(entry.key for entry in entries)
+        if b"" in keys or len(keys) != len(entries):
+            raise NativeHistoryIncompleteError("Native history has ambiguous keys")
+        if not keys or len(entries) >= limit or not found_session:
+            raise CannotConnectError("Native history handoff inventory is unavailable")
+        return keys
+
     async def async_get_cleaning_session_records(
         self,
         *,
         strict: bool = False,
+        session_hash: str | None = None,
     ) -> tuple[CleaningSessionRecord, ...]:
-        """Read opaque-keyed native history records for completion evidence."""
+        """Read native history, optionally waiting for one session's record."""
         records, _revision = await self.async_get_cleaning_session_snapshot(
-            strict=strict
+            strict=strict, session_hash=session_hash
         )
         return records
 
@@ -305,11 +353,31 @@ class HermesReads(HermesCollections):
         self,
         *,
         strict: bool = False,
+        session_hash: str | None = None,
     ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
-        """Return decoded records and their revision from one collection read."""
-        entries = await self.async_get_tracked_collection_entries(
-            "coverage_session_history", limit=64
-        )
+        """Decode a bounded history sample and hash the selected entries.
+
+        For a known session, reading goes on through idle gaps until its key
+        arrives or the collection ends or reaches a bound, and only its entry
+        is returned.
+        """
+        if session_hash is None:
+            entries = await self.async_get_tracked_collection_entries(
+                "coverage_session_history", limit=64
+            )
+        else:
+            entries = await self.async_get_tracked_collection_entries(
+                "coverage_session_history",
+                limit=64,
+                wait_for_entry=lambda entry: (
+                    native_session_hash(entry.key) == session_hash
+                ),
+            )
+            entries = tuple(
+                entry
+                for entry in entries
+                if native_session_hash(entry.key) == session_hash
+            )
         records = decode_cleaning_session_records(entries, strict=strict)
         return records, _native_history_collection_revision(entries)
 

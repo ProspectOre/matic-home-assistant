@@ -48,7 +48,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
-from tests.session_fakes import FakeRobot, run_step, verifying_write
+from tests.session_fakes import FakeRobot, robot_client, run_step, verifying_write
 
 SESSION = UUID(int=772)
 SESSION_KEY = history_key(SESSION)
@@ -752,16 +752,11 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         checkpoint=verifying_write(dt_util.utcnow() + timedelta(minutes=4)),
     )
     checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
-    client = SimpleNamespace(
+    client = robot_client(
         async_get_cleaning_session_identity=AsyncMock(return_value=b""),
         async_get_cleaning_session_records=AsyncMock(return_value=(_record((room,)),)),
-        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
-        async_get_state=AsyncMock(return_value=None),
         async_confirm_coverage_receipt=AsyncMock(return_value=True),
         async_send_user_command=AsyncMock(),
-        activity_journal=SimpleNamespace(
-            set_run_id=MagicMock(), current_run_id=MagicMock()
-        ),
     )
     runtime = SimpleNamespace(
         client=client,

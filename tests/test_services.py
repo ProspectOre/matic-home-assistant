@@ -2723,64 +2723,6 @@ async def test_plan_cadence_bindings_uses_verified_current_map() -> None:
     assert set(identities) == {room.id for room in floor_plan.rooms}
 
 
-async def test_late_native_completion_uses_current_room_cadence_identity(hass) -> None:
-    robot = FakeRobot()
-    room = CleaningRoom("room-office", "Office", "vacuum", "quick")
-    floor_plan = _area_floor_plan()
-    entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(
-            session=_session(floor_plan=floor_plan),
-            slam_map=SimpleNamespace(
-                floor_plan_is_current=MagicMock(return_value=True)
-            ),
-        )
-    )
-    now = dt_util.utcnow()
-    reconciliation = _NativeReconciliation(
-        "home", room.room_id, room.name, now - timedelta(seconds=10)
-    )
-    record = CleaningSessionRecord(
-        b"late-native-session",
-        CleaningSession(
-            (now - timedelta(seconds=12)).isoformat(),
-            now.isoformat(),
-            12,
-            (room.name,),
-            ((room.name, 12),),
-            True,
-            completed_rooms=(room.name,),
-        ),
-    )
-    manager = memory_manager(hass)
-    manager.ledger.async_mark_native_completed = AsyncMock(return_value=True)
-    robot.show("docked")
-    with (
-        patch(
-            "custom_components.matic_robot.managed_reconciliation.OEM_STOP_RECONCILIATION_POLL_SECONDS",
-            0,
-        ),
-        patch(
-            "custom_components.matic_robot.managed_reconciliation.current_room_cadence_identity",
-            return_value=_plan_cadence_bindings(entry)[1][room.room_id],
-        ),
-    ):
-        await _async_reconcile_native_stop(
-            hass,
-            manager,
-            "serial",
-            "vacuum.test",
-            room,
-            reconciliation,
-            frozenset(),
-            robot.port(session_history=AsyncMock(return_value=(record,))),
-            None,
-        )
-    assert (
-        manager.ledger.async_mark_native_completed.await_args.kwargs["room_identity"]
-        == _plan_cadence_bindings(entry)[1][room.room_id]
-    )
-
-
 async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
     hass,
 ) -> None:

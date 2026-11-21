@@ -116,6 +116,7 @@ async def _async_run_leg(
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    expected_dispatch_revision: str | None = None,
 ) -> bool:
     """Run one leg and report whether every room in it settled.
 
@@ -190,7 +191,7 @@ async def _async_run_leg(
         """Return what a late history record settles this leg's rooms by."""
         if single:
             return history_reconciliation._build_native_reconciliation(
-                plan_id, leg[0], dispatched_at, room_started, run_id=run_id
+                plan_id, leg[0], dispatch, room_started, run_id, floor_token
             )
         skipped = skipped_room_ids()
         return build_grouped_native_reconciliation(
@@ -275,7 +276,7 @@ async def _async_run_leg(
 
     async def async_verify_end(*, mission_ended: bool = False) -> bool:
         """Read the ended mission's history; return whether it gave a verdict."""
-        assert dispatched_at is not None
+        assert dispatch is not None and dispatched_at is not None
         write = await advance(
             LegVerifying(
                 dt_util.utcnow()
@@ -292,6 +293,7 @@ async def _async_run_leg(
                     history_baseline,
                     leg,
                     dispatched_at,
+                    session_hash=dispatch.session_hash,
                     robot=robot,
                     cancel_event=cancel_event,
                     allow_active_cleaning=mission_ended,
@@ -308,6 +310,7 @@ async def _async_run_leg(
             history_baseline,
             leg[0],
             dispatched_at,
+            session_hash=dispatch.session_hash,
             robot=robot,
             cancel_event=cancel_event,
             allow_active_cleaning=mission_ended,
@@ -342,20 +345,16 @@ async def _async_run_leg(
         return outcome, None
 
     async def async_wait_for_resume(seconds: float) -> None:
-        if room_observer is None:
-            await observation._async_wait_for_owned_resume(
-                robot, seconds, cancel_event, leg, native_identity
-            )
-            return
         await observation._async_wait_for_owned_resume(
             robot,
             seconds,
             cancel_event,
             leg,
             native_identity,
-            resume_event=room_observer.resume_event,
+            resume_event=room_observer.resume_event if room_observer else None,
         )
-        room_observer.resume_after_initial_pause()
+        if room_observer is not None:
+            room_observer.resume_after_initial_pause()
 
     async def resumed_after_return() -> bool:
         return await observation._async_wait_for_active_session_resolution(
@@ -410,6 +409,7 @@ async def _async_run_leg(
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
         else:
             if dispatch.rooms != tuple(leg):

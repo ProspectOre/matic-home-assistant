@@ -412,6 +412,24 @@ class SimulatedRobot:
             self._pending_history.clear()
             self.set_collection("coverage_session_history", self._history)
 
+    def add_foreign_history(self) -> None:
+        """Record a finished whole-floor session the integration never started."""
+        assert self.floor is not None
+        now = _now()
+        session = CoverageSession(
+            session_wire=bytes_field(2, uuid_wire(uuid4())),
+            mission_wire=fixed32_int(2, self.floor.mission_id),
+            visits=[Visit(room.id, [], [(0, 1)], now) for room in self.floor.rooms],
+            started_at=now - 600_000_000_000,
+        )
+        self._history.append(
+            (
+                session.session_wire,
+                session.history_value(self.floor, now, completed=True),
+            )
+        )
+        self.set_collection("coverage_session_history", self._history)
+
     def hold_history(self) -> None:
         """Hold future session-history updates until ``release_history``."""
         self.hold_history_updates = True

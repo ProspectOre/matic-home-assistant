@@ -29,7 +29,10 @@ is not recorded.
 A plan runs in one or more parts ([how a plan runs](cleaning.md#how-a-plan-runs)):
 consecutive rooms share one and each custom area gets its own. Each room is checked against the robot's record of
 the part that plan started, so a partly finished part counts only its completed
-rooms.
+rooms. Each part carries an ID the plan chose, and only the robot's record
+with that ID counts. A new record the integration can't decode withholds
+credit. A record with no such ID keeps plans from starting, with
+`reason_code: native_history_incomplete`, until the robot drops it.
 
 The robot's summary of a custom area names no room or area. An area counts as
 finished when the part the plan started for it ends normally while the plan

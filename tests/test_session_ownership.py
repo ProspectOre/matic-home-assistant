@@ -20,7 +20,6 @@ from custom_components.matic_robot.client.models import RobotActivity
 from custom_components.matic_robot.managed_area import (
     _area_refused_before_start,
     _async_wait_for_area_end,
-    _async_wait_for_area_record,
 )
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
@@ -186,7 +185,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     assert len(dispatched) == 1
     sender.assert_not_awaited()
     presence.assert_not_awaited()
-    history.assert_awaited_once()  # Baseline only; no new mission history credited.
+    history.assert_not_awaited()  # A tracked start reads no baseline; none credited.
     manager.ledger.async_mark_resumed.assert_awaited_once()
     snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
@@ -602,7 +601,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     if ended:
         assert history.await_count > 1
     else:
-        history.assert_awaited_once()
+        history.assert_not_awaited()  # A tracked start reads no baseline.
     snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert not snapshot["last_completed_by_room"]
@@ -700,7 +699,7 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
         assert not started.is_set()
         sender.assert_not_awaited()
     assert len(commands) == 1
-    history.assert_awaited_once()
+    history.assert_not_awaited()  # A tracked start reads no baseline.
     assert all(
         value["runs"] == 0 and value["at"] is None
         for value in manager.history.snapshot("serial")[
@@ -1718,6 +1717,8 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
             7,
             managed_user_command=sender,
             floor_token="floor",
+            # Only a handoff reads history before a tracked start.
+            expected_dispatch_history=frozenset(),
             checkpoint_dispatch=AsyncMock(),
             advance=run_step,
         )
@@ -1927,7 +1928,7 @@ class _AreaRobot:
     async def read_identity(self) -> bytes | None:
         return self.identity
 
-    async def history(self) -> tuple[SimpleNamespace, ...]:
+    async def history(self, **_: object) -> tuple[SimpleNamespace, ...]:
         self.history_reads += 1
         return tuple(self.records)
 
@@ -2570,40 +2571,6 @@ async def test_area_end_rechecks_state_after_active_session_read(
                 cancel,
                 ORIGINAL,
             )
-
-
-async def test_area_record_waiter_is_bounded_and_honours_cancel(monkeypatch):
-    monkeypatch.setattr(
-        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
-        0.001,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_ATTEMPTS", 3
-    )
-    cancel = asyncio.Event()
-    old = SimpleNamespace(key=b"synthetic-old")
-    new = SimpleNamespace(key=b"synthetic-new")
-
-    # Nothing to wait for without a dispatch baseline.
-    unused = AsyncMock()
-    await _async_wait_for_area_record(unused, None, cancel)
-    unused.assert_not_awaited()
-
-    arrives = AsyncMock(side_effect=[(old,), MaticError("busy"), (old, new)])
-    await _async_wait_for_area_record(arrives, frozenset({old.key}), cancel)
-    assert arrives.await_count == 3
-
-    # A record that never arrives leaves the next leg's fence to decide.
-    never = AsyncMock(return_value=(old,))
-    await _async_wait_for_area_record(never, frozenset({old.key}), cancel)
-    assert never.await_count == 3
-
-    async def stopped() -> tuple:
-        cancel.set()
-        return (old,)
-
-    with pytest.raises(PlanCancelledError):
-        await _async_wait_for_area_record(stopped, frozenset({old.key}), cancel)
 
 
 def test_only_known_vacuum_refusals_skip_the_area_cleanup_stop():

@@ -1325,6 +1325,7 @@ class PlanLedger:
         duration_seconds: int | None = None,
         room_identity: str | None = None,
         verified_coverage_receipt: CoverageReceipt | None = None,
+        floor_plan: FloorPlan | None = None,
     ) -> bool:
         """Credit a native completion that arrived after managed cleanup.
 
@@ -1333,7 +1334,7 @@ class PlanLedger:
         only to the exact pending dispatch captured by that runner and is
         therefore safe against later or superseding native sessions.
         """
-        changed = False
+        changed: list[bool] = []
 
         async def commit(_lease: _MetadataLockLease) -> bool:
             async with self.native_history_commit(serial_number):
@@ -1346,12 +1347,9 @@ class PlanLedger:
                     duration_seconds=duration_seconds,
                     room_identity=room_identity,
                     verified_coverage_receipt=verified_coverage_receipt,
-                    changed=lambda: _set_true(),
+                    floor_plan=floor_plan,
+                    changed=lambda: changed.append(True),
                 )
-
-        def _set_true() -> None:
-            nonlocal changed
-            changed = True
 
         def notify_if_changed(_result: bool) -> None:
             if changed:
@@ -1376,6 +1374,7 @@ class PlanLedger:
         duration_seconds: int | None = None,
         room_identity: str | None = None,
         verified_coverage_receipt: CoverageReceipt | None = None,
+        floor_plan: FloorPlan | None = None,
         changed: Callable[[], None] | None = None,
     ) -> bool:
         """Reconcile late completion inside its native-history commit."""
@@ -1397,6 +1396,7 @@ class PlanLedger:
             pending["plan_id"] != plan_id
             or pending["room_id"] != room.room_id
             or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
+            or not native_history.native_marker_on_floor(pending, floor_plan)
         ):
             return False
         if native_history._native_reconciliation_was_committed(robot, pending):
