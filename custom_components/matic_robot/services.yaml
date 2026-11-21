@@ -372,6 +372,8 @@ save_plan:
         - room: Study
           cleaning_mode: vacuum
           coverage_setting: quick
+          cadence:
+            mop_every_n: 3
       selector:
         object:
           translation_key: plan_entry
@@ -393,6 +395,39 @@ save_plan:
                 select:
                   translation_key: coverage_setting
                   options: [quick, standard, heavy_duty]
+            cadence:
+              selector:
+                object:
+                  translation_key: room_cadence
+                  fields:
+                    scope:
+                      selector:
+                        select:
+                          translation_key: cadence_scope
+                          options: [plan, shared]
+                    mop_every_n:
+                      selector:
+                        number:
+                          min: 1
+                          max: 100
+                          mode: box
+                    coverage_every_n:
+                      selector:
+                        number:
+                          min: 1
+                          max: 100
+                          mode: box
+                    periodic_coverage_setting:
+                      selector:
+                        select:
+                          translation_key: coverage_setting
+                          options: [quick, standard, heavy_duty]
+                    do_mop_next:
+                      selector:
+                        boolean:
+                    do_coverage_next:
+                      selector:
+                        boolean:
     return_to_base:
       default: true
       selector:

@@ -1295,7 +1295,45 @@
         "coverage_setting": {
           "name": "Vacuum coverage",
           "description": "How thoroughly the robot vacuums this room or area."
+        },
+        "cadence": {
+          "name": "Room schedule",
+          "description": "Rooms only. Mop or run a vacuum rotation every few cleans instead of every clean. Leave empty to keep the room's current schedule."
         }
+      }
+    },
+    "room_cadence": {
+      "fields": {
+        "scope": {
+          "name": "Count cleans",
+          "description": "In this plan only, or across all plans that use the room. Defaults to this plan."
+        },
+        "mop_every_n": {
+          "name": "Mop every",
+          "description": "Vacuum normally and also mop on every this-many counted cleans, 1 to 100. Needs the room's cleaning mode to be vacuum."
+        },
+        "coverage_every_n": {
+          "name": "Vacuum rotation every",
+          "description": "Use the rotation coverage on every this-many counted cleans, 1 to 100."
+        },
+        "periodic_coverage_setting": {
+          "name": "Rotation coverage",
+          "description": "The vacuum coverage the rotation uses."
+        },
+        "do_mop_next": {
+          "name": "Mop on the next clean",
+          "description": "Bring the mop forward once without resetting progress. Needs Mop every."
+        },
+        "do_coverage_next": {
+          "name": "Rotation on the next clean",
+          "description": "Bring the vacuum rotation forward once without resetting progress. Needs Vacuum rotation every."
+        }
+      }
+    },
+    "cadence_scope": {
+      "options": {
+        "plan": "In this plan only",
+        "shared": "Across all plans"
       }
     },
     "robot_data_item": {

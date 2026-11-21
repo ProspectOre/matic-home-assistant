@@ -111,6 +111,22 @@ class CadenceBindingError(ValueError):
     """Raised when active shared cadence lacks a verified map binding."""
 
 
+class CadencePolicyError(ValueError):
+    """Raised when a room cadence policy is malformed or contradicts its room."""
+
+
+class CadenceMapChangedError(ValueError):
+    """Raised when a room's cadence or its progress belongs to another map."""
+
+
+class SharedCadenceUnavailableError(ValueError):
+    """Raised when a plan room follows a shared schedule that has no policy."""
+
+
+class CadenceProgressUnverifiedError(ValueError):
+    """Raised when active cadence progress needs an owner reset before use."""
+
+
 class SharedRoomScheduleStaleError(ValueError):
     """Raised when the confirmation no longer describes this schedule."""
 
@@ -121,6 +137,14 @@ class SharedRoomScheduleMapChangedError(ValueError):
 
 class SharedRoomScheduleLockedError(ValueError):
     """Raised when a run or cadence mutation owns this shared room schedule."""
+
+
+class AmbiguousRoomError(ValueError):
+    """Raised when a room reference matches more than one room."""
+
+
+class RoomMapChangedError(ValueError):
+    """Raised when the room map changed before a room setting was saved."""
 
 
 class PlanRoomMissingError(ValueError):
@@ -618,7 +642,7 @@ def resolve_room_reference(
     if len(id_matches) == 1:
         return id_matches[0]
     if len(id_matches) > 1:
-        raise ValueError(f"ambiguous room ID: {identifier}")
+        raise AmbiguousRoomError(f"ambiguous room ID: {identifier}")
 
     name_matches = [
         (room_id, room_name)
@@ -628,7 +652,7 @@ def resolve_room_reference(
     if len(name_matches) == 1:
         return name_matches[0]
     if len(name_matches) > 1:
-        raise ValueError(f"ambiguous room name: {identifier}")
+        raise AmbiguousRoomError(f"ambiguous room name: {identifier}")
     raise ValueError(identifier)
 
 
@@ -666,7 +690,7 @@ def resolve_rooms(
             raise ValueError(identifier)
         if len(candidates) != 1:
             kind = "room ID" if stable_id else "room name"
-            raise ValueError(f"ambiguous {kind}: {identifier}")
+            raise AmbiguousRoomError(f"ambiguous {kind}: {identifier}")
         resolved = candidates[0]
         room_id, room_name = resolved
         if room_id in seen:

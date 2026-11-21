@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import sys
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -183,6 +182,125 @@ async def async_run_photo_tour(
         _cancelled.discard(entry.entry_id)
 
 
+@dataclass(frozen=True, slots=True)
+class _TourQuestion:
+    """The question an AI task answers about each photo of a tour."""
+
+    text: str
+    ai_task_entity_id: str
+    attachment_generation: int
+
+
+@dataclass(slots=True)
+class _Tour:
+    """One running tour: where it is allowed to go and where it has been."""
+
+    hass: HomeAssistant
+    entry: MaticConfigEntry
+    entity_id: str
+    context: Context | None
+    question: _TourQuestion | None
+    full_resolution: bool
+    deadline: float
+    album: str = field(default_factory=lambda: uuid4().hex)
+    # The area the robot reported at each stop it reached.
+    arrivals: list[str] = field(default_factory=list)
+
+    async def async_visit(self, shot: _Shot) -> dict[str, Any]:
+        """Send the robot to one stop, photograph it and announce the photo."""
+        entry = self.entry
+        _assert_photos_allowed(entry, [shot.room])
+        try:
+            async with self.operation_timeout():
+                await _async_check_schedule(entry)
+                photo = await _async_photograph(
+                    self.hass, entry, self.entity_id, shot, self.arrivals, self.album
+                )
+                analysis = await self._async_answer(photo.photo_id, shot.label)
+        except TimeoutError as err:
+            raise _error("photo_tour_timeout") from err
+        result: dict[str, Any] = {
+            **_stop_fields(entry, shot),
+            "photo_id": photo.photo_id,
+            "captured_at": photo.captured_at.isoformat(),
+            "url": (
+                photo_url(entry.entry_id, photo.photo_id)
+                if self.full_resolution
+                else photo_preview_url(entry.entry_id, photo.photo_id)
+            ),
+            "preview_url": photo_preview_url(entry.entry_id, photo.photo_id),
+            "map_url": photo_map_url(entry.entry_id, photo.photo_id),
+        }
+        self.hass.bus.async_fire(
+            PHOTO_TAKEN_EVENT,
+            {ATTR_ENTITY_ID: self.entity_id, **result},
+            context=self.context,
+        )
+        if analysis is not None:
+            result["analysis"] = analysis
+        return result
+
+    async def _async_answer(self, photo_id: str, label: str) -> dict[str, Any] | None:
+        question = self.question
+        if question is None:
+            return None
+        return await async_answer_about_photo(
+            self.hass,
+            self.entry,
+            photo_id,
+            await _async_image(self.entry, photo_id, label),
+            question.text,
+            question.ai_task_entity_id,
+            self.context,
+            attachment_generation=question.attachment_generation,
+        )
+
+    async def async_finish(self, *, failed: bool) -> None:
+        """Dock the robot when the tour still owns it where it last parked.
+
+        A command that stopped the tour decides where the robot goes. A dock
+        that fails is reported only when nothing else failed first.
+        """
+        entry_id = self.entry.entry_id
+        _finishing.add(entry_id)
+        if not self.arrivals or entry_id in _stop_requested:
+            return
+        can_dock = False
+        try:
+            async with asyncio.timeout(self._remaining("ownership check")):
+                can_dock = await _async_still_parked(self.entry, self.arrivals[-1])
+        except Exception:
+            _LOGGER.exception("Could not verify Matic photo tour ownership")
+        # A command can arrive while the ownership read is under way.
+        if not can_dock or entry_id in _stop_requested:
+            return
+        try:
+            async with asyncio.timeout(self._remaining("docking")):
+                await self.hass.services.async_call(
+                    VACUUM_DOMAIN,
+                    SERVICE_RETURN_TO_BASE,
+                    {ATTR_ENTITY_ID: self.entity_id},
+                    blocking=True,
+                    context=self.context,
+                )
+        except Exception as err:
+            _LOGGER.exception("Could not safely finish Matic photo tour")
+            if not failed:
+                raise _error("photo_tour_dock_timeout") from err
+
+    def operation_timeout(self) -> asyncio.Timeout:
+        """Bound a step so the tour keeps its reserve for docking."""
+        return asyncio.timeout(
+            max(0, self.deadline - CLEANUP_RESERVE_SECONDS - monotonic())
+        )
+
+    def _remaining(self, step: str) -> float:
+        remaining = max(0, self.deadline - monotonic())
+        if remaining == 0:
+            raise TimeoutError(f"tour deadline exhausted before {step}")
+        return remaining
+
+
 async def _async_run_tour(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
@@ -205,157 +323,91 @@ async def _async_run_tour(
     lock = _tours.setdefault(entry.entry_id, asyncio.Lock())
     if lock.locked():
         raise _error("photo_tour_running")
-    if (question is None) != (ai_task_entity_id is None):
-        raise _error("photo_tour_ai_question_required")
-    if question is not None and ai_task_entity_id is not None:
-        if not question.strip() or len(question) > 500:
-            raise _error("photo_tour_ai_question_invalid")
-        try:
-            validate_ai_task_entity(hass, ai_task_entity_id)
-        except HomeAssistantError:
-            raise _error("photo_tour_ai_unavailable") from None
-        try:
-            attachment_generation = photo_attachment_source(
-                hass
-            ).capture_entry_generation(entry.entry_id)
-        except PhotoAttachmentUnavailable:
-            raise _error("photo_tour_ai_unavailable") from None
-    else:
-        attachment_generation = None
+    tour_question = _tour_question(hass, entry, question, ai_task_entity_id)
     async with lock:
-        check_photo_tour(entry, stops)
-        shots = _shots(entry, stops)
-        rooms = list(dict.fromkeys(shot.room for shot in shots))
-        _assert_photos_allowed(entry, rooms)
-        room_ids = _resolve_rooms(entry, rooms)
-        if room_ids is None:
-            raise _error("photo_tour_rooms_unavailable")
-        forbidden = set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ()))
-        current_ids = _current_room_ids(entry)
-        if current_ids is None or not forbidden <= current_ids:
-            raise _error("photo_tour_rooms_unavailable")
-        if forbidden.intersection(room_ids):
-            raise _error("photo_tour_room_blocked")
-        operational = entry.runtime_data.session.state.value.operational
-        if operational.cleaning or operational.paused or operational.returning:
-            raise _error("photo_tour_robot_busy")
-        battery = operational.battery_percentage
-        if battery is not None and battery < MIN_BATTERY_PERCENT:
-            raise _error("photo_tour_low_battery", battery=str(battery))
-        cooldown = max(
-            0,
-            int(
-                entry.options.get(
-                    CONF_PHOTO_COOLDOWN_SECONDS,
-                    DEFAULT_COOLDOWN_SECONDS,
-                )
-            ),
+        shots = _check_tour_start(entry, stops, skip_cooldown=skip_cooldown)
+        tour = _Tour(
+            hass,
+            entry,
+            entity_id,
+            context,
+            tour_question,
+            full_resolution,
+            deadline=monotonic() + MAX_TOUR_SECONDS,
         )
-        elapsed = monotonic() - _last_tour_started.get(entry.entry_id, -float("inf"))
-        if elapsed < cooldown and not skip_cooldown:
-            raise _error(
-                "photo_tour_cooldown",
-                seconds=str(max(1, int(cooldown - elapsed))),
-            )
-        deadline = monotonic() + MAX_TOUR_SECONDS
-        operation_deadline = deadline - CLEANUP_RESERVE_SECONDS
         try:
-            async with asyncio.timeout(max(0, operation_deadline - monotonic())):
+            async with tour.operation_timeout():
                 await _async_check_schedule(entry)
         except TimeoutError as err:
             raise _error("photo_tour_timeout") from err
         _last_tour_started[entry.entry_id] = monotonic()
-        results: list[dict[str, Any]] = []
-        album = uuid4().hex
-        # The area the robot reported at each stop it reached.
-        arrivals: list[str] = []
         try:
-            for shot in shots:
-                _assert_photos_allowed(entry, [shot.room])
-                try:
-                    async with asyncio.timeout(
-                        max(0, operation_deadline - monotonic())
-                    ):
-                        await _async_check_schedule(entry)
-                        photo = await _async_photograph(
-                            hass, entry, entity_id, shot, arrivals, album
-                        )
-                        analysis = (
-                            await async_answer_about_photo(
-                                hass,
-                                entry,
-                                photo.photo_id,
-                                await _async_image(entry, photo.photo_id, shot.label),
-                                question,
-                                ai_task_entity_id,
-                                context,
-                                attachment_generation=attachment_generation,
-                            )
-                            if question is not None and ai_task_entity_id is not None
-                            else None
-                        )
-                except TimeoutError as err:
-                    raise _error("photo_tour_timeout") from err
-                result: dict[str, Any] = {
-                    **_stop_fields(entry, shot),
-                    "photo_id": photo.photo_id,
-                    "captured_at": photo.captured_at.isoformat(),
-                    "url": (
-                        photo_url(entry.entry_id, photo.photo_id)
-                        if full_resolution
-                        else photo_preview_url(entry.entry_id, photo.photo_id)
-                    ),
-                    "preview_url": photo_preview_url(entry.entry_id, photo.photo_id),
-                    "map_url": photo_map_url(entry.entry_id, photo.photo_id),
-                }
-                if analysis is not None:
-                    result["analysis"] = analysis
-                results.append(result)
-                event_result = {
-                    key: value for key, value in result.items() if key != "analysis"
-                }
-                hass.bus.async_fire(
-                    PHOTO_TAKEN_EVENT,
-                    {ATTR_ENTITY_ID: entity_id, **event_result},
-                    context=context,
-                )
-        finally:
-            # A tour always returns to the dock when it still owns the parked
-            # robot.
-            active_error = sys.exc_info()[1]
-            _finishing.add(entry.entry_id)
-            can_dock = False
-            # A command that stopped the tour decides where the robot goes.
-            if arrivals and entry.entry_id not in _stop_requested:
-                try:
-                    remaining = max(0, deadline - monotonic())
-                    if remaining == 0:
-                        raise TimeoutError(
-                            "tour deadline exhausted before ownership check"
-                        )
-                    async with asyncio.timeout(remaining):
-                        can_dock = await _async_still_parked(entry, arrivals[-1])
-                except Exception:
-                    _LOGGER.exception("Could not verify Matic photo tour ownership")
-                # A command can arrive while the ownership read is under way.
-                if can_dock and entry.entry_id not in _stop_requested:
-                    try:
-                        remaining = max(0, deadline - monotonic())
-                        if remaining == 0:
-                            raise TimeoutError("tour deadline exhausted before docking")
-                        async with asyncio.timeout(remaining):
-                            await hass.services.async_call(
-                                VACUUM_DOMAIN,
-                                SERVICE_RETURN_TO_BASE,
-                                {ATTR_ENTITY_ID: entity_id},
-                                blocking=True,
-                                context=context,
-                            )
-                    except Exception as err:
-                        _LOGGER.exception("Could not safely finish Matic photo tour")
-                        if active_error is None:
-                            raise _error("photo_tour_dock_timeout") from err
+            results = [await tour.async_visit(shot) for shot in shots]
+        except BaseException:
+            await tour.async_finish(failed=True)
+            raise
+        await tour.async_finish(failed=False)
         return results
+
+
+def _tour_question(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    question: str | None,
+    ai_task_entity_id: str | None,
+) -> _TourQuestion | None:
+    """Validate the optional AI question before the robot moves."""
+    if question is None and ai_task_entity_id is None:
+        return None
+    if question is None or ai_task_entity_id is None:
+        raise _error("photo_tour_ai_question_required")
+    if not question.strip() or len(question) > 500:
+        raise _error("photo_tour_ai_question_invalid")
+    try:
+        validate_ai_task_entity(hass, ai_task_entity_id)
+    except HomeAssistantError:
+        raise _error("photo_tour_ai_unavailable") from None
+    try:
+        generation = photo_attachment_source(hass).capture_entry_generation(
+            entry.entry_id
+        )
+    except PhotoAttachmentUnavailable:
+        raise _error("photo_tour_ai_unavailable") from None
+    return _TourQuestion(question, ai_task_entity_id, generation)
+
+
+def _check_tour_start(
+    entry: MaticConfigEntry, stops: list[TourStop], *, skip_cooldown: bool
+) -> list[_Shot]:
+    """Return the tour's shots once privacy, the robot and the cooldown allow it."""
+    check_photo_tour(entry, stops)
+    shots = _shots(entry, stops)
+    rooms = list(dict.fromkeys(shot.room for shot in shots))
+    _assert_photos_allowed(entry, rooms)
+    room_ids = _resolve_rooms(entry, rooms)
+    if room_ids is None:
+        raise _error("photo_tour_rooms_unavailable")
+    forbidden = set(entry.options.get(CONF_PHOTO_NO_PHOTO_ROOMS, ()))
+    current_ids = _current_room_ids(entry)
+    if current_ids is None or not forbidden <= current_ids:
+        raise _error("photo_tour_rooms_unavailable")
+    if forbidden.intersection(room_ids):
+        raise _error("photo_tour_room_blocked")
+    operational = entry.runtime_data.session.state.value.operational
+    if operational.cleaning or operational.paused or operational.returning:
+        raise _error("photo_tour_robot_busy")
+    battery = operational.battery_percentage
+    if battery is not None and battery < MIN_BATTERY_PERCENT:
+        raise _error("photo_tour_low_battery", battery=str(battery))
+    cooldown = max(
+        0, int(entry.options.get(CONF_PHOTO_COOLDOWN_SECONDS, DEFAULT_COOLDOWN_SECONDS))
+    )
+    elapsed = monotonic() - _last_tour_started.get(entry.entry_id, -float("inf"))
+    if elapsed < cooldown and not skip_cooldown:
+        raise _error(
+            "photo_tour_cooldown", seconds=str(max(1, int(cooldown - elapsed)))
+        )
+    return shots
 
 
 async def _async_photograph(
