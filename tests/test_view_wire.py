@@ -140,6 +140,9 @@ def _plans_runtime() -> Any:
                     "name": "Rug",
                     "cleaning_mode": "mop",
                     "coverage_setting": "quick",
+                    # The planner's area projection carries the binding.
+                    "binding_status": "current",
+                    "binding_fingerprint": "f" * 64,
                 },
             ],
             "finish_current_room": True,
@@ -545,7 +548,7 @@ PLANS: dict[str, Any] = {
                     {"room_id": "room-3", "name": "Den", "sensor": "binary_sensor.den"}
                 ],
                 "preview_token": (
-                    "58562463f949d9172259b45b6911b6a3892ca70b6013bda07102bab0978cc3bc"
+                    "a0f6b958c2cb98ca9e7efef28ba42cf8968413e8dce46617e91103a75b621cc9"
                 ),
                 "blocker": None,
             },

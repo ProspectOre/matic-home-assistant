@@ -7,6 +7,7 @@ import json
 import struct
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import accumulate
 from typing import Any, Literal, cast
 
 from .client import CleaningMode, CoverageSetting, FloorPlan
@@ -247,43 +248,6 @@ def plan_area_fingerprint(area: Mapping[str, Any]) -> str:
     return hashlib.sha256(b"matic-plan-area-v1\0" + encoded).hexdigest()
 
 
-def entry_mission_boundaries(
-    entries: Sequence[Mapping[str, Any]], *, single_room_missions: bool = False
-) -> list[int]:
-    """Return entry offsets where a run must start a new robot mission.
-
-    Rooms and drawn areas cannot share one native mission: each area is its
-    own leg. With Smart Stop enabled, every room also gets its own mission.
-    """
-    boundaries: list[int] = []
-    offset = 0
-    rooms: list[CleaningRoom] = []
-
-    def close_rooms() -> None:
-        nonlocal offset
-        for group in leg_groups(rooms, single_room_missions=single_room_missions):
-            offset += len(group)
-            boundaries.append(offset)
-        rooms.clear()
-
-    for entry in entries:
-        if entry.get("kind") == "area":
-            close_rooms()
-            offset += 1
-            boundaries.append(offset)
-            continue
-        rooms.append(
-            CleaningRoom(
-                str(entry["room_id"]),
-                str(entry["name"]),
-                str(entry["cleaning_mode"]),
-                str(entry["coverage_setting"]),
-            )
-        )
-    close_rooms()
-    return boundaries[:-1]
-
-
 @dataclass(frozen=True, slots=True)
 class AreaLeg:
     """One saved custom area in a plan run: always a native mission of its own.
@@ -393,6 +357,27 @@ def plan_legs(
         raise ValueError("run entries do not match its rooms")
     close_rooms()
     return legs
+
+
+def preview_legs(preview_entries: list[dict[str, Any]]) -> list[PlanLeg]:
+    """Return the legs a new run of a preview's entries dispatches."""
+    rooms = [
+        CleaningRoom(
+            str(entry["room_id"]),
+            str(entry["name"]),
+            str(entry["cleaning_mode"]),
+            str(entry["coverage_setting"]),
+        )
+        for entry in preview_entries
+        if entry["kind"] == "room"
+    ]
+    return plan_legs(rooms, run_entries(preview_entries))
+
+
+def leg_boundaries(legs: Sequence[PlanLeg]) -> list[int]:
+    """Return the entry offsets where each leg after the first starts."""
+    sizes = (1 if isinstance(leg, AreaLeg) else len(leg) for leg in legs)
+    return list(accumulate(sizes))[:-1]
 
 
 def _dispatching_room_leg(checkpoint: Mapping[str, Any]) -> bool:

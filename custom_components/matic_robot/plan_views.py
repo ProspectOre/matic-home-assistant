@@ -29,9 +29,10 @@ from .plan_model import (
     PlanAreaMissingError,
     PlanRoomsHeldError,
     RoomSequenceLimitError,
-    entry_mission_boundaries,
+    leg_boundaries,
     plan_entries,
     plan_floor_token,
+    preview_legs,
     room_cadence_identity,
 )
 from .plan_schema import (
@@ -248,12 +249,7 @@ def _next_run_preview(
         if not preview_entries:
             raise ValueError("plan has no rooms")
         rooms, steps = _preview_steps(preview_entries)
-        # Smart Stop runs each room in its own native mission so a
-        # room-boundary STOP cannot allow the next room to start.
-        # Custom areas remain separate missions either way.
-        boundaries = entry_mission_boundaries(
-            steps, single_room_missions=preview.get("finish_current_room") is True
-        )
+        boundaries = leg_boundaries(preview_legs(preview_entries))
     except PlanRoomsHeldError:
         return {
             **_blocked("plan_rooms_held"),
