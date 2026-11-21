@@ -79,6 +79,7 @@ from .plans import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
+    PlanRoomMissingError,
     RoomSequenceLimitError,
     SavedPlanLimitError,
     SharedRoomScheduleLockedError,
@@ -825,6 +826,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     call.data.get("plan"),
                     intelligent=intelligent,
                 )
+            except PlanRoomMissingError as err:
+                raise _plan_request_error(err) from err
             except (KeyError, TypeError, ValueError) as err:
                 raise _validation_error(
                     "The saved plan can no longer run", "invalid_plan"
@@ -1919,6 +1922,13 @@ def _plan_request_error(err: ValueError) -> ServiceValidationError:
         return _validation_error(
             "A custom area in the plan no longer exists", "plan_area_missing"
         )
+    if isinstance(err, PlanRoomMissingError):
+        rooms = ", ".join(err.room_ids)
+        return _validation_error(
+            f"Plan rooms are no longer on the robot's map: {rooms}",
+            "plan_room_missing",
+            {"rooms": rooms},
+        )
     if isinstance(err, PlanAreaMapChangedError):
         return _validation_error(
             "The saved custom area belongs to a different room map",
@@ -2027,7 +2037,13 @@ def _plan_entry_position(
 ) -> int:
     """Find the zero-based entry named by an action's room or area field."""
     if "area" not in call.data:
-        room_id = _resolve_room_id(call.data["room"], room_map)
+        reference = str(call.data["room"])
+        # An entry can still name a room that a map edit removed.
+        stale = reference not in room_map and any(
+            saved["kind"] == "room" and saved["room_id"] == reference
+            for saved in entries
+        )
+        room_id = reference if stale else _resolve_room_id(reference, room_map)
         position = next(
             (
                 index

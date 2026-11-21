@@ -1477,6 +1477,9 @@
     "plan_area_missing": {
       "message": "A custom area in this plan was deleted. Open the plan in Matic Map, save it again, then try again."
     },
+    "plan_room_missing": {
+      "message": "These rooms in the plan are no longer on the robot's map: {rooms}. A map edit in the Matic app can remove a room or give it a new ID. Remove them from the plan in Matic Map or with the Remove room or area from plan action, then try again."
+    },
     "plan_area_limit": {
       "message": "A plan can include up to {limit} custom areas. Remove some areas and try again."
     },
@@ -1569,6 +1572,10 @@
           "continue_in_reconfigure": "Go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset."
         }
       }
+    },
+    "plan_room_missing": {
+      "title": "{name}: saved plans name rooms that are no longer on the map",
+      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs, so these plans won't run. In Matic Map, open each plan, clear the rooms shown by ID instead of by name, choose the current rooms, then save. This Repair clears once every plan names only rooms on the map."
     },
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",

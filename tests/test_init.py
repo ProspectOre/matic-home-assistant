@@ -1069,6 +1069,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     plans.recovery_run.return_value = {} if recovering_run else None
     plans.pending_stop_run_id.return_value = "run" if recovering_stop else None
     plans.areas.return_value = {}
+    plans.plans.return_value = {}
     plans.async_add_listener.return_value = plan_unsubscribe
     plans.async_upgrade_area_bindings = AsyncMock(
         side_effect=(
@@ -1197,6 +1198,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
         patch(
             "custom_components.matic_robot.async_sync_custom_area_issue"
         ) as sync_area_issue,
+        patch(
+            "custom_components.matic_robot.async_sync_plan_room_issue"
+        ) as sync_plan_room_issue,
         patch(
             "custom_components.matic_robot.dt_util.now",
             return_value=datetime(2026, 7, 14, tzinfo=UTC),
@@ -1346,10 +1350,14 @@ async def test_setup_refreshes_before_forwarding_platforms(
     hass.bus.async_listen.assert_called_once()
     assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_native_history_updated"
     sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
+    sync_plan_room_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
 
-    with patch(
-        "custom_components.matic_robot.async_sync_custom_area_issue"
-    ) as listener_sync:
+    with (
+        patch(
+            "custom_components.matic_robot.async_sync_custom_area_issue"
+        ) as listener_sync,
+        patch("custom_components.matic_robot.async_sync_plan_room_issue"),
+    ):
         scheduled = []
         entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
             scheduled.append(target)
@@ -2126,6 +2134,9 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_area_issue,
+        patch(
+            "custom_components.matic_robot.async_delete_plan_room_issue"
+        ) as delete_plan_room_issue,
     ):
         await async_remove_entry(hass, entry)
 
@@ -2139,6 +2150,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     slam_map.async_remove.assert_awaited_once()
     slam_history.async_remove.assert_awaited_once()
     delete_area_issue.assert_called_once_with(hass, "entry")
+    delete_plan_room_issue.assert_called_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
     bare_plans = SimpleNamespace(async_remove_robot=AsyncMock())
@@ -2155,6 +2167,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_bare_area_issue,
+        patch("custom_components.matic_robot.async_delete_plan_room_issue"),
     ):
         await async_remove_entry(bare, entry)
 
@@ -2184,6 +2197,7 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
         ),
         patch("custom_components.matic_robot.clear_slam_scene_cache"),
         patch("custom_components.matic_robot.async_delete_custom_area_issue"),
+        patch("custom_components.matic_robot.async_delete_plan_room_issue"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch(
             "custom_components.matic_robot.SlamHistoryStore",
