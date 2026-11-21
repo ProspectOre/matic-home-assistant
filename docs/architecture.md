@@ -68,7 +68,7 @@ these owners around one repository:
 | Owner | Responsibility |
 | --- | --- |
 | [Repository](../custom_components/matic_robot/plan_repository.py) | Durable state and its one commit: a writer edits a copy of one robot, the copy is saved, and memory takes it only after the save succeeds. Stop fences take effect in memory at once and are saved with the next commit. |
-| [Cadence](../custom_components/matic_robot/plan_cadence.py) | Room schedule policy, progress and reservations. |
+| [Cadence](../custom_components/matic_robot/plan_cadence.py) | Room schedule policy, progress and reservations; each room's effective settings come from its [resolution](../custom_components/matic_robot/cadence_resolution.py). |
 | [Catalog](../custom_components/matic_robot/plan_catalog.py) | Saved plans and areas, rotation and previews. |
 | [Run control](../custom_components/matic_robot/run_control.py) | One actor per robot for its run, motion ownership, cancellation and stop fences; background start. |
 | [Ledger](../custom_components/matic_robot/plan_ledger.py) | Run checkpoints, room accounting and native-history commits. |

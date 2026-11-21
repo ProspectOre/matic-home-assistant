@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta, tzinfo
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
 
 from .client import is_sha256_hex
@@ -254,6 +255,31 @@ def record_completion(
     return row != before or resolved_unknown
 
 
+@dataclass(frozen=True, slots=True)
+class _LocalDay:
+    """The instant an allowance is read at and the local day it falls on."""
+
+    now: datetime
+    timezone: tzinfo
+    today: date
+
+    def contains(self, stamp: datetime) -> bool | None:
+        """Return whether the instant is in this day; None when it has no date."""
+        try:
+            return stamp.astimezone(self.timezone).date() == self.today
+        except OverflowError:
+            return None
+
+
+@dataclass(frozen=True, slots=True)
+class _DayCount:
+    """The room's receipts for one local day, and whether they can be trusted."""
+
+    completed: int
+    verified: bool
+    times: frozenset[datetime]
+
+
 def daily_state(
     robot: Mapping[str, Any],
     room_id: str,
@@ -264,194 +290,139 @@ def daily_state(
 ) -> DailyLimit:
     """Project a bound policy against verified completions in the local day."""
     policies = robot.get("daily_room_limits")
-    if policies is not None and not isinstance(policies, Mapping):
-        return {
-            "limit": None,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "invalid_policy",
-        }
-    policy = policies.get(room_id) if isinstance(policies, Mapping) else None
-    if not isinstance(policy, Mapping):
-        if isinstance(policies, Mapping) and room_id in policies:
-            return {
-                "limit": None,
-                "completed_today": 0,
-                "reached": True,
-                "reason": "invalid_policy",
-            }
+    if policies is None or (isinstance(policies, Mapping) and room_id not in policies):
         return {"limit": None, "completed_today": 0, "reached": False}
-    limit = policy.get("limit")
+    policy = _valid_policy(policies, room_id)
+    if policy is None:
+        return _closed(None, "invalid_policy")
+    limit: int = policy["limit"]
+    if identity is None or policy.get("identity") != identity:
+        return _closed(limit, "room_identity_unconfirmed")
+    if timezone is None:
+        return _closed(limit, "timezone_unavailable")
+    now = now.astimezone(UTC)
+    row = _completion_row(robot, room_id)
+    if row is None or not _evidence_readable(row, now):
+        return _closed(limit, "completion_history_unverified")
+    day = _LocalDay(now, timezone, now.astimezone(timezone).date())
+    count = _count_receipts(row.get("receipts", []), identity, day)
+    overflow = _time(row.get("overflow_until"))
+    if (
+        not count.verified
+        or _last_clean_uncounted(robot, room_id, count.times, day)
+        or (overflow is not None and overflow > now)
+    ):
+        return _closed(limit, "completion_history_unverified", count.completed)
+    return {
+        "limit": limit,
+        "completed_today": count.completed,
+        "reached": count.completed >= limit,
+    }
+
+
+def _closed(
+    limit: int | None, reason: DailyLimitReason, completed_today: int = 0
+) -> DailyLimit:
+    """Hold the allowance closed for a stated reason."""
+    return {
+        "limit": limit,
+        "completed_today": completed_today,
+        "reached": True,
+        "reason": reason,
+    }
+
+
+def _valid_policy(policies: object, room_id: str) -> Mapping[str, Any] | None:
+    """Return the room's stored policy when it and its limit are well formed."""
+    policy = policies.get(room_id) if isinstance(policies, Mapping) else None
+    limit = policy.get("limit") if isinstance(policy, Mapping) else None
     if (
         isinstance(limit, bool)
         or not isinstance(limit, int)
         or not 1 <= limit <= MAX_DAILY_ROOM_LIMIT
     ):
-        return {
-            "limit": None,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "invalid_policy",
-        }
-    if identity is None or policy.get("identity") != identity:
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "room_identity_unconfirmed",
-        }
-    if timezone is None:
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "timezone_unavailable",
-        }
-    now = now.astimezone(UTC)
+        return None
+    return policy
+
+
+def _completion_row(robot: Mapping[str, Any], room_id: str) -> Mapping[str, Any] | None:
+    """Return the room's stored evidence, or None when it is not a mapping."""
     records = robot.get("daily_room_completions")
-    if records is not None and not isinstance(records, Mapping):
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "completion_history_unverified",
-        }
-    row = records.get(room_id) if isinstance(records, Mapping) else None
-    if row is not None and not isinstance(row, Mapping):
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "completion_history_unverified",
-        }
-    if not isinstance(row, Mapping):
-        row = {}
+    if records is None:
+        return {}
+    if not isinstance(records, Mapping):
+        return None
+    row = records.get(room_id)
+    if row is None:
+        return {}
+    return row if isinstance(row, Mapping) else None
+
+
+def _evidence_readable(row: Mapping[str, Any], now: datetime) -> bool:
+    """Return whether no hold is open and every stored field can be counted."""
     unknown_time = _time(row.get("unknown_time_until"))
     if "unknown_time_until" in row and (unknown_time is None or unknown_time > now):
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "completion_history_unverified",
-        }
+        return False
     holds = row.get("unknown_time_holds", [])
     if not isinstance(holds, list) or len(holds) > MAX_RECENT_COMPLETIONS:
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "completion_history_unverified",
-        }
-    for hold in holds:
-        if (
-            not isinstance(hold, Mapping)
-            or (hold_until := _time(hold.get("until"))) is None
-        ):
-            return {
-                "limit": limit,
-                "completed_today": 0,
-                "reached": True,
-                "reason": "completion_history_unverified",
-            }
-        if hold_until > now and not is_sha256_hex(hold.get("session_hash")):
-            return {
-                "limit": limit,
-                "completed_today": 0,
-                "reached": True,
-                "reason": "completion_history_unverified",
-            }
-        if hold_until > now:
-            return {
-                "limit": limit,
-                "completed_today": 0,
-                "reached": True,
-                "reason": "completion_history_unverified",
-            }
-    overflow = _time(row.get("overflow_until"))
-    if "overflow_until" in row and overflow is None:
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "completion_history_unverified",
-        }
+        return False
+    if any(
+        not isinstance(hold, Mapping)
+        or (until := _time(hold.get("until"))) is None
+        or until > now
+        for hold in holds
+    ):
+        return False
+    if "overflow_until" in row and _time(row.get("overflow_until")) is None:
+        return False
     receipts = row.get("receipts", [])
-    if not isinstance(receipts, list) or len(receipts) > MAX_RECENT_COMPLETIONS:
-        return {
-            "limit": limit,
-            "completed_today": 0,
-            "reached": True,
-            "reason": "completion_history_unverified",
-        }
-    count = 0
-    ambiguous = False
-    today = now.astimezone(timezone).date()
-    recorded_times: set[datetime] = set()
+    return isinstance(receipts, list) and len(receipts) <= MAX_RECENT_COMPLETIONS
+
+
+def _count_receipts(receipts: list[Any], identity: str, day: _LocalDay) -> _DayCount:
+    """Count the day's verified receipts for the room's current identity."""
+    completed = 0
+    verified = True
+    times: set[datetime] = set()
     for receipt in receipts:
         if (
             not isinstance(receipt, Mapping)
             or (stamp := _time(receipt.get("at"))) is None
         ):
-            return {
-                "limit": limit,
-                "completed_today": count,
-                "reached": True,
-                "reason": "completion_history_unverified",
-            }
-        if stamp > now:
-            ambiguous = True
+            return _DayCount(completed, False, frozenset(times))
+        if stamp > day.now or (in_day := day.contains(stamp)) is None:
+            verified = False
             continue
-        try:
-            completed_day = stamp.astimezone(timezone).date()
-        except OverflowError:
-            ambiguous = True
+        if not in_day:
             continue
-        if completed_day != today:
-            continue
-        recorded_times.add(stamp)
+        times.add(stamp)
         if receipt.get("identity") is None:
-            ambiguous = True
+            verified = False
         elif not is_sha256_hex(receipt.get("identity")):
-            return {
-                "limit": limit,
-                "completed_today": count,
-                "reached": True,
-                "reason": "completion_history_unverified",
-            }
+            return _DayCount(completed, False, frozenset(times))
         elif receipt.get("identity") == identity:
-            if receipt.get("unverified") is True:
-                ambiguous = True
-            elif receipt.get("unverified") not in (None, False):
-                ambiguous = True
+            if receipt.get("unverified") in (None, False):
+                completed += 1
             else:
-                count += 1
+                verified = False
+    return _DayCount(completed, verified, frozenset(times))
+
+
+def _last_clean_uncounted(
+    robot: Mapping[str, Any],
+    room_id: str,
+    counted: frozenset[datetime],
+    day: _LocalDay,
+) -> bool:
+    """Return whether the room's last recorded clean today has no receipt."""
     rooms = robot.get("rooms")
-    global_room = rooms.get(room_id) if isinstance(rooms, Mapping) else None
+    room = rooms.get(room_id) if isinstance(rooms, Mapping) else None
     last_completed = (
-        _time(global_room.get("last_completed"))
-        if isinstance(global_room, Mapping)
-        else None
+        _time(room.get("last_completed")) if isinstance(room, Mapping) else None
     )
-    if last_completed is not None:
-        try:
-            last_completed_day = last_completed.astimezone(timezone).date()
-        except OverflowError:
-            ambiguous = True
-        else:
-            if last_completed_day == today and last_completed not in recorded_times:
-                # Old installations may have recorded only the most recent clean;
-                # do not invent a complete daily count for that local day.
-                ambiguous = True
-    reason: DailyLimitReason | None = (
-        "completion_history_unverified"
-        if ambiguous or (overflow is not None and overflow > now)
-        else None
-    )
-    result: DailyLimit = {
-        "limit": limit,
-        "completed_today": count,
-        "reached": count >= limit or reason is not None,
-    }
-    if reason:
-        result["reason"] = reason
-    return result
+    if last_completed is None:
+        return False
+    # Old installations may have recorded only the most recent clean; do not
+    # invent a complete daily count for that local day.
+    in_day = day.contains(last_completed)
+    return in_day is None or (in_day and last_completed not in counted)
