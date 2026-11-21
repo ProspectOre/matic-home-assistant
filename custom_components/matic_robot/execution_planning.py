@@ -75,33 +75,9 @@ class ExecutionPlanner:
         rotation, so they stay first in line for the next one.
         """
         plan = self.catalog.plan(serial_number, plan_id)
-        entries = plan_entries(plan)
-        areas = [entry for entry in entries if entry["kind"] == "area"]
-        area_projections: dict[str, dict[str, Any]] = {}
-        rooms = _plan_rooms(plan, room_map, require_rooms=not areas)
-        if areas:
-            area_projections = {
-                entry["area_id"]: self.preview_area(serial_number, entry, floor_plan)
-                for entry in areas
-            }
-        use_intelligent = (
-            plan.get("run_behavior", "intelligent") == "intelligent"
-            if intelligent is None
-            else intelligent
+        targets, area_projections = self._plan_targets(
+            serial_number, plan, room_map, floor_plan
         )
-        room_by_id = {room.room_id: room for room in rooms}
-        targets: list[CleaningRoom | AreaLeg] = [
-            AreaLeg(
-                entry["area_id"],
-                area_projections[entry["area_id"]]["name"],
-                entry["cleaning_mode"],
-                entry["coverage_setting"],
-                area_projections[entry["area_id"]]["binding_fingerprint"],
-            )
-            if entry["kind"] == "area"
-            else room_by_id[entry["room_id"]]
-            for entry in entries
-        ]
         if room_identities is None and floor_plan is not None:
             room_identities = {
                 room.id: room_cadence_identity(floor_plan, room.id)
@@ -118,58 +94,32 @@ class ExecutionPlanner:
             for target in targets
             if isinstance(target, CleaningRoom)
         }
-        daily_held = [
+        targets, daily_held = _hold_rooms(
+            targets,
             {
-                "room_id": target.room_id,
-                "name": target.name,
-                **daily_by_room[target.room_id],
-            }
-            for target in targets
-            if isinstance(target, CleaningRoom)
-            and daily_by_room[target.room_id]["reached"]
-        ]
-        if daily_held:
-            targets = [
-                target
-                for target in targets
-                if not isinstance(target, CleaningRoom)
-                or not daily_by_room[target.room_id]["reached"]
-            ]
-        held = [
-            {
-                "room_id": target.room_id,
-                "name": target.name,
-                **held_rooms[target.room_id],
-            }
-            for target in targets
-            if held_rooms
-            and isinstance(target, CleaningRoom)
-            and target.room_id in held_rooms
-        ]
-        if held:
-            held_ids = {room["room_id"] for room in held}
-            targets = [
-                target
-                for target in targets
-                if not isinstance(target, CleaningRoom)
-                or target.room_id not in held_ids
-            ]
-            if not targets:
-                raise PlanRoomsHeldError("occupancy holds every room in the plan")
-        candidates = self.rotation_candidates(serial_number, plan["id"], targets)
-        ordered_candidates = (
-            sorted(candidates, key=_rotation_sort_key)
-            if use_intelligent
-            else candidates
+                room_id: state
+                for room_id, state in daily_by_room.items()
+                if state["reached"]
+            },
         )
-        ordered_targets = [candidate.room for candidate in ordered_candidates]
-        chosen = [
-            target for target in ordered_targets if isinstance(target, CleaningRoom)
-        ]
+        targets, held = _hold_rooms(targets, held_rooms or {})
+        if held and not targets:
+            raise PlanRoomsHeldError("occupancy holds every room in the plan")
+
+        use_intelligent = (
+            plan.get("run_behavior", "intelligent") == "intelligent"
+            if intelligent is None
+            else intelligent
+        )
+        candidates = self.rotation_candidates(serial_number, plan["id"], targets)
+        if use_intelligent:
+            candidates.sort(key=_rotation_sort_key)
+        ordered_targets = [candidate.room for candidate in candidates]
+
         effective, cadence = self.cadence.resolve_cadence(
             serial_number,
             plan["id"],
-            chosen,
+            [target for target in ordered_targets if isinstance(target, CleaningRoom)],
             floor_token=floor_token,
             room_identities=room_identities,
         )
@@ -186,12 +136,7 @@ class ExecutionPlanner:
             for room in effective
         ]
         effective_by_id = {room["room_id"]: room for room in preview_rooms}
-        preview_entries = [
-            area_projections[target.area_id]
-            if isinstance(target, AreaLeg)
-            else {"kind": "room", **effective_by_id[target.room_id]}
-            for target in ordered_targets
-        ]
+        area_count = sum(isinstance(target, AreaLeg) for target in ordered_targets)
         return {
             "valid": True,
             "plan_id": plan["id"],
@@ -202,11 +147,14 @@ class ExecutionPlanner:
                 "least_recent_opportunity" if use_intelligent else "saved_order"
             ),
             "rooms": preview_rooms,
-            "entries": preview_entries,
-            **({"area_count": len(areas)} if areas else {}),
-            "rotation": _rotation_details(
-                ordered_candidates, intelligent=use_intelligent
-            ),
+            "entries": [
+                area_projections[target.area_id]
+                if isinstance(target, AreaLeg)
+                else {"kind": "room", **effective_by_id[target.room_id]}
+                for target in ordered_targets
+            ],
+            **({"area_count": area_count} if area_count else {}),
+            "rotation": _rotation_details(candidates, intelligent=use_intelligent),
             "room_count": len(effective),
             **({"held_rooms": held} if held else {}),
             **({"daily_limit_held_rooms": daily_held} if daily_held else {}),
@@ -218,6 +166,41 @@ class ExecutionPlanner:
             "start_timeout": int(plan.get("start_timeout", 120)),
             "completion_timeout": int(plan.get("completion_timeout", 21600)),
         }
+
+    def _plan_targets(
+        self,
+        serial_number: str,
+        plan: Mapping[str, Any],
+        room_map: Mapping[str, str],
+        floor_plan: FloorPlan | None,
+    ) -> tuple[list[CleaningRoom | AreaLeg], dict[str, dict[str, Any]]]:
+        """Resolve a plan's entries, in saved order, against the live map.
+
+        Returns the targets and each area's projection by area ID.
+        """
+        entries = plan_entries(plan)
+        has_areas = any(entry["kind"] == "area" for entry in entries)
+        room_by_id = {
+            room.room_id: room
+            for room in _plan_rooms(plan, room_map, require_rooms=not has_areas)
+        }
+        area_projections = {
+            entry["area_id"]: self.preview_area(serial_number, entry, floor_plan)
+            for entry in entries
+            if entry["kind"] == "area"
+        }
+        return [
+            AreaLeg(
+                entry["area_id"],
+                area_projections[entry["area_id"]]["name"],
+                entry["cleaning_mode"],
+                entry["coverage_setting"],
+                area_projections[entry["area_id"]]["binding_fingerprint"],
+            )
+            if entry["kind"] == "area"
+            else room_by_id[entry["room_id"]]
+            for entry in entries
+        ], area_projections
 
     def preview_area(
         self,
@@ -347,6 +330,22 @@ class ExecutionPlanner:
                 )
             )
         return candidates
+
+
+def _hold_rooms(
+    targets: list[CleaningRoom | AreaLeg], holds: Mapping[str, Mapping[str, Any]]
+) -> tuple[list[CleaningRoom | AreaLeg], list[dict[str, Any]]]:
+    """Leave held rooms out of a run; return the rest and each hold."""
+    held = [
+        {"room_id": target.room_id, "name": target.name, **holds[target.room_id]}
+        for target in targets
+        if isinstance(target, CleaningRoom) and target.room_id in holds
+    ]
+    return [
+        target
+        for target in targets
+        if not isinstance(target, CleaningRoom) or target.room_id not in holds
+    ], held
 
 
 def _plan_rooms(
