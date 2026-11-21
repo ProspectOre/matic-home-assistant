@@ -747,11 +747,12 @@ class RunControl:
             return None
         if active.get("status") == "verifying":
             return "verifying_completion"
-        if isinstance(active.get("room_id"), str):
-            return "finishing_room"
-        if isinstance(active.get("area_id"), str):
-            return "finishing_area"
-        return "returning_to_dock"
+        # A stored active plan names a room, else a custom area.
+        return (
+            "finishing_room"
+            if isinstance(active.get("room_id"), str)
+            else "finishing_area"
+        )
 
     @callback
     def prepare_run(self, serial_number: str) -> asyncio.Event:
