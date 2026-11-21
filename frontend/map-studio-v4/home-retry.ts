@@ -15,7 +15,7 @@ export const homeRetry = (
   const button = html`
     <button class="ms-btn ms-btn--secondary" type="button"
       aria-disabled=${state.rechecking ? "true" : nothing}
-      @click=${recheck}
+      @click=${() => { if (!state.rechecking) recheck(); }}
     >${t("v4_retry", "Try again")}</button>`;
   return liveMapFailed(state)
     ? html`<div class="problem home-actions" role="alert"><p>${t("v4_map_load_failed", "Home Assistant couldn't load the map.")}</p>${button}</div>`
