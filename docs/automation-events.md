@@ -6,7 +6,7 @@ Each event's type is `matic_robot_` plus the name in the second column.
 
 | Event | Type | Fields |
 | --- | --- | --- |
-| Plan started | `plan_started` | `entity_id`, `plan_id`, `run_id`, `trigger`, `provenance`, `service`, `started_at`, `room_count` |
+| Plan started | `plan_started` | `entity_id`, `plan_id`, `run_id`, `trigger`, `provenance`, `service`, `started_at`, `room_count`, sometimes `missing_rooms` |
 | Room started | `room_started` | `entity_id`, `plan_id`, `run_id`, `room_id`, `room`, `cleaning_mode`, `coverage_setting`, `provenance` |
 | Room finished | `room_completed` | room fields, `reason_code` |
 | Room skipped | `room_skipped` | room fields, `reason_code`, sometimes `cause` |
@@ -19,7 +19,7 @@ Each event's type is `matic_robot_` plus the name in the second column.
 | Plan area started | `area_started` | `entity_id`, `plan_id`, `run_id`, `area_id`, `area`, `cleaning_mode`, `coverage_setting`, `provenance` |
 | Plan area finished | `area_finished` | area fields |
 | Plan area failed | `area_failed` | area fields, `reason_code` |
-| Plan finished | `plan_finished` | `entity_id`, `plan_id`, `run_id`, `outcome`, `reason_code`, `cause`, `provenance`, `terminal_activity`, times, room counts |
+| Plan finished | `plan_finished` | `entity_id`, `plan_id`, `run_id`, `outcome`, `reason_code`, `cause`, `provenance`, `terminal_activity`, times, room counts, sometimes `missing_rooms` |
 | Plan docked | `plan_docked` | `entity_id`, `plan_id`, `run_id`, `outcome`, `docked_at` |
 | Cleaning finished | `cleaning_finished` | `device_id`, `entry_id`, `started_at`, `ended_at`, `duration_seconds`, `completed`, `rooms`, `completed_rooms`, `room_durations`, `stop_reason` |
 | Firmware changed | `firmware_changed` | `device_id`, `entry_id`, `previous_version`, `firmware_version` |
@@ -42,6 +42,11 @@ Other outcomes: `stopped_docked`, `recharge_suspended`, `cancelled`, `failed`,
 room and plan events too, with a `plan_id` starting `__matic_manual_room_sequence__`.
 
 ## Run events in automations, the logbook and the dashboard
+
+`missing_rooms` lists the plan rooms a map edit in the Matic app removed,
+which the run skips. Each has `room_id`, `name` (the last name Matic saw for
+it, or `null`) and `match_room_id` (the one room now on the map with that
+name, or `null`).
 
 The run events are every event from Plan started to Cleaning finished in the
 table above. Each one also:
