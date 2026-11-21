@@ -67,8 +67,9 @@ The card's actions match what the robot is doing:
 
 - **Follow the robot** keeps the live robot centered; moving the map yourself
   turns it off. **Ride along in 3D** also turns the view with the robot. Both
-  need a live position, and Ride along needs the robot's heading. Neither shows
-  video from the robot's camera.
+  need a live position, and Ride along needs the robot's heading. If the
+  position drops out, the camera waits and carries on when it returns;
+  switching robots turns both off. Neither shows video from the robot's camera.
 - **Wi-Fi signal** estimates the signal up to 1.5 m (5 ft) from each reading,
   within the reading's own room, in four bands: strong (-55 dBm and up), good
   (-67 to -56), weak (-80 to -68) and dead zone (below -80), which is also
