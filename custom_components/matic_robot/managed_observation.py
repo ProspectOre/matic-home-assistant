@@ -27,6 +27,7 @@ from .managed_run import (
     RoomInterruptedError,
     RoomRunOutcome,
     RoomTakenOverError,
+    async_unless_cancelled,
     validation_error,
 )
 from .native_completion import (
@@ -108,7 +109,9 @@ async def _async_verify_leg_completion(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader(session_hash=session_hash)
+                    records = await async_unless_cancelled(
+                        reader(session_hash=session_hash), cancel_event
+                    )
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic leg evidence unavailable (%s)", type(err).__name__
@@ -155,15 +158,9 @@ async def _async_verify_leg_completion(
                 if len(matches) > 1:
                     return None
                 if attempt + 1 < attempts:
-                    if cancel_event is None:
-                        await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
-                    else:
-                        try:
-                            async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
-                                await cancel_event.wait()
-                        except TimeoutError:
-                            continue
-                        raise PlanCancelledError
+                    await async_unless_cancelled(
+                        asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS), cancel_event
+                    )
     except TimeoutError:
         pass
     if evidence is not None and on_unreached is not None:
@@ -504,7 +501,9 @@ async def _async_adjudicate_room_end(
                     allow_active_cleaning=allow_active_cleaning,
                 )
                 try:
-                    records = await reader(session_hash=session_hash)
+                    records = await async_unless_cancelled(
+                        reader(session_hash=session_hash), cancel_event
+                    )
                 except MaticError as err:
                     _LOGGER.debug(
                         "Native Matic completion evidence unavailable (%s)",
@@ -558,15 +557,9 @@ async def _async_adjudicate_room_end(
                 ):
                     return NativeRoomVerdict.UNVERIFIED
                 if attempt + 1 < attempts:
-                    if cancel_event is None:
-                        await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
-                    else:
-                        try:
-                            async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
-                                await cancel_event.wait()
-                        except TimeoutError:
-                            continue
-                        raise PlanCancelledError
+                    await async_unless_cancelled(
+                        asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS), cancel_event
+                    )
     except TimeoutError:
         return NativeRoomVerdict.UNVERIFIED
     return NativeRoomVerdict.UNVERIFIED

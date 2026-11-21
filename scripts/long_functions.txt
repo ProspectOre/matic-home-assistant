@@ -1,1 +1,1 @@
-custom_components/matic_robot/managed_executor.py::_async_execute_rooms_reserved 655
+custom_components/matic_robot/managed_executor.py::_async_execute_rooms_reserved 646

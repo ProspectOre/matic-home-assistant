@@ -640,7 +640,6 @@ class PlanLedger:
             skipped=self.skipped_room_ids(serial_number, run_id),
         )
         _close_unfinished_area_records(robot, run_id=run_id, ended_at=ended_at)
-        docked = last_run.get("outcome") == "stopped_docked"
         stored_completed_count = stored_count(last_run, "completed_room_count")
         was_completed = last_run.get("outcome") == "completed"
         completed = was_completed or (
@@ -651,26 +650,16 @@ class PlanLedger:
         last_run.update(
             {
                 "ended_at": ended_at,
-                "outcome": (
-                    "stopped_docked"
-                    if docked
-                    else "completed"
-                    if completed
-                    else normalize_run_outcome(outcome)
-                ),
+                "outcome": "completed" if completed else normalize_run_outcome(outcome),
                 "reason_code": (
-                    "stopped_docked"
-                    if docked
-                    else last_run.get("reason_code", "all_rooms_verified")
+                    last_run.get("reason_code", "all_rooms_verified")
                     if was_completed
                     else "all_rooms_verified"
                     if completed
                     else reason_code[:64]
                 ),
                 "cause": (
-                    "managed_cancellation"
-                    if docked
-                    else last_run.get("cause", "verified_completion")
+                    last_run.get("cause", "verified_completion")
                     if was_completed
                     else "verified_completion"
                     if completed
@@ -682,7 +671,7 @@ class PlanLedger:
                 ),
             }
         )
-        if terminal_activity is not None and not docked:
+        if terminal_activity is not None:
             last_run["terminal_activity"] = terminal_activity[:64]
         append_run_history(robot, last_run)
         last_run.pop("recovery_checkpoint", None)
@@ -719,14 +708,25 @@ class PlanLedger:
         context: Context | None = None,
         stop_fence_token: int | None = None,
     ) -> bool:
-        """Close a stopped run only after a correlated final DOCK settles."""
+        """Close a stopped run as ``stopped_docked``, its one writer, once home.
+
+        A running run closes after its ``plan_finished``, which ``plan_docked``
+        so always follows. A failed run only has its matching fence cleared.
+        """
+        live = running_run(self.repository.robot(serial_number), run_id) is not None
+        await self.control.async_wait_for_run_end(serial_number, run_id, live)
+        outcome = (self.run_record(serial_number, run_id) or {}).get("outcome")
+        if outcome == "failed" and stop_fence_token is not None:
+            return await self.control.async_clear_stop_pending_if_token(
+                serial_number, stop_fence_token, run_id=run_id
+            )
 
         def mutate() -> dict[str, Any] | None:
             robot = self.repository.robot(serial_number)
             last_run = stored_run(robot, run_id)
             if last_run is None:
                 return None
-            if last_run.get("outcome") not in {"running", "cancelled", "unverified"}:
+            if last_run.get("outcome") not in {"cancelled", "unverified"}:
                 return None
             if stop_fence_token is not None and (
                 self.control.stop_fence_token(serial_number) != stop_fence_token
