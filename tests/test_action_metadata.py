@@ -177,3 +177,16 @@ def test_blueprints_are_named_and_every_input_is_described() -> None:
     }
     # The firmware blueprint derives the robot from its sensor, so 19 remain.
     assert inputs == 19
+
+
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [key for key, _value in pairs]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert not duplicates, f"duplicate keys: {duplicates}"
+    return dict(pairs)
+
+
+def test_strings_name_each_key_once() -> None:
+    # A repeated key silently replaces the earlier text when the JSON loads.
+    for path in (INTEGRATION / "strings.json", INTEGRATION / "translations/en.json"):
+        json.loads(path.read_text(), object_pairs_hook=_unique_keys)

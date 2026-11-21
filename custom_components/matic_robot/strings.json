@@ -968,12 +968,6 @@
         }
       }
     },
-    "cadence_scope": {
-      "options": {
-        "plan": "In this plan only",
-        "shared": "Across all plans"
-      }
-    },
     "robot_data_item": {
       "options": {
         "active_session_key": "Current cleaning run",
