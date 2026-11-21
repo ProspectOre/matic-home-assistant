@@ -742,6 +742,20 @@ def resolve_rooms(
     return rooms
 
 
+def plan_on_another_floor(
+    plan: Mapping[str, Any], room_map: Mapping[str, str], mapped_floors: int
+) -> bool:
+    """Return whether a plan belongs to another of the robot's mapped floors.
+
+    On a robot with more than one mapped floor, a plan none of whose rooms are
+    on this floor's map was saved for another floor; its rooms were not
+    removed.
+    """
+    return mapped_floors > 1 and not any(
+        room_id in room_map for room_id in _plan_room_ids(plan.get("rooms", []))
+    )
+
+
 def missing_plan_rooms(
     plan: Mapping[str, Any],
     room_map: Mapping[str, str],
@@ -749,7 +763,7 @@ def missing_plan_rooms(
 ) -> list[MissingRoom]:
     """Describe a plan's rooms that the map no longer has.
 
-    ``name`` is the last name the integration saw for the room, if any.
+    ``name`` is the room's name when a run last started cleaning it, if any.
     ``match_room_id`` is a room now on the map with that name, offered for a
     re-link when exactly one such room exists, the plan does not already hold
     it, and no other missing room shares the name.

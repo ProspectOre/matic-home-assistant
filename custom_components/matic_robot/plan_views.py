@@ -40,6 +40,7 @@ from .plan_model import (
     missing_plan_rooms,
     plan_entries,
     plan_floor_token,
+    plan_on_another_floor,
     plan_setting,
     preview_legs,
     room_cadence_identity,
@@ -226,12 +227,17 @@ def _held_out(preview: Mapping[str, Any]) -> _HeldRooms:
 
 def _missing_rooms(floor: _Floor, plan: Mapping[str, object]) -> _HeldRooms:
     """Name the plan's rooms the map lost, for a preview that stops early."""
+    floors = len(floor.floor_plan.mapped_floors)
+    if not missing_plan_rooms(plan, floor.room_map, {}) or plan_on_another_floor(
+        plan, floor.room_map, floors
+    ):
+        return {}
     missing = missing_plan_rooms(
         plan,
         floor.room_map,
         floor.manager.catalog.known_room_names(floor.serial_number),
     )
-    return {"missing_rooms": missing} if missing else {}
+    return {"missing_rooms": missing}
 
 
 def _next_run_preview(
@@ -287,7 +293,7 @@ def _next_run_preview(
     except PlanRoomMissingError:
         return {**_blocked("room_missing"), **_missing_rooms(floor, plan)}
     except (KeyError, TypeError, ValueError) as err:
-        return _blocked(_blocker(err))
+        return {**_blocked(_blocker(err)), **_missing_rooms(floor, plan)}
     return {
         "rooms": rooms,
         "entries": steps,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
@@ -265,11 +265,19 @@ def _resolve_saved_plan(
 
 
 def _normalize_saved_room(
-    room: dict[str, Any], room_map: dict[str, str]
+    room: dict[str, Any],
+    room_map: dict[str, str],
+    kept: Collection[str] = (),
 ) -> dict[str, Any]:
-    """Resolve one mapped room and preserve its individual preferences."""
+    """Resolve one mapped room and preserve its individual preferences.
+
+    ``kept`` holds the off-map room IDs the saved plan already has: a map edit
+    removed them, runs skip them, and a save may keep them by ID.
+    """
     raw = dict(room)
-    raw["room_id"] = _resolve_room_id(str(raw["room"]), room_map)
+    if (identifier := str(raw["room"])) in kept:
+        room_map = {**room_map, identifier: identifier}
+    raw["room_id"] = _resolve_room_id(identifier, room_map)
     resolved = resolve_rooms([raw], room_map)[0]
     return {
         "room_id": resolved.room_id,

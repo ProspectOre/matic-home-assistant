@@ -561,7 +561,7 @@ class PlanCatalog:
         return str(plan.get("name", plan_id)) if plan else plan_id
 
     def known_room_names(self, serial_number: str) -> dict[str, str]:
-        """Return the last name the integration saw for each room ID."""
+        """Return each room's name when a run last started cleaning it."""
         return {
             room_id: record["name"]
             for room_id, record in self.repository.robot(serial_number)["rooms"].items()

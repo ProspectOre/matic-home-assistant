@@ -1002,7 +1002,7 @@
     "v4_map_simplified_detail": "Showing a simplified map because full graphics support is unavailable.",
     "v4_plan_missing_rooms": "Not on the map, so this run skips: {rooms}. Edit the plan to update them.",
     "v4_plan_room_relink": "Use the new {room}",
-    "v4_plan_room_relink_note": "Keeps its settings and schedule. Schedule progress starts over."
+    "v4_plan_room_relink_note": "Keeps its settings and schedule. Schedule progress starts over. If its occupancy sensor comes from an area, map the new room to that area in the vacuum's settings."
   },
   "config": {
     "flow_title": "{name}",

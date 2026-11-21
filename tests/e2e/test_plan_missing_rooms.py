@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 
@@ -136,6 +137,33 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
     flow = await async_create_fix_flow(hass, issue_id, issue.data)
     flow.hass = hass
     assert (await flow.async_step_init())["reason"] == "no_matching_rooms"
+
+    # The plan keeps the hall while it is paused; a room it never had is
+    # still refused.
+    await plan.call(
+        DOMAIN,
+        "save_plan",
+        plan_id=PLAN,
+        name="Weekly",
+        enabled=False,
+        rooms=[{"room": kitchen}, {"room": new_study}, {"room": old_hall}],
+    )
+    paused = catalog.plan(serial, PLAN)
+    assert not paused["enabled"]
+    assert [room["room_id"] for room in paused["rooms"]] == [
+        kitchen,
+        new_study,
+        old_hall,
+    ]
+    assert paused["rooms"][1]["cadence"]["coverage_every_n"] == 3
+    with pytest.raises(ServiceValidationError):
+        await plan.call(
+            DOMAIN,
+            "save_plan",
+            plan_id="other",
+            name="Other",
+            rooms=[{"room": old_hall}],
+        )
 
     await plan.call(
         DOMAIN,

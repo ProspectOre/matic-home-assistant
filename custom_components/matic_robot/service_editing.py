@@ -21,6 +21,7 @@ from .plan_model import (
     SharedRoomScheduleLockedError,
     SharedRoomScheduleMapChangedError,
     SharedRoomScheduleStaleError,
+    missing_plan_rooms,
     plan_floor_token,
     room_cadence_identity,
 )
@@ -237,13 +238,15 @@ async def _async_save_plan(
     plan_id = call.data.get("plan_id") or slugify(call.data["name"])
     if not plan_id or plan_id == "unknown":
         raise validation_error("Plan ID is empty", "plan_name_unusable")
+    stored = manager.catalog.plans(serial_number).get(plan_id, {})
+    kept = {room["room_id"] for room in missing_plan_rooms(stored, room_map, {})}
     rooms: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
     for item in call.data["rooms"]:
         if "area" in item:
             entries.append(_normalize_saved_area(manager, serial_number, entry, item))
             continue
-        room = _normalize_saved_room(item, room_map)
+        room = _normalize_saved_room(item, room_map, kept)
         rooms.append(room)
         entries.append({"kind": "room", "room_id": room["room_id"]})
     plan = {

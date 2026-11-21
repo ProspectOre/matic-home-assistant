@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
@@ -15,6 +16,7 @@ from .const import DOMAIN
 from .plan_model import (
     missing_plan_rooms,
     plan_floor_token,
+    plan_on_another_floor,
     plan_setting,
     room_cadence_identity,
 )
@@ -112,21 +114,17 @@ def plan_room_links(
 
 
 def _stale_plans(plans: Mapping[str, Any], floor_plan: FloorPlan) -> list[str]:
-    """Return enabled plans that name a room this floor's map no longer has.
-
-    On a robot with more than one mapped floor, a plan none of whose rooms
-    are on this floor belongs to another floor and is not counted.
-    """
-    live = {room.id for room in floor_plan.rooms}
-    one_floor = len(floor_plan.mapped_floors) <= 1
-    stale: list[str] = []
-    for plan_id, plan in plans.items():
-        if not isinstance(plan, Mapping) or not plan_setting(plan, "enabled"):
-            continue
-        room_ids = _plan_room_ids(plan)
-        if room_ids - live and (one_floor or room_ids & live):
-            stale.append(plan_id)
-    return stale
+    """Return enabled plans of this floor that name a room its map lost."""
+    room_map = {room.id: room.name for room in floor_plan.rooms}
+    floors = len(floor_plan.mapped_floors)
+    return [
+        plan_id
+        for plan_id, plan in plans.items()
+        if isinstance(plan, Mapping)
+        and plan_setting(plan, "enabled")
+        and not _plan_room_ids(plan) <= room_map.keys()
+        and not plan_on_another_floor(plan, room_map, floors)
+    ]
 
 
 class PlanRoomRepairFlow(RepairsFlow):
@@ -144,8 +142,10 @@ class PlanRoomRepairFlow(RepairsFlow):
         entry: MaticConfigEntry | None = self.hass.config_entries.async_get_entry(
             self._entry_id
         )
-        floor_plan = entry.runtime_data.session.floor.value if entry else None
-        if entry is None or floor_plan is None:
+        if entry is None or entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="robot_unavailable")
+        floor_plan = entry.runtime_data.session.floor.value
+        if floor_plan is None:
             return self.async_abort(reason="robot_unavailable")
         catalog = entry.runtime_data.cleaning_plans.catalog
         serial_number = entry.runtime_data.session.info.serial_number
@@ -192,6 +192,8 @@ class PlanRoomRepairFlow(RepairsFlow):
     @staticmethod
     def _require_floor(entry: MaticConfigEntry, floor_token: str) -> None:
         """Refuse the save once the live map is not the confirmed one."""
+        if entry.state is not ConfigEntryState.LOADED:
+            raise ValueError("the robot unloaded after the moves were confirmed")
         live = entry.runtime_data.session.floor.value
         if live is None or plan_floor_token(live) != floor_token:
             raise ValueError("the map changed after the moves were confirmed")

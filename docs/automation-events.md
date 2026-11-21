@@ -44,8 +44,8 @@ room and plan events too, with a `plan_id` starting `__matic_manual_room_sequenc
 ## Run events in automations, the logbook and the dashboard
 
 `missing_rooms` lists the plan rooms a map edit in the Matic app removed,
-which the run skips. Each has `room_id`, `name` (the last name Matic saw for
-it, or `null`) and `match_room_id` (the one room now on the map with that
+which the run skips. Each has `room_id`, `name` (its name when a run last
+started cleaning it, or `null` if no run has) and `match_room_id` (the one room now on the map with that
 name, or `null`).
 
 The run events are every event from Plan started to Cleaning finished in the

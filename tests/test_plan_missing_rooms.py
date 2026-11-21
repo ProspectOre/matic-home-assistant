@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 
@@ -21,6 +22,7 @@ from custom_components.matic_robot.execution_planning import _plan_rooms
 from custom_components.matic_robot.plan_catalog import PlanCatalog
 from custom_components.matic_robot.plan_model import (
     DuplicateRoomError,
+    PlanAreaMissingError,
     PlanRoomMissingError,
     PlanRoomsHeldError,
     missing_plan_rooms,
@@ -256,11 +258,18 @@ def test_a_map_edit_during_start_names_the_missing_rooms() -> None:
     assert raised.value.translation_placeholders == {"rooms": "room-study"}
 
 
-async def test_matic_map_hears_which_rooms_stop_the_plan() -> None:
+@pytest.mark.parametrize(
+    ("error", "blocker"),
+    [
+        (PlanRoomMissingError(["room-2"]), "room_missing"),
+        (PlanAreaMissingError("area gone"), "area_missing"),
+    ],
+)
+async def test_matic_map_hears_which_rooms_stop_the_plan(
+    error: ValueError, blocker: str
+) -> None:
     runtime = _plans_runtime()
-    runtime.cleaning_plans.planning.preview = MagicMock(
-        side_effect=PlanRoomMissingError(["room-2"])
-    )
+    runtime.cleaning_plans.planning.preview = MagicMock(side_effect=error)
     runtime.cleaning_plans.catalog.known_room_names = MagicMock(
         return_value={"room-2": "Study"}
     )
@@ -273,10 +282,53 @@ async def test_matic_map_hears_which_rooms_stop_the_plan() -> None:
         plan["id"]: plan["next_run_preview"]
         for plan in json.loads(response.body)["plans"]
     }
-    assert {preview["blocker"] for preview in previews.values()} == {"room_missing"}
+    assert {preview["blocker"] for preview in previews.values()} == {blocker}
     assert previews["weekday"]["missing_rooms"] == [
         {"room_id": "room-2", "name": "Study", "match_room_id": None}
     ]
+
+
+async def test_another_floors_plan_is_not_offered_this_floors_rooms() -> None:
+    runtime = _plans_runtime()
+    runtime.cleaning_plans.planning.preview = MagicMock(
+        side_effect=PlanRoomMissingError(["room-1", "room-2"])
+    )
+    floor = runtime.session.floor.value
+    upstairs = next(room for room in floor.rooms if room.id == "room-1")
+    # Both floors have a room with that name; this floor shows its own.
+    runtime.cleaning_plans.catalog.known_room_names = MagicMock(
+        return_value={"room-1": upstairs.name}
+    )
+    downstairs = replace(upstairs, id="room-down")
+    runtime.cleaning_plans.cadence.daily_limit_state = MagicMock(
+        return_value={"limit": None, "completed_today": 0, "reached": False}
+    )
+    mapped = tuple(
+        MappedFloor(floor.mission_id + index, f"Floor {index}", f"token-{index}")
+        for index in range(2)
+    )
+    runtime.session.floor.value = replace(
+        floor, rooms=(downstairs,), mapped_floors=mapped
+    )
+
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+
+    weekday = next(
+        plan["next_run_preview"]
+        for plan in json.loads(response.body)["plans"]
+        if plan["id"] == "weekday"
+    )
+    assert weekday["blocker"] == "room_missing"
+    assert "missing_rooms" not in weekday
+    # On a one-floor robot the same plan lost its rooms, and the match shows.
+    runtime.session.floor.value = replace(floor, rooms=(downstairs,))
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+    weekday = next(
+        plan["next_run_preview"]
+        for plan in json.loads(response.body)["plans"]
+        if plan["id"] == "weekday"
+    )
+    assert weekday["missing_rooms"][0]["match_room_id"] == "room-down"
 
 
 def _plans(**overrides: object) -> dict:
@@ -347,9 +399,13 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
         ),
         cleaning_plans=SimpleNamespace(catalog=catalog),
     )
+    entry.state = ConfigEntryState.NOT_LOADED
     flow = PlanRoomRepairFlow("entry")
     flow.hass = MagicMock()
     flow.hass.config_entries.async_get_entry.return_value = entry
+    # An unloaded entry has no robot to read.
+    assert (await flow.async_step_init())["reason"] == "robot_unavailable"
+    entry.state = ConfigEntryState.LOADED
 
     with patch(
         "custom_components.matic_robot.plan_room_repairs.repair_placeholders",
@@ -382,6 +438,10 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
     entry.runtime_data.session.floor.value = None
     with pytest.raises(ValueError, match="map changed"):
         links.kwargs["precondition"]()
+    entry.state = ConfigEntryState.UNLOAD_IN_PROGRESS
+    with pytest.raises(ValueError, match="unloaded"):
+        links.kwargs["precondition"]()
+    entry.state = ConfigEntryState.LOADED
 
     # A re-link that leaves no removed room finishes, so the Repair clears.
     entry.runtime_data.session.floor.value = floor

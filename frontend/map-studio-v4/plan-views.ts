@@ -567,7 +567,7 @@ export class MaticPlanViewsV4 extends LitElement {
           aria-disabled=${gate.disabled} aria-describedby=${gate.described}
           @click=${() => { if (!held) this.#intent({ type: "relink-room", roomId, toRoomId: relink.roomId }); }}
         >${this.#t("v4_plan_room_relink", "Use the new {room}", { room: relink.name })}</button>
-        <small>${this.#t("v4_plan_room_relink_note", "Keeps its settings and schedule. Schedule progress starts over.")}</small>
+        <small>${this.#t("v4_plan_room_relink_note", "Keeps its settings and schedule. Schedule progress starts over. If its occupancy sensor comes from an area, map the new room to that area in the vacuum's settings.")}</small>
       </div>` : nothing}
       ${open && room ? html`<div class="row-expanded">
         <div class="split">

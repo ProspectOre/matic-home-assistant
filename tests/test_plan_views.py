@@ -104,6 +104,7 @@ async def test_plan_room_missing_from_the_map_has_settings_and_no_cadence() -> N
     runtime.cleaning_plans.catalog.plans.return_value = {
         "old": {"name": "Old", "rooms": [{"room_id": "room-9", "cleaning_mode": "mop"}]}
     }
+    runtime.cleaning_plans.catalog.known_room_names = MagicMock(return_value={})
     runtime.cleaning_plans.cadence.daily_limit_state.side_effect = None
     runtime.cleaning_plans.cadence.daily_limit_state.return_value = {
         "limit": None,

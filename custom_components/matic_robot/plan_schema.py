@@ -160,8 +160,9 @@ class HeldRoom(TypedDict):
 class MissingRoom(TypedDict):
     """A plan room a map edit removed; the run cleans the rest without it.
 
-    `name` is the room's last name the integration saw. `match_room_id` is
-    the one room now on the map with that name, offered for a re-link.
+    `name` is the room's name when a run last started cleaning it, so a room
+    no run has cleaned has none. `match_room_id` is the one room now on the
+    map with that name, offered for a re-link.
     """
 
     room_id: str
