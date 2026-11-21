@@ -679,9 +679,14 @@ async def test_area_bindings_upgrade_once_per_new_usable_floor(hass) -> None:
     complete = _usable_floor("room", "later")
     updated = _usable_floor("room", "later", "final")
 
-    with patch(
-        "custom_components.matic_robot.floor_sync.async_sync_custom_area_issue"
-    ) as sync_issue:
+    with (
+        patch(
+            "custom_components.matic_robot.floor_sync.async_sync_custom_area_issue"
+        ) as sync_issue,
+        patch(
+            "custom_components.matic_robot.floor_sync.async_sync_plan_room_issue"
+        ) as sync_plan_issue,
+    ):
         AreaBindingSync(
             hass,
             entry,
@@ -723,4 +728,5 @@ async def test_area_bindings_upgrade_once_per_new_usable_floor(hass) -> None:
     assert slam_map.set_expected_mission_id.call_args.args == (42,)
     assert sync_issue.call_count == 7
     sync_issue.assert_called_with(hass, "entry", {}, partial)
+    assert sync_plan_issue.call_count == 7
     assert entry.async_on_unload.call_args_list[-1].args == (plan_unsubscribe,)

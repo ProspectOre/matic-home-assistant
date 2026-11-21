@@ -21,8 +21,15 @@ reused; a layer is rebuilt and uploaded when its data changes, not when the
 camera moves. A pointer that only moves the cursor mark redraws the 2D canvas
 and leaves WebGL alone. A still map draws nothing.
 
-The robot moves on every frame between the poses Home Assistant pushes: each
-frame places it between the last two, over the time between them. Its mesh is
+The robot moves on every frame between the poses Home Assistant pushes. Each
+pose carries the robot's own time, so the map plays them back on that clock a
+moment late: the longest recent interval between poses plus the latest
+arrival, so a pose that reaches the browser late or in a burst with another
+does not make the robot stop and jump. The path between poses is a cubic curve
+whose slopes come from the poses before, held to twice the mean speed so the
+robot does not overshoot a stop. When the delay changes, the playback runs at
+0.9 to 1.25 times real time until it catches up, never backwards. Follow and
+Ride along move the camera in the same frame as the robot. The robot's mesh is
 part of the scene, so such a frame redraws the scene as a camera frame does,
 uploading nothing. A robot that has stopped draws nothing.
 
