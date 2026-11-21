@@ -198,6 +198,8 @@ export async function installPanelFixture(page, {
     const pendingHistoryScenes = [];
     let deferredSceneReads = 0;
     const pendingSceneReads = [];
+    let deferredLayerReads = 0;
+    const pendingLayerReads = [];
     const serviceCalls = [];
     const serviceFailures = [];
     let deferredServices = 0;
@@ -289,8 +291,15 @@ export async function installPanelFixture(page, {
         }
         return result;
       }
-      if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
-      if (floorTypes && path.endsWith("floor_layers/synthetic")) return json(window.__floorTypesReply ?? floorTypes);
+      // Each robot's Wi-Fi and carpet layers answer from `window.__layerReplies[path]`, else the shared reply.
+      const layer = wifiSignal && /\/wifi_heatmap\/[^/]+$/.test(path) ? window.__wifiSignalReply ?? wifiSignal
+        : floorTypes && /\/floor_layers\/[^/]+$/.test(path) ? window.__floorTypesReply ?? floorTypes : null;
+      if (layer) {
+        const result = json(window.__layerReplies?.[path] ?? layer);
+        if (deferredLayerReads === 0) return result;
+        deferredLayerReads -= 1;
+        return new Promise((resolve) => pendingLayerReads.push(() => resolve(result)));
+      }
       if (photoGallery && path === "/api/matic_robot/photo_gallery/synthetic-entry") return json(window.__photoGalleryReply ?? photoGallery);
       // A photo's star (photo_star_view.py): recorded, then answered with
       // window.__photoStarReply ({ status, body }) or as the server would.
@@ -606,6 +615,9 @@ export async function installPanelFixture(page, {
       pendingHistoryScenes,
       deferNextSceneRead: () => { deferredSceneReads += 1; },
       pendingSceneReadCount: () => pendingSceneReads.length,
+      deferNextLayerRead: () => { deferredLayerReads += 1; },
+      pendingLayerReadCount: () => pendingLayerReads.length,
+      releaseLayerRead: () => { const release = pendingLayerReads.shift(); if (!release) throw new Error("no deferred layer read"); release(); },
       releaseSceneRead: () => { const release = pendingSceneReads.shift(); if (!release) throw new Error("no deferred scene read"); release(); },
       get planReads() { return planReads; },
       setPlanCatalog: (value) => Object.assign(planCatalog, structuredClone(value)),

@@ -131,3 +131,47 @@ test("each robot keeps its own layers, and a robot with none saved starts with t
     "synthetic-entry-b": { trail: false, wifi: false, floorTypes: true },
   });
 });
+
+test("a late layer read for one robot never replaces the next robot's layers", async ({ page }) => {
+  const cell = (dbm) => ({ enabled: true, cell_size: 0.3048, cells: [{ x: 0.152, y: 0.152, dbm, samples: 1, updated_at: 1 }] });
+  const layers = (key) => ({ wifi_heatmap_url: `/api/matic_robot/wifi_heatmap/${key}`, floor_layers_url: `/api/matic_robot/floor_layers/${key}` });
+  await page.addInitScript(() => {
+    window.__layerReplies = {
+      "/api/matic_robot/wifi_heatmap/a": { enabled: true, cell_size: 0.3048, cells: [{ x: 0.152, y: 0.152, dbm: -48, samples: 1, updated_at: 1 }] },
+      "/api/matic_robot/floor_layers/a": { entry_id: "a", page_count: 1, truncated: false, layers: { carpet: [[[0.3, 0.3], [1.2, 0.3], [1.2, 0.9]]], vent: [] } },
+    };
+  });
+  const panel = await mount(page, {
+    wifiSignal: cell(-88),
+    floorTypes: { ...FLOOR_TYPES, layers: { carpet: [], vent: [VENT] } },
+    initialCatalogEntries: [entry("synthetic-entry", "a", layers("a")), entry("synthetic-entry-b", "b", layers("b"))],
+    initialRobotStates: {
+      "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } },
+      "vacuum.synthetic_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b" } },
+    },
+  });
+  const content = () => panel.evaluate((element) => {
+    const { resources, wifiSignal, floorTypes } = element.getWorkspaceSnapshot();
+    return { entry: resources.entry?.entryId, wifi: wifiSignal?.status === "ready" ? wifiSignal.cells.map((cell) => cell.dbm) : null,
+      carpet: floorTypes?.status === "ready" ? floorTypes.carpet.length : null, vent: floorTypes?.status === "ready" ? floorTypes.vent.length : null };
+  });
+  const robot = panel.locator("select.robot-switcher");
+  await quick(panel, "wifi").click();
+  await quick(panel, "floor-types").click();
+  await expect.poll(content).toEqual({ entry: "synthetic-entry", wifi: [-48], carpet: 1, vent: 0 });
+  await robot.selectOption("synthetic-entry-b");
+  await quick(panel, "wifi").click();
+  await quick(panel, "floor-types").click();
+  const b = { entry: "synthetic-entry-b", wifi: [-88], carpet: 0, vent: 1 };
+  await expect.poll(content).toEqual(b);
+
+  // Robot A's restored layers are still being read when the user switches back to B.
+  await page.evaluate(() => { window.__panelFixture.deferNextLayerRead(); window.__panelFixture.deferNextLayerRead(); });
+  await robot.selectOption("synthetic-entry");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingLayerReadCount())).toBe(2);
+  await robot.selectOption("synthetic-entry-b");
+  await expect.poll(content).toEqual(b);
+  await page.evaluate(() => { window.__panelFixture.releaseLayerRead(); window.__panelFixture.releaseLayerRead(); });
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  expect(await content()).toEqual(b);
+});
