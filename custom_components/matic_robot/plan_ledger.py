@@ -62,7 +62,7 @@ from .run_control import (
     RunControl,
 )
 from .run_history import append_run_history, update_run_history
-from .run_machine import CheckpointWrite, count_room, running_run
+from .run_machine import CheckpointWrite, count_room, running_run, stored_run
 from .verified_completion import (
     VerifiedCompletion,
     global_room,
@@ -626,8 +626,8 @@ class PlanLedger:
     ) -> tuple[bool, list[dict[str, Any]]]:
         """Persist one terminal managed-run outcome when its ID still matches."""
         robot = self.repository.robot(serial_number)
-        last_run = robot.get("last_run")
-        if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+        last_run = stored_run(robot, run_id)
+        if last_run is None:
             return False, []
         room_count = last_run.get("room_count")
         max_rooms = room_count if isinstance(room_count, int) and room_count >= 0 else 0
@@ -694,6 +694,15 @@ class PlanLedger:
             robot["active_plan"] = None
         return True, unfinished
 
+    def active_target(self, serial_number: str) -> Mapping[str, Any] | None:
+        """Return the stored room or area being cleaned, never the projection."""
+        active = self.repository.robot(serial_number).get("active_plan")
+        return active if isinstance(active, Mapping) else None
+
+    def run_record(self, serial_number: str, run_id: str) -> Mapping[str, Any] | None:
+        """Return the stored record of run ``run_id``, running or finished."""
+        return stored_run(self.repository.robot(serial_number), run_id)
+
     @callback
     def active_run_id(self, serial_number: str) -> str | None:
         """Return the current managed run ID without exposing user context."""
@@ -714,8 +723,8 @@ class PlanLedger:
 
         def mutate() -> dict[str, Any] | None:
             robot = self.repository.robot(serial_number)
-            last_run = robot.get("last_run")
-            if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+            last_run = stored_run(robot, run_id)
+            if last_run is None:
                 return None
             if last_run.get("outcome") not in {"running", "cancelled", "unverified"}:
                 return None
@@ -786,12 +795,8 @@ class PlanLedger:
             now = dt_util.utcnow().isoformat()
             record = self.room(serial_number, plan_id, room)
             robot = self.repository.robot(serial_number)
-            last_run = robot.get("last_run")
-            checkpoint = (
-                last_run.get("recovery_checkpoint", {})
-                if isinstance(last_run, dict) and last_run.get("run_id") == run_id
-                else {}
-            )
+            last_run = stored_run(robot, run_id)
+            checkpoint = (last_run or {}).get("recovery_checkpoint", {})
             started_ids = (
                 checkpoint.get("started_room_ids", [])
                 if isinstance(checkpoint, dict)
@@ -844,9 +849,7 @@ class PlanLedger:
             }
             stop_policy = (
                 last_run
-                if isinstance(last_run, Mapping)
-                and last_run.get("run_id") == run_id
-                and _has_frozen_stop_policy(last_run)
+                if last_run is not None and _has_frozen_stop_policy(last_run)
                 else checkpoint
             )
             if _has_frozen_stop_policy(stop_policy):
@@ -1576,10 +1579,7 @@ class PlanLedger:
 
     def skipped_room_ids(self, serial_number: str, run_id: str) -> frozenset[str]:
         """Return the rooms skipped during a run that is still running."""
-        run = self.repository.robot(serial_number).get("last_run")
-        if not isinstance(run, Mapping) or run.get("run_id") != run_id:
-            return frozenset()
-        skipped = run.get("skipped_room_ids")
+        skipped = (self.run_record(serial_number, run_id) or {}).get("skipped_room_ids")
         if not isinstance(skipped, list):
             return frozenset()
         return frozenset(item for item in skipped if isinstance(item, str))

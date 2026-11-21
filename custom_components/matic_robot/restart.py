@@ -48,6 +48,7 @@ from .plan_model import (
     PlanLeg,
     checkpoint_legs,
     plan_floor_token,
+    stored_count,
 )
 from .robot_port import RobotPort
 from .room_coherence import current_floor_plan, room_completion_names_are_current
@@ -825,5 +826,8 @@ async def _async_finish_recovered_run(
         else "verified_completion"
         if completed
         else "home_assistant",
-        manager.history.snapshot(serial_number)["last_run"]["completed_room_count"],
+        stored_count(
+            manager.ledger.run_record(serial_number, run["run_id"]),
+            "completed_room_count",
+        ),
     )

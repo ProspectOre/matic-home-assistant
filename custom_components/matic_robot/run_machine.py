@@ -290,16 +290,18 @@ def count_room(run: dict[str, Any], room_id: str) -> bool:
     return True
 
 
+def stored_run(robot: Mapping[str, Any], run_id: str | None) -> dict[str, Any] | None:
+    """Return the stored record of run ``run_id``, running or finished."""
+    run = robot.get("last_run")
+    return run if isinstance(run, dict) and run.get("run_id") == run_id else None
+
+
 def running_run(
     robot: Mapping[str, Any], run_id: str | None = None
 ) -> dict[str, Any] | None:
     """Return the stored run while it runs; with ``run_id``, only that run."""
-    run = robot.get("last_run")
-    if (
-        isinstance(run, dict)
-        and run.get("outcome") == "running"
-        and (run_id is None or run.get("run_id") == run_id)
-    ):
+    run = robot.get("last_run") if run_id is None else stored_run(robot, run_id)
+    if isinstance(run, dict) and run.get("outcome") == "running":
         return run
     return None
 
