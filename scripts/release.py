@@ -33,7 +33,7 @@ STAGES = {"beta": "b", "rc": "rc"}
 # gh fills in the repository it runs for.
 API = "repos/{owner}/{repo}"
 # An inline link to another guide in docs/, which a release page cannot resolve.
-DOC_LINK = re.compile(r"\]\(([\w-]+(?:/[\w-]+)*\.md(?:#[\w-]+)?)\)")
+DOC_LINK = re.compile(r"\]\(((?:\.{1,2}/)*[\w.-]+(?:/[\w.-]+)*\.md(?:#[\w-]+)?)\)")
 
 
 class ReleaseError(RuntimeError):
@@ -140,13 +140,16 @@ def remote_tags() -> dict[str, str]:
     return {ref.removeprefix("refs/tags/"): sha for ref, sha in map(str.split, rows)}
 
 
+def guide_links(body: str, docs: str) -> str:
+    """Point the notes' relative links to guides at ``docs``, a docs/ URL."""
+    return DOC_LINK.sub(lambda link: f"]({docs}/{link[1]})", body)
+
+
 def publish(tag: str, root: Path = ROOT) -> None:
     """Create the release and its tag at the commit the workflow built."""
     title, body = notes(tag, root)
-    docs = "/".join(
-        (os.environ["GITHUB_SERVER_URL"], os.environ["GITHUB_REPOSITORY"], "blob")
-    )
-    body = DOC_LINK.sub(lambda link: f"]({docs}/{tag}/docs/{link[1]})", body)
+    repository = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+    body = guide_links(body, f"{repository}/blob/{tag}/docs")
     final, version = versions(tag)
     created = _lines(
         *("gh", "release", "create", tag, str(root / ARCHIVE)),
