@@ -32,6 +32,8 @@ TAG = re.compile(
 STAGES = {"beta": "b", "rc": "rc"}
 # gh fills in the repository it runs for.
 API = "repos/{owner}/{repo}"
+# A Markdown link to another file in docs/, which a release page cannot resolve.
+DOC_LINK = re.compile(r"\]\((?![a-z]+:|#)([^)\s]+)\)")
 
 
 class ReleaseError(RuntimeError):
@@ -141,6 +143,10 @@ def remote_tags() -> dict[str, str]:
 def publish(tag: str, root: Path = ROOT) -> None:
     """Create the release and its tag at the commit the workflow built."""
     title, body = notes(tag, root)
+    docs = "/".join(
+        (os.environ["GITHUB_SERVER_URL"], os.environ["GITHUB_REPOSITORY"], "blob")
+    )
+    body = DOC_LINK.sub(lambda link: f"]({docs}/{tag}/docs/{link[1]})", body)
     final, version = versions(tag)
     created = _lines(
         *("gh", "release", "create", tag, str(root / ARCHIVE)),

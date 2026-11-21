@@ -1,6 +1,5 @@
 # Matic 0.6 beta 1
 
-Unpublished candidate from `release/0.6`; publication needs owner testing and approval.
 Guides: [Matic Map](map.md), [features](features.md), [actions](actions.md) and [entities](entities.md).
 
 ## Highlights

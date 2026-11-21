@@ -335,10 +335,17 @@ def test_publish_creates_the_release_from_the_zip_and_its_notes(
     notes: str,
     flags: tuple[str, ...],
 ) -> None:
-    _write(checkout, {notes: "# Matic 0.6\n\nFirst paragraph.\n\n## More\n"})
+    body = (
+        "First paragraph, [map](map.md), [actions](actions.md#cleaning),\n"
+        "[below](#more) and [releases](https://example.com/releases).\n\n## More\n"
+    )
+    _write(checkout, {notes: f"# Matic 0.6\n\n{body}"})
     github = FakeGitHub({}, {})
     monkeypatch.setattr(release, "_lines", github)
     monkeypatch.setenv("GITHUB_SHA", "c" * 40)
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    docs = f"https://github.com/owner/repo/blob/{tag}/docs"
 
     release.publish(tag, checkout)
 
@@ -346,7 +353,11 @@ def test_publish_creates_the_release_from_the_zip_and_its_notes(
         (
             *("gh", "release", "create", tag, str(checkout / release.ARCHIVE)),
             *("--target", "c" * 40, "--title", "Matic 0.6"),
-            *("--notes", "First paragraph.\n\n## More\n", *flags),
+            "--notes",
+            body.replace("](map.md)", f"]({docs}/map.md)").replace(
+                "](actions.md#cleaning)", f"]({docs}/actions.md#cleaning)"
+            ),
+            *flags,
         )
     ]
 
