@@ -568,10 +568,8 @@ class RunControl:
 
     @callback
     def run_ended(self, serial_number: str, run_id: str) -> None:
-        """Release what waits for run ``run_id`` to end."""
-        end = self.actor(serial_number).run_ends.pop(run_id, None)
-        if end is not None:
-            end.set_result(None)
+        """Release what waits for run ``run_id``, which ``run_ending`` held."""
+        self.actor(serial_number).run_ends.pop(run_id).set_result(None)
 
     @callback
     def mark_managed_stop(self, serial_number: str) -> None:
