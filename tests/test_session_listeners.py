@@ -40,7 +40,7 @@ from custom_components.matic_robot.session_listeners import (
     async_listen,
 )
 from tests.session_fakes import (
-    SYNTHETIC_INFO,
+    idle_client,
     push_state,
     session_entry,
     start_session,
@@ -49,18 +49,6 @@ from tests.session_fakes import (
 IDLE = RobotOperationalState(50, (), (), False, False, False, False, False, False)
 LISTENERS = "custom_components.matic_robot.session_listeners"
 TIME_ZONE_ISSUE = "time_zone_mismatch_entry"
-
-
-def _client(telemetry: RobotTelemetry | None = None) -> AsyncMock:
-    client = AsyncMock()
-    client.async_get_info.return_value = SYNTHETIC_INFO
-    client.async_get_state.return_value = IDLE
-    client.async_get_floor_plan.return_value = None
-    client.async_get_telemetry.return_value = telemetry or RobotTelemetry(
-        protocol_version=25
-    )
-    client.add_connection_listener = MagicMock()
-    return client
 
 
 def _tracker(**methods: object) -> SimpleNamespace:
@@ -109,7 +97,7 @@ def _firmware(version: str, protocol: int) -> RobotTelemetry:
 
 
 async def test_unloading_the_entry_removes_every_listener(hass) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     entry = session_entry()
     session = await start_session(hass, client, entry)
     tracker = _tracker()
@@ -135,7 +123,7 @@ async def test_unloading_the_entry_removes_every_listener(hass) -> None:
 
 
 async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
-    session = await _listening(hass, _client())
+    session = await _listening(hass, idle_client())
     entity_events: list[MaticCuesEvent] = []
     remove_listener = CuesTransitions(session.state, entity_events.append).subscribe()
     bus_events = async_capture_events(hass, EVENT_CUES)
@@ -187,7 +175,7 @@ async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
 async def test_live_cues_remaining_voice_transitions(
     hass, voice_status: CuesVoiceStatus, event_type: str
 ) -> None:
-    session = await start_session(hass, _client())
+    session = await start_session(hass, idle_client())
     events: list[MaticCuesEvent] = []
     CuesTransitions(session.state, events.append).subscribe()
 
@@ -197,7 +185,7 @@ async def test_live_cues_remaining_voice_transitions(
 
 
 async def test_live_cues_classified_intent_can_change_in_place(hass) -> None:
-    client = _client()
+    client = idle_client()
     classified = replace(
         IDLE,
         cues_voice_status=CuesVoiceStatus.CLASSIFIED,
@@ -216,7 +204,7 @@ async def test_live_cues_classified_intent_can_change_in_place(hass) -> None:
 
 
 async def test_observed_firmware_is_recorded(hass) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     client.async_get_state.return_value = replace(IDLE, software_version="fallback")
     tracker = _tracker()
 
@@ -231,7 +219,7 @@ async def test_observed_firmware_is_recorded(hass) -> None:
 
 
 async def test_a_change_during_a_check_is_checked_after_it(hass) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     release = asyncio.Event()
     versions: list[str | None] = []
 
@@ -257,7 +245,7 @@ async def test_a_change_during_a_check_is_checked_after_it(hass) -> None:
 
 
 async def test_each_new_firmware_is_snapshotted_once_in_background(hass) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     tracker = _tracker(
         needs_snapshot=MagicMock(return_value=True),
         occurrence_generation=MagicMock(return_value=7),
@@ -303,7 +291,7 @@ def _recording_build(snapshots: list[tuple[str | None, int | None]]) -> AsyncMoc
 async def test_new_firmware_identity_bypasses_snapshot_cooldown(
     hass, firmware_version, protocol_version
 ) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     tracker = _snapshot_tracker([False, True])
     snapshots: list[tuple[str | None, int | None]] = []
 
@@ -321,7 +309,7 @@ async def test_new_firmware_identity_bypasses_snapshot_cooldown(
 
 
 async def test_returning_to_firmware_identity_bypasses_old_cooldown(hass) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     tracker = _snapshot_tracker([False, True, True])
     snapshots: list[tuple[str | None, int | None]] = []
 
@@ -338,7 +326,7 @@ async def test_returning_to_firmware_identity_bypasses_old_cooldown(hass) -> Non
 
 
 async def test_snapshot_failure_cooldown_defers_the_scheduled_retry(hass) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     tracker = _tracker(
         needs_snapshot=MagicMock(return_value=True),
         occurrence_generation=MagicMock(return_value=0),
@@ -378,7 +366,7 @@ async def test_superseded_snapshot_clears_its_retry_cooldown(hass) -> None:
             return_value={"discarded": True, "reason": "snapshot_occurrence_superseded"}
         )
     )
-    session, watch = await _watching_firmware(hass, _client(), tracker)
+    session, watch = await _watching_firmware(hass, idle_client(), tracker)
     identity = ("v168.11", 25)
     watch._snapshot_retry_after[identity] = 100.0
 
@@ -396,7 +384,7 @@ async def test_superseded_snapshot_clears_its_retry_cooldown(hass) -> None:
 
 
 async def test_device_registry_firmware_is_updated_once_per_version(hass) -> None:
-    client = _client(_firmware("v168.11", 25))
+    client = idle_client(_firmware("v168.11", 25))
     registry = SimpleNamespace(
         async_get_device_by_identifier=MagicMock(
             return_value=SimpleNamespace(id="device")
@@ -422,7 +410,7 @@ def _zone(timezone: str | None, *schedules: CleaningSchedule) -> RobotTelemetry:
 async def test_time_zone_mismatch_raises_repair_until_clocks_match(hass) -> None:
     registry = ir.async_get(hass)
     await hass.config.async_update(time_zone="America/Los_Angeles")
-    client = _client(_zone("America/New_York"))
+    client = idle_client(_zone("America/New_York"))
 
     with patch.object(
         ir, "async_create_issue", wraps=ir.async_create_issue
@@ -460,7 +448,7 @@ async def test_time_zone_repair_follows_each_enabled_schedule_zone(hass) -> None
 
     await hass.config.async_update(time_zone="America/Los_Angeles")
     entry = session_entry()
-    session = await start_session(hass, _client(), entry)
+    session = await start_session(hass, idle_client(), entry)
     check_zone = _TimeZoneCheck(hass, entry, session)
     check_zone.async_start()
     registry = ir.async_get(hass)
@@ -511,7 +499,7 @@ async def test_time_zone_repair_from_before_a_reload_clears_on_match(hass) -> No
     )
     await hass.config.async_update(time_zone="America/Los_Angeles")
 
-    await _listening(hass, _client(_zone("America/Los_Angeles")))
+    await _listening(hass, idle_client(_zone("America/Los_Angeles")))
 
     assert ir.async_get(hass).async_get_issue(DOMAIN, TIME_ZONE_ISSUE) is None
 
@@ -526,7 +514,7 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
     from tests.wire_builders import _bfield, _vfield
 
     session = await _listening(
-        hass, _client(), now=datetime(2026, 7, 20, 1, tzinfo=UTC)
+        hass, idle_client(), now=datetime(2026, 7, 20, 1, tzinfo=UTC)
     )
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
     summary = _bfield(3, _bfield(1, _vfield(1, 1784509800))) + _bfield(
@@ -581,7 +569,7 @@ def _finished(hour: str) -> CleaningSession:
 async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
     session = await _listening(
-        hass, _client(), now=datetime(2026, 7, 20, 1, 45, tzinfo=UTC)
+        hass, idle_client(), now=datetime(2026, 7, 20, 1, 45, tzinfo=UTC)
     )
 
     await _read(
@@ -635,7 +623,7 @@ async def test_finished_event_waits_for_native_history_after_local_end(
 ) -> None:
     """A local end must not consume the eventual native completion event."""
     session = await _listening(
-        hass, _client(), now=datetime(2026, 7, 19, 12, tzinfo=UTC)
+        hass, idle_client(), now=datetime(2026, 7, 19, 12, tzinfo=UTC)
     )
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
     previous = CleaningSession(
@@ -691,7 +679,7 @@ async def test_finished_event_waits_for_native_history_after_local_end(
 @pytest.mark.parametrize("active_at_startup", [False, True])
 async def test_finished_event_rejects_partial_startup_history(hass, active_at_startup):
     session = await _listening(
-        hass, _client(), now=datetime(2026, 7, 20, 1, 45, tzinfo=UTC)
+        hass, idle_client(), now=datetime(2026, 7, 20, 1, 45, tzinfo=UTC)
     )
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
     active = CleaningSession("2026-07-20T01:40:00+00:00", None, None, (), (), False)
@@ -730,7 +718,7 @@ async def test_finished_event_rejects_partial_startup_history(hass, active_at_st
 
 
 async def test_finished_event_observed_native_run_ignores_host_clock_skew(hass):
-    session = await _listening(hass, _client())
+    session = await _listening(hass, idle_client())
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
     active = CleaningSession("2001-01-01T01:00:00+00:00", None, None, (), (), False)
     await _read(hass, session, RobotTelemetry(latest_session=active))
@@ -750,7 +738,7 @@ async def test_finished_event_observed_native_run_ignores_host_clock_skew(hass):
 async def test_native_finished_event_excludes_unattempted_room_scope(hass):
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
     session = await _listening(
-        hass, _client(), now=datetime(2026, 7, 20, 1, 45, tzinfo=UTC)
+        hass, idle_client(), now=datetime(2026, 7, 20, 1, 45, tzinfo=UTC)
     )
     finished = CleaningSession(
         "2026-07-20T02:00:00+00:00",

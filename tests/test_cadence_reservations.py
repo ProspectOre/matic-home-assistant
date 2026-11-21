@@ -15,16 +15,9 @@ from homeassistant.util import dt as dt_util
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.plan_model import CleaningRoom, _managed_stop_policy
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.plans.fakes import interrupted_run, memory_manager
 from tests.session_fakes import robot_port
-from tests.test_restart import recovery_state as restart_recovery_fixture
-
-
-def _manager(hass) -> CleaningPlanManager:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    return manager
 
 
 def _plan(*room_ids: str, scope: str = "plan") -> dict[str, object]:
@@ -64,7 +57,7 @@ def _cadence_snapshot(
 async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
     hass,
 ) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan("serial", "home", _plan("room-a", "room-b"))
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -124,7 +117,7 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
 async def test_reservation_covers_room_b_during_room_a_and_leaves_other_plan_editable(
     hass,
 ) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan("serial", "home", _plan("room-a", "room-b"))
     await manager.catalog.async_save_plan("serial", "other", _plan("room-c"))
     manager.cadence.reserve_prepared_run(
@@ -146,7 +139,7 @@ async def test_reservation_covers_room_b_during_room_a_and_leaves_other_plan_edi
 async def test_shared_cadence_reservation_covers_mutations_from_another_plan(
     hass,
 ) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     floor_token = "a" * 64
     identity = "b" * 64
     shared_plan = _plan("room-b", scope="shared")
@@ -199,7 +192,7 @@ async def test_shared_cadence_reservation_covers_mutations_from_another_plan(
 async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
     hass,
 ) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     floor_token = "a" * 64
     identity_b = "b" * 64
     identity_c = "c" * 64
@@ -285,7 +278,7 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
 async def test_non_opted_in_inactive_room_does_not_reserve_future_shared_schedule(
     hass,
 ) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     floor_token = "a" * 64
     identity = "b" * 64
     room = CleaningRoom("room-b", "Room B", "vacuum", "standard")
@@ -316,7 +309,7 @@ async def test_non_opted_in_inactive_room_does_not_reserve_future_shared_schedul
 
 
 async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     room = CleaningRoom("room-a", "Room A", "vacuum", "standard")
     saved_plan = {
         **_plan(room.room_id),
@@ -405,7 +398,7 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
 
 
 async def test_restart_restores_frozen_stop_policy_after_saved_plan_edit(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     room = CleaningRoom("room-a", "Room A", "vacuum", "standard")
     saved_plan = {
         **_plan(room.room_id),
@@ -451,7 +444,7 @@ async def test_restart_restores_frozen_stop_policy_after_saved_plan_edit(hass) -
     await manager.catalog.async_save_plan("serial", "home", edited_plan)
 
     stored = deepcopy(manager.repository.data)
-    recovered = _manager(hass)
+    recovered = memory_manager(hass)
     recovered.repository.store = SimpleNamespace(
         async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
     )
@@ -469,7 +462,7 @@ async def test_restart_restores_frozen_stop_policy_after_saved_plan_edit(hass) -
 
 
 async def test_inflight_shared_write_blocks_a_run_in_another_plan(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     floor_token = "a" * 64
     identity = "b" * 64
     shared = _plan("room-b", scope="shared")
@@ -518,7 +511,7 @@ async def test_inflight_shared_write_blocks_a_run_in_another_plan(hass) -> None:
 async def test_executor_maps_a_conflicting_restored_reservation_to_validation_error(
     hass,
 ) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     manager.cadence.reserve_prepared_run("serial", "home", "restored-run", ["room-a"])
     call = ServiceCall(
         hass,
@@ -555,7 +548,7 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
 
 
 async def test_inflight_failed_cadence_write_cannot_seed_a_run(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan("serial", "home", _plan("room-a"))
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -589,7 +582,7 @@ async def test_inflight_failed_cadence_write_cannot_seed_a_run(hass) -> None:
 
 
 async def test_recovery_restores_reservation_from_durable_checkpoint(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     robot = manager.repository.robot("serial")
     robot["plans"]["home"] = _plan("room-a", "room-b")
     robot["last_run"] = {
@@ -624,7 +617,7 @@ async def test_recovery_restores_reservation_from_durable_checkpoint(hass) -> No
 
 
 async def test_checkpoint_roundtrip_preserves_shared_schedule_reservation(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["home"] = _plan("room-b")
     await manager.ledger.async_begin_run(
         "serial", "home", "roundtrip-run", 1, trigger="user", service="test"
@@ -641,7 +634,7 @@ async def test_checkpoint_roundtrip_preserves_shared_schedule_reservation(hass) 
     )
     stored = deepcopy(manager.repository.data)
 
-    restored = _manager(hass)
+    restored = memory_manager(hass)
     restored.repository.store.async_load = AsyncMock(return_value=stored)
     await restored.async_load()
 
@@ -650,7 +643,7 @@ async def test_checkpoint_roundtrip_preserves_shared_schedule_reservation(hass) 
 
 
 async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> None:
-    manager, entry, _checkpoint, room = await restart_recovery_fixture.__wrapped__(hass)
+    manager, entry, _checkpoint, room = await interrupted_run(hass)
     manager.repository.robot("serial")["plans"]["plan"] = {
         "name": "Home",
         "rooms": [
@@ -680,7 +673,7 @@ async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> 
 
 
 def test_prepared_stop_policy_requires_the_owning_run(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     manager.cadence.reserve_prepared_run("serial", "home", "run-one", ["room-a"])
 
     with pytest.raises(HomeAssistantError) as refused:
@@ -691,7 +684,7 @@ def test_prepared_stop_policy_requires_the_owning_run(hass) -> None:
 
 
 async def test_request_stop_uses_matching_recovery_checkpoint_policy(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     robot = manager.repository.robot("serial")
     robot["plans"]["home"] = {
         "finish_current_room": False,
@@ -720,7 +713,7 @@ async def test_request_stop_uses_matching_recovery_checkpoint_policy(hass) -> No
 
 
 async def test_request_stop_fails_closed_for_invalid_persisted_plan(hass) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     robot = manager.repository.robot("serial")
     robot["plans"]["damaged"] = None
     robot["active_plan"] = {
@@ -742,7 +735,7 @@ def test_invalid_persisted_stop_policy_uses_safe_defaults() -> None:
 async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
     hass,
 ) -> None:
-    manager = _manager(hass)
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan("serial", "home", _plan("room-a"))
     call = ServiceCall(
         hass,

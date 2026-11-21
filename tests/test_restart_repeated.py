@@ -14,13 +14,6 @@ from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 
-from .test_restart import recovery_state as recovery_fixture
-
-
-@pytest.fixture
-async def recovery_state(hass):
-    return await recovery_fixture.__wrapped__(hass)
-
 
 @pytest.mark.parametrize("stage", ["refresh", "history", "identity", "status"])
 async def test_second_shutdown_during_recovery_preserves_checkpoint(

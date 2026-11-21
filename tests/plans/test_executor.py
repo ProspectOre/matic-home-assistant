@@ -24,6 +24,7 @@ from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from tests.plans.fakes import (
     OWNED_SESSION,
     heavy_room,
+    kitchen_leg_ends,
     leg_rooms,
     memory_manager,
     mission_ends,
@@ -72,16 +73,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
 
-    async def send_command(_call) -> None:
-        robot.show("cleaning", current_area="Kitchen")
-
-        async def finish_room() -> None:
-            await asyncio.sleep(0)
-            robot.show("returning", current_area="Kitchen", low_charge=False)
-
-        hass.async_create_task(finish_room(), eager_start=True)
-
-    robot.on_start = send_command
+    robot.on_start = kitchen_leg_ends(hass, robot)
 
     sender = AsyncMock()
     with patch(

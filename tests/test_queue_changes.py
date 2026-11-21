@@ -34,6 +34,7 @@ from custom_components.matic_robot.client.wire import (
     uuid_string,
 )
 from tests.test_mixed_coverage import _session_identity
+from tests.wire_builders import _varint
 
 # Produced offline by Matic 1.167.0's own queue encoder from the synthetic
 # identifiers below and mission 42. No robot data is present.
@@ -83,15 +84,6 @@ def _plan(payload: bytes) -> bytes:
 
 def _field(number: int, value: bytes) -> bytes:
     return bytes([(number << 3) | 2]) + _varint(len(value)) + value
-
-
-def _varint(value: int) -> bytes:
-    out = bytearray()
-    while value > 0x7F:
-        out.append((value & 0x7F) | 0x80)
-        value >>= 7
-    out.append(value)
-    return bytes(out)
 
 
 def _replay(vector: str, goals: tuple[CoverageUpdateGoal, ...]) -> bytes:

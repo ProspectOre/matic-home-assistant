@@ -2,7 +2,6 @@
 
 import hashlib
 from dataclasses import asdict
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -19,7 +18,7 @@ from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     plan_floor_token,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import managed_clean_rooms
 
 from .test_entities import _entry
@@ -31,8 +30,7 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
     hass, mixed, ownership_changed
 ):
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.session.floor.value
     selected = floor.rooms[: 2 if mixed else 1]

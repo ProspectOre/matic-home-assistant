@@ -129,20 +129,6 @@ _PHASE_STATES: dict[Phase, tuple[int, ...]] = {
 }
 
 
-def _bytes_field(number: int, value: bytes) -> bytes:
-    tag = (number << 3) | 2
-    return _varint(tag) + _varint(len(value)) + value
-
-
-def _varint(value: int) -> bytes:
-    result = bytearray()
-    while value > 0x7F:
-        result.append((value & 0x7F) | 0x80)
-        value >>= 7
-    result.append(value)
-    return bytes(result)
-
-
 @dataclass(frozen=True, slots=True)
 class ReceivedCommand:
     """One channel write as the simulated robot received it."""
@@ -547,9 +533,9 @@ class SimulatedRobot:
             name=self.name,
             battery_fraction=self.battery,
         )
-        extra = _bytes_field(4, self.software_version.encode())
+        extra = bytes_field(4, self.software_version.encode())
         if self.current_area is not None:
-            extra += _bytes_field(16, self.current_area.encode())
+            extra += bytes_field(16, self.current_area.encode())
         return wire.SerializeToString() + extra
 
     def add_credential(self, user_id: str) -> HermesCredential:

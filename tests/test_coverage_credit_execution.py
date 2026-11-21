@@ -47,6 +47,7 @@ from custom_components.matic_robot.plan_model import (
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.client.test_coverage_receipts import history_key
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, run_step, verifying_write
 
 SESSION = UUID(int=772)
@@ -146,8 +147,7 @@ async def _real_manager(
     run_id: str,
     interval: int = 3,
 ) -> tuple[CleaningPlanManager, dict[str, dict[str, object]]]:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     identities = {
         room.room_id: room_cadence_identity(floor, room.room_id) for room in rooms
     }

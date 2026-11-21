@@ -25,7 +25,7 @@ from custom_components.matic_robot.managed_run import (
     coverage_guard_message,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
-from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, run_step
 
 
@@ -245,15 +245,13 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
 
 async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     """Mixed coverage keeps a typed preflight error at the HA service edge."""
-    from custom_components.matic_robot.plans import CleaningPlanManager
     from tests.session_fakes import managed_clean_rooms
     from tests.test_entities import _entry
 
     reason = CoverageGuardReason.NATIVE_SESSION_ACTIVE
     error = CoverageGuardError(reason)
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     token = manager.control.begin_managed_motion("synthetic-serial")
     client = entry.runtime_data.session.client
@@ -303,8 +301,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
         ) from error
 
     robot.on_start = reject_dispatch
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     events = []
     hass.bus.async_listen(f"{DOMAIN}_room_failed", events.append)
     hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)

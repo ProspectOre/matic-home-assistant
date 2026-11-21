@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import CoreState, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -20,7 +19,7 @@ from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
 )
-from custom_components.matic_robot.client.models import FloorPlan, RobotActivity, Room
+from custom_components.matic_robot.client.models import RobotActivity
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_area import _async_wait_for_area_end
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
@@ -43,91 +42,8 @@ from custom_components.matic_robot.restart import (
     async_recover_managed_run,
 )
 from custom_components.matic_robot.robot_commands import CleanPlanArea
-from tests.session_fakes import FakeRobot, robot_client, robot_port
+from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
-
-
-def _operational_state(**changes: object) -> SimpleNamespace:
-    """Complete direct robot snapshot used by restart STOP watcher tests."""
-    return SimpleNamespace(
-        **{
-            "returning": False,
-            "cleaning": False,
-            "paused": False,
-            "charging": False,
-            "charging_idle": False,
-            "error_codes": (),
-            **changes,
-        }
-    )
-
-
-@pytest.fixture
-async def recovery_state(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    room = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
-    floor = FloorPlan(
-        42,
-        "partition",
-        b"partition",
-        (
-            Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),
-            Room("office", "Office", "office", b"office", ()),
-            Room("hall", "Hall", "hall", b"hall", ()),
-        ),
-    )
-    identity = b"synthetic-session"
-    entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
-    robot = FakeRobot()
-    robot.show("cleaning")
-    await manager.ledger.async_begin_run(
-        "serial", "plan", "run", 1, trigger="automation", service="run_selected_plan"
-    )
-    await manager.ledger.async_mark_started("serial", "plan", room, run_id="run")
-    data = {
-        "plan_id": "plan",
-        "start_timeout": 120,
-        "completion_timeout": 21600,
-        "return_to_base": False,
-    }
-    checkpoint = {
-        "version": 1,
-        "mixed_settings": True,
-        "phase": "accepted",
-        "leg_index": 0,
-        "floor_token": plan_floor_token(floor),
-        "rooms": [asdict(room)],
-        "entity_id": entity.entity_id,
-        "data": data,
-        "native_identity_hash": hashlib.sha256(identity).hexdigest(),
-        "dispatched_at": dt_util.utcnow().isoformat(),
-        "completion_deadline": (dt_util.utcnow() + timedelta(hours=6)).isoformat(),
-        "history_baseline": [],
-        "completed_room_ids": [],
-        "started_room_ids": [room.room_id],
-    }
-    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    client = robot_client(
-        async_get_cleaning_session_identity=AsyncMock(return_value=identity),
-        async_get_cleaning_session_records=AsyncMock(return_value=()),
-        async_get_active_cleaning_session_state=AsyncMock(return_value=True),
-        async_get_state=AsyncMock(return_value=_operational_state()),
-        async_send_user_command=AsyncMock(),
-    )
-    heartbeat = SimpleNamespace(
-        async_request_refresh=AsyncMock(), async_confirm_room_completed=MagicMock()
-    )
-    session = SimpleNamespace(floor=SimpleNamespace(value=floor), heartbeat=heartbeat)
-    session.state, session.error = robot.state, robot.error
-    slam_map = SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True))
-    runtime = SimpleNamespace(
-        client=client, cleaning_plans=manager, session=session, slam_map=slam_map
-    )
-    entry = SimpleNamespace(
-        runtime_data=runtime, robot=robot, state=ConfigEntryState.LOADED
-    )
-    return manager, entry, checkpoint, room
 
 
 async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery_state):

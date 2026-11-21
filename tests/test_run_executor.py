@@ -2,7 +2,6 @@
 
 import asyncio
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +13,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_observation import _LegOutcomeObserver
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import plan_room, run_plan_call
+from tests.plans.fakes import memory_manager, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
@@ -23,8 +22,7 @@ from .test_session_ownership import REPLACEMENT, ROOM
 
 async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     """A managed run emits one bounded terminal record without user identity."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room = plan_room("Kitchen", "room-kitchen")
     events = []
     hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
@@ -80,8 +78,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
 
 async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
     """A registered STOP watcher owns the journal until dock confirmation ends."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     scope: dict[str, str | None] = {"run_id": None}
 
     def set_run_id(run_id: str | None) -> None:
@@ -129,8 +126,7 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
 
 async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> None:
     """A delegated journal scope is released even when its watcher is cancelled."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     scope: dict[str, str | None] = {"run_id": None}
     watcher_started = asyncio.Event()
 
@@ -175,8 +171,7 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
 
 async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
     """An older dock watcher cannot pin a newer run's activity scope."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     set_run_id = MagicMock()
     watcher_release = asyncio.Event()
 
@@ -215,8 +210,7 @@ async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
 async def test_execute_rooms_skips_every_room_once_cancellation_is_set(hass) -> None:
     cancel_event = asyncio.Event()
     cancel_event.set()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "away",
@@ -338,8 +332,7 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
     hass, monkeypatch, multi_room
 ):
     robot = FakeRobot()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     identity = b""
     commands = []
     sender = AsyncMock()

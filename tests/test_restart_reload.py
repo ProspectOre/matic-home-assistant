@@ -11,14 +11,9 @@ from custom_components.matic_robot import async_unload_entry
 from custom_components.matic_robot.const import CONF_SERIAL_NUMBER
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.plans.fakes import memory_manager
 
 # Reuse the synthetic, real CleaningPlanManager state used by restart tests.
-from tests.test_restart import recovery_state as recovery_fixture
-
-
-@pytest.fixture
-async def recovery_state(hass):
-    return await recovery_fixture.__wrapped__(hass)
 
 
 @pytest.mark.parametrize("explicit_reason", [None, "managed_stop", "motion_replaced"])
@@ -110,10 +105,8 @@ async def test_retire_recovery_is_idempotent_and_drops_checkpoint(
 
 
 async def test_retire_missing_run_is_noop(hass) -> None:
-    from custom_components.matic_robot.plans import CleaningPlanManager
 
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.recovery.async_retire_recovery("missing", "config_entry_removed")
     assert manager.recovery.recovery_run("missing") is None
 

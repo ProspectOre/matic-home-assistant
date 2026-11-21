@@ -7,38 +7,18 @@ nothing in this module encodes a real robot credential, address, or map.
 
 from __future__ import annotations
 
-import struct
 from uuid import UUID
 
+from tests.e2e import sim_mission
 
-def _varint(value: int) -> bytes:
-    """Encode an unsigned integer as a protobuf base-128 varint."""
-    result = bytearray()
-    while value > 0x7F:
-        result.append((value & 0x7F) | 0x80)
-        value >>= 7
-    result.append(value)
-    return bytes(result)
-
-
-def _vfield(number: int, value: int) -> bytes:
-    """Encode a varint (wire type 0) field."""
-    return _varint(number << 3) + _varint(value)
-
-
-def _bfield(number: int, value: bytes) -> bytes:
-    """Encode a length-delimited (wire type 2) field."""
-    return _varint((number << 3) | 2) + _varint(len(value)) + value
-
-
-def _fixed32(number: int, value: float) -> bytes:
-    """Encode a 32-bit float (wire type 5) field."""
-    return _varint((number << 3) | 5) + struct.pack("<f", value)
-
-
-def _fixed64(number: int, value: int) -> bytes:
-    """Encode a 64-bit fixed (wire type 1) field."""
-    return _varint((number << 3) | 1) + struct.pack("<Q", value)
+# One definition of each encoder, in the simulator harness: the upgrade drill
+# copies tests/e2e alone into an older release's tree.
+_varint = sim_mission.varint
+_vfield = sim_mission.varint_field
+_bfield = sim_mission.bytes_field
+_fixed32 = sim_mission.fixed32_float
+_fixed64 = sim_mission.fixed64
+_sint32 = sim_mission.zigzag
 
 
 def _session_identity(session_id: UUID) -> bytes:

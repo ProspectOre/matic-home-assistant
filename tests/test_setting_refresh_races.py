@@ -5,23 +5,12 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from custom_components.matic_robot.client.models import (
-    RobotOperationalState,
-    RobotTelemetry,
-)
-from tests.session_fakes import SYNTHETIC_INFO, start_session
-
-IDLE = RobotOperationalState(50, (), (), False, False, False, False, False, False)
+from custom_components.matic_robot.client.models import RobotTelemetry
+from tests.session_fakes import idle_client, start_session
 
 
 def _client() -> AsyncMock:
-    client = AsyncMock()
-    client.async_get_info.return_value = SYNTHETIC_INFO
-    client.async_get_state.return_value = IDLE
-    client.async_get_floor_plan.return_value = None
-    client.async_get_telemetry.return_value = RobotTelemetry(deep_mop_enabled=False)
-    client.add_connection_listener = MagicMock()
-    return client
+    return idle_client(RobotTelemetry(deep_mop_enabled=False))
 
 
 async def test_refresh_demand_survives_inflight_poll(hass) -> None:

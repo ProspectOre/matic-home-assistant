@@ -30,6 +30,7 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
     KabukiOutputWire,
     SubscriptionServiceConfig,
 )
+from tests.wire_builders import _varint, _varint_field
 
 
 def test_kabuki_subscription_request_has_required_empty_config() -> None:
@@ -237,21 +238,8 @@ def test_live_and_future_error_codes_remain_truthful_and_automation_safe() -> No
     assert state.native_session_activity() is None
 
 
-def _varint(value: int) -> bytes:
-    encoded = bytearray()
-    while value > 0x7F:
-        encoded.append((value & 0x7F) | 0x80)
-        value >>= 7
-    encoded.append(value)
-    return bytes(encoded)
-
-
 def _message_field(number: int, value: bytes = b"") -> bytes:
     return _varint(number << 3 | 2) + _varint(len(value)) + value
-
-
-def _varint_field(number: int, value: int) -> bytes:
-    return _varint(number << 3) + _varint(value)
 
 
 def _cues_output(*payloads: bytes) -> bytes:

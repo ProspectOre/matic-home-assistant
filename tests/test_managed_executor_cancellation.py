@@ -1,7 +1,6 @@
 """Regression coverage for elapsed room completion timeout cancellation."""
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,7 +13,7 @@ from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_run import _PreparedRoomDispatch
 from custom_components.matic_robot.plan_model import CleaningRoom
-from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, run_step
 
 
@@ -25,8 +24,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
 
     room = CleaningRoom("room-office", "Office", "vacuum", "standard")
     identity = b"owned-native-session"
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["synthetic-plan"] = {
         "name": "Synthetic plan",
         "rooms": [

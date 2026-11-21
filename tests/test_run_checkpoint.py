@@ -21,16 +21,14 @@ from custom_components.matic_robot.managed_run import (
     _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom, leg_groups
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_machine import (
     Restarted,
     Run,
     RunPhase,
     transition,
 )
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, robot_port
-
-from .test_restart import recovery_state as recovery_fixture
 
 
 def _release_0_6_checkpoint(phase: str) -> dict:
@@ -80,11 +78,6 @@ def test_a_release_0_6_checkpoint_resumes(phase, resumed) -> None:
         "recovery_checkpoint": _release_0_6_checkpoint(phase),
     }
     assert transition(Run(), Restarted(record))[0] == resumed
-
-
-@pytest.fixture
-async def recovery_state(hass):
-    return await recovery_fixture.__wrapped__(hass)
 
 
 @pytest.mark.parametrize("history_state", ["available", "error"])
@@ -222,8 +215,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
 async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
     """Pin every save a fresh durable run makes, as restart recovery reads them."""
     robot = FakeRobot()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     robot.show("idle")
     kitchen = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
     office = CleaningRoom("office", "Office", "mop", "standard")

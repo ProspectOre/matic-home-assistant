@@ -27,11 +27,17 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_leg import _async_run_leg
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
 from custom_components.matic_robot.run_machine import RoomSettled
 from custom_components.matic_robot.verified_completion import global_room
-from tests.plans.fakes import leg_manager, leg_record, plan_room, run_plan_call
+from tests.plans.fakes import (
+    kitchen_leg_ends,
+    leg_manager,
+    leg_record,
+    memory_manager,
+    plan_room,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot, run_step
 from tests.test_entities import _entry
 
@@ -46,8 +52,7 @@ def _cleaning_entity(hass, *, cleaning: bool = True):
         replace(state, operational=replace(state.operational, cleaning=cleaning))
     )
     session.client.async_change_queue = AsyncMock()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     entity.hass = hass
@@ -188,8 +193,7 @@ ROOM = CleaningRoom("room-2", "Study", "vacuum", "standard")
 
 
 async def test_a_skipped_room_keeps_its_rotation_turn(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.ledger.async_begin_run(
         SERIAL, "plan", "run-1", 1, trigger="user", service="run_selected_plan"
     )
@@ -217,8 +221,7 @@ async def test_a_skipped_room_keeps_its_rotation_turn(hass) -> None:
 
 
 async def test_a_skip_from_another_run_is_not_kept(hass) -> None:
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
 
     assert not await manager.ledger.async_note_room_skipped(SERIAL, "run-1", "room-2")
     assert manager.ledger.skipped_room_ids(SERIAL, "run-1") == frozenset()
@@ -242,8 +245,7 @@ async def test_a_skip_from_another_run_is_not_kept(hass) -> None:
 async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
     """A room skipped mid-run closes as skipped with the run's ID, not unverified."""
     robot = FakeRobot()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     robot.on_start = AsyncMock()
     rooms = [plan_room("Kitchen", "room-kitchen"), plan_room("Study", "room-study")]
     events = []
@@ -320,16 +322,7 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
     skipped = []
     hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
 
-    async def send_command(_call) -> None:
-        robot.show("cleaning", current_area="Kitchen")
-
-        async def end_leg() -> None:
-            await asyncio.sleep(0)
-            robot.show("returning", current_area="Kitchen", low_charge=False)
-
-        hass.async_create_task(end_leg(), eager_start=True)
-
-    robot.on_start = send_command
+    robot.on_start = kitchen_leg_ends(hass, robot)
     reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:

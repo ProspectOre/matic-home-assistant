@@ -3,8 +3,6 @@
 import asyncio
 from copy import deepcopy
 from datetime import timedelta
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from homeassistant.util import dt as dt_util
 
@@ -14,15 +12,14 @@ from custom_components.matic_robot.plan_model import (
     plan_floor_token,
     room_cadence_identity,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager
+from tests.plans.fakes import memory_manager
 
 
 async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
     hass,
 ) -> None:
     """A late room credit stays durable across terminalization and next start."""
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     floor_plan = FloorPlan(
         7,

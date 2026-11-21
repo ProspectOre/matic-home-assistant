@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import timedelta
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -28,8 +27,8 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.leg_finish import async_end_after_current_room
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.native_completion import leg_room_results
-from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import PlanStart, RobotCommands
+from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot
 from tests.test_entities import _entry
 from tests.test_queue_changes import (
@@ -285,8 +284,7 @@ class _Robot:
 
 
 async def _run(hass, make_robot, *, smart_stop: bool = True):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     await manager.catalog.async_save_plan(
         "serial",
         "test-plan",

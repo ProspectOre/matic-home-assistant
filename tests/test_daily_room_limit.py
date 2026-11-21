@@ -36,6 +36,7 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.robot_commands import RobotCommands
 from custom_components.matic_robot.room_sequence import resolve_room_sequence
 from custom_components.matic_robot.vacuum import MaticVacuum
+from tests.plans.fakes import memory_manager
 from tests.test_entities import _entry
 
 SERIAL = "serial"
@@ -677,8 +678,7 @@ def test_corrupt_completion_writes_do_not_replace_stored_state(monkeypatch):
 
 
 async def test_daily_policy_changes_require_identity_and_respect_reservations(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     identity = room_cadence_identity(_floor(), ROOM_ID)
     setter = manager.cadence.async_set_daily_limit
     with pytest.raises(ValueError, match="identity"):
@@ -722,8 +722,7 @@ async def test_daily_policy_changes_require_identity_and_respect_reservations(ha
 
 
 async def test_verified_completion_is_persisted_once_and_blocks_preview(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _floor()
     identity = room_cadence_identity(floor, ROOM_ID)
     await manager.cadence.async_set_daily_limit(
@@ -783,8 +782,7 @@ async def test_verified_completion_is_persisted_once_and_blocks_preview(hass):
 
 
 async def test_daily_limit_setter_validates_map_policy_and_rolls_back(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     identity = room_cadence_identity(_floor(), ROOM_ID)
     for limit in (0, 101, True):
         with pytest.raises(ValueError):
@@ -816,8 +814,7 @@ async def test_daily_limit_setter_validates_map_policy_and_rolls_back(hass):
 
 
 async def test_daily_credit_deduplicates_run_even_without_recovery_checkpoint(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     identity = room_cadence_identity(_floor(), ROOM_ID)
     await manager.cadence.async_set_daily_limit(
         SERIAL, ROOM_ID, room_identity=identity, limit=2, require_current=lambda: True
@@ -837,8 +834,7 @@ async def test_daily_credit_deduplicates_run_even_without_recovery_checkpoint(ha
 
 
 async def test_failed_cancelled_and_skipped_attempts_do_not_count(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     identity = room_cadence_identity(_floor(), ROOM_ID)
     await manager.cadence.async_set_daily_limit(
         SERIAL, ROOM_ID, room_identity=identity, limit=1, require_current=lambda: True
@@ -859,8 +855,7 @@ async def test_failed_cancelled_and_skipped_attempts_do_not_count(hass):
 
 
 async def test_late_native_verified_completion_is_counted_once(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _floor()
     identity = room_cadence_identity(floor, ROOM_ID)
     await manager.cadence.async_set_daily_limit(
@@ -910,8 +905,7 @@ async def test_external_native_uncertainty_is_bounded_and_never_counts_as_comple
     hass,
     native_key,
 ):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _floor()
     identity = room_cadence_identity(floor, ROOM_ID)
     await manager.cadence.async_set_daily_limit(
@@ -959,8 +953,7 @@ async def test_external_native_uncertainty_is_bounded_and_never_counts_as_comple
 async def test_native_completion_with_unresolved_room_identity_is_held(
     hass, monkeypatch
 ):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _floor()
     identity = room_cadence_identity(floor, ROOM_ID)
     await manager.cadence.async_set_daily_limit(
@@ -989,8 +982,7 @@ async def test_native_completion_with_unresolved_room_identity_is_held(
 
 
 async def test_native_completion_without_time_holds_then_expires(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _floor()
     identity = room_cadence_identity(floor, ROOM_ID)
     await manager.cadence.async_set_daily_limit(
@@ -1022,8 +1014,7 @@ async def test_native_completion_without_time_holds_then_expires(hass):
 
 
 async def test_manual_sequence_omits_held_room_and_binds_preview_token(hass):
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     floor = _floor()
     identity = room_cadence_identity(floor, ROOM_ID)
     requested = [
@@ -1112,8 +1103,7 @@ async def test_daily_limit_preserves_area_entries_in_mixed_plan(hass):
 
 async def test_untracked_vacuum_room_clean_is_refused_when_policy_enabled(hass):
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
@@ -1134,8 +1124,7 @@ async def test_untracked_vacuum_room_clean_is_refused_when_policy_enabled(hass):
 
 async def test_direct_redo_and_reached_room_refuse_bypassing_daily_limit(hass):
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
@@ -1162,8 +1151,7 @@ async def test_direct_clean_refuses_when_room_identity_cannot_be_resolved(
     hass, monkeypatch
 ):
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
@@ -1186,8 +1174,7 @@ async def test_direct_clean_refuses_when_room_identity_cannot_be_resolved(
 async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
     # Idle: clean again starts only while the robot holds no task.
     entry = _entry(idle=True)
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
@@ -1221,8 +1208,7 @@ async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
 
 async def test_daily_policy_set_during_stop_wait_blocks_the_write(hass, monkeypatch):
     entry = _entry()
-    manager = CleaningPlanManager(hass)
-    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager = memory_manager(hass)
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.session.floor.value
     room = floor.rooms[0]
