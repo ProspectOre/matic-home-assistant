@@ -77,6 +77,12 @@ async def test_geometry_heavy_history_retains_identity_and_per_mode_evidence():
     assert revised.session.mode_results == ()
 
 
+def test_large_history_requires_one_bounded_summary():
+    geometry = _bfield(2, b"x" * (256 * 1024 + 1))
+    assert decode_cleaning_session(geometry) is None
+    assert decode_cleaning_session(geometry + _bfield(5, b"") * 2) is None
+
+
 def test_projection_handles_missing_outcomes_and_duplicate_display_names():
     semantics = decode_history_semantics(_payload())
     assert semantics is not None

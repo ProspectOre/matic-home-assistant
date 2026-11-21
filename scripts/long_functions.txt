@@ -1,5 +1,5 @@
 custom_components/matic_robot/bluetooth_pairing.py::async_request_bluetooth_credential 347
-custom_components/matic_robot/client/cleaning_session.py::decode_cleaning_session 203
+custom_components/matic_robot/client/cleaning_session.py::decode_cleaning_session 200
 custom_components/matic_robot/execution_planning.py::ExecutionPlanner.preview 172
 custom_components/matic_robot/firmware.py::FirmwareTracker.async_record_snapshot 167
 custom_components/matic_robot/managed_area.py::_async_run_area_leg 185

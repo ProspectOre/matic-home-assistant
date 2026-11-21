@@ -362,7 +362,9 @@ def test_wire_helpers_reject_wrong_types_duplicates_and_missing_fields() -> None
 )
 def test_initiator_rejects_unsupported_or_malformed_shapes(reason: bytes) -> None:
     with pytest.raises(DecodeError):
-        semantics._decode_initiator((WireField(3, 2, reason),), WireFieldBudget(100))
+        semantics._decode_initiator(
+            (WireField(3, 2, memoryview(reason)),), WireFieldBudget(100)
+        )
 
 
 def test_completion_kind_handles_all_unattempted_and_empty_inputs() -> None:
