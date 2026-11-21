@@ -34,6 +34,7 @@ from custom_components.matic_robot.slam_decoded_map import decode_photo_page
 from custom_components.matic_robot.slam_history_collector import (
     _encode_history_scene,
 )
+from custom_components.matic_robot.slam_history_format import HistoryRequestError
 from custom_components.matic_robot.slam_history_view import (
     MaticSlamHistoryImportView,
     _read_json_object,
@@ -373,6 +374,15 @@ async def test_history_json_reader_bounds_stream_and_rejects_invalid_json() -> N
             await _read_json_object(
                 SimpleNamespace(content_length=None, content=Chunks([raw]), app=app), 10
             )
+    # Past Python's integer-string limit, json.loads raises a plain ValueError.
+    huge_integer = b'{"n":' + b"1" * 5000 + b"}"
+    with pytest.raises(HistoryRequestError, match="invalid-json"):
+        await _read_json_object(
+            SimpleNamespace(
+                content_length=None, content=Chunks([huge_integer]), app=app
+            ),
+            16 * 1024,
+        )
     assert await _read_json_object(
         SimpleNamespace(content_length=None, content=Chunks([b'{"ok":true}']), app=app),
         20,

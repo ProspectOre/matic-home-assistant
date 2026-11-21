@@ -3,30 +3,94 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
 
+from custom_components.matic_robot.cadence import (
+    CoverageCadenceRequiresVacuumError,
+    normalize_cadence_policy,
+)
+from custom_components.matic_robot.plan_model import (
+    CadenceMapChangedError,
+    CadencePolicyError,
+    CadenceProgressUnverifiedError,
+    EmptyPlanError,
+    PlanDisabledError,
+    SharedCadenceUnavailableError,
+    resolve_rooms,
+)
 from custom_components.matic_robot.plan_views import MaticPlansView
 from tests.test_slam_scene import _entry, _hass, _request
 from tests.test_view_wire import _plans_runtime
 
 
+def _raised(source: Callable[[], object]) -> ValueError:
+    """The error a real plan or cadence check raises."""
+    with pytest.raises(ValueError) as caught:
+        source()
+    return caught.value
+
+
 @pytest.mark.parametrize(
-    ("message", "blocker"),
+    ("error", "blocker"),
     [
-        ("plan was saved for a different map", "cadence_identity_changed"),
-        ("room identity changed", "cadence_identity_changed"),
-        ("shared room cadence is unavailable", "shared_schedule_unavailable"),
-        ("cadence must be an object", "invalid_cadence_policy"),
-        ("unreadable", "invalid_plan"),
+        (PlanDisabledError("plan is disabled"), "plan_disabled"),
+        (EmptyPlanError("plan has no rooms"), "plan_has_no_rooms"),
+        (CadenceMapChangedError("on another map"), "cadence_identity_changed"),
+        (SharedCadenceUnavailableError("none"), "shared_schedule_unavailable"),
+        (CadenceProgressUnverifiedError("reset"), "cadence_progress_unverified"),
+        (CoverageCadenceRequiresVacuumError("mop"), "coverage_requires_vacuum"),
+        (CadencePolicyError("bad"), "invalid_cadence_policy"),
+        # The type decides, not the text.
+        (ValueError("shared room cadence is unavailable"), "invalid_plan"),
+        # An out-of-range interval is a cadence policy error.
+        (
+            _raised(
+                lambda: normalize_cadence_policy(
+                    {"mop_every_n": 0},
+                    cleaning_mode="vacuum",
+                    coverage_setting="standard",
+                )
+            ),
+            "invalid_cadence_policy",
+        ),
+        # A saved room name that is gone names no cadence blocker.
+        (
+            _raised(
+                lambda: resolve_rooms(
+                    [
+                        {
+                            "room": "Cadence nook",
+                            "cleaning_mode": "vacuum",
+                            "coverage_setting": "standard",
+                        }
+                    ],
+                    {"room-a": "Hall"},
+                )
+            ),
+            "invalid_plan",
+        ),
+    ],
+    ids=[
+        "disabled",
+        "empty",
+        "map changed",
+        "shared unavailable",
+        "unverified",
+        "coverage needs vacuum",
+        "policy",
+        "untyped",
+        "interval out of range",
+        "missing room name",
     ],
 )
-async def test_preview_error_message_names_the_blocker(
-    message: str, blocker: str
+async def test_preview_error_type_names_the_blocker(
+    error: ValueError, blocker: str
 ) -> None:
     runtime = _plans_runtime()
-    runtime.cleaning_plans.planning.preview = MagicMock(side_effect=ValueError(message))
+    runtime.cleaning_plans.planning.preview = MagicMock(side_effect=error)
 
     response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
 

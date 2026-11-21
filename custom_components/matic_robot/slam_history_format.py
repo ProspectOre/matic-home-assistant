@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, Literal
 
 from google.protobuf.message import DecodeError
 
@@ -29,6 +29,38 @@ MAX_HISTORY_ITEMS = 12
 MAX_HISTORY_COMPRESSED_BYTES = 48 * 1024 * 1024
 MAX_HISTORY_REQUESTS = 64
 MAX_ARCHIVE_BYTES = 68 * 1024 * 1024
+
+type HistoryErrorCode = Literal[
+    "history-archive-too-large",
+    "history-generation-conflict",
+    "history-kept-record-requires-explicit-delete",
+    "history-quota-exceeded",
+    "history-record-already-deleted",
+    "history-record-in-trash",
+    "history-record-not-found",
+    "history-record-not-in-trash",
+    "history-record-not-kept",
+    "history-request-id-reused",
+    "history-request-too-large",
+    "history-store-closed",
+    "history-trash-expired",
+    "invalid-history-action",
+    "invalid-history-archive",
+    "invalid-history-archive-record",
+    "invalid-history-export-selection",
+    "invalid-history-mutation",
+    "invalid-history-name",
+    "invalid-history-request-fields",
+    "invalid-json",
+]
+
+
+class HistoryRequestError(ValueError):
+    """A refused saved-map request; its code is the error the view returns."""
+
+    def __init__(self, code: HistoryErrorCode) -> None:
+        super().__init__(code)
+        self.code: HistoryErrorCode = code
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,10 +461,10 @@ def _validate_coverage(
 
 def _valid_name(value: str | None) -> str:
     if not isinstance(value, str):
-        raise ValueError("invalid-history-name")
+        raise HistoryRequestError("invalid-history-name")
     cleaned = " ".join(value.split())
     if not cleaned or len(cleaned) > 128:
-        raise ValueError("invalid-history-name")
+        raise HistoryRequestError("invalid-history-name")
     return cleaned
 
 
@@ -496,26 +528,26 @@ def _archive_fingerprint(archive: Mapping[str, Any]) -> str:
     try:
         raw = json.dumps(archive, separators=(",", ":")).encode()
     except (TypeError, ValueError) as err:
-        raise ValueError("invalid-history-archive") from err
+        raise HistoryRequestError("invalid-history-archive") from err
     if (
         len(raw) > MAX_ARCHIVE_BYTES
         or archive.get("format") != "matic-map-archive"
         or archive.get("version") != 1
         or set(archive) != {"format", "version", "records"}
     ):
-        raise ValueError("invalid-history-archive")
+        raise HistoryRequestError("invalid-history-archive")
     return hashlib.sha256(raw).hexdigest()
 
 
 def _import_records(records: object, group_salt: bytes) -> list[SlamHistorySnapshot]:
     """Decode archive records as kept, read-only history snapshots."""
     if not isinstance(records, list) or not records or len(records) > MAX_HISTORY_ITEMS:
-        raise ValueError("invalid-history-archive")
+        raise HistoryRequestError("invalid-history-archive")
     prepared: list[SlamHistorySnapshot] = []
     archive_group = secrets.token_hex(16)
     for item in records:
         if not isinstance(item, Mapping):
-            raise ValueError("invalid-history-archive")
+            raise HistoryRequestError("invalid-history-archive")
         if set(item) != {
             "source_id",
             "created_at",
@@ -524,7 +556,7 @@ def _import_records(records: object, group_salt: bytes) -> list[SlamHistorySnaps
             "scene_zlib_base64",
             "frame",
         }:
-            raise ValueError("invalid-history-archive-record")
+            raise HistoryRequestError("invalid-history-archive-record")
         encoded = item.get("scene_zlib_base64")
         digest = item.get("sha256")
         timestamp = item.get("created_at")
@@ -562,7 +594,7 @@ def _import_records(records: object, group_salt: bytes) -> list[SlamHistorySnaps
             DecodeError,
             zlib.error,
         ) as err:
-            raise ValueError("invalid-history-archive-record") from err
+            raise HistoryRequestError("invalid-history-archive-record") from err
         prepared.append(
             replace(
                 parsed,

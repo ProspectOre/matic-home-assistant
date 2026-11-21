@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .cadence import cadence_snapshot, normalize_cadence_policy
-from .plan_model import CleaningRoom
+from .plan_model import (
+    CadenceMapChangedError,
+    CadencePolicyError,
+    CadenceProgressUnverifiedError,
+    CleaningRoom,
+    SharedCadenceUnavailableError,
+)
 
 type _Cadence = tuple[dict[str, Any], Mapping[str, Any] | None]
 
@@ -85,7 +91,7 @@ def _governing_cadence(request: CadenceRequest, room: CleaningRoom) -> _Cadence 
             plan_policy.get("mop_every_n") is not None
             or plan_policy.get("coverage_every_n") is not None
         ):
-            raise ValueError("shared room cadence is unavailable")
+            raise SharedCadenceUnavailableError("shared room cadence is unavailable")
         return shared
     if request.use_shared_schedule:
         # A manual one-time mode must not invalidate the shared schedule it is
@@ -108,9 +114,9 @@ def _plan_room_policy(
         and stored_identity != expected_identity
         and isinstance(policy, Mapping)
     ):
-        raise ValueError("room cadence belongs to a different map")
+        raise CadenceMapChangedError("room cadence belongs to a different map")
     if policy is not None and not isinstance(policy, Mapping):
-        raise ValueError("room cadence must be an object")
+        raise CadencePolicyError("room cadence must be an object")
     return policy
 
 
@@ -134,14 +140,14 @@ def _shared_cadence(
         and schedule.get("floor_token") is not None
         and schedule.get("floor_token") != request.floor_token
     ):
-        raise ValueError("shared room cadence belongs to a different map")
+        raise CadenceMapChangedError("shared room cadence belongs to a different map")
     policy = normalize_cadence_policy(
         {"scope": "shared", **schedule["policy"]},
         cleaning_mode=cleaning_mode,
         coverage_setting=room.coverage_setting,
     )
     if unverified_cadence_modes(schedule, policy):
-        raise ValueError(
+        raise CadenceProgressUnverifiedError(
             "room cadence progress is unverified; reset mop and coverage before use"
         )
     return policy, schedule.get("progress")
@@ -166,10 +172,10 @@ def _plan_cadence(
         and expected_identity is not None
         and record.get("identity") not in {None, expected_identity}
     ):
-        raise ValueError("room cadence progress belongs to a different map")
+        raise CadenceMapChangedError("room cadence progress belongs to a different map")
     blocked_modes = unverified_cadence_modes(record, policy)
     if blocked_modes:
-        raise ValueError(
+        raise CadenceProgressUnverifiedError(
             "room cadence progress is unverified; reset "
             + " and ".join(blocked_modes)
             + " before use"
