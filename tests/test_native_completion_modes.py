@@ -299,12 +299,20 @@ async def test_restart_reconciliation_preserves_mode_admission(
         _build_native_reconciliation,
         _native_reconciliation_data,
     )
+    from custom_components.matic_robot.managed_run import _PreparedRoomDispatch
     from custom_components.matic_robot.plans import CleaningPlanManager
 
     room = CleaningRoom("study", "Study", "vacuum", "standard")
     dispatched = dt_util.utcnow() - timedelta(seconds=90)
     marker = _native_reconciliation_data(
-        _build_native_reconciliation("synthetic-plan", room, dispatched, True)
+        _build_native_reconciliation(
+            "synthetic-plan",
+            room,
+            _PreparedRoomDispatch((room,), None, dispatched),
+            True,
+            None,
+            "f" * 64,
+        )
     )
     assert marker["cleaning_mode"] == "vacuum"
     assert marker["coverage_setting"] == "standard"

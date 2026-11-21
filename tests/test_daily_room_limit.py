@@ -1188,7 +1188,7 @@ async def test_redo_rechecks_daily_policy_after_loading_native_history(hass):
         None,
     )
 
-    async def history():
+    async def history(**_: object):
         await manager.cadence.async_set_daily_limit(
             "synthetic-serial",
             room.id,

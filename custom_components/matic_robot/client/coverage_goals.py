@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from google.protobuf.message import DecodeError
 
+from .commands import CoverageUpdateGoal, queue_start_visit
 from .wire import (
     WireField,
     WireFieldBudget,
@@ -364,3 +366,68 @@ def _single_bytes_field(fields: tuple[WireField, ...], number: int) -> bytes:
     if len(matches) != 1:
         raise DecodeError("coverage goal has a missing or repeated message field")
     return matches[0]
+
+
+def queue_start_index(plan: Sequence[CoveragePlanGoal], current_region: str) -> int:
+    """Return the plan index where the current room's last visit begins."""
+    visits: list[tuple[str, list[int]]] = []
+    for index, goal in enumerate(plan):
+        if visits and visits[-1][0] == goal.region_id:
+            visits[-1][1].append(index)
+        else:
+            visits.append((goal.region_id, [index]))
+    return visits[queue_start_visit(visits, current_region)][1][0]
+
+
+def queue_region_order(
+    goals: Sequence[CoverageUpdateGoal | CoveragePlanGoal],
+) -> list[str]:
+    order: list[str] = []
+    for goal in goals:
+        if not order or order[-1] != goal.region_id:
+            order.append(goal.region_id)
+    return order
+
+
+def queue_readback_matches(
+    sent: Sequence[CoverageUpdateGoal],
+    held: Sequence[CoveragePlanGoal],
+    *,
+    dropped: set[str],
+    expected_order: list[str],
+) -> bool:
+    """Match the plan after a queue change by round IDs, specs and room order.
+
+    The robot lists a room's behaviors in its own order and may leave out the
+    last floor mop behavior, so the check compares rooms, not goal positions.
+    """
+    held_rounds = {goal.round_id: goal.signature for goal in held}
+    if dropped & held_rounds.keys():
+        return False
+    for goal in sent:
+        signature = held_rounds.get(goal.round_id)
+        if signature is None:
+            if (goal.floor, goal.mode, goal.behavior) != (0, 1, 3):
+                return False
+            continue
+        # Heavy Duty vacuum and double-pass mop read back as setting 3.
+        region, setting, floor, mode, behavior = signature
+        if (region, floor, mode, behavior) != (
+            goal.region_id,
+            goal.floor,
+            goal.mode,
+            goal.behavior,
+        ) or (
+            setting != goal.setting
+            and (setting, goal.setting, mode)
+            not in {
+                (3, 0, 0),
+                (3, 1, 1),
+            }
+        ):
+            return False
+    sent_rounds = {goal.round_id for goal in sent}
+    return (
+        queue_region_order([goal for goal in held if goal.round_id in sent_rounds])
+        == expected_order
+    )

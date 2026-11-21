@@ -219,8 +219,8 @@ def _validated_native_reconciliation(
     if evidence is not None and room_id in dict(evidence.room_regions):
         result["coverage_evidence"] = evidence.as_storage()
     if "session_hash" in value or "rooms" in value:
-        # A grouped marker carries an observed native session and floor. Keep
-        # its first-room fields so older stores can still load the envelope.
+        # A session-bound marker carries its native session and floor. A grouped
+        # marker keeps its first-room fields so older stores can still load it.
         for key in ("session_hash", "floor_token"):
             if not is_sha256_hex(value.get(key)):
                 return None
@@ -369,9 +369,11 @@ def _reconcile_pending_native_history(
     if _native_reconciliation_expired(pending):
         robot.pop("pending_native_reconciliation", None)
         return True
+    if "floor_token" in pending and pending["floor_token"] != plan_floor_token(
+        floor_plan
+    ):
+        return False
     if "rooms" in pending:
-        if pending["floor_token"] != plan_floor_token(floor_plan):
-            return False
         changed = False
         records = tuple(records)
         for child in pending["rooms"]:

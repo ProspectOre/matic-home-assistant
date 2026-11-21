@@ -292,9 +292,14 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         ("accepted", 1, ["kitchen"]),
     ]
     assert "handoff_history" not in saves[3]
-    # The same fields release/0.6 saved and reads, so either version resumes.
-    assert set(saves[3]) == set(_release_0_6_checkpoint("accepted"))
-    assert set(saves[4]) == set(_release_0_6_checkpoint("handoff"))
+    # The fields release/0.6 saved and reads, so either version resumes, plus
+    # the dispatch's own session and the handoff's idle revision, which 0.5.5
+    # saves under the same names.
+    assert set(saves[3]) == set(_release_0_6_checkpoint("accepted")) | {"session_hash"}
+    assert set(saves[4]) == set(_release_0_6_checkpoint("handoff")) | {
+        "session_hash",
+        "handoff_revision",
+    }
     assert saves[4]["handoff_history"] == [hashlib.sha256(b"after").hexdigest()]
     assert saves[2]["native_identity_hash"] == hashlib.sha256(b"session").hexdigest()
     assert saves[2]["history_baseline"] == [hashlib.sha256(b"before").hexdigest()]

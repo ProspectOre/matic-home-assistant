@@ -528,7 +528,9 @@ async def test_area_history_baseline_failure_never_stops_or_credits(hass) -> Non
             floor_is_current=None,
             floor_token=None,
             expected_dispatch_identity=None,
-            expected_dispatch_history=None,
+            # Only a handoff reads history before a tracked start.
+            expected_dispatch_history=frozenset(),
+            expected_dispatch_revision=None,
             on_native_identity=native_identity,
             run_id="run",
             checkpoint_dispatch=None,

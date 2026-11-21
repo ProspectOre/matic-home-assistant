@@ -14,6 +14,7 @@ from custom_components.matic_robot.leg_handoff import async_dispatch_on_return
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.robot_commands import PlanStart
+from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.test_unreachable_room import KITCHEN, STUDY, _events, _session
@@ -63,7 +64,7 @@ class _Robot:
     async def read_identity(self) -> bytes:
         return self.identity
 
-    async def history(self) -> tuple[CleaningSessionRecord, ...]:
+    async def history(self, **_: object) -> tuple[CleaningSessionRecord, ...]:
         return tuple(self.records)
 
     def show(self, state: str, **attributes) -> None:
@@ -84,6 +85,7 @@ class _Robot:
                 self.show("docked")
             raise MaticError("refused")
         self.identity = _session_identity(command.session_id)
+        self.session_key = history_key(command.session_id)
         if state == "returning" and self.fail_after_taking:
             # The robot starts the room, then the settings readback fails.
             self.show("cleaning")
@@ -97,7 +99,7 @@ class _Robot:
     async def _give_up(self) -> None:
         await asyncio.sleep(0.01)
         self.records.append(
-            CleaningSessionRecord(b"kitchen", _session("Kitchen", "unattempted"))
+            CleaningSessionRecord(self.session_key, _session("Kitchen", "unattempted"))
         )
         self.identity = b""
         # The robot never docks on its own here: only the next leg moves it on.
@@ -107,7 +109,7 @@ class _Robot:
         await asyncio.sleep(0.01)
         self.show("returning", current_area=STUDY.name)
         self.records.append(
-            CleaningSessionRecord(b"study", _session("Study", "completed"))
+            CleaningSessionRecord(self.session_key, _session("Study", "completed"))
         )
         self.identity = b""
         self.show("docked")

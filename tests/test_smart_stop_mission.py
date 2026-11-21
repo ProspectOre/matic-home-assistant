@@ -28,6 +28,7 @@ from custom_components.matic_robot.leg_finish import async_end_after_current_roo
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.native_completion import leg_room_results
 from custom_components.matic_robot.robot_commands import PlanStart, RobotCommands
+from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot
 from tests.test_entities import _entry
@@ -231,12 +232,13 @@ class _Robot:
     async def read_identity(self) -> bytes:
         return self.identity
 
-    async def history(self) -> tuple[CleaningSessionRecord, ...]:
+    async def history(self, **_: object) -> tuple[CleaningSessionRecord, ...]:
         return tuple(self.records)
 
     async def start(self, command: PlanStart) -> None:
         self.starts.append(command)
         self.identity = _session_identity(command.session_id)
+        self.session_key = history_key(command.session_id)
         self.fake.show("cleaning", current_area=KITCHEN.name)
         self.hass.async_create_task(self._ask_to_stop(), eager_start=False)
 
@@ -276,7 +278,7 @@ class _Robot:
 
     async def _end(self, statuses: dict[str, str]) -> None:
         await asyncio.sleep(0.01)
-        self.records.append(_record(b"mission", statuses))
+        self.records.append(_record(self.session_key, statuses))
         self.identity = b""
         self.fake.show("returning", current_area=None)
         await asyncio.sleep(0.01)
@@ -401,6 +403,7 @@ class _UnreachableRobot(_Robot):
     async def start(self, command: PlanStart) -> None:
         self.starts.append(command)
         self.identity = _session_identity(command.session_id)
+        self.session_key = history_key(command.session_id)
         self.fake.show("cleaning", current_area=None)
         self.hass.async_create_task(self._clean(), eager_start=False)
 

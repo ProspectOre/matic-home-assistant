@@ -25,6 +25,7 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.coverage_goals import (
     CoveragePlanGoal,
     coverage_plan_goals,
+    queue_readback_matches,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import FloorPlan, Room
@@ -485,7 +486,7 @@ async def test_unconfirmed_queue_change_times_out(monkeypatch):
 def test_readback_needs_every_required_goal_sent():
     sent = LIVE[2:4]
 
-    assert not api_module._queue_readback_matches(
+    assert not queue_readback_matches(
         sent,
         coverage_plan_goals(_readback(LIVE[2:3])),
         dropped=set(),
@@ -503,7 +504,7 @@ def test_readback_compares_each_sent_goal_spec():
     sent = [vacuum, mop]
 
     def matches(held):
-        return api_module._queue_readback_matches(
+        return queue_readback_matches(
             sent, _held(held), dropped=set(), expected_order=[CURRENT]
         )
 

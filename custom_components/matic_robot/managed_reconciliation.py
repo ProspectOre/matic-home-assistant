@@ -24,9 +24,7 @@ from .coverage_accounting import (
     async_confirm_completed_coverage,
     coverage_evidence_from_storage,
 )
-from .managed_run import (
-    _NativeReconciliation,
-)
+from .managed_run import _NativeReconciliation, _PreparedRoomDispatch
 from .native_completion import match_single_room_completions
 from .native_history import OEM_STOP_RECONCILIATION_SECONDS
 from .plan_model import (
@@ -106,22 +104,28 @@ async def _async_reconcile_grouped_history(
 def _build_native_reconciliation(
     plan_id: str,
     room: CleaningRoom,
-    dispatched_at: datetime | None,
+    dispatch: _PreparedRoomDispatch | None,
     room_started: bool,
-    *,
-    run_id: str | None = None,
+    run_id: str | None,
+    floor_token: str,
 ) -> _NativeReconciliation | None:
-    """Build a late-native marker only after the robot visibly started the room."""
-    if not room_started or dispatched_at is None:
+    """Build a late-native marker only after the robot visibly started the room.
+
+    A marker bound to the dispatch's own session also keeps its floor, which
+    history import checks before crediting it.
+    """
+    if not room_started or dispatch is None:
         return None
     return _NativeReconciliation(
         plan_id,
         room.room_id,
         room.name,
-        dispatched_at,
+        dispatch.dispatched_at,
         room.cleaning_mode,
         run_id,
         room.coverage_setting,
+        dispatch.session_hash,
+        floor_token if dispatch.session_hash is not None else None,
     )
 
 
@@ -138,6 +142,11 @@ def _native_reconciliation_data(
         "dispatched_at": value.dispatched_at.isoformat(),
         **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
         **({"run_id": value.run_id} if value.run_id else {}),
+        **(
+            {"session_hash": value.session_hash, "floor_token": value.floor_token}
+            if value.session_hash
+            else {}
+        ),
         **(
             {"coverage_setting": value.coverage_setting}
             if value.coverage_setting
@@ -160,7 +169,7 @@ def _schedule_native_reconciliation(
     """Start a lifecycle-bound watcher for a native session finishing after STOP."""
     if reconciliation is None:
         return
-    if history_baseline is not None:
+    if history_baseline is not None or reconciliation.session_hash is not None:
         watcher = _async_reconcile_native_stop(
             hass,
             manager,
@@ -189,7 +198,7 @@ async def _async_reconcile_native_stop(
     entity_id: str,
     room: CleaningRoom,
     reconciliation: _NativeReconciliation,
-    history_baseline: frozenset[bytes],
+    history_baseline: frozenset[bytes] | None,
     robot: RobotPort,
     context: Context | None,
 ) -> None:
@@ -210,7 +219,9 @@ async def _async_reconcile_native_stop(
             )
             break
         try:
-            records = await robot.session_history()
+            records = await robot.session_history(
+                session_hash=reconciliation.session_hash
+            )
         except MaticError as err:
             _LOGGER.debug(
                 "Native Matic stop reconciliation read unavailable (%s)",
@@ -222,6 +233,7 @@ async def _async_reconcile_native_stop(
             history_baseline,
             room,
             reconciliation.dispatched_at,
+            session_hash=reconciliation.session_hash,
         )
         if match is not None:
             record, duration = match
@@ -301,14 +313,17 @@ async def _async_expire_native_reconciliation(
 
 def _native_completion_match(
     records: tuple[CleaningSessionRecord, ...],
-    baseline: frozenset[bytes],
+    baseline: frozenset[bytes] | None,
     room: CleaningRoom,
     dispatched_at: datetime,
+    *,
+    session_hash: str | None = None,
 ) -> tuple[CleaningSessionRecord, int] | None:
     """Find one new, completed, single-room native record for a dispatch."""
     matches = match_single_room_completions(
         records,
         baseline=baseline,
+        session_hash=session_hash,
         room_name=room.name,
         cleaning_mode=room.cleaning_mode,
         dispatched_at=dispatched_at,

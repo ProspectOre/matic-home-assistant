@@ -38,6 +38,7 @@ from .exceptions import (
     CoverageGuardReason,
     InvalidRobotCertificateError,
     MaticError,
+    NativeHistoryIncompleteError,
     PairingModeRequiredError,
     SinkLocationUnavailableError,
 )
@@ -136,6 +137,7 @@ __all__ = [
     "MappedFloor",
     "MaticError",
     "MaticHermesClient",
+    "NativeHistoryIncompleteError",
     "PairingModeRequiredError",
     "PeerIdentity",
     "QueueAction",

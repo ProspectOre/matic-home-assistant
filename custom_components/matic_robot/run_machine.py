@@ -108,6 +108,7 @@ class DispatchRecorded:
     completion_deadline: datetime | None
     native_identity: bytes | None
     history_baseline: frozenset[bytes] | None
+    session_hash: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,10 +146,13 @@ class LegVerified:
 
     ``history`` is the robot's session history at this boundary, or None when
     it could not be read, which leaves the next leg unable to start.
+    ``revision`` fingerprints the robot's inactive session marker, which the
+    next start must still match; None when it could not be read.
     """
 
     next_leg_index: int
     history: frozenset[bytes] | None
+    revision: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +222,7 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
                     "native_identity_hash": _digest(event.native_identity)
                     if event.native_identity
                     else None,
+                    "session_hash": event.session_hash,
                     "history_baseline": _digests(event.history_baseline),
                 }
             )
@@ -256,7 +261,11 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
             return _restarted(record), CheckpointWrite({}, save=False)
     moved, write = _moved(run, RunPhase.HANDOFF, event.next_leg_index)
     return moved, CheckpointWrite(
-        {**write.fields, "handoff_history": _digests(event.history)},
+        {
+            **write.fields,
+            "handoff_revision": event.revision,
+            "handoff_history": _digests(event.history),
+        },
         drop=("verification_deadline",),
     )
 

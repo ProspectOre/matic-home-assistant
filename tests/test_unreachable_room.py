@@ -32,6 +32,7 @@ from custom_components.matic_robot.native_completion import (
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.robot_commands import PlanStart
 from custom_components.matic_robot.run_history import run_ending, run_rooms
+from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.wire_builders import _session_identity
@@ -163,12 +164,13 @@ class _Robot:
     async def read_identity(self) -> bytes | None:
         return self.identity
 
-    async def history(self) -> tuple[CleaningSessionRecord, ...]:
+    async def history(self, **_: object) -> tuple[CleaningSessionRecord, ...]:
         return tuple(self.records)
 
     async def send_command(self, command: PlanStart) -> None:
         self.dispatches.append(command)
         self.identity = _session_identity(command.session_id)
+        self.session_key = history_key(command.session_id)
         index = len(self.dispatches)
         if index == 1:
             # The robot accepts the mission and drives, but never enters the room.
@@ -185,7 +187,7 @@ class _Robot:
             self.fake.show("cleaning", current_area=KITCHEN.name)
             return
         self.fake.show("returning", current_area=None)
-        self.records.append(CleaningSessionRecord(b"kitchen-mission", self.first_end()))
+        self.records.append(CleaningSessionRecord(self.session_key, self.first_end()))
         self.identity = b""
         self.fake.show("docked", current_area=None)
 
@@ -193,7 +195,7 @@ class _Robot:
         await asyncio.sleep(0.01)
         self.fake.show("returning", current_area=STUDY.name)
         self.records.append(
-            CleaningSessionRecord(b"study-mission", _session("Study", "completed"))
+            CleaningSessionRecord(self.session_key, _session("Study", "completed"))
         )
         self.identity = b""
         self.fake.show("docked", current_area=None)
@@ -297,18 +299,18 @@ async def test_owned_mission_ending_before_start_is_not_a_takeover(
     )
     history = robot.history
 
-    async def counted_history():
+    async def counted_history(**kwargs):
         reads.append(None)
-        return await history()
+        return await history(**kwargs)
 
     robot.history = counted_history
     manager, events, error = await _run_plan(hass, robot)
-    # Baseline plus one read: a cancelled record is final. An unknown stop
-    # keeps polling until the history window closes.
+    # A tracked start reads no baseline, and a cancelled record is final after
+    # one read. An unknown stop keeps polling until the history window closes.
     if stop_reason is None:
         assert len(reads) > 2
     else:
-        assert len(reads) == 2
+        assert len(reads) == 1
 
     assert error is not None
     assert error.translation_key == "room_interrupted"

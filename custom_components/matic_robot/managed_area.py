@@ -13,7 +13,7 @@ from homeassistant.exceptions import ServiceValidationError
 from . import managed_dispatch as dispatch_control
 from . import managed_observation as observation
 from . import managed_run
-from .client import CleaningSessionRecord, MaticError, RobotActivity, UserCommand
+from .client import MaticError, RobotActivity, UserCommand, native_session_hash
 from .const import DOMAIN
 from .managed_run import (
     PlanCancelledError,
@@ -110,28 +110,52 @@ async def _async_wait_for_area_end(
 
 
 async def _async_wait_for_area_record(
-    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
-    baseline: frozenset[bytes] | None,
+    robot: RobotPort,
+    dispatch: _PreparedRoomDispatch,
     cancel_event: asyncio.Event,
 ) -> None:
     """Wait, bounded, for an ended area mission's own history record.
 
     The next leg dispatches only while native history is unchanged since the
-    handoff, and an area's record can land minutes after the area ends. This
-    run owned the robot throughout, so any new record is the area's own. A
-    record that never arrives leaves that fence to fail closed.
+    handoff, and an area's record can land minutes after the area ends. With a
+    verified session the wait is for that session's own key; otherwise this
+    run owned the robot throughout, so any new key is the area's. A record that
+    never arrives leaves that fence to fail closed.
     """
-    if baseline is None:
+    baseline, session_hash = dispatch.history_baseline, dispatch.session_hash
+    if baseline is None and session_hash is None:
         return
-    for _attempt in range(observation.SESSION_HISTORY_ATTEMPTS):
-        if cancel_event.is_set():
-            raise PlanCancelledError
-        keys = await observation._async_session_history_baseline(reader)
-        if keys is not None and keys - baseline:
-            return
-        with suppress(TimeoutError):
-            async with asyncio.timeout(observation.SESSION_HISTORY_RETRY_SECONDS):
-                await cancel_event.wait()
+    if cancel_event.is_set():
+        raise PlanCancelledError
+
+    async def wait_for_record() -> None:
+        for attempt in range(observation.SESSION_HISTORY_ATTEMPTS):
+            keys = await robot.history_keys(session_hash=session_hash)
+            new_keys = (keys or frozenset()) - (baseline or frozenset())
+            if any(
+                session_hash is None or native_session_hash(key) == session_hash
+                for key in new_keys
+            ):
+                return
+            if attempt + 1 < observation.SESSION_HISTORY_ATTEMPTS:
+                await asyncio.sleep(observation.SESSION_HISTORY_RETRY_SECONDS)
+
+    history = asyncio.create_task(wait_for_record())
+    cancelled = asyncio.create_task(cancel_event.wait())
+    try:
+        async with asyncio.timeout(observation.SESSION_HISTORY_TIMEOUT_SECONDS):
+            await asyncio.wait(
+                {history, cancelled}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if cancel_event.is_set():
+                raise PlanCancelledError
+            history.result()
+    except TimeoutError:
+        pass
+    finally:
+        history.cancel()
+        cancelled.cancel()
+        await asyncio.gather(history, cancelled, return_exceptions=True)
 
 
 def _area_refused_before_start(error: BaseException) -> bool:
@@ -161,6 +185,7 @@ async def _async_run_area_leg(
     floor_token: str,
     expected_dispatch_identity: bytes | None,
     expected_dispatch_history: frozenset[str] | None,
+    expected_dispatch_revision: str | None,
     on_native_identity: Callable[[bytes | None], None],
     run_id: str,
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]],
@@ -215,6 +240,7 @@ async def _async_run_area_leg(
                 on_identity=on_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
                 expected_dispatch_history=expected_dispatch_history,
+                expected_dispatch_revision=expected_dispatch_revision,
             )
             await checkpoint_dispatch(dispatch)
         await manager.ledger.async_mark_area_started(
@@ -253,9 +279,7 @@ async def _async_run_area_leg(
                 robot, cancel_event, dispatch.native_identity
             )
         if settle_history:
-            await _async_wait_for_area_record(
-                robot.session_history, dispatch.history_baseline, cancel_event
-            )
+            await _async_wait_for_area_record(robot, dispatch, cancel_event)
     except PlanCancelledError, asyncio.CancelledError:
         # Stop owns its own STOP.
         raise

@@ -11,7 +11,6 @@ from collections import Counter
 from collections.abc import (
     Awaitable,
     Callable,
-    Sequence,
 )
 from time import monotonic
 from uuid import UUID, uuid4
@@ -34,16 +33,17 @@ from .commands import (
     encode_mixed_coverage_commands,
     encode_redo_coverage_command,
     encode_user_command,
-    queue_start_visit,
     requeue_coverage_goals,
 )
 from .coverage_goals import (
-    CoveragePlanGoal,
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
     coverage_plan_goals,
     coverage_plan_lacks_active_goals,
     coverage_readback_matches,
+    queue_readback_matches,
+    queue_region_order,
+    queue_start_index,
 )
 from .coverage_receipts import (
     CoverageReceipt,
@@ -99,69 +99,6 @@ _BINARY_SETTING_CHANNELS = {
     "pet_waste": "petwaste_enabled_command",
     "voice": "voice_enabled_command",
 }
-
-
-def _queue_start_index(plan: Sequence[CoveragePlanGoal], current_region: str) -> int:
-    """Return the plan index where the current room's last visit begins."""
-    visits: list[tuple[str, list[int]]] = []
-    for index, goal in enumerate(plan):
-        if visits and visits[-1][0] == goal.region_id:
-            visits[-1][1].append(index)
-        else:
-            visits.append((goal.region_id, [index]))
-    return visits[queue_start_visit(visits, current_region)][1][0]
-
-
-def _region_order(goals: Sequence[CoverageUpdateGoal | CoveragePlanGoal]) -> list[str]:
-    order: list[str] = []
-    for goal in goals:
-        if not order or order[-1] != goal.region_id:
-            order.append(goal.region_id)
-    return order
-
-
-def _queue_readback_matches(
-    sent: Sequence[CoverageUpdateGoal],
-    held: Sequence[CoveragePlanGoal],
-    *,
-    dropped: set[str],
-    expected_order: list[str],
-) -> bool:
-    """Match the plan after a queue change by round IDs, specs and room order.
-
-    The robot lists a room's behaviors in its own order and may leave out the
-    last floor mop behavior, so the check compares rooms, not goal positions.
-    """
-    held_rounds = {goal.round_id: goal.signature for goal in held}
-    if dropped & held_rounds.keys():
-        return False
-    for goal in sent:
-        signature = held_rounds.get(goal.round_id)
-        if signature is None:
-            if (goal.floor, goal.mode, goal.behavior) != (0, 1, 3):
-                return False
-            continue
-        # Heavy Duty vacuum and double-pass mop read back as setting 3.
-        region, setting, floor, mode, behavior = signature
-        if (region, floor, mode, behavior) != (
-            goal.region_id,
-            goal.floor,
-            goal.mode,
-            goal.behavior,
-        ) or (
-            setting != goal.setting
-            and (setting, goal.setting, mode)
-            not in {
-                (3, 0, 0),
-                (3, 1, 1),
-            }
-        ):
-            return False
-    sent_rounds = {goal.round_id for goal in sent}
-    return (
-        _region_order([goal for goal in held if goal.round_id in sent_rounds])
-        == expected_order
-    )
 
 
 def _log_mixed_readback_timeout(
@@ -247,6 +184,17 @@ class HermesCommands(HermesReads):
         if await self.async_get_cleaning_session_identity() != baseline_identity:
             raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
         return baseline_identity
+
+    async def _async_check_idle_session_revision(self, expected: str | None) -> None:
+        """Refuse a start when the inactive session marker changed since a handoff."""
+        if expected is None:
+            return
+        try:
+            current = await self.async_get_idle_cleaning_session_revision()
+        except MaticError as err:
+            raise CoverageGuardError(CoverageGuardReason.IDENTITY_UNAVAILABLE) from err
+        if current != expected:
+            raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
 
     async def async_get_sink_posture(self, floor_plan: FloorPlan) -> bytes:
         """Return this floor's saved sink posture, as the app stored it."""
@@ -339,10 +287,10 @@ class HermesCommands(HermesReads):
             session_id=session_id,
             goals=goals,
         )
-        start = _queue_start_index(plan, current[0])
+        start = queue_start_index(plan, current[0])
         sent = {goal.round_id for goal in goals}
         dropped = {goal.round_id for goal in plan[start:]} - sent
-        expected_order = _region_order(goals)
+        expected_order = queue_region_order(goals)
         if await self.async_get_cleaning_session_identity() != identity:
             raise MaticError("Native mission changed before the queue change")
         await self._connection._async_send_user_payload(
@@ -362,7 +310,7 @@ class HermesCommands(HermesReads):
                         )
                     except DecodeError:
                         continue
-                    if _queue_readback_matches(
+                    if queue_readback_matches(
                         goals, held, dropped=dropped, expected_order=expected_order
                     ):
                         return
@@ -393,6 +341,7 @@ class HermesCommands(HermesReads):
         require_settings_readback: bool = False,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start an exact normal-coverage command for local room IDs."""
         if require_settings_readback and session_id is None:
@@ -410,6 +359,7 @@ class HermesCommands(HermesReads):
             baseline_identity = await self._async_require_idle_native_session()
         else:
             baseline_identity = None
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._connection._async_send_user_payload(
@@ -442,13 +392,13 @@ class HermesCommands(HermesReads):
         on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
         session_id: UUID | None = None,
+        expected_idle_revision: str | None = None,
     ) -> CoverageReceipt | None:
         """Start then update only our accepted, still-current native mission.
 
-        There is no retry/replay of either write. A partial dispatch failure
-        stops only the exact generated session, never an external replacement.
-        Managed callers durably checkpoint the generated identity before the
-        initial write, so restart can fence this exact partial transaction.
+        Neither write is retried. A partial failure stops only the generated
+        session, never an external replacement. Managed callers checkpoint its
+        identity before the first write, so restart can fence it.
         """
         commands = encode_mixed_coverage_commands(
             mission_id=floor_plan.mission_id,
@@ -470,6 +420,7 @@ class HermesCommands(HermesReads):
             # this transaction before sending any bytes if ownership changed.
             if await self._async_require_idle_native_session() != baseline_identity:
                 raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+        await self._async_check_idle_session_revision(expected_idle_revision)
         require_current()
         try:
             await self._connection._async_send_user_payload(
@@ -918,6 +869,7 @@ class HermesCommands(HermesReads):
         coverage_setting: CoverageSetting,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
+        expected_idle_revision: str | None = None,
     ) -> None:
         """Start an official drawn-circle custom-area coverage command.
 
@@ -934,6 +886,7 @@ class HermesCommands(HermesReads):
         )
         if session_id is not None:
             await self._async_require_idle_native_session()
+        await self._async_check_idle_session_revision(expected_idle_revision)
         if require_current is not None:
             require_current()
         await self._connection._async_send_user_payload(
