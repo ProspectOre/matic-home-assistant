@@ -918,7 +918,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "wifi_heatmap_url": f"/api/matic_robot/wifi_heatmap/{loaded.entry_id}",
                 "floor_layers_url": f"/api/matic_robot/floor_layers/{loaded.entry_id}",
                 "history_count": 0,
-                "history_floor_count": 0,
+                "history_floor_count": 2,
                 "map_revision": 7,
                 "scene_revision": 7,
                 "map_floor_coherent": True,
@@ -2812,7 +2812,8 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     }
     assert mixed["next_run_estimate_seconds"] is None
     smart_stop = plans["smart-stop"]["next_run_preview"]
-    assert smart_stop["mission_boundaries"] == [1]
+    # Smart Stop shortens the robot's queue; both rooms still share one mission.
+    assert smart_stop["mission_boundaries"] == []
     assert smart_stop["preview_token"] == saved_plan_preview_token(
         manager.planning.preview(
             serial,

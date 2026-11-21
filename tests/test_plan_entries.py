@@ -25,12 +25,13 @@ from custom_components.matic_robot.plan_model import (
     PlanDisabledError,
     _dispatching_room_leg,
     checkpoint_legs,
-    entry_mission_boundaries,
+    leg_boundaries,
     leg_groups,
     plan_area_fingerprint,
     plan_entries,
     plan_floor_token,
     plan_legs,
+    preview_legs,
     run_entries,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
@@ -432,7 +433,6 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
     )
     assert preview["room_count"] == 3
     assert preview["area_count"] == 2
-    assert entry_mission_boundaries(entries) == [1, 3, 4]
     # The executor receives exactly the preview's room order and area positions.
     legs = plan_legs(
         [
@@ -446,6 +446,8 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
         ],
         run_entries(entries),
     )
+    assert preview_legs(entries) == legs
+    assert leg_boundaries(legs) == [1, 3, 4]
     assert [
         leg.area_id if isinstance(leg, AreaLeg) else [r.room_id for r in leg]
         for leg in legs
@@ -569,37 +571,20 @@ async def test_preview_token_covers_area_binding_but_not_room_only_plans(
     assert saved_plan_preview_token(moved, **token_inputs) != token
 
 
-def test_mission_boundaries_split_at_every_room_and_area_switch() -> None:
+def test_leg_boundaries_mark_where_each_later_leg_starts() -> None:
     rooms = [
         CleaningRoom("a", "A", "vacuum", "standard"),
         CleaningRoom("b", "B", "mop", "standard"),
     ]
-    room_entries = [
-        {
-            "kind": "room",
-            "room_id": room.room_id,
-            "name": room.name,
-            "cleaning_mode": room.cleaning_mode,
-            "coverage_setting": room.coverage_setting,
-        }
-        for room in rooms
-    ]
-    expected_rooms_only = []
-    offset = 0
-    for group in leg_groups(rooms)[:-1]:
-        offset += len(group)
-        expected_rooms_only.append(offset)
-    assert entry_mission_boundaries(room_entries) == expected_rooms_only
-    assert entry_mission_boundaries(room_entries, single_room_missions=True) == [1]
-    area = {"kind": "area", "area_id": "rug"}
-    assert entry_mission_boundaries([]) == []
-    assert entry_mission_boundaries([area]) == []
-    assert entry_mission_boundaries([area, area]) == [1]
-    assert entry_mission_boundaries([room_entries[0], area, room_entries[1]]) == [1, 2]
-    assert entry_mission_boundaries([area, *room_entries]) == [
-        1,
-        *[1 + value for value in expected_rooms_only],
-    ]
+    area = AreaLeg("rug", "Rug", "vacuum", "quick", "f" * 64)
+    assert leg_boundaries([]) == []
+    assert leg_boundaries([rooms]) == []
+    assert leg_boundaries([area]) == []
+    assert leg_boundaries([area, area]) == [1]
+    assert leg_boundaries([rooms[:1], area, rooms[1:]]) == [1, 2]
+    assert leg_boundaries([area, rooms]) == [1]
+    # A recovered 0.5 Smart Stop run still has one leg per room.
+    assert leg_boundaries(leg_groups(rooms, single_room_missions=True)) == [1]
 
 
 # Services ----------------------------------------------------------------

@@ -157,6 +157,7 @@
     "v4_map_support_detail": "Details to share with support",
     "v4_map_unavailable": "Map unavailable",
     "v4_map_unavailable_status": "Home Assistant can't show the map right now, so cleaning can't start.",
+    "v4_map_load_failed": "Home Assistant couldn't load the map.",
     "v4_active_map_unavailable": "Live map unavailable",
     "v4_mapped_floors": "Mapped floors",
     "v4_mouse": "Mouse",

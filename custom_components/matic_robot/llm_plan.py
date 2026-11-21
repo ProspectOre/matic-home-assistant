@@ -28,10 +28,11 @@ from .llm_common import (
     _resolve_plan_id,
 )
 from .plan_model import (
-    CleaningRoom,
-    leg_groups,
+    AreaLeg,
+    PlanLeg,
     plan_entries,
     plan_floor_token,
+    preview_legs,
     room_cadence_identity,
 )
 
@@ -88,6 +89,8 @@ class MaticGetPlanTool(_MaticTool):
                 },
                 floor_plan=floor_plan,
             )
+            # The legs the run would send; each custom area is its own.
+            groups = preview_legs(preview["entries"])
         except (KeyError, ValueError) as err:
             # A missing area or one drawn on another map lands here too.
             raise _error("llm_plan_unavailable", error=str(err)) from err
@@ -95,24 +98,6 @@ class MaticGetPlanTool(_MaticTool):
         cadence_by_room = {
             room["room_id"]: room["cadence"] for room in preview["rooms"]
         }
-        # Each custom area keeps its saved place as a pass of its own.
-        groups: list[list[CleaningRoom] | dict[str, Any]] = []
-        rooms: list[CleaningRoom] = []
-        for item in preview["entries"]:
-            if item["kind"] == "area":
-                groups.extend(leg_groups(rooms))
-                rooms = []
-                groups.append(item)
-                continue
-            rooms.append(
-                CleaningRoom(
-                    item["room_id"],
-                    item["name"],
-                    item["cleaning_mode"],
-                    item["coverage_setting"],
-                )
-            )
-        groups.extend(leg_groups(rooms))
         rotation = preview["rotation"]
         snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
         active = snapshot.get("active_plan")
@@ -127,21 +112,19 @@ class MaticGetPlanTool(_MaticTool):
             )
         )
 
-        def leg(
-            index: int, group: list[CleaningRoom] | dict[str, Any]
-        ) -> JsonObjectType:
+        def leg(index: int, group: PlanLeg) -> JsonObjectType:
             handoff = "firmware_may_touch_dock" if index < len(groups) else "final_leg"
-            if isinstance(group, dict):
+            if isinstance(group, AreaLeg):
                 return {
                     "leg": index,
                     "custom_area": {
-                        "id": group["area_id"],
-                        "name": group["name"],
-                        "cleaning_mode": group["cleaning_mode"],
-                        "coverage_setting": group["coverage_setting"],
+                        "id": group.area_id,
+                        "name": group.name,
+                        "cleaning_mode": group.cleaning_mode,
+                        "coverage_setting": group.coverage_setting,
                     },
-                    "cleaning_mode": group["cleaning_mode"],
-                    "coverage_setting": group["coverage_setting"],
+                    "cleaning_mode": group.cleaning_mode,
+                    "coverage_setting": group.coverage_setting,
                     "handoff_after_leg": handoff,
                 }
             return {

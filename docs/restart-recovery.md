@@ -9,9 +9,9 @@ and stop preference. Recovery never sends a cleaning command a second time.
 
 ## How a plan is split
 
-A plan runs as one or more robot missions, called legs. `plan_legs` and
-`entry_mission_boundaries` in
-[plan_model.py](../custom_components/matic_robot/plan_model.py) decide them:
+A plan runs as one or more robot missions, called legs. `plan_legs` in
+[plan_model.py](../custom_components/matic_robot/plan_model.py) decides them
+for the run and for every preview of it:
 
 - Consecutive rooms share one mission, each room with its own cleaning mode and
   vacuum coverage.
