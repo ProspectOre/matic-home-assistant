@@ -71,8 +71,8 @@ these owners around one repository:
 | [Cadence](../custom_components/matic_robot/plan_cadence.py) | Room schedule policy, progress and reservations; each room's effective settings come from its [resolution](../custom_components/matic_robot/cadence_resolution.py). |
 | [Catalog](../custom_components/matic_robot/plan_catalog.py) | Saved plans and areas, rotation and previews. |
 | [Run control](../custom_components/matic_robot/run_control.py) | One actor per robot for its run, motion ownership, cancellation, stop fences and whether Smart Stop is pending; background start. |
-| [Ledger](../custom_components/matic_robot/plan_ledger.py) | Run checkpoints, room accounting and native-history commits. |
-| [History](../custom_components/matic_robot/plan_history.py) | Managed history projections and duration estimates. |
+| [Ledger](../custom_components/matic_robot/plan_ledger.py) | Run checkpoints, room accounting and native-history commits; the stored run record and current target, which the executor and restart recovery read. |
+| [History](../custom_components/matic_robot/plan_history.py) | Managed history projections for entities, assistant tools and Matic Map, and duration estimates. Nothing that runs a plan reads the projection. |
 | [Recovery](../custom_components/matic_robot/plan_recovery.py) | Recovery checkpoints and dispatch evidence. |
 | [Execution planning](../custom_components/matic_robot/execution_planning.py) | Execution previews and rotation target selection. |
 

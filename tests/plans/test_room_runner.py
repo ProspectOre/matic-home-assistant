@@ -33,6 +33,7 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -46,7 +47,6 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
             managed_reconciliation=lambda *_args: nullcontext(True),
             pending_stop_run_id=MagicMock(return_value=None),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
@@ -81,6 +81,9 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
     hass = SimpleNamespace(bus=bus, is_stopping=False)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
+            active_target=MagicMock(
+                return_value={"status": "suspended", "suspend_reason": "low_charge"}
+            ),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -93,16 +96,6 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
             managed_motion_is_current=MagicMock(return_value=True),
             managed_reconciliation=lambda *_args: nullcontext(True),
             pending_stop_run_id=MagicMock(return_value=None),
-        ),
-        history=SimpleNamespace(
-            snapshot=MagicMock(
-                return_value={
-                    "active_plan": {
-                        "status": "suspended",
-                        "suspend_reason": "low_charge",
-                    }
-                }
-            )
         ),
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
@@ -396,6 +389,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -404,7 +398,6 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             async_mark_failed=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     manager.ledger.async_claim_native_session = AsyncMock(side_effect=claim)
@@ -469,6 +462,7 @@ async def test_room_timeout_is_failure_safe() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -477,7 +471,6 @@ async def test_room_timeout_is_failure_safe() -> None:
             async_mark_failed=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     sender = AsyncMock(side_effect=MaticError("synthetic cleanup failure"))
     with (
@@ -532,6 +525,7 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -540,7 +534,6 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
             async_mark_failed=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = plan_room("Kitchen", "room-kitchen")
 
@@ -591,6 +584,7 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -600,7 +594,6 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
             async_mark_interrupted=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = plan_room("Kitchen", "room-kitchen")
 
@@ -647,6 +640,7 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -656,7 +650,6 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     with (
         patch(
@@ -717,6 +710,7 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -726,7 +720,6 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = plan_room("Kitchen", "room-kitchen")
     # The session is still active on the first read after the handoff, then clears.
