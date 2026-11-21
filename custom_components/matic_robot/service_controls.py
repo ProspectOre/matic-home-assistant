@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -14,14 +15,12 @@ from homeassistant.core import (
 
 from . import service_context as context
 from .client import MaticError, QueueAction
-from .managed_dispatch import _ensure_stop_settled
 from .managed_run import (
     validation_error,
 )
 from .plans import CleaningPlanManager
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
 from .room_coherence import current_floor_plan as _current_floor_plan
-from .run_control import RunControl
 from .service_context import ServiceRuntime, register_robot_action
 from .service_names import (
     SERVICE_CLEAN,
@@ -42,7 +41,7 @@ from .service_schemas import (
 )
 
 if TYPE_CHECKING:
-    from . import MaticConfigEntry
+    pass
 
 
 def register_controls_services(runtime: ServiceRuntime) -> None:
@@ -50,7 +49,7 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
     hass = runtime.hass
     manager = runtime.manager
     register_robot_action(
-        hass, SERVICE_CLEAN, partial(_async_clean, hass, manager), CLEAN_SERVICE_SCHEMA
+        hass, SERVICE_CLEAN, partial(_async_clean, hass), CLEAN_SERVICE_SCHEMA
     )
     register_robot_action(
         hass,
@@ -75,20 +74,13 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
 
 
 async def _async_clean(
-    hass: HomeAssistant,
-    manager: CleaningPlanManager,
-    call: ServiceCall,
-    entity_ids: list[str],
+    hass: HomeAssistant, call: ServiceCall, entity_ids: list[str]
 ) -> None:
     """Route the complete verified cleaning matrix to selected vacuums."""
     for entity_id in entity_ids:
         entry = context._entry_for_entity(hass, entity_id)
-        await _async_settle_stop(
-            hass,
-            manager,
-            entry,
-            entry.runtime_data.session.info.serial_number,
-            entity_id,
+        await RobotControls(hass, entry, entity_id).async_ensure_stop_settled(
+            entry.runtime_data.session.info.serial_number
         )
     await _async_each_robot(
         hass,
@@ -141,39 +133,23 @@ async def _async_clean_area(
     entity_id, entry, serial_number, _room_map = context._saved_plan_context(
         hass, entity_ids, require_current_floor=True
     )
-    control = manager.control
-    request_generation = control.motion_generation(serial_number)
-    request_stop_generation = control.stop_request_generation(serial_number)
-    request_admission_epoch = control.command_admission_epoch(serial_number)
-    control.require_command_admission(
-        serial_number, expected_epoch=request_admission_epoch
-    )
-    require_current_request = partial(
-        _require_current_request, control, serial_number, request_stop_generation
-    )
+    commands = RobotControls(hass, entry, entity_id)
     area_command = partial(
         _validated_area_command,
         cleaning_mode=call.data.get("cleaning_mode"),
         coverage_setting=call.data.get("coverage_setting"),
     )
-
-    await _async_settle_stop(hass, manager, entry, serial_number, entity_id)
-    require_current_request(request_generation)
-    control.require_command_admission(
-        serial_number, expected_epoch=request_admission_epoch
-    )
+    fence = await commands.async_admit_motion()
     area = _saved_area(manager, serial_number, call.data["area"])
     area_command(area, entry.runtime_data.session.floor.value)
 
-    async with control.external_command(serial_number):
-        require_current_request(request_generation)
-        await _async_settle_stop(hass, manager, entry, serial_number, entity_id)
-        require_current_request(request_generation)
+    # Check the area again before taking motion, so a missing or moved area
+    # never replaces a plan's ownership.
+    async with commands.motion_lease(fence, take_motion=False):
         current_area = _saved_area(manager, serial_number, call.data["area"])
         area_command(current_area, _current_floor_plan(entry))
-        require_current_request(request_generation)
-        generation = await control.async_replace_managed_motion(serial_number)
-        require_current_request(generation)
+        generation = await manager.control.async_replace_managed_motion(serial_number)
+        commands.require_fence(replace(fence, generation=generation))
         floor_plan, circles, mode, coverage = area_command(
             current_area, _current_floor_plan(entry)
         )
@@ -192,23 +168,6 @@ async def _async_clean_area(
     await entry.runtime_data.session.heartbeat.async_request_refresh()
 
 
-def _require_current_request(
-    control: RunControl,
-    serial_number: str,
-    stop_generation: int,
-    motion_generation: int,
-) -> None:
-    """Refuse a request that a newer motion or stop request replaced."""
-    if (
-        control.motion_generation(serial_number) != motion_generation
-        or control.stop_request_generation(serial_number) != stop_generation
-    ):
-        raise validation_error(
-            "The cleaning request was superseded before it could start",
-            "robot_command_failed",
-        )
-
-
 def _saved_area(
     manager: CleaningPlanManager, serial_number: str, name: str
 ) -> dict[str, Any]:
@@ -221,24 +180,6 @@ def _saved_area(
             "unknown_area",
             {"area": str(name)},
         ) from err
-
-
-async def _async_settle_stop(
-    hass: HomeAssistant,
-    manager: CleaningPlanManager,
-    entry: MaticConfigEntry,
-    serial_number: str,
-    entity_id: str,
-) -> None:
-    """Wait out a pending stop, reading the robot through its own client."""
-    await _ensure_stop_settled(
-        hass,
-        manager,
-        serial_number,
-        entity_id,
-        entry.runtime_data.client.async_get_active_cleaning_session_state,
-        entry.runtime_data.client.async_get_state,
-    )
 
 
 async def _async_each_robot(
