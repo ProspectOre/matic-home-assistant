@@ -6,7 +6,7 @@ import asyncio
 import socket
 import ssl
 import struct
-from time import monotonic
+from time import get_clock_info, monotonic
 from typing import Any, cast
 
 import grpclib
@@ -26,6 +26,9 @@ from .tls import validate_certificate
 MAX_HERMES_MESSAGE_BYTES = 16 * 1024 * 1024
 # A ping the robot has not answered after this long means the link is dead.
 KEEPALIVE_TIMEOUT_SECONDS = 10.0
+
+# asyncio runs a timer up to one clock tick before its time.
+_TIMER_SLACK = get_clock_info("monotonic").resolution
 
 TRANSPORT_ERRORS = (OSError, StreamTerminatedError, GrpcProtocolError, H2Error)
 # grpclib has no public hook for a message-size limit, a stream or connection
@@ -166,9 +169,17 @@ class _Connection(Connection):
 
     def close(self) -> None:
         # A TLS close waits for the peer's reply, and a silent peer sends none.
-        if self._close_by_ping_handler is not None and not self.is_closing():
+        if self._ping_timed_out() and not self.is_closing():
             self._transport.abort()
         super().close()
+
+    def _ping_timed_out(self) -> bool:
+        """Whether this close is the ping timeout, not a close with a ping in flight."""
+        timeout = self._close_by_ping_handler
+        return (
+            timeout is not None
+            and timeout.when() <= asyncio.get_running_loop().time() + _TIMER_SLACK
+        )
 
 
 class _Protocol(H2Protocol):

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from .client import (
     CleaningSessionRecord,
+    CoverageReceipt,
     MaticError,
     UserCommand,
     is_sha256_hex,
@@ -37,7 +40,13 @@ from .managed_observation import (
     _async_wait_for_settled_leg_handoff,
 )
 from .managed_run import _PreparedRoomDispatch
-from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, plan_floor_token
+from .plan_model import (
+    AreaLeg,
+    CleaningRoom,
+    PlanLeg,
+    checkpoint_legs,
+    plan_floor_token,
+)
 from .robot_port import RobotPort
 from .room_coherence import current_floor_plan, room_completion_names_are_current
 from .run_machine import (
@@ -52,10 +61,13 @@ from .run_machine import (
 from .service_names import SERVICE_RUN_SELECTED_PLAN
 
 if TYPE_CHECKING:
-    from . import MaticConfigEntry
+    from . import MaticConfigEntry, MaticRuntimeData
+    from .plans import CleaningPlanManager
 
 RECOVERY_ATTEMPTS = 60
 RECOVERY_RETRY_SECONDS = 2
+# Why a run ends when its checkpoint or vacuum entity cannot be used.
+_CHECKPOINT_UNVERIFIED = "restart_checkpoint_unverified"
 # What a stored run record says about how the run began, for plan_finished.
 _STARTED = (
     "plan_id",
@@ -217,6 +229,99 @@ async def _async_stop_interrupted_mixed_dispatch(
     return "restart_mixed_dispatch_stop_requested"
 
 
+def _vacuum_entity_id(hass: HomeAssistant, serial_number: str) -> str | None:
+    """Return the robot's vacuum entity, which a run's commands go through."""
+    return er.async_get(hass).async_get_entity_id(
+        "vacuum", DOMAIN, f"{serial_number}_vacuum"
+    )
+
+
+def _restore_stop_settlement(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    serial_number: str,
+    restored_owner: str | None,
+) -> None:
+    """Watch a stop that was pending before recovery until the robot settles."""
+    manager = entry.runtime_data.cleaning_plans
+    owner = manager.control.pending_stop_run_id(serial_number)
+    entity_id = _vacuum_entity_id(hass, serial_number)
+    if (
+        owner is not None
+        and owner == restored_owner
+        and entity_id is not None
+        and not manager.control.dock_reconciliation_active(serial_number)
+    ):
+        _schedule_managed_dock_after_stop(
+            hass, entry, manager, serial_number, entity_id, owner, None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Recovery:
+    """A stored run, the leg it stopped in and the ownership recovery holds."""
+
+    hass: HomeAssistant
+    entry: MaticConfigEntry
+    serial_number: str
+    run: dict[str, Any]
+    checkpoint: dict[str, Any]
+    cancel: asyncio.Event
+    generation: int
+    restarted: Run
+    rooms: list[CleaningRoom]
+    legs: list[PlanLeg]
+    leg: PlanLeg
+    # The fingerprint the live mission must match to be the run's own.
+    expected_hash: Any
+    entity_id: str
+
+    @property
+    def runtime(self) -> MaticRuntimeData:
+        """Return the entry's client, session and plan manager."""
+        return self.entry.runtime_data
+
+    @property
+    def manager(self) -> CleaningPlanManager:
+        """Return the plan manager."""
+        return self.entry.runtime_data.cleaning_plans
+
+    def lost_ownership(self) -> bool:
+        """Return whether a stop or another motion took the robot."""
+        return (
+            self.cancel.is_set()
+            or self.manager.control.motion_generation(self.serial_number)
+            != self.generation
+        )
+
+    def floor_is_current(self) -> bool:
+        """Return whether the robot is on the floor the run was planned on."""
+        floor = self.runtime.session.floor.value
+        return (
+            floor is not None
+            and plan_floor_token(floor) == self.checkpoint["floor_token"]
+            and self.runtime.slam_map.floor_plan_is_current(floor)
+        )
+
+    def completion_is_current(self) -> bool:
+        """Return whether that floor still names the run's rooms as planned."""
+        floor = self.runtime.session.floor.value
+        return (
+            floor is not None
+            and self.floor_is_current()
+            and room_completion_names_are_current(floor, self.rooms)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Rejoined:
+    """The live mission recovery verified, and what continues the run on it."""
+
+    identity: bytes
+    call: ServiceCall
+    robot: RobotPort
+
+
 async def async_recover_managed_run(
     hass: HomeAssistant, entry: MaticConfigEntry, serial_number: str
 ) -> None:
@@ -232,352 +337,20 @@ async def async_recover_managed_run(
     # after the unload handler already checked for a registered task.
     if entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
         return
-    runtime = entry.runtime_data
-    manager = runtime.cleaning_plans
+    manager = entry.runtime_data.cleaning_plans
     restored_stop_owner = manager.control.pending_stop_run_id(serial_number)
-
-    def restore_stop_settlement() -> None:
-        owner = manager.control.pending_stop_run_id(serial_number)
-        entity_id = er.async_get(hass).async_get_entity_id(
-            "vacuum", DOMAIN, f"{serial_number}_vacuum"
-        )
-        if (
-            owner is not None
-            and owner == restored_stop_owner
-            and entity_id is not None
-            and not manager.control.dock_reconciliation_active(serial_number)
-        ):
-            _schedule_managed_dock_after_stop(
-                hass, entry, manager, serial_number, entity_id, owner, None
-            )
-
     run = manager.recovery.recovery_run(serial_number)
     if run is None:
-        restore_stop_settlement()
+        _restore_stop_settlement(hass, entry, serial_number, restored_stop_owner)
         return
     manager.control.register_run_task(serial_number)
     cancel = manager.control.prepare_run(serial_number)
     generation = manager.control.motion_generation(serial_number)
-    reason = "restart_checkpoint_unverified"
+    reason = _CHECKPOINT_UNVERIFIED
     checkpoint = run["recovery_checkpoint"]
     try:
-        if manager.control.pending_stop_run_id(serial_number) is not None:
-            reason = "restart_stop_settlement_pending"
-            return
-        restarted, _ = transition(Run(), Restarted(run))
-        if restarted.ended is not None:
-            reason = restarted.ended
-            return
-        rooms = [CleaningRoom(**room) for room in checkpoint["rooms"]]
-        legs = checkpoint_legs(checkpoint)
-        leg = legs[restarted.leg_index]
-        phase = restarted.phase
-        expected = checkpoint[
-            "mixed_initial_session_hash"
-            if phase is RunPhase.DISPATCHING
-            else "native_identity_hash"
-        ]
-        entity_id = er.async_get(hass).async_get_entity_id(
-            "vacuum", DOMAIN, f"{serial_number}_vacuum"
-        )
-        if entity_id is None:
-            return
-
-        command = partial(
-            _async_managed_user_command,
-            hass,
-            entry,
-            manager,
-            serial_number,
-            entity_id,
-            None,
-        )
-
-        def floor_is_current() -> bool:
-            floor = runtime.session.floor.value
-            return (
-                floor is not None
-                and plan_floor_token(floor) == checkpoint["floor_token"]
-                and runtime.slam_map.floor_plan_is_current(floor)
-            )
-
-        def completion_is_current() -> bool:
-            floor = runtime.session.floor.value
-            return (
-                floor is not None
-                and floor_is_current()
-                and room_completion_names_are_current(floor, rooms)
-            )
-
-        identity: bytes | None = None
-        for attempt in range(RECOVERY_ATTEMPTS):
-            if (
-                cancel.is_set()
-                or manager.control.motion_generation(serial_number) != generation
-            ):
-                reason = "restart_recovery_cancelled"
-                return
-            try:
-                await runtime.session.heartbeat.async_request_refresh()
-                identity = await runtime.client.async_get_cleaning_session_identity()
-            except MaticError:
-                identity = None
-            if identity is not None and floor_is_current():
-                break
-            if attempt + 1 < RECOVERY_ATTEMPTS:
-                await asyncio.sleep(RECOVERY_RETRY_SECONDS)
-        else:
-            reason = "restart_state_unavailable"
-            return
-        if phase is RunPhase.DISPATCHING:
-            if not identity or not _matches_mixed_session_hash(identity, expected):
-                reason = "restart_mixed_native_mission_changed_or_ended"
-                return
-            reason = await _async_stop_interrupted_mixed_dispatch(
-                hass,
-                entry,
-                serial_number,
-                run,
-                expected,
-                identity,
-                generation,
-                cancel,
-                floor_is_current,
-            )
-            return
-        # Room labels authorize dispatch and credit, not STOP of an already
-        # owned interrupted mission, which depends on native and floor identity.
-        if not completion_is_current():
-            reason = "restart_recovery_superseded"
-            return
-        same_mission = (
-            bool(identity) and hashlib.sha256(identity).hexdigest() == expected
-        )
-        ended = identity == b""
-        if not (
-            ended
-            if phase is RunPhase.VERIFYING
-            else same_mission or (phase is RunPhase.HANDOFF and ended)
-        ):
-            reason = "restart_native_mission_changed_or_ended"
-            return
-        call = _recovered_call(hass, run, checkpoint)
-        robot = RobotPort.for_entry(hass, entry, entity_id)
-
-        async def execute(**resume: Any) -> str:
-            """Continue in the loop a new run uses, from the restarted leg."""
-            await _async_execute_rooms(
-                hass,
-                call,
-                manager,
-                entity_id,
-                serial_number,
-                rooms,
-                robot=robot,
-                managed_user_command=command,
-                mapped_room_names=tuple(
-                    room.name for room in current_floor_plan(entry).rooms
-                ),
-                floor_is_current=completion_is_current,
-                floor_token=checkpoint["floor_token"],
-                recovery=run,
-                **resume,
-            )
-            return (
-                "home_assistant_shutdown"
-                if _shutdown_suspends_run(hass, manager, serial_number)
-                else "restart_execution_ended"
-            )
-
-        if phase is RunPhase.HANDOFF:
-            handoff_history = checkpoint.get("handoff_history")
-            if not isinstance(handoff_history, list) or not all(
-                isinstance(key, str) and len(key) == 64 for key in handoff_history
-            ):
-                reason = "restart_handoff_history_unavailable"
-                return
-            records = await runtime.client.async_get_cleaning_session_records(
-                strict=True
-            )
-            if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
-                handoff_history
-            ):
-                reason = "restart_handoff_history_changed"
-                return
-            await manager.recovery.async_mark_recovery_status(
-                serial_number, "running", reason="handoff_checkpoint_verified"
-            )
-            # Settle before the loop starts the next leg, as recovery always
-            # has: the loop's own handoff may send that leg while the robot
-            # still drives home.
-            settled = await _async_wait_for_settled_leg_handoff(
-                robot,
-                cancel,
-                expected_identity=identity if identity else None,
-                reject_new_identity=not identity,
-                timeout_seconds=LEG_HANDOFF_TIMEOUT_SECONDS,
-                finish_room_event=manager.control.finish_room_event(serial_number),
-            )
-            if manager.control.finish_room_event(serial_number).is_set():
-                reason = "restart_stop_requested"
-                return
-            if not settled:
-                reason = "restart_handoff_unsettled"
-                return
-            if (
-                cancel.is_set()
-                or manager.control.motion_generation(serial_number) != generation
-                or not completion_is_current()
-            ):
-                reason = "restart_recovery_cancelled"
-                return
-            reason = await execute(
-                recovered_dispatch=None, handoff_expected_identity=identity or b""
-            )
-            return
-        dispatched_at = stored_instant(checkpoint["dispatched_at"])
-        assert dispatched_at is not None
-        records = await runtime.client.async_get_cleaning_session_records()
-        hashes = checkpoint.get("history_baseline")
-        if not isinstance(hashes, list):
-            return
-        baseline = frozenset(
-            record.key
-            for record in records
-            if hashlib.sha256(record.key).hexdigest() in hashes
-        )
-        # Recheck after I/O: Stop, takeover, and map transitions win recovery.
-        if (
-            cancel.is_set()
-            or manager.control.motion_generation(serial_number) != generation
-            or not completion_is_current()
-            or await runtime.client.async_get_cleaning_session_identity()
-            not in {identity, b""}
-        ):
-            reason = "restart_recovery_superseded"
-            return
-        # The same mission was verified above. An explicit end during the
-        # history read is a terminal handoff, not a takeover; the executor still
-        # requires normal return and native room evidence before crediting it.
-        await manager.recovery.async_mark_recovery_status(
-            serial_number, "running", reason="same_native_mission_verified"
-        )
-        if (
-            cancel.is_set()
-            or manager.control.motion_generation(serial_number) != generation
-        ):
-            reason = "restart_recovery_cancelled"
-            return
-        if phase is RunPhase.ACCEPTED:
-            reason = await execute(
-                recovered_dispatch=_PreparedRoomDispatch(
-                    () if isinstance(leg, AreaLeg) else tuple(leg),
-                    baseline,
-                    dispatched_at,
-                    native_identity=identity,
-                    recovered=True,
-                    completion_deadline=stored_instant(
-                        checkpoint["completion_deadline"]
-                    ),
-                )
-            )
-            return
-        # The mission end was observed and saved before shutdown. Only its
-        # bounded history read resumes here, outside the loop: the loop would
-        # go on to dock the robot or start the next leg, which recovery never
-        # authorizes after a verifying checkpoint.
-        assert isinstance(leg, list)
-        verification_deadline = stored_instant(checkpoint["verification_deadline"])
-        assert verification_deadline is not None
-        remaining = (verification_deadline - dt_util.utcnow()).total_seconds()
-        if remaining <= 0:
-            reason = "restart_verification_expired"
-            return
-        await manager.recovery.async_mark_recovery_status(
-            serial_number, "verifying", reason="native_end_previously_observed"
-        )
-
-        async def read_history() -> tuple[CleaningSessionRecord, ...]:
-            records = await runtime.client.async_get_cleaning_session_records()
-            if (
-                cancel.is_set()
-                or manager.control.motion_generation(serial_number) != generation
-                or not completion_is_current()
-                or await runtime.client.async_get_cleaning_session_identity() != b""
-            ):
-                raise HomeAssistantError(
-                    "Completion recovery was superseded",
-                    translation_domain=DOMAIN,
-                    translation_key="run_changed",
-                )
-            return records
-
-        completion_sessions: list[str] = []
-        evidence = await _async_verify_leg_completion(
-            read_history,
-            baseline,
-            leg,
-            dispatched_at,
-            robot=robot,
-            cancel_event=cancel,
-            timeout_seconds=remaining,
-            on_verified_session=completion_sessions.append,
-        )
-        verified_coverage = await async_confirm_completed_coverage(
-            manager.recovery.coverage_receipt(serial_number, run["run_id"]),
-            completion_sessions[-1] if completion_sessions else None,
-            runtime.client.async_confirm_coverage_receipt,
-        )
-        if (
-            cancel.is_set()
-            or manager.control.motion_generation(serial_number) != generation
-            or not completion_is_current()
-        ):
-            reason = "restart_recovery_superseded"
-            return
-        for room in leg:
-            if (
-                evidence
-                and room.room_id in evidence
-                and room.room_id not in restarted.completed_room_ids
-            ):
-                completed_at, duration = evidence[room.room_id]
-                if not await manager.ledger.async_mark_completed(
-                    serial_number,
-                    run["plan_id"],
-                    room,
-                    run_id=run.get("run_id"),
-                    completed_at=completed_at,
-                    duration_seconds=duration,
-                    verified_coverage_receipt=verified_coverage,
-                    completion_is_current=lambda: (
-                        not cancel.is_set()
-                        and manager.control.motion_generation(serial_number)
-                        == generation
-                        and completion_is_current()
-                    ),
-                ):
-                    reason = "restart_recovery_superseded"
-                    return
-                restarted, _ = transition(restarted, RoomVerified(room.room_id))
-                robot.confirm_room_completed(room.name)
-                fire_room_event(
-                    hass,
-                    call,
-                    entity_id,
-                    room,
-                    "completed",
-                    run_id=run["run_id"],
-                    provenance=run["provenance"],
-                    reason_code="verified_completion",
-                )
-        reason = (
-            restarted.end_reason
-            if restarted.all_settled(
-                {room.room_id for room in rooms},
-                {index for index, item in enumerate(legs) if isinstance(item, AreaLeg)},
-            )
-            else "restart_remaining_queue_unverified"
+        reason = await _async_recovery_reason(
+            hass, entry, serial_number, run, cancel, generation
         )
     except asyncio.CancelledError:
         if _shutdown_suspends_run(hass, manager, serial_number):
@@ -599,49 +372,407 @@ async def async_recover_managed_run(
             and not _shutdown_suspends_run(hass, manager, serial_number)
             and manager.recovery.recovery_run(serial_number) is not None
         ):
-            completed = reason in RUN_SETTLED_REASONS
-            cancellation = manager.control.cancellation_reason(serial_number)
-            replaced = cancellation == "motion_replaced"
-            stopped = (
-                cancellation == "managed_stop"
-                or reason == "restart_stop_requested"
-                or checkpoint.get("stop_intent") in {"immediate", "not_running"}
-                or (
-                    checkpoint.get("phase") in {RunPhase.VERIFYING, RunPhase.HANDOFF}
-                    and checkpoint.get("stop_intent") == "after_room"
-                    and not completed
-                )
-            )
-            if cancellation == "config_entry_unload":
-                reason = "config_entry_unload"
-            await async_finish_plan_run(
-                hass,
-                manager,
-                serial_number,
-                checkpoint.get("entity_id"),
-                {key: run.get(key) for key in _STARTED},
-                "cancelled"
-                if replaced or stopped
-                else "completed"
-                if completed
-                else "unverified",
-                "managed_replaced"
-                if replaced
-                else "managed_stop"
-                if stopped
-                else reason,
-                "replacement"
-                if replaced
-                else "managed_cancellation"
-                if stopped
-                else "verified_completion"
-                if completed
-                else "home_assistant",
-                manager.history.snapshot(serial_number)["last_run"][
-                    "completed_room_count"
-                ],
+            await _async_finish_recovered_run(
+                hass, manager, serial_number, run, checkpoint, reason
             )
         shutdown_suspended = _shutdown_suspends_run(hass, manager, serial_number)
         manager.control.unregister_run_task(serial_number)
         if not shutdown_suspended:
-            restore_stop_settlement()
+            _restore_stop_settlement(hass, entry, serial_number, restored_stop_owner)
+
+
+async def _async_recovery_reason(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    serial_number: str,
+    run: dict[str, Any],
+    cancel: asyncio.Event,
+    generation: int,
+) -> str:
+    """Resume the stored run where it can go on and return why recovery ended."""
+    manager = entry.runtime_data.cleaning_plans
+    checkpoint = run["recovery_checkpoint"]
+    if manager.control.pending_stop_run_id(serial_number) is not None:
+        return "restart_stop_settlement_pending"
+    restarted, _ = transition(Run(), Restarted(run))
+    if restarted.ended is not None:
+        return restarted.ended
+    rooms = [CleaningRoom(**room) for room in checkpoint["rooms"]]
+    legs = checkpoint_legs(checkpoint)
+    leg = legs[restarted.leg_index]
+    expected = checkpoint[
+        "mixed_initial_session_hash"
+        if restarted.phase is RunPhase.DISPATCHING
+        else "native_identity_hash"
+    ]
+    entity_id = _vacuum_entity_id(hass, serial_number)
+    if entity_id is None:
+        return _CHECKPOINT_UNVERIFIED
+    recovery = _Recovery(
+        hass,
+        entry,
+        serial_number,
+        run,
+        checkpoint,
+        cancel,
+        generation,
+        restarted,
+        rooms,
+        legs,
+        leg,
+        expected,
+        entity_id,
+    )
+    identity: bytes | None
+    for attempt in range(RECOVERY_ATTEMPTS):
+        if recovery.lost_ownership():
+            return "restart_recovery_cancelled"
+        try:
+            await recovery.runtime.session.heartbeat.async_request_refresh()
+            identity = (
+                await recovery.runtime.client.async_get_cleaning_session_identity()
+            )
+        except MaticError:
+            identity = None
+        if identity is not None and recovery.floor_is_current():
+            return await _async_resume(recovery, identity)
+        if attempt + 1 < RECOVERY_ATTEMPTS:
+            await asyncio.sleep(RECOVERY_RETRY_SECONDS)
+    return "restart_state_unavailable"
+
+
+async def _async_resume(recovery: _Recovery, identity: bytes) -> str:
+    """Check the live mission against the checkpoint and resume its phase."""
+    phase, expected = recovery.restarted.phase, recovery.expected_hash
+    if phase is RunPhase.DISPATCHING:
+        if not identity or not _matches_mixed_session_hash(identity, expected):
+            return "restart_mixed_native_mission_changed_or_ended"
+        return await _async_stop_interrupted_mixed_dispatch(
+            recovery.hass,
+            recovery.entry,
+            recovery.serial_number,
+            recovery.run,
+            expected,
+            identity,
+            recovery.generation,
+            recovery.cancel,
+            recovery.floor_is_current,
+        )
+    # Room labels authorize dispatch and credit, not STOP of an already
+    # owned interrupted mission, which depends on native and floor identity.
+    if not recovery.completion_is_current():
+        return "restart_recovery_superseded"
+    same_mission = bool(identity) and hashlib.sha256(identity).hexdigest() == expected
+    ended = identity == b""
+    if not (
+        ended
+        if phase is RunPhase.VERIFYING
+        else same_mission or (phase is RunPhase.HANDOFF and ended)
+    ):
+        return "restart_native_mission_changed_or_ended"
+    rejoined = _Rejoined(
+        identity,
+        _recovered_call(recovery.hass, recovery.run, recovery.checkpoint),
+        RobotPort.for_entry(recovery.hass, recovery.entry, recovery.entity_id),
+    )
+    if phase is RunPhase.HANDOFF:
+        return await _async_resume_handoff(recovery, rejoined)
+    return await _async_resume_mission(recovery, rejoined)
+
+
+async def _async_execute(
+    recovery: _Recovery, rejoined: _Rejoined, **resume: Any
+) -> str:
+    """Continue in the loop a new run uses, from the restarted leg."""
+    hass, manager, serial_number = (
+        recovery.hass,
+        recovery.manager,
+        recovery.serial_number,
+    )
+    await _async_execute_rooms(
+        hass,
+        rejoined.call,
+        manager,
+        recovery.entity_id,
+        serial_number,
+        recovery.rooms,
+        robot=rejoined.robot,
+        managed_user_command=partial(
+            _async_managed_user_command,
+            hass,
+            recovery.entry,
+            manager,
+            serial_number,
+            recovery.entity_id,
+            None,
+        ),
+        mapped_room_names=tuple(
+            room.name for room in current_floor_plan(recovery.entry).rooms
+        ),
+        floor_is_current=recovery.completion_is_current,
+        floor_token=recovery.checkpoint["floor_token"],
+        recovery=recovery.run,
+        **resume,
+    )
+    return (
+        "home_assistant_shutdown"
+        if _shutdown_suspends_run(hass, manager, serial_number)
+        else "restart_execution_ended"
+    )
+
+
+async def _async_resume_handoff(recovery: _Recovery, rejoined: _Rejoined) -> str:
+    """Settle the leg a shutdown interrupted between legs, then run the rest."""
+    manager, serial_number = recovery.manager, recovery.serial_number
+    identity = rejoined.identity
+    handoff_history = recovery.checkpoint.get("handoff_history")
+    if not isinstance(handoff_history, list) or not all(
+        isinstance(key, str) and len(key) == 64 for key in handoff_history
+    ):
+        return "restart_handoff_history_unavailable"
+    records = await recovery.runtime.client.async_get_cleaning_session_records(
+        strict=True
+    )
+    if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
+        handoff_history
+    ):
+        return "restart_handoff_history_changed"
+    await manager.recovery.async_mark_recovery_status(
+        serial_number, "running", reason="handoff_checkpoint_verified"
+    )
+    # Settle before the loop starts the next leg, as recovery always
+    # has: the loop's own handoff may send that leg while the robot
+    # still drives home.
+    settled = await _async_wait_for_settled_leg_handoff(
+        rejoined.robot,
+        recovery.cancel,
+        expected_identity=identity if identity else None,
+        reject_new_identity=not identity,
+        timeout_seconds=LEG_HANDOFF_TIMEOUT_SECONDS,
+        finish_room_event=manager.control.finish_room_event(serial_number),
+    )
+    if manager.control.finish_room_event(serial_number).is_set():
+        return "restart_stop_requested"
+    if not settled:
+        return "restart_handoff_unsettled"
+    if recovery.lost_ownership() or not recovery.completion_is_current():
+        return "restart_recovery_cancelled"
+    return await _async_execute(
+        recovery,
+        rejoined,
+        recovered_dispatch=None,
+        handoff_expected_identity=identity or b"",
+    )
+
+
+async def _async_resume_mission(recovery: _Recovery, rejoined: _Rejoined) -> str:
+    """Rejoin an accepted mission, or finish the history read of an ended one."""
+    manager, serial_number = recovery.manager, recovery.serial_number
+    checkpoint, identity = recovery.checkpoint, rejoined.identity
+    dispatched_at = stored_instant(checkpoint["dispatched_at"])
+    assert dispatched_at is not None
+    records = await recovery.runtime.client.async_get_cleaning_session_records()
+    hashes = checkpoint.get("history_baseline")
+    if not isinstance(hashes, list):
+        return _CHECKPOINT_UNVERIFIED
+    baseline = frozenset(
+        record.key
+        for record in records
+        if hashlib.sha256(record.key).hexdigest() in hashes
+    )
+    # Recheck after I/O: Stop, takeover, and map transitions win recovery.
+    if (
+        recovery.lost_ownership()
+        or not recovery.completion_is_current()
+        or await recovery.runtime.client.async_get_cleaning_session_identity()
+        not in {identity, b""}
+    ):
+        return "restart_recovery_superseded"
+    # The same mission was verified above. An explicit end during the
+    # history read is a terminal handoff, not a takeover; the executor still
+    # requires normal return and native room evidence before crediting it.
+    await manager.recovery.async_mark_recovery_status(
+        serial_number, "running", reason="same_native_mission_verified"
+    )
+    if recovery.lost_ownership():
+        return "restart_recovery_cancelled"
+    leg = recovery.leg
+    if recovery.restarted.phase is RunPhase.ACCEPTED:
+        return await _async_execute(
+            recovery,
+            rejoined,
+            recovered_dispatch=_PreparedRoomDispatch(
+                () if isinstance(leg, AreaLeg) else tuple(leg),
+                baseline,
+                dispatched_at,
+                native_identity=identity,
+                recovered=True,
+                completion_deadline=stored_instant(checkpoint["completion_deadline"]),
+            ),
+        )
+    # The mission end was observed and saved before shutdown. Only its
+    # bounded history read resumes here, outside the loop: the loop would
+    # go on to dock the robot or start the next leg, which recovery never
+    # authorizes after a verifying checkpoint.
+    assert isinstance(leg, list)
+    return await _async_verify_ended_leg(
+        recovery, rejoined, leg, baseline, dispatched_at
+    )
+
+
+async def _async_verify_ended_leg(
+    recovery: _Recovery,
+    rejoined: _Rejoined,
+    leg: list[CleaningRoom],
+    baseline: frozenset[bytes],
+    dispatched_at: datetime,
+) -> str:
+    """Read the ended leg's history within its saved budget and credit it."""
+    manager, serial_number = recovery.manager, recovery.serial_number
+    runtime = recovery.runtime
+    verification_deadline = stored_instant(recovery.checkpoint["verification_deadline"])
+    assert verification_deadline is not None
+    remaining = (verification_deadline - dt_util.utcnow()).total_seconds()
+    if remaining <= 0:
+        return "restart_verification_expired"
+    await manager.recovery.async_mark_recovery_status(
+        serial_number, "verifying", reason="native_end_previously_observed"
+    )
+
+    async def read_history() -> tuple[CleaningSessionRecord, ...]:
+        records = await runtime.client.async_get_cleaning_session_records()
+        if (
+            recovery.lost_ownership()
+            or not recovery.completion_is_current()
+            or await runtime.client.async_get_cleaning_session_identity() != b""
+        ):
+            raise HomeAssistantError(
+                "Completion recovery was superseded",
+                translation_domain=DOMAIN,
+                translation_key="run_changed",
+            )
+        return records
+
+    completion_sessions: list[str] = []
+    evidence = await _async_verify_leg_completion(
+        read_history,
+        baseline,
+        leg,
+        dispatched_at,
+        robot=rejoined.robot,
+        cancel_event=recovery.cancel,
+        timeout_seconds=remaining,
+        on_verified_session=completion_sessions.append,
+    )
+    verified_coverage = await async_confirm_completed_coverage(
+        manager.recovery.coverage_receipt(serial_number, recovery.run["run_id"]),
+        completion_sessions[-1] if completion_sessions else None,
+        runtime.client.async_confirm_coverage_receipt,
+    )
+    if recovery.lost_ownership() or not recovery.completion_is_current():
+        return "restart_recovery_superseded"
+    return await _async_credit_verified_rooms(
+        recovery, rejoined, leg, evidence, verified_coverage
+    )
+
+
+async def _async_credit_verified_rooms(
+    recovery: _Recovery,
+    rejoined: _Rejoined,
+    leg: list[CleaningRoom],
+    evidence: dict[str, tuple[str, int]] | None,
+    verified_coverage: CoverageReceipt | None,
+) -> str:
+    """Credit each room the history proves and say whether the run is settled."""
+    run, restarted = recovery.run, recovery.restarted
+    for room in leg:
+        if (
+            evidence
+            and room.room_id in evidence
+            and room.room_id not in restarted.completed_room_ids
+        ):
+            completed_at, duration = evidence[room.room_id]
+            if not await recovery.manager.ledger.async_mark_completed(
+                recovery.serial_number,
+                run["plan_id"],
+                room,
+                run_id=run.get("run_id"),
+                completed_at=completed_at,
+                duration_seconds=duration,
+                verified_coverage_receipt=verified_coverage,
+                completion_is_current=lambda: (
+                    not recovery.lost_ownership() and recovery.completion_is_current()
+                ),
+            ):
+                return "restart_recovery_superseded"
+            restarted, _ = transition(restarted, RoomVerified(room.room_id))
+            rejoined.robot.confirm_room_completed(room.name)
+            fire_room_event(
+                recovery.hass,
+                rejoined.call,
+                recovery.entity_id,
+                room,
+                "completed",
+                run_id=run["run_id"],
+                provenance=run["provenance"],
+                reason_code="verified_completion",
+            )
+    return (
+        restarted.end_reason
+        if restarted.all_settled(
+            {room.room_id for room in recovery.rooms},
+            {
+                index
+                for index, item in enumerate(recovery.legs)
+                if isinstance(item, AreaLeg)
+            },
+        )
+        else "restart_remaining_queue_unverified"
+    )
+
+
+async def _async_finish_recovered_run(
+    hass: HomeAssistant,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    run: dict[str, Any],
+    checkpoint: dict[str, Any],
+    reason: str,
+) -> None:
+    """End the run as stopped, replaced, completed or unverified."""
+    completed = reason in RUN_SETTLED_REASONS
+    cancellation = manager.control.cancellation_reason(serial_number)
+    replaced = cancellation == "motion_replaced"
+    stopped = (
+        cancellation == "managed_stop"
+        or reason == "restart_stop_requested"
+        or checkpoint.get("stop_intent") in {"immediate", "not_running"}
+        or (
+            checkpoint.get("phase") in {RunPhase.VERIFYING, RunPhase.HANDOFF}
+            and checkpoint.get("stop_intent") == "after_room"
+            and not completed
+        )
+    )
+    if cancellation == "config_entry_unload":
+        reason = "config_entry_unload"
+    await async_finish_plan_run(
+        hass,
+        manager,
+        serial_number,
+        checkpoint.get("entity_id"),
+        {key: run.get(key) for key in _STARTED},
+        "cancelled"
+        if replaced or stopped
+        else "completed"
+        if completed
+        else "unverified",
+        "managed_replaced" if replaced else "managed_stop" if stopped else reason,
+        "replacement"
+        if replaced
+        else "managed_cancellation"
+        if stopped
+        else "verified_completion"
+        if completed
+        else "home_assistant",
+        manager.history.snapshot(serial_number)["last_run"]["completed_room_count"],
+    )
