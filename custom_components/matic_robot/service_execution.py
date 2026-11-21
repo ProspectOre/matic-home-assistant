@@ -227,7 +227,11 @@ async def _async_execute(
     rooms: list[CleaningRoom],
     floor_token: str,
     on_started: Callable[[str], None],
-    **options: Any,
+    *,
+    cadence_by_room: Mapping[str, Mapping[str, Any]],
+    validate_prepared_run: Callable[[], None],
+    entries: Sequence[Mapping[str, Any]] | None = None,
+    held_rooms: Sequence[Mapping[str, str]] = (),
 ) -> str:
     """Hand one resolved run to the executor, bound to its robot and map."""
     entity_id, entry, serial_number, room_map = target
@@ -252,7 +256,10 @@ async def _async_execute(
         floor_is_current=partial(_floor_is_current, entry, floor_token, rooms),
         floor_token=floor_token,
         on_started=on_started,
-        **options,
+        cadence_by_room=cadence_by_room,
+        validate_prepared_run=validate_prepared_run,
+        entries=entries,
+        held_rooms=held_rooms,
     )
 
 
