@@ -72,6 +72,47 @@ test("losing live authority clears following immediately", () => {
   assert.equal(store.value.followMode, "off");
 });
 
+test("following pauses through a missing pose and ends when the robot or its map changes", () => {
+  const base = initialWorkspaceState();
+  const entry = { entryId: "robot", mapFloorCoherent: true, mapSessionVerified: true,
+    mapSessionKey: "session-a", mapSceneEpoch: "epoch-a" };
+  const pose = { position: [1, 2], floorCoherent: true, mapSessionKey: "session-a", heading: 0 };
+  const posed = (value) => ({ map: { ...store.value.map, exactPose: value !== null },
+    resources: { ...store.value.resources, pose: { status: value ? "ready" : "idle", value, problem: null } } });
+  const store = new WorkspaceStore({ ...base, pageActive: true, coherence: "current",
+    host: { ...base.host, administrator: true, connected: true, robotConnected: true },
+    map: { ...base.map, available: true, floorCoherent: true, sessionVerified: true, exactPose: true },
+    resources: { ...base.resources, entry, scene: { status: "ready", value: { source: "live" }, problem: null },
+      pose: { status: "ready", value: pose, problem: null } },
+  });
+  store.dispatch({ type: "set-follow-mode", mode: "ride" });
+  assert.equal(store.value.followMode, "ride");
+  store.replace({ ...store.value, ...posed(null) });
+  assert.equal(store.value.followMode, "ride");
+  // A catalog refresh hands over an equal entry, which is the same robot and map.
+  store.replace({ ...store.value, resources: { ...store.value.resources, entry: { ...entry } } });
+  assert.equal(store.value.followMode, "ride");
+  store.replace({ ...store.value, ...posed({ ...pose, heading: null }) });
+  assert.equal(store.value.followMode, "ride");
+  store.replace({ ...store.value, ...posed(pose) });
+  assert.equal(store.value.followMode, "ride");
+  // Switching to another mode still needs the pose it follows.
+  store.replace({ ...store.value, ...posed(null) });
+  store.dispatch({ type: "set-follow-mode", mode: "follow" });
+  assert.equal(store.value.followMode, "ride");
+  store.replace({ ...store.value, ...posed(pose) });
+  store.dispatch({ type: "set-follow-mode", mode: "follow" });
+  assert.equal(store.value.followMode, "follow");
+  store.replace({ ...store.value, ...posed(null), resources: { ...store.value.resources,
+    pose: { status: "idle", value: null, problem: null }, entry: { ...entry, mapSceneEpoch: "epoch-b" } } });
+  assert.equal(store.value.followMode, "off");
+  store.replace({ ...store.value, ...posed(pose), resources: { ...store.value.resources, entry } });
+  store.dispatch({ type: "set-follow-mode", mode: "follow" });
+  store.replace({ ...store.value, ...posed(null), resources: { ...store.value.resources,
+    pose: { status: "idle", value: null, problem: null }, entry: { ...entry, entryId: "robot-b" } } });
+  assert.equal(store.value.followMode, "off");
+});
+
 test("overlap candidates include both catalogs and discard stale ids", () => {
   const state = initialWorkspaceState();
   const store = new WorkspaceStore({ ...state, resources: { ...state.resources,

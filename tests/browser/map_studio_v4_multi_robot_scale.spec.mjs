@@ -43,7 +43,7 @@ const robotStates = Object.fromEntries(entries.map((item, index) => [
   { state: index ? "docked" : "idle", attributes: { matic_entry_id: item.entry_id } },
 ]));
 
-test("three robot identities keep floor and saved-map selection isolated across large catalogs and stale responses", async ({ page }) => {
+test("three robot identities keep floor and saved-map selection isolated across large catalogs and stale responses @household", async ({ page }) => {
   const largeRooms = Array.from({ length: 250 }, (_, index) => ({
     id: `scene-room-${index}`,
     name: `Room ${index}`,
@@ -98,4 +98,57 @@ test("three robot identities keep floor and saved-map selection isolated across 
     return [state.selection.entryId, state.resources.entry?.entryId ?? null,
       state.resources.scene.status, state.resources.scene.value?.metadata.rooms.length ?? 0];
   })).toEqual(["synthetic-entry", "synthetic-entry", "ready", 250]);
+});
+
+test("the robot picker tells robots with one name apart and names a robot that has none @household", async ({ page }) => {
+  const fixture = await installPanelFixture(page, {
+    initialCatalogEntries: entries,
+    initialRobotStates: {
+      "vacuum.robot_a": { state: "idle", attributes: { matic_entry_id: "synthetic-entry", friendly_name: "Matic" } },
+      "vacuum.robot_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b", friendly_name: "Matic" } },
+      "vacuum.spare_robot": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-c" } },
+    },
+    registries: {
+      entities: { "vacuum.robot_a": { device_id: "device-a" }, "vacuum.robot_b": { device_id: "device-b" } },
+      devices: { "device-a": { name: "Matic", area_id: "upstairs" }, "device-b": { name: "Matic", area_id: "downstairs" } },
+      areas: { upstairs: { name: "Upstairs" }, downstairs: { name: "Downstairs" } },
+    },
+  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const selector = page.locator(fixture.panelTag).locator("select.robot-switcher");
+  await expect(selector.locator("option")).toHaveText(["Downstairs · Matic", "Upstairs · Matic", "spare robot"]);
+  await selector.selectOption({ label: "Downstairs · Matic" });
+  await expect(selector).toHaveValue("synthetic-entry-b");
+});
+
+test("the robot picker keeps a 44 px target on a 320 px phone, with and without Full map @household", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  const fixture = await installPanelFixture(page, {
+    initialCatalogEntries: entries.slice(0, 2),
+    initialRobotStates: {
+      "vacuum.robot_a": { state: "idle", attributes: { matic_entry_id: "synthetic-entry", friendly_name: "Matic" } },
+      "vacuum.robot_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b", friendly_name: "Matic" } },
+    },
+  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  const selector = panel.locator("select.robot-switcher");
+  const target = async () => {
+    await expect(selector).toBeVisible();
+    const box = await selector.boundingBox();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.x + box.width).toBeLessThanOrEqual(320);
+    // Nothing else in the bar is pushed off the screen to make room.
+    const bar = await selector.evaluate((element) => Array.from(element.parentElement.children, (child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.width ? rect.right : 0;
+    }));
+    expect(Math.max(...bar)).toBeLessThanOrEqual(320);
+  };
+  await target();
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
+  await panel.getByRole("button", { name: "Full map", exact: true }).click();
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().fullMap)).toBe(true);
+  await target();
 });

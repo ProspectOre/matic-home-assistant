@@ -63,3 +63,17 @@ test("Fit map turns following off", async ({ page }) => {
   await page.locator("matic-map-canvas-v4").getByRole("button", { name: "Fit the whole map on screen" }).click();
   await expect.poll(following).toBe(false);
 });
+
+test("a gap in the robot's position pauses following until the position returns", async ({ page }) => {
+  const { following } = await openFollowing(page);
+  const waiting = page.locator("matic-map-canvas-v4").getByRole("status").filter({ hasText: "Waiting for the robot's position" });
+  await page.evaluate(() => window.__panelFixture.pushPose(null));
+  await expect.poll(() => page.evaluate(() =>
+    document.querySelector(window.__panelFixture.panelTag).getWorkspaceSnapshot().map.exactPose)).toBe(false);
+  expect(await following()).toBe(true);
+  await expect(waiting).toBeVisible();
+
+  await page.evaluate(() => window.__panelFixture.pushPose([2, 1]));
+  await expect(waiting).toHaveCount(0);
+  expect(await following()).toBe(true);
+});

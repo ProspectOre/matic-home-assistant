@@ -25,7 +25,7 @@ export type MapQuality = "auto" | "efficient" | "balanced" | "maximum";
 export type MapAppearance = "photo" | "rooms";
 export type Localize = (key: string, placeholders?: Record<string, unknown>) => string;
 
-interface RobotChoice {
+export interface RobotChoice {
   readonly entryId: string;
   readonly label: string;
 }
@@ -686,6 +686,12 @@ export interface HassLike {
   /** Home Assistant's theme state; `darkMode` is the mode its frontend shows. */
   readonly themes?: { readonly darkMode?: boolean };
   readonly states?: Readonly<Record<string, HassEntityLike>>;
+  /** Home Assistant's entity, device and area registries, as its frontend holds them. */
+  readonly entities?: Readonly<Record<string, { readonly device_id?: string | null; readonly area_id?: string | null }>>;
+  readonly devices?: Readonly<Record<string, {
+    readonly name?: string | null; readonly name_by_user?: string | null; readonly area_id?: string | null;
+  }>>;
+  readonly areas?: Readonly<Record<string, { readonly name?: string }>>;
   readonly user?: {
     readonly id?: string;
     readonly is_admin?: boolean;
