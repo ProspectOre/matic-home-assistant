@@ -92,7 +92,9 @@ custom area marked done, partly done, stopped or not started, and how the
 clean ended. Cleans started in the Matic app or by a robot schedule are listed
 too. Open a clean to see the robot's own map picture of it, for the recent
 cleans the robot still keeps, and choose **Show trail on map** to draw the path
-the robot took. The path is sampled, so it can have gaps.
+the robot took. The path breaks where the robot wasn't seen for more than 8
+seconds or its position jumped more than a metre at once. A long clean keeps
+the points that shape the path, such as turns and the far end of a pass.
 
 ## Saved maps
 

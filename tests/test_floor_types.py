@@ -54,6 +54,12 @@ def _blank() -> np.ndarray:
     return np.full((32, 32), SemanticKind.HARD_FLOOR, dtype=np.uint8)
 
 
+def _carpet() -> np.ndarray:
+    cells = _blank()
+    cells[0:8, 0:8] = SemanticKind.CARPET
+    return cells
+
+
 def test_mission_token_matches_a_decoded_page_key() -> None:
     page = decode_slam_semantic_tile(synthetic_semantic_entry())
     assert page.mission_token == MISSION
@@ -184,8 +190,10 @@ def _runtime(
     cells[0:8, 0:8] = SemanticKind.CARPET
     pages = (_semantic_entry(cells), HermesCollectionEntry(b"bad", b"bad"))
     identity = None if mission_id is None else SlamMapIdentity(MISSION, mission_id)
+    floor = SimpleNamespace(mission_id=mission_id, partition_id_wire=b"partition")
     return SimpleNamespace(
         slam_map=SimpleNamespace(mission_identity=identity),
+        session=SimpleNamespace(floor=SimpleNamespace(value=floor)),
         client=SimpleNamespace(
             async_get_tracked_collection_entries=read
             or AsyncMock(
@@ -226,6 +234,7 @@ async def test_view_serves_outlines_and_caches_them_per_floor() -> None:
     assert runtime.client.async_get_tracked_collection_entries.await_count == 2
 
     runtime.slam_map.mission_identity = SlamMapIdentity("other", 7)
+    runtime.session.floor.value.mission_id = 7
     body = json.loads((await view.get(_request(runtime), "entry")).body)
     assert body["page_count"] == 0
     assert runtime.client.async_get_tracked_collection_entries.await_count == 4
@@ -351,3 +360,19 @@ async def test_concurrent_requests_share_one_read() -> None:
         view.get(_request(runtime), "entry"), view.get(_request(runtime), "entry")
     )
     assert runtime.client.async_get_tracked_collection_entries.await_count == 2
+
+
+async def test_a_remap_of_the_same_mission_drops_its_old_outlines() -> None:
+    reads = iter(((_semantic_entry(_carpet()),), (), (), ()))
+    runtime = _runtime(read=AsyncMock(side_effect=lambda name, limit: next(reads)))
+    view = MaticFloorLayersView()
+    body = json.loads((await view.get(_request(runtime), "entry")).body)
+    assert len(body["layers"]["carpet"]) == 1
+    # Same mission, new floor partition: a new map frame, read afresh.
+    runtime.session.floor.value = SimpleNamespace(
+        mission_id=0x1234ABCD, partition_id_wire=b"remapped"
+    )
+    body = json.loads((await view.get(_request(runtime), "entry")).body)
+    assert runtime.client.async_get_tracked_collection_entries.await_count == 4
+    assert body["page_count"] == 0
+    assert body["layers"]["carpet"] == []
