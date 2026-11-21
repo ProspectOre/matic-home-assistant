@@ -681,6 +681,55 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
     assert cancelled
 
 
+@pytest.mark.parametrize("multi_room", [False, True])
+@pytest.mark.parametrize("ended_by", ["cancellation", "budget"])
+async def test_history_read_waiting_for_its_record_ends_with_the_run(
+    hass, monkeypatch, multi_room, ended_by
+):
+    """A stop or unload, or the read budget, ends a read still waiting."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_TIMEOUT_SECONDS",
+        0.05 if ended_by == "budget" else 30,
+    )
+    cancel_event = asyncio.Event()
+    if ended_by == "cancellation":
+        hass.loop.call_later(0.01, cancel_event.set)
+    read_cancelled = False
+
+    async def waiting_reader(**_: object):
+        nonlocal read_cancelled
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            read_cancelled = True
+            raise
+        return ()
+
+    verify = _async_verify_leg_completion if multi_room else _async_adjudicate_room_end
+    async with asyncio.timeout(5):
+        if ended_by == "cancellation":
+            with pytest.raises(PlanCancelledError):
+                await verify(
+                    waiting_reader,
+                    frozenset(),
+                    leg_rooms() if multi_room else leg_rooms()[0],
+                    dt_util.utcnow(),
+                    robot=FakeRobot().port(),
+                    cancel_event=cancel_event,
+                )
+        else:
+            result = await verify(
+                waiting_reader,
+                frozenset(),
+                leg_rooms() if multi_room else leg_rooms()[0],
+                dt_util.utcnow(),
+                robot=FakeRobot().port(),
+                cancel_event=cancel_event,
+            )
+            assert not result or result is NativeRoomVerdict.UNVERIFIED
+    assert read_cancelled
+
+
 async def test_leg_rejects_ambiguous_normalized_native_room_names():
     """Distinct native names cannot collapse into one commanded room's credit."""
     robot = FakeRobot()

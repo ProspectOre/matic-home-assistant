@@ -94,7 +94,9 @@ at the dock. A replacement command, expiry, or ownership mismatch retires it.
   (history was unreadable, or the checkpoint predates it) cannot continue; nor
   can a robot that does not settle within the bounded 12-minute handoff wait.
 - If history verification had already begun, recovery resumes that observer
-  with its original deadline; it cannot dispatch another leg.
+  with its original deadline; it cannot dispatch another leg. After a Smart
+  Stop it reads only the rooms the robot kept, and closes the run as
+  `stopped_docked` once the robot is home, without sending it anything.
 - Missing floor evidence, malformed checkpoints, and old runs without checkpoints
   cannot resume cleaning. Previously cancelled runs are not resumed.
 - In a plan without custom areas, if every room was already durably verified,

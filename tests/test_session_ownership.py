@@ -2014,7 +2014,7 @@ async def _run_area_plan(
                 side_effect=robot.area_runs,
             ),
             patch(
-                "custom_components.matic_robot.managed_executor.schedule_dock_confirmation",
+                "custom_components.matic_robot.managed_dispatch.schedule_dock_confirmation",
                 MagicMock(return_value=False),
             ),
         ):

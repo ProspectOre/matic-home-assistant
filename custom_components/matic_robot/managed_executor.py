@@ -53,9 +53,6 @@ from .run_machine import (
     RunEvent,
     transition,
 )
-from .stop_return import (
-    schedule_dock_confirmation,
-)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -521,23 +518,14 @@ async def _async_execute_rooms_reserved(
                     if current.activity not in home_or_returning:
                         await outer_command(motion_token, UserCommand.DOCK)
                     if needs_dock_confirmation:
-                        schedule_dock_confirmation(
+                        dispatch_control._schedule_run_dock_confirmation(
                             hass,
-                            refresh=robot.refresh,
-                            manager=manager,
-                            serial_number=serial_number,
-                            entity_id=entity_id,
-                            run_id=run_id,
-                            set_run_id=robot.set_activity_run_id,
-                            get_run_id=robot.get_activity_run_id,
-                            on_docked=partial(
-                                dispatch_control._async_mark_run_docked,
-                                manager,
-                                serial_number,
-                                run_id,
-                                entity_id,
-                                call.context,
-                            ),
+                            manager,
+                            robot,
+                            serial_number,
+                            entity_id,
+                            run_id,
+                            call.context,
                         )
                         dock_confirmation_scheduled = True
                 except ManagedMotionReplacedError as err:
@@ -770,6 +758,8 @@ async def async_finish_plan_run(
         "terminal_activity": terminal_activity,
         "completed_room_count": completed_room_count,
     }
+    # A dock closure seen once the end is stored waits for plan_finished.
+    manager.control.run_ending(serial_number, started["run_id"])
     try:
         await manager.ledger.async_finish_run(
             serial_number,
@@ -786,14 +776,19 @@ async def async_finish_plan_run(
         if stored is not None:
             end.update({key: stored[key] for key in _STORED_END if key in stored})
     finally:
-        # Room events queue on the bus first; yield so plan_finished follows
-        # the room boundary it summarizes.
-        await asyncio.sleep(0)
-        hass.bus.async_fire(
-            EVENT_PLAN_FINISHED,
-            {ATTR_ENTITY_ID: entity_id, **started, **end},
-            context=context,
-        )
+        try:
+            # Room events queue on the bus first; yield so plan_finished
+            # follows the room boundary it summarizes.
+            await asyncio.sleep(0)
+        finally:
+            # Fired and released even when a second cancel lands on the yield,
+            # so a waiting dock closure always follows plan_finished.
+            hass.bus.async_fire(
+                EVENT_PLAN_FINISHED,
+                {ATTR_ENTITY_ID: entity_id, **started, **end},
+                context=context,
+            )
+            manager.control.run_ended(serial_number, started["run_id"])
 
 
 async def _async_execute_rooms(

@@ -32,6 +32,7 @@ from .coverage_accounting import async_confirm_completed_coverage
 from .managed_dispatch import (
     _async_managed_user_command,
     _schedule_managed_dock_after_stop,
+    _schedule_run_dock_confirmation,
     _shutdown_suspends_run,
 )
 from .managed_executor import _async_execute_rooms, async_finish_plan_run
@@ -428,7 +429,7 @@ async def async_recover_managed_run(
             and manager.recovery.recovery_run(serial_number) is not None
         ):
             await _async_finish_recovered_run(
-                hass, manager, serial_number, run, checkpoint, reason
+                hass, entry, serial_number, run, checkpoint, reason
             )
         shutdown_suspended = _shutdown_suspends_run(hass, manager, serial_number)
         manager.control.unregister_run_task(serial_number)
@@ -711,6 +712,7 @@ async def _async_verify_ended_leg(
         cancel_event=recovery.cancel,
         timeout_seconds=remaining,
         on_verified_session=completion_sessions.append,
+        skipped_room_ids=_withheld_room_ids(recovery, leg),
         session_hash=session_hash,
     )
     verified_coverage = await async_confirm_completed_coverage(
@@ -723,6 +725,22 @@ async def _async_verify_ended_leg(
     return await _async_credit_verified_rooms(
         recovery, rejoined, leg, evidence, verified_coverage
     )
+
+
+def _withheld_room_ids(recovery: _Recovery, leg: list[CleaningRoom]) -> set[str]:
+    """Return the rooms the run kept the robot from, as the leg runner does.
+
+    The owner's skips, and on a Smart Stop each room the robot never started:
+    the robot dropped those from its mission.
+    """
+    run_id, checkpoint = recovery.run["run_id"], recovery.checkpoint
+    withheld = set(
+        recovery.manager.ledger.skipped_room_ids(recovery.serial_number, run_id)
+    )
+    started = checkpoint.get("started_room_ids")
+    if checkpoint.get("stop_intent") == "after_room" and isinstance(started, list):
+        withheld |= {room.room_id for room in leg if room.room_id not in started}
+    return withheld
 
 
 async def _async_credit_verified_rooms(
@@ -785,25 +803,31 @@ async def _async_credit_verified_rooms(
 
 async def _async_finish_recovered_run(
     hass: HomeAssistant,
-    manager: CleaningPlanManager,
+    entry: MaticConfigEntry,
     serial_number: str,
     run: dict[str, Any],
     checkpoint: dict[str, Any],
     reason: str,
 ) -> None:
-    """End the run as stopped, replaced, completed or unverified."""
+    """End the run as stopped, replaced, completed or unverified.
+
+    A run a Smart Stop ended between rooms is then closed at the dock, as the
+    executor closes one; recovery sends the robot nothing.
+    """
+    manager = entry.runtime_data.cleaning_plans
     completed = reason in RUN_SETTLED_REASONS
     cancellation = manager.control.cancellation_reason(serial_number)
     replaced = cancellation == "motion_replaced"
+    smart_stopped = (
+        checkpoint.get("phase") in {RunPhase.VERIFYING, RunPhase.HANDOFF}
+        and checkpoint.get("stop_intent") == "after_room"
+        and not completed
+    )
     stopped = (
         cancellation == "managed_stop"
         or reason == "restart_stop_requested"
         or checkpoint.get("stop_intent") in {"immediate", "not_running"}
-        or (
-            checkpoint.get("phase") in {RunPhase.VERIFYING, RunPhase.HANDOFF}
-            and checkpoint.get("stop_intent") == "after_room"
-            and not completed
-        )
+        or smart_stopped
     )
     if cancellation == "config_entry_unload":
         reason = "config_entry_unload"
@@ -831,3 +855,19 @@ async def _async_finish_recovered_run(
             "completed_room_count",
         ),
     )
+    entity_id = checkpoint.get("entity_id")
+    if (
+        smart_stopped
+        and isinstance(entity_id, str)
+        and cancellation is None
+        and not manager.control.stop_pending(serial_number)
+    ):
+        _schedule_run_dock_confirmation(
+            hass,
+            manager,
+            RobotPort.for_entry(hass, entry, entity_id),
+            serial_number,
+            entity_id,
+            run["run_id"],
+            None,
+        )

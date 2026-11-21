@@ -56,8 +56,8 @@ completion scope and nullable completion flags.
 ## Interpret the outcome
 
 `matic_robot_plan_finished` describes the managed run. Its `outcome`
-(`completed`, `stopped_docked`, `recharge_suspended`, `cancelled`, `failed`, or
-`unverified`), verified room count, and `reason_code` explain what the runner
+(`completed`, `recharge_suspended`, `cancelled`, `failed`, or `unverified`),
+verified room count, and `reason_code` explain what the runner
 observed. Common reasons include `all_rooms_verified`, `all_rooms_settled`
 (every room completed, skipped by the owner, or unreachable), `partial_native_result`,
 `stopped_in_place`, `native_task_ended`, `native_task_taken_over`, `managed_stop`, `low_charge`,
@@ -68,7 +68,9 @@ Room events use `verified_completion` and `unverified_completion` instead;
 `room_unreachable`. `native_task_ended` means the mission the run started ended
 without proof of completion; `native_task_taken_over` means a different native
 task replaced it.
-`cause: unknown` means the source was not established.
+`cause: unknown` means the source was not established. A stopped run that
+reaches the dock afterwards fires `matic_robot_plan_docked` with
+`outcome: stopped_docked`, always after its `plan_finished`.
 
 A successful stop and dock can leave unfinished rooms. Native firmware may label
 a stopped room completed, so managed completion also checks ownership and the
