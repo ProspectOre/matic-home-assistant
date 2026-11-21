@@ -5,6 +5,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant.core import callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
@@ -416,3 +417,45 @@ async def test_dock_closure_waits_for_plan_finished_after_the_end_is_stored(
     assert await closures[0]
     await hass.async_block_till_done()
     assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
+
+
+async def test_dock_closure_is_released_when_the_finalizer_is_cancelled(
+    hass,
+) -> None:
+    """A second cancel on the finalizer's yield still releases the dock closure."""
+    manager = memory_manager(hass)
+    await manager.ledger.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    closure = hass.async_create_task(
+        manager.ledger.async_mark_run_docked("serial", "run-1")
+    )
+    finish_run = manager.ledger.async_finish_run
+
+    async def finish_then_cancel(*args, **kwargs) -> None:
+        await finish_run(*args, **kwargs)
+        finalizer.cancel()
+
+    manager.ledger.async_finish_run = finish_then_cancel
+    finalizer = hass.async_create_task(
+        async_finish_plan_run(
+            hass,
+            manager,
+            "serial",
+            "vacuum.matic",
+            {"plan_id": "away", "run_id": "run-1"},
+            "cancelled",
+            "managed_stop",
+            "managed_cancellation",
+            0,
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await finalizer
+    assert await asyncio.wait_for(closure, 1)

@@ -7,8 +7,8 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
 
 1. **Managed outcomes.** Every managed run gets one local `run_id` and emits a
    `matic_robot_plan_finished` event when its run ends. HA shutdown preserves recoverable runs instead. Its terminal
-   `outcome` is `completed`, `stopped_docked`, `recharge_suspended`,
-   `cancelled`, `failed`, or `unverified`; `reason_code`, `cause`, and aggregate
+   `outcome` is `completed`, `recharge_suspended`, `cancelled`, `failed`, or
+   `unverified`; `reason_code`, `cause`, and aggregate
    verified room counts explain the result without exposing the saved room list.
    A later `matic_robot_plan_docked` event
    upgrades a cancelled or unverified stop to `stopped_docked` once the robot

@@ -776,16 +776,19 @@ async def async_finish_plan_run(
         if stored is not None:
             end.update({key: stored[key] for key in _STORED_END if key in stored})
     finally:
-        # Room events queue on the bus first; yield so plan_finished follows
-        # the room boundary it summarizes.
-        await asyncio.sleep(0)
-        hass.bus.async_fire(
-            EVENT_PLAN_FINISHED,
-            {ATTR_ENTITY_ID: entity_id, **started, **end},
-            context=context,
-        )
-        # A dock closure waiting on the run follows plan_finished.
-        manager.control.run_ended(serial_number, started["run_id"])
+        try:
+            # Room events queue on the bus first; yield so plan_finished
+            # follows the room boundary it summarizes.
+            await asyncio.sleep(0)
+            hass.bus.async_fire(
+                EVENT_PLAN_FINISHED,
+                {ATTR_ENTITY_ID: entity_id, **started, **end},
+                context=context,
+            )
+        finally:
+            # A dock closure waiting on the run follows plan_finished, and is
+            # released even when a second cancel lands on the yield.
+            manager.control.run_ended(serial_number, started["run_id"])
 
 
 async def _async_execute_rooms(
