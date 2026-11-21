@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
@@ -15,6 +15,7 @@ from .area_binding import AreaBindingStatus, area_binding_status
 from .client import (
     CleaningMode,
     CoverageGuardError,
+    CoverageReceipt,
     CoverageSetting,
     FloorPlan,
     MaticError,
@@ -290,168 +291,74 @@ class RobotCommands:
         room_coverage: list[CoverageSetting] | None = None,
         room_modes: list[CleaningMode] | None = None,
     ) -> None:
-        if (room_coverage is not None or room_modes is not None) and (
-            motion_token is None
-            or not ordered
-            or room_coverage is None
-            or room_modes is None
-            or len(room_coverage) != len(rooms)
-            or len(room_modes) != len(rooms)
-            or len(rooms) < 2
-        ):
-            raise validation_error(
-                "Mixed coverage requires an owned ordered plan with per-room settings",
-                "mixed_coverage_needs_plan",
-            )
+        """Start ``rooms`` as one mission.
+
+        With ``motion_token`` the mission is a plan leg the run owns; without
+        it, a direct clean that takes motion from any plan. Every check runs
+        before the motion lease, again under it, and once more just before the
+        client sends.
+        """
+        managed = motion_token is not None
+        mixed = _mixed_room_settings(
+            rooms,
+            managed=managed,
+            ordered=ordered,
+            room_coverage=room_coverage,
+            room_modes=room_modes,
+        )
         floor_plan = self.current_floor_plan(expected_floor_token)
-        self.require_daily_room_dispatch(
-            floor_plan, rooms, tracked=motion_token is not None
-        )
-        command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
+        self.require_daily_room_dispatch(floor_plan, rooms, tracked=managed)
+        floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self._session.info.serial_number
-        request_generation = self._plans.control.motion_generation(serial_number)
-        request_stop_generation = self._plans.control.stop_request_generation(
-            serial_number
-        )
-        request_admission_epoch = self._plans.control.command_admission_epoch(
-            serial_number
-        )
-        await self.async_ensure_stop_settled(serial_number)
-        self.require_motion_generation(serial_number, request_generation)
-        if motion_token is None:
-            self.require_stop_request_generation(serial_number, request_stop_generation)
-        self._plans.control.require_command_admission(
-            serial_number, expected_epoch=request_admission_epoch
-        )
-        context = (
+        fence = await self._async_admit_motion(serial_number, direct=not managed)
+        lease = (
             self._plans.control.managed_command(serial_number, motion_token)
             if motion_token is not None
             else self._plans.control.external_motion(
                 serial_number,
-                expected_generation=request_generation,
-                expected_stop_generation=request_stop_generation,
+                expected_generation=fence.generation,
+                expected_stop_generation=fence.stop_generation,
             )
         )
-        async with context as dispatch_generation:
-            if (
-                motion_token is None
-                and dispatch_generation is None
+        async with lease as taken_generation:
+            if taken_generation is not None:
+                fence = replace(fence, generation=taken_generation)
+            elif (
+                fence.stop_generation is not None
                 and self._plans.control.motion_generation(serial_number)
-                == request_generation
+                == fence.generation
             ):
-                self.require_stop_request_generation(
-                    serial_number, request_stop_generation
-                )
-            expected_generation = (
-                request_generation
-                if motion_token is not None or dispatch_generation is None
-                else dispatch_generation
-            )
+                # Only a newer Stop request refused this direct start.
+                self._require_fence(fence)
             await self.async_ensure_stop_settled(serial_number)
-            self.require_motion_generation(serial_number, expected_generation)
-            if motion_token is None:
-                self.require_stop_request_generation(
-                    serial_number, request_stop_generation
-                )
-            floor_plan = self.current_floor_plan(command_floor_token)
+            self._require_fence(fence)
+            floor_plan = self.current_floor_plan(floor_token)
 
             def require_current_dispatch() -> None:
-                self.require_motion_generation(serial_number, expected_generation)
-                if motion_token is None:
-                    self.require_stop_request_generation(
-                        serial_number, request_stop_generation
-                    )
-                current_floor = self.current_floor_plan(command_floor_token)
-                self.require_daily_room_dispatch(
-                    current_floor, rooms, tracked=motion_token is not None
+                self._require_fence(fence)
+                current_floor = self.current_floor_plan(floor_token)
+                self.require_daily_room_dispatch(current_floor, rooms, tracked=managed)
+                if managed:
+                    self._require_run_not_cancelled(serial_number)
+
+            run_id = self._plans.ledger.active_run_id(serial_number)
+            receipt: CoverageReceipt | None = None
+            if mixed is not None:
+                receipt = await self._async_start_mixed_coverage(
+                    fence,
+                    floor_plan,
+                    rooms,
+                    *mixed,
+                    run_id=run_id,
+                    session_id=managed_session_id,
+                    expected_idle_revision=expected_idle_revision,
+                    require_current=require_current_dispatch,
                 )
-                if (
-                    motion_token is not None
-                    and self._plans.control.cancellation_event(serial_number).is_set()
-                ):
-                    raise HomeAssistantError(
-                        "Managed coverage was stopped before dispatch",
-                        translation_domain=DOMAIN,
-                        translation_key="coverage_stopped_before_start",
-                    )
-
-            receipt = None
-            receipt_run_id = self._plans.ledger.active_run_id(serial_number)
-            if room_coverage is not None:
-                assert room_modes is not None
-
-                def require_owned() -> None:
-                    self.require_motion_generation(serial_number, expected_generation)
-
-                stop_fence_run_id: str | None = None
-
-                async def prepare_stop() -> None:
-                    nonlocal stop_fence_run_id
-                    run_id = self._plans.ledger.active_run_id(serial_number)
-                    stop_fence_run_id = run_id
-                    try:
-                        await self._plans.control.async_mark_stop_pending(
-                            serial_number, run_id=run_id
-                        )
-                    except BaseException:
-                        await self._plans.control.async_clear_stop_pending(
-                            serial_number, run_id=run_id
-                        )
-                        raise
-
-                async def rollback_stop() -> None:
-                    await self._plans.control.async_clear_stop_pending(
-                        serial_number, run_id=stop_fence_run_id
-                    )
-
-                def recovery_stop_transmitted() -> None:
-                    # The client invokes this only after STOP bytes reached the
-                    # transport. Start settlement watching before the partial
-                    # dispatch error unwinds to managed-plan cleanup.
-                    self.schedule_dock_after_stop(
-                        serial_number, run_id=stop_fence_run_id
-                    )
-
-                run_id = self._plans.ledger.active_run_id(serial_number)
-                try:
-                    receipt = await self._session.client.async_start_mixed_coverage(
-                        floor_plan,
-                        [room.protocol_id for room in rooms],
-                        room_coverage,
-                        room_modes,
-                        first_room_name=rooms[0].name,
-                        session_id=managed_session_id,
-                        expected_idle_revision=expected_idle_revision,
-                        require_current=require_current_dispatch,
-                        require_owned=require_owned,
-                        prepare_stop=prepare_stop,
-                        rollback_stop=rollback_stop,
-                        on_recovery_stop_transmitted=recovery_stop_transmitted,
-                        checkpoint_initial_session=(
-                            partial(
-                                self._plans.recovery.async_checkpoint_mixed_session,
-                                serial_number,
-                                run_id,
-                            )
-                            if run_id is not None
-                            else None
-                        ),
-                    )
-                except CoverageGuardError as err:
-                    raise validation_error(
-                        coverage_guard_message(err), err.reason_code
-                    ) from err
-                except (MaticError, TimeoutError) as err:
-                    raise HomeAssistantError(
-                        "Mixed coverage dispatch could not be verified",
-                        translation_domain=DOMAIN,
-                        translation_key="coverage_start_unconfirmed",
-                    ) from err
             else:
                 command_rooms = [room.protocol_id for room in rooms]
                 mode = cleaning_mode or self._runtime.cleaning_mode
                 setting = coverage_setting or self._runtime.coverage_setting
-                if motion_token is not None:
+                if managed:
                     receipt = await self._session.client.async_start_coverage(
                         floor_plan,
                         command_rooms,
@@ -482,20 +389,134 @@ class RobotCommands:
                     )
             if (
                 receipt is not None
-                and motion_token is not None
-                and receipt_run_id is not None
+                and run_id is not None
                 and managed_session_id is not None
             ):
                 require_current_dispatch()
                 await self._plans.recovery.async_checkpoint_coverage_receipt(
                     serial_number,
-                    receipt_run_id,
+                    run_id,
                     receipt,
                     floor_plan=floor_plan,
                     room_ids=[room.id for room in rooms],
                     session_id=managed_session_id,
                 )
             await self._session.heartbeat.async_request_refresh()
+
+    async def _async_start_mixed_coverage(
+        self,
+        fence: _MotionFence,
+        floor_plan: FloorPlan,
+        rooms: list[Room],
+        room_coverage: list[CoverageSetting],
+        room_modes: list[CleaningMode],
+        *,
+        run_id: str | None,
+        session_id: UUID | None,
+        expected_idle_revision: str | None,
+        require_current: Callable[[], None],
+    ) -> CoverageReceipt | None:
+        """Send a plan leg whose rooms differ in settings, with its stop recovery.
+
+        The client may have to stop a partly configured mission; the stop
+        fence and dock watch here keep that stop owned by the run.
+        """
+        serial_number = fence.serial_number
+        stop_fence_run_id: str | None = None
+
+        async def prepare_stop() -> None:
+            nonlocal stop_fence_run_id
+            stop_run_id = self._plans.ledger.active_run_id(serial_number)
+            stop_fence_run_id = stop_run_id
+            try:
+                await self._plans.control.async_mark_stop_pending(
+                    serial_number, run_id=stop_run_id
+                )
+            except BaseException:
+                await self._plans.control.async_clear_stop_pending(
+                    serial_number, run_id=stop_run_id
+                )
+                raise
+
+        async def rollback_stop() -> None:
+            await self._plans.control.async_clear_stop_pending(
+                serial_number, run_id=stop_fence_run_id
+            )
+
+        def recovery_stop_transmitted() -> None:
+            # The client invokes this only after STOP bytes reached the
+            # transport. Start settlement watching before the partial
+            # dispatch error unwinds to managed-plan cleanup.
+            self.schedule_dock_after_stop(serial_number, run_id=stop_fence_run_id)
+
+        try:
+            return await self._session.client.async_start_mixed_coverage(
+                floor_plan,
+                [room.protocol_id for room in rooms],
+                room_coverage,
+                room_modes,
+                first_room_name=rooms[0].name,
+                session_id=session_id,
+                expected_idle_revision=expected_idle_revision,
+                require_current=require_current,
+                require_owned=partial(self._require_fence, fence),
+                prepare_stop=prepare_stop,
+                rollback_stop=rollback_stop,
+                on_recovery_stop_transmitted=recovery_stop_transmitted,
+                checkpoint_initial_session=(
+                    partial(
+                        self._plans.recovery.async_checkpoint_mixed_session,
+                        serial_number,
+                        run_id,
+                    )
+                    if run_id is not None
+                    else None
+                ),
+            )
+        except CoverageGuardError as err:
+            raise validation_error(
+                coverage_guard_message(err), err.reason_code
+            ) from err
+        except (MaticError, TimeoutError) as err:
+            raise HomeAssistantError(
+                "Mixed coverage dispatch could not be verified",
+                translation_domain=DOMAIN,
+                translation_key="coverage_start_unconfirmed",
+            ) from err
+
+    async def _async_admit_motion(
+        self, serial_number: str, *, direct: bool
+    ) -> _MotionFence:
+        """Admit a start before its lease: no pending Stop, no newer command.
+
+        A direct start is also fenced by Stop requests; a plan's is not.
+        """
+        control = self._plans.control
+        fence = _MotionFence(
+            serial_number,
+            control.motion_generation(serial_number),
+            control.stop_request_generation(serial_number) if direct else None,
+        )
+        admission_epoch = control.command_admission_epoch(serial_number)
+        await self.async_ensure_stop_settled(serial_number)
+        self._require_fence(fence)
+        control.require_command_admission(serial_number, expected_epoch=admission_epoch)
+        return fence
+
+    def _require_fence(self, fence: _MotionFence) -> None:
+        self.require_motion_generation(fence.serial_number, fence.generation)
+        if fence.stop_generation is not None:
+            self.require_stop_request_generation(
+                fence.serial_number, fence.stop_generation
+            )
+
+    def _require_run_not_cancelled(self, serial_number: str) -> None:
+        if self._plans.control.cancellation_event(serial_number).is_set():
+            raise HomeAssistantError(
+                "Managed coverage was stopped before dispatch",
+                translation_domain=DOMAIN,
+                translation_key="coverage_stopped_before_start",
+            )
 
     async def async_clean_plan_area(
         self,
@@ -515,18 +536,10 @@ class RobotCommands:
         still be the geometry the run was prepared with, on the current map.
         """
         serial_number = self._session.info.serial_number
-        request_generation = self._plans.control.motion_generation(serial_number)
-        request_admission_epoch = self._plans.control.command_admission_epoch(
-            serial_number
-        )
-        await self.async_ensure_stop_settled(serial_number)
-        self.require_motion_generation(serial_number, request_generation)
-        self._plans.control.require_command_admission(
-            serial_number, expected_epoch=request_admission_epoch
-        )
+        fence = await self._async_admit_motion(serial_number, direct=False)
         async with self._plans.control.managed_command(serial_number, motion_token):
             await self.async_ensure_stop_settled(serial_number)
-            self.require_motion_generation(serial_number, request_generation)
+            self._require_fence(fence)
             floor_plan = self.current_floor_plan(expected_floor_token)
             area = self._plans.catalog.areas(serial_number).get(area_id)
             if not isinstance(area, dict):
@@ -549,14 +562,9 @@ class RobotCommands:
             ]
 
             def require_current_dispatch() -> None:
-                self.require_motion_generation(serial_number, request_generation)
+                self._require_fence(fence)
                 self.current_floor_plan(expected_floor_token)
-                if self._plans.control.cancellation_event(serial_number).is_set():
-                    raise HomeAssistantError(
-                        "Managed coverage was stopped before dispatch",
-                        translation_domain=DOMAIN,
-                        translation_key="coverage_stopped_before_start",
-                    )
+                self._require_run_not_cancelled(serial_number)
 
             try:
                 await self._session.client.async_start_custom_coverage(
@@ -690,6 +698,45 @@ class RobotCommands:
                         "Invalid per-room setting", "invalid_room_setting"
                     ) from err
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class _MotionFence:
+    """The generations a start was admitted under; a newer one supersedes it.
+
+    ``stop_generation`` is set only for a direct start.
+    """
+
+    serial_number: str
+    generation: int
+    stop_generation: int | None
+
+
+def _mixed_room_settings(
+    rooms: list[Room],
+    *,
+    managed: bool,
+    ordered: bool,
+    room_coverage: list[CoverageSetting] | None,
+    room_modes: list[CleaningMode] | None,
+) -> tuple[list[CoverageSetting], list[CleaningMode]] | None:
+    """Return a request's per-room settings, or None when every room shares one."""
+    if room_coverage is None and room_modes is None:
+        return None
+    if (
+        not managed
+        or not ordered
+        or room_coverage is None
+        or room_modes is None
+        or len(room_coverage) != len(rooms)
+        or len(room_modes) != len(rooms)
+        or len(rooms) < 2
+    ):
+        raise validation_error(
+            "Mixed coverage requires an owned ordered plan with per-room settings",
+            "mixed_coverage_needs_plan",
+        )
+    return room_coverage, room_modes
 
 
 _OPTION_LABELS: dict[type[CleaningMode | CoverageSetting], str] = {

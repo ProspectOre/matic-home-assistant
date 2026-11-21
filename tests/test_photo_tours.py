@@ -1187,17 +1187,6 @@ async def test_dock_cleanup_errors_do_not_mask_tour_failures(monkeypatch) -> Non
         photo_tours, "_async_still_parked", AsyncMock(return_value=True)
     )
     hass.services.async_call.side_effect = RuntimeError("dock transport failed")
-    monkeypatch.setattr(
-        photo_tours,
-        "sys",
-        SimpleNamespace(
-            exc_info=lambda: (
-                HomeAssistantError,
-                HomeAssistantError("original-photo-error"),
-                None,
-            )
-        ),
-    )
     with pytest.raises(HomeAssistantError, match="original-photo-error"):
         await _run_rooms(hass, entry, "vacuum.matic", ["Kitchen"])
     hass.services.async_call.assert_awaited_once()
@@ -1223,7 +1212,7 @@ async def test_dock_cleanup_verification_failure_is_bounded_and_safe(
     assert _commands(hass) == []
 
 
-async def test_dock_failure_is_suppressed_when_an_error_is_already_active(
+async def test_dock_failure_is_reported_while_the_caller_handles_an_error(
     monkeypatch,
 ) -> None:
     hass = _hass()
@@ -1234,18 +1223,16 @@ async def test_dock_failure_is_suppressed_when_an_error_is_already_active(
     monkeypatch.setattr(
         photo_tours, "_async_still_parked", AsyncMock(return_value=True)
     )
-    monkeypatch.setattr(
-        photo_tours,
-        "sys",
-        SimpleNamespace(
-            exc_info=lambda: (HomeAssistantError, HomeAssistantError("active"), None)
-        ),
-    )
     hass.services.async_call.side_effect = RuntimeError("dock transport failed")
 
-    result = await _run_rooms(hass, entry, "vacuum.matic", ["Kitchen"])
+    # An error the caller is handling is not the tour's own failure.
+    try:
+        raise ValueError("caller")
+    except ValueError:
+        with pytest.raises(HomeAssistantError) as raised:
+            await _run_rooms(hass, entry, "vacuum.matic", ["Kitchen"])
 
-    assert result[0]["photo_id"] == "photo-1"
+    assert raised.value.translation_key == "photo_tour_dock_timeout"
     hass.services.async_call.assert_awaited_once()
 
 
