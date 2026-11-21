@@ -10,7 +10,6 @@ custom_components/matic_robot/managed_leg.py::_async_run_leg 717
 custom_components/matic_robot/native_cadence.py::import_native_cadence 202
 custom_components/matic_robot/photo_tours.py::_async_run_tour 173
 custom_components/matic_robot/plan_cadence.py::PlanCadence.resolve_cadence 213
-custom_components/matic_robot/plan_catalog.py::PlanCatalog.save_plan_transaction 358
 custom_components/matic_robot/plan_history.py::PlanHistory.snapshot 151
 custom_components/matic_robot/plan_state.py::_normalize_robot 180
 custom_components/matic_robot/restart.py::async_recover_managed_run 428
