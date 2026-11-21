@@ -10171,11 +10171,9 @@ test.describe("plan shell", () => {
   const catalog = () => ({
     rooms: [{ room_id: "kitchen", name: "Kitchen", boundary: [[0, 0], [6, 0], [6, 5], [0, 5]] }],
     selected_plan: "daily",
-    plans: [{
-      id: "daily", name: "Daily", enabled: true, run_behavior: "ordered",
+    plans: [{ id: "daily", name: "Daily", enabled: true, run_behavior: "ordered",
       rooms: [{ room_id: "kitchen", cleaning_mode: "vacuum", coverage_setting: "standard" }],
-      room_order: ["kitchen"], return_to_base: true, finish_current_room: false, finish_current_room_threshold: 50,
-    }],
+      room_order: ["kitchen"], return_to_base: true, finish_current_room: false, finish_current_room_threshold: 50 }],
   });
   const openPanelPlan = async (page) => {
     const fixture = await installPanelFixture(page, { initialPlanCatalog: catalog() });
@@ -10184,6 +10182,8 @@ test.describe("plan shell", () => {
     await openPlanPicker(panel);
     await panel.getByRole("button", { name: /^Daily/ }).click();
     await panel.getByRole("button", { name: "Edit Daily", exact: true }).click();
+    // Edit focuses its heading before its first paint; a fill sooner types into the heading.
+    await expect(panel.getByRole("heading", { level: 2, name: "Edit plan" })).toBeFocused();
     return { panel, fixture };
   };
 
