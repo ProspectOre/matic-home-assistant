@@ -15,10 +15,10 @@ from custom_components.matic_robot.const import (
     CONF_SERIAL_NUMBER,
     DOMAIN,
 )
+from custom_components.matic_robot.repair_placeholders import repair_placeholders
 from custom_components.matic_robot.repairs import (
     RobotIdentityRepairFlow,
     async_create_fix_flow,
-    repair_placeholders,
 )
 
 ENTRY_DATA = {

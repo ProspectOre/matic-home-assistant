@@ -31,6 +31,7 @@ from .plan_model import (
     PlanRoomsHeldError,
     RoomSequenceLimitError,
     leg_boundaries,
+    missing_plan_rooms,
     plan_entries,
     plan_floor_token,
     preview_legs,
@@ -43,6 +44,7 @@ from .plan_schema import (
     DailyLimit,
     DailyLimitHeldRoom,
     HeldRoom,
+    MissingRoom,
     NextRunPreview,
     PlanAreaEntry,
     PlanBlocker,
@@ -78,6 +80,7 @@ class _HeldRooms(TypedDict, total=False):
 
     daily_limit_held_rooms: list[DailyLimitHeldRoom]
     held_rooms: list[HeldRoom]
+    missing_rooms: list[MissingRoom]
 
 
 @dataclass
@@ -134,8 +137,6 @@ def _blocker(err: KeyError | TypeError | ValueError) -> PlanBlocker:
         return "plan_room_limit"
     if isinstance(err, PlanAreaMissingError):
         return "area_missing"
-    if isinstance(err, PlanRoomMissingError):
-        return "room_missing"
     if isinstance(err, PlanAreaMapChangedError):
         return "area_map_changed"
     if isinstance(err, CoverageCadenceRequiresVacuumError):
@@ -213,6 +214,8 @@ def _held_out(preview: Mapping[str, Any]) -> _HeldRooms:
         held["daily_limit_held_rooms"] = preview["daily_limit_held_rooms"]
     if "held_rooms" in preview:
         held["held_rooms"] = preview["held_rooms"]
+    if "missing_rooms" in preview:
+        held["missing_rooms"] = preview["missing_rooms"]
     return held
 
 
@@ -266,6 +269,13 @@ def _next_run_preview(
                 for room_id, hold in held_rooms.items()
             ],
         }
+    except PlanRoomMissingError:
+        missing = missing_plan_rooms(
+            plan,
+            floor.room_map,
+            floor.manager.catalog.known_room_names(floor.serial_number),
+        )
+        return {**_blocked("room_missing"), "missing_rooms": missing}
     except (KeyError, TypeError, ValueError) as err:
         return _blocked(_blocker(err))
     return {

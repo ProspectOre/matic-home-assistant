@@ -28,10 +28,12 @@ from .plan_model import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
+    PlanRoomMissingError,
     PlanRoomsHeldError,
     _rotation_details,
     _rotation_sort_key,
     _RotationCandidate,
+    missing_plan_rooms,
     plan_area_fingerprint,
     plan_entries,
     resolve_rooms,
@@ -77,13 +79,11 @@ class ExecutionPlanner:
         plan = self.catalog.plan(serial_number, plan_id)
         entries = plan_entries(plan)
         areas = [entry for entry in entries if entry["kind"] == "area"]
-        area_projections: dict[str, dict[str, Any]] = {}
-        rooms = _plan_rooms(plan, room_map, require_rooms=not areas)
-        if areas:
-            area_projections = {
-                entry["area_id"]: self.preview_area(serial_number, entry, floor_plan)
-                for entry in areas
-            }
+        rooms, missing = _plan_rooms(plan, room_map, require_rooms=not areas)
+        area_projections = {
+            entry["area_id"]: self.preview_area(serial_number, entry, floor_plan)
+            for entry in areas
+        }
         use_intelligent = (
             plan.get("run_behavior", "intelligent") == "intelligent"
             if intelligent is None
@@ -101,6 +101,7 @@ class ExecutionPlanner:
             if entry["kind"] == "area"
             else room_by_id[entry["room_id"]]
             for entry in entries
+            if entry["kind"] == "area" or entry["room_id"] not in missing
         ]
         if room_identities is None and floor_plan is not None:
             room_identities = {
@@ -209,6 +210,7 @@ class ExecutionPlanner:
             ),
             "room_count": len(effective),
             **({"held_rooms": held} if held else {}),
+            **self._missing_rooms(serial_number, plan, room_map, missing),
             **({"daily_limit_held_rooms": daily_held} if daily_held else {}),
             "return_to_base": bool(plan.get("return_to_base", True)),
             "finish_current_room": bool(plan.get("finish_current_room", False)),
@@ -218,6 +220,19 @@ class ExecutionPlanner:
             "start_timeout": int(plan.get("start_timeout", 120)),
             "completion_timeout": int(plan.get("completion_timeout", 21600)),
         }
+
+    def _missing_rooms(
+        self,
+        serial_number: str,
+        plan: Mapping[str, Any],
+        room_map: Mapping[str, str],
+        missing: frozenset[str],
+    ) -> dict[str, Any]:
+        """Name the rooms a map edit took out of this run, when there are any."""
+        if not missing:
+            return {}
+        known = self.catalog.known_room_names(serial_number)
+        return {"missing_rooms": missing_plan_rooms(plan, room_map, known)}
 
     def preview_area(
         self,
@@ -351,10 +366,12 @@ class ExecutionPlanner:
 
 def _plan_rooms(
     plan: Mapping[str, Any], room_map: Mapping[str, str], *, require_rooms: bool
-) -> list[CleaningRoom]:
+) -> tuple[list[CleaningRoom], frozenset[str]]:
     """Resolve an enabled plan's stored rooms against the live map.
 
-    A plan with custom areas may have no rooms at all.
+    Rooms a map edit removed are left out and returned by ID, so the rest of
+    the plan still runs. A plan with custom areas may have no rooms at all;
+    one left with nothing to clean raises ``PlanRoomMissingError``.
     """
     if not plan.get("enabled", True):
         raise PlanDisabledError("plan is disabled")
@@ -363,4 +380,11 @@ def _plan_rooms(
         raise EmptyPlanError("plan has no rooms")
     if not isinstance(raw, list) or any(not isinstance(room, Mapping) for room in raw):
         raise ValueError("plan contains an invalid room")
-    return resolve_rooms(raw, dict(room_map))
+    try:
+        return resolve_rooms(raw, dict(room_map)), frozenset()
+    except PlanRoomMissingError as err:
+        missing = frozenset(err.room_ids)
+        present = [room for room in raw if room.get("room_id") not in missing]
+        if require_rooms and not present:
+            raise
+        return resolve_rooms(present, dict(room_map)), missing

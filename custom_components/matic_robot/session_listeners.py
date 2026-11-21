@@ -21,7 +21,7 @@ from .client import CleaningSession
 from .const import DOMAIN, EVENT_CLEANING_FINISHED, SLOW_UPDATE_INTERVAL_SECONDS
 from .cues import async_fire_cues_events
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
-from .repairs import repair_placeholders
+from .repair_placeholders import repair_placeholders
 from .session import RobotSession
 from .session_tracking import _parse_timestamp, _sessions_overlap
 from .time_zone import known_zone, time_zones_differ

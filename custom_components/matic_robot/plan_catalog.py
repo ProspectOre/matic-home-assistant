@@ -58,6 +58,7 @@ from .plan_model import (
     _stored_entries,
     plan_area_fingerprint,
     plan_entries,
+    relink_plan_rooms,
 )
 from .plan_repository import (
     PlanRepository,
@@ -558,6 +559,57 @@ class PlanCatalog:
         if plan is None and _is_manual_room_sequence_plan_id(plan_id):
             return MANUAL_ROOM_SEQUENCE_PLAN_NAME
         return str(plan.get("name", plan_id)) if plan else plan_id
+
+    def known_room_names(self, serial_number: str) -> dict[str, str]:
+        """Return the last name the integration saw for each room ID."""
+        return {
+            room_id: record["name"]
+            for room_id, record in self.repository.robot(serial_number)["rooms"].items()
+            if isinstance(record, Mapping) and isinstance(record.get("name"), str)
+        }
+
+    async def async_relink_plan_rooms(
+        self,
+        serial_number: str,
+        links: Mapping[str, Mapping[str, str]],
+        *,
+        floor_token: str | None,
+        room_identities: Mapping[str, str],
+    ) -> None:
+        """Move plan rooms to new room IDs in one save, per plan ``links``.
+
+        Every target must be on the current map. Each plan is read again under
+        the write lock, so a room that is no longer in it fails the save.
+        """
+        if any(
+            target not in room_identities
+            for plan_links in links.values()
+            for target in plan_links.values()
+        ):
+            raise ValueError("re-link target is not on the current map")
+
+        async def commit(_lease: _MetadataLockLease) -> None:
+            plans = self.repository.robot(serial_number)["plans"]
+            async with self.cadence.cadence_commit(serial_number) as mutations:
+                for plan_id, plan_links in links.items():
+                    mutations.append(
+                        self.save_plan_transaction(
+                            serial_number,
+                            plan_id,
+                            relink_plan_rooms(plans[plan_id], plan_links),
+                            select=False,
+                            floor_token=floor_token,
+                            room_identities=room_identities,
+                        )
+                    )
+
+        await self.repository.async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.repository.plan_write_lock(serial_number),),
+            notify=True,
+            reject_on_admission_close=True,
+        )
 
     def area_name(self, serial_number: str, area_id: str | None) -> str | None:
         if area_id is None:

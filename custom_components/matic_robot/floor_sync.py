@@ -44,7 +44,11 @@ def async_sync_map_repairs(
         hass, entry_id, plans.catalog.areas(serial_number), floor_plan
     )
     async_sync_plan_room_issue(
-        hass, entry_id, plans.catalog.plans(serial_number), floor_plan
+        hass,
+        entry_id,
+        plans.catalog.plans(serial_number),
+        floor_plan,
+        plans.catalog.known_room_names(serial_number),
     )
 
 

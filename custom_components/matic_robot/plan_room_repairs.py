@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
 from .client import FloorPlan
 from .const import DOMAIN
-from .repairs import repair_placeholders
+from .plan_model import missing_plan_rooms, plan_floor_token, room_cadence_identity
+from .repair_placeholders import repair_placeholders
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 
 @callback
@@ -20,24 +25,16 @@ def async_sync_plan_room_issue(
     entry_id: str,
     plans: Mapping[str, Any],
     floor_plan: FloorPlan | None,
+    known_names: Mapping[str, str],
 ) -> None:
     """Create, update or clear the Repair for plans with rooms off the map.
 
-    Without a live map nothing can be judged, so an existing issue stays. On
-    a robot with more than one mapped floor, a plan none of whose rooms are on
-    this floor belongs to another floor and is not counted.
+    Without a live map nothing can be judged, so an existing issue stays. The
+    Repair can be fixed when a removed room's name is on the map again.
     """
     if floor_plan is None:
         return
-    live = {room.id for room in floor_plan.rooms}
-    one_floor = len(floor_plan.mapped_floors) <= 1
-    stale: list[str] = []
-    for plan_id, plan in plans.items():
-        if not isinstance(plan, Mapping) or not plan.get("enabled", True):
-            continue
-        room_ids = _plan_room_ids(plan)
-        if room_ids - live and (one_floor or room_ids & live):
-            stale.append(str(plan.get("name") or plan_id))
+    stale = _stale_plans(plans, floor_plan)
     issue_id = plan_room_issue_id(entry_id)
     if not stale:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
@@ -46,13 +43,19 @@ def async_sync_plan_room_issue(
         hass,
         DOMAIN,
         issue_id,
-        is_fixable=False,
+        is_fixable=bool(plan_room_links(plans, floor_plan, known_names)),
+        data={"entry_id": entry_id},
         is_persistent=False,
         severity=ir.IssueSeverity.WARNING,
         translation_key="plan_room_missing",
         translation_placeholders={
             **repair_placeholders(hass, entry_id),
-            "plans": ", ".join(sorted(stale, key=str.casefold)),
+            "plans": ", ".join(
+                sorted(
+                    (str(plans[plan_id].get("name") or plan_id) for plan_id in stale),
+                    key=str.casefold,
+                )
+            ),
         },
     )
 
@@ -79,3 +82,92 @@ def _plan_room_ids(plan: Mapping[str, Any]) -> set[str]:
         for room in rooms
         if isinstance(room, Mapping) and room.get("room_id")
     }
+
+
+def plan_room_links(
+    plans: Mapping[str, Any],
+    floor_plan: FloorPlan,
+    known_names: Mapping[str, str],
+) -> dict[str, dict[str, str]]:
+    """Return, per plan, each removed room that has a same-name room now."""
+    room_map = {room.id: room.name for room in floor_plan.rooms}
+    links: dict[str, dict[str, str]] = {}
+    for plan_id in _stale_plans(plans, floor_plan):
+        matched = {
+            room["room_id"]: room["match_room_id"]
+            for room in missing_plan_rooms(plans[plan_id], room_map, known_names)
+            if room["match_room_id"] is not None
+        }
+        if matched:
+            links[plan_id] = matched
+    return links
+
+
+def _stale_plans(plans: Mapping[str, Any], floor_plan: FloorPlan) -> list[str]:
+    """Return enabled plans that name a room this floor's map no longer has.
+
+    On a robot with more than one mapped floor, a plan none of whose rooms
+    are on this floor belongs to another floor and is not counted.
+    """
+    live = {room.id for room in floor_plan.rooms}
+    one_floor = len(floor_plan.mapped_floors) <= 1
+    stale: list[str] = []
+    for plan_id, plan in plans.items():
+        if not isinstance(plan, Mapping) or not plan.get("enabled", True):
+            continue
+        room_ids = _plan_room_ids(plan)
+        if room_ids - live and (one_floor or room_ids & live):
+            stale.append(plan_id)
+    return stale
+
+
+class PlanRoomRepairFlow(RepairsFlow):
+    """Move removed plan rooms to the same-name rooms now on the map."""
+
+    def __init__(self, entry_id: str) -> None:
+        self._entry_id = entry_id
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        """List the moves, then save them once the user confirms."""
+        entry: MaticConfigEntry | None = self.hass.config_entries.async_get_entry(
+            self._entry_id
+        )
+        floor_plan = entry.runtime_data.session.floor.value if entry else None
+        if entry is None or floor_plan is None:
+            return self.async_abort(reason="robot_unavailable")
+        catalog = entry.runtime_data.cleaning_plans.catalog
+        serial_number = entry.runtime_data.session.info.serial_number
+        plans = catalog.plans(serial_number)
+        links = plan_room_links(
+            plans, floor_plan, catalog.known_room_names(serial_number)
+        )
+        if not links:
+            return self.async_abort(reason="no_matching_rooms")
+        if user_input is None:
+            names = {room.id: room.name for room in floor_plan.rooms}
+            return self.async_show_form(
+                step_id="init",
+                description_placeholders={
+                    **repair_placeholders(self.hass, self._entry_id),
+                    "rooms": "\n".join(
+                        f"- {plans[plan_id].get('name') or plan_id}: "
+                        + ", ".join(names[target] for target in moves.values())
+                        for plan_id, moves in links.items()
+                    ),
+                },
+            )
+        try:
+            await catalog.async_relink_plan_rooms(
+                serial_number,
+                links,
+                floor_token=plan_floor_token(floor_plan),
+                room_identities={
+                    room.id: room_cadence_identity(floor_plan, room.id)
+                    for room in floor_plan.rooms
+                },
+            )
+        except ValueError:
+            return self.async_abort(reason="plan_changed")
+        return self.async_create_entry(data={})

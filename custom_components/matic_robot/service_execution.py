@@ -185,6 +185,7 @@ async def _async_run_selected_plan(
         # The run order of rooms and custom areas, when there is an area.
         entries=preview["entries"] if _preview_has_area(preview) else None,
         held_rooms=preview.get("held_rooms", ()),
+        missing_rooms=preview.get("missing_rooms", ()),
     )
     return await _async_start(hass, manager, call, run)
 
@@ -234,6 +235,7 @@ async def _async_execute(
     validate_prepared_run: Callable[[], None],
     entries: Sequence[Mapping[str, Any]] | None = None,
     held_rooms: Sequence[Mapping[str, str]] = (),
+    missing_rooms: Sequence[Mapping[str, str | None]] = (),
 ) -> str:
     """Hand one resolved run to the executor, bound to its robot and map."""
     entity_id, entry, serial_number, room_map = target
@@ -262,6 +264,7 @@ async def _async_execute(
         validate_prepared_run=validate_prepared_run,
         entries=entries,
         held_rooms=held_rooms,
+        missing_rooms=missing_rooms,
     )
 
 

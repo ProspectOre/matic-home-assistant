@@ -1925,7 +1925,7 @@
       "message": "A custom area in this plan was deleted. Open the plan in Matic Map, save it again, then try again."
     },
     "plan_room_missing": {
-      "message": "These rooms in the plan are no longer on the robot's map: {rooms}. A map edit in the Matic app can remove a room or give it a new ID. Open the plan in Matic Map, remove the rooms marked as not on the map, then try again."
+      "message": "None of the plan's rooms are on the robot's map any more: {rooms}. A map edit in the Matic app can remove a room or give it a new ID. Open the plan in Matic Map, choose the rooms to clean, then try again."
     },
     "plan_area_limit": {
       "message": "A plan can include up to {limit} custom areas. Remove some areas and try again."
@@ -2145,7 +2145,21 @@
     },
     "plan_room_missing": {
       "title": "{name}: saved plans name rooms that are no longer on the map",
-      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs, so these plans won't run. In Matic Map, open each plan, choose Edit, remove the rooms marked as not on the map, then save. This Repair clears once every plan names only rooms on the map."
+      "description": "Plans to update: {plans}. A map edit in the Matic app removed some of their rooms or gave them new IDs. These plans skip those rooms and clean the rest. In Matic Map, open each plan and choose Edit: move a removed room to its replacement, or take it out of the plan, then save. When a room with the same name is on the map again, Submit moves it for you. This Repair clears once every plan names only rooms on the map.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Move plan rooms to their new rooms",
+            "description": "These rooms are on {name}'s map again under the same names, with new IDs:\n\n{rooms}\n\nEach plan room moves to the new room and keeps its cleaning mode, coverage and schedule settings. Its schedule progress starts over, because the robot gives no proof that the new room is the old one. Other removed rooms stay as they are.",
+            "submit": "Move rooms"
+          }
+        },
+        "abort": {
+          "robot_unavailable": "The robot's map isn't available right now. Try again once it is connected.",
+          "no_matching_rooms": "No removed room has a room with the same name on the map now. Update the plans in Matic Map instead.",
+          "plan_changed": "A plan changed while this was open. Open the Repair again to see what is left to move."
+        }
+      }
     },
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
