@@ -15,6 +15,7 @@ from homeassistant.util import dt as dt_util
 
 from .client import (
     CleaningSessionRecord,
+    FloorPlan,
     MaticError,
     RobotActivity,
     native_session_hash,
@@ -246,12 +247,14 @@ async def _async_reconcile_native_stop(
                 native_session_hash(record.key),
                 robot.coverage_verifier,
             )
+            current_floor: FloorPlan | None
             try:
+                current_floor = current_entity_floor_plan(hass, entity_id)
                 current_room_identity = current_room_cadence_identity(
                     hass, entity_id, room.room_id
                 )
             except HomeAssistantError:
-                current_room_identity = None
+                current_floor = current_room_identity = None
             completed = await manager.ledger.async_mark_native_completed(
                 serial_number,
                 reconciliation.plan_id,
@@ -261,6 +264,7 @@ async def _async_reconcile_native_stop(
                 duration_seconds=duration,
                 room_identity=current_room_identity,
                 verified_coverage_receipt=verified_coverage,
+                floor_plan=current_floor,
             )
             if completed:
                 robot.confirm_room_completed(room.name)

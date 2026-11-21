@@ -352,6 +352,21 @@ def _native_reconciliation_remaining_seconds(
     return (expires_at - dt_util.utcnow()).total_seconds()
 
 
+def native_marker_on_floor(
+    pending: Mapping[str, Any], floor_plan: FloorPlan | None
+) -> bool:
+    """Return whether a marker may be credited against this floor.
+
+    A session-bound marker keeps the floor it was dispatched on; a room with
+    the same id on another floor is a different room and earns nothing.
+    """
+    if "floor_token" not in pending:
+        return True
+    return floor_plan is not None and pending["floor_token"] == plan_floor_token(
+        floor_plan
+    )
+
+
 def _reconcile_pending_native_history(
     robot: dict[str, Any],
     floor_plan: FloorPlan,
@@ -369,9 +384,7 @@ def _reconcile_pending_native_history(
     if _native_reconciliation_expired(pending):
         robot.pop("pending_native_reconciliation", None)
         return True
-    if "floor_token" in pending and pending["floor_token"] != plan_floor_token(
-        floor_plan
-    ):
+    if not native_marker_on_floor(pending, floor_plan):
         return False
     if "rooms" in pending:
         changed = False
