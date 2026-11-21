@@ -126,7 +126,9 @@ class RunControl:
         first command. This returns then, or when the run ends first, and
         raises any error the run ended with before that. With ``wait`` it
         returns when the run ends, as a plan action did before runs started
-        in the background. Cancelling the caller before then cancels the run.
+        in the background. Cancelling the caller, such as a stopped automation,
+        cancels the run only until the robot has its first command; after
+        that the run goes on and a stop or unload ends it.
 
         The task starts eagerly, so a run is admitted or refused before this
         first waits. An admitted run registers itself with the robot's actor
@@ -147,9 +149,10 @@ class RunControl:
                 await asyncio.wait((started, task), return_when=asyncio.FIRST_COMPLETED)
                 if started.done():
                     return started.result()
-            return await task
+            return await asyncio.shield(task)
         except asyncio.CancelledError:
-            task.cancel()
+            if not started.done():
+                task.cancel()
             raise
 
     @callback

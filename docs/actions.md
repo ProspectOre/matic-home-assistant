@@ -37,7 +37,9 @@ command, with the run's `run_id` in the response. A refusal, such as a plan
 already running or a robot that can't take the command, fails the action. The
 run then goes on without the action; [Plan finished](automation-events.md)
 reports how it ended. Add `wait: true` to return only when the run ends and
-fail the action when the run fails, as both actions did before 0.6.
+fail the action when the run fails, as both actions did before 0.6. Once the
+robot has the first command, stopping the automation or cancelling the action
+leaves the run going; Stop cleaning ends it.
 
 ```yaml
 actions:
