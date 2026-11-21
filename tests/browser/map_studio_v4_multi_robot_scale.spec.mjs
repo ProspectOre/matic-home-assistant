@@ -99,3 +99,24 @@ test("three robot identities keep floor and saved-map selection isolated across 
       state.resources.scene.status, state.resources.scene.value?.metadata.rooms.length ?? 0];
   })).toEqual(["synthetic-entry", "synthetic-entry", "ready", 250]);
 });
+
+test("the robot picker tells robots with one name apart and names a robot that has none", async ({ page }) => {
+  const fixture = await installPanelFixture(page, {
+    initialCatalogEntries: entries,
+    initialRobotStates: {
+      "vacuum.robot_a": { state: "idle", attributes: { matic_entry_id: "synthetic-entry", friendly_name: "Matic" } },
+      "vacuum.robot_b": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-b", friendly_name: "Matic" } },
+      "vacuum.spare_robot": { state: "docked", attributes: { matic_entry_id: "synthetic-entry-c" } },
+    },
+    registries: {
+      entities: { "vacuum.robot_a": { device_id: "device-a" }, "vacuum.robot_b": { device_id: "device-b" } },
+      devices: { "device-a": { name: "Matic", area_id: "upstairs" }, "device-b": { name: "Matic", area_id: "downstairs" } },
+      areas: { upstairs: { name: "Upstairs" }, downstairs: { name: "Downstairs" } },
+    },
+  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const selector = page.locator(fixture.panelTag).locator("select.robot-switcher");
+  await expect(selector.locator("option")).toHaveText(["Downstairs · Matic", "Upstairs · Matic", "spare robot"]);
+  await selector.selectOption({ label: "Downstairs · Matic" });
+  await expect(selector).toHaveValue("synthetic-entry-b");
+});

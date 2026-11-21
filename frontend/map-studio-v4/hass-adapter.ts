@@ -4,6 +4,7 @@ import type {
   HassProjection,
   PanelLike,
   RobotActivity,
+  RobotChoice,
   RobotRunStatus,
   ScheduledRun,
 } from "./contracts";
@@ -142,14 +143,48 @@ const safeUserKey = (value: unknown): string => {
   return key || "local-user";
 };
 
-const safeRobotLabel = (value: unknown): string => {
-  if (typeof value !== "string") return "Robot";
+const safeLabel = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
   const label = value.trim();
-  return label
-    && Array.from(label).length <= 128
-    && !/[\u0000-\u001f\u007f]/u.test(label)
-    ? label
-    : "Robot";
+  return label && Array.from(label).length <= 128 && !/[\u0000-\u001f\u007f]/u.test(label) ? label : null;
+};
+
+// Home Assistant's name for a state: its friendly name, else its object id with spaces.
+const stateName = (hass: HassLike | undefined, entityId: string): string =>
+  safeLabel(hass?.states?.[entityId]?.attributes?.friendly_name)
+  ?? entityId.slice(entityId.indexOf(".") + 1).replaceAll("_", " ");
+
+/**
+ * Robots that share a name are told apart by their area, else their device's
+ * name, else their entity id: the first that differs for every robot of that
+ * name. It goes ahead of the name, so a narrow picker still shows it.
+ */
+const robotChoices = (hass: HassLike | undefined, robots: ReadonlyMap<string, string>, language: string): RobotChoice[] => {
+  const fold = (text: string) => text.toLocaleLowerCase(language);
+  const named = Array.from(robots, ([entryId, entityId]) => {
+    const registered = hass?.entities?.[entityId];
+    const device = registered?.device_id ? hass?.devices?.[registered.device_id] : undefined;
+    const areaId = registered?.area_id || device?.area_id;
+    return {
+      entryId,
+      entityId,
+      name: stateName(hass, entityId),
+      area: areaId ? safeLabel(hass?.areas?.[areaId]?.name) : null,
+      device: safeLabel(device?.name_by_user) ?? safeLabel(device?.name),
+    };
+  });
+  return named.map((robot) => {
+    const group = named.filter((member) => fold(member.name) === fold(robot.name));
+    if (group.length === 1) return { entryId: robot.entryId, name: robot.name, label: robot.name };
+    const key = (["area", "device"] as const).find((field) => {
+      const labels = group.map((member) => member[field]);
+      return labels.every((label) => label && fold(label) !== fold(robot.name))
+        && new Set(labels.map((label) => fold(label!))).size === group.length;
+    });
+    return { entryId: robot.entryId, name: robot.name, label: `${(key && robot[key]) || robot.entityId} · ${robot.name}` };
+  }).sort((left, right) => left.name.localeCompare(right.name, language, { sensitivity: "base" })
+    || left.label.localeCompare(right.label, language, { sensitivity: "base" }))
+    .map(({ entryId, label }) => ({ entryId, label }));
 };
 
 export class HassAdapter {
@@ -169,7 +204,7 @@ export class HassAdapter {
     let selectedVacuum: HassEntityLike | null = null;
     let selectedVacuumEntityId: string | null = null;
     let selectedEntryKey: string | null = requestedEntry;
-    const robots = new Map<string, { readonly entryId: string; readonly label: string }>();
+    const robots = new Map<string, string>();
     const histories = new Map<string, Readonly<Record<string, unknown>>>();
     const schedules = new Map<string, ScheduledRun | null>();
 
@@ -183,7 +218,7 @@ export class HassAdapter {
         schedules.set(entryKey, scheduledRun(entity.attributes.matic_next_run));
       }
       if (!entityId.startsWith("vacuum.")) continue;
-      robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });
+      robots.set(entryKey, entityId);
       if (requestedEntry ? entryKey === requestedEntry : !selectedVacuum) {
         selectedVacuum = entity;
         selectedVacuumEntityId = entityId;
@@ -224,9 +259,8 @@ export class HassAdapter {
       ? previousDates
       : { language: dateLanguage, timeZone };
     const userKey = safeUserKey(hass?.user?.id);
-    const robotLabel = safeRobotLabel(selectedVacuum?.attributes?.friendly_name);
-    const robotChoices = [...robots.values()].sort((left, right) =>
-      left.label.localeCompare(right.label, language, { sensitivity: "base" }));
+    const choices = robotChoices(hass, robots, language);
+    const robotLabel = choices.find((choice) => choice.entryId === selectedEntryKey && selectedVacuum)?.label ?? "Robot";
     const history = histories.get(selectedEntryKey ?? "");
     const lastRun = managedRunSummary(history?.last_run, history?.active_plan, metrics.get("current_room_estimated_progress"));
     const projection: HassProjection = {
@@ -243,7 +277,7 @@ export class HassAdapter {
       vacuumEntityId: selectedVacuumEntityId,
       entryKey: selectedEntryKey,
       robotLabel,
-      robots: robotChoices,
+      robots: choices,
       lastRun,
       smartStop: smartStopStatus(history?.last_run, history?.active_plan),
       nextSchedule: schedules.get(selectedEntryKey ?? "") ?? null,

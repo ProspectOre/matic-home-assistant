@@ -24,6 +24,10 @@ floor. The **?** on the map lists the mouse, touch or keyboard controls for the
 input you're using, plus the drawing controls while you draw. Click a room on
 either view to select it; the map and the room list stay in step.
 
+With more than one robot, the menu beside the title switches between them.
+Robots with the same name show their area first, or their device name, or
+their entity ID when nothing else tells them apart.
+
 **Full map** hides the panel and keeps the status, the main action and **Exit
 full map** in a small bar over the map.
 

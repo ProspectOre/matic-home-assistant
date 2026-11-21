@@ -71,6 +71,8 @@ export async function installPanelFixture(page, {
   sceneRooms = [],
   initialCatalogEntries = null,
   initialRobotStates = null,
+  // Home Assistant's entity, device and area registries ({ entities, devices, areas }).
+  registries = {},
   // Home Assistant's per-user frontend data (frontend/get_user_data), keyed by
   // key. Null leaves the fixture without a websocket connection, so without a pose.
   userData = {},
@@ -140,7 +142,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, photoGallery }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, registries, userData, wifiSignal, floorTypes, photoGallery }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -497,6 +499,7 @@ export async function installPanelFixture(page, {
         connected: true,
         user: { id: "synthetic-admin", is_admin: true },
         states: robotStates,
+        ...registries,
         ...(connection ? { connection } : {}),
         fetchWithAuth,
         callService: async (domain, service, data, target) => {
@@ -638,6 +641,7 @@ export async function installPanelFixture(page, {
     posePosition,
     initialCatalogEntries,
     initialRobotStates,
+    registries,
     userData,
     wifiSignal,
     floorTypes,
