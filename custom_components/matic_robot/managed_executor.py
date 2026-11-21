@@ -621,20 +621,18 @@ class _PlanRun:
         before ownership is released.
         """
         manager, serial_number = self.manager, self.serial_number
-        active = manager.ledger.active_target(serial_number)
-        if (
-            not manager.control.managed_motion_is_current(
-                serial_number, self.motion_token
-            )
-            or active is None
-            or active.get("plan_id") != self.call.data["plan_id"]
-        ):
-            return
+        active = manager.ledger.active_target(serial_number) or {}
         room = next(
             (room for room in self.rooms if room.room_id == active.get("room_id")),
             None,
         )
-        if room is None:
+        if (
+            room is None
+            or active.get("plan_id") != self.call.data["plan_id"]
+            or not manager.control.managed_motion_is_current(
+                serial_number, self.motion_token
+            )
+        ):
             return
         reason = f"Managed cleaning aborted ({type(err).__name__})"
         _LOGGER.error(reason)
