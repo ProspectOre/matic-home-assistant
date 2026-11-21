@@ -13,7 +13,13 @@ from google.protobuf.message import DecodeError
 
 from .models import MODE_STATUSES, CleaningModeResult
 from .stop_reason import decode_stop_variant, stop_reason_name
-from .wire import WireField, WireFieldBudget, decode_fields, uuid_from_fixed64
+from .wire import (
+    WireField,
+    WireFieldBudget,
+    decode_fields,
+    seconds_nanos,
+    uuid_from_fixed64,
+)
 
 # Large native records repeat opaque geometry in their goal envelopes.
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
@@ -358,7 +364,7 @@ def _decode_modern_rooms(
                 continue
             duration_payload = _optional_message(mode_summary, 4)
             duration = (
-                _decode_duration(duration_payload, budget)
+                room_duration_seconds(_fields(duration_payload, budget))
                 if duration_payload is not None
                 else None
             )
@@ -375,13 +381,12 @@ def _decode_modern_rooms(
     return tuple(results)
 
 
-def _decode_duration(payload: memoryview, budget: WireFieldBudget) -> int | None:
-    fields = _fields(payload, budget)
-    seconds = _optional_varint(fields, 1)
-    nanos = _optional_varint(fields, 2)
-    seconds = 0 if seconds is None else seconds
-    nanos = 0 if nanos is None else nanos
-    if seconds > MAX_DURATION_SECONDS or nanos > 999_999_999:
+def room_duration_seconds[Buffer: (bytes, memoryview)](
+    fields: tuple[WireField[Buffer], ...],
+) -> int:
+    """Return the whole seconds of one room mode's Duration, legacy or modern."""
+    seconds, _ = seconds_nanos(fields)
+    if seconds > MAX_DURATION_SECONDS:
         raise DecodeError("history duration outside safe bounds")
     return seconds
 

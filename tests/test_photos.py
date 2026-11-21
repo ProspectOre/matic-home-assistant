@@ -98,6 +98,7 @@ def test_accepts_a_bare_timestamp_without_nanos_or_preview() -> None:
         (_key(), _value(captured=_timestamp(seconds=snaps.MAX_CAPTURE_SECONDS))),
         (_key(), _value(captured=_timestamp(nanos=1_000_000_000))),
         (_key(), _value(captured=_vfield(2, 1))),
+        (_key(), _value(captured=_timestamp(nanos=None) + _bfield(2, b""))),
         (_key(), _value(image=b"RIFF\0\0\0\0WEBPjunk")),
         (_key(), _value(image=b"\xff\xd8\xff\xe0 not webp")),
         (_key(), _value(preview=b"GIF89a")),

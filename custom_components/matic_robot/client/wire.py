@@ -265,6 +265,30 @@ def point(
     return coordinates[1], coordinates[2]
 
 
+def seconds_nanos[Buffer: (bytes, memoryview)](
+    fields: tuple[WireField[Buffer], ...],
+) -> tuple[int, int]:
+    """Read a non-negative Timestamp or Duration from an already bounded message.
+
+    Both well-known types are ``{1: seconds, 2: nanos}``, each omitted at zero.
+    Other fields are skipped; a repeated or mistyped one, a negative seconds
+    value or nanos outside one second fails.
+    """
+    values = {1: 0, 2: 0}
+    seen: set[int] = set()
+    for field in fields:
+        if field.number not in values:
+            continue
+        if field.number in seen or not isinstance(field.value, int):
+            raise DecodeError("malformed protobuf timestamp or duration")
+        seen.add(field.number)
+        values[field.number] = field.value
+    seconds, nanos = values[1], values[2]
+    if seconds >= 1 << 63 or nanos >= 1_000_000_000:
+        raise DecodeError("protobuf timestamp or duration is out of range")
+    return seconds, nanos
+
+
 def uuid_from_fixed64(high: bytes | memoryview, low: bytes | memoryview) -> str:
     """Join Matic's two little-endian fixed64 words into a UUID string."""
     value = (int.from_bytes(high, "little") << 64) | int.from_bytes(low, "little")

@@ -23,6 +23,7 @@ from .wire import (
     WireField,
     decode_fields,
     field_bytes,
+    seconds_nanos,
 )
 
 _CUES_INTENTS_BY_FIELD = {
@@ -78,17 +79,11 @@ def decode_pose_observation_time(payload: bytes) -> float:
     nested = field_bytes(timestamp, 1)
     if len(nested) != 1:
         raise DecodeError("latest pose timestamp has no unique value")
-    values = decode_fields(nested[0], max_fields=4)
-    seconds = [int(f.value) for f in values if f.number == 1 and f.wire_type == 0]
-    nanos = [int(f.value) for f in values if f.number == 2 and f.wire_type == 0]
-    if (
-        len(seconds) != 1
-        or len(nanos) != 1
-        or not 0 <= nanos[0] < 1_000_000_000
-        or seconds[0] < 0
-    ):
-        raise DecodeError("latest pose timestamp is malformed")
-    return seconds[0] + nanos[0] / 1_000_000_000
+    seconds, nanos = seconds_nanos(decode_fields(nested[0], max_fields=4))
+    # Zero seconds is a robot clock that was never set.
+    if not seconds:
+        raise DecodeError("latest pose timestamp is unset")
+    return seconds + nanos / 1_000_000_000
 
 
 def decode_operational_state(payload: bytes) -> RobotOperationalState:
