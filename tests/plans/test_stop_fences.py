@@ -5,6 +5,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.core import callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
@@ -97,7 +98,9 @@ async def test_dock_closure_follows_the_runs_plan_finished(hass) -> None:
     manager = memory_manager(hass)
     order: list[str] = []
     for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
-        hass.bus.async_listen(event_type, lambda event: order.append(event.event_type))
+        hass.bus.async_listen(
+            event_type, callback(lambda e: order.append(e.event_type))
+        )
     await manager.ledger.async_begin_run(
         "serial",
         "away",
@@ -375,7 +378,9 @@ async def test_dock_closure_waits_for_plan_finished_after_the_end_is_stored(
     manager = memory_manager(hass)
     order: list[str] = []
     for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
-        hass.bus.async_listen(event_type, lambda event: order.append(event.event_type))
+        hass.bus.async_listen(
+            event_type, callback(lambda e: order.append(e.event_type))
+        )
     await manager.ledger.async_begin_run(
         "serial",
         "away",

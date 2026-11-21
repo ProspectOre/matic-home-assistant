@@ -7,7 +7,7 @@ from itertools import accumulate
 
 import pytest
 from homeassistant.components import frontend as ha_frontend
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockModule, mock_integration
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
@@ -69,7 +69,9 @@ def _run_ends(hass: HomeAssistant) -> list[str]:
     """Record plan_finished and plan_docked in the order they fire."""
     order: list[str] = []
     for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
-        hass.bus.async_listen(event_type, lambda event: order.append(event.event_type))
+        hass.bus.async_listen(
+            event_type, callback(lambda e: order.append(e.event_type))
+        )
     return order
 
 
