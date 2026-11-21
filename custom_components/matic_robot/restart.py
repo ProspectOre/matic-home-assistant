@@ -36,7 +36,7 @@ from .managed_dispatch import (
     _shutdown_suspends_run,
 )
 from .managed_executor import _async_execute_rooms, async_finish_plan_run
-from .managed_leg import fire_room_event
+from .managed_leg import RoomResult, fire_room_event, withheld_room_ids
 from .managed_observation import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
     _async_verify_leg_completion,
@@ -56,6 +56,7 @@ from .room_coherence import current_floor_plan, room_completion_names_are_curren
 from .run_machine import (
     RUN_SETTLED_REASONS,
     Restarted,
+    RoomSettled,
     RoomVerified,
     Run,
     RunPhase,
@@ -703,6 +704,7 @@ async def _async_verify_ended_leg(
         return records
 
     completion_sessions: list[str] = []
+    unreachable: set[str] = set()
     evidence = await _async_verify_leg_completion(
         read_history,
         baseline,
@@ -713,6 +715,7 @@ async def _async_verify_ended_leg(
         timeout_seconds=remaining,
         on_verified_session=completion_sessions.append,
         skipped_room_ids=_withheld_room_ids(recovery, leg),
+        on_unreached=unreachable.add,
         session_hash=session_hash,
     )
     verified_coverage = await async_confirm_completed_coverage(
@@ -723,7 +726,7 @@ async def _async_verify_ended_leg(
     if recovery.lost_ownership() or not recovery.completion_is_current():
         return "restart_recovery_superseded"
     return await _async_credit_verified_rooms(
-        recovery, rejoined, leg, evidence, verified_coverage
+        recovery, rejoined, leg, evidence or {}, unreachable, verified_coverage
     )
 
 
@@ -733,34 +736,43 @@ def _withheld_room_ids(recovery: _Recovery, leg: list[CleaningRoom]) -> set[str]
     The owner's skips, and on a Smart Stop each room the robot never started:
     the robot dropped those from its mission.
     """
-    run_id, checkpoint = recovery.run["run_id"], recovery.checkpoint
-    withheld = set(
-        recovery.manager.ledger.skipped_room_ids(recovery.serial_number, run_id)
-    )
+    checkpoint = recovery.checkpoint
     started = checkpoint.get("started_room_ids")
-    if checkpoint.get("stop_intent") == "after_room" and isinstance(started, list):
-        withheld |= {room.room_id for room in leg if room.room_id not in started}
-    return withheld
+    return withheld_room_ids(
+        recovery.manager.ledger.skipped_room_ids(
+            recovery.serial_number, recovery.run["run_id"]
+        ),
+        leg,
+        started
+        if checkpoint.get("stop_intent") == "after_room" and isinstance(started, list)
+        else None,
+    )
 
 
 async def _async_credit_verified_rooms(
     recovery: _Recovery,
     rejoined: _Rejoined,
     leg: list[CleaningRoom],
-    evidence: dict[str, tuple[str, int]] | None,
+    evidence: dict[str, tuple[str, int]],
+    unreachable: set[str],
     verified_coverage: CoverageReceipt | None,
 ) -> str:
-    """Credit each room the history proves and say whether the run is settled."""
+    """Credit or settle each room the history decides and say if the run settled.
+
+    A room the owner skipped or the robot could not reach settles without
+    credit, as the leg runner settles it, so the run can still complete.
+    """
     run, restarted = recovery.run, recovery.restarted
+    manager, serial_number = recovery.manager, recovery.serial_number
+    skipped = set(manager.ledger.skipped_room_ids(serial_number, run["run_id"]))
     for room in leg:
-        if (
-            evidence
-            and room.room_id in evidence
-            and room.room_id not in restarted.completed_room_ids
-        ):
+        if room.room_id in restarted.completed_room_ids | restarted.settled_room_ids:
+            continue
+        result: RoomResult
+        if room.room_id in evidence:
             completed_at, duration = evidence[room.room_id]
-            if not await recovery.manager.ledger.async_mark_completed(
-                recovery.serial_number,
+            if not await manager.ledger.async_mark_completed(
+                serial_number,
                 run["plan_id"],
                 room,
                 run_id=run.get("run_id"),
@@ -772,21 +784,41 @@ async def _async_credit_verified_rooms(
                 ),
             ):
                 return "restart_recovery_superseded"
-            counted = recovery.manager.recovery.counted_room_ids(
-                recovery.serial_number, run["run_id"]
-            )
+            counted = manager.recovery.counted_room_ids(serial_number, run["run_id"])
             restarted, _ = transition(restarted, RoomVerified(counted))
             rejoined.robot.confirm_room_completed(room.name)
-            fire_room_event(
-                recovery.hass,
-                rejoined.call,
-                recovery.entity_id,
-                room,
-                "completed",
-                run_id=run["run_id"],
-                provenance=run["provenance"],
-                reason_code="verified_completion",
+            result, fields = "completed", {"reason_code": "verified_completion"}
+        elif room.room_id in unreachable | skipped:
+            if recovery.lost_ownership() or not recovery.completion_is_current():
+                return "restart_recovery_superseded"
+            if room.room_id in skipped:
+                await manager.ledger.async_mark_skipped(
+                    serial_number, run["plan_id"], room, run_id=run["run_id"]
+                )
+                result, fields = "skipped", {"reason_code": "owner_skipped"}
+            else:
+                await manager.ledger.async_mark_unreachable(
+                    serial_number, run["plan_id"], room, run_id=run["run_id"]
+                )
+                result = "skipped"
+                fields = {"reason_code": "room_unreachable", "cause": "robot"}
+            restarted, write = transition(restarted, RoomSettled(room.room_id))
+            write.apply(recovery.checkpoint)
+            await manager.recovery.async_set_recovery_checkpoint(
+                serial_number, run["run_id"], recovery.checkpoint
             )
+        else:
+            continue
+        fire_room_event(
+            recovery.hass,
+            rejoined.call,
+            recovery.entity_id,
+            room,
+            result,
+            run_id=run["run_id"],
+            provenance=run["provenance"],
+            **fields,
+        )
     return (
         restarted.end_reason
         if restarted.all_settled(

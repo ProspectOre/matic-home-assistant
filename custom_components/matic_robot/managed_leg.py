@@ -90,6 +90,23 @@ def fire_room_event(
     )
 
 
+def withheld_room_ids(
+    skipped: Collection[str],
+    leg: Sequence[CleaningRoom],
+    started: Collection[str] | None,
+) -> set[str]:
+    """Return the leg's rooms the run kept the robot from.
+
+    The owner's skips, and on a mission ending early, a Smart Stop or a STOP,
+    each room not in ``started``: the robot dropped those from its mission.
+    ``started`` is None while the mission is not ending early.
+    """
+    withheld = set(skipped)
+    if started is not None:
+        withheld |= {room.room_id for room in leg} - set(started)
+    return withheld
+
+
 @dataclass(slots=True, kw_only=True)
 class _LegRun:
     """One leg's owned native mission, from dispatch to credit or failure."""
@@ -196,10 +213,11 @@ class _LegRun:
 
     def withheld_room_ids(self) -> set[str]:
         """Return the rooms the run kept the robot from, with the owner's skips."""
-        withheld = set(self.skipped_room_ids())
-        if self.ending_early():
-            withheld |= {room.room_id for room in self.leg} - self.observed_ids
-        return withheld
+        return withheld_room_ids(
+            self.skipped_room_ids(),
+            self.leg,
+            self.observed_ids if self.ending_early() else None,
+        )
 
     async def async_run(self) -> bool:
         """Run the leg and report whether every room in it settled."""
