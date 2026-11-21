@@ -6,9 +6,9 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from functools import partial
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 from homeassistant.const import ATTR_ENTITY_ID
@@ -34,6 +34,7 @@ from .native_completion import native_room_key
 from .plan_model import (
     AreaLeg,
     CleaningRoom,
+    PlanLeg,
     normalize_run_provenance,
     plan_legs,
     run_entries,
@@ -57,664 +58,671 @@ from .run_machine import (
 _LOGGER = logging.getLogger(__name__)
 
 
-async def _async_execute_rooms_reserved(
-    hass: HomeAssistant,
-    call: ServiceCall,
-    manager: CleaningPlanManager,
-    entity_id: str,
-    serial_number: str,
-    rooms: list[CleaningRoom],
-    *,
-    robot: RobotPort,
-    floor_token: str,
-    cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
-    managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
-    mapped_room_names: tuple[str, ...] = (),
-    floor_is_current: Callable[[], bool] | None = None,
-    recovery: dict[str, Any] | None = None,
-    recovered_dispatch: _PreparedRoomDispatch | None = None,
-    handoff_expected_identity: bytes | None = None,
-    _prepared_run_id: str,
-    validate_prepared_run: Callable[[], None] | None = None,
-    entries: Sequence[Mapping[str, Any]] | None = None,
-    held_rooms: Sequence[Mapping[str, str]] = (),
-    on_started: Callable[[str], None] | None = None,
-) -> None:
-    """Execute every resolved room and custom area with safe cancellation.
+class _Handoff(NamedTuple):
+    """How a leg starts: the dispatch it adopts and the boundary a new one checks."""
 
-    ``entries`` is the preview's run order when the plan has a custom area;
-    a recovered run reads it from its checkpoint instead. ``on_started``
-    receives the run_id once the first command is recorded as sent.
-    """
-    lock = manager.control.lock(serial_number)
-    async with lock:
-        manager.control.require_command_admission(serial_number)
-        manager.control.register_run_task(serial_number)
-        cancel_event = manager.control.prepare_run(serial_number)
-        motion_token = manager.control.begin_managed_motion(serial_number)
-        dock_confirmation_scheduled = False
-        native_identity: bytes | None = handoff_expected_identity
-        expected_dispatch_identity = handoff_expected_identity
-        run_id = _prepared_run_id
-        finish_current_room, finish_current_room_threshold = (
-            manager.cadence.prepared_run_stop_policy(serial_number, run_id)
+    dispatch: _PreparedRoomDispatch | None = None
+    history: frozenset[str] | None = None
+    revision: str | None = None
+
+
+@dataclass(slots=True, kw_only=True)
+class _PlanRun:
+    """One managed run, from its admission under the lock to its end record."""
+
+    hass: HomeAssistant
+    call: ServiceCall
+    manager: CleaningPlanManager
+    entity_id: str
+    serial_number: str
+    rooms: list[CleaningRoom]
+    robot: RobotPort
+    floor_token: str
+    run_id: str
+    recovery: dict[str, Any] | None
+    cadence_by_room: Mapping[str, Mapping[str, Any]] | None
+    managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None
+    mapped_room_names: tuple[str, ...]
+    floor_is_current: Callable[[], bool] | None
+    validate_prepared_run: Callable[[], None] | None
+    entries: Sequence[Mapping[str, Any]] | None
+    held_rooms: Sequence[Mapping[str, str]]
+    on_started: Callable[[str], None] | None
+    # The mission a recovered run adopts for its first remaining leg.
+    recovered_dispatch: _PreparedRoomDispatch | None
+    cancel_event: asyncio.Event
+    motion_token: int
+    # The identity of the mission the run is on, b"" when none.
+    native_identity: bytes | None
+    # The completed mission a new dispatch may replace, if any.
+    expected_identity: bytes | None
+    finish_room_event: asyncio.Event = field(init=False)
+    finish_current_room: bool = field(init=False)
+    finish_current_room_threshold: int = field(init=False)
+    started_at: str = field(init=False)
+    provenance: str = field(init=False)
+    checkpoint: dict[str, Any] = field(init=False)
+    run: Run = field(init=False)
+    # Whether plan_started was fired, so plan_finished must follow.
+    run_started: bool = field(init=False)
+    outer_command: Callable[[int, UserCommand], Awaitable[None]] | None = field(
+        init=False
+    )
+    legs: list[PlanLeg] = field(default_factory=list)
+    # The outcome, reason code and cause the run ends with.
+    ending: tuple[str, str, str] = ("failed", "run_not_finished", "unknown")
+    shutdown_suspended: bool = False
+    dock_confirmation_scheduled: bool = False
+
+    def __post_init__(self) -> None:
+        recovery, manager = self.recovery, self.manager
+        self.finish_room_event = manager.control.finish_room_event(self.serial_number)
+        self.finish_current_room, self.finish_current_room_threshold = (
+            manager.cadence.prepared_run_stop_policy(self.serial_number, self.run_id)
         )
-        run_started_at = (
+        self.started_at = (
             str(recovery["started_at"]) if recovery else dt_util.utcnow().isoformat()
         )
-        run_started = recovery is not None
-        shutdown_suspended = False
-        run_outcome = "failed"
-        run_reason_code = "run_not_finished"
-        run_cause = "unknown"
-        run_provenance = (
+        self.run_started = recovery is not None
+        self.provenance = (
             normalize_run_provenance(recovery["provenance"])
             if recovery
-            else dispatch_control._run_provenance(call)
+            else dispatch_control._run_provenance(self.call)
         )
-        checkpoint = deepcopy(recovery["recovery_checkpoint"]) if recovery else {}
-        run = Run.from_checkpoint(checkpoint) if recovery else Run()
-        area_leg_count = 0
-        chosen: list[CleaningRoom] = []
-
-        async def advance(event: RunEvent) -> CheckpointWrite:
-            """Move the run and apply its write to the durable checkpoint."""
-            nonlocal run
-            run, write = transition(run, event)
-            write.apply(checkpoint)
-            if write.save:
-                await manager.recovery.async_set_recovery_checkpoint(
-                    serial_number, run_id, checkpoint
-                )
-            return write
-
-        async def save_dispatch(dispatch: _PreparedRoomDispatch) -> None:
-            await advance(
-                DispatchRecorded(
-                    dispatch.dispatched_at,
-                    dispatch.completion_deadline,
-                    dispatch.native_identity,
-                    dispatch.history_baseline,
-                    dispatch.session_hash,
-                )
-            )
-            if on_started is not None:
-                on_started(run_id)
-
-        def bind_native_identity(identity: bytes | None) -> None:
-            nonlocal native_identity
-            native_identity = identity
-
-        outer_command = dispatch_control._guard_native_commands(
-            managed_user_command,
+        self.checkpoint = deepcopy(recovery["recovery_checkpoint"]) if recovery else {}
+        self.run = Run.from_checkpoint(self.checkpoint) if recovery else Run()
+        self.outer_command = dispatch_control._guard_native_commands(
+            self.managed_user_command,
             manager,
-            serial_number,
-            robot.session_identity,
-            lambda: native_identity,
+            self.serial_number,
+            self.robot.session_identity,
+            lambda: self.native_identity,
             allow_ended_dock=True,
         )
-        robot.set_activity_run_id(run_id)
 
-        def started() -> dict[str, Any]:
-            """Name the run as it began, for plan_started and plan_finished."""
-            return {
-                "plan_id": call.data["plan_id"],
-                "run_id": run_id,
-                "trigger": run_provenance,
-                "provenance": run_provenance,
-                "service": str(call.service),
-                "started_at": run_started_at,
-                "room_count": len(chosen),
-            }
+    def started(self) -> dict[str, Any]:
+        """Name the run as it began, for plan_started and plan_finished."""
+        return {
+            "plan_id": self.call.data["plan_id"],
+            "run_id": self.run_id,
+            "trigger": self.provenance,
+            "provenance": self.provenance,
+            "service": str(self.call.service),
+            "started_at": self.started_at,
+            "room_count": len(self.rooms),
+        }
 
-        def record_room_completion(_room: CleaningRoom) -> None:
-            nonlocal run
-            counted = manager.recovery.counted_room_ids(serial_number, run_id)
-            run = transition(run, RoomVerified(counted))[0]
-
-        try:
-            # Publish ownership before the first suspending check. Otherwise
-            # Stop can observe no run while this start waits for an old stop
-            # fence to clear, and prepare_run would erase its cancellation.
-            await dispatch_control._ensure_stop_settled(
-                hass,
-                manager,
-                serial_number,
-                entity_id,
-                robot.active_session,
-                robot.fresh_state,
+    async def advance(self, event: RunEvent) -> CheckpointWrite:
+        """Move the run and apply its write to the durable checkpoint."""
+        self.run, write = transition(self.run, event)
+        write.apply(self.checkpoint)
+        if write.save:
+            await self.manager.recovery.async_set_recovery_checkpoint(
+                self.serial_number, self.run_id, self.checkpoint
             )
-            if recovery is None and validate_prepared_run is not None:
-                validate_prepared_run()
-            finish_room_event = manager.control.finish_room_event(serial_number)
-            if checkpoint.get("stop_intent") == "after_room":
-                finish_room_event.set()
+        return write
+
+    async def save_dispatch(self, dispatch: _PreparedRoomDispatch) -> None:
+        await self.advance(
+            DispatchRecorded(
+                dispatch.dispatched_at,
+                dispatch.completion_deadline,
+                dispatch.native_identity,
+                dispatch.history_baseline,
+                dispatch.session_hash,
+            )
+        )
+        if self.on_started is not None:
+            self.on_started(self.run_id)
+
+    def bind_native_identity(self, identity: bytes | None) -> None:
+        self.native_identity = identity
+
+    def record_room_completed(self, _room: CleaningRoom) -> None:
+        counted = self.manager.recovery.counted_room_ids(
+            self.serial_number, self.run_id
+        )
+        self.run = transition(self.run, RoomVerified(counted))[0]
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancel_event.is_set() or not (
+            self.manager.control.managed_motion_is_current(
+                self.serial_number, self.motion_token
+            )
+        ):
+            raise PlanCancelledError
+
+    def validate_new_run(self) -> None:
+        if self.validate_prepared_run is not None:
+            self.validate_prepared_run()
+
+    async def async_start(self) -> None:
+        """Wait out a stop fence, plan the legs and record a new run's start."""
+        # Publish ownership before the first suspending check. Otherwise
+        # Stop can observe no run while this start waits for an old stop
+        # fence to clear, and prepare_run would erase its cancellation.
+        await dispatch_control._ensure_stop_settled(
+            self.hass,
+            self.manager,
+            self.serial_number,
+            self.entity_id,
+            self.robot.active_session,
+            self.robot.fresh_state,
+        )
+        self.validate_new_run()
+        checkpoint = self.checkpoint
+        if checkpoint.get("stop_intent") == "after_room":
+            self.finish_room_event.set()
+        recovered = self.recovery is not None
+        entries = checkpoint.get("entries") if recovered else run_entries(self.entries)
+        self.legs = plan_legs(
+            self.rooms,
+            entries,
             # A Smart Stop run 0.5 started ran each room as its own mission;
             # a recovered one keeps that grouping.
-            single_room_missions = (
-                recovery is not None and checkpoint.get("single_room_missions") is True
-            )
-            chosen = rooms
-            leg_entries = (
-                checkpoint.get("entries")
-                if recovery is not None
-                else run_entries(entries)
-            )
-            legs = plan_legs(
-                chosen, leg_entries, single_room_missions=single_room_missions
-            )
-            area_leg_count = sum(isinstance(leg, AreaLeg) for leg in legs)
-            if recovery is None:
-                run_started = True
-                await manager.ledger.async_begin_run(
-                    serial_number,
-                    call.data["plan_id"],
-                    run_id,
-                    len(chosen),
-                    trigger=run_provenance,
-                    service=str(call.service),
-                    provenance=run_provenance,
-                    finish_current_room=finish_current_room,
-                    finish_current_room_threshold=finish_current_room_threshold,
-                    held_rooms=held_rooms,
+            single_room_missions=(
+                recovered and checkpoint.get("single_room_missions") is True
+            ),
+        )
+        if not recovered:
+            self.run_started = True
+            await self.async_announce_start()
+        if self.mapped_room_names:
+            mapped_keys = [native_room_key(name) for name in self.mapped_room_names]
+            ambiguous = [
+                room.name
+                for room in self.rooms
+                if mapped_keys.count(native_room_key(room.name)) != 1
+            ]
+            if ambiguous:
+                # Admission and completion must use the same identity key.
+                raise managed_run.validation_error(
+                    "Managed completion cannot distinguish duplicate mapped room names",
+                    "ambiguous_room_name",
+                    {"room": ", ".join(ambiguous)},
                 )
-                hass.bus.async_fire(
-                    EVENT_PLAN_STARTED,
-                    {ATTR_ENTITY_ID: entity_id, **started()},
-                    context=call.context,
-                )
-                for held in held_rooms:
-                    hass.bus.async_fire(
-                        f"{DOMAIN}_room_held",
-                        {
-                            ATTR_ENTITY_ID: entity_id,
-                            "plan_id": call.data["plan_id"],
-                            "room_id": held["room_id"],
-                            "room": held["name"],
-                            "run_id": run_id,
-                            "provenance": run_provenance,
-                            "reason_code": held["reason"],
-                            "sensor": held["sensor"],
-                        },
-                        context=call.context,
-                    )
-            if mapped_room_names:
-                mapped_keys = [native_room_key(name) for name in mapped_room_names]
-                ambiguous = [
-                    room.name
-                    for room in chosen
-                    if mapped_keys.count(native_room_key(room.name)) != 1
-                ]
-                if ambiguous:
-                    # Admission and completion must use the same identity key.
-                    raise managed_run.validation_error(
-                        "Managed completion cannot distinguish duplicate "
-                        "mapped room names",
-                        "ambiguous_room_name",
-                        {"room": ", ".join(ambiguous)},
-                    )
-            if recovery is None:
-                checkpoint = {
-                    "version": 1,
-                    "mixed_settings": True,
-                    # A Smart Stop now ends the mission after its current
-                    # room through the robot's queue, so rooms share missions.
-                    "single_room_missions": False,
-                    "entity_id": entity_id,
-                    "floor_token": floor_token,
-                    "rooms": [asdict(room) for room in chosen],
-                    "data": dict(call.data),
-                    **run.position(),
-                    "finish_current_room": finish_current_room,
-                    "finish_current_room_threshold": finish_current_room_threshold,
-                }
-                if leg_entries is not None:
-                    checkpoint["entries"] = leg_entries
-                if cadence_by_room is not None:
-                    checkpoint["cadence_by_room"] = deepcopy(
-                        {key: dict(value) for key, value in cadence_by_room.items()}
-                    )
-                await manager.recovery.async_set_recovery_checkpoint(
-                    serial_number, run_id, checkpoint
-                )
-            if recovery is None and validate_prepared_run is not None:
-                validate_prepared_run()
-            for index, leg in enumerate(legs):
-                if recovery is not None and index < run.leg_index:
-                    continue
-                if (
-                    cancel_event.is_set()
-                    or not manager.control.managed_motion_is_current(
-                        serial_number, motion_token
-                    )
-                ):
-                    raise PlanCancelledError
-                prepared_dispatch, recovered_dispatch = recovered_dispatch, None
-                expected_dispatch_history = None
-                expected_dispatch_revision = None
-                refused_on_return = False
-                if index > 0 and prepared_dispatch is None:
-                    handoff_history = checkpoint.get("handoff_history")
-                    if isinstance(handoff_history, list):
-                        expected_dispatch_history = frozenset(handoff_history)
-                        expected_dispatch_revision = checkpoint.get("handoff_revision")
-                    else:
-                        # No durable evidence boundary means we cannot prove
-                        # that an intervening native mission did not complete.
-                        break
-                    await advance(HandoffEntered(index))
-                    if finish_room_event.is_set():
-                        break
-                    if isinstance(leg, list):
+        if not recovered:
+            await self.async_save_first_checkpoint(entries)
+        self.validate_new_run()
 
-                        async def dispatch_on_return(
-                            on_identity: Callable[[bytes | None], None],
-                            leg: list[CleaningRoom] = leg,
-                            index: int = index,
-                            history: frozenset[str] | None = expected_dispatch_history,
-                            revision: str | None = expected_dispatch_revision,
-                        ) -> _PreparedRoomDispatch:
-                            await advance(LegDispatching(index))
-                            return await dispatch_control._async_dispatch_leg_command(
-                                robot,
-                                leg,
-                                motion_token,
-                                floor_token=floor_token,
-                                floor_is_current=floor_is_current,
-                                on_dispatch=lambda: bind_native_identity(None),
-                                on_claim=lambda session_id: (
-                                    manager.ledger.async_claim_native_session(
-                                        serial_number, session_id, run_id=run_id
-                                    )
-                                ),
-                                on_identity=on_identity,
-                                expected_dispatch_identity=b"",
-                                expected_dispatch_history=history,
-                                expected_dispatch_revision=revision,
-                            )
+    async def async_announce_start(self) -> None:
+        """Begin the run's ledger record and fire plan_started and room_held."""
+        await self.manager.ledger.async_begin_run(
+            self.serial_number,
+            self.call.data["plan_id"],
+            self.run_id,
+            len(self.rooms),
+            trigger=self.provenance,
+            service=str(self.call.service),
+            provenance=self.provenance,
+            finish_current_room=self.finish_current_room,
+            finish_current_room_threshold=self.finish_current_room_threshold,
+            held_rooms=self.held_rooms,
+        )
+        bus, context = self.hass.bus, self.call.context
+        bus.async_fire(
+            EVENT_PLAN_STARTED,
+            {ATTR_ENTITY_ID: self.entity_id, **self.started()},
+            context=context,
+        )
+        for held in self.held_rooms:
+            bus.async_fire(
+                f"{DOMAIN}_room_held",
+                {
+                    ATTR_ENTITY_ID: self.entity_id,
+                    "plan_id": self.call.data["plan_id"],
+                    "room_id": held["room_id"],
+                    "room": held["name"],
+                    "run_id": self.run_id,
+                    "provenance": self.provenance,
+                    "reason_code": held["reason"],
+                    "sensor": held["sensor"],
+                },
+                context=context,
+            )
 
-                        async def back_to_handoff(index: int = index) -> None:
-                            nonlocal refused_on_return
-                            refused_on_return = True
-                            await advance(HandoffEntered(index))
+    async def async_save_first_checkpoint(
+        self, entries: list[dict[str, str]] | None
+    ) -> None:
+        """Store what restart recovery needs to resume a new run."""
+        self.checkpoint = {
+            "version": 1,
+            "mixed_settings": True,
+            # A Smart Stop now ends the mission after its current room
+            # through the robot's queue, so rooms share missions.
+            "single_room_missions": False,
+            "entity_id": self.entity_id,
+            "floor_token": self.floor_token,
+            "rooms": [asdict(room) for room in self.rooms],
+            "data": dict(self.call.data),
+            **self.run.position(),
+            "finish_current_room": self.finish_current_room,
+            "finish_current_room_threshold": self.finish_current_room_threshold,
+        }
+        if entries is not None:
+            self.checkpoint["entries"] = entries
+        if self.cadence_by_room is not None:
+            self.checkpoint["cadence_by_room"] = deepcopy(
+                {key: dict(value) for key, value in self.cadence_by_room.items()}
+            )
+        await self.manager.recovery.async_set_recovery_checkpoint(
+            self.serial_number, self.run_id, self.checkpoint
+        )
 
-                        prepared_dispatch = await leg_handoff.async_dispatch_on_return(
-                            robot,
-                            dispatch_on_return,
-                            bind_native_identity,
-                            back_to_handoff,
-                            partial(
-                                dispatch_control._async_cleanup_managed_motion,
-                                outer_command,
-                                motion_token,
-                                dispatch_attempted=True,
-                            ),
-                            partial(
-                                dispatch_control._shutdown_suspends_run,
-                                hass,
-                                manager,
-                                serial_number,
-                            ),
-                        )
-                if index > 0 and prepared_dispatch is None:
-                    if not await observation._async_wait_for_settled_leg_handoff(
-                        robot,
-                        cancel_event,
-                        expected_identity=native_identity,
-                        # A refused command whose session shows up late is
-                        # the robot taking it after all: never send it twice.
-                        reject_new_identity=refused_on_return,
-                        finish_room_event=finish_room_event,
-                    ):
-                        # The previous native leg is complete, but the robot
-                        # never reached a safe handoff state. Leave the
-                        # remaining settings legs unattempted; issuing STOP
-                        # here would restart the OEM stop countdown we just
-                        # waited out.
-                        break
-                    # The settled handoff establishes an empty ownership
-                    # boundary. Recheck that boundary immediately before the
-                    # next dispatch so a new external mission cannot be
-                    # adopted as our baseline.
-                    completed_identity = native_identity
-                    native_identity = b""
-                    # Firmware can retain the completed mission identity
-                    # while a blocked doorway leaves it returning/idle. Keep
-                    # that identity as the dispatch fence; the handoff waiter
-                    # already established that the session is inactive, and
-                    # dispatch accepts either this identity or its clearing.
-                    expected_dispatch_identity = completed_identity or b""
-                    if expected_dispatch_revision is None:
-                        expected_dispatch_revision = await robot.handoff_revision()
-                        checkpoint["handoff_revision"] = expected_dispatch_revision
-                    if finish_room_event.is_set():
-                        # Honor a graceful finish request before dispatching a
-                        # new settings-boundary leg.
-                        break
-                if prepared_dispatch is None:
-                    await advance(LegDispatching(index))
-                if isinstance(leg, AreaLeg):
-                    completion_verified = await area_execution._async_run_area_leg(
-                        hass,
-                        call,
-                        manager,
-                        entity_id,
-                        serial_number,
-                        leg,
-                        robot,
-                        cancel_event,
-                        motion_token,
-                        managed_user_command,
-                        prepared_dispatch=prepared_dispatch,
-                        finish_room_event=finish_room_event,
-                        floor_is_current=floor_is_current,
-                        floor_token=floor_token,
-                        expected_dispatch_identity=expected_dispatch_identity,
-                        expected_dispatch_history=expected_dispatch_history,
-                        expected_dispatch_revision=expected_dispatch_revision,
-                        on_native_identity=bind_native_identity,
-                        run_id=run_id,
-                        checkpoint_dispatch=save_dispatch,
-                        provenance=run_provenance,
-                        # Later legs need the area's own record in history.
-                        settle_history=index + 1 < len(legs),
-                    )
-                    await advance(AreaFinished(index, last_leg=index + 1 == len(legs)))
-                else:
-                    resumed = (
-                        manager.ledger.active_target(serial_number) or {}
-                        if recovery is not None and index == run.leg_index
-                        else {}
-                    )
-                    completion_verified = await leg_execution._async_run_leg(
-                        hass,
-                        call,
-                        manager,
-                        entity_id,
-                        serial_number,
-                        leg,
-                        robot,
-                        motion_token,
-                        cancel_event=cancel_event,
-                        managed_user_command=managed_user_command,
-                        prepared_dispatch=prepared_dispatch,
-                        finish_room_event=finish_room_event,
-                        floor_is_current=floor_is_current,
-                        floor_token=floor_token,
-                        expected_dispatch_identity=expected_dispatch_identity,
-                        expected_dispatch_history=expected_dispatch_history,
-                        expected_dispatch_revision=expected_dispatch_revision,
-                        on_native_identity=bind_native_identity,
-                        run_id=run_id,
-                        record_room_completed=record_room_completion,
-                        checkpoint_dispatch=save_dispatch,
-                        advance=advance,
-                        provenance=run_provenance,
-                        recovered_suspend_reason=resumed.get("suspend_reason"),
-                        recovered_room_id=resumed.get("room_id"),
-                    )
-                expected_dispatch_identity = None
-                if not completion_verified:
+    async def async_run_legs(self) -> None:
+        """Run each remaining leg until one is left unsettled or a stop ends it."""
+        for index, leg in enumerate(self.legs):
+            if index < self.run.leg_index:
+                continue
+            self.raise_if_cancelled()
+            handoff = _Handoff(self.recovered_dispatch)
+            self.recovered_dispatch = None
+            if index > 0 and handoff.dispatch is None:
+                settled_handoff = await self.async_hand_off(index, leg)
+                if settled_handoff is None:
                     break
-                if (
-                    cancel_event.is_set()
-                    or not manager.control.managed_motion_is_current(
-                        serial_number, motion_token
-                    )
-                ):
-                    raise PlanCancelledError
-                if finish_room_event.is_set():
-                    break
-                if index + 1 < len(legs):
-                    # The verified leg is complete, but the native task may
-                    # still be returning. Persist the next leg before the
-                    # bounded handoff wait so restart recovery can resume the
-                    # queue instead of treating the prior verifying leg as
-                    # the only recoverable work.
-                    revision = await robot.handoff_revision()
-                    handoff_keys = await robot.history_keys(
-                        handoff=True, session_hash=checkpoint.get("session_hash")
-                    )
-                    await advance(LegVerified(index + 1, handoff_keys, revision))
-            # Every room has a result and every custom area's own mission ended.
-            all_entries_done = (
-                run.completed_room_ids | run.settled_room_ids
-                == {room.room_id for room in chosen}
-                and len(run.finished_area_legs) == area_leg_count
-            )
-            if finish_room_event.is_set() and not all_entries_done:
-                run_outcome = "cancelled"
-                run_reason_code = "managed_stop"
-                run_cause = "managed_cancellation"
-                mark_managed_stop = manager.control.mark_managed_stop
-                mark_managed_stop(serial_number)
-            elif all_entries_done:
-                run_outcome = "completed"
-                run_reason_code = run.end_reason
-                run_cause = "verified_completion"
-            else:
-                run_outcome = "unverified"
-                run_reason_code = "partial_native_result"
-                run_cause = "native_result"
-            if cancel_event.is_set() or not manager.control.managed_motion_is_current(
-                serial_number, motion_token
-            ):
-                raise PlanCancelledError
-            current = robot.observed()
-            home_or_returning = observation.HOME | {RobotActivity.RETURNING}
-            needs_dock_confirmation = (
-                finish_room_event.is_set() and not all_entries_done
-            )
-            if (
-                (call.data["return_to_base"] or finish_room_event.is_set())
-                and current is not None
-                and outer_command is not None
-                and not dispatch_control._stop_is_pending(manager, serial_number)
-                and (
-                    current.activity not in home_or_returning or needs_dock_confirmation
+                handoff = settled_handoff
+            if handoff.dispatch is None:
+                await self.advance(LegDispatching(index))
+            settled = await self.async_run_leg(index, leg, handoff)
+            self.expected_identity = None
+            if not settled:
+                break
+            self.raise_if_cancelled()
+            if self.finish_room_event.is_set():
+                break
+            if index + 1 < len(self.legs):
+                # The verified leg is complete, but the native task may still
+                # be returning. Persist the next leg before the bounded handoff
+                # wait so restart recovery can resume the queue instead of
+                # treating the prior verifying leg as the only recoverable work.
+                revision = await self.robot.handoff_revision()
+                handoff_keys = await self.robot.history_keys(
+                    handoff=True, session_hash=self.checkpoint.get("session_hash")
                 )
-            ):
-                try:
-                    if current.activity not in home_or_returning:
-                        await outer_command(motion_token, UserCommand.DOCK)
-                    if needs_dock_confirmation:
-                        dispatch_control._schedule_run_dock_confirmation(
-                            hass,
-                            manager,
-                            robot,
-                            serial_number,
-                            entity_id,
-                            run_id,
-                            call.context,
+                await self.advance(LegVerified(index + 1, handoff_keys, revision))
+
+    async def async_hand_off(self, index: int, leg: PlanLeg) -> _Handoff | None:
+        """Carry the run from the ended leg into this one, or None to stop.
+
+        A room leg starts while the robot returns when it can; otherwise
+        the robot must settle before the next dispatch.
+        """
+        handoff_history = self.checkpoint.get("handoff_history")
+        if not isinstance(handoff_history, list):
+            # No durable evidence boundary means we cannot prove that an
+            # intervening native mission did not complete.
+            return None
+        history = frozenset(handoff_history)
+        revision = self.checkpoint.get("handoff_revision")
+        await self.advance(HandoffEntered(index))
+        if self.finish_room_event.is_set():
+            return None
+        refused_on_return = False
+        if isinstance(leg, list):
+
+            async def dispatch(
+                on_identity: Callable[[bytes | None], None],
+            ) -> _PreparedRoomDispatch:
+                await self.advance(LegDispatching(index))
+                return await dispatch_control._async_dispatch_leg_command(
+                    self.robot,
+                    leg,
+                    self.motion_token,
+                    floor_token=self.floor_token,
+                    floor_is_current=self.floor_is_current,
+                    on_dispatch=lambda: self.bind_native_identity(None),
+                    on_claim=lambda session_id: (
+                        self.manager.ledger.async_claim_native_session(
+                            self.serial_number, session_id, run_id=self.run_id
                         )
-                        dock_confirmation_scheduled = True
-                except ManagedMotionReplacedError as err:
-                    raise PlanCancelledError from err
-                except MaticError as err:
-                    raise managed_run.validation_error(
-                        "The robot could not return to its dock",
-                        "robot_command_failed",
-                    ) from err
-        except PlanCancelledError as err:
-            if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
-                shutdown_suspended = True
-                return
-            cancellation_reason_reader = manager.control.cancellation_reason
-            cancellation_reason = cancellation_reason_reader(serial_number)
-            recharge_suspended = "low_charge" in (
-                getattr(err, "suspend_reason", None),
-                dispatch_control._suspended_run_reason(manager, serial_number),
+                    ),
+                    on_identity=on_identity,
+                    expected_dispatch_identity=b"",
+                    expected_dispatch_history=history,
+                    expected_dispatch_revision=revision,
+                )
+
+            async def back_to_handoff() -> None:
+                nonlocal refused_on_return
+                refused_on_return = True
+                await self.advance(HandoffEntered(index))
+
+            prepared = await leg_handoff.async_dispatch_on_return(
+                self.robot,
+                dispatch,
+                self.bind_native_identity,
+                back_to_handoff,
+                partial(
+                    dispatch_control._async_cleanup_managed_motion,
+                    self.outer_command,
+                    self.motion_token,
+                    dispatch_attempted=True,
+                ),
+                partial(
+                    dispatch_control._shutdown_suspends_run,
+                    self.hass,
+                    self.manager,
+                    self.serial_number,
+                ),
             )
-            if cancellation_reason == "config_entry_unload":
-                run_outcome = "unverified"
-                run_reason_code = "config_entry_unload"
-                run_cause = "home_assistant"
-            elif cancellation_reason == "motion_replaced" or isinstance(
-                err.__cause__, ManagedMotionReplacedError
-            ):
-                run_outcome = "cancelled"
-                run_reason_code = "managed_replaced"
-                run_cause = "replacement"
-            elif cancellation_reason == "managed_stop":
-                run_outcome = "cancelled"
-                run_reason_code = "managed_stop"
-                run_cause = "managed_cancellation"
-            elif recharge_suspended:
-                run_outcome = "recharge_suspended"
-                run_reason_code = "low_charge"
-                run_cause = "robot"
-            else:
-                run_outcome = "unverified"
-                run_reason_code = "cancellation_unattributed"
-                run_cause = "unknown"
+            if prepared is not None:
+                return _Handoff(prepared, history, revision)
+        if not await observation._async_wait_for_settled_leg_handoff(
+            self.robot,
+            self.cancel_event,
+            expected_identity=self.native_identity,
+            # A refused command whose session shows up late is the robot
+            # taking it after all: never send it twice.
+            reject_new_identity=refused_on_return,
+            finish_room_event=self.finish_room_event,
+        ):
+            # The previous native leg is complete, but the robot never reached
+            # a safe handoff state. Leave the remaining settings legs
+            # unattempted; issuing STOP here would restart the OEM stop
+            # countdown we just waited out.
+            return None
+        # The settled handoff establishes an empty ownership boundary, which
+        # dispatch rechecks so a new external mission is never adopted as our
+        # baseline. Firmware can retain the completed mission identity while
+        # a blocked doorway leaves it returning or idle, so that identity stays
+        # the dispatch fence: dispatch accepts it or its clearing.
+        self.expected_identity = self.native_identity or b""
+        self.native_identity = b""
+        if revision is None:
+            revision = await self.robot.handoff_revision()
+            self.checkpoint["handoff_revision"] = revision
+        if self.finish_room_event.is_set():
+            # Honor a graceful finish request before dispatching a new
+            # settings-boundary leg.
+            return None
+        return _Handoff(None, history, revision)
+
+    async def async_run_leg(self, index: int, leg: PlanLeg, handoff: _Handoff) -> bool:
+        """Run one area or room leg and report whether it settled."""
+        if isinstance(leg, AreaLeg):
+            settled = await area_execution._async_run_area_leg(
+                self.hass,
+                self.call,
+                self.manager,
+                self.entity_id,
+                self.serial_number,
+                leg,
+                self.robot,
+                self.cancel_event,
+                self.motion_token,
+                self.managed_user_command,
+                prepared_dispatch=handoff.dispatch,
+                finish_room_event=self.finish_room_event,
+                floor_is_current=self.floor_is_current,
+                floor_token=self.floor_token,
+                expected_dispatch_identity=self.expected_identity,
+                expected_dispatch_history=handoff.history,
+                expected_dispatch_revision=handoff.revision,
+                on_native_identity=self.bind_native_identity,
+                run_id=self.run_id,
+                checkpoint_dispatch=self.save_dispatch,
+                provenance=self.provenance,
+                # Later legs need the area's own record in history.
+                settle_history=index + 1 < len(self.legs),
+            )
+            await self.advance(
+                AreaFinished(index, last_leg=index + 1 == len(self.legs))
+            )
+            return settled
+        resumed = (
+            self.manager.ledger.active_target(self.serial_number) or {}
+            if self.recovery is not None and index == self.run.leg_index
+            else {}
+        )
+        return await leg_execution._async_run_leg(
+            self.hass,
+            self.call,
+            self.manager,
+            self.entity_id,
+            self.serial_number,
+            leg,
+            self.robot,
+            self.motion_token,
+            cancel_event=self.cancel_event,
+            managed_user_command=self.managed_user_command,
+            prepared_dispatch=handoff.dispatch,
+            finish_room_event=self.finish_room_event,
+            floor_is_current=self.floor_is_current,
+            floor_token=self.floor_token,
+            expected_dispatch_identity=self.expected_identity,
+            expected_dispatch_history=handoff.history,
+            expected_dispatch_revision=handoff.revision,
+            on_native_identity=self.bind_native_identity,
+            run_id=self.run_id,
+            record_room_completed=self.record_room_completed,
+            checkpoint_dispatch=self.save_dispatch,
+            advance=self.advance,
+            provenance=self.provenance,
+            recovered_suspend_reason=resumed.get("suspend_reason"),
+            recovered_room_id=resumed.get("room_id"),
+        )
+
+    async def async_end(self) -> None:
+        """Name how the legs ended and send the robot home when it should go."""
+        # Every room has a result and every custom area's own mission ended.
+        all_settled = self.run.all_settled(
+            {room.room_id for room in self.rooms},
+            {index for index, leg in enumerate(self.legs) if isinstance(leg, AreaLeg)},
+        )
+        smart_stopped = self.finish_room_event.is_set() and not all_settled
+        if smart_stopped:
+            self.ending = ("cancelled", "managed_stop", "managed_cancellation")
+            self.manager.control.mark_managed_stop(self.serial_number)
+        elif all_settled:
+            self.ending = ("completed", self.run.end_reason, "verified_completion")
+        else:
+            self.ending = ("unverified", "partial_native_result", "native_result")
+        self.raise_if_cancelled()
+        current = self.robot.observed()
+        home_or_returning = observation.HOME | {RobotActivity.RETURNING}
+        if (
+            not (self.call.data["return_to_base"] or self.finish_room_event.is_set())
+            or current is None
+            or self.outer_command is None
+            or dispatch_control._stop_is_pending(self.manager, self.serial_number)
+            or (current.activity in home_or_returning and not smart_stopped)
+        ):
             return
-        except (Exception, asyncio.CancelledError) as err:
-            if dispatch_control._shutdown_suspends_run(hass, manager, serial_number):
-                shutdown_suspended = True
-                raise
-            # A native task that ends in place is positive evidence that the
-            # room was stopped, but it does not identify who or what stopped
-            # it.  Keep the no-credit guard from the room handler while
-            # treating this expected partial plan outcome as a controlled
-            # result, so a presence automation does not turn a valid stop into
-            # a generic service error.
-            stopped_in_place = isinstance(err, RoomStoppedInPlaceError) or isinstance(
-                getattr(err, "__cause__", None), RoomStoppedInPlaceError
-            )
-            if stopped_in_place:
-                run_outcome = "unverified"
-                run_reason_code = "stopped_in_place"
-                run_cause = "unknown"
-                return
-            leaf_error = (
-                err.__cause__
-                if isinstance(err, ServiceValidationError) and err.__cause__ is not None
-                else err
-            )
-            if getattr(leaf_error, "suspend_reason", None) == "low_charge":
-                run_outcome = "recharge_suspended"
-                run_reason_code = "low_charge"
-                run_cause = "robot"
-                raise
-            if isinstance(leaf_error, RoomInterruptedError | RoomTakenOverError):
-                run_outcome = "unverified"
-                run_reason_code = (
-                    "native_task_taken_over"
-                    if isinstance(leaf_error, RoomTakenOverError)
-                    else managed_run._interruption_reason_code(leaf_error)
+        try:
+            if current.activity not in home_or_returning:
+                await self.outer_command(self.motion_token, UserCommand.DOCK)
+            if smart_stopped:
+                dispatch_control._schedule_run_dock_confirmation(
+                    self.hass,
+                    self.manager,
+                    self.robot,
+                    self.serial_number,
+                    self.entity_id,
+                    self.run_id,
+                    self.call.context,
                 )
-                run_cause = "unknown"
-                raise
-            run_outcome = "failed"
-            run_reason_code = managed_run._failure_reason_code(err)
-            run_cause = (
+                self.dock_confirmation_scheduled = True
+        except ManagedMotionReplacedError as err:
+            raise PlanCancelledError from err
+        except MaticError as err:
+            raise managed_run.validation_error(
+                "The robot could not return to its dock", "robot_command_failed"
+            ) from err
+
+    def cancelled(self, err: PlanCancelledError) -> None:
+        """Attribute a cancelled run, or keep it for restart on shutdown."""
+        manager, serial_number = self.manager, self.serial_number
+        if dispatch_control._shutdown_suspends_run(self.hass, manager, serial_number):
+            self.shutdown_suspended = True
+            return
+        reason = manager.control.cancellation_reason(serial_number)
+        if reason == "config_entry_unload":
+            self.ending = ("unverified", "config_entry_unload", "home_assistant")
+        elif reason == "motion_replaced" or isinstance(
+            err.__cause__, ManagedMotionReplacedError
+        ):
+            self.ending = ("cancelled", "managed_replaced", "replacement")
+        elif reason == "managed_stop":
+            self.ending = ("cancelled", "managed_stop", "managed_cancellation")
+        elif "low_charge" in (
+            getattr(err, "suspend_reason", None),
+            dispatch_control._suspended_run_reason(manager, serial_number),
+        ):
+            self.ending = ("recharge_suspended", "low_charge", "robot")
+        else:
+            self.ending = ("unverified", "cancellation_unattributed", "unknown")
+
+    async def async_failed(self, err: BaseException) -> bool:
+        """Attribute a failed run and return whether the error propagates."""
+        if dispatch_control._shutdown_suspends_run(
+            self.hass, self.manager, self.serial_number
+        ):
+            self.shutdown_suspended = True
+            return True
+        # A native task that ends in place is positive evidence that the room
+        # was stopped, but it does not identify who or what stopped it. Keep
+        # the no-credit guard from the room handler while treating this
+        # expected partial plan outcome as a controlled result, so a presence
+        # automation does not turn a valid stop into a generic service error.
+        if isinstance(err, RoomStoppedInPlaceError) or isinstance(
+            err.__cause__, RoomStoppedInPlaceError
+        ):
+            self.ending = ("unverified", "stopped_in_place", "unknown")
+            return False
+        leaf_error = (
+            err.__cause__
+            if isinstance(err, ServiceValidationError) and err.__cause__ is not None
+            else err
+        )
+        if getattr(leaf_error, "suspend_reason", None) == "low_charge":
+            self.ending = ("recharge_suspended", "low_charge", "robot")
+        elif isinstance(leaf_error, RoomTakenOverError):
+            self.ending = ("unverified", "native_task_taken_over", "unknown")
+        elif isinstance(leaf_error, RoomInterruptedError):
+            reason_code = managed_run._interruption_reason_code(leaf_error)
+            self.ending = ("unverified", reason_code, "unknown")
+        else:
+            self.ending = (
+                "failed",
+                managed_run._failure_reason_code(err),
                 "unknown"
                 if isinstance(err, HomeAssistantError | MaticError | TimeoutError)
-                else "internal"
+                else "internal",
             )
-            finish_event_reader = manager.control.finish_room_event
-            finish_event_reader(serial_number).clear()
-            # Leaf handlers retire expected failures. Unexpected failures must
-            # also leave a terminal record before ownership is released.
-            active = manager.ledger.active_target(serial_number)
-            if (
-                manager.control.managed_motion_is_current(serial_number, motion_token)
-                and active is not None
-                and active.get("plan_id") == call.data["plan_id"]
-            ):
-                room = next(
-                    (room for room in rooms if room.room_id == active.get("room_id")),
-                    None,
-                )
-                if room is not None:
-                    reason = f"Managed cleaning aborted ({type(err).__name__})"
-                    _LOGGER.error(reason)
-                    await manager.ledger.async_mark_interrupted(
-                        serial_number, call.data["plan_id"], room, reason
-                    )
-                    leg_execution.fire_room_event(
-                        hass,
-                        call,
-                        entity_id,
-                        room,
-                        "interrupted",
-                        run_id=run_id,
-                        provenance=run_provenance,
-                        error=reason,
-                        reason_code="unexpected_exception",
-                        cause="internal",
-                    )
-                    session_ended = False
-                    current = robot.observed()
-                    if current is not None and current.activity in observation.HOME | {
-                        RobotActivity.READY,
-                        RobotActivity.RETURNING,
-                    }:
-                        try:
-                            session_ended = (
-                                await observation._async_active_session_state(
-                                    robot.active_session
-                                )
-                            ) is False
-                        except (Exception, asyncio.CancelledError) as cleanup_error:
-                            _LOGGER.warning(
-                                "Unable to confirm aborted native session ended (%s)",
-                                type(cleanup_error).__name__,
-                            )
-                    # Returning is already a firmware-owned terminal motion
-                    # state. Sending STOP here can replace a natural handoff
-                    # with the OEM ten-minute stop countdown, leaving later
-                    # settings legs unattempted. Only stop when the robot is
-                    # not already on its way home.
-                    if (
-                        not session_ended
-                        and (
-                            current is None
-                            or current.activity is not RobotActivity.RETURNING
-                            or current.low_charge
-                        )
-                        and managed_run._coverage_guard_cause(err) is None
-                    ):
-                        if not dispatch_control._managed_stop_fence_owned_by_run(
-                            manager, serial_number, run_id
-                        ):
-                            await dispatch_control._async_cleanup_managed_motion(
-                                outer_command, motion_token, dispatch_attempted=True
-                            )
-            raise
-        finally:
+            self.finish_room_event.clear()
+            await self.async_record_aborted(err)
+        return True
+
+    async def async_record_aborted(self, err: BaseException) -> None:
+        """Close the room an unexpected failure left running, and stop the robot.
+
+        Leaf handlers retire expected failures; this leaves a terminal record
+        before ownership is released.
+        """
+        manager, serial_number = self.manager, self.serial_number
+        active = manager.ledger.active_target(serial_number)
+        if (
+            not manager.control.managed_motion_is_current(
+                serial_number, self.motion_token
+            )
+            or active is None
+            or active.get("plan_id") != self.call.data["plan_id"]
+        ):
+            return
+        room = next(
+            (room for room in self.rooms if room.room_id == active.get("room_id")),
+            None,
+        )
+        if room is None:
+            return
+        reason = f"Managed cleaning aborted ({type(err).__name__})"
+        _LOGGER.error(reason)
+        await manager.ledger.async_mark_interrupted(
+            serial_number, self.call.data["plan_id"], room, reason
+        )
+        leg_execution.fire_room_event(
+            self.hass,
+            self.call,
+            self.entity_id,
+            room,
+            "interrupted",
+            run_id=self.run_id,
+            provenance=self.provenance,
+            error=reason,
+            reason_code="unexpected_exception",
+            cause="internal",
+        )
+        session_ended = False
+        current = self.robot.observed()
+        if current is not None and current.activity in observation.HOME | {
+            RobotActivity.READY,
+            RobotActivity.RETURNING,
+        }:
             try:
-                # Cancellation during HA shutdown is not a robot outcome.
-                # Explicit unload/stop and genuine failures still finalize.
-                if run_started and not shutdown_suspended:
-                    await async_finish_plan_run(
-                        hass,
-                        manager,
-                        serial_number,
-                        entity_id,
-                        started(),
-                        run_outcome,
-                        run_reason_code,
-                        run_cause,
-                        len(run.completed_room_ids),
-                        context=call.context,
+                session_ended = (
+                    await observation._async_active_session_state(
+                        self.robot.active_session
                     )
-            finally:
-                manager.control.end_managed_motion(serial_number, motion_token)
-                # The recovery wrapper still needs the lifecycle reason to
-                # preserve this checkpoint when HA itself is not stopping.
-                # It unregisters the same task after observing suspension.
-                if recovery is None or not shutdown_suspended:
-                    manager.control.unregister_run_task(serial_number)
-                if not dock_confirmation_scheduled and not (
-                    manager.control.defer_activity_scope_cleanup(
-                        serial_number,
-                        run_id,
-                        robot.set_activity_run_id,
-                        robot.get_activity_run_id,
-                    )
-                ):
-                    robot.set_activity_run_id(None)
+                ) is False
+            except (Exception, asyncio.CancelledError) as cleanup_error:
+                _LOGGER.warning(
+                    "Unable to confirm aborted native session ended (%s)",
+                    type(cleanup_error).__name__,
+                )
+        # Returning is already a firmware-owned terminal motion state. Sending
+        # STOP here can replace a natural handoff with the OEM ten-minute stop
+        # countdown, leaving later settings legs unattempted. Only stop when
+        # the robot is not already on its way home.
+        if (
+            not session_ended
+            and (
+                current is None
+                or current.activity is not RobotActivity.RETURNING
+                or current.low_charge
+            )
+            and managed_run._coverage_guard_cause(err) is None
+            and not dispatch_control._managed_stop_fence_owned_by_run(
+                manager, serial_number, self.run_id
+            )
+        ):
+            await dispatch_control._async_cleanup_managed_motion(
+                self.outer_command, self.motion_token, dispatch_attempted=True
+            )
+
+    async def async_close(self) -> None:
+        """Record the run's end and release what it held on the robot."""
+        control = self.manager.control
+        try:
+            # Cancellation during HA shutdown is not a robot outcome.
+            # Explicit unload/stop and genuine failures still finalize.
+            if self.run_started and not self.shutdown_suspended:
+                await async_finish_plan_run(
+                    self.hass,
+                    self.manager,
+                    self.serial_number,
+                    self.entity_id,
+                    self.started(),
+                    *self.ending,
+                    len(self.run.completed_room_ids),
+                    context=self.call.context,
+                )
+        finally:
+            control.end_managed_motion(self.serial_number, self.motion_token)
+            # The recovery wrapper still needs the lifecycle reason to preserve
+            # this checkpoint when HA itself is not stopping. It unregisters
+            # the same task after observing suspension.
+            if self.recovery is None or not self.shutdown_suspended:
+                control.unregister_run_task(self.serial_number)
+            if not self.dock_confirmation_scheduled and not (
+                control.defer_activity_scope_cleanup(
+                    self.serial_number,
+                    self.run_id,
+                    self.robot.set_activity_run_id,
+                    self.robot.get_activity_run_id,
+                )
+            ):
+                self.robot.set_activity_run_id(None)
 
 
 # The fields of a stored run's end that plan_finished reports as stored.
@@ -813,9 +821,15 @@ async def _async_execute_rooms(
     held_rooms: Sequence[Mapping[str, str]] = (),
     on_started: Callable[[str], None] | None = None,
 ) -> str:
-    """Reserve queued cadence synchronously, execute the run, return its run_id."""
-    manager.control.require_command_admission(serial_number)
-    lock = manager.control.lock(serial_number)
+    """Reserve queued cadence, execute every room and custom area, return the run_id.
+
+    ``entries`` is the preview's run order when the plan has a custom area;
+    a recovered run reads it from its checkpoint instead. ``on_started``
+    receives the run_id once the first command is recorded as sent.
+    """
+    control = manager.control
+    control.require_command_admission(serial_number)
+    lock = control.lock(serial_number)
     if recovery is None and manager.recovery.recovery_run(serial_number) is not None:
         raise managed_run.validation_error(
             "A managed Matic plan is reconnecting", "plan_already_running"
@@ -825,9 +839,9 @@ async def _async_execute_rooms(
             "A managed Matic cleaning plan is already running", "plan_already_running"
         )
     run_id = str(recovery["run_id"]) if recovery else uuid4().hex
-    recovery_checkpoint = (
-        recovery.get("recovery_checkpoint") if isinstance(recovery, dict) else None
-    )
+    saved = recovery.get("recovery_checkpoint") if recovery else None
+    saved = saved if isinstance(saved, Mapping) else {}
+    threshold = saved.get("finish_current_room_threshold")
     manager.cadence.reserve_prepared_run(
         serial_number,
         str(call.data["plan_id"]),
@@ -835,46 +849,58 @@ async def _async_execute_rooms(
         (room.room_id for room in rooms),
         cadence_by_room,
         finish_current_room=(
-            recovery_checkpoint.get("finish_current_room")
-            if isinstance(recovery_checkpoint, Mapping)
-            and isinstance(recovery_checkpoint.get("finish_current_room"), bool)
+            saved["finish_current_room"]
+            if isinstance(saved.get("finish_current_room"), bool)
             else None
         ),
         finish_current_room_threshold=(
-            recovery_checkpoint.get("finish_current_room_threshold")
-            if isinstance(recovery_checkpoint, Mapping)
-            and isinstance(
-                recovery_checkpoint.get("finish_current_room_threshold"), int
-            )
-            and not isinstance(
-                recovery_checkpoint.get("finish_current_room_threshold"), bool
-            )
+            threshold
+            if isinstance(threshold, int) and not isinstance(threshold, bool)
             else None
         ),
     )
     try:
-        await _async_execute_rooms_reserved(
-            hass,
-            call,
-            manager,
-            entity_id,
-            serial_number,
-            rooms,
-            robot=robot,
-            floor_token=floor_token,
-            cadence_by_room=cadence_by_room,
-            managed_user_command=managed_user_command,
-            mapped_room_names=mapped_room_names,
-            floor_is_current=floor_is_current,
-            recovery=recovery,
-            recovered_dispatch=recovered_dispatch,
-            handoff_expected_identity=handoff_expected_identity,
-            _prepared_run_id=run_id,
-            validate_prepared_run=validate_prepared_run,
-            entries=entries,
-            held_rooms=held_rooms,
-            on_started=on_started,
-        )
+        async with lock:
+            control.require_command_admission(serial_number)
+            control.register_run_task(serial_number)
+            cancel_event = control.prepare_run(serial_number)
+            execution = _PlanRun(
+                hass=hass,
+                call=call,
+                manager=manager,
+                entity_id=entity_id,
+                serial_number=serial_number,
+                rooms=rooms,
+                robot=robot,
+                floor_token=floor_token,
+                run_id=run_id,
+                recovery=recovery,
+                cadence_by_room=cadence_by_room,
+                managed_user_command=managed_user_command,
+                mapped_room_names=mapped_room_names,
+                floor_is_current=floor_is_current,
+                validate_prepared_run=validate_prepared_run,
+                entries=entries,
+                held_rooms=held_rooms,
+                on_started=on_started,
+                recovered_dispatch=recovered_dispatch,
+                cancel_event=cancel_event,
+                motion_token=control.begin_managed_motion(serial_number),
+                native_identity=handoff_expected_identity,
+                expected_identity=handoff_expected_identity,
+            )
+            robot.set_activity_run_id(run_id)
+            try:
+                await execution.async_start()
+                await execution.async_run_legs()
+                await execution.async_end()
+            except PlanCancelledError as err:
+                execution.cancelled(err)
+            except (Exception, asyncio.CancelledError) as err:
+                if await execution.async_failed(err):
+                    raise
+            finally:
+                await execution.async_close()
     finally:
         manager.cadence.release_prepared_run(serial_number, run_id)
     return run_id
