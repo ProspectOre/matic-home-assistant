@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot import native_cadence
 from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
@@ -166,6 +167,41 @@ def test_correction_replays_later_managed_completion():
     revised = replace(record, session=replace(record.session, partition_id="changed"))
     assert import_native_cadence(robot, floor, [revised])
     assert schedule["progress"] == {"mop": 1, "coverage": 1}
+
+
+def test_vacuum_and_mop_in_one_session_are_credited_as_one_combined_clean():
+    floor, record, schedule, robot = scenario()
+    both = replace(
+        record,
+        session=replace(
+            record.session,
+            mode_results=(
+                CleaningModeResult("Kitchen", "vacuum", "completed", 60, "room-proto"),
+                CleaningModeResult("Kitchen", "mop", "completed", 30, "room-proto"),
+            ),
+        ),
+    )
+    assert import_native_cadence(robot, floor, [both])
+    assert [event["mode"] for event in schedule["accounting"]["events"]] == [
+        "vacuum_and_mop"
+    ]
+
+
+def test_oversized_batch_passes_over_a_malformed_schedule(monkeypatch):
+    monkeypatch.setattr(native_cadence, "MAX_NATIVE_IMPORT_RECORDS", 0)
+    floor, record, schedule, robot = scenario()
+    robot["shared_room_cadence"]["room-b"] = "malformed"
+    assert import_native_cadence(robot, floor, [record])
+    assert schedule["accounting_unverified"] is True
+    assert robot["shared_room_cadence"]["room-b"] == "malformed"
+
+
+def test_credited_session_leaves_a_malformed_admission_index_as_stored():
+    floor, record, schedule, robot = scenario()
+    schedule["native_events"] = []
+    assert import_native_cadence(robot, floor, [record])
+    assert schedule["progress"] == {"mop": 1, "coverage": 1}
+    assert schedule["native_events"] == []
 
 
 async def test_option_activation_is_durable_and_idempotent(hass):
