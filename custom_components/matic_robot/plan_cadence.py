@@ -26,8 +26,12 @@ from homeassistant.util import dt as dt_util
 from . import daily_room_limit, native_history, plan_schema, plan_timing
 from .cadence import (
     CoverageCadenceRequiresVacuumError,
-    cadence_snapshot,
     normalize_cadence_policy,
+)
+from .cadence_resolution import (
+    CadenceRequest,
+    resolve_room_cadence,
+    unverified_cadence_modes,
 )
 from .client import is_sha256_hex
 from .completion_ledger import reset_progress as _reset_completion_progress
@@ -66,29 +70,6 @@ class _CadenceMutation:
     plan_room_ids: frozenset[str]
     shared_room_ids: frozenset[str]
     deletes_plan: bool = False
-
-
-def _unverified_cadence_modes(record: object, policy: Mapping[str, Any]) -> list[str]:
-    """Return active cadence modes whose persisted progress needs owner reset."""
-    raw_modes = (
-        ["mop", "coverage"]
-        if isinstance(record, Mapping) and record.get("accounting_unverified") is True
-        else record.get("unverified_modes")
-        if isinstance(record, Mapping)
-        else None
-    )
-    if not isinstance(raw_modes, list):
-        return []
-    stored = {
-        mode
-        for mode in raw_modes
-        if isinstance(mode, str) and mode in ("mop", "coverage")
-    }
-    return [
-        mode
-        for mode, field in (("mop", "mop_every_n"), ("coverage", "coverage_every_n"))
-        if mode in stored and policy.get(field) is not None
-    ]
 
 
 class PlanCadence:
@@ -381,204 +362,25 @@ class PlanCadence:
         """Resolve per-room effective settings from one durable policy source."""
         robot = self.repository.robot(serial_number)
         plan = robot["plans"].get(plan_id, {}) if plan_id is not None else {}
-        plan_rooms = {
-            str(raw.get("room_id")): raw
-            for raw in plan.get("rooms", [])
-            if isinstance(raw, Mapping) and raw.get("room_id")
-        }
-        schedules = robot.get("shared_room_cadence", {})
-        room_identities = room_identities or {}
+        request = CadenceRequest(
+            robot=robot,
+            plan_id=plan_id,
+            plan_rooms={
+                str(raw.get("room_id")): raw
+                for raw in plan.get("rooms", [])
+                if isinstance(raw, Mapping) and raw.get("room_id")
+            },
+            schedules=robot.get("shared_room_cadence", {}),
+            floor_token=floor_token,
+            room_identities=room_identities or {},
+            use_shared_schedule=use_shared_schedule,
+            apply_due_settings=apply_due_settings,
+        )
         resolved: list[CleaningRoom] = []
         snapshots: dict[str, dict[str, Any]] = {}
         for room in rooms:
-            validation_mode = room.cleaning_mode if apply_due_settings else "vacuum"
-            raw = plan_rooms.get(room.room_id, {})
-            policy_value = raw.get("cadence") if isinstance(raw, Mapping) else None
-            expected_identity = (
-                room_identities.get(room.room_id) if room_identities else None
-            )
-            stored_identity = (
-                raw.get("cadence_identity") if isinstance(raw, Mapping) else None
-            )
-            if (
-                isinstance(stored_identity, str)
-                and expected_identity is not None
-                and stored_identity != expected_identity
-                and isinstance(policy_value, Mapping)
-            ):
-                raise ValueError("room cadence belongs to a different map")
-            policy: dict[str, Any] | None = None
-            progress: Mapping[str, Any] | None = None
-            if policy_value is not None and not isinstance(policy_value, Mapping):
-                raise ValueError("room cadence must be an object")
-            if (
-                isinstance(policy_value, Mapping)
-                and policy_value.get("scope") == "shared"
-            ):
-                schedule = (
-                    schedules.get(room.room_id)
-                    if isinstance(schedules, Mapping)
-                    else None
-                )
-                if isinstance(schedule, Mapping) and isinstance(
-                    schedule.get("policy"), Mapping
-                ):
-                    if (
-                        expected_identity is not None
-                        and schedule.get("identity") != expected_identity
-                    ):
-                        raise ValueError(
-                            "shared room cadence belongs to a different map"
-                        )
-                    if (
-                        floor_token is not None
-                        and schedule.get("floor_token") is not None
-                        and schedule.get("floor_token") != floor_token
-                    ):
-                        raise ValueError(
-                            "shared room cadence belongs to a different map"
-                        )
-                    policy = normalize_cadence_policy(
-                        {"scope": "shared", **schedule["policy"]},
-                        # Shared schedules are defined against their saved normal
-                        # vacuum mode. A one-time caller's selected mode is an
-                        # override, not a redefinition of that schedule.
-                        cleaning_mode=(
-                            "vacuum"
-                            if use_shared_schedule
-                            else str(raw.get("cleaning_mode", "vacuum"))
-                        ),
-                        coverage_setting=room.coverage_setting,
-                    )
-                    progress = schedule.get("progress")
-                    if _unverified_cadence_modes(schedule, policy):
-                        raise ValueError(
-                            "room cadence progress is unverified; reset mop and "
-                            "coverage before use"
-                        )
-                elif (
-                    policy_value.get("mop_every_n") is not None
-                    or policy_value.get("coverage_every_n") is not None
-                ):
-                    raise ValueError("shared room cadence is unavailable")
-            elif use_shared_schedule:
-                schedule = (
-                    schedules.get(room.room_id)
-                    if isinstance(schedules, Mapping)
-                    else None
-                )
-                if isinstance(schedule, Mapping) and isinstance(
-                    schedule.get("policy"), Mapping
-                ):
-                    if (
-                        expected_identity is not None
-                        and schedule.get("identity") != expected_identity
-                    ):
-                        raise ValueError(
-                            "shared room cadence belongs to a different map"
-                        )
-                    if (
-                        floor_token is not None
-                        and schedule.get("floor_token") is not None
-                        and schedule.get("floor_token") != floor_token
-                    ):
-                        raise ValueError(
-                            "shared room cadence belongs to a different map"
-                        )
-                    policy = normalize_cadence_policy(
-                        {"scope": "shared", **schedule["policy"]},
-                        # A manual one-time mode must not invalidate the shared
-                        # schedule it is borrowing.
-                        cleaning_mode="vacuum",
-                        coverage_setting=room.coverage_setting,
-                    )
-                    progress = schedule.get("progress")
-                    if _unverified_cadence_modes(schedule, policy):
-                        raise ValueError(
-                            "room cadence progress is unverified; reset mop and "
-                            "coverage before use"
-                        )
-            elif isinstance(policy_value, Mapping) and plan_id is not None:
-                policy = normalize_cadence_policy(
-                    policy_value,
-                    cleaning_mode=validation_mode,
-                    coverage_setting=room.coverage_setting,
-                )
-                plan_records = robot["plan_room_cadence"].get(plan_id, {})
-                progress_record = (
-                    plan_records.get(room.room_id, {})
-                    if isinstance(plan_records, Mapping)
-                    else {}
-                )
-                if (
-                    isinstance(progress_record, Mapping)
-                    and expected_identity is not None
-                    and progress_record.get("identity") not in {None, expected_identity}
-                ):
-                    raise ValueError("room cadence progress belongs to a different map")
-                blocked_modes = _unverified_cadence_modes(progress_record, policy)
-                if blocked_modes:
-                    raise ValueError(
-                        "room cadence progress is unverified; reset "
-                        + " and ".join(blocked_modes)
-                        + " before use"
-                    )
-                progress = (
-                    progress_record.get("progress")
-                    if isinstance(progress_record, Mapping)
-                    else None
-                )
-            if policy is None:
-                snapshots[room.room_id] = {
-                    "scope": "plan",
-                    "shared_schedule_participating": use_shared_schedule,
-                    "mop_every_n": None,
-                    "coverage_every_n": None,
-                    "periodic_coverage_setting": None,
-                    "mop_progress": 0,
-                    "coverage_progress": 0,
-                    "mop_due": False,
-                    "coverage_due": False,
-                    "effective_cleaning_mode": room.cleaning_mode,
-                    "effective_coverage_setting": room.coverage_setting,
-                    "next_mop_in": None,
-                    "next_coverage_in": None,
-                    "schedule_active": False,
-                }
-                resolved.append(room)
-                continue
-            snapshot = cadence_snapshot(
-                policy,
-                progress,
-                cleaning_mode=room.cleaning_mode,
-                coverage_setting=room.coverage_setting,
-            )
-            snapshot["shared_schedule_participating"] = (
-                use_shared_schedule or snapshot.get("scope") == "shared"
-            )
-            if snapshot["effective_cleaning_mode"] == "mop":
-                # A borrowed vacuum-strength schedule cannot change a mop-only
-                # one-time run. Due coverage stays due for a vacuum run.
-                snapshot["effective_coverage_setting"] = room.coverage_setting
-            if not apply_due_settings:
-                # A tracked one-off may explicitly keep its chosen settings.
-                # Keep the shared due state in the checkpoint so compatible
-                # verified work can satisfy it, while omitted due work stays due.
-                snapshot["effective_cleaning_mode"] = room.cleaning_mode
-                snapshot["effective_coverage_setting"] = room.coverage_setting
-            snapshot["schedule_active"] = bool(
-                policy["mop_every_n"] is not None
-                or policy["coverage_every_n"] is not None
-            )
-            snapshots[room.room_id] = snapshot
-            resolved.append(
-                CleaningRoom(
-                    room.room_id,
-                    room.name,
-                    str(snapshot["effective_cleaning_mode"]),
-                    str(snapshot["effective_coverage_setting"]),
-                )
-            )
+            effective, snapshots[room.room_id] = resolve_room_cadence(request, room)
+            resolved.append(effective)
         return resolved, snapshots
 
     def cadence_progress(
@@ -840,7 +642,7 @@ class PlanCadence:
                     if isinstance(records, Mapping)
                     else {}
                 )
-                unverified_modes = _unverified_cadence_modes(record, policy)
+                unverified_modes = unverified_cadence_modes(record, policy)
                 if unverified_modes:
                     return {
                         "cadence": policy,
