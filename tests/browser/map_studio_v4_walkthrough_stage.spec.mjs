@@ -215,6 +215,8 @@ test("three cells land in their first step at their size", async ({ page }) => {
     expect((await snapshot(frame)).workflow).toBe(workflow);
     const box = await page.locator("iframe").boundingBox();
     expect([Math.round(box.width), Math.round(box.height)]).toEqual([width, height]);
+    // Replacing a mounted gallery iframe by a hash change can corrupt WebKit's heap on Linux and hang the next load.
+    await page.goto("about:blank");
   }
 });
 
