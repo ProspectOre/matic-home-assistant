@@ -36,7 +36,12 @@ from .map_schema import (
     HistorySnapshot,
 )
 from .slam_history import HistoryReadCapacityError, SlamHistoryStore
-from .slam_history_format import MAX_ARCHIVE_BYTES, SlamHistorySnapshot
+from .slam_history_format import (
+    MAX_ARCHIVE_BYTES,
+    HistoryErrorCode,
+    HistoryRequestError,
+    SlamHistorySnapshot,
+)
 from .slam_view_data import floor_choices
 
 MAX_HISTORY_IMPORT_REQUEST_BYTES = MAX_ARCHIVE_BYTES + 16 * 1024
@@ -234,7 +239,7 @@ class MaticSlamHistoryManageView(HomeAssistantView):
                 or ("name" in body and not isinstance(body["name"], str))
                 or ("allow_kept" in body and not isinstance(body["allow_kept"], bool))
             ):
-                raise ValueError("invalid-history-mutation")
+                raise HistoryRequestError("invalid-history-mutation")
             normalized_action = {
                 "trash": "delete",
                 "delete_all": "permanent_delete",
@@ -247,7 +252,7 @@ class MaticSlamHistoryManageView(HomeAssistantView):
                 name=body.get("name"),
                 allow_kept=body.get("allow_kept", False),
             )
-        except ValueError as err:
+        except HistoryRequestError as err:
             return _history_error(err)
         return self.json(result, headers=PRIVATE_NO_STORE_HEADERS)
 
@@ -276,11 +281,11 @@ class MaticSlamHistoryExportView(HomeAssistantView):
                 or isinstance(generation, bool)
                 or not isinstance(generation, int)
             ):
-                raise ValueError("invalid-history-export-selection")
+                raise HistoryRequestError("invalid-history-export-selection")
             result = await runtime.slam_history.async_export(
                 record_ids, expected_generation=generation
             )
-        except ValueError as err:
+        except HistoryRequestError as err:
             return _history_error(err)
         return self.json(result, headers=PRIVATE_NO_STORE_HEADERS)
 
@@ -315,13 +320,13 @@ class MaticSlamHistoryImportView(HomeAssistantView):
                 or not isinstance(generation, int)
                 or not isinstance(request_id, str)
             ):
-                raise ValueError("invalid-history-archive")
+                raise HistoryRequestError("invalid-history-archive")
             result = await runtime.slam_history.async_import(
                 archive,
                 expected_generation=generation,
                 request_id=request_id,
             )
-        except ValueError as err:
+        except HistoryRequestError as err:
             return _history_error(err)
         return self.json(result, headers=PRIVATE_NO_STORE_HEADERS)
 
@@ -330,11 +335,11 @@ async def _read_json_object(request: web.Request, maximum_bytes: int) -> dict[st
     """Read a bounded request body without buffering an untrusted archive twice."""
     length = request.content_length
     if length is not None and length > maximum_bytes:
-        raise ValueError("history-request-too-large")
+        raise HistoryRequestError("history-request-too-large")
     cached = getattr(request, "_read_bytes", None)
     if isinstance(cached, bytes):
         if len(cached) > maximum_bytes:
-            raise ValueError("history-request-too-large")
+            raise HistoryRequestError("history-request-too-large")
         raw = cached
     else:
         chunks: list[bytes] = []
@@ -342,17 +347,19 @@ async def _read_json_object(request: web.Request, maximum_bytes: int) -> dict[st
         while chunk := await request.content.readany():
             total += len(chunk)
             if total > maximum_bytes:
-                raise ValueError("history-request-too-large")
+                raise HistoryRequestError("history-request-too-large")
             chunks.append(chunk)
         raw = b"".join(chunks)
     try:
         body = await request.app[KEY_HASS].async_add_executor_job(
             partial(json.loads, raw)
         )
-    except (json.JSONDecodeError, UnicodeDecodeError) as err:
-        raise ValueError("invalid-json") from err
+    # Malformed JSON, bad UTF-8 and an integer past Python's digit limit are
+    # all ValueError.
+    except ValueError as err:
+        raise HistoryRequestError("invalid-json") from err
     if not isinstance(body, dict):
-        raise ValueError("invalid-json")
+        raise HistoryRequestError("invalid-json")
     return body
 
 
@@ -361,21 +368,21 @@ def _require_fields(
 ) -> None:
     keys = set(body)
     if not required <= keys or keys - required - optional:
-        raise ValueError("invalid-history-request-fields")
+        raise HistoryRequestError("invalid-history-request-fields")
 
 
-def _history_error(err: ValueError) -> web.Response:
-    code = str(err)
-    status = (
-        HTTPStatus.CONFLICT
-        if "generation-conflict" in code or "request-id-reused" in code
-        else HTTPStatus.NOT_FOUND
-        if "not-found" in code
-        else HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-        if "too-large" in code
-        else HTTPStatus.BAD_REQUEST
-    )
-    error: HistoryError = {"error": code}
+_HISTORY_ERROR_STATUS: dict[HistoryErrorCode, HTTPStatus] = {
+    "history-generation-conflict": HTTPStatus.CONFLICT,
+    "history-request-id-reused": HTTPStatus.CONFLICT,
+    "history-record-not-found": HTTPStatus.NOT_FOUND,
+    "history-request-too-large": HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+    "history-archive-too-large": HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+}
+
+
+def _history_error(err: HistoryRequestError) -> web.Response:
+    error: HistoryError = {"error": err.code}
+    status = _HISTORY_ERROR_STATUS.get(err.code, HTTPStatus.BAD_REQUEST)
     # aiohttp's json_response, unlike the views' json, keeps the spaces.
     return web.json_response(error, status=status, headers=PRIVATE_NO_STORE_HEADERS)
 
