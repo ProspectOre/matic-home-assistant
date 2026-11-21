@@ -7,10 +7,11 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
-from homeassistant.core import CoreState
+from homeassistant.core import CoreState, callback
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.models import (
+    CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
 )
@@ -215,6 +216,91 @@ async def test_multiroom_verification_deduplicates_prior_credit(
         ["hall"] if proof == "complete" else []
     )
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+def _hall_unattempted_record() -> CleaningSessionRecord:
+    now = dt_util.utcnow()
+    return CleaningSessionRecord(
+        b"finished",
+        CleaningSession(
+            (now - timedelta(seconds=30)).isoformat(),
+            now.isoformat(),
+            30,
+            ("Kitchen", "Hall"),
+            (("Kitchen", 30), ("Hall", 0)),
+            False,
+            ("Kitchen",),
+            ("Kitchen",),
+            mode_results=(
+                CleaningModeResult("Kitchen", "vacuum", "completed", 30),
+                CleaningModeResult("Hall", "vacuum", "unattempted", 0),
+            ),
+            stop_reason="finished",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("owner_skipped", "reason_code"),
+    [(False, "room_unreachable"), (True, "owner_skipped")],
+)
+async def test_recovery_settles_a_room_without_credit_as_the_leg_runner_does(
+    hass, recovery_state, owner_skipped, reason_code
+):
+    """An unattempted or owner-skipped room settles without credit, as live."""
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["rooms"].append(
+        asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
+    )
+    last_run = manager.repository.robot("serial")["last_run"]
+    last_run["room_count"] = 2
+    if owner_skipped:
+        last_run["skipped_room_ids"] = ["hall"]
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        _hall_unattempted_record(),
+    )
+    skipped = []
+    hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    run = manager.history.snapshot("serial")["last_run"]
+    assert (run["outcome"], run["reason_code"]) == ("completed", "all_rooms_settled")
+    assert run["completed_room_count"] == 1
+    assert [
+        (event.data["room_id"], event.data["reason_code"]) for event in skipped
+    ] == [("hall", reason_code)]
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_recovery_does_not_settle_a_room_after_losing_the_robot(
+    hass, recovery_state
+):
+    """A takeover between rooms stops recovery before it settles the next one."""
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["rooms"].append(
+        asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
+    )
+    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        _hall_unattempted_record(),
+    )
+    skipped = []
+    hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
+    hass.bus.async_listen(
+        "matic_robot_room_completed",
+        callback(lambda _event: manager.control.begin_managed_motion("serial")),
+    )
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    assert skipped == []
+    run = manager.history.snapshot("serial")["last_run"]
+    assert (run["outcome"], run["reason_code"]) == (
+        "unverified",
+        "restart_recovery_superseded",
+    )
+    assert run["completed_room_count"] == 1
 
 
 @pytest.mark.parametrize("stop", [None, "after_room"])
