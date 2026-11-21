@@ -7,11 +7,11 @@ import { build } from "esbuild";
 const frontend = fileURLToPath(new URL("../../frontend/map-studio-v4", import.meta.url));
 const { outputFiles } = await build({
   stdin: {
-    contents: 'export { WorkspaceStore, reduceWorkspace, canSelectRooms } from "./state"; export { isWorkspaceIntent } from "./contracts"; export { layerDepth } from "./layer-history"; export { createGalleryState } from "../map-studio-v4-review/gallery-state";',
+    contents: 'export { WorkspaceStore, reduceWorkspace, canSelectRooms } from "./state"; export { isWorkspaceIntent } from "./contracts"; export { layerDepth } from "./layer-history"; export { createGalleryState } from "../map-studio-v4-review/gallery-state"; export { roomBlocker } from "./workflow-actions";',
     resolveDir: frontend, loader: "ts",
   }, bundle: true, write: false, platform: "node", format: "esm", target: "es2022",
 });
-const { WorkspaceStore, reduceWorkspace, canSelectRooms, isWorkspaceIntent, layerDepth, createGalleryState } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString("base64")}`);
+const { WorkspaceStore, reduceWorkspace, canSelectRooms, isWorkspaceIntent, layerDepth, createGalleryState, roomBlocker } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString("base64")}`);
 
 // Dispatches `intents` to a store holding the gallery scenario (with `patch`
 // spread over it) and returns the fields the plan rules change.
@@ -291,4 +291,51 @@ test("Rooms selection waits for an editable map with no robot work to stop", () 
 test("layerDepth puts Run and a new plan's Edit under a saved plan's Edit", () => {
   assert.deepEqual(["ready", "plans", "plan-saved-intelligent", "plan-new", "plan-dirty"]
     .map((scenario) => layerDepth(createGalleryState(scenario))), [0, 1, 2, 2, 3]);
+});
+
+test("a removed plan room moves only in Edit, onto a room the plan lacks", () => {
+  const edit = (planView) => ({ ...createGalleryState("plan-run-room-missing"), planView });
+  const store = new WorkspaceStore(edit("run"));
+  const before = store.value;
+  store.dispatch({ type: "relink-room", roomId: "room-gone", toRoomId: "room-new" });
+  assert.equal(store.value, before, "Run never changes the plan");
+
+  const editState = edit("edit");
+  const kept = editState.planDraft.rooms[0].roomId;
+  const editing = new WorkspaceStore({ ...editState, planDraft: { ...editState.planDraft, occupancySensors: {
+    [kept]: "binary_sensor.kept", "room-gone": "binary_sensor.moved", "room-new": "binary_sensor.parked",
+  } } });
+  for (const intent of [
+    { type: "relink-room", roomId: "room-absent", toRoomId: "room-new" },
+    { type: "relink-room", roomId: "room-gone", toRoomId: kept },
+  ]) {
+    const unchanged = editing.value;
+    editing.dispatch(intent);
+    assert.equal(editing.value, unchanged, intent.toRoomId);
+  }
+  editing.dispatch({ type: "toggle-room", roomId: "room-new" });
+  editing.dispatch({ type: "toggle-room", roomId: "room-new" });
+  assert.deepEqual(editing.value.planDraft.parkedRooms.map((room) => room.roomId), ["room-new"]);
+  editing.dispatch({ type: "relink-room", roomId: "room-gone", toRoomId: "room-new" });
+  const { rooms, parkedRooms, occupancySensors, dirty } = editing.value.planDraft;
+  // It keeps its settings and saved schedule; the old room's progress stays behind.
+  const gone = editState.planDraft.rooms.find((room) => room.roomId === "room-gone");
+  assert.deepEqual(rooms.at(-1), { roomId: "room-new", cleaningMode: "vacuum", coverageSetting: "quick", cadence: gone.cadence });
+  assert.equal(gone.cadence.coverageEveryN, 3);
+  assert.deepEqual([parkedRooms, dirty], [[], true]);
+  // The room's sensor moves with it, so Save, which sends only the plan's rooms' sensors, keeps it.
+  assert.deepEqual(occupancySensors, { [kept]: "binary_sensor.kept", "room-new": "binary_sensor.moved" });
+});
+
+test("a room off the map never names the Run blocker", () => {
+  const state = createGalleryState("plan-run-room-missing");
+  const plan = state.resources.plans.value.plans.find((candidate) => candidate.id === state.selection.planId);
+  const named = plan.rooms[0].roomId;
+  const blocked = (roomId) => ({ ...plan, rooms: plan.rooms.map((room) =>
+    room.roomId === roomId ? { ...room, cadenceReasons: ["room_not_on_current_map"] } : room) });
+  // The removed room comes last; put a blocker on it and on a named room.
+  const both = { ...blocked("room-gone"), rooms: blocked("room-gone").rooms.map((room) =>
+    room.roomId === named ? { ...room, cadenceReasons: ["identity_changed"] } : room) };
+  assert.equal(roomBlocker(state, blocked("room-gone")), null);
+  assert.equal(roomBlocker(state, { ...both, rooms: [...both.rooms].reverse() }).jump.roomId, named);
 });

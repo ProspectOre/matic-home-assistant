@@ -11,6 +11,7 @@ import {
   type DailyRoomLimit,
   type MapRoom,
   type NextRunHeldRoom,
+  type NextRunMissingRoom,
   type NextRunPreview,
   type NextRunPreviewBlocker,
   type NextRunPreviewRoom,
@@ -179,6 +180,18 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
       sensor: boundedString(held.sensor, 255, "invalid-plan-preview-held"),
     };
   });
+  const rawMissing = preview.missing_rooms;
+  if (rawMissing !== undefined && (!Array.isArray(rawMissing) || rawMissing.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE)) {
+    throw new ContractError("invalid-plan-preview-missing");
+  }
+  const missingRooms = rawMissing?.map((candidate): NextRunMissingRoom => {
+    const missing: Unchecked<wire.MissingRoom> = objectValue(candidate, "invalid-plan-preview-missing");
+    return {
+      roomId: boundedString(missing.room_id, 128, "invalid-plan-preview-missing"),
+      name: missing.name === null ? null : boundedString(missing.name, 256, "invalid-plan-preview-missing", true),
+      matchRoomId: missing.match_room_id === null ? null : boundedString(missing.match_room_id, 128, "invalid-plan-preview-missing"),
+    };
+  });
   const previewToken = preview.preview_token;
   const dailyHeld = preview.daily_limit_held_rooms;
   if (dailyHeld !== undefined && (!Array.isArray(dailyHeld) || dailyHeld.length > MAX_ROOM_SEQUENCE_SIZE)) {
@@ -198,6 +211,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
   return {
     rooms, steps: parsedSteps, missionBoundaries: boundaries, blocker: rawBlocker as NextRunPreviewBlocker | null,
     ...(heldRooms?.length ? { heldRooms } : {}),
+    ...(missingRooms?.length ? { missingRooms } : {}),
     ...(dailyLimitHeldRooms?.length ? { dailyLimitHeldRooms } : {}),
     ...(typeof previewToken === "string" ? { previewToken } : {}),
   };

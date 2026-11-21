@@ -24,6 +24,7 @@ Home Assistant raises a Repair for most things it needs from you. Check
 | **Locating** | The robot is confirming which floor it is on. Cleaning comes back by itself once it has. |
 | **Map limited** or **Map unavailable** | Home Assistant can't confirm the map well enough to start a clean. Cleaning comes back by itself when the live map is ready, and Stop keeps working. If it doesn't clear, [report it](#report-a-problem). |
 | A custom area says **Map changed · Check it before cleaning** | Open it and choose **Confirm area on current map** or **Redraw** ([custom areas](cleaning.md#custom-areas)). |
+| A Repair says saved plans name rooms that are no longer on the map | A map edit in the Matic app removed those rooms or gave them new IDs. Runs skip them and clean the rest. When a room with the same name is back on the map, choose **Fix** to move each plan room to it, keeping its settings; its schedule progress starts over. Otherwise open the plan in Matic Map and choose **Edit**. |
 | A Repair about a different time zone | The robot runs its schedules on its own clock. Change the time zone in the Matic app or in Home Assistant so they match. |
 | A Repair about the bag or about maintenance | Follow the Repair; it clears when the robot stops reporting it ([maintenance](entities.md#maintenance)). |
 | A Repair says some robot reads are failing | See [firmware checks](firmware-compatibility.md#automatic-firmware-checks). A failed read alone doesn't prove a firmware problem. |
