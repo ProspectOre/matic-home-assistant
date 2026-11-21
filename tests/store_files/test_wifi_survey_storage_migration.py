@@ -16,17 +16,6 @@ from custom_components.matic_robot.wifi_survey import (
 )
 
 
-@pytest.fixture
-def hass_storage() -> dict[str, Any]:
-    """Use versioned files in the test configuration directory."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    return hass_tmp_config_dir
-
-
 @pytest.mark.parametrize("old_version", [1, 2])
 async def test_a_survey_from_a_development_build_starts_empty(
     hass, old_version: int

@@ -36,18 +36,6 @@ UPDATED_AREA = {
 CREATED_AREA = {**EXISTING_AREA, "name": "Created"}
 
 
-@pytest.fixture
-def hass_storage():
-    """Avoid pytest-homeassistant's in-memory Store mock for these tests."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir):
-    """Use pytest's isolated config directory with real Store I/O."""
-    return hass_tmp_config_dir
-
-
 async def _manager_with_areas(hass) -> CleaningPlanManager:
     manager = CleaningPlanManager(hass)
     await manager.async_load()

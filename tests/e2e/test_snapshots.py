@@ -60,6 +60,11 @@ _VOLATILE_DIAGNOSTICS = path_type(
 
 
 @pytest.fixture
+def floor() -> None:
+    """The snapshots are of a robot that has mapped nothing."""
+
+
+@pytest.fixture
 def snapshot(snapshot: SnapshotAssertion) -> SnapshotAssertion:
     """Use syrupy's own serializer, whichever extension the helper applies."""
     return snapshot.use_extension(AmberSnapshotExtension)

@@ -42,14 +42,9 @@ from custom_components.matic_robot.const import (
 
 from .hermes_sim import RunningSimulator, SimulatedRobot
 from .plan_run import VACUUM, PlanRun, expect_finished, state_becomes
-from .sim_mission import SimFloor, three_room_floor, two_room_floor
+from .sim_mission import three_room_floor
 
 RUN_ENTITY = "event.simulated_matic_cleaning_run"
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 async def test_a_plan_run_reaches_the_event_entity_in_order(

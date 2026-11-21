@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -61,3 +62,24 @@ async def recovery_state(hass: HomeAssistant) -> tuple[Any, ...]:
     from tests.plans.fakes import interrupted_run
 
     return await interrupted_run(hass)
+
+
+@pytest.fixture
+def local_bluetooth_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pass the config flow's adapter pre-check; a test may fail it again."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_has_local_bluetooth_adapter",
+        lambda _hass: True,
+    )
+
+
+@pytest.fixture
+async def detach_triggers(hass: HomeAssistant) -> AsyncIterator[None]:
+    """Turn the blueprint automation off so no time trigger outlives the test."""
+    yield
+    await hass.services.async_call(
+        "automation",
+        "turn_off",
+        {"entity_id": "automation.blueprint_under_test"},
+        blocking=True,
+    )

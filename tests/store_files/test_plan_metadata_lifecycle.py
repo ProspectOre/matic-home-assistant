@@ -26,18 +26,6 @@ AREA = {
 }
 
 
-@pytest.fixture
-def hass_storage() -> dict:
-    """Use isolated real Store persistence for lifecycle assertions."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep Store files in the isolated test configuration directory."""
-    return hass_tmp_config_dir
-
-
 async def test_closed_metadata_admission_rejects_area_and_plan_writes(hass) -> None:
     """Unload closure rejects user writes before they change persisted state."""
     manager = CleaningPlanManager(hass)

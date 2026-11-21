@@ -17,15 +17,10 @@ from custom_components.matic_robot.robot_controls import RobotControls
 
 from .hermes_sim import DOCK_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import poll
-from .sim_mission import SimFloor, two_room_floor
+from .sim_mission import SimFloor
 from .test_camera_flows import VACUUM, _configure_tour, _webp
 
 pytestmark = pytest.mark.usefixtures("fast_tour_polls")
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 async def _start_tour_and_wait_for_the_photo(
