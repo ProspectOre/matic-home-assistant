@@ -643,7 +643,7 @@
     "v4_plan_areas_rotation_hint": "Smart Order chooses the longest-waiting rooms and areas first. Saved order follows your list.",
     "v4_plan_area_every_run": "Custom area · Every run",
     "v4_plan_area_missing": "Not found · Remove it from this plan",
-    "v4_plan_room_missing": "Removed or renumbered in the Matic app · Remove it from this plan",
+    "v4_plan_room_missing": "Removed or renumbered in the Matic app · Runs skip it",
     "v4_plan_room_missing_name": "Room not on the map",
     "v4_area_include_named": "Include {area}",
     "v4_area_settings_named": "Settings for {area}",
@@ -999,7 +999,10 @@
     "v4_area_preview_failed": "The map preview isn't available, so you can't review or save this area. Reload the page to try again.",
     "v4_draw_overlay_action_unavailable": "Wait for map drawing to load before reviewing or saving this area.",
     "v4_task_view_2d": "This task uses 2D. Return to Home to view the map in 3D.",
-    "v4_map_simplified_detail": "Showing a simplified map because full graphics support is unavailable."
+    "v4_map_simplified_detail": "Showing a simplified map because full graphics support is unavailable.",
+    "v4_plan_missing_rooms": "Not on the map, so this run skips: {rooms}. Edit the plan to update them.",
+    "v4_plan_room_relink": "Use the new {room}",
+    "v4_plan_room_relink_note": "Keeps its settings and schedule. Schedule progress starts over."
   },
   "config": {
     "flow_title": "{name}",

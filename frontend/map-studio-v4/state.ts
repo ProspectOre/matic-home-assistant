@@ -25,6 +25,7 @@ import type { AreaCircle, SavedPlan } from "./backend-contracts";
 import { entryCoherenceIdentity, entryFloorKey, entryMissionKey } from "./backend-contracts";
 import { notice, readWorkspaceNotice } from "./contracts";
 import { applyResult, type WorkspaceResult } from "./workspace-result";
+import { relinkPlanRoom, togglePlanRoom } from "./plan-draft-rooms";
 
 /** Task geometry stays top-down; the live overview keeps its own presentation. */
 export const forcesTop = (state: WorkspaceState | null): boolean =>
@@ -574,31 +575,10 @@ export const reduceWorkspace = (
         workflow: "areas",
         precisionOpen: false,
       };
+    case "relink-room":
+      return relinkPlanRoom(state, intent.roomId, intent.toRoomId);
     case "toggle-room": {
-      if (state.workflow === "plan") {
-        // Map taps never change the plan in Run.
-        if (state.planView === "run") return state;
-        const { rooms, parkedRooms, areas } = state.planDraft;
-        const room = rooms.find((candidate) => candidate.roomId === intent.roomId);
-        if (!room && rooms.length >= MAX_ROOM_SEQUENCE_SIZE) return state;
-        // An unticked room keeps its settings and schedule until Save, so
-        // ticking it again restores them.
-        const parked = parkedRooms.find((candidate) => candidate.roomId === intent.roomId);
-        const others = (list: typeof rooms) => list.filter((candidate) => candidate.roomId !== intent.roomId);
-        return {
-          ...state,
-          planDraft: {
-            ...state.planDraft,
-            dirty: true,
-            rooms: room
-              ? others(rooms)
-              : [...rooms, parked ?? { roomId: intent.roomId, cleaningMode: "vacuum", coverageSetting: "standard" }],
-            parkedRooms: room ? [...others(parkedRooms), room] : others(parkedRooms),
-            // The custom areas after a removed room keep their place in the run.
-            areas: room ? areas.map((area) => area.slot > rooms.indexOf(room) ? { ...area, slot: area.slot - 1 } : area) : areas,
-          },
-        };
-      }
+      if (state.workflow === "plan") return togglePlanRoom(state, intent.roomId);
       if (state.workflow === "rooms" && !canSelectRooms(state)) return state;
       const selected = state.selection.roomIds.includes(intent.roomId);
       // A refused add says why in the slot; the list's rows are described by

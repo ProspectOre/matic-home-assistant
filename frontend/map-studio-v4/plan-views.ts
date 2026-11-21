@@ -98,6 +98,7 @@ export class MaticPlanViewsV4 extends LitElement {
 .edit-name { display: grid; gap: 0.125rem; min-inline-size: 0; padding-inline: var(--ms-space-1); }
 .edit-name small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .edit-moves { display: flex; }
+.relink { display: grid; grid-column: 1 / -1; gap: var(--ms-space-1); padding: 0 var(--ms-space-3) var(--ms-space-3); justify-items: start; }
 .row-expanded { display: grid; grid-column: 1 / -1; gap: var(--ms-space-2); padding: var(--ms-space-3); border-block-start: 1px solid var(--ms-line); }
 .run-end { display: grid; gap: var(--ms-space-2); }
 .run-end > summary { min-block-size: var(--ms-control); align-content: center; font-weight: var(--ms-w-bold); cursor: pointer; }
@@ -336,7 +337,7 @@ export class MaticPlanViewsV4 extends LitElement {
       })
       : withPlanAreas(plan, draftForPlan(plan).rooms.map((room) => {
         const name = catalog.rooms.find((candidate) => candidate.roomId === room.roomId)?.name;
-        return this.#runRow(name ?? this.#missingRoomName(), settingLabel(this.#t, room), null, {
+        return this.#runRow(name ?? this.#missingRoomName(room.roomId), settingLabel(this.#t, room), null, {
           blocked: room.roomId === blockedRoom,
           problem: name === undefined ? this.#missingRoomProblem() : null,
         });
@@ -358,6 +359,9 @@ export class MaticPlanViewsV4 extends LitElement {
           : this.#t("v4_next_run_preview", "Next run")}</h3>
       ${!paused && preview?.heldRooms?.length ? html`<p class="quiet" data-held-rooms>${this.#t("v4_plan_held_rooms", "Held while occupied: {rooms}. They stay first in line for the next run.", {
         rooms: formatList(state.locale, preview.heldRooms.map((room) => this.#t("v4_plan_held_room", "{room} ({sensor})", { room: room.name, sensor: room.sensor }))),
+      })}</p>` : nothing}
+      ${!paused && ready && preview?.missingRooms?.length ? html`<p class="quiet" data-missing-rooms>${this.#t("v4_plan_missing_rooms", "Not on the map, so this run skips: {rooms}. Edit the plan to update them.", {
+        rooms: formatList(state.locale, preview.missingRooms.map((room) => room.name ?? this.#t("v4_plan_room_missing_name", "Room not on the map"))),
       })}</p>` : nothing}
       ${!paused && preview?.dailyLimitHeldRooms?.length ? html`<p class="quiet" data-daily-limit-held>${dailyLimitHeldSummaryCopy(
         formatList(state.locale, preview.dailyLimitHeldRooms.map((room) => dailyLimitHeldRoomCopy(
@@ -520,6 +524,7 @@ export class MaticPlanViewsV4 extends LitElement {
     const schedule = room ? scheduleLine(this.#t, this.state.locale, room.cadence) : null;
     const blocked = room?.cadenceReasons?.some((reason) => BLOCKING.includes(reason));
     const missing = room !== null && !this.state.resources.plans.value?.rooms.some((candidate) => candidate.roomId === roomId);
+    const relink = missing ? this.#relinkTarget(roomId) : null;
     // While the mop schedule is on, the mode stays Vacuum.
     const modeLocked = Boolean(room?.cadence?.mopEveryN);
     return html`<li class="ms-row edit-row" data-selected=${room ? "true" : nothing}>
@@ -557,6 +562,13 @@ export class MaticPlanViewsV4 extends LitElement {
         ${this.#arrow(roomId, position, name, -1, position === 0, held)}
         ${this.#arrow(roomId, position, name, 1, position === last, held)}
       </span>` : html`<span></span>`}
+      ${relink ? html`<div class="relink">
+        <button class="ms-btn ms-btn--secondary" type="button" data-room-relink=${roomId}
+          aria-disabled=${gate.disabled} aria-describedby=${gate.described}
+          @click=${() => { if (!held) this.#intent({ type: "relink-room", roomId, toRoomId: relink.roomId }); }}
+        >${this.#t("v4_plan_room_relink", "Use the new {room}", { room: relink.name })}</button>
+        <small>${this.#t("v4_plan_room_relink_note", "Keeps its settings and schedule. Schedule progress starts over.")}</small>
+      </div>` : nothing}
       ${open && room ? html`<div class="row-expanded">
         <div class="split">
           <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning mode")}
@@ -632,12 +644,28 @@ export class MaticPlanViewsV4 extends LitElement {
   }
 
   /** A saved room the robot's map no longer has: a map edit removed it or gave it a new ID. */
-  #missingRoomName(): string {
-    return this.#t("v4_plan_room_missing_name", "Room not on the map");
+  #missingRoomName(roomId?: string): string {
+    const known = this.#missingRooms().find((room) => room.roomId === roomId)?.name;
+    return known ?? this.#t("v4_plan_room_missing_name", "Room not on the map");
+  }
+
+  /** The removed rooms the open plan's preview names, with any same-name room now on the map. */
+  #missingRooms() {
+    const catalog = this.state.resources.plans.value;
+    const id = this.state.planDraft.id ?? this.state.selection.planId;
+    return catalog?.plans.find((plan) => plan.id === id)?.nextRunPreview?.missingRooms ?? [];
+  }
+
+  /** The room on the map a removed plan room can move to, unless the draft already holds it. */
+  #relinkTarget(roomId: string): { readonly roomId: string; readonly name: string } | null {
+    const target = this.#missingRooms().find((room) => room.roomId === roomId)?.matchRoomId;
+    const draft = this.state.planDraft.rooms;
+    const room = this.state.resources.plans.value?.rooms.find((candidate) => candidate.roomId === target);
+    return room && !draft.some((candidate) => candidate.roomId === room.roomId) ? { roomId: room.roomId, name: room.name } : null;
   }
 
   #missingRoomProblem(): string {
-    return this.#t("v4_plan_room_missing", "Removed or renumbered in the Matic app · Remove it from this plan");
+    return this.#t("v4_plan_room_missing", "Removed or renumbered in the Matic app · Runs skip it");
   }
 
   /**
@@ -787,7 +815,7 @@ export class MaticPlanViewsV4 extends LitElement {
     const gate = this.#gate(held);
     const ordered = draft.runBehavior === "ordered";
     const atLimit = draft.rooms.length >= MAX_ROOM_SEQUENCE_SIZE;
-    const nameOf = (roomId: string): string => catalog.rooms.find((room) => room.roomId === roomId)?.name ?? this.#missingRoomName();
+    const nameOf = (roomId: string): string => catalog.rooms.find((room) => room.roomId === roomId)?.name ?? this.#missingRoomName(roomId);
     // The run in order, rooms and custom areas, then the rooms left out.
     const steps = draftSteps(draft);
     const last = steps.length - 1;

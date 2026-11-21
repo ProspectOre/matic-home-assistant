@@ -292,3 +292,29 @@ test("layerDepth puts Run and a new plan's Edit under a saved plan's Edit", () =
   assert.deepEqual(["ready", "plans", "plan-saved-intelligent", "plan-new", "plan-dirty"]
     .map((scenario) => layerDepth(createGalleryState(scenario))), [0, 1, 2, 2, 3]);
 });
+
+test("a removed plan room moves only in Edit, onto a room the plan lacks", () => {
+  const edit = (planView) => ({ ...createGalleryState("plan-run-room-missing"), planView });
+  const store = new WorkspaceStore(edit("run"));
+  const before = store.value;
+  store.dispatch({ type: "relink-room", roomId: "room-gone", toRoomId: "room-new" });
+  assert.equal(store.value, before, "Run never changes the plan");
+
+  const editing = new WorkspaceStore(edit("edit"));
+  const kept = editing.value.planDraft.rooms[0].roomId;
+  for (const intent of [
+    { type: "relink-room", roomId: "room-absent", toRoomId: "room-new" },
+    { type: "relink-room", roomId: "room-gone", toRoomId: kept },
+  ]) {
+    const unchanged = editing.value;
+    editing.dispatch(intent);
+    assert.equal(editing.value, unchanged, intent.toRoomId);
+  }
+  editing.dispatch({ type: "toggle-room", roomId: "room-new" });
+  editing.dispatch({ type: "toggle-room", roomId: "room-new" });
+  assert.deepEqual(editing.value.planDraft.parkedRooms.map((room) => room.roomId), ["room-new"]);
+  editing.dispatch({ type: "relink-room", roomId: "room-gone", toRoomId: "room-new" });
+  const { rooms, parkedRooms, dirty } = editing.value.planDraft;
+  assert.deepEqual(rooms.at(-1), { roomId: "room-new", cleaningMode: "vacuum", coverageSetting: "quick" });
+  assert.deepEqual([parkedRooms, dirty], [[], true]);
+});
