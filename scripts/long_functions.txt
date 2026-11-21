@@ -1,4 +1,2 @@
-custom_components/matic_robot/managed_area.py::_async_run_area_leg 185
 custom_components/matic_robot/managed_executor.py::_async_execute_rooms_reserved 667
 custom_components/matic_robot/managed_leg.py::_async_run_leg 717
-custom_components/matic_robot/stop_return.py::async_dock_when_stop_settles 189
