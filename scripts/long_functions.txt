@@ -11,6 +11,4 @@ custom_components/matic_robot/plan_history.py::PlanHistory.snapshot 151
 custom_components/matic_robot/plan_state.py::_normalize_robot 180
 custom_components/matic_robot/restart.py::async_recover_managed_run 428
 custom_components/matic_robot/robot_commands.py::RobotCommands.async_clean_rooms 220
-custom_components/matic_robot/runtime_code.py::capture_runtime_code 229
-custom_components/matic_robot/slam_render.py::render_slam_map 265
 custom_components/matic_robot/stop_return.py::async_dock_when_stop_settles 189
