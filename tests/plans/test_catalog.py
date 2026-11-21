@@ -440,7 +440,7 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
         "serial", "disabled", {"name": "Disabled", "enabled": False, "rooms": []}
     )
     with pytest.raises(ValueError, match="disabled"):
-        manager.planning.rooms_for_plan("serial", {}, "disabled")
+        manager.planning.preview("serial", {}, "disabled")
     with pytest.raises(KeyError):
         manager.catalog.plan("serial", "missing")
     with pytest.raises(KeyError):
@@ -450,7 +450,7 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
         "serial", "empty", {"name": "Empty", "enabled": True, "rooms": []}
     )
     with pytest.raises(ValueError, match="no rooms"):
-        manager.planning.rooms_for_plan("serial", {}, "empty")
+        manager.planning.preview("serial", {}, "empty")
 
     for rooms in ("room-kitchen", ["room-kitchen"]):
         with pytest.raises(ValueError, match="plan contains an invalid room"):
@@ -543,9 +543,7 @@ def test_plan_preview_rejects_corrupt_room_records(hass) -> None:
     }
 
     with pytest.raises(ValueError, match="plan contains an invalid room"):
-        manager.planning.rooms_for_plan(
-            "serial", {"room-kitchen": "Kitchen"}, "corrupt"
-        )
+        manager.planning.preview("serial", {"room-kitchen": "Kitchen"}, "corrupt")
 
 
 async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) -> None:

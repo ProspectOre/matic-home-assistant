@@ -55,23 +55,6 @@ class ExecutionPlanner:
         self.cadence = cadence
         self.repository = repository
 
-    def rooms_for_plan(
-        self,
-        serial_number: str,
-        room_map: Mapping[str, str],
-        plan_id: str | None = None,
-    ) -> tuple[dict[str, Any], list[CleaningRoom]]:
-        """Resolve a saved plan's rooms against the robot's live map."""
-        plan = self.catalog.plan(serial_number, plan_id)
-        if not plan.get("enabled", True):
-            raise PlanDisabledError("plan is disabled")
-        raw = plan.get("rooms", [])
-        if not isinstance(raw, list) or not raw:
-            raise EmptyPlanError("plan has no rooms")
-        if any(not isinstance(room, Mapping) for room in raw):
-            raise ValueError("plan contains an invalid room")
-        return plan, resolve_rooms(raw, dict(room_map))
-
     def preview(
         self,
         serial_number: str,
@@ -95,17 +78,8 @@ class ExecutionPlanner:
         entries = plan_entries(plan)
         areas = [entry for entry in entries if entry["kind"] == "area"]
         area_projections: dict[str, dict[str, Any]] = {}
-        if not areas:
-            plan, rooms = self.rooms_for_plan(serial_number, room_map, plan["id"])
-        else:
-            if not plan.get("enabled", True):
-                raise PlanDisabledError("plan is disabled")
-            raw = plan.get("rooms", [])
-            if not isinstance(raw, list) or any(
-                not isinstance(room, Mapping) for room in raw
-            ):
-                raise ValueError("plan contains an invalid room")
-            rooms = resolve_rooms(raw, dict(room_map))
+        rooms = _plan_rooms(plan, room_map, require_rooms=not areas)
+        if areas:
             area_projections = {
                 entry["area_id"]: self.preview_area(serial_number, entry, floor_plan)
                 for entry in areas
@@ -373,3 +347,20 @@ class ExecutionPlanner:
                 )
             )
         return candidates
+
+
+def _plan_rooms(
+    plan: Mapping[str, Any], room_map: Mapping[str, str], *, require_rooms: bool
+) -> list[CleaningRoom]:
+    """Resolve an enabled plan's stored rooms against the live map.
+
+    A plan with custom areas may have no rooms at all.
+    """
+    if not plan.get("enabled", True):
+        raise PlanDisabledError("plan is disabled")
+    raw = plan.get("rooms", [])
+    if require_rooms and (not isinstance(raw, list) or not raw):
+        raise EmptyPlanError("plan has no rooms")
+    if not isinstance(raw, list) or any(not isinstance(room, Mapping) for room in raw):
+        raise ValueError("plan contains an invalid room")
+    return resolve_rooms(raw, dict(room_map))

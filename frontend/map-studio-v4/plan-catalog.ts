@@ -160,6 +160,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     "area_map_changed", "area_missing", "coverage_requires_vacuum", "cadence_identity_unavailable",
     "plan_disabled", "plan_has_no_rooms", "plan_room_limit", "cadence_identity_changed", "shared_schedule_unavailable",
     "cadence_progress_unverified", "invalid_cadence_policy", "invalid_plan", "plan_rooms_held", "daily_limit_reached",
+    "room_missing",
   ];
   const rawBlocker = preview.blocker;
   if (rawBlocker !== null && !blockers.includes(rawBlocker as NextRunPreviewBlocker)) {

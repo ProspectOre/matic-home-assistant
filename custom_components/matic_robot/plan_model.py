@@ -110,6 +110,14 @@ class SharedRoomScheduleLockedError(ValueError):
     """Raised when a run or cadence mutation owns this shared room schedule."""
 
 
+class PlanRoomMissingError(ValueError):
+    """Raised when a plan names rooms the robot's current map no longer has."""
+
+    def __init__(self, room_ids: Sequence[str]) -> None:
+        super().__init__("plan rooms are not on the current map")
+        self.room_ids = tuple(room_ids)
+
+
 class PlanAreaMissingError(ValueError):
     """Raised when a plan names a saved custom area that no longer exists."""
 
@@ -639,6 +647,7 @@ def resolve_rooms(
         name_lookup.setdefault(room_name.casefold(), []).append(resolved)
     rooms: list[CleaningRoom] = []
     seen: set[str] = set()
+    missing: list[str] = []
     for raw in raw_rooms:
         if len(rooms) >= MAX_ROOM_SEQUENCE_SIZE:
             raise RoomSequenceLimitError(
@@ -651,6 +660,11 @@ def resolve_rooms(
             if stable_id
             else name_lookup.get(identifier.casefold(), [])
         )
+        if not candidates and stable_id:
+            # The robot retired this ID, usually after a map edit in the Matic
+            # app. Keep going so the error names every such room at once.
+            missing.append(stable_id)
+            continue
         if not candidates:
             raise ValueError(identifier)
         if len(candidates) != 1:
@@ -669,4 +683,6 @@ def resolve_rooms(
                 coverage_setting=str(raw["coverage_setting"]),
             )
         )
+    if missing:
+        raise PlanRoomMissingError(missing)
     return rooms
