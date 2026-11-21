@@ -459,3 +459,74 @@ async def test_dock_closure_is_released_when_the_finalizer_is_cancelled(
     with pytest.raises(asyncio.CancelledError):
         await finalizer
     assert await asyncio.wait_for(closure, 1)
+
+
+async def _finish(hass, manager, outcome: str, reason_code: str) -> None:
+    await async_finish_plan_run(
+        hass,
+        manager,
+        "serial",
+        "vacuum.matic",
+        {"plan_id": "away", "run_id": "run-1"},
+        outcome,
+        reason_code,
+        "managed_cancellation",
+        0,
+    )
+
+
+async def _begin(manager) -> None:
+    await manager.ledger.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason_code", "fenced"),
+    [
+        ("completed", "all_rooms_verified", False),
+        ("failed", "robot_error", False),
+        ("failed", "robot_error", True),
+    ],
+)
+async def test_dock_closure_keeps_the_end_a_live_run_reached(
+    hass, outcome: str, reason_code: str, fenced: bool
+) -> None:
+    """A dock seen while the run ran never overwrites how the run ended."""
+    manager = memory_manager(hass)
+    await _begin(manager)
+    token = None
+    if fenced:
+        await manager.control.async_mark_stop_pending("serial", run_id="run-1")
+        token = manager.control.stop_fence_token("serial")
+    closure = hass.async_create_task(
+        manager.ledger.async_mark_run_docked("serial", "run-1", stop_fence_token=token)
+    )
+    await asyncio.sleep(0)
+    assert not closure.done()
+
+    await _finish(hass, manager, outcome, reason_code)
+
+    assert await closure is fenced
+    assert manager.ledger.run_record("serial", "run-1")["outcome"] == outcome
+    assert manager.control.stop_fence_token("serial") is None
+
+
+async def test_dock_closure_does_not_wait_when_the_end_failed_to_save(
+    hass,
+) -> None:
+    """An announced run whose record still reads running releases its closure."""
+    manager = memory_manager(hass)
+    await _begin(manager)
+    manager.ledger.async_finish_run = AsyncMock()
+    await _finish(hass, manager, "cancelled", "managed_stop")
+    assert manager.ledger.run_record("serial", "run-1")["outcome"] == "running"
+
+    closing = manager.ledger.async_mark_run_docked("serial", "run-1")
+    assert not await asyncio.wait_for(closing, 1)

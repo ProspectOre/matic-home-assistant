@@ -82,6 +82,7 @@ class RobotActor:
     dock_scope_cleanups: dict[str, _ScopeCleanup] = field(default_factory=dict)
     # Dock closures waiting for a run's plan_finished, by run.
     run_ends: dict[str, asyncio.Future[None]] = field(default_factory=dict)
+    ended_run_id: str | None = None
     command_admission: _CommandAdmission = _OPEN_COMMAND_ADMISSION
     generation: int = 0
     cancellation_reason: str | None = None
@@ -561,15 +562,22 @@ class RunControl:
     async def async_wait_for_run_end(
         self, serial_number: str, run_id: str, running: bool
     ) -> None:
-        """Wait for a running or ending run's ``plan_finished``; else return."""
-        if running or run_id in self.actor(serial_number).run_ends:
+        """Wait for a running or ending run's ``plan_finished``; else return.
+
+        A run already announced does not wait, even when its stored end
+        failed to save and the record still reads running.
+        """
+        actor = self.actor(serial_number)
+        if run_id != actor.ended_run_id and (running or run_id in actor.run_ends):
             # Waiters share the future; one cancelled waiter must not cancel it.
             await asyncio.wait((self.run_ending(serial_number, run_id),))
 
     @callback
     def run_ended(self, serial_number: str, run_id: str) -> None:
         """Release what waits for run ``run_id``, which ``run_ending`` held."""
-        self.actor(serial_number).run_ends.pop(run_id).set_result(None)
+        actor = self.actor(serial_number)
+        actor.ended_run_id = run_id
+        actor.run_ends.pop(run_id).set_result(None)
 
     @callback
     def mark_managed_stop(self, serial_number: str) -> None:
