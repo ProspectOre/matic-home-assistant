@@ -780,14 +780,14 @@ async def async_finish_plan_run(
             # Room events queue on the bus first; yield so plan_finished
             # follows the room boundary it summarizes.
             await asyncio.sleep(0)
+        finally:
+            # Fired and released even when a second cancel lands on the yield,
+            # so a waiting dock closure always follows plan_finished.
             hass.bus.async_fire(
                 EVENT_PLAN_FINISHED,
                 {ATTR_ENTITY_ID: entity_id, **started, **end},
                 context=context,
             )
-        finally:
-            # A dock closure waiting on the run follows plan_finished, and is
-            # released even when a second cancel lands on the yield.
             manager.control.run_ended(serial_number, started["run_id"])
 
 

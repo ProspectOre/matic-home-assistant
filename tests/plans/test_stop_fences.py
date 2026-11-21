@@ -422,8 +422,13 @@ async def test_dock_closure_waits_for_plan_finished_after_the_end_is_stored(
 async def test_dock_closure_is_released_when_the_finalizer_is_cancelled(
     hass,
 ) -> None:
-    """A second cancel on the finalizer's yield still releases the dock closure."""
+    """A second cancel on the finalizer's yield still announces, then closes."""
     manager = memory_manager(hass)
+    order: list[str] = []
+    for event_type in (EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED):
+        hass.bus.async_listen(
+            event_type, callback(lambda e: order.append(e.event_type))
+        )
     await manager.ledger.async_begin_run(
         "serial",
         "away",
@@ -459,6 +464,8 @@ async def test_dock_closure_is_released_when_the_finalizer_is_cancelled(
     with pytest.raises(asyncio.CancelledError):
         await finalizer
     assert await asyncio.wait_for(closure, 1)
+    await hass.async_block_till_done()
+    assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
 
 
 async def _finish(hass, manager, outcome: str, reason_code: str) -> None:
