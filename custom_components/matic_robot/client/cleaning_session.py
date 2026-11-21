@@ -16,6 +16,7 @@ from .history_semantics import (
     MAX_HISTORY_BYTES,
     SemanticHistory,
     decode_history_semantics,
+    room_duration_seconds,
 )
 from .models import (
     MODE_STATUSES,
@@ -30,9 +31,8 @@ from .telemetry_fields import (
     decode_text_from_fields,
     telemetry_bytes,
     telemetry_fields,
-    telemetry_varint,
 )
-from .wire import WireField, decode_fields, field_bytes
+from .wire import WireField, decode_fields, field_bytes, seconds_nanos
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -271,7 +271,7 @@ def _legacy_room_duration(detail_fields: tuple[WireField, ...]) -> int | None:
     if not durations:
         return None
     try:
-        return _omittable_varint(telemetry_fields(durations[0]), 1)
+        return room_duration_seconds(telemetry_fields(durations[0]))
     except DecodeError:
         return None
 
@@ -432,13 +432,9 @@ def decode_nested_timestamp(payload: bytes, number: int) -> str | None:
             max_bytes=_CLEANING_SESSION_MAX_BYTES,
             max_fields=_CLEANING_SESSION_MAX_FIELDS,
         )
-        timestamp = telemetry_bytes(wrapper, 1)
-        seconds = telemetry_varint(timestamp, 1)
-        try:
-            nanos = telemetry_varint(timestamp, 2)
-        except DecodeError:
-            nanos = 0
-        if nanos > 999_999_999:
+        seconds, nanos = seconds_nanos(telemetry_fields(telemetry_bytes(wrapper, 1)))
+        # Zero seconds is a robot clock that was never set.
+        if not seconds:
             return None
         value = datetime.fromtimestamp(seconds + nanos / 1_000_000_000, UTC)
     except DecodeError, OSError, OverflowError, ValueError:

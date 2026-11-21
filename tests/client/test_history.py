@@ -198,6 +198,15 @@ def test_decode_monthly_cleaning_recap_reads_maintenance_suggestions() -> None:
     assert decode_monthly_cleaning_recap(_recap_entry()).maintenance_suggestions == ()
 
 
+def test_decode_monthly_cleaning_recap_skips_unknown_duration_fields() -> None:
+    # Protobuf skips unknown fields; this path alone used to reject them.
+    durations = _bfield(1, _duration(120) + _bfield(3, b"later")) + _bfield(
+        2, _duration()
+    )
+    recap = decode_monthly_cleaning_recap(_recap_entry(durations=durations))
+    assert recap.sweep_duration_seconds == 120
+
+
 def test_decode_monthly_cleaning_recap_accepts_default_duration_fields() -> None:
     recap = decode_monthly_cleaning_recap(
         _recap_entry(durations=_bfield(1, b"") + _bfield(2, b""))
