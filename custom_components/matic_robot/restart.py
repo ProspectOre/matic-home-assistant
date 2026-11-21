@@ -759,11 +759,12 @@ async def _async_credit_verified_rooms(
 ) -> str:
     """Credit or settle each room the history decides and say if the run settled.
 
-    A room the robot could not reach settles without credit, as the leg
-    runner settles it, so it stays due and the run can still complete.
+    A room the owner skipped or the robot could not reach settles without
+    credit, as the leg runner settles it, so the run can still complete.
     """
     run, restarted = recovery.run, recovery.restarted
     manager, serial_number = recovery.manager, recovery.serial_number
+    skipped = set(manager.ledger.skipped_room_ids(serial_number, run["run_id"]))
     for room in leg:
         if room.room_id in restarted.completed_room_ids | restarted.settled_room_ids:
             continue
@@ -787,17 +788,25 @@ async def _async_credit_verified_rooms(
             restarted, _ = transition(restarted, RoomVerified(counted))
             rejoined.robot.confirm_room_completed(room.name)
             result, fields = "completed", {"reason_code": "verified_completion"}
-        elif room.room_id in unreachable:
-            await manager.ledger.async_mark_unreachable(
-                serial_number, run["plan_id"], room, run_id=run["run_id"]
-            )
+        elif room.room_id in unreachable | skipped:
+            if recovery.lost_ownership() or not recovery.completion_is_current():
+                return "restart_recovery_superseded"
+            if room.room_id in skipped:
+                await manager.ledger.async_mark_skipped(
+                    serial_number, run["plan_id"], room, run_id=run["run_id"]
+                )
+                result, fields = "skipped", {"reason_code": "owner_skipped"}
+            else:
+                await manager.ledger.async_mark_unreachable(
+                    serial_number, run["plan_id"], room, run_id=run["run_id"]
+                )
+                result = "skipped"
+                fields = {"reason_code": "room_unreachable", "cause": "robot"}
             restarted, write = transition(restarted, RoomSettled(room.room_id))
             write.apply(recovery.checkpoint)
             await manager.recovery.async_set_recovery_checkpoint(
                 serial_number, run["run_id"], recovery.checkpoint
             )
-            result = "skipped"
-            fields = {"reason_code": "room_unreachable", "cause": "robot"}
         else:
             continue
         fire_room_event(

@@ -199,7 +199,7 @@ class _PlanRun:
             raise PlanCancelledError
 
     def validate_new_run(self) -> None:
-        if self.validate_prepared_run is not None:
+        if self.recovery is None and self.validate_prepared_run is not None:
             self.validate_prepared_run()
 
     async def async_start(self) -> None:
