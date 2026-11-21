@@ -120,6 +120,25 @@ async def test_answered_pings_keep_the_connection_open() -> None:
     robot.transport.abort.assert_not_called()
 
 
+async def test_closing_with_a_ping_in_flight_closes_without_aborting() -> None:
+    channel = _channel()
+    robot = _Robot(channel)
+    robot.open_stream()
+    # Deliver the robot's reply to the open stream before it goes quiet.
+    await asyncio.sleep(0)
+    robot.silent = True
+    connection = robot.protocol.connection
+    connection._ping_handle.cancel()
+    connection._ping()
+    assert robot.pings == 1
+
+    channel._protocol = robot.protocol
+    channel.close()
+
+    robot.transport.close.assert_called_once_with()
+    robot.transport.abort.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("code", "too_many_pings"),
     [(ErrorCodes.ENHANCE_YOUR_CALM, True), (ErrorCodes.NO_ERROR, False)],
