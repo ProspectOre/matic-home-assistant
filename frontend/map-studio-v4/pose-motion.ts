@@ -17,10 +17,6 @@ const MIN_RATE = 0.9;
 const MAX_RATE = 1.25;
 const CATCH_UP_MS = 2_000;
 
-/** The map canvas asks its panel for the motion with this event. */
-export const POSE_MOTION_EVENT = "matic-pose-motion";
-export type PoseMotionRequest = CustomEvent<(motion: PoseMotion) => void>;
-
 interface Sample {
   readonly pose: PoseModel;
   /** x and y in metres and the heading, unwrapped against the sample before so turns take the short way; NaN without one. */
