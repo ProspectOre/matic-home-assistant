@@ -60,6 +60,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -70,7 +71,6 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
 
     robot.on_start = kitchen_leg_ends(hass, robot)
@@ -117,6 +117,7 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -127,7 +128,6 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     hass = SimpleNamespace(
         bus=SimpleNamespace(async_fire=MagicMock()),
@@ -194,6 +194,7 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -204,7 +205,6 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     # After the handoff the session reads as this run's once, while the room
     # outcome settles, and once more for a later failure; then it is unknown.
@@ -267,6 +267,7 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -276,7 +277,6 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     wait = AsyncMock(side_effect=[RobotActivity.PAUSED, RobotActivity.CLEANING])
     with (
@@ -330,6 +330,7 @@ async def test_room_pause_and_resume_outcome() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -340,7 +341,6 @@ async def test_room_pause_and_resume_outcome() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = plan_room("Kitchen", "room-kitchen")
     wait = AsyncMock(return_value=RobotActivity.CLEANING)
@@ -401,6 +401,7 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         )
         manager = SimpleNamespace(
             ledger=SimpleNamespace(
+                active_target=MagicMock(return_value=None),
                 async_mark_started=AsyncMock(),
                 async_claim_native_session=AsyncMock(),
                 async_mark_completed=AsyncMock(),
@@ -417,7 +418,6 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
                 register_reconciliation_task=MagicMock(),
                 cancellation_reason=MagicMock(return_value=None),
             ),
-            history=SimpleNamespace(snapshot=MagicMock(return_value={})),
         )
         if interrupted:
             outcome = AsyncMock(return_value=RoomRunOutcome.INTERRUPTED)
@@ -480,6 +480,7 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     )
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -496,7 +497,6 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
             register_reconciliation_task=MagicMock(),
             cancellation_reason=MagicMock(return_value="config_entry_unload"),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     sender = AsyncMock()
     with (

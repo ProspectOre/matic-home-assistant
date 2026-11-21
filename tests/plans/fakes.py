@@ -132,6 +132,7 @@ def run_plan_call(
 def leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -150,7 +151,6 @@ def leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
             cancellation_reason=MagicMock(return_value=cancellation_reason),
             pending_stop_run_id=MagicMock(return_value=None),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
         recovery=SimpleNamespace(coverage_receipt=MagicMock(return_value=None)),
     )
 

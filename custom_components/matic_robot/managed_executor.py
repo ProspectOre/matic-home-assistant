@@ -425,7 +425,7 @@ async def _async_execute_rooms_reserved(
                     await advance(AreaFinished(index, last_leg=index + 1 == len(legs)))
                 else:
                     resumed = (
-                        manager.history.snapshot(serial_number).get("active_plan") or {}
+                        manager.ledger.active_target(serial_number) or {}
                         if recovery is not None and index == run.leg_index
                         else {}
                     )
@@ -553,14 +553,9 @@ async def _async_execute_rooms_reserved(
                 return
             cancellation_reason_reader = manager.control.cancellation_reason
             cancellation_reason = cancellation_reason_reader(serial_number)
-            snapshot_reader = manager.history.snapshot
-            active_snapshot = snapshot_reader(serial_number).get("active_plan")
-            recharge_suspended = getattr(
-                err, "suspend_reason", None
-            ) == "low_charge" or (
-                isinstance(active_snapshot, dict)
-                and active_snapshot.get("status") == "suspended"
-                and active_snapshot.get("suspend_reason") == "low_charge"
+            recharge_suspended = "low_charge" in (
+                getattr(err, "suspend_reason", None),
+                dispatch_control._suspended_run_reason(manager, serial_number),
             )
             if cancellation_reason == "config_entry_unload":
                 run_outcome = "unverified"
@@ -633,10 +628,10 @@ async def _async_execute_rooms_reserved(
             finish_event_reader(serial_number).clear()
             # Leaf handlers retire expected failures. Unexpected failures must
             # also leave a terminal record before ownership is released.
-            active = manager.history.snapshot(serial_number)["active_plan"]
+            active = manager.ledger.active_target(serial_number)
             if (
                 manager.control.managed_motion_is_current(serial_number, motion_token)
-                and isinstance(active, dict)
+                and active is not None
                 and active.get("plan_id") == call.data["plan_id"]
             ):
                 room = next(
@@ -787,8 +782,8 @@ async def async_finish_plan_run(
             entity_id=entity_id,
             context=context,
         )
-        stored = manager.history.snapshot(serial_number)["last_run"]
-        if isinstance(stored, dict) and stored.get("run_id") == started["run_id"]:
+        stored = manager.ledger.run_record(serial_number, started["run_id"])
+        if stored is not None:
             end.update({key: stored[key] for key in _STORED_END if key in stored})
     finally:
         # Room events queue on the bus first; yield so plan_finished follows
