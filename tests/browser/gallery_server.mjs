@@ -1,4 +1,4 @@
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readdirSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,21 @@ const scripts = new Map([
   ],
 
 ]);
+
+/**
+ * Every chunk of the built panel, for the stage frame to load before it
+ * mounts. The panel fetches most of them only when a view first needs one, so
+ * a frame that already said it was ready was still fetching; leaving it then
+ * cancelled those requests, which now and then corrupts the heap of Linux
+ * WebKit's network process and fails the next load. A frame with every chunk
+ * in hand requests nothing after it is ready.
+ */
+function panelChunks() {
+  const chunks = join(repositoryRoot, "custom_components", "matic_robot", "map_studio_v4", "chunks");
+  // No build yet: the page then says how to make one.
+  if (!statSync(chunks, { throwIfNoEntry: false })?.isDirectory()) return [];
+  return readdirSync(chunks).filter((name) => name.endsWith(".js")).sort().map((name) => `/map_studio_v4/chunks/${name}`);
+}
 
 /**
  * The synthetic test and review server: the audit/review harness and the
@@ -72,7 +87,10 @@ export function createGalleryServer() {
           .catch(() => {
             throw new Error("The review bundle has no stage. Run npm run build:map-studio-v4, then reload.");
           })
-          .then((stage) => stage.${frame ? "mountStageFrame" : "mountStagePage"}(document))
+          .then(async (stage) => {
+            await Promise.all(${JSON.stringify(frame ? panelChunks() : [])}.map((chunk) => import(chunk)));
+            await stage.${frame ? "mountStageFrame" : "mountStagePage"}(document);
+          })
           .catch((error) => {
             const alert = document.createElement("p");
             alert.setAttribute("role", "alert");
