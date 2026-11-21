@@ -115,7 +115,9 @@ class _Robot:
         self.show("docked")
 
 
-async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
+async def _run(
+    hass, robot: _Robot, sender: AsyncMock | None = None, **readers: object
+) -> list:
     manager = memory_manager(hass)
     manager.repository.robot("serial")["plans"]["test-plan"] = {
         "finish_current_room": True
@@ -148,6 +150,7 @@ async def _run(hass, robot: _Robot, sender: AsyncMock | None = None) -> list:
                 session_identity=robot.read_identity,
                 active_session=AsyncMock(return_value=None),
                 session_history=robot.history,
+                **readers,
             ),
             managed_user_command=sender or AsyncMock(),
         ),
@@ -174,6 +177,22 @@ async def test_refused_next_room_waits_for_the_dock(hass) -> None:
 
     assert robot.dispatch_states == ["docked", "returning", "docked"]
     assert [e["room_id"] for e in _events(events, "room_completed")] == ["room-study"]
+
+
+async def test_every_start_after_a_handoff_checks_the_saved_idle_revision(
+    hass,
+) -> None:
+    robot = _Robot(hass, refuse_while_returning=True)
+    revision = AsyncMock(return_value="a" * 64)
+    await _run(hass, robot, idle_session_revision=revision)
+
+    # Read once at the handoff; the start after the refusal reuses it.
+    revision.assert_awaited_once()
+    assert [start.idle_revision for start in robot.fake.started] == [
+        None,
+        "a" * 64,
+        "a" * 64,
+    ]
 
 
 def _robot(state: str | None, identity: bytes | None):

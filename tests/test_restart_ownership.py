@@ -1,12 +1,19 @@
-"""Restart recovery of a leg handoff checks the robot's idle session revision."""
+"""Restart recovery follows the dispatch's own session and the idle revision."""
 
+import hashlib
 from dataclasses import asdict
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import pytest
 
+from custom_components.matic_robot.client import native_session_hash
+from custom_components.matic_robot.client.exceptions import (
+    NativeHistoryIncompleteError,
+)
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.client.test_coverage_receipts import active_key
 
 
 @pytest.mark.parametrize(
@@ -58,4 +65,51 @@ async def test_handoff_resumes_only_while_the_idle_revision_holds(
     if not resumes:
         last_run = manager.history.snapshot("serial")["last_run"]
         assert last_run["reason_code"] == "restart_native_mission_changed_or_ended"
+    client.async_send_user_command.assert_not_awaited()
+
+
+OTHER = UUID("22222222-2222-4222-8222-222222222222")
+
+
+@pytest.mark.parametrize(
+    "case", ["own_session", "malformed", "other_session", "incomplete"]
+)
+async def test_a_tracked_dispatch_resumes_only_by_its_own_session(
+    hass, recovery_state, case
+):
+    manager, entry, checkpoint, _room = recovery_state
+    identity = active_key()
+    own = native_session_hash(identity, active=True)
+    checkpoint.update(
+        native_identity_hash=hashlib.sha256(identity).hexdigest(),
+        history_baseline=[] if case == "incomplete" else None,
+        session_hash={
+            "malformed": "not-a-session",
+            "other_session": hashlib.sha256(str(OTHER).encode()).hexdigest(),
+        }.get(case, own),
+    )
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    client = entry.runtime_data.client
+    client.async_get_cleaning_session_identity.return_value = identity
+    if case == "incomplete":
+        client.async_get_cleaning_session_records.side_effect = (
+            NativeHistoryIncompleteError("entry without a session identity")
+        )
+
+    with patch(
+        "custom_components.matic_robot.restart._async_execute_rooms", AsyncMock()
+    ) as runner:
+        await async_recover_managed_run(hass, entry, "serial")
+
+    if case == "own_session":
+        dispatch = runner.await_args.kwargs["recovered_dispatch"]
+        assert dispatch.history_baseline is None
+        assert dispatch.session_hash == own
+        return
+    runner.assert_not_awaited()
+    assert manager.history.snapshot("serial")["last_run"]["reason_code"] == (
+        "restart_history_incomplete"
+        if case == "incomplete"
+        else "restart_checkpoint_unverified"
+    )
     client.async_send_user_command.assert_not_awaited()
