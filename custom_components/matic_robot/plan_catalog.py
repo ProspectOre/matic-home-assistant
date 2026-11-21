@@ -18,7 +18,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from . import area_binding_geometry as binding_geometry
-from . import native_history, plan_timing
+from . import native_history
 from .area_binding import (
     AreaBindingStatus,
     area_binding_needs_geometry_index,
@@ -58,6 +58,7 @@ from .plan_model import (
     _stored_entries,
     plan_area_fingerprint,
     plan_entries,
+    stored_count,
 )
 from .plan_repository import (
     PlanRepository,
@@ -918,9 +919,7 @@ def _write_shared_schedule(
     schedule["policy"] = _without_scope(policy)
     if floor_token is not None:
         schedule["floor_token"] = floor_token
-    schedule["revision"] = min(
-        2_147_483_647, plan_timing._stored_count(schedule, "revision") + 1
-    )
+    schedule["revision"] = min(2_147_483_647, stored_count(schedule, "revision") + 1)
 
 
 def _restart_shared_progress(

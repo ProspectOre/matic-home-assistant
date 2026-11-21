@@ -81,6 +81,11 @@ class PlanRecovery:
         run = recovery_run(self.repository.robot(serial_number))
         return deepcopy(run) if run is not None else None
 
+    def counted_room_ids(self, serial_number: str, run_id: str) -> frozenset[str]:
+        """Return the rooms the running run ``run_id`` has counted."""
+        checkpoint = run_checkpoint(self.repository.robot(serial_number), run_id) or {}
+        return frozenset(checkpoint.get("completed_room_ids", ()))
+
     async def async_set_recovery_checkpoint(
         self,
         serial_number: str,
@@ -134,6 +139,8 @@ class PlanRecovery:
                     normalized_checkpoint["cadence_by_room"] = cadence_by_room
                 last_run["recovery_checkpoint"] = {
                     **normalized_checkpoint,
+                    # Only count_room adds to the tally; a queue save keeps it.
+                    "completed_room_ids": existing.get("completed_room_ids", []),
                     **(
                         {"started_room_ids": existing["started_room_ids"]}
                         if "started_room_ids" in existing

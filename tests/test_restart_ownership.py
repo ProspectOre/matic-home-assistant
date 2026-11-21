@@ -14,6 +14,7 @@ from custom_components.matic_robot.client.exceptions import (
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.client.test_coverage_receipts import active_key
+from tests.plans.fakes import save_run_checkpoint
 
 
 @pytest.mark.parametrize(
@@ -46,7 +47,7 @@ async def test_handoff_resumes_only_while_the_idle_revision_holds(
     client = entry.runtime_data.client
     client.async_get_idle_cleaning_session_revision = AsyncMock(return_value=current)
     manager.repository.robot("serial")["last_run"]["room_count"] = 2
-    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await save_run_checkpoint(manager, checkpoint)
     client.async_get_cleaning_session_identity.return_value = b""
     entry.robot.show("idle")
 

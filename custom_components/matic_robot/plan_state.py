@@ -24,11 +24,11 @@ from .plan_model import (
     _is_manual_room_sequence_plan_id,
     normalize_run_outcome,
     normalize_run_provenance,
+    stored_count,
 )
 from .plan_timing import (
     _latest_timestamp,
     _normalize_duration_profiles,
-    _stored_count,
 )
 
 _LEGACY_MANUAL_ROOM_SEQUENCE_PLAN_NAME = "Map Studio room clean"
@@ -211,8 +211,8 @@ def _normalize_cadence_progress(record: dict[str, Any]) -> bool:
     """Store a cadence record's progress as its two counts."""
     progress = record.get("progress")
     normalized = {
-        "mop": _stored_count(progress, "mop"),
-        "coverage": _stored_count(progress, "coverage"),
+        "mop": stored_count(progress, "mop"),
+        "coverage": stored_count(progress, "coverage"),
     }
     if progress == normalized:
         return False
