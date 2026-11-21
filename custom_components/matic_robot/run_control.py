@@ -29,10 +29,10 @@ from .plan_model import (
     _has_frozen_stop_policy,
     _managed_stop_policy,
 )
-from .plan_recovery import recovery_run_state
 from .plan_repository import (
     PlanRepository,
 )
+from .run_machine import recovery_run
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -349,7 +349,7 @@ class RunControl:
         replaced = False
         if (
             self.cancel(serial_number)
-            or recovery_run_state(self.repository.robot(serial_number)) is not None
+            or recovery_run(self.repository.robot(serial_number)) is not None
         ):
             actor.cancel_event.set()
             dispatch = self.managed_stop_dispatch_transaction.get()
@@ -725,6 +725,35 @@ class RunControl:
         """Return the graceful-stop signal for the current managed run."""
         return self.actor(serial_number).finish_room_event
 
+    def smart_stop_phase(self, serial_number: str) -> str | None:
+        """Return where the running run's accepted Smart Stop stands, else None.
+
+        Smart Stop is pending while the checkpoint holds the after-room intent
+        and the finish signal is set, until another command replaces the run.
+        """
+        robot = self.repository.robot(serial_number)
+        run = recovery_run(robot)
+        if (
+            run is None
+            or run["recovery_checkpoint"].get("stop_intent") != "after_room"
+            or not self.finish_room_event(serial_number).is_set()
+            or self.cancellation_reason(serial_number) == "motion_replaced"
+        ):
+            return None
+        active = robot.get("active_plan")
+        if not isinstance(active, Mapping):
+            return "returning_to_dock"
+        if active.get("run_id") != run["run_id"]:
+            return None
+        if active.get("status") == "verifying":
+            return "verifying_completion"
+        # A stored active plan names a room, else a custom area.
+        return (
+            "finishing_room"
+            if isinstance(active.get("room_id"), str)
+            else "finishing_area"
+        )
+
     @callback
     def prepare_run(self, serial_number: str) -> asyncio.Event:
         """Clear and return the cancellation signal for a new managed run."""
@@ -754,31 +783,14 @@ class RunControl:
         def fence_new_motion() -> None:
             actor.motion_generation += 1
 
-        if stop_now:
-            robot = self.repository.robot(serial_number)
-            active = robot.get("active_plan")
-            last_run = robot.get("last_run")
-            checkpoint = (
-                last_run.get("recovery_checkpoint")
-                if isinstance(last_run, Mapping)
-                and last_run.get("outcome") == "running"
-                and isinstance(active, Mapping)
-                and last_run.get("run_id") == active.get("run_id")
-                else None
-            )
-            if (
-                not isinstance(active, Mapping)
-                or not (active.get("room_id") or active.get("area_id"))
-                or active.get("status") == "verifying"
-                or not isinstance(checkpoint, Mapping)
-                or checkpoint.get("stop_intent") != "after_room"
-                or not self.finish_room_event(serial_number).is_set()
-                or self.cancellation_reason(serial_number) == "motion_replaced"
-            ):
-                # The current room may have completed between the UI read and
-                # the explicit override. Keep the accepted graceful stop and
-                # let its existing dock path finish without a duplicate dock.
-                return PlanStopDecision("after_room")
+        if stop_now and self.smart_stop_phase(serial_number) not in {
+            "finishing_room",
+            "finishing_area",
+        }:
+            # The current room may have completed between the UI read and
+            # the explicit override. Keep the accepted graceful stop and
+            # let its existing dock path finish without a duplicate dock.
+            return PlanStopDecision("after_room")
 
         # Fence undispatched direct starts/resumes even if no managed lock is
         # held yet. A graceful stop keeps the current managed owner intact so
@@ -790,7 +802,7 @@ class RunControl:
                 self.cancellation_event(serial_number).set()
                 actor.cancellation_reason = "managed_stop"
                 return PlanStopDecision("immediate")
-            if recovery_run_state(self.repository.robot(serial_number)) is not None:
+            if recovery_run(self.repository.robot(serial_number)) is not None:
                 self.cancellation_event(serial_number).set()
                 actor.cancellation_reason = "managed_stop"
                 return PlanStopDecision("immediate")
