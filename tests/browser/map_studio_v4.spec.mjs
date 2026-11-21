@@ -6601,7 +6601,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(mode).toHaveValue("heavy_duty");
   });
 
-  test("selects a requested robot deterministically", async ({ page }) => {
+  test("selects a requested robot deterministically @household", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
       const module = await import("/map_studio_v4-review/review.js");

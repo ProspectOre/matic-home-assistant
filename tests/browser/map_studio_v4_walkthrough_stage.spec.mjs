@@ -117,10 +117,13 @@ test("the pseudo-language translates every common key and keeps placeholders", a
     return {
       plain: localize("component.matic_robot.common.area_erase"),
       counted: localize("component.matic_robot.common.v4_rooms_more", { count: 3 }),
+      // Drawn on the canvas, so no text check on the page can see it.
+      canvas: localize("component.matic_robot.common.v4_last_seen_during_run"),
       missing: localize("component.matic_robot.common.not_a_key"),
     };
   }, GALLERY);
   expect(result.plain).toMatch(/^\[Éŕåšé·+\]$/u);
+  expect(result.canvas).toMatch(/^\[.+\]$/u);
   expect(result.counted).toContain("3");
   expect(result.counted).not.toContain("{count}");
   expect(result.missing).toBe("component.matic_robot.common.not_a_key");

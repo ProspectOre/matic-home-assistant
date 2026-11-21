@@ -130,7 +130,7 @@ test("removed pin IDs are reconciled without disturbing surviving shortcut order
     .toEqual(SAVED_PINS);
 });
 
-test("entry change hides the previous entry choices until the new owner's pins settle", async ({ page }) => {
+test("entry change hides the previous entry choices until the new owner's pins settle @household", async ({ page }) => {
   const a = { entry_id: "synthetic-entry", scene_url: "/api/matic_robot/slam_scene/synthetic",
     history_url: "/api/matic_robot/slam_history/synthetic",
     areas_url: "/api/matic_robot/areas/synthetic", plans_url: "/api/matic_robot/plans/synthetic", map_revision: 7,

@@ -398,7 +398,7 @@ test.describe("home by state", () => {
     });
   }
 
-  test("an unavailable robot selection states it once (H11)", async ({ page }) => {
+  test("an unavailable robot selection states it once (H11) @household", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "multi-robot" });
     await patchState(gallery, { robots: [{ entryId: "synthetic-entry-two", label: "Second robot" }] });
     await expect(gallery.getByRole("heading", { name: "Selected robot unavailable", level: 2 })).toBeVisible();

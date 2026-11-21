@@ -12,6 +12,9 @@ const excludeAudit = auditRun ? [] : [/@audit/];
 
 // Project selection is tag-based: tests whose title carries `@mobile` run only
 // on the two mobile-device projects; everything else runs on the desktop ones.
+// `@household` names the tests of a home with more than one robot. It selects
+// no project, so the sharded CI run includes them like any other test;
+// `npm run test:browser:household` runs them alone.
 export default defineConfig({
   testDir: "./tests/browser",
   grepInvert: auditRun ? undefined : /@audit/,

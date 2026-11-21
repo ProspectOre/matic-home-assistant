@@ -57,6 +57,24 @@ def test_browser_shards_keep_the_traces_of_retried_tests() -> None:
     assert steps[run]["env"]["DEBUG"] == "pw:browser"
 
 
+def test_the_household_browser_tests_run_alone_and_in_every_sharded_run() -> None:
+    """`@household` is a name to run them by, never a filter on the CI shards."""
+    scripts = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["scripts"]
+    assert scripts["test:browser"] == "playwright test"
+    assert scripts["test:browser:household"] == "playwright test --grep @household"
+    config = (ROOT / "playwright.config.mjs").read_text(encoding="utf-8")
+    filters = [line for line in config.splitlines() if "grep" in line.lower()]
+    assert filters
+    assert not [line for line in filters if "household" in line]
+    tagged = [
+        path.name
+        for path in (ROOT / "tests" / "browser").glob("*.spec.mjs")
+        if "@household" in path.read_text(encoding="utf-8")
+    ]
+    assert "map_studio_v4_multi_robot_scale.spec.mjs" in tagged
+    assert "map_studio_v4_entry_selection.spec.mjs" in tagged
+
+
 def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> None:
     """A lane without its own install would rerun the pinned version."""
     job = _workflow("nightly.yml")["jobs"]["nightly"]

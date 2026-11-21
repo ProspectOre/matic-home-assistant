@@ -162,6 +162,7 @@ export function drawLastSeenDuringRun(
   state: WorkspaceState,
   palette: CanvasPalette,
   project: ProjectMeters,
+  label: string,
 ): void {
   if (!canShowLastSeenDuringRun(state) || !state.seen) return;
   const marker = project(state.seen.position[0], state.seen.position[1], 3, false);
@@ -184,9 +185,9 @@ export function drawLastSeenDuringRun(
   context.lineJoin = "round";
   context.lineWidth = 4;
   context.strokeStyle = rgba(palette.onAccent, .95);
-  context.strokeText("Last seen during last clean", marker.x + 14, marker.y);
+  context.strokeText(label, marker.x + 14, marker.y);
   context.fillStyle = rgba(palette.text, 1);
-  context.fillText("Last seen during last clean", marker.x + 14, marker.y);
+  context.fillText(label, marker.x + 14, marker.y);
   context.restore();
 }
 

@@ -54,7 +54,7 @@ async function mountPanel(page) {
   return { fixture, panel };
 }
 
-test("@safety reused panel follows a changed host-configured entry while selection source is host", async ({ page }) => {
+test("@safety reused panel follows a changed host-configured entry while selection source is host @household", async ({ page }) => {
   const { panel } = await mountPanel(page);
 
   await panel.evaluate((element) => {
@@ -69,7 +69,7 @@ test("@safety reused panel follows a changed host-configured entry while selecti
   })).toEqual(["synthetic-entry-b", "host", "synthetic-entry-b"]);
 });
 
-test("@safety pending user selection stays authoritative across a host-config refresh", async ({ page }) => {
+test("@safety pending user selection stays authoritative across a host-config refresh @household", async ({ page }) => {
   const { fixture, panel } = await mountPanel(page);
   await page.evaluate(() => window.__panelFixture.deferNextCatalog());
   await panel.locator("select.robot-switcher").selectOption("synthetic-entry-b");

@@ -24,6 +24,10 @@ floor. The **?** on the map lists the mouse, touch or keyboard controls for the
 input you're using, plus the drawing controls while you draw. Click a room on
 either view to select it; the map and the room list stay in step.
 
+With more than one robot, the menu beside the title switches between them.
+Robots with the same name show their area first, or their device name, or
+their entity ID when nothing else tells them apart.
+
 **Full map** hides the panel and keeps the status, the main action and **Exit
 full map** in a small bar over the map.
 
@@ -63,8 +67,9 @@ The card's actions match what the robot is doing:
 
 - **Follow the robot** keeps the live robot centered; moving the map yourself
   turns it off. **Ride along in 3D** also turns the view with the robot. Both
-  need a live position, and Ride along needs the robot's heading. Neither shows
-  video from the robot's camera.
+  need a live position, and Ride along needs the robot's heading. If the
+  position drops out, the camera waits and carries on when it returns;
+  switching robots turns both off. Neither shows video from the robot's camera.
 - **Wi-Fi signal** estimates the signal up to 1.5 m (5 ft) from each reading,
   within the reading's own room, in four bands: strong (-55 dBm and up), good
   (-67 to -56), weak (-80 to -68) and dead zone (below -80), which is also
@@ -87,7 +92,9 @@ custom area marked done, partly done, stopped or not started, and how the
 clean ended. Cleans started in the Matic app or by a robot schedule are listed
 too. Open a clean to see the robot's own map picture of it, for the recent
 cleans the robot still keeps, and choose **Show trail on map** to draw the path
-the robot took. The path is sampled, so it can have gaps.
+the robot took. The path breaks where the robot wasn't seen for more than 8
+seconds or its position jumped more than a metre at once. A long clean keeps
+the points that shape the path, such as turns and the far end of a pass.
 
 ## Saved maps
 

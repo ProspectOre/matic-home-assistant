@@ -21,7 +21,6 @@ from custom_components.matic_robot.run_history import (
     MAX_HISTORY_ROOMS,
     MAX_LIVE_TRAIL_POINTS,
     MAX_SAVED_TRAIL_POINTS,
-    MAX_TRAIL_SEGMENTS,
     MAX_TRAILS,
     RUN_HISTORY_LIMIT,
     RunTrails,
@@ -489,7 +488,7 @@ async def test_trail_points_keep_the_robots_pose_time(hass: HomeAssistant) -> No
         ((0.5, 0.0), float("nan")),
         ((1.0, 0.0), 5e9),
         ((1.5, 0.0), None),
-        ((2.0, 0.0), 1_800_000_009.6),
+        ((2.0, 0.0), 1_800_000_007.6),
     ):
         trails.observe(
             run_id="run-1",
@@ -504,7 +503,7 @@ async def test_trail_points_keep_the_robots_pose_time(hass: HomeAssistant) -> No
             (0.5, 0.0),
             (1.0, 0.0),
             (1.5, 0.0),
-            (2.0, 0.0, 1_800_000_010),
+            (2.0, 0.0, 1_800_000_008),
         ]
     ]
     trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
@@ -550,7 +549,7 @@ async def test_trail_segments_and_live_points_stay_bounded(hass: HomeAssistant) 
     (points,) = trails.live(MAP)
     assert len(points) == MAX_LIVE_TRAIL_POINTS // 2 + 1
     assert points[-1] == (round(MAX_LIVE_TRAIL_POINTS * 0.2, 2), 0)
-    for _ in range(MAX_TRAIL_SEGMENTS + 1):
+    for _ in range(MAX_SAVED_TRAIL_POINTS // 2):
         trails.observe(
             run_id="run-1", native_active=True, map_key=OTHER_MAP, point=None
         )
@@ -558,7 +557,8 @@ async def test_trail_segments_and_live_points_stay_bounded(hass: HomeAssistant) 
             trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=point)
     trails.observe(run_id=None, native_active=False, map_key=MAP, point=None)
     segments = trails.segments(trails.trail_id(MAP, run_id="run-1"), MAP)
-    assert len(segments) == MAX_TRAIL_SEGMENTS
+    # Each visit keeps its ends until they alone fill the budget.
+    assert segments == [[(0, 0), (2, 0)]] * (MAX_SAVED_TRAIL_POINTS // 2)
 
 
 async def test_robot_started_trails_match_by_time_and_stay_bounded(
@@ -623,7 +623,8 @@ async def test_trails_reload_and_reject_damaged_storage(
         {**good, "map_key": None},
         {**good, "ended_at": "soon"},
         {**good, "segments": []},
-        {**good, "segments": [[[0, 0]]] * (MAX_TRAIL_SEGMENTS + 1)},
+        {**good, "segments": [[[0, 0]]] * (MAX_LIVE_TRAIL_POINTS + 1)},
+        {**good, "segments": [[[0, 0]] * MAX_LIVE_TRAIL_POINTS, [[1, 1]]]},
         {**good, "segments": ["x"]},
         {**good, "segments": [[[0, 0, 0]]]},
         {**good, "segments": [[[0, 0, 5e9]]]},
@@ -634,7 +635,7 @@ async def test_trails_reload_and_reject_damaged_storage(
     ]
     hass_storage["matic_robot.run_trails.entry"] = {
         "version": 1,
-        "minor_version": 1,
+        "minor_version": 2,
         "key": "matic_robot.run_trails.entry",
         "data": {
             "trails": [good, *bad],
@@ -650,8 +651,8 @@ async def test_trails_reload_and_reject_damaged_storage(
     await trails.async_load()
     assert trails._data()["trails"] == [good]
     assert trails.trail_id(MAP, run_id="run-2") == LIVE_TRAIL_ID
-    trails.observe(run_id="run-2", native_active=True, map_key=MAP, point=(5, 5))
-    reloaded_points = [(0, 0), (1, 1, 1_800_000_000), (2, 2), (5, 5)]
+    trails.observe(run_id="run-2", native_active=True, map_key=MAP, point=(2.5, 2))
+    reloaded_points = [(0, 0), (1, 1, 1_800_000_000), (2, 2), (2.5, 2)]
     assert trails.live(MAP) == [reloaded_points]
     assert trails._data()["live"]["segments"] == [reloaded_points]
 
@@ -664,6 +665,41 @@ async def test_trails_reload_and_reject_damaged_storage(
     assert reloaded._data() == {"trails": [], "live": None}
 
     await trails.async_remove()
+    assert trails._data() == {"trails": [], "live": None}
+
+
+async def test_older_trails_split_where_the_map_left_a_jump_undrawn(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    older = {
+        "id": "t1",
+        "run_id": "run-1",
+        "map_key": MAP,
+        "started_at": STARTED,
+        "ended_at": ENDED,
+        "segments": [[[0, 0], [0.5, 0], [3, 0], [3.5, 0]], [[9, 9]]],
+    }
+    hass_storage["matic_robot.run_trails.entry"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "matic_robot.run_trails.entry",
+        "data": {
+            "trails": [older, "junk", {**older, "segments": "x"}],
+            "live": {**older, "segments": ["x"]},
+        },
+    }
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
+    assert trails._data() == {
+        "trails": [
+            {**older, "segments": [[[0, 0], [0.5, 0]], [[3, 0], [3.5, 0]], [[9, 9]]]}
+        ],
+        "live": None,
+    }
+
+    hass_storage["matic_robot.run_trails.entry"]["data"] = {"trails": "junk"}
+    trails = RunTrails(hass, "entry")
+    await trails.async_load()
     assert trails._data() == {"trails": [], "live": None}
 
 
@@ -720,3 +756,29 @@ def test_a_finished_run_saved_before_history_existed_is_listed() -> None:
 
     append_run_history(robot, robot["last_run"])
     assert len(history_entries(robot, (), manual=lambda plan_id: False)) == 1
+
+
+async def test_live_trail_checkpoints_while_poses_keep_arriving(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    trails = RunTrails(hass, "entry")
+    clock = hass.loop.time()
+    for second in range(66):
+        with patch.object(hass.loop, "time", return_value=clock + second):
+            trails.observe(
+                run_id="run-1",
+                native_active=True,
+                map_key=MAP,
+                point=(second * 0.2, 0),
+                observed_at=1_800_000_000 + second,
+            )
+            async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        if second in (30, 61):
+            # A steady pose stream does not push the write back.
+            saved = hass_storage["matic_robot.run_trails.entry"]["data"]["live"]
+            assert saved["segments"][-1][-1][2] == 1_800_000_000 + second
+            reloaded = RunTrails(hass, "entry")
+            await reloaded.async_load()
+            assert reloaded.live(MAP) == trails.live(MAP)
+    await trails.async_shutdown()
