@@ -20,8 +20,9 @@ import { MaticBackend } from "./backend";
 import { EffectController } from "./effects";
 import { LayerHistoryController } from "./layer-history";
 import { LayerRestore, rememberLayer } from "./layer-choices";
-import { PhotoLinkOpener } from "./photo-link";
-import { PoseMotion, POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
+import type { PhotoLinkOpener } from "./photo-link";
+import { POSE_MOTION_EVENT, type PoseMotionRequest } from "./map-canvas";
+import type { PoseMotion } from "./pose-motion";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
 import { editViewpoint, placeViewpoint } from "./viewpoint-draft";
@@ -78,8 +79,14 @@ class MaticMapPanelV4 extends LitElement {
   #layers: LayerHistoryController | null = null;
   #layerRestore: LayerRestore | null = null;
   #photoLink: PhotoLinkOpener | null = null;
-  // Outlives the controllers, so the map canvas keeps it across a reconnect.
-  readonly #poseMotion = new PoseMotion();
+  // Pose motion and the photo link opener load once the first map is in
+  // (optionalUiReady), so its first frames carry the startup graph alone.
+  // Until then the map draws each pose as it arrives. The motion outlives the
+  // controllers, so the map canvas keeps it across a reconnect.
+  #poseMotion: PoseMotion | null = null;
+  #poseMotionLoad: Promise<void> | null = null;
+  #poseMotionRequests: ((motion: PoseMotion) => void)[] = [];
+  #photoLinkLoad: Promise<void> | null = null;
   #stopViewport: (() => void) | null = null;
   // HA's layout viewport can extend below Safari's visible viewport. Cap only
   // this panel, preserving smaller embeds and allowing it to grow again.
@@ -160,13 +167,16 @@ class MaticMapPanelV4 extends LitElement {
     document.addEventListener("fullscreenchange", this.#fitViewport, options);
     this.addEventListener(POSE_MOTION_EVENT, (event) => {
       event.stopPropagation();
-      (event as PoseMotionRequest).detail(this.#poseMotion);
+      const deliver = (event as PoseMotionRequest).detail;
+      if (this.#poseMotion) deliver(this.#poseMotion);
+      else this.#poseMotionRequests.push(deliver);
     }, { signal: events.signal });
     observer.observe(this);
     this.#fitViewport();
     this.#requestCommonTranslations();
     this.#unsubscribe = this.#store.subscribe((state) => {
       this._workspace = state;
+      if (state.optionalUiReady) this.#loadOptional();
       if (state.selection.entryId !== this.#projection?.entryKey) {
         const projection = this.#project();
         if (projection !== this.#projection) {
@@ -202,11 +212,10 @@ class MaticMapPanelV4 extends LitElement {
     // host from before the detach.
     this.#projection = this.#project();
     this.#backend = new MaticBackend(() => this.hass);
-    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null, this.#poseMotion);
+    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null, () => this.#poseMotion);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
     this.#layerRestore = new LayerRestore(this.#store, this.#route);
-    this.#photoLink = new PhotoLinkOpener(this.#store, this.#route);
     if (this.#projection) {
       this.#effects.sync(this.#projection);
       // A detached panel keeps its last verified workspace state, but its
@@ -223,9 +232,24 @@ class MaticMapPanelV4 extends LitElement {
     }
   }
 
+  #loadOptional(): void {
+    this.#poseMotionLoad ??= import("./pose-motion").then(({ PoseMotion }) => {
+      const motion = this.#poseMotion = new PoseMotion();
+      for (const deliver of this.#poseMotionRequests.splice(0)) deliver(motion);
+    }, () => {});
+    const effects = this.#effects;
+    if (!effects) return;
+    this.#photoLinkLoad ??= import("./photo-link").then(({ PhotoLinkOpener }) => {
+      if (this.#effects !== effects) return;
+      this.#photoLink = new PhotoLinkOpener(this.#store, this.#route);
+      this.#photoLink.check();
+    }, () => {});
+  }
+
   #stopControllers(): void {
     this.#layerRestore?.dispose();
     this.#layerRestore = null;
+    this.#photoLinkLoad = null;
     this.#photoLink?.dispose();
     this.#photoLink = null;
     this.#layers?.dispose();
@@ -233,7 +257,7 @@ class MaticMapPanelV4 extends LitElement {
     this.#effects?.dispose();
     this.#effects = null;
     this.#backend = null;
-    this.#poseMotion.clear();
+    this.#poseMotion?.clear();
   }
 
   // The colour scheme willUpdate picks; the shell and map re-read their
