@@ -142,10 +142,12 @@ test("Wi-Fi readings become one texture on the floor plane, with dead zones outl
   assert.equal(overlayShapes(scene(), state({ wifiSignal: { status: "ready", cells: [], rooms: [] } }), PALETTE).length, 0);
 });
 
-test("the travel path breaks at gaps over a metre and keeps a lone observation as a dot", () => {
+test("the travel path draws each recorded segment whole and a lone observation as a dot", () => {
   const trail = { id: "live", mapSessionKey: "session", segments: [
-    [[1, 2], [1.5, 2], [2, 2], [4, 2], [4.5, 2], [8, 2]],
+    [[1, 2], [1.5, 2], [2, 2]],
+    [[4, 2], [4.5, 2]],
     [],
+    [[8, 2]],
     [[3, 3]],
   ] };
   const shapes = overlayShapes(scene(), state({ trail }), PALETTE);

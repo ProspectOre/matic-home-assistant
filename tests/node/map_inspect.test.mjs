@@ -120,6 +120,7 @@ test("a full live trail thins like the server's and keeps the run's first point"
   const [points] = store.value.trail.segments;
   assert.equal(points.length, 2_001);
   assert.equal(points[0], full[0], "the first point, and so the clean's start time, stays");
-  assert.equal(points[1], full[2]);
+  // On a straight line no point outweighs another, so the oldest go first.
+  assert.equal(points[1], full[2_001]);
   assert.deepEqual(points.at(-1), [4_000, 0, 1_800_004_000]);
 });
