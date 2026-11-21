@@ -14,6 +14,7 @@ from . import MaticConfigEntry
 from .client import CleaningMode, CoverageSetting
 from .const import CONF_CLEANING_MODE, CONF_COVERAGE_SETTING
 from .entity import MaticEntity, MaticPlanDataEntity
+from .plan_model import plan_setting
 from .stores import Store
 
 PARALLEL_UPDATES = 0
@@ -135,7 +136,7 @@ class MaticSavedPlanSelect(MaticPlanDataEntity, SelectEntity):
             for plan_id, plan in self._history.catalog.plans(
                 self._serial_number
             ).items()
-            if plan.get("enabled", True)
+            if plan_setting(plan, "enabled")
         ]
 
     @property

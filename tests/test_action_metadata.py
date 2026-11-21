@@ -7,6 +7,13 @@ from pathlib import Path
 import yaml
 from homeassistant.util.yaml import load_yaml
 
+from custom_components.matic_robot.plan_model import PLAN_SETTING_DEFAULTS
+from custom_components.matic_robot.service_schemas import (
+    CLEAN_ROOM_SEQUENCE_SCHEMA,
+    ROOM_CADENCE_SCHEMA,
+    SAVE_PLAN_SCHEMA,
+)
+
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
 BLUEPRINTS = sorted((ROOT / "blueprints/automation/matic_robot").glob("*.yaml"))
@@ -75,6 +82,36 @@ def test_id_fields_are_advanced_and_plan_fields_hint_the_default() -> None:
         assert ("Leave empty" in description) is not field.get("required", False)
 
 
+def test_plan_setting_defaults_in_the_action_form_are_the_backend_defaults() -> None:
+    """services.yaml is data Home Assistant reads, so its copy is pinned here."""
+    fields = SERVICES["save_plan"]["fields"]
+    assert {key: fields[key]["default"] for key in PLAN_SETTING_DEFAULTS} == dict(
+        PLAN_SETTING_DEFAULTS
+    )
+    for key in ("clean_room_sequence", "preview_room_sequence"):
+        assert (
+            SERVICES[key]["fields"]["return_to_base"]["default"]
+            == PLAN_SETTING_DEFAULTS["return_to_base"]
+        )
+    saved = SAVE_PLAN_SCHEMA(
+        {"entity_id": "vacuum.robot", "name": "Plan", "rooms": [{"room": "Room 1"}]}
+    )
+    assert {key: saved[key] for key in PLAN_SETTING_DEFAULTS} == {
+        "enabled": True,
+        "run_behavior": "intelligent",
+        "return_to_base": True,
+        "finish_current_room": False,
+        "finish_current_room_threshold": 50,
+        "occupancy_aware": False,
+        "start_timeout": 120,
+        "completion_timeout": 21600,
+    }
+    sequence = CLEAN_ROOM_SEQUENCE_SCHEMA(
+        {"entity_id": "vacuum.robot", "rooms": [{"room": "Room 1"}]}
+    )
+    assert sequence["return_to_base"] is True
+
+
 def test_room_objects_declare_their_fields() -> None:
     for key, field in (
         ("clean_room_sequence", "rooms"),
@@ -92,13 +129,21 @@ def test_room_objects_declare_their_fields() -> None:
 
 
 def test_plan_entry_objects_offer_a_room_or_an_area() -> None:
-    entry_fields = ["room", "area", "cleaning_mode", "coverage_setting"]
+    entry_fields = ["room", "area", "cleaning_mode", "coverage_setting", "cadence"]
     selector = SERVICES["save_plan"]["fields"]["rooms"]["selector"]["object"]
     assert list(selector["fields"]) == entry_fields
     assert not any(item.get("required") for item in selector["fields"].values())
     assert selector["multiple"] is True
     assert selector["translation_key"] == "plan_entry"
     assert list(STRINGS["selector"]["plan_entry"]["fields"]) == entry_fields
+    cadence = selector["fields"]["cadence"]["selector"]["object"]
+    assert cadence["translation_key"] == "room_cadence"
+    # The action UI offers every field the action's schema accepts.
+    assert (
+        set(cadence["fields"])
+        == {str(key) for key in ROOM_CADENCE_SCHEMA.schema}
+        == set(STRINGS["selector"]["room_cadence"]["fields"])
+    )
 
 
 def _selects() -> list[dict]:
@@ -161,3 +206,16 @@ def test_blueprints_are_named_and_every_input_is_described() -> None:
     # The firmware blueprint derives the robot from its sensor; the photo
     # check blueprint asks for a place, a notify target and its options.
     assert inputs == 30
+
+
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [key for key, _value in pairs]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert not duplicates, f"duplicate keys: {duplicates}"
+    return dict(pairs)
+
+
+def test_strings_name_each_key_once() -> None:
+    # A repeated key silently replaces the earlier text when the JSON loads.
+    for path in (INTEGRATION / "strings.json", INTEGRATION / "translations/en.json"):
+        json.loads(path.read_text(), object_pairs_hook=_unique_keys)

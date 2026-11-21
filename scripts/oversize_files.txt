@@ -13,7 +13,7 @@ tests/browser/map_studio_v4_gpu_upload.spec.mjs 1701
 tests/browser/map_studio_v4_home_rooms.spec.mjs 2000
 tests/browser/map_studio_v4_manual_preview.spec.mjs 1274
 tests/browser/map_studio_v4_map_surfaces.spec.mjs 1933
-tests/browser/map_studio_v4_notices.spec.mjs 1006
+tests/browser/map_studio_v4_notices.spec.mjs 1005
 tests/browser/map_studio_v4_quality.spec.mjs 1181
 tests/browser/map_studio_v4_room_schedule.spec.mjs 1239
 tests/client/test_api_paths.py 2764
@@ -34,7 +34,7 @@ tests/test_mixed_coverage.py 2062
 tests/test_photo_tours.py 1431
 tests/test_plan_entries.py 1055
 tests/test_restart.py 1459
-tests/test_services.py 6268
+tests/test_services.py 6266
 tests/test_session_ownership.py 2585
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1816
