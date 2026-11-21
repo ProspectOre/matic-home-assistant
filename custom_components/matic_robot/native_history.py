@@ -34,13 +34,13 @@ from .plan_model import (
     CleaningRoom,
     plan_floor_token,
     room_cadence_identity,
+    stored_count,
 )
 from .plan_timing import (
     _admit_room_settings,
     _duration_profile_key,
     _duration_profiles,
     _latest_timestamp,
-    _stored_count,
 )
 from .room_statistics import native_statistics_have_ambiguous_floor
 from .room_statistics_store import import_native_room_statistics
@@ -526,8 +526,8 @@ def _repair_native_reconciled_run(
         last_run["native_reconciled_completion"] = True
     if (
         "session_hash" not in pending
-        and _stored_count(last_run, "completed_room_count")
-        >= _stored_count(last_run, "room_count")
+        and stored_count(last_run, "completed_room_count")
+        >= stored_count(last_run, "room_count")
         and last_run.get("outcome")
         in {
             "cancelled",

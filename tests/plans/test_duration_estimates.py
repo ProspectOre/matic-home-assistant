@@ -9,13 +9,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot.plan_model import CleaningRoom, PlanStopDecision
+from custom_components.matic_robot.plan_model import (
+    CleaningRoom,
+    PlanStopDecision,
+    stored_count,
+)
 from custom_components.matic_robot.plan_timing import (
     _compatible_duration_history,
     _duration_history,
     _estimated_progress,
     _expected_duration,
-    _stored_count,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager, plan_room
@@ -300,9 +303,9 @@ def test_progress_estimate_rejects_missing_and_malformed_start_times() -> None:
 
 
 def test_persisted_duration_values_fail_closed() -> None:
-    assert _stored_count({"count": 3}, "count") == 3
+    assert stored_count({"count": 3}, "count") == 3
     for value in (-1, True, 1.5, "3", None):
-        assert _stored_count({"count": value}, "count") == 0
+        assert stored_count({"count": value}, "count") == 0
     assert _duration_history(
         {"duration_history_seconds": [True, float("inf"), float("nan"), 42]}
     ) == [42]

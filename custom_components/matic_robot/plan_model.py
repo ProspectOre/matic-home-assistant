@@ -17,7 +17,7 @@ from .room_identity import room_cadence_identity as room_cadence_identity
 _PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v2\0"
 
 
-def _stored_count(record: object, key: str) -> int:
+def stored_count(record: object, key: str) -> int:
     """Return a nonnegative persisted counter or zero."""
     value = record.get(key) if isinstance(record, Mapping) else None
     return (

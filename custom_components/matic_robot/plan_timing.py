@@ -12,8 +12,7 @@ from typing import Any
 from homeassistant.util import dt as dt_util
 
 from .client import CleaningMode, CoverageSetting
-from .plan_model import CleaningRoom
-from .plan_model import _stored_count as _stored_count
+from .plan_model import CleaningRoom, stored_count
 
 DURATION_HISTORY_MAX_SAMPLES = 7
 
@@ -110,7 +109,7 @@ def _duration_history(record: Mapping[str, Any]) -> list[int]:
         if history:
             return history
 
-    samples = _stored_count(record, "duration_samples")
+    samples = stored_count(record, "duration_samples")
     average = record.get("average_duration_seconds")
     if (
         samples < DURATION_CONFIDENCE_MIN_SAMPLES
@@ -162,7 +161,7 @@ def _duration_profiles(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         normalized: dict[str, Any] = {
             "duration_history_seconds": history,
             "duration_samples": max(
-                len(history), _stored_count(profile, "duration_samples")
+                len(history), stored_count(profile, "duration_samples")
             ),
         }
         completed = _latest_timestamp_value(profile.get("last_completed"))
@@ -222,7 +221,7 @@ def _record_duration_sample(
         history = [*previous.get("duration_history_seconds", []), duration]
         profiles[key] = {
             "duration_history_seconds": history[-DURATION_HISTORY_MAX_SAMPLES:],
-            "duration_samples": _stored_count(previous, "duration_samples") + 1,
+            "duration_samples": stored_count(previous, "duration_samples") + 1,
             "last_completed": completed_at,
         }
     record["duration_profiles"] = profiles

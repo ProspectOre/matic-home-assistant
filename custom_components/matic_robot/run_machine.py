@@ -18,7 +18,7 @@ from enum import StrEnum
 from typing import Any
 
 from .client import is_sha256_hex
-from .plan_model import AreaLeg, CleaningRoom, _stored_count, checkpoint_legs
+from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, stored_count
 
 # Reason codes of a run whose every room and area has a result.
 RUN_SETTLED_REASONS = frozenset({"all_rooms_verified", "all_rooms_settled"})
@@ -284,8 +284,8 @@ def count_room(run: dict[str, Any], room_id: str) -> bool:
             return False
         counted.append(room_id)
     run["completed_room_count"] = min(
-        _stored_count(run, "completed_room_count") + 1,
-        _stored_count(run, "room_count"),
+        stored_count(run, "completed_room_count") + 1,
+        stored_count(run, "room_count"),
     )
     return True
 
