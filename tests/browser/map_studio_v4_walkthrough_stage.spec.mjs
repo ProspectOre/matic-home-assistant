@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { accessibilityReadout, cellHash, cellIds, findCell, startStaging } from "../../scripts/walkthrough.mjs";
@@ -82,6 +83,27 @@ test("a staged frame lands in its step's scenario and dialog", async ({ page }) 
   expect(state.dialog).toBe("confirmDeletePlan");
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.locator("html")).not.toHaveAttribute("data-stage-error");
+});
+
+// A frame that still fetched after it said ready had those requests cancelled
+// by whatever left it next, which on Linux WebKit sometimes killed the
+// network process and failed the next load.
+test("a ready frame has every panel chunk and nothing still loading", async ({ page }) => {
+  const requested = new Set();
+  const loading = new Set();
+  page.on("request", (request) => {
+    requested.add(new URL(request.url()).pathname);
+    loading.add(request);
+  });
+  page.on("requestfinished", (request) => loading.delete(request));
+  page.on("requestfailed", (request) => loading.delete(request));
+  await openFrame(page, "steps=ready");
+  expect([...loading].map((request) => request.url())).toEqual([]);
+  const chunks = readdirSync(fileURLToPath(new URL("../../custom_components/matic_robot/map_studio_v4/chunks", import.meta.url)))
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => `/map_studio_v4/chunks/${name}`);
+  expect(chunks.length).toBeGreaterThan(10);
+  expect(chunks.filter((chunk) => !requested.has(chunk))).toEqual([]);
 });
 
 test("the stage page sizes the frame, names the cell and switches steps", async ({ page }) => {
@@ -218,8 +240,6 @@ test("three cells land in their first step at their size", async ({ page }) => {
     expect((await snapshot(frame)).workflow).toBe(workflow);
     const box = await page.locator("iframe").boundingBox();
     expect([Math.round(box.width), Math.round(box.height)]).toEqual([width, height]);
-    // Replacing a mounted gallery iframe by a hash change can corrupt WebKit's heap on Linux and hang the next load.
-    await page.goto("about:blank");
   }
 });
 
