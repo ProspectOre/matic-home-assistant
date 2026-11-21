@@ -33,6 +33,7 @@ STAGES = {"beta": "b", "rc": "rc"}
 # gh fills in the repository it runs for.
 API = "repos/{owner}/{repo}"
 # An inline link to another guide in docs/, which a release page cannot resolve.
+CODE = re.compile(r"(```.*?```|`[^`\n]*`)", re.DOTALL)
 DOC_LINK = re.compile(r"\]\(((?:\.{1,2}/)*[\w.-]+(?:/[\w.-]+)*\.md(?:#[\w-]+)?)\)")
 
 
@@ -141,8 +142,15 @@ def remote_tags() -> dict[str, str]:
 
 
 def guide_links(body: str, docs: str) -> str:
-    """Point the notes' relative links to guides at ``docs``, a docs/ URL."""
-    return DOC_LINK.sub(lambda link: f"]({docs}/{link[1]})", body)
+    """Point the notes' relative links to guides at ``docs``, a docs/ URL.
+
+    Code fences and spans show Markdown as written, so they keep theirs.
+    """
+    parts = CODE.split(body)
+    parts[::2] = [
+        DOC_LINK.sub(lambda link: f"]({docs}/{link[1]})", p) for p in parts[::2]
+    ]
+    return "".join(parts)
 
 
 def publish(tag: str, root: Path = ROOT) -> None:

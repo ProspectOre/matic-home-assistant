@@ -139,11 +139,12 @@ def test_every_relative_guide_link_in_the_notes_is_rewritten() -> None:
     """A link the rewrite missed would be dead on the release page."""
     body = (
         "[a](map.md) [b](./map.md#x) [c](../README.md) [d](release-notes-0.5.0.md) "
-        "[e](https://example.com/guide.md)"
+        "[e](https://example.com/guide.md) `[f](map.md)`\n```\n[g](map.md)\n```"
     )
     assert release.guide_links(body, "D") == (
         "[a](D/map.md) [b](D/./map.md#x) [c](D/../README.md) "
-        "[d](D/release-notes-0.5.0.md) [e](https://example.com/guide.md)"
+        "[d](D/release-notes-0.5.0.md) [e](https://example.com/guide.md) "
+        "`[f](map.md)`\n```\n[g](map.md)\n```"
     )
     for path in (release.ROOT / "docs").glob("release-notes-*.md"):
         rewritten = release.guide_links(path.read_text(encoding="utf-8"), "D")

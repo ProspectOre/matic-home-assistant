@@ -142,7 +142,7 @@ one run of the Release workflow.
    as the tag without its `v`. The first line, `# Title`, becomes the release
    title and the rest its body. Link other guides inline, with a relative
    target such as `map.md`; publishing points those links at the tag's copy of
-   `docs/`. It leaves every other link and image as written.
+   `docs/`. It leaves every other link and image, and code, as written.
 2. Run Release from Actions with the tag. A candidate runs on `release/X.Y` or
    `main`. A stable `vX.Y.Z` runs on `main`, after `release/X.Y` is merged
    into it.
