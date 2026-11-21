@@ -211,6 +211,26 @@ test("Ride to Follow restores the manual view with reduced motion and explicit o
   expect(result.off).toEqual(result.manual);
 });
 
+test("a pose gap holds the ride camera and off still restores the view from before following", async ({ page }) => {
+  await loadCameraFollowHarness(page);
+  const result = await page.evaluate(() => {
+    const fixture = window.makeCameraFollowFixture();
+    fixture.controller.update(fixture.pose, "ride", true);
+    const ride = fixture.camera();
+    fixture.controller.update(null, "ride", true);
+    const paused = fixture.camera();
+    fixture.controller.update({ ...fixture.pose, position: [4, 2] }, "ride", true);
+    const resumed = fixture.camera();
+    fixture.controller.update(null, "off", true);
+    const off = fixture.camera();
+    fixture.controller.dispose();
+    return { manual: fixture.manual, ride, paused, resumed, off };
+  });
+  expect(result.paused).toEqual(result.ride);
+  expect(result.resumed.targetX).toBe(4);
+  expect(result.off).toEqual(result.manual);
+});
+
 test("explicit Follow exit restores fit behavior so a later resize refits the map", async ({ page }) => {
   const bundle = await build({
     stdin: {

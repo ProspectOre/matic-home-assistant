@@ -22,7 +22,7 @@ import {
   type WorkspaceState,
 } from "./contracts";
 import type { AreaCircle, SavedPlan } from "./backend-contracts";
-import { entryFloorKey, entryMissionKey } from "./backend-contracts";
+import { entryCoherenceIdentity, entryFloorKey, entryMissionKey } from "./backend-contracts";
 import { notice, readWorkspaceNotice } from "./contracts";
 import { applyResult, type WorkspaceResult } from "./workspace-result";
 
@@ -939,7 +939,7 @@ export class WorkspaceStore {
       : noticed.dialog?.startsWith("confirmDelete") && !deleteSubject(noticed);
     const presented = taskPresentation(this.#state, missingSubject ? { ...noticed, dialog: null, scheduleDeleteRequest: null } : noticed);
     const committed = presented.followMode !== "off" && !canFollowRobot(presented, presented.followMode)
-      ? { ...presented, followMode: "off" as const } : presented;
+      && !followWaitsForPose(this.#state, presented) ? { ...presented, followMode: "off" as const } : presented;
     this.#state = committed;
     this.#publish();
     return committed;
@@ -968,29 +968,16 @@ export class CoherenceMachine {
   #generation: number;
 
   constructor(initialGeneration = 0) {
-    this.#generation = Number.isSafeInteger(initialGeneration) && initialGeneration >= 0
-      ? initialGeneration
-      : 0;
+    this.#generation = Number.isSafeInteger(initialGeneration) && initialGeneration >= 0 ? initialGeneration : 0;
   }
 
   get generation(): number {
     return this.#generation;
   }
 
-  begin(
-    entryKey: string,
-    floorKey: string,
-    missionKey: string,
-    revision: number,
-  ): ResourceStamp {
+  begin(entryKey: string, floorKey: string, missionKey: string, revision: number): ResourceStamp {
     this.#generation += 1;
-    this.#stamp = {
-      entryKey,
-      generation: this.#generation,
-      floorKey,
-      missionKey,
-      revision,
-    };
+    this.#stamp = { entryKey, generation: this.#generation, floorKey, missionKey, revision };
     return this.#stamp;
   }
 
@@ -1035,7 +1022,7 @@ export const isSelectedRobotUnavailable = (state: WorkspaceState): boolean =>
   state.selection.entryId !== null && state.robots.length > 0
   && !state.robots.some((robot) => robot.entryId === state.selection.entryId);
 
-export const canShowExactPose = (state: WorkspaceState): boolean =>
+const canShowPoseFrame = (state: WorkspaceState): boolean =>
   canShowLiveMap(state)
   && !state.floor.readOnly
   // A degraded map stream can still have an independently verified floor,
@@ -1045,9 +1032,10 @@ export const canShowExactPose = (state: WorkspaceState): boolean =>
   && (state.coherence === "current" || state.coherence === "degraded")
   && state.map.floorCoherent
   && state.map.sessionVerified
-  && state.map.exactPose
   && state.host.connected
   && state.host.robotConnected;
+
+export const canShowExactPose = (state: WorkspaceState): boolean => canShowPoseFrame(state) && state.map.exactPose;
 
 export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride"): boolean => {
   const pose = state.resources.pose.value;
@@ -1056,6 +1044,15 @@ export const canFollowRobot = (state: WorkspaceState, mode: "follow" | "ride"): 
     && pose.position !== null && pose.floorCoherent && pose.mapSessionKey !== null
     && pose.mapSessionKey === state.resources.entry?.mapSessionKey
     && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading)));
+};
+
+/** Following pauses, rather than ends, while the same robot's live map waits for its next pose. */
+const followWaitsForPose = (before: WorkspaceState, state: WorkspaceState): boolean => {
+  const entry = state.resources.entry;
+  return state.followMode !== "off" && state.followMode === before.followMode
+    && state.pageActive && !forcesTop(state) && canShowPoseFrame(state)
+    && state.resources.scene.value?.source === "live" && Boolean(entry?.mapSessionKey && before.resources.entry)
+    && entryCoherenceIdentity(before.resources.entry!) === entryCoherenceIdentity(entry!);
 };
 
 /** Robot-wide settings do not depend on the selected map or floor. */

@@ -57,8 +57,10 @@ export class CameraFollowController {
       && pose && pose.position && pose.floorCoherent
       && pose.mapSessionKey !== null && pose.mapSessionKey === entry?.mapSessionKey
       && (mode !== "ride" || (typeof pose.heading === "number" && Number.isFinite(pose.heading))));
+    // The store keeps a mode on only while the same map waits for its next
+    // pose: hold the camera, and the view to restore, until the pose returns.
     if (!admitted || !pose?.position) {
-      if (this.#mode !== "off") this.cancel(false);
+      this.#stop();
       return;
     }
     if (!state || !state.pageActive) {
@@ -112,10 +114,7 @@ export class CameraFollowController {
 
   /** Gesture cancellation keeps the camera where the user took control. */
   cancel(restore: boolean): void {
-    if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
-    this.#frame = null;
-    this.#lastTime = 0;
-    this.#target = null;
+    this.#stop();
     this.#mode = "off";
     if (restore && this.#beforeFollow) {
       this.#host.setCamera(this.#beforeFollow.camera);
@@ -128,6 +127,13 @@ export class CameraFollowController {
 
   dispose(): void {
     this.cancel(false);
+  }
+
+  #stop(): void {
+    if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
+    this.#frame = null;
+    this.#lastTime = 0;
+    this.#target = null;
   }
 
   #scheduleFrame(): void {

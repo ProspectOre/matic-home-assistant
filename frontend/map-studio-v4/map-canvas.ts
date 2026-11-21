@@ -17,6 +17,7 @@ import type { MapPoint } from "./renderer-camera";
 import type { Inspected } from "./map-inspect";
 import { layersNeeded } from "./renderer-overlays";
 import {
+  canFollowRobot,
   canSelectRooms,
   canShowExactPose,
   canShowLiveMap,
@@ -554,6 +555,9 @@ export class MaticMapCanvasV4 extends LitElement {
         loading: { key: "v4_camera_follow_loading", fallback: "Starting robot tracking…" },
         failed: { key: "v4_camera_follow_failed", fallback: "Robot tracking didn't start, so the camera isn't following. Reload the page, then turn tracking on again." },
       }) : nothing;
+    // The store keeps following on through a pose gap; say why the camera holds still.
+    const waiting = state.followMode !== "off" && !canFollowRobot(state, state.followMode)
+      ? html`<p class="detail-notice" role="status">${this.#t("v4_follow_waiting", "Waiting for the robot's position…")}</p>` : nothing;
     const surface = showScene && this.#surfaceGeometryStatus !== "idle"
       ? chunkStatus(this.#surfaceGeometryStatus, this.localize, retry, {
         loading: { key: "v4_surface_loading", fallback: "Loading detailed map…" },
@@ -566,8 +570,8 @@ export class MaticMapCanvasV4 extends LitElement {
       ? html`<p class="detail-notice" role="status">${this.#surfaceDetail === "sampled"
         ? this.#t("v4_surface_sampled", "This map is missing some detail.")
         : this.#t("v4_surface_limited", "Showing less detail for smoother movement.")}</p>` : nothing;
-    if (layers === nothing && following === nothing && simplified === nothing && surface === nothing && limited === nothing) return nothing;
-    return html`<div class="renderer-status">${simplified}${surface}${limited}${layers}${following}</div>`;
+    if ([layers, following, waiting, simplified, surface, limited].every((part) => part === nothing)) return nothing;
+    return html`<div class="renderer-status">${simplified}${surface}${limited}${layers}${following}${waiting}</div>`;
   }
 
   #legends() {
