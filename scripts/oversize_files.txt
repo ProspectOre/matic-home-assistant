@@ -24,7 +24,6 @@ tests/node/workspace_resource_ownership.test.mjs 1020
 tests/test_area_binding.py 3029
 tests/test_bluetooth_pairing.py 2334
 tests/test_cadence_manager.py 2972
-tests/test_camera_ai.py 1170
 tests/test_config_flow.py 1708
 tests/test_config_flow_import.py 1028
 tests/test_config_flow_paths.py 1153
