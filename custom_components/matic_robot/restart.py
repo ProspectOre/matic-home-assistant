@@ -855,12 +855,13 @@ async def _async_finish_recovered_run(
             "completed_room_count",
         ),
     )
+    entity_id = checkpoint.get("entity_id")
     if (
         smart_stopped
+        and isinstance(entity_id, str)
         and cancellation is None
         and not manager.control.stop_pending(serial_number)
     ):
-        entity_id = checkpoint["entity_id"]
         _schedule_run_dock_confirmation(
             hass,
             manager,

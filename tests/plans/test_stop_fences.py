@@ -530,3 +530,21 @@ async def test_dock_closure_does_not_wait_when_the_end_failed_to_save(
 
     closing = manager.ledger.async_mark_run_docked("serial", "run-1")
     assert not await asyncio.wait_for(closing, 1)
+
+
+async def test_a_cancelled_dock_closure_leaves_the_others_waiting(hass) -> None:
+    """Cancelling one waiter neither cancels the shared end nor breaks the finalizer."""
+    manager = memory_manager(hass)
+    await _begin(manager)
+    first, second = (
+        hass.async_create_task(manager.ledger.async_mark_run_docked("serial", "run-1"))
+        for _ in range(2)
+    )
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    await _finish(hass, manager, "cancelled", "managed_stop")
+
+    assert await asyncio.wait_for(second, 1)
