@@ -189,6 +189,15 @@ def _preview_has_area(preview: Mapping[str, Any]) -> bool:
     )
 
 
+def _unknown_plan_error(err: KeyError) -> ServiceValidationError:
+    """Name the plan a catalog lookup did not find."""
+    return validation_error(
+        f"Unknown Matic cleaning plan: {err.args[0]}",
+        "unknown_plan",
+        {"plan": str(err.args[0])},
+    )
+
+
 def _plan_request_error(err: ValueError) -> ServiceValidationError:
     """Translate a rejected plan or room sequence without exposing its text."""
     if isinstance(err, PlanAreaLimitError):

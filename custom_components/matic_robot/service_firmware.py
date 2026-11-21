@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import probatio
 from homeassistant.core import (
+    HomeAssistant,
     ServiceCall,
     SupportsResponse,
 )
@@ -17,6 +19,7 @@ from .const import (
     DOMAIN,
 )
 from .firmware import (
+    FirmwareTracker,
     async_build_firmware_snapshot,
     fingerprint_entry,
 )
@@ -43,57 +46,15 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
     hass = runtime.hass
     firmware_tracker = runtime.firmware_tracker
 
-    async def async_firmware_investigator(call: ServiceCall) -> None:
-        """Change research routing without changing any robot behavior."""
-        entry = firmware_entry(call)
-        if not valid_investigator(call.data["provider"]):
-            raise validation_error(
-                "Investigator names are lowercase slugs", "invalid_investigator"
-            )
-        try:
-            await firmware_tracker.async_configure_investigator(
-                entry.entry_id, call.data["provider"]
-            )
-        except ValueError as err:
-            raise validation_error(
-                "Firmware evidence is not available yet",
-                "firmware_evidence_unavailable",
-            ) from err
-
-    async def async_firmware_notification(call: ServiceCall) -> None:
-        """Apply a revision-bound notification action from trusted HA code."""
-        entry = firmware_entry(call)
-        try:
-            await firmware_tracker.async_notification_action(
-                entry.entry_id,
-                call.data["report_id"],
-                call.data["revision"],
-                call.data["action"],
-            )
-        except ValueError as err:
-            raise validation_error(
-                "The firmware notification is no longer current",
-                "firmware_notification_stale",
-            ) from err
-
-    def firmware_entry(call: ServiceCall) -> MaticConfigEntry:
-        entity_ids = context._resolve_loaded_matic_vacuums(
-            hass, call.data, require_available=False
-        )
-        if len(entity_ids) != 1:
-            raise validation_error(
-                "Firmware actions require exactly one Matic robot",
-                "single_robot_required",
-            )
-        return context._entry_for_entity(hass, entity_ids[0])
-
     # These two change stored research state, not the robot, and must work
     # while it is unreachable. Core skips an unavailable entity, so they stay
     # domain actions.
     hass.services.async_register(
         DOMAIN,
         "firmware_investigator",
-        context._require_matic_admin(hass, async_firmware_investigator),
+        context._require_matic_admin(
+            hass, partial(_async_firmware_investigator, hass, firmware_tracker)
+        ),
         schema=cv.make_entity_service_schema(
             {
                 probatio.Required("provider"): probatio.All(
@@ -106,7 +67,9 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
         DOMAIN,
         "firmware_notification",
         context._require_matic_control(
-            hass, async_firmware_notification, allow_unavailable=True
+            hass,
+            partial(_async_firmware_notification, hass, firmware_tracker),
+            allow_unavailable=True,
         ),
         schema=cv.make_entity_service_schema(
             {
@@ -122,72 +85,123 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
             }
         ),
     )
-
-    async def async_inspect_endpoint(
-        call: ServiceCall, entity_ids: list[str]
-    ) -> dict[str, Any]:
-        """Return payload-free fingerprints from the Hermes allowlist."""
-        if len(entity_ids) != 1:
-            raise validation_error(
-                "Hermes endpoint inspection requires exactly one Matic robot",
-                "single_robot_required",
-            )
-        entry = context._entry_for_entity(hass, entity_ids[0])
-        endpoint_name = call.data["endpoint"]
-        endpoint = HERMES_ENDPOINT_MAP[endpoint_name]
-        values = await entry.runtime_data.client.async_inspect_endpoint(
-            endpoint_name, limit=call.data["limit"]
-        )
-        response: dict[str, Any] = {
-            "endpoint": endpoint_name,
-            "kind": endpoint.kind,
-            "sensitivity": endpoint.sensitivity,
-            "entry_count": len(values),
-            "limit": call.data["limit"],
-            "entries": [
-                fingerprint_entry(value, endpoint_name=endpoint_name)
-                for value in values
-            ],
-        }
-        if endpoint_name == "latest_pose":
-            response["pose_vector_paths"] = [
-                list(path)
-                for value in values
-                for path in pose_vector_paths(value.value)
-            ]
-        return response
-
     register_robot_action(
         hass,
         SERVICE_INSPECT_HERMES_ENDPOINT,
-        async_inspect_endpoint,
+        partial(_async_inspect_endpoint, hass),
         INSPECT_ENDPOINT_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
-
-    async def async_firmware_snapshot(
-        call: ServiceCall, entity_ids: list[str]
-    ) -> dict[str, Any]:
-        """Capture and persist one payload-free compatibility snapshot."""
-        if len(entity_ids) != 1:
-            raise validation_error(
-                "Firmware snapshots require exactly one Matic robot",
-                "single_robot_required",
-            )
-        entry = context._entry_for_entity(hass, entity_ids[0])
-        occurrence_generation = firmware_tracker.occurrence_generation(entry.entry_id)
-        snapshot = await async_build_firmware_snapshot(entry.runtime_data.session)
-        comparison = await firmware_tracker.async_record_snapshot(
-            entry.entry_id,
-            snapshot,
-            occurrence_generation=occurrence_generation,
-        )
-        return {**snapshot, "comparison": comparison}
-
     register_robot_action(
         hass,
         SERVICE_FIRMWARE_SNAPSHOT,
-        async_firmware_snapshot,
+        partial(_async_firmware_snapshot, hass, firmware_tracker),
         FIRMWARE_SNAPSHOT_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
+
+
+async def _async_firmware_investigator(
+    hass: HomeAssistant, firmware_tracker: FirmwareTracker, call: ServiceCall
+) -> None:
+    """Change research routing without changing any robot behavior."""
+    entry = _firmware_entry(hass, call)
+    if not valid_investigator(call.data["provider"]):
+        raise validation_error(
+            "Investigator names are lowercase slugs", "invalid_investigator"
+        )
+    try:
+        await firmware_tracker.async_configure_investigator(
+            entry.entry_id, call.data["provider"]
+        )
+    except ValueError as err:
+        raise validation_error(
+            "Firmware evidence is not available yet",
+            "firmware_evidence_unavailable",
+        ) from err
+
+
+async def _async_firmware_notification(
+    hass: HomeAssistant, firmware_tracker: FirmwareTracker, call: ServiceCall
+) -> None:
+    """Apply a revision-bound notification action from trusted HA code."""
+    entry = _firmware_entry(hass, call)
+    try:
+        await firmware_tracker.async_notification_action(
+            entry.entry_id,
+            call.data["report_id"],
+            call.data["revision"],
+            call.data["action"],
+        )
+    except ValueError as err:
+        raise validation_error(
+            "The firmware notification is no longer current",
+            "firmware_notification_stale",
+        ) from err
+
+
+def _firmware_entry(hass: HomeAssistant, call: ServiceCall) -> MaticConfigEntry:
+    entity_ids = context._resolve_loaded_matic_vacuums(
+        hass, call.data, require_available=False
+    )
+    if len(entity_ids) != 1:
+        raise validation_error(
+            "Firmware actions require exactly one Matic robot",
+            "single_robot_required",
+        )
+    return context._entry_for_entity(hass, entity_ids[0])
+
+
+async def _async_inspect_endpoint(
+    hass: HomeAssistant, call: ServiceCall, entity_ids: list[str]
+) -> dict[str, Any]:
+    """Return payload-free fingerprints from the Hermes allowlist."""
+    if len(entity_ids) != 1:
+        raise validation_error(
+            "Hermes endpoint inspection requires exactly one Matic robot",
+            "single_robot_required",
+        )
+    entry = context._entry_for_entity(hass, entity_ids[0])
+    endpoint_name = call.data["endpoint"]
+    endpoint = HERMES_ENDPOINT_MAP[endpoint_name]
+    values = await entry.runtime_data.client.async_inspect_endpoint(
+        endpoint_name, limit=call.data["limit"]
+    )
+    response: dict[str, Any] = {
+        "endpoint": endpoint_name,
+        "kind": endpoint.kind,
+        "sensitivity": endpoint.sensitivity,
+        "entry_count": len(values),
+        "limit": call.data["limit"],
+        "entries": [
+            fingerprint_entry(value, endpoint_name=endpoint_name) for value in values
+        ],
+    }
+    if endpoint_name == "latest_pose":
+        response["pose_vector_paths"] = [
+            list(path) for value in values for path in pose_vector_paths(value.value)
+        ]
+    return response
+
+
+async def _async_firmware_snapshot(
+    hass: HomeAssistant,
+    firmware_tracker: FirmwareTracker,
+    call: ServiceCall,
+    entity_ids: list[str],
+) -> dict[str, Any]:
+    """Capture and persist one payload-free compatibility snapshot."""
+    if len(entity_ids) != 1:
+        raise validation_error(
+            "Firmware snapshots require exactly one Matic robot",
+            "single_robot_required",
+        )
+    entry = context._entry_for_entity(hass, entity_ids[0])
+    occurrence_generation = firmware_tracker.occurrence_generation(entry.entry_id)
+    snapshot = await async_build_firmware_snapshot(entry.runtime_data.session)
+    comparison = await firmware_tracker.async_record_snapshot(
+        entry.entry_id,
+        snapshot,
+        occurrence_generation=occurrence_generation,
+    )
+    return {**snapshot, "comparison": comparison}
