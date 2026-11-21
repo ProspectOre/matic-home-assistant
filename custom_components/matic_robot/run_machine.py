@@ -270,6 +270,35 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
     )
 
 
+def running_run(
+    robot: Mapping[str, Any], run_id: str | None = None
+) -> dict[str, Any] | None:
+    """Return the stored run while it runs; with ``run_id``, only that run."""
+    run = robot.get("last_run")
+    if (
+        isinstance(run, dict)
+        and run.get("outcome") == "running"
+        and (run_id is None or run.get("run_id") == run_id)
+    ):
+        return run
+    return None
+
+
+def run_checkpoint(robot: Mapping[str, Any], run_id: str) -> dict[str, Any] | None:
+    """Return the recovery checkpoint of the running run ``run_id``."""
+    run = running_run(robot, run_id)
+    checkpoint = run.get("recovery_checkpoint") if run is not None else None
+    return checkpoint if isinstance(checkpoint, dict) else None
+
+
+def recovery_run(robot: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the running run when it has a checkpoint to recover from."""
+    run = running_run(robot)
+    if run is not None and isinstance(run.get("recovery_checkpoint"), dict):
+        return run
+    return None
+
+
 def stored_instant(value: Any) -> datetime | None:
     """Return a checkpointed time, or None when it is unreadable or naive."""
     try:
