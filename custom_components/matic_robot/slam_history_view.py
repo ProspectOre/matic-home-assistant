@@ -354,7 +354,9 @@ async def _read_json_object(request: web.Request, maximum_bytes: int) -> dict[st
         body = await request.app[KEY_HASS].async_add_executor_job(
             partial(json.loads, raw)
         )
-    except (json.JSONDecodeError, UnicodeDecodeError) as err:
+    # Malformed JSON, bad UTF-8 and an integer past Python's digit limit are
+    # all ValueError.
+    except ValueError as err:
         raise HistoryRequestError("invalid-json") from err
     if not isinstance(body, dict):
         raise HistoryRequestError("invalid-json")
