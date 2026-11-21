@@ -334,7 +334,6 @@ def test_schedule_label_rejects_invalid_utf8_and_excessive_length() -> None:
 
 
 def test_wire_helpers_reject_wrong_types_duplicates_and_missing_fields() -> None:
-    budget = WireFieldBudget(100)
     with pytest.raises(DecodeError):
         semantics._known((WireField(1, 2, b""),), 1, 0)
     with pytest.raises(DecodeError):
@@ -359,7 +358,7 @@ def test_wire_helpers_reject_wrong_types_duplicates_and_missing_fields() -> None
         semantics._required_fixed64((WireField(1, 1, b"1234567"),), 1)
     with pytest.raises(DecodeError):
         semantics._required_fixed32((), 1)
-    assert semantics._decode_duration(b"", budget) == 0
+    assert semantics.room_duration_seconds(()) == 0
 
 
 @pytest.mark.parametrize(
