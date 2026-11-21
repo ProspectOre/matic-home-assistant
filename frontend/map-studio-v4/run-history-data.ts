@@ -8,6 +8,7 @@ import type * as wire from "./backend-schema";
 import type { RobotActivity, WorkspaceNotice } from "./contracts";
 import type { WorkspaceStore } from "./state";
 import type { LastSeenDuringRun } from "./contracts";
+import { TRAIL_STEP_METERS, startsSegment, thinSegments, wentUnseen } from "./trail-path";
 
 type RunEnding =
   | "running" | "finished" | "stopped" | "smart_stop" | "replaced" | "low_battery"
@@ -69,7 +70,7 @@ const RESULTS: readonly RunItemResult[] = [
 ];
 const MAX_RUNS = 200;
 const MAX_ITEMS = 64;
-const MAX_SEGMENTS = 8;
+// Points across all of a trail's segments, as run_history.py bounds them.
 const MAX_POINTS = 4_000;
 
 const fail = (code: string): never => {
@@ -131,12 +132,15 @@ const coordinate = (value: unknown): number =>
 export const parseRunTrail = (value: unknown): RunTrail => {
   const payload: Unchecked<wire.RunTrail> = record(value, "invalid-trail");
   const segments = payload.segments;
-  if (!Array.isArray(segments) || segments.length > MAX_SEGMENTS) return fail("invalid-trail");
+  if (!Array.isArray(segments) || segments.length > MAX_POINTS
+    || segments.reduce((total, segment) => total + (Array.isArray(segment) ? segment.length : 0), 0) > MAX_POINTS) {
+    return fail("invalid-trail");
+  }
   return {
     id: text(payload.trail, 64, "invalid-trail"),
     mapSessionKey: text(payload.map_session_key, 128, "invalid-trail"),
     segments: segments.map((segment) => {
-      if (!Array.isArray(segment) || segment.length > MAX_POINTS) return fail("invalid-trail");
+      if (!Array.isArray(segment)) return fail("invalid-trail");
       return segment.map((point): TrailPoint => {
         if (!Array.isArray(point) || (point.length !== 2 && point.length !== 3)) return fail("invalid-trail");
         const [x, y, at] = point as unknown[];
@@ -212,12 +216,16 @@ export const readRuns = async (
 const WORKING: readonly RobotActivity[] = ["starting", "cleaning", "paused", "returning", "stopping"];
 // The run each store's live trail last grew for; null while no run is active.
 const trailRuns = new WeakMap<WorkspaceStore, string | null>();
+// The robot's time of the newest pose a live trail saw, kept or not. A trail
+// read from the server starts from its last point's time, as the server does.
+const trailSeen = new WeakMap<RunTrail, number | null>();
 
 /**
  * Adds a verified live pose to the run-in-progress trail, keeping points at
- * least 15 cm apart. As in run_history.py, a managed run is its own trail
- * and a robot-started task lasts while the robot works; poses between runs
- * are not drawn, and a new run starts an empty trail.
+ * least 15 cm apart and starting a segment where trail-path.ts says the path
+ * breaks. As in run_history.py, a managed run is its own trail and a
+ * robot-started task lasts while the robot works; poses between runs are not
+ * drawn, and a new run starts an empty trail.
  */
 export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void => {
   const state = store.value;
@@ -231,17 +239,27 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   if ((previous !== undefined && previous !== run) || trail.mapSessionKey !== pose.mapSessionKey) {
     trail = { id: "live", mapSessionKey: pose.mapSessionKey, segments: [[]] };
   }
-  const segment = trail.segments.at(-1) ?? [];
-  const last = segment.at(-1);
+  const last = trail.segments.at(-1)?.at(-1);
+  const lastSeen = trailSeen.has(trail) ? trailSeen.get(trail)! : last?.[2] ?? null;
+  const seen = pose.observedAt;
   const [x, y] = pose.position;
-  if (last && Math.hypot(x - last[0], y - last[1]) < 0.15) return;
+  // A pose after a gap starts the next segment however close it is.
+  if (last && Math.hypot(x - last[0], y - last[1]) < TRAIL_STEP_METERS && !wentUnseen(lastSeen, seen ?? null)) {
+    trailSeen.set(trail, seen ?? lastSeen);
+    return;
+  }
   // Whole seconds, as the server keeps them.
-  const point: TrailPoint = pose.observedAt ? [x, y, Math.round(pose.observedAt)] : [x, y];
-  // Past the limit keep every other point, as the server's recorder does, so
-  // the run's first point and its time stay.
-  const points = segment.length < MAX_POINTS ? [...segment, point]
-    : [...segment.filter((_, index) => index % 2 === 0), point];
-  store.dispatch({ type: "result", trail: { ...trail, segments: [...trail.segments.slice(0, -1), points] } });
+  const point: TrailPoint = seen ? [x, y, Math.round(seen)] : [x, y];
+  let segments: (readonly TrailPoint[])[] = !last || startsSegment(last, lastSeen, point, seen)
+    ? [...trail.segments.filter((segment) => segment.length), [point]]
+    : [...trail.segments.slice(0, -1), [...trail.segments.at(-1)!, point]];
+  // Past the limit keep the most shape-defining half and the newest point, as the server does.
+  if (segments.reduce((total, segment) => total + segment.length, 0) > MAX_POINTS) {
+    segments = thinSegments(segments, MAX_POINTS / 2 + 1);
+  }
+  const extended = { ...trail, segments };
+  trailSeen.set(extended, seen ?? lastSeen);
+  store.dispatch({ type: "result", trail: extended });
 };
 
 /**
