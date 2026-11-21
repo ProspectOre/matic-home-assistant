@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from enum import Enum, auto
+from functools import partial
 from time import monotonic
 from typing import Protocol
 
@@ -58,6 +60,28 @@ class StopReturnClient(Protocol):
         """Send one vetted user command to the robot."""
 
 
+async def _async_native_settled_state(
+    native_active: Callable[[], Awaitable[bool | None]],
+    fresh_state: Callable[[], Awaitable[object]],
+) -> str | None:
+    """Return a fresh state name once the native task reports inactive, else None."""
+    try:
+        active = await native_active()
+    except MaticError as err:
+        _LOGGER.debug(
+            "Native Matic stop settlement unreadable (%s)", type(err).__name__
+        )
+        return None
+    if active is not False:
+        return None
+    try:
+        confirmed = await fresh_state()
+    except MaticError as err:
+        _LOGGER.debug("Fresh Matic stop state unreadable (%s)", type(err).__name__)
+        return "unknown"
+    return _fresh_state_name(confirmed)
+
+
 async def async_native_stop_is_settled(
     hass: HomeAssistant,
     native_active: Callable[[], Awaitable[bool | None]],
@@ -67,26 +91,11 @@ async def async_native_stop_is_settled(
     allowed_states: frozenset[str] = DOCKED_STATES,
 ) -> bool:
     """Require native inactivity followed by a direct, fresh robot snapshot."""
-    try:
-        active = await native_active()
-    except MaticError as err:
-        _LOGGER.debug(
-            "Native Matic stop settlement unreadable (%s)", type(err).__name__
-        )
-        return False
-    if active is not False:
-        return False
-    try:
-        confirmed = await fresh_state()
-    except MaticError as err:
-        _LOGGER.debug("Fresh Matic stop state unreadable (%s)", type(err).__name__)
+    fresh = await _async_native_settled_state(native_active, fresh_state)
+    if fresh not in allowed_states:
         return False
     cached = hass.states.get(entity_id)
-    return (
-        _fresh_state_name(confirmed) in allowed_states
-        and cached is not None
-        and cached.state not in REPLACEMENT_STATES
-    )
+    return cached is not None and cached.state not in REPLACEMENT_STATES
 
 
 def _fresh_state_name(state: object) -> str:
@@ -140,6 +149,98 @@ async def async_clear_ownerless_stop_if_settled(
     )
 
 
+class _Settlement(Enum):
+    """What one settlement sample lets the watcher do."""
+
+    ABANDON = auto()  # Replacement work or a lost fence: the firmware keeps STOP.
+    WAIT = auto()
+    REFRESH = auto()  # Refresh state before the next sample.
+    DOCKED = auto()  # Already home: settle without DOCK.
+    DOCK = auto()
+
+
+async def _async_sample_settlement(
+    client: StopReturnClient,
+    cached_state: str,
+    owns_settled_stop: Callable[[], bool],
+) -> _Settlement:
+    """Classify a settled-looking STOP from the robot's own evidence.
+
+    Runs under the command lock. A replacement invalidates the fence before
+    waiting for that lock, so ownership is rechecked before the native reads
+    and again before acting on them: a late inactive result cannot DOCK.
+    """
+    if not owns_settled_stop():
+        return _Settlement.ABANDON
+    fresh = await _async_native_settled_state(
+        client.async_get_active_cleaning_session_state, client.async_get_state
+    )
+    if fresh is None:
+        # A cached homeward value can outlive the task while the native probe
+        # is active or unreadable. Retry within the bound; never DOCK until
+        # native inactivity is authoritative.
+        if cached_state in HOMEWARD_STATES:
+            return _Settlement.REFRESH
+        return _Settlement.WAIT
+    if fresh in REPLACEMENT_STATES:
+        return _Settlement.ABANDON
+    if fresh not in DOCKED_STATES and fresh != SETTLED_STATE:
+        # A failed, opaque or still-returning snapshot is not permission to
+        # DOCK or clear the fence; the next fresh sample can settle it.
+        return _Settlement.REFRESH
+    if not owns_settled_stop():
+        return _Settlement.ABANDON
+    return _Settlement.DOCKED if fresh in DOCKED_STATES else _Settlement.DOCK
+
+
+async def _async_send_dock(
+    client: StopReturnClient,
+    run_id: str | None,
+    set_run_id: Callable[[str | None], None] | None,
+) -> bool:
+    """Send DOCK in the run's journal scope; False if the robot refused it."""
+    if set_run_id is not None and run_id is not None:
+        set_run_id(run_id)
+    try:
+        await client.async_send_user_command(UserCommand.DOCK)
+    except MaticError as err:
+        _LOGGER.warning(
+            "Unable to dock Matic after its stop settled (%s)", type(err).__name__
+        )
+        return False
+    return True
+
+
+async def _async_settle_fenced_stop(
+    hass: HomeAssistant,
+    client: StopReturnClient,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str,
+    stop_fence_token: int,
+    run_id: str | None,
+    on_docked: Callable[[], Awaitable[bool | None]] | None,
+) -> bool:
+    """Settle a captured STOP fence once the robot is natively done and home."""
+    if not await async_native_stop_is_settled(
+        hass,
+        client.async_get_active_cleaning_session_state,
+        entity_id,
+        fresh_state=client.async_get_state,
+    ):
+        return False
+    if on_docked is not None:
+        return (await on_docked()) is not False
+    if run_id is None:
+        return bool(
+            await manager.control.async_clear_stop_pending_if_token(
+                serial_number, stop_fence_token, run_id=None
+            )
+        )
+    # A run's fence settles only through that run's finalizer.
+    return False
+
+
 async def async_dock_when_stop_settles(
     hass: HomeAssistant,
     *,
@@ -161,7 +262,21 @@ async def async_dock_when_stop_settles(
         deadline, started + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
     )
     settled_state_observed = False
-    settlement_callback = on_docked
+    settle = (
+        on_docked
+        if stop_fence_token is None
+        else partial(
+            _async_settle_fenced_stop,
+            hass,
+            client,
+            manager,
+            serial_number,
+            entity_id,
+            stop_fence_token,
+            run_id,
+            on_docked,
+        )
+    )
 
     def owns_stop_fence() -> bool:
         if not manager.control.stop_pending(serial_number):
@@ -171,164 +286,65 @@ async def async_dock_when_stop_settles(
             or manager.control.stop_fence_token(serial_number) == stop_fence_token
         )
 
-    if stop_fence_token is not None:
-
-        async def settle_confirmed_stop() -> bool:
-            """Require native inactivity and current docking before settling STOP."""
-            if not await async_native_stop_is_settled(
-                hass,
-                client.async_get_active_cleaning_session_state,
-                entity_id,
-                fresh_state=client.async_get_state,
-            ):
-                return False
-            if on_docked is not None:
-                return (await on_docked()) is not False
-            elif run_id is None:
-                return bool(
-                    await manager.control.async_clear_stop_pending_if_token(
-                        serial_number, stop_fence_token, run_id=None
-                    )
-                )
+    def owns_settled_stop() -> bool:
+        if not owns_stop_fence():
             return False
-
-        settlement_callback = settle_confirmed_stop
-
-    def clear_run_scope() -> None:
-        """Release this watcher without clearing a newer managed run."""
-        if set_run_id is not None and (get_run_id is None or get_run_id() == run_id):
-            set_run_id(None)
+        latest = hass.states.get(entity_id)
+        return latest is not None and latest.state not in REPLACEMENT_STATES
 
     try:
         while True:
             if not owns_stop_fence():
                 return False
             now = monotonic()
-            refresh_transition = False
+            step = _Settlement.WAIT
             state = hass.states.get(entity_id)
-            if state is not None:
-                if state.state in REPLACEMENT_STATES:
-                    # The first state read commonly still reflects the task that
-                    # accepted STOP. Refresh through that bounded transition edge;
-                    # a later or persistent cleaning state is replacement motion.
-                    if settled_state_observed or now >= transition_grace_deadline:
+            if state is not None and state.state in REPLACEMENT_STATES:
+                # The first state read commonly still reflects the task that
+                # accepted STOP. Refresh through that bounded transition edge;
+                # a later or persistent cleaning state is replacement motion.
+                if settled_state_observed or now >= transition_grace_deadline:
+                    return False
+                step = _Settlement.REFRESH
+            elif state is not None and state.state in HOMEWARD_STATES | {SETTLED_STATE}:
+                settled_state_observed = True
+                async with manager.control.external_command(serial_number):
+                    step = await _async_sample_settlement(
+                        client, state.state, owns_settled_stop
+                    )
+                    if step is _Settlement.DOCK and not await _async_send_dock(
+                        client, run_id, set_run_id
+                    ):
                         return False
-                    refresh_transition = True
-                elif state.state in HOMEWARD_STATES | {SETTLED_STATE}:
-                    settled_state_observed = True
-                    dock_sent = False
-                    already_docked = False
-                    async with manager.control.external_command(serial_number):
-                        # Replacements invalidate the fence before waiting for
-                        # this lock. Recheck it both before and after the native
-                        # session read so a late false result cannot trigger a
-                        # stale DOCK command.
-                        if not owns_stop_fence():
-                            return False
-                        latest_state = hass.states.get(entity_id)
-                        if (
-                            latest_state is None
-                            or latest_state.state in REPLACEMENT_STATES
-                        ):
-                            return False
-                        try:
-                            active = (
-                                await client.async_get_active_cleaning_session_state()
-                            )
-                        except MaticError as err:
-                            _LOGGER.debug(
-                                "Native Matic stop settlement unreadable (%s)",
-                                type(err).__name__,
-                            )
-                            active = None
-                        if active is not False and state.state in HOMEWARD_STATES:
-                            # A cached HOMEWARD value can outlive the task, and
-                            # the native probe can be active or temporarily
-                            # unreadable. Retry within the existing bound; never
-                            # send DOCK until native inactivity is authoritative.
-                            refresh_transition = True
-                        if active is False:
-                            try:
-                                fresh = await client.async_get_state()
-                            except MaticError as err:
-                                _LOGGER.debug(
-                                    "Fresh Matic stop state unreadable (%s)",
-                                    type(err).__name__,
-                                )
-                                fresh = None
-                            fresh_name = (
-                                _fresh_state_name(fresh)
-                                if fresh is not None
-                                else "unknown"
-                            )
-                            if fresh_name in DOCKED_STATES:
-                                if not owns_stop_fence():
-                                    return False
-                                latest_state = hass.states.get(entity_id)
-                                if (
-                                    latest_state is None
-                                    or latest_state.state in REPLACEMENT_STATES
-                                ):
-                                    return False
-                                already_docked = True
-                            elif fresh_name in REPLACEMENT_STATES:
-                                return False
-                            elif fresh_name != SETTLED_STATE:
-                                # A failed, opaque, or still-returning direct
-                                # snapshot is not permission to DOCK or clear the
-                                # fence. Keep the bounded watcher alive so the
-                                # next fresh sample can settle it.
-                                refresh_transition = True
-                            if not already_docked and not refresh_transition:
-                                if not owns_stop_fence():
-                                    return False
-                                latest_state = hass.states.get(entity_id)
-                                if (
-                                    latest_state is None
-                                    or latest_state.state in REPLACEMENT_STATES
-                                ):
-                                    return False
-                                if set_run_id is not None and run_id is not None:
-                                    set_run_id(run_id)
-                                try:
-                                    await client.async_send_user_command(
-                                        UserCommand.DOCK
-                                    )
-                                except MaticError as err:
-                                    _LOGGER.warning(
-                                        "Unable to dock Matic after its stop "
-                                        "settled (%s)",
-                                        type(err).__name__,
-                                    )
-                                    return False
-                                dock_sent = True
-                    if already_docked:
-                        if settlement_callback is not None:
-                            return (await settlement_callback()) is not False
-                        return True
-                    if dock_sent:
-                        # Failure finalization also needs the command lease. Do
-                        # not hold it while waiting for the run's terminal state.
-                        if settlement_callback is not None:
-                            await async_confirm_docked(
-                                hass,
-                                refresh=refresh,
-                                entity_id=entity_id,
-                                on_docked=settlement_callback,
-                                run_id=run_id,
-                                set_run_id=set_run_id,
-                                get_run_id=get_run_id,
-                            )
-                        else:
-                            await refresh()
-                        return True
+                if step is _Settlement.ABANDON:
+                    return False
+                if step is _Settlement.DOCKED:
+                    return settle is None or (await settle()) is not False
+                if step is _Settlement.DOCK:
+                    # Failure finalization also needs the command lease. Do
+                    # not hold it while waiting for the run's terminal state.
+                    if settle is None:
+                        await refresh()
+                    else:
+                        await async_confirm_docked(
+                            hass,
+                            refresh=refresh,
+                            entity_id=entity_id,
+                            on_docked=settle,
+                            run_id=run_id,
+                            set_run_id=set_run_id,
+                            get_run_id=get_run_id,
+                        )
+                    return True
             if now >= deadline:
                 return False
             await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
-            if refresh_transition:
+            if step is _Settlement.REFRESH:
                 await refresh()
     finally:
-        clear_run_scope()
+        # Release this watcher without clearing a newer managed run.
+        if set_run_id is not None and (get_run_id is None or get_run_id() == run_id):
+            set_run_id(None)
 
 
 def schedule_dock_after_stop(
