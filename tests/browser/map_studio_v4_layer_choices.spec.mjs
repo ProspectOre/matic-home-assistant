@@ -103,7 +103,7 @@ const entry = (id, key, extra = {}) => ({
   floor_layers_url: "/api/matic_robot/floor_layers/synthetic", ...extra,
 });
 
-test("each robot keeps its own layers, and a robot with none saved starts with them off", async ({ page }) => {
+test("each robot keeps its own layers, and a robot with none saved starts with them off @household", async ({ page }) => {
   const panel = await mount(page, {
     initialCatalogEntries: [
       entry("synthetic-entry", "a", { wifi_heatmap_url: "/api/matic_robot/wifi_heatmap/synthetic" }),
@@ -132,7 +132,7 @@ test("each robot keeps its own layers, and a robot with none saved starts with t
   });
 });
 
-test("a late layer read for one robot never replaces the next robot's layers", async ({ page }) => {
+test("a late layer read for one robot never replaces the next robot's layers @household", async ({ page }) => {
   const cell = (dbm) => ({ enabled: true, cell_size: 0.3048, cells: [{ x: 0.152, y: 0.152, dbm, samples: 1, updated_at: 1 }] });
   const layers = (key) => ({ wifi_heatmap_url: `/api/matic_robot/wifi_heatmap/${key}`, floor_layers_url: `/api/matic_robot/floor_layers/${key}` });
   await page.addInitScript(() => {

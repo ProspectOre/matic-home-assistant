@@ -165,7 +165,7 @@ test("a user who signs in on the same robot gets their own shortcuts, never the 
   await expect.poll(() => pins(page)).toEqual({ entry: "synthetic-entry", status: "ready", pins: [plan("u1-plan")] });
 });
 
-test("robot A, then B, then A again: the first A read, settling last, is dropped", async ({ page }) => {
+test("robot A, then B, then A again: the first A read, settling last, is dropped @household", async ({ page }) => {
   await setup(page, { u1: record([plan("fresh")]) });
   await hold(page, "frontend/get_user_data");
   await sync(page, "u1", "synthetic-entry");
@@ -490,7 +490,7 @@ test("with no record yet, a plan list that failed first seeds the default plan o
 
 const storedPins = (page, user, entry) => page.evaluate(([user, key]) => window.pinsHarness.data[user]?.[key]?.pins ?? null, [user, keyOf(entry)]);
 
-test("two tabs writing different robots at once keep both robots' shortcuts", async ({ page }) => {
+test("two tabs writing different robots at once keep both robots' shortcuts @household", async ({ page }) => {
   const a = [plan("daily")];
   const b = [plan("b-plan")];
   await setup(page, { u1: { [keyOf("synthetic-entry")]: { pins: a }, [keyOf("entry-b")]: { pins: b } } });

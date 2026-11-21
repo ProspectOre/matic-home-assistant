@@ -59,7 +59,7 @@ async function mountTwoRobotPanel(page) {
   return { fixture, selector, entryA };
 }
 
-test("@safety robot selector follows the requested entry while its catalog is pending", async ({ page }) => {
+test("@safety robot selector follows the requested entry while its catalog is pending @household", async ({ page }) => {
   const { fixture, selector } = await mountTwoRobotPanel(page);
   const initialGeneration = await page.locator(fixture.panelTag).evaluate((panel) =>
     panel.getWorkspaceSnapshot().generation);
@@ -84,7 +84,7 @@ test("@safety robot selector follows the requested entry while its catalog is pe
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
 });
 
-test("@safety rapid switchback admits the latest requested entry after a stale catalog settles", async ({ page }) => {
+test("@safety rapid switchback admits the latest requested entry after a stale catalog settles @household", async ({ page }) => {
   const { fixture, selector } = await mountTwoRobotPanel(page);
   await page.evaluate(() => window.__panelFixture.deferNextCatalog());
   await selector.selectOption("synthetic-entry-b");
@@ -102,7 +102,7 @@ test("@safety rapid switchback admits the latest requested entry after a stale c
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
 });
 
-test("@safety switching entries closes open layers without leaving phantom browser history", async ({ page }) => {
+test("@safety switching entries closes open layers without leaving phantom browser history @household", async ({ page }) => {
   const { fixture, selector } = await mountTwoRobotPanel(page);
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
@@ -167,7 +167,7 @@ test("@safety the same user regains map access immediately after administrator a
 });
 
 
-test("@safety entry removal revokes a pending selection before its stale catalog returns", async ({ page }) => {
+test("@safety entry removal revokes a pending selection before its stale catalog returns @household", async ({ page }) => {
   const { fixture, selector, entryA } = await mountTwoRobotPanel(page);
   await page.evaluate(() => window.__panelFixture.deferNextCatalog());
   await selector.selectOption("synthetic-entry-b");
@@ -197,7 +197,7 @@ test("@safety entry removal revokes a pending selection before its stale catalog
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
 });
 
-test("@safety a removed requested robot never falls back to another loaded robot", async ({ page }) => {
+test("@safety a removed requested robot never falls back to another loaded robot @household", async ({ page }) => {
   const anchor = new Date("2026-09-30T12:00:00Z");
   await pauseClockAt(page, anchor);
   const { fixture, selector, entryA } = await mountTwoRobotPanel(page);

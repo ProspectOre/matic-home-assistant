@@ -712,7 +712,7 @@ test("a queue change is sent only while the robot cleans, and its notice says wh
   });
 });
 
-test("a robot change ends a pending queue change, and its late reply changes nothing", async ({ page }) => {
+test("a robot change ends a pending queue change, and its late reply changes nothing @household", async ({ page }) => {
   await setupEffects(page);
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;

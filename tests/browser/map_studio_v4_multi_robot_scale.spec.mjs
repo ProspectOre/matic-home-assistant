@@ -43,7 +43,7 @@ const robotStates = Object.fromEntries(entries.map((item, index) => [
   { state: index ? "docked" : "idle", attributes: { matic_entry_id: item.entry_id } },
 ]));
 
-test("three robot identities keep floor and saved-map selection isolated across large catalogs and stale responses", async ({ page }) => {
+test("three robot identities keep floor and saved-map selection isolated across large catalogs and stale responses @household", async ({ page }) => {
   const largeRooms = Array.from({ length: 250 }, (_, index) => ({
     id: `scene-room-${index}`,
     name: `Room ${index}`,
@@ -100,7 +100,7 @@ test("three robot identities keep floor and saved-map selection isolated across 
   })).toEqual(["synthetic-entry", "synthetic-entry", "ready", 250]);
 });
 
-test("the robot picker tells robots with one name apart and names a robot that has none", async ({ page }) => {
+test("the robot picker tells robots with one name apart and names a robot that has none @household", async ({ page }) => {
   const fixture = await installPanelFixture(page, {
     initialCatalogEntries: entries,
     initialRobotStates: {
@@ -121,7 +121,7 @@ test("the robot picker tells robots with one name apart and names a robot that h
   await expect(selector).toHaveValue("synthetic-entry-b");
 });
 
-test("the robot picker keeps a 44 px target on a 320 px phone, with and without Full map", async ({ page }) => {
+test("the robot picker keeps a 44 px target on a 320 px phone, with and without Full map @household", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 640 });
   const fixture = await installPanelFixture(page, {
     initialCatalogEntries: entries.slice(0, 2),
