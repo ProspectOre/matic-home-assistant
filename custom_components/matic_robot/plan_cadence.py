@@ -38,7 +38,11 @@ from .completion_ledger import reset_progress as _reset_completion_progress
 from .const import DOMAIN
 from .managed_run import validation_error
 from .plan_model import (
+    CadenceMapChangedError,
+    CadenceProgressUnverifiedError,
     CleaningRoom,
+    RoomMapChangedError,
+    SharedCadenceUnavailableError,
     SharedRoomScheduleLockedError,
     SharedRoomScheduleMapChangedError,
     SharedRoomScheduleStaleError,
@@ -136,7 +140,7 @@ class PlanCadence:
         async def commit(_lease: _MetadataLockLease) -> plan_schema.DailyLimit:
             async with self.repository.commit(serial_number, user=True) as robot:
                 if not require_current():
-                    raise ValueError("room map changed")
+                    raise RoomMapChangedError("room map changed")
                 reservation = self.prepared_runs.get(serial_number)
                 if reservation is not None and room_id in reservation.rooms:
                     raise SharedRoomScheduleLockedError(
@@ -660,7 +664,6 @@ class PlanCadence:
                 use_shared_schedule=use_shared_schedule,
             )
         except ValueError as err:
-            message = str(err)
             if isinstance(err, CoverageCadenceRequiresVacuumError):
                 # Preserve this otherwise valid policy in the editor so it
                 # can be cleared or used after switching to a vacuum mode.
@@ -673,11 +676,11 @@ class PlanCadence:
                 "coverage_requires_vacuum"
                 if isinstance(err, CoverageCadenceRequiresVacuumError)
                 else "identity_changed"
-                if "different map" in message
+                if isinstance(err, CadenceMapChangedError)
                 else "shared_schedule_unavailable"
-                if "unavailable" in message
+                if isinstance(err, SharedCadenceUnavailableError)
                 else "cadence_progress_unverified"
-                if "progress is unverified" in message
+                if isinstance(err, CadenceProgressUnverifiedError)
                 else "invalid_cadence_policy"
             )
             return {
@@ -723,7 +726,7 @@ class PlanCadence:
                     mutations.append(result[1])
             if result is None:
                 self.repository.notify_listeners(serial_number)
-                raise ValueError(
+                raise CadenceProgressUnverifiedError(
                     "room cadence progress is unverified; reset mop and "
                     "coverage before use"
                 )
