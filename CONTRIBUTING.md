@@ -91,7 +91,8 @@ packages and may need administrator rights. Give each worktree its own
 `node_modules`: a shared, symlinked one can change the generated chunks.
 
 `backend-schema.ts` is generated from the schema modules `SCHEMAS` in
-`scripts/contract_types.py` names. After changing one, run
+`scripts/contract_types.py` names and the backend values `VALUES` names, such
+as the plan setting defaults. After changing one, run
 `uv run scripts/contract_types.py`; `scripts/check.py` fails until you do.
 
 ## Changes and pull requests

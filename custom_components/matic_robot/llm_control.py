@@ -18,7 +18,7 @@ from homeassistant.util.json import JsonObjectType
 from .client import CleaningMode
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .llm_common import _ROBOT_FIELD, _error, _MaticTool, _resolve_plan_id
-from .plan_model import resolve_room_reference
+from .plan_model import plan_setting, resolve_room_reference
 from .robot_controls import RobotControls
 from .slam_view_data import catalog_entry_projection
 
@@ -67,7 +67,7 @@ class MaticRunPlanTool(_MaticTool):
             return await _async_refusal(
                 hass, llm_context, "exceptions", "unknown_plan", {"plan": ""}
             )
-        if not plan.get("enabled", True):
+        if not plan_setting(plan, "enabled"):
             return await _async_refusal(
                 hass, llm_context, "common", "v4_reason_run_plan_paused"
             )
