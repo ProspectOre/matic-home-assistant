@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from .client import SESSION_STOP_REASONS, CleaningSession
+from .client import CleaningSession
 
 MIN_CLEANED_ROOM_SECONDS = 60
 
@@ -151,10 +151,7 @@ class CleaningSessionTracker:
                 return replace(
                     tracked,
                     stop_reason_code=native_session.stop_reason_code,
-                    stop_reason=(
-                        native_session.stop_reason
-                        or SESSION_STOP_REASONS.get(native_session.stop_reason_code)
-                    ),
+                    stop_reason=native_session.stop_reason,
                 )
             return replace(native_session, duration_seconds=tracked.duration_seconds)
         native_started = _parse_timestamp(native_session.started_at)

@@ -9,7 +9,7 @@ from google.protobuf.message import DecodeError
 
 from .models import MappedFloor
 from .slam_tiles import decode_slam_mission_id
-from .wire import WireField, decode_fields, field_bytes
+from .wire import WireField, WireFieldLimitExceeded, decode_fields, field_bytes
 
 MAX_MAPPED_FLOORS = 64
 MAX_FLOOR_LABEL_BYTES = 256
@@ -80,9 +80,9 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
 def _decode_labeled_mission(payload: bytes) -> tuple[MappedFloor, int | None]:
     try:
         fields = _decode_bounded_fields(payload)
+    except WireFieldLimitExceeded as err:
+        raise DecodeError("labeled mission exceeds its field limit") from err
     except DecodeError as err:
-        if "field limit" in str(err):
-            raise DecodeError("labeled mission exceeds its field limit") from err
         raise DecodeError("labeled mission has an invalid shape") from err
     mission_values = field_bytes(fields, 1)
     label_values = field_bytes(fields, 2)
