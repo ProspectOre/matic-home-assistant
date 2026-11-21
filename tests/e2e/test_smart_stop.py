@@ -2,13 +2,33 @@
 
 from __future__ import annotations
 
+from itertools import accumulate
+
+import pytest
+from homeassistant.components import frontend as ha_frontend
 from homeassistant.core import HomeAssistant
+from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import MockModule, mock_integration
+from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.http import plans_api_url
 
 from .hermes_sim import DOCK_PAYLOAD, STOP_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import VACUUM, PlanRun, expect_finished
-from .sim_mission import SimFloor
+from .sim_mission import SimFloor, parse_coverage_command
+
+
+@pytest.fixture
+async def frontend(hass: HomeAssistant) -> None:
+    """Matic Map's views are served only beside the frontend.
+
+    The frontend package is not a test dependency, so a stand-in is loaded
+    with the module list Matic Map registers into.
+    """
+    mock_integration(hass, MockModule("frontend"))
+    assert await async_setup_component(hass, "frontend", {})
+    hass.data[ha_frontend.DATA_EXTRA_MODULE_URL] = set()
 
 
 async def _start_smart_stop_plan(plan: PlanRun) -> None:
@@ -79,3 +99,33 @@ async def test_stop_now_ends_the_room_being_finished(
     finished = await plan.outcome()
     # The Kitchen was cut short, so no room counts as cleaned.
     expect_finished(finished, "cancelled", "managed_stop", 0, "idle", "docked")
+
+
+async def test_the_preview_shows_the_missions_the_run_sends(
+    frontend: None,
+    plan: PlanRun,
+    robot: SimulatedRobot,
+    hass_client: ClientSessionGenerator,
+) -> None:
+    await _start_smart_stop_plan(plan)
+    response = await (await hass_client()).get(plans_api_url(plan.entry.entry_id))
+    (saved,) = (await response.json())["plans"]
+    preview = saved["next_run_preview"]
+    robot.finish_room()
+    await plan.poll()
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    expect_finished(
+        await plan.outcome(), "completed", "all_rooms_verified", 2, "docked"
+    )
+
+    # Each coverage command is one mission; the preview marks where each ends.
+    missions = [
+        parse_coverage_command(payload, 0) for payload in plan.coverage_commands()
+    ]
+    sent = [len(mission.visits) for mission in missions if mission is not None]
+    assert sent == [2]
+    assert preview["blocker"] is None
+    assert preview["mission_boundaries"] == list(accumulate(sent))[:-1]

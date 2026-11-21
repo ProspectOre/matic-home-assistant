@@ -2812,7 +2812,8 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     }
     assert mixed["next_run_estimate_seconds"] is None
     smart_stop = plans["smart-stop"]["next_run_preview"]
-    assert smart_stop["mission_boundaries"] == [1]
+    # Smart Stop shortens the robot's queue; both rooms still share one mission.
+    assert smart_stop["mission_boundaries"] == []
     assert smart_stop["preview_token"] == saved_plan_preview_token(
         manager.planning.preview(
             serial,
