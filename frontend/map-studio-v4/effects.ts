@@ -90,7 +90,7 @@ export class EffectController {
   readonly #coherence: CoherenceMachine;
   readonly #backend: MaticBackend;
   readonly #workspaceConnection: WorkspaceConnection | null;
-  readonly #poseMotion: PoseMotion | null;
+  readonly #poseMotion: () => PoseMotion | null;
   readonly #pageLifecycle: PageLifecycle;
   readonly #preferences = new PreferenceStore();
   #preferenceSnapshot: MapPreferences | null = null;
@@ -171,7 +171,7 @@ export class EffectController {
     store: WorkspaceStore,
     backend: MaticBackend,
     workspaceConnection: WorkspaceConnection | null = null,
-    poseMotion: PoseMotion | null = null,
+    poseMotion: () => PoseMotion | null = () => null,
   ) {
     this.#store = store;
     this.#poseMotion = poseMotion;
@@ -225,8 +225,8 @@ export class EffectController {
       loadPlans: () => this.#catalog.loadPlans(),
       resumeAreaCatalog: () => this.#catalog.resumeAreas(),
       movePose: (pose) => {
-        if (!pose) return this.#poseMotion?.clear();
-        this.#poseMotion?.push(pose);
+        if (!pose) return this.#poseMotion()?.clear();
+        this.#poseMotion()?.push(pose);
         if (this.#runs || this.#store.value.trail?.id === "live") void this.#runResources().then((runs) => runs?.extendLiveTrail(pose));
       },
       loadWorkspaceResources: (entry, stamp, resources, refresh) => this.#loadWorkspaceResources(entry, stamp, resources, refresh),
@@ -381,7 +381,7 @@ export class EffectController {
     // Robot settings survive map changes; coordinate writes keep their frame.
     this.#abortResources(MUTATION_RESOURCES);
     this.#catalog.cancelQueued();
-    this.#poseMotion?.clear();
+    this.#poseMotion()?.clear();
     this.#workspace.pause();
     const state = this.#store.value;
     this.#store.dispatch({
@@ -538,7 +538,7 @@ export class EffectController {
       }
       this.#stopPolling();
       this.#catalog.cancelQueued();
-      this.#poseMotion?.clear();
+      this.#poseMotion()?.clear();
       this.#abortResources();
       const state = this.#store.value;
       const retainedScene = state.resources.scene.value;
@@ -573,7 +573,7 @@ export class EffectController {
         this.#spatialResources.invalidateFence();
         this.#abortResources();
         this.#catalog.cancelQueued();
-        this.#poseMotion?.clear();
+        this.#poseMotion()?.clear();
       }
       this.#stopPolling();
       const state = this.#store.value;

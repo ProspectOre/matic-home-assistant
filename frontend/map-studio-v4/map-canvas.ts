@@ -10,7 +10,7 @@ import type { PropertyValues, TemplateResult } from "lit";
 import type { ColorScheme, DateFormat, Localize, NoticePlaceholders, WorkspaceIntent, WorkspaceState } from "./contracts";
 import type { OutlineEditor } from "./outline-editor";
 import { MAP_CANVAS_TAG } from "./element-tags";
-import { POSE_MOTION_EVENT, type PoseMotionRequest } from "./pose-motion";
+import type { PoseMotion } from "./pose-motion";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
 import { RendererController, topView, type CameraState, type RendererDiagnostics, type RendererModuleName, type RendererModuleStatus, type RendererSurfaceDetail } from "./renderer-controller";
 import type { MapPoint } from "./renderer-camera";
@@ -33,6 +33,9 @@ export const WORKSPACE_INTENT_EVENT = "matic-workspace-intent";
 export const WORKSPACE_ACTION_EVENT = "matic-workspace-action";
 /** The "?" press, and Escape while help shows: the shell owns the popover. */
 const MAP_HELP_EVENT = "matic-map-help";
+/** The map canvas asks its panel for the robot's motion with this event. */
+export const POSE_MOTION_EVENT = "matic-pose-motion";
+export type PoseMotionRequest = CustomEvent<(motion: PoseMotion) => void>;
 
 const NAVIGATION_HELP_ID = "navigation-help";
 
