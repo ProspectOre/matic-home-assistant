@@ -8,14 +8,12 @@ custom_components/matic_robot/managed_dispatch.py::_async_dispatch_leg_command 1
 custom_components/matic_robot/managed_executor.py::_async_execute_rooms_reserved 674
 custom_components/matic_robot/managed_leg.py::_async_run_leg 717
 custom_components/matic_robot/native_cadence.py::import_native_cadence 202
-custom_components/matic_robot/native_history.py::_apply_native_room_statistics 294
 custom_components/matic_robot/photo_tours.py::_async_run_tour 173
 custom_components/matic_robot/plan_cadence.py::PlanCadence.resolve_cadence 213
 custom_components/matic_robot/plan_history.py::PlanHistory.snapshot 151
 custom_components/matic_robot/plan_state.py::_normalize_robot 180
 custom_components/matic_robot/restart.py::async_recover_managed_run 428
 custom_components/matic_robot/robot_commands.py::RobotCommands.async_clean_rooms 220
-custom_components/matic_robot/room_statistics.py::native_room_statistics_by_session 196
 custom_components/matic_robot/runtime_code.py::capture_runtime_code 229
 custom_components/matic_robot/slam_render.py::render_slam_map 265
 custom_components/matic_robot/stop_return.py::async_dock_when_stop_settles 189
