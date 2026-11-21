@@ -219,6 +219,16 @@ def _held_out(preview: Mapping[str, Any]) -> _HeldRooms:
     return held
 
 
+def _missing_rooms(floor: _Floor, plan: Mapping[str, object]) -> _HeldRooms:
+    """Name the plan's rooms the map lost, for a preview that stops early."""
+    missing = missing_plan_rooms(
+        plan,
+        floor.room_map,
+        floor.manager.catalog.known_room_names(floor.serial_number),
+    )
+    return {"missing_rooms": missing} if missing else {}
+
+
 def _next_run_preview(
     hass: HomeAssistant,
     entry_id: str,
@@ -248,9 +258,8 @@ def _next_run_preview(
             return {
                 "rooms": [],
                 "entries": [],
-                "mission_boundaries": [],
-                "blocker": "daily_limit_reached",
-                "daily_limit_held_rooms": preview["daily_limit_held_rooms"],
+                **_blocked("daily_limit_reached"),
+                **_held_out(preview),
             }
         if not preview_entries:
             raise ValueError("plan has no rooms")
@@ -268,14 +277,10 @@ def _next_run_preview(
                 }
                 for room_id, hold in held_rooms.items()
             ],
+            **_missing_rooms(floor, plan),
         }
     except PlanRoomMissingError:
-        missing = missing_plan_rooms(
-            plan,
-            floor.room_map,
-            floor.manager.catalog.known_room_names(floor.serial_number),
-        )
-        return {**_blocked("room_missing"), "missing_rooms": missing}
+        return {**_blocked("room_missing"), **_missing_rooms(floor, plan)}
     except (KeyError, TypeError, ValueError) as err:
         return _blocked(_blocker(err))
     return {

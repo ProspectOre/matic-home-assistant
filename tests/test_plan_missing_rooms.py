@@ -22,6 +22,7 @@ from custom_components.matic_robot.plan_catalog import PlanCatalog
 from custom_components.matic_robot.plan_model import (
     DuplicateRoomError,
     PlanRoomMissingError,
+    PlanRoomsHeldError,
     missing_plan_rooms,
     relink_plan_rooms,
     resolve_rooms,
@@ -369,3 +370,33 @@ async def test_matic_map_hears_which_rooms_a_run_skips() -> None:
     ]
     assert ready
     assert all(preview["missing_rooms"] == [skipped] for preview in ready)
+    capped = [
+        plan["next_run_preview"]
+        for plan in json.loads(response.body)["plans"]
+        if plan["next_run_preview"]["blocker"] == "daily_limit_reached"
+    ]
+    assert capped
+    assert all(preview["missing_rooms"] == [skipped] for preview in capped)
+
+
+async def test_a_plan_with_every_room_held_still_names_the_removed_ones() -> None:
+    runtime = _plans_runtime()
+    runtime.cleaning_plans.planning.preview = MagicMock(
+        side_effect=PlanRoomsHeldError("all held")
+    )
+    runtime.cleaning_plans.catalog.known_room_names = MagicMock(
+        return_value={"room-2": "Study"}
+    )
+    floor = runtime.session.floor.value
+    runtime.session.floor.value = replace(floor, rooms=floor.rooms[:1])
+
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+
+    previews = {
+        plan["id"]: plan["next_run_preview"]
+        for plan in json.loads(response.body)["plans"]
+    }
+    assert previews["weekday"]["blocker"] == "plan_rooms_held"
+    assert previews["weekday"]["missing_rooms"] == [
+        {"room_id": "room-2", "name": "Study", "match_room_id": None}
+    ]
