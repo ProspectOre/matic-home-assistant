@@ -36,12 +36,13 @@ def test_ci_runs_for_every_merge_into_main_and_release_branches(name: str) -> No
 
 
 def test_browser_shards_keep_the_traces_of_retried_tests() -> None:
-    """Record a trace on retry and upload it under a name unique to the shard."""
+    """Trace a retry, upload it per shard and print each browser's output."""
     browser = _workflow("test.yml")["jobs"]["browser"]
     steps = browser["steps"]
     shard = "--shard=${{ matrix.shard }}/${{ strategy.job-total }}"
     commands = [step.get("run") for step in steps]
-    upload = steps[commands.index(f"npm run test:browser -- {shard}") + 1]
+    run = commands.index(f"npm run test:browser -- {shard}")
+    upload = steps[run + 1]
 
     assert browser["strategy"]["matrix"] == {"shard": [1, 2, 3, 4, 5, 6, 7, 8]}
     assert upload["if"] == "failure()"
@@ -52,6 +53,8 @@ def test_browser_shards_keep_the_traces_of_retried_tests() -> None:
     }
     config = (ROOT / "playwright.config.mjs").read_text(encoding="utf-8")
     assert 'trace: "on-first-retry"' in config
+    # The trace is the retry's; a crashed first attempt leaves only this.
+    assert steps[run]["env"]["DEBUG"] == "pw:browser"
 
 
 def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> None:
