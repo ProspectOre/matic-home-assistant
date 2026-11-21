@@ -976,10 +976,10 @@ test("the heading and notice slot stay put while the plan editor body scrolls", 
     const gallery = await loadGallery(page, { scenario: "plan-cadence-shared", narrow });
     await setGalleryNotice(page, sampleNotice("warning", `Pinned at ${width}`));
     await expect(gallery.locator("[data-notice-slot]")).toBeVisible();
+    // The body holds only "Loading…" until the workflow views chunk arrives.
+    await expect(gallery.getByRole("group", { name: "Smart cleaning for Kitchen" })).toBeVisible();
     const moved = await gallery.getByRole("heading", { level: 2 }).evaluate(async (heading) => {
       const root = heading.getRootNode();
-      // Let the sheet finish opening to its detent before measuring.
-      await Promise.all(root.getAnimations().map((animation) => animation.finished));
       const body = root.querySelector(".workflow-body, .sheet-body");
       const tops = () => ({
         heading: heading.getBoundingClientRect().top,
