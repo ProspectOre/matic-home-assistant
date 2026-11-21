@@ -337,7 +337,8 @@ def test_publish_creates_the_release_from_the_zip_and_its_notes(
 ) -> None:
     body = (
         "First paragraph, [map](map.md), [actions](actions.md#cleaning),\n"
-        "[below](#more) and [releases](https://example.com/releases).\n\n## More\n"
+        "[below](#more), [releases](https://example.com/releases),\n"
+        "![map](images/map.png) and `handlers[i](event)`.\n\n## More\n"
     )
     _write(checkout, {notes: f"# Matic 0.6\n\n{body}"})
     github = FakeGitHub({}, {})

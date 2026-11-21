@@ -32,8 +32,8 @@ TAG = re.compile(
 STAGES = {"beta": "b", "rc": "rc"}
 # gh fills in the repository it runs for.
 API = "repos/{owner}/{repo}"
-# A Markdown link to another file in docs/, which a release page cannot resolve.
-DOC_LINK = re.compile(r"\]\((?![a-z]+:|#)([^)\s]+)\)")
+# An inline link to another guide in docs/, which a release page cannot resolve.
+DOC_LINK = re.compile(r"\]\(([\w-]+(?:/[\w-]+)*\.md(?:#[\w-]+)?)\)")
 
 
 class ReleaseError(RuntimeError):
