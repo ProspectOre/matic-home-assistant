@@ -14,7 +14,7 @@ from .wire import (
     WireField,
     decode_fields,
     field_bytes,
-    field_varints,
+    seconds_nanos,
     uuid_string,
 )
 
@@ -77,17 +77,10 @@ def _capture_time(payload: bytes) -> datetime:
     wrapped = _single_bytes(fields, 1)
     if wrapped is not None:
         fields = decode_fields(wrapped, max_fields=MAX_PHOTO_FIELDS)
-    seconds = field_varints(fields, 1)
-    nanos = field_varints(fields, 2)
-    if (
-        len(seconds) != 1
-        or len(nanos) > 1
-        or not MIN_CAPTURE_SECONDS <= seconds[0] < MAX_CAPTURE_SECONDS
-        or (nanos and nanos[0] >= 1_000_000_000)
-    ):
+    seconds, nanos = seconds_nanos(fields)
+    if not MIN_CAPTURE_SECONDS <= seconds < MAX_CAPTURE_SECONDS:
         raise DecodeError("photo capture time is invalid")
-    microseconds = nanos[0] // 1000 if nanos else 0
-    return datetime.fromtimestamp(seconds[0], UTC).replace(microsecond=microseconds)
+    return datetime.fromtimestamp(seconds, UTC).replace(microsecond=nanos // 1000)
 
 
 def _wrapped_webp(payload: bytes) -> bytes:
