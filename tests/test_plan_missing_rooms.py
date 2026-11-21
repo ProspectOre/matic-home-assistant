@@ -403,9 +403,12 @@ async def test_the_repair_flow_waits_for_the_robot_and_a_steady_plan(hass) -> No
     flow = PlanRoomRepairFlow("entry")
     flow.hass = MagicMock()
     flow.hass.config_entries.async_get_entry.return_value = entry
-    # An unloaded entry has no robot to read.
+    # An unloaded entry has no robot to read; a loaded one may have no map yet.
     assert (await flow.async_step_init())["reason"] == "robot_unavailable"
     entry.state = ConfigEntryState.LOADED
+    entry.runtime_data.session.floor.value = None
+    assert (await flow.async_step_init())["reason"] == "robot_unavailable"
+    entry.runtime_data.session.floor.value = floor
 
     with patch(
         "custom_components.matic_robot.plan_room_repairs.repair_placeholders",

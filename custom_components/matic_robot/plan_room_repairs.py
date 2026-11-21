@@ -142,10 +142,11 @@ class PlanRoomRepairFlow(RepairsFlow):
         entry: MaticConfigEntry | None = self.hass.config_entries.async_get_entry(
             self._entry_id
         )
-        if entry is None or entry.state is not ConfigEntryState.LOADED:
-            return self.async_abort(reason="robot_unavailable")
-        floor_plan = entry.runtime_data.session.floor.value
-        if floor_plan is None:
+        if (
+            entry is None
+            or entry.state is not ConfigEntryState.LOADED
+            or (floor_plan := entry.runtime_data.session.floor.value) is None
+        ):
             return self.async_abort(reason="robot_unavailable")
         catalog = entry.runtime_data.cleaning_plans.catalog
         serial_number = entry.runtime_data.session.info.serial_number
