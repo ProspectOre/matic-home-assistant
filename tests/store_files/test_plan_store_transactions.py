@@ -43,18 +43,6 @@ async def _seed_history_and_reconciliation(manager: CleaningPlanManager):
     return room, marker, watcher
 
 
-@pytest.fixture
-def hass_storage() -> dict:
-    """Use the real Home Assistant Store instead of the test plugin mock."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep Store files in the test's isolated configuration directory."""
-    return hass_tmp_config_dir
-
-
 async def test_failed_plan_write_is_not_persisted_by_queued_peer_write(
     hass, monkeypatch
 ) -> None:

@@ -40,11 +40,6 @@ SINK = b"\x0a\x04sink"
 
 
 @pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
-
-
-@pytest.fixture
 def study_area(hass: HomeAssistant) -> str:
     """An area the vacuum links to the room of the same name when it loads."""
     return ar.async_get(hass).async_create("Study").id

@@ -455,6 +455,14 @@ async def test_slam_map_store_reconsiders_a_complete_candidate_after_expiry(
     assert store.floor_plan_is_current(complete_plan)
 
 
+async def _moved_page_snapshot(name: str, *, limit: int):
+    assert limit == 1
+    if name == "map_compressed_rgb":
+        return (synthetic_slam_entry(page_x=8),)
+    assert name == "map_integrated"
+    return (synthetic_structure_entry(page_x=8),)
+
+
 async def test_slam_map_store_revalidates_after_silent_candidate_expiry(hass) -> None:
     """A timer takes bounded fresh reads when map subscriptions stay quiet."""
     active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
@@ -463,15 +471,8 @@ async def test_slam_map_store_revalidates_after_silent_candidate_expiry(hass) ->
     await store.async_add_structure(synthetic_structure_entry())
     assert store.floor_plan_is_current(active_plan)
 
-    async def snapshot(name: str, *, limit: int):
-        assert limit == 1
-        if name == "map_compressed_rgb":
-            return (synthetic_slam_entry(page_x=8),)
-        assert name == "map_integrated"
-        return (synthetic_structure_entry(page_x=8),)
-
     client = SimpleNamespace(
-        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+        async_get_collection_entries=AsyncMock(side_effect=_moved_page_snapshot)
     )
     store._collection_client = client
     with patch(
@@ -506,15 +507,8 @@ async def test_slam_map_store_revalidates_after_page_driven_candidate_expiry(
         slam_map_store_module.monotonic() - CANDIDATE_CLASSIFICATION_SECONDS
     )
 
-    async def snapshot(name: str, *, limit: int):
-        assert limit == 1
-        if name == "map_compressed_rgb":
-            return (synthetic_slam_entry(page_x=8),)
-        assert name == "map_integrated"
-        return (synthetic_structure_entry(page_x=8),)
-
     client = SimpleNamespace(
-        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+        async_get_collection_entries=AsyncMock(side_effect=_moved_page_snapshot)
     )
     store._collection_client = client
 

@@ -34,15 +34,9 @@ from .sim_mission import (
     bytes_field,
     fixed32_int,
     schedule_event,
-    two_room_floor,
     uuid_wire,
     wifi_status,
 )
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 @pytest.fixture

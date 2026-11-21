@@ -31,15 +31,10 @@ from .hermes_sim import (
 )
 from .plan_run import firmware_snapshot_saved, state_becomes
 from .sim_faults import Faults
-from .sim_mission import SimFloor, parse_coverage_command, two_room_floor
+from .sim_mission import parse_coverage_command
 
 VACUUM = "vacuum.simulated_matic"
 BATTERY = "sensor.simulated_matic_battery"
-
-
-@pytest.fixture
-def floor() -> SimFloor:
-    return two_room_floor()
 
 
 def _state(hass: HomeAssistant, entity_id: str) -> str:

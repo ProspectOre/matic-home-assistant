@@ -16,18 +16,6 @@ SERIAL = "synthetic-commit-robot"
 PEER = "synthetic-commit-peer"
 
 
-@pytest.fixture
-def hass_storage() -> dict:
-    """Use Home Assistant's real Store implementation."""
-    return {}
-
-
-@pytest.fixture
-def hass_config_dir(hass_tmp_config_dir: str) -> str:
-    """Keep Store files in the isolated test configuration directory."""
-    return hass_tmp_config_dir
-
-
 async def test_listener_failure_does_not_reject_or_rollback_committed_plan(
     hass, caplog
 ) -> None:
