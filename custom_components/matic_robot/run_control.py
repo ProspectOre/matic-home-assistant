@@ -915,3 +915,18 @@ def _retrieve_run_end(task: asyncio.Task[Any]) -> None:
     """Retrieve the end of a run nobody awaits; plan_finished reports it."""
     if not task.cancelled() and (err := task.exception()) is not None:
         _LOGGER.debug("Managed cleaning run ended: %s", err)
+
+
+def evidence_is_current(
+    control: RunControl,
+    serial_number: str,
+    token: int,
+    cancel_event: asyncio.Event | None,
+    floor_is_current: Callable[[], bool] | None,
+) -> bool:
+    """Return whether a run still owns the motion and floor it credits."""
+    return (
+        (cancel_event is None or not cancel_event.is_set())
+        and control.managed_motion_is_current(serial_number, token)
+        and (floor_is_current is None or floor_is_current())
+    )
