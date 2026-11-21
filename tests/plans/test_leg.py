@@ -128,6 +128,7 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
@@ -137,7 +138,6 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
-        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = plan_room("Kitchen", "room-kitchen")
     with (
