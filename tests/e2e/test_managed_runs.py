@@ -18,6 +18,7 @@ from homeassistant.exceptions import ServiceValidationError
 
 import custom_components.matic_robot.managed_observation as managed_observation_module
 from custom_components.matic_robot import stop_return
+from custom_components.matic_robot.client import native_session_hash
 
 from .hermes_sim import DOCK_PAYLOAD, STOP_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import PlanRun, expect_finished
@@ -200,6 +201,48 @@ async def test_restart_rejoins_the_same_native_mission(
     finished = await plan.wait_for_finished()
     expect_finished(finished, "completed", "all_rooms_verified", 2, "docked")
     # The recovered run did not dispatch the robot again.
+    assert len(plan.coverage_commands()) == 1
+
+
+async def test_restart_resumes_a_tracked_run_by_its_own_session(
+    plan: PlanRun,
+    robot: SimulatedRobot,
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A start reads no history baseline; recovery follows its saved session."""
+    monkeypatch.setattr(
+        managed_observation_module, "SESSION_HISTORY_TIMEOUT_SECONDS", 2
+    )
+    await plan.start()
+    robot.finish_room()
+    await plan.poll()
+    plans = plan.entry.runtime_data.cleaning_plans
+    run = plans.recovery.recovery_run(robot.serial_number)
+    assert run is not None and robot.session is not None
+    checkpoint = run["recovery_checkpoint"]
+    assert checkpoint["phase"] == "accepted"
+    assert checkpoint["history_baseline"] is None
+    assert checkpoint["session_hash"] == native_session_hash(
+        robot.session.active_key, active=True
+    )
+    # While Home Assistant is down, another session finishes every room.
+    robot.add_foreign_history()
+
+    assert await hass.config_entries.async_reload(plan.entry.entry_id)
+    plans = plan.entry.runtime_data.cleaning_plans
+    async with asyncio.timeout(10):
+        while (plans.recovery.recovery_run(robot.serial_number) or {}).get(
+            "recovery_reason"
+        ) != "same_native_mission_verified":
+            await plan.poll()
+    # The run's own session ends with Study unfinished.
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+
+    finished = await plan.wait_for_finished()
+    expect_finished(finished, "unverified", "partial_native_result", 1, "docked")
     assert len(plan.coverage_commands()) == 1
 
 
