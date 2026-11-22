@@ -111,7 +111,7 @@ async def _code_form(
     flow_id = await _discover(hass, simulator)
     form = await _answer(hass, flow_id, {})
     assert (form["type"], form["step_id"]) == (FlowResultType.FORM, "pairing_code")
-    assert window.asked.is_set()
+    assert window.asked
     return flow_id
 
 
@@ -192,9 +192,10 @@ async def test_closing_the_dialog_releases_the_robot(
     flow_id = await _code_form(hass, simulator, window)
 
     hass.config_entries.flow.async_abort(flow_id)
+    # Fails, rather than hangs, if closing stops ending the agent's request.
+    await asyncio.wait_for(window.released.wait(), 5)
     await hass.async_block_till_done()
 
-    assert window.released
     assert robot.credentials == set()
     assert hass.config_entries.flow.async_progress_by_handler(DOMAIN) == []
     assert hass.config_entries.async_entries(DOMAIN) == []

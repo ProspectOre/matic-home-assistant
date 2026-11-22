@@ -32,9 +32,13 @@ class PairingWindow:
         self.robot = robot
         self.code = code
         self.attempts = 0
-        self.asked = asyncio.Event()
-        self.released = False
+        self.released = asyncio.Event()
         self._exchange: BluetoothPasskeyExchange | None = None
+
+    @property
+    def asked(self) -> bool:
+        """Return whether the agent's request for the code reached the flow."""
+        return self._exchange is not None and self._exchange.requested
 
     def expire(self) -> None:
         """Time the shown code out, as BlueZ cancels the agent's request."""
@@ -55,7 +59,6 @@ class PairingWindow:
         exchange.begin_candidate()
         # BlueZ asks for the code from its own agent task, as here.
         request = asyncio.ensure_future(exchange.async_request_passkey())
-        self.asked.set()
         try:
             await asyncio.wait({request})
             passkey = request.result()
@@ -64,8 +67,8 @@ class PairingWindow:
         except asyncio.CancelledError:
             # The dialog was closed while the robot waited for its code; the
             # flow cancels the exchange, which ends the agent's request.
-            self.released = True
             await asyncio.gather(request, return_exceptions=True)
+            self.released.set()
             raise
         exchange.note_answered()
         if f"{passkey:06d}" != self.code:
