@@ -240,7 +240,11 @@ _REQUESTED_MODES = {
 }
 
 
-def match_single_room_unreachable(
+RobotEndedRoom = Literal["unreachable", "partly_cleaned"]
+_MODE_STATUSES = frozenset({"unattempted", "partial", "completed"})
+
+
+def match_single_room_robot_ended(
     records: Iterable[CleaningSessionRecord],
     *,
     room_name: str,
@@ -249,20 +253,22 @@ def match_single_room_unreachable(
     now: datetime,
     baseline: Collection[bytes] | None = None,
     session_hash: str | None = None,
-) -> tuple[CleaningSessionRecord, ...]:
-    """Return at most two records proving the robot could not reach a room.
+) -> tuple[tuple[CleaningSessionRecord, RobotEndedRoom], ...]:
+    """Return at most two records where the robot ended a room it could not finish.
 
-    The OEM app titles a ``Finished`` stop reason "Area inaccessible" when the
-    requested room stayed unattempted (Matic 1.183.1). A cancelled, unknown or
-    partly attempted record is never unreachable: the robot reached the room,
-    or someone stopped the mission.
+    The OEM app titles a ``Finished`` stop reason "Area inaccessible" (Matic
+    1.183.1), both when the requested room stayed unattempted and when the
+    robot cleaned only part of it. Every requested mode unattempted means the
+    room was unreachable; any other result short of every mode completed means
+    it was partly cleaned. A cancelled or unknown stop reason is neither:
+    someone stopped the mission.
     """
     requested = _REQUESTED_MODES.get(cleaning_mode or "")
     candidates = records_for_dispatch(records, baseline, session_hash)
     if requested is None or candidates is None:
         return ()
     target = native_room_key(room_name)
-    matches: list[CleaningSessionRecord] = []
+    matches: list[tuple[CleaningSessionRecord, RobotEndedRoom]] = []
     for record in candidates:
         session = record.session
         if session.stop_reason != "finished":
@@ -274,13 +280,18 @@ def match_single_room_unreachable(
             for result in session.mode_results
             if native_room_key(result.room) == target
         ]
+        statuses = {result.status for result in results}
         if (
             not results
             or {result.cleaning_mode for result in results} != requested
-            or any(result.status != "unattempted" for result in results)
+            or not statuses <= _MODE_STATUSES
+            or statuses == {"completed"}
         ):
             continue
-        matches.append(record)
+        kind: RobotEndedRoom = (
+            "unreachable" if statuses == {"unattempted"} else "partly_cleaned"
+        )
+        matches.append((record, kind))
         if len(matches) == 2:
             break
     return tuple(matches)

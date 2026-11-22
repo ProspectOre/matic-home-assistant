@@ -93,7 +93,11 @@ from .coverage_accounting import (
     verified_room_coverage,
 )
 from .native_cadence import import_native_cadence
-from .native_completion import is_session_hash, match_single_room_completions
+from .native_completion import (
+    RobotEndedRoom,
+    is_session_hash,
+    match_single_room_completions,
+)
 from .native_completion import native_room_key as _native_room_key
 from .room_identity import room_cadence_identity as room_cadence_identity
 from .room_statistics import (
@@ -5591,16 +5595,20 @@ class CleaningPlanManager:
 
         await self._async_mutate_and_save(serial_number, mutate)
 
-    async def async_mark_unreachable(
-        self, serial_number: str, plan_id: str, room: CleaningRoom
+    async def async_mark_robot_ended(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        result: RobotEndedRoom,
     ) -> None:
-        """Close a room the robot could not reach, without credit."""
+        """Close a room the robot could not reach or finish, without credit."""
 
         def mutate() -> bool:
             record = self._room(serial_number, plan_id, room)
-            record["last_result"] = "unreachable"
-            record["last_unreachable"] = dt_util.utcnow().isoformat()
-            record["unreachable_runs"] = _stored_count(record, "unreachable_runs") + 1
+            record["last_result"] = result
+            record[f"last_{result}"] = dt_util.utcnow().isoformat()
+            record[f"{result}_runs"] = _stored_count(record, f"{result}_runs") + 1
             self._robot(serial_number)["active_plan"] = None
             return True
 

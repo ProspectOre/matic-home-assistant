@@ -10,6 +10,13 @@ The Repair clears once every plan names only rooms on the map.
 plan holds even when the room is no longer on the map, so a stale room can be
 taken out of a plan without saving the whole plan again.
 
+A plan no longer ends when the robot cleans only part of a room and returns to
+the dock on its own, for example because an obstacle blocks the rest of the
+floor. The room is recorded as partly cleaned, gets no completion credit so it
+stays due, and the plan moves on to the next room. The Matic app shows that
+clean as **Area inaccessible**, the same as a room the robot could not reach at
+all.
+
 **Save plan** and **Save room to plan** now show each room's schedule settings
 (mop every N cleans, vacuum rotation, and which plans share the count) in the
 action editor. The actions already accepted them; they were missing from the
