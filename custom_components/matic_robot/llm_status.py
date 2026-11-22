@@ -210,15 +210,19 @@ class MaticGetZonesTool(_MaticTool):
 
 
 def _sampled_room_timing(
-    hass: HomeAssistant, entry: MaticConfigEntry, snapshot: dict[str, Any]
+    hass: HomeAssistant, entry: MaticConfigEntry
 ) -> dict[str, Any] | None:
-    """Read the registered active-time entity's shared sample, without a clock tick."""
+    """Read the registered active-time entity's shared sample, without a clock tick.
+
+    The sample counts only while it names the current managed room.
+    """
     session = entry.runtime_data.session
     if session.error.value is not None:
         return None
-    active = snapshot.get("active_plan")
-    run = snapshot.get("last_run")
-    if not isinstance(active, dict) or not isinstance(run, dict):
+    current = entry.runtime_data.cleaning_plans.history.current_room(
+        session.info.serial_number
+    )
+    if current is None:
         return None
     entity_id = er.async_get(hass).async_get_entity_id(
         "sensor",
@@ -232,17 +236,7 @@ def _sampled_room_timing(
     if (
         sample.get("matic_entry_id") != entry.entry_id
         or sample.get("matic_metric") != "current_room_active_time"
-        or not isinstance(sample.get("run_id"), str)
-        or not sample["run_id"]
-        or sample["run_id"] != active.get("run_id")
-        or sample["run_id"] != run.get("run_id")
-        or active.get("plan_id") != run.get("plan_id")
-        or run.get("outcome") != "running"
-        or not isinstance(sample.get("room_id"), str)
-        or not sample["room_id"]
-        or sample["room_id"] != active.get("room_id")
-        or sample.get("status") not in ("running", "suspended")
-        or sample["status"] != active.get("status")
+        or any(sample.get(key) != value for key, value in current.items())
         or not isinstance(sample.get("room"), str)
         or not sample["room"]
     ):
@@ -319,7 +313,7 @@ def _robot_summary(hass: HomeAssistant, entry: MaticConfigEntry) -> JsonObjectTy
                 "stop_settle_pending": manager.control.stop_pending(serial_number),
                 "active_plan": snapshot.get("active_plan"),
                 "last_run": snapshot.get("last_run"),
-                "current_room_timing": _sampled_room_timing(hass, entry, snapshot),
+                "current_room_timing": _sampled_room_timing(hass, entry),
             },
             "selected_plan": {
                 "id": snapshot.get("selected_plan"),
