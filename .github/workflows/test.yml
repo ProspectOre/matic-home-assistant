@@ -27,7 +27,40 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Matic Map, built once for every lane that reads it. An edit run skips it
+  # with the browser shards.
+  build:
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 .github/scripts/delivery-contract.py .
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:build
+      - run: npm run build:map-studio-v4
+      # The panel the tests and the zip read, and the review build the
+      # browser shards serve. Restored at the same paths.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: matic-map
+          path: |
+            custom_components/matic_robot/matic_icons.js
+            custom_components/matic_robot/map_studio_v4/
+            tests/browser/.generated/
+          include-hidden-files: true
+          if-no-files-found: error
+          # Long enough to re-run a failed lane.
+          retention-days: 7
+
   test:
+    needs: build
+    # Runs on a built bundle, or in an edit run, which skips the build.
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event.action == 'edited' && !github.event.changes.base && 60 || 20 }}
     permissions:
@@ -43,7 +76,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
-      - run: python3 .github/scripts/delivery-contract.py .
       # The required check is this job, so an edit run reports the last code
       # run of it rather than skipping, which would read as passing.
       - if: ${{ fromJSON(env.RECHECK) }}
@@ -51,11 +83,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: .github/scripts/last-code-run.sh "test (${{ matrix.python-version }})"
+      # Tests run node on the built bundle; nothing here installs npm packages.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: ${{ !fromJSON(env.RECHECK) }}
         with:
           node-version: 24
-          cache: npm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !fromJSON(env.RECHECK) }}
+        with:
+          name: matic-map
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: ${{ !fromJSON(env.RECHECK) }}
         with:
@@ -67,11 +103,11 @@ jobs:
           uv sync --locked
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
         if: ${{ !fromJSON(env.RECHECK) }}
-      # Builds Matic Map, which the tests read and the zip ships. A pull
-      # request is checked out as its merge into the base branch, so the first
-      # parent is that branch and the change must come with tests. A release
-      # branch is exempt: its changes were held to that on their way in.
-      - run: python scripts/check.py --all ${BASE:+--base "$BASE"}
+      # Tests the downloaded Matic Map, which the zip ships. A pull request is
+      # checked out as its merge into the base branch, so the first parent is
+      # that branch and the change must come with tests. A release branch is
+      # exempt: its changes were held to that on their way in.
+      - run: python scripts/check.py --all --built ${BASE:+--base "$BASE"}
         if: ${{ !fromJSON(env.RECHECK) }}
         env:
           BASE: >-
@@ -79,7 +115,7 @@ jobs:
             && !(startsWith(github.head_ref, 'release/')
             && github.event.pull_request.head.repo.full_name == github.repository)
             && 'HEAD^1' || '' }}
-      # The zip a release ships, kept so an unreleased head can be installed.
+      # The zip a release publishes, kept so an unreleased head can be installed.
       - run: python scripts/release.py zip
         if: ${{ !fromJSON(env.RECHECK) }}
       - run: python scripts/check_fresh_install.py
@@ -94,6 +130,8 @@ jobs:
   # Matic Map in a real Home Assistant paired to the simulated robot. Home
   # Assistant installs its own dependencies' requirements at startup.
   live:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event.action == 'edited' && !github.event.changes.base && 60 || 20 }}
     permissions:
@@ -127,8 +165,10 @@ jobs:
         if: ${{ !fromJSON(env.RECHECK) }}
       - run: npm ci
         if: ${{ !fromJSON(env.RECHECK) }}
-      - run: npm run build:map-studio-v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ !fromJSON(env.RECHECK) }}
+        with:
+          name: matic-map
       - run: npx playwright install --with-deps chromium
         if: ${{ !fromJSON(env.RECHECK) }}
       - run: npx playwright test --config playwright.live.config.mjs
@@ -137,6 +177,7 @@ jobs:
   # Matic Map in Chromium, WebKit and Firefox against the static review build.
   # An edit run skips it; `ci` reports the last code run, which covered it.
   browser:
+    needs: build
     if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-latest
     # Unsharded, the suite took 24.5 minutes for 2334 tests on hosted runners in
@@ -161,9 +202,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run test:build
-      # The suite loads the built bundle, which is not committed.
-      - run: npm run build:map-studio-v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: matic-map
       - run: npm run test:browser -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           # Firefox requires a Home directory owned by the container user.
@@ -181,7 +222,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [test, live, browser]
+    needs: [build, test, live, browser]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event.action == 'edited' && !github.event.changes.base && 60 || 5 }}
@@ -202,9 +243,10 @@ jobs:
       - name: Require every lane to succeed
         if: ${{ !fromJSON(env.RECHECK) }}
         env:
+          BUILD: ${{ needs.build.result }}
           TEST: ${{ needs.test.result }}
           LIVE: ${{ needs.live.result }}
           BROWSER: ${{ needs.browser.result }}
         run: |
-          echo "test: $TEST, live: $LIVE, browser: $BROWSER"
-          [ "$TEST" = success ] && [ "$LIVE" = success ] && [ "$BROWSER" = success ]
+          echo "build: $BUILD, test: $TEST, live: $LIVE, browser: $BROWSER"
+          [ "$BUILD" = success ] && [ "$TEST" = success ] && [ "$LIVE" = success ] && [ "$BROWSER" = success ]

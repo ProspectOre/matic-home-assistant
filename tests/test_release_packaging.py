@@ -160,7 +160,7 @@ def test_source_and_runtime_translations_stay_in_sync() -> None:
 
 
 def test_ci_checks_and_keeps_the_zip_a_release_ships() -> None:
-    """Build the zip after the tests built Matic Map, load it, then keep it."""
+    """Zip the Matic Map the tests read, load the zip, then keep it."""
     steps = load_yaml(ROOT / ".github" / "workflows" / "test.yml")["jobs"]["test"][
         "steps"
     ]
@@ -168,7 +168,7 @@ def test_ci_checks_and_keeps_the_zip_a_release_ships() -> None:
     build = commands.index("python scripts/release.py zip")
     upload = steps[build + 2]
 
-    check = 'python scripts/check.py --all ${BASE:+--base "$BASE"}'
+    check = 'python scripts/check.py --all --built ${BASE:+--base "$BASE"}'
     assert commands.index(check) < build
     assert commands[build + 1] == "python scripts/check_fresh_install.py"
     assert upload["uses"].startswith("actions/upload-artifact@")

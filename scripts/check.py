@@ -9,7 +9,8 @@ changed since the nearest main or release branch. Imports do not show what
 Home Assistant loads by name or which files a test reads, so --all runs every
 test, as CI does, and then requires a test to run every line and take every
 branch the change adds to the integration. Tests read the built Matic Map, so
-it is built first.
+it is built first, unless --built says the tree already holds the build CI
+shares between its jobs.
 
 The checks run at the same time, and the tests on one worker per CPU; each
 check's output is printed whole when it finishes.
@@ -583,6 +584,11 @@ def main(arguments: list[str] | None = None) -> int:
         help="commit the change is measured from; "
         "by default where HEAD left the nearest main or release branch",
     )
+    parser.add_argument(
+        "--built",
+        action="store_true",
+        help="test the Matic Map already in the tree instead of building it",
+    )
     options = parser.parse_args(arguments)
     if options.base and not _git("rev-parse", "--verify", f"{options.base}^{{commit}}"):
         parser.error(f"--base {options.base} is not a commit in this checkout")
@@ -607,7 +613,7 @@ def main(arguments: list[str] | None = None) -> int:
     failed = ["structure"] if structure else []
     if not selected:
         print("No test reaches a changed file; CI runs every test.")
-    elif (build := build_commands()) is None:
+    elif (build := [] if options.built else build_commands()) is None:
         print("Tests read the built Matic Map; install Node.js 24 to build it.")
         failed.append("tests")
     else:

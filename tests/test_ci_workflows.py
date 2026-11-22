@@ -91,14 +91,16 @@ def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> Non
         assert f"matrix.suite == '{suite}'" in conditions
 
 
+def _commands(job: dict[str, Any]) -> list[str]:
+    """Return each step's command, or the action it uses without its ref."""
+    return [step.get("run") or step["uses"].split("@")[0] for step in job["steps"]]
+
+
 @pytest.mark.parametrize(
     ("workflow", "job", "reader"),
     [
-        ("test.yml", "live", "npx playwright test"),
-        ("test.yml", "browser", "npm run test:browser"),
         ("nightly.yml", "nightly", "pytest"),
         ("nightly.yml", "nightly", "npx playwright test"),
-        ("release.yml", "build", "python scripts/release.py zip"),
         (
             "windows-assistive-qualification.yml",
             "windows-assistive-qualification",
@@ -109,7 +111,7 @@ def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> Non
 def test_matic_map_is_built_before_a_job_reads_it(
     workflow: str, job: str, reader: str
 ) -> None:
-    """The bundle is not committed. In Test's `test` job, check.py builds it."""
+    """The bundle is not committed. Test shares one build; see below."""
     commands = [
         step.get("run", "") for step in _workflow(workflow)["jobs"][job]["steps"]
     ]
@@ -119,39 +121,108 @@ def test_matic_map_is_built_before_a_job_reads_it(
     assert built < min(i for i, run in enumerate(commands) if reader in run)
 
 
-def test_release_runs_by_hand_and_builds_without_write_access() -> None:
-    """npm packages run in the build job, so only the publish job may write."""
-    workflow = _workflow("release.yml")
-    build, publish = workflow["jobs"]["build"], workflow["jobs"]["publish"]
+def test_one_job_builds_matic_map_and_shares_it() -> None:
+    """No other job in Test builds Matic Map or reruns the build tests."""
+    jobs = _workflow("test.yml")["jobs"]
+    build = jobs["build"]
+    upload = build["steps"][-1]
 
-    def steps(job: dict[str, Any]) -> list[str]:
-        return [step.get("run") or step["uses"].split("@")[0] for step in job["steps"]]
+    assert next(iter(jobs)) == "build"
+    assert _commands(build)[1:] == [
+        "python3 .github/scripts/delivery-contract.py .",
+        "actions/setup-node",
+        "npm ci",
+        "npm run test:build",
+        "npm run build:map-studio-v4",
+        "actions/upload-artifact",
+    ]
+    assert upload["with"]["name"] == "matic-map"
+    assert upload["with"]["path"].split() == [
+        "custom_components/matic_robot/matic_icons.js",
+        "custom_components/matic_robot/map_studio_v4/",
+        "tests/browser/.generated/",
+    ]
+    # The review build sits under a dot directory, which is skipped otherwise.
+    assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["if-no-files-found"] == "error"
+    for name, job in jobs.items():
+        assert name == "build" or not any(
+            "npm run build:" in run or "test:build" in run for run in _commands(job)
+        )
+
+
+@pytest.mark.parametrize(
+    ("job", "reader"),
+    [
+        ("test", 'python scripts/check.py --all --built ${BASE:+--base "$BASE"}'),
+        ("live", "npx playwright test --config playwright.live.config.mjs"),
+        ("browser", "npm run test:browser -- --shard="),
+    ],
+)
+def test_every_lane_downloads_the_build_before_reading_it(
+    job: str, reader: str
+) -> None:
+    lane = _workflow("test.yml")["jobs"][job]
+    commands = _commands(lane)
+    download = commands.index("actions/download-artifact")
+
+    assert lane["needs"] == "build"
+    assert lane["steps"][download]["with"] == {"name": "matic-map"}
+    assert download < next(i for i, run in enumerate(commands) if reader in run)
+
+
+def test_a_failed_build_skips_every_lane_and_an_edit_run_still_replays() -> None:
+    """Lanes that replay in an edit run must run while the build is skipped."""
+    jobs = _workflow("test.yml")["jobs"]
+    edit_run = "${{ !(github.event.action == 'edited' && !github.event.changes.base) }}"
+
+    assert jobs["build"]["if"] == edit_run
+    assert jobs["browser"]["if"] == edit_run
+    for lane in ("test", "live"):
+        assert jobs[lane]["if"] == (
+            "${{ !cancelled() && needs.build.result != 'failure' }}"
+        )
+
+
+def test_release_publishes_the_zip_test_built_for_its_commit() -> None:
+    """Release rebuilds nothing: it finds, checks, attests and publishes."""
+    workflow = _workflow("release.yml")
+    (job,) = workflow["jobs"].values()
+    steps = {step.get("id"): step for step in job["steps"]}
+    download = next(
+        step
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
 
     assert list(workflow[True]) == ["workflow_dispatch"]
     assert list(workflow[True]["workflow_dispatch"]["inputs"]) == ["tag"]
     assert workflow["permissions"] == {"contents": "read"}
-    assert build["permissions"] == {
+    assert job["permissions"] == {
+        "actions": "read",
         "attestations": "write",
-        "contents": "read",
+        "contents": "write",
         "id-token": "write",
     }
-    assert publish["permissions"] == {"contents": "write"}
-    assert publish["needs"] == "build"
-    for job in (build, publish):
-        assert job["steps"][0]["with"] == {"persist-credentials": False}
-    assert steps(build)[3:] == [
+    assert job["steps"][0]["with"] == {"persist-credentials": False}
+    assert _commands(job)[2:] == [
         'python scripts/release.py check "$TAG"',
-        "npm ci",
-        "npm run build:map-studio-v4",
-        "python scripts/release.py zip",
-        "actions/attest",
-        "actions/upload-artifact",
-    ]
-    assert steps(publish)[2:] == [
+        "python scripts/release.py built",
         "actions/download-artifact",
+        "python scripts/release.py verify",
+        "actions/attest",
         'python scripts/release.py publish "$TAG"',
         'python scripts/release.py prune "$TAG"',
     ]
+    assert steps["test"]["run"] == "python scripts/release.py built"
+    assert download["with"] == {
+        "name": "matic_robot.zip",
+        "path": "dist",
+        "run-id": "${{ steps.test.outputs.run-id }}",
+        "github-token": "${{ github.token }}",
+    }
+    assert "digest-mismatch" not in download["with"]
+    assert not any("npm" in run for run in _commands(job))
 
 
 def test_the_allowed_install_script_is_the_locked_esbuild() -> None:

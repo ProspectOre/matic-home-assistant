@@ -96,9 +96,11 @@ there lists any other exception with its reason.
 - Nightly runs the tests and the live lane on the oldest supported, newest
   stable and beta Home Assistant. GitHub starts it from the default branch
   only.
-- Test builds and keeps `matic_robot.zip`, the file HACS installs, for every
-  head it runs on. Release builds the same zip, publishes it as a release and
-  deletes superseded candidates. Only a maintainer with the owner's approval
+- Test's `build` job builds Matic Map once; the tests, the live lane and the
+  browser shards download it, and `check.py --built` tests it without
+  rebuilding. Test keeps `matic_robot.zip`, the file HACS installs, for every
+  head it runs on. Release publishes the zip Test kept for its commit, never a
+  rebuild, and deletes superseded candidates. Only a maintainer with the owner's approval
   runs it; see [CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 - `.github/delivery-contract.json` must list every workflow file.
   `.github/scripts/delivery-contract.py` checks that first in Test.
