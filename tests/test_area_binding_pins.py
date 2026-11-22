@@ -40,7 +40,7 @@ from custom_components.matic_robot.area_binding import (
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_views import _project_areas
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.service_plans import _validated_area_command
+from custom_components.matic_robot.service_plans import validated_area_command
 from tests import legacy_bindings
 from tests.plans.fakes import memory_manager
 
@@ -137,7 +137,7 @@ def _digest(value: object) -> str:
 
 def _command(area: dict[str, Any], floor_plan: FloorPlan) -> object:
     try:
-        _, circles, _, _ = _validated_area_command(area, floor_plan, None, None)
+        _, circles, _, _ = validated_area_command(area, floor_plan, None, None)
     except ServiceValidationError as err:
         return err.translation_key
     return [list(circle) for circle in circles]

@@ -338,7 +338,7 @@ async def test_save_plan_stores_occupancy_settings_for_its_rooms(hass) -> None:
     )
     context = ("vacuum.test", SimpleNamespace(), "serial", {"room-kitchen": "Kitchen"})
     with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
+        "custom_components.matic_robot.service_context.saved_plan_context",
         return_value=context,
     ):
         result = await _registered_handler(services, "save_plan")(call)
@@ -415,7 +415,7 @@ async def test_preview_and_run_hold_occupied_rooms(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=context,
         ),
         patch(
@@ -453,7 +453,7 @@ async def test_run_refuses_when_every_room_is_held(hass) -> None:
     }
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=context,
         ),
         patch(
@@ -484,7 +484,7 @@ async def test_preview_of_unknown_plan_reads_no_occupancy(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=context,
         ),
         patch("custom_components.matic_robot.service_plans.occupancy_holds") as read,

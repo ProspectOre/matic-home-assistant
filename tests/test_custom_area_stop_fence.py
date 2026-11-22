@@ -77,7 +77,7 @@ async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> No
     call = ServiceCall(hass, DOMAIN, "clean_area", {"area": "test_area"})
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {"room-office": "Office"}),
         ),
         patch.object(RobotCommands, "async_ensure_stop_settled", side_effect=preflight),

@@ -167,11 +167,11 @@ async def test_robot_actions_skip_an_unreachable_robot() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context.resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.service_context._entry_for_entity",
+            "custom_components.matic_robot.service_context.entry_for_entity",
             return_value=entry,
         ),
         patch.object(RobotControls, "async_go_to_room", sent),
@@ -200,11 +200,11 @@ async def test_robot_actions_send_to_every_robot_and_raise_the_first_failure() -
     )
     with (
         patch(
-            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context.resolve_loaded_matic_vacuums",
             return_value=["vacuum.one", "vacuum.two"],
         ),
         patch(
-            "custom_components.matic_robot.service_context._entry_for_entity",
+            "custom_components.matic_robot.service_context.entry_for_entity",
             side_effect=lambda _hass, entity_id: entries[entity_id],
         ),
         patch.object(RobotControls, "async_go_to_room", go),

@@ -35,8 +35,8 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.service_plans import (
-    _saved_plan_preview,
-    _validated_area_command,
+    saved_plan_preview,
+    validated_area_command,
 )
 from tests import legacy_bindings
 from tests.plans.fakes import memory_manager
@@ -228,7 +228,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     )
 
     with pytest.raises(PlanAreaMapChangedError):
-        _saved_plan_preview(manager, "synthetic-serial", entry, {}, "area-plan")
+        saved_plan_preview(manager, "synthetic-serial", entry, {}, "area-plan")
     with pytest.raises(HomeAssistantError):
         await get_plan.async_call(
             tool_hass,
@@ -310,7 +310,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     assert rebound["map_binding"]["frame"]
     assert area_binding_status(rebound, current_map) is AreaBindingStatus.CURRENT
 
-    _floor, preview, _token = _saved_plan_preview(
+    _floor, preview, _token = saved_plan_preview(
         manager, "synthetic-serial", entry, {}, "area-plan"
     )
     assert preview["valid"] is True
@@ -436,7 +436,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
         assert readiness.data["status"] == "needs_confirmation"
         assert readiness.data["can_preview"] is False
         with pytest.raises(PlanAreaMapChangedError):
-            _saved_plan_preview(
+            saved_plan_preview(
                 reloaded,
                 "synthetic-serial",
                 entry,
@@ -450,7 +450,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
                 _llm_context(),
             )
         with pytest.raises(HomeAssistantError):
-            _validated_area_command(
+            validated_area_command(
                 reloaded.catalog.area("synthetic-serial", "saved-zone"),
                 refreshed_map,
                 None,
@@ -472,7 +472,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
             )
             is AreaBindingStatus.CURRENT
         )
-        _floor, preview, _token = _saved_plan_preview(
+        _floor, preview, _token = saved_plan_preview(
             reloaded,
             "synthetic-serial",
             entry,
@@ -490,7 +490,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
             "room-1"
         ]
         assert llm_preview.data["legs"][1]["custom_area"]["id"] == "saved-zone"
-        _validated_area_command(
+        validated_area_command(
             reloaded.catalog.area("synthetic-serial", "saved-zone"),
             refreshed_map,
             None,

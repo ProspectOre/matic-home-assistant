@@ -37,7 +37,7 @@ from custom_components.matic_robot.plan_model import (
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.service_plans import (
-    _plan_request_error,
+    plan_request_error,
 )
 from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
@@ -602,7 +602,7 @@ async def _handler(hass, manager, service: str, schema, data: dict, floor=None):
     services = await _registered_services(hass, manager)
     floor = floor or _floor()
     with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
+        "custom_components.matic_robot.service_context.saved_plan_context",
         return_value=_context(floor),
     ):
         return await _registered_handler(services, service)(
@@ -706,16 +706,16 @@ async def test_save_plan_service_rejects_unusable_areas(
 
 
 def test_plan_request_errors_translate_area_failures() -> None:
-    assert _plan_request_error(PlanAreaMissingError("x")).translation_key == (
+    assert plan_request_error(PlanAreaMissingError("x")).translation_key == (
         "plan_area_missing"
     )
-    assert _plan_request_error(PlanAreaMapChangedError("x")).translation_key == (
+    assert plan_request_error(PlanAreaMapChangedError("x")).translation_key == (
         "area_map_changed"
     )
-    assert _plan_request_error(DuplicatePlanAreaError("x")).translation_key == (
+    assert plan_request_error(DuplicatePlanAreaError("x")).translation_key == (
         "duplicate_area"
     )
-    limit = _plan_request_error(PlanAreaLimitError("x"))
+    limit = plan_request_error(PlanAreaLimitError("x"))
     assert limit.translation_key == "plan_area_limit"
     assert limit.translation_placeholders == {"limit": str(MAX_ROOM_SEQUENCE_SIZE)}
 
@@ -753,7 +753,7 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
 
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
@@ -810,7 +810,7 @@ async def test_running_a_room_only_plan_keeps_its_legacy_executor_call(hass) -> 
     )
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
@@ -832,7 +832,7 @@ async def test_preview_plan_service_returns_typed_entries(hass) -> None:
     services = await _registered_services(hass, manager)
 
     with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
+        "custom_components.matic_robot.service_context.saved_plan_context",
         return_value=_context(floor),
     ):
         preview = await _registered_handler(services, "preview_plan")(

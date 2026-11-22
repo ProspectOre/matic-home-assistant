@@ -19,7 +19,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.service_plans import (
-    _validated_area_command,
+    validated_area_command,
 )
 from tests import legacy_bindings
 
@@ -62,7 +62,7 @@ def test_small_single_room_frame_shift_stays_reviewable(offset):
         is binding.AreaBindingStatus.GEOMETRY_CHANGED
     )
     with pytest.raises(ServiceValidationError) as error:
-        _validated_area_command(area, changed, None, None)
+        validated_area_command(area, changed, None, None)
     assert error.value.translation_key == "area_map_changed"
     assert area == before
 

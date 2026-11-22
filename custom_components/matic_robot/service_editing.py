@@ -38,12 +38,12 @@ from .service_names import (
     SERVICE_SAVE_PLAN,
 )
 from .service_plans import (
-    _normalize_saved_area,
-    _normalize_saved_room,
-    _plan_cadence_bindings,
-    _plan_request_error,
-    _resolve_saved_plan,
-    _unknown_plan_error,
+    normalize_saved_area,
+    normalize_saved_room,
+    plan_cadence_bindings,
+    plan_request_error,
+    resolve_saved_plan,
+    unknown_plan_error,
 )
 from .service_schemas import (
     DELETE_ROOM_SCHEDULE_SCHEMA,
@@ -109,7 +109,7 @@ async def _async_reset_plan_history(
     entity_ids: list[str],
 ) -> None:
     """Reset selected or explicitly named durable cleaning history."""
-    _entity_id, _entry, serial_number, _room_map = context._saved_plan_context(
+    _entity_id, _entry, serial_number, _room_map = context.saved_plan_context(
         hass, entity_ids
     )
     plan_id: str | None = None
@@ -117,7 +117,7 @@ async def _async_reset_plan_history(
         try:
             plan_id = manager.catalog.plan(serial_number, call.data.get("plan"))["id"]
         except KeyError as err:
-            raise _unknown_plan_error(err) from err
+            raise unknown_plan_error(err) from err
     await manager.ledger.async_reset_history(serial_number, plan_id)
 
 
@@ -128,10 +128,10 @@ async def _async_reset_room_cadence(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Reset cadence counters without resetting completion history."""
-    _entity_id, _entry, serial_number, _room_map = context._saved_plan_context(
+    _entity_id, _entry, serial_number, _room_map = context.saved_plan_context(
         hass, entity_ids, require_rooms=False
     )
-    plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
+    plan = resolve_saved_plan(manager, serial_number, call.data["plan"])
     room_ids = [call.data["room_id"]] if call.data.get("room_id") else None
     if room_ids and room_ids[0] not in {room["room_id"] for room in plan["rooms"]}:
         raise validation_error(
@@ -161,7 +161,7 @@ async def _async_delete_room_schedule(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Remove one shared room schedule and detach its saved consumers."""
-    _entity_id, entry, serial_number, room_map = context._saved_plan_context(
+    _entity_id, entry, serial_number, room_map = context.saved_plan_context(
         hass, entity_ids, require_rooms=False, require_current_floor=True
     )
     room_id = call.data["room_id"]
@@ -211,7 +211,7 @@ async def _async_list_plans(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Return every canonical plan definition and current selection."""
-    entity_id, _entry, serial_number, room_map = context._saved_plan_context(
+    entity_id, _entry, serial_number, room_map = context.saved_plan_context(
         hass, entity_ids, require_rooms=False
     )
     snapshot = manager.history.snapshot(serial_number)
@@ -233,7 +233,7 @@ async def _async_save_plan(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Create or atomically replace a complete saved plan."""
-    _entity_id, entry, serial_number, room_map = context._saved_plan_context(
+    _entity_id, entry, serial_number, room_map = context.saved_plan_context(
         hass, entity_ids, require_current_floor=True
     )
     plan_id = call.data.get("plan_id") or slugify(call.data["name"])
@@ -251,9 +251,9 @@ async def _async_save_plan(
     entries: list[dict[str, Any]] = []
     for item in call.data["rooms"]:
         if "area" in item:
-            entries.append(_normalize_saved_area(manager, serial_number, entry, item))
+            entries.append(normalize_saved_area(manager, serial_number, entry, item))
             continue
-        room = _normalize_saved_room(item, room_map, kept)
+        room = normalize_saved_room(item, room_map, kept)
         rooms.append(room)
         entries.append({"kind": "room", "room_id": room["room_id"]})
     plan = {
@@ -276,7 +276,7 @@ async def _async_save_plan(
         "completion_timeout": call.data["completion_timeout"],
     }
     try:
-        cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
+        cadence_floor_token, room_identities = plan_cadence_bindings(entry)
         await manager.catalog.async_save_plan(
             serial_number,
             plan_id,
@@ -290,7 +290,7 @@ async def _async_save_plan(
             "The saved-plan limit is reached", "plan_limit_reached"
         ) from err
     except ValueError as err:
-        raise _plan_request_error(err) from err
+        raise plan_request_error(err) from err
     return {"plan": manager.catalog.plan(serial_number, plan_id)}
 
 
@@ -301,10 +301,10 @@ async def _async_delete_plan(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Delete one plan by ID or human-readable name."""
-    _entity_id, _entry, serial_number, _room_map = context._saved_plan_context(
+    _entity_id, _entry, serial_number, _room_map = context.saved_plan_context(
         hass, entity_ids, require_rooms=False
     )
-    plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
+    plan = resolve_saved_plan(manager, serial_number, call.data["plan"])
     try:
         await manager.catalog.async_delete_plan(serial_number, plan["id"])
     except ValueError as err:

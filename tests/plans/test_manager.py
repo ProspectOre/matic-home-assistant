@@ -15,7 +15,7 @@ from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.service_context import _entry_for_entity
+from custom_components.matic_robot.service_context import entry_for_entity
 from tests.plans.fakes import memory_manager, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot
 
@@ -336,7 +336,7 @@ def test_entry_lookup_rejects_missing_registry_entry() -> None:
         ),
         pytest.raises(ServiceValidationError, match="unavailable"),
     ):
-        _entry_for_entity(SimpleNamespace(), "vacuum.matic")
+        entry_for_entity(SimpleNamespace(), "vacuum.matic")
 
 
 async def test_plan_manager_initialization_is_shared_before_storage_load(hass) -> None:

@@ -47,13 +47,13 @@ from .service_names import (
     SERVICE_STOP_INTELLIGENT_CLEANING,
 )
 from .service_plans import (
-    _plan_occupancy_holds,
-    _plan_request_error,
-    _preview_has_area,
-    _resolve_room_id,
-    _saved_plan_execution,
-    _saved_plan_preview,
-    _unknown_plan_error,
+    plan_occupancy_holds,
+    plan_request_error,
+    preview_has_area,
+    resolve_room_id,
+    saved_plan_execution,
+    saved_plan_preview,
+    unknown_plan_error,
 )
 from .service_schemas import (
     CLEAN_ROOM_SEQUENCE_SCHEMA,
@@ -133,20 +133,20 @@ async def _async_run_selected_plan(
     """Run a saved plan in its saved cleaning order, or the one asked for."""
     run_behavior = call.data.get("run_behavior")
     preview_token = call.data.get("preview_token")
-    target = context._saved_plan_context(hass, entity_ids, require_current_floor=True)
+    target = context.saved_plan_context(hass, entity_ids, require_current_floor=True)
     entity_id, entry, serial_number, room_map = target
     execution_floor_plan = _current_floor_plan(entry)
     execution_floor_token = plan_floor_token(execution_floor_plan)
     # Occupancy is read once at admission. A sensor that changes while the
     # run waits for the robot does not invalidate the run.
     preview_plan = partial(
-        _saved_plan_preview,
+        saved_plan_preview,
         manager,
         serial_number,
         entry,
         plan_reference=call.data.get("plan"),
         intelligent=None if run_behavior is None else run_behavior == "intelligent",
-        held_rooms=_plan_occupancy_holds(
+        held_rooms=plan_occupancy_holds(
             hass, manager, serial_number, entity_id, call.data.get("plan"), room_map
         ),
     )
@@ -162,13 +162,13 @@ async def _async_run_selected_plan(
                 "Every selected room has reached its daily cleaning limit",
                 "daily_room_limit_reached",
             )
-        plan, rooms, cadence_by_room = _saved_plan_execution(
+        plan, rooms, cadence_by_room = saved_plan_execution(
             manager, serial_number, execution_floor_plan, preview
         )
     except KeyError as err:
-        raise _unknown_plan_error(err) from err
+        raise unknown_plan_error(err) from err
     except ValueError as err:
-        raise _plan_request_error(err) from err
+        raise plan_request_error(err) from err
 
     data = {
         "plan_id": plan["id"],
@@ -189,7 +189,7 @@ async def _async_run_selected_plan(
             _require_unchanged_plan, entry, preview_plan, initial_preview_token
         ),
         # The run order of rooms and custom areas, when there is an area.
-        entries=preview["entries"] if _preview_has_area(preview) else None,
+        entries=preview["entries"] if preview_has_area(preview) else None,
         held_rooms=preview.get("held_rooms", ()),
         missing_rooms=preview.get("missing_rooms", ()),
     )
@@ -207,7 +207,7 @@ def _require_unchanged_plan(
         current_room_map = {room.id: room.name for room in current_floor.rooms}
         _current_floor, _current_preview, current_token = preview_plan(current_room_map)
     except PlanRoomMissingError as err:
-        raise _plan_request_error(err) from err
+        raise plan_request_error(err) from err
     except (KeyError, TypeError, ValueError) as err:
         raise validation_error(
             "The saved plan can no longer run", "invalid_plan"
@@ -224,7 +224,7 @@ def _only_daily_limit_holds(preview: Mapping[str, Any]) -> bool:
     return bool(
         preview.get("daily_limit_held_rooms")
         and not preview.get("rooms")
-        and not _preview_has_area(preview)
+        and not preview_has_area(preview)
     )
 
 
@@ -310,10 +310,10 @@ def _resolve_sequence(
             return_to_base=bool(data["return_to_base"]),
             use_room_schedule=bool(data.get("use_room_schedule", False)),
             override_room_schedule=bool(data.get("override_room_schedule", False)),
-            room_resolver=_resolve_room_id,
+            room_resolver=resolve_room_id,
         )
     except ValueError as err:
-        raise _plan_request_error(err) from err
+        raise plan_request_error(err) from err
 
 
 async def _async_clean_room_sequence(
@@ -323,7 +323,7 @@ async def _async_clean_room_sequence(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Start an unsaved ordered room sequence with per-room settings."""
-    target = context._saved_plan_context(hass, entity_ids, require_current_floor=True)
+    target = context.saved_plan_context(hass, entity_ids, require_current_floor=True)
     _entity_id, entry, serial_number, room_map = target
     execution_floor_plan = _current_floor_plan(entry)
     execution_floor_token = plan_floor_token(execution_floor_plan)
@@ -409,7 +409,7 @@ async def _async_preview_room_sequence(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Return the current authoritative resolution of a room sequence."""
-    _entity_id, entry, serial_number, room_map = context._saved_plan_context(
+    _entity_id, entry, serial_number, room_map = context.saved_plan_context(
         hass, entity_ids, require_current_floor=True
     )
     resolved = _resolve_sequence(
@@ -433,17 +433,17 @@ async def _async_preview_plan(
     entity_ids: list[str],
 ) -> dict[str, Any]:
     """Validate and return the exact next saved-plan execution."""
-    entity_id, entry, serial_number, room_map = context._saved_plan_context(
+    entity_id, entry, serial_number, room_map = context.saved_plan_context(
         hass, entity_ids, require_current_floor=True
     )
     try:
-        _floor_plan, preview, preview_token = _saved_plan_preview(
+        _floor_plan, preview, preview_token = saved_plan_preview(
             manager,
             serial_number,
             entry,
             room_map,
             call.data.get("plan"),
-            held_rooms=_plan_occupancy_holds(
+            held_rooms=plan_occupancy_holds(
                 hass,
                 manager,
                 serial_number,
@@ -453,9 +453,9 @@ async def _async_preview_plan(
             ),
         )
     except KeyError as err:
-        raise _unknown_plan_error(err) from err
+        raise unknown_plan_error(err) from err
     except ValueError as err:
-        raise _plan_request_error(err) from err
+        raise plan_request_error(err) from err
     result = {"entity_id": entity_id, **preview, "preview_token": preview_token}
     if _only_daily_limit_holds(preview):
         result["blocker"] = "daily_limit_reached"
@@ -469,7 +469,7 @@ async def _async_stop_intelligent_cleaning(
     entity_ids: list[str],
 ) -> None:
     """Apply the active plan's stop policy and send the robot home."""
-    entity_id, entry, serial_number, _room_map = context._saved_plan_context(
+    entity_id, entry, serial_number, _room_map = context.saved_plan_context(
         hass, entity_ids, require_rooms=False
     )
     fence = await _async_reserve_stop(manager, serial_number, call.data)
