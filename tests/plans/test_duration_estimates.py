@@ -180,6 +180,8 @@ async def test_current_room_timing_rejects_other_owners_and_settings(hass) -> No
     ):
         robot["active_plan"] = {**active, **fields}
         assert manager.history.current_room_timing("serial") is None
+    robot["active_plan"] = None
+    assert manager.history.current_room("serial") is None
     robot["active_plan"] = active
     robot["last_run"]["outcome"] = "unverified"
     assert manager.history.current_room_timing("serial") is None
