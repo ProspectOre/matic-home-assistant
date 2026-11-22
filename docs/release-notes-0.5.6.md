@@ -15,5 +15,7 @@ taken out of a plan without saving the whole plan again.
 action editor. The actions already accepted them; they were missing from the
 form.
 
+Thanks to @parkerbxyz for reporting #517 and #518.
+
 Back up Home Assistant, update Matic to `v0.5.6` in HACS, and restart Home
 Assistant. Home Assistant 2026.10 or later is required.
