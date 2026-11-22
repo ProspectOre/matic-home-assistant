@@ -3,10 +3,12 @@
   "plans": {
     "daily": { "name": "Daily", "enabled": true, "room_count": 3 }
   },
-  "last_run": {
+  "run": {
     "run_id": "partial-1",
     "outcome": "failed",
+    "completed_room_count": 1,
     "room_count": 3,
-    "completed_room_count": 1
+    "target": null,
+    "smart_stop_phase": null
   }
 }

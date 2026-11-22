@@ -280,6 +280,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             stop_dispatch_pending=MagicMock(return_value=False),
         ),
         history=SimpleNamespace(
+            run_summary=MagicMock(return_value=None),
             snapshot=MagicMock(
                 return_value={
                     "completed_runs": 0,
@@ -1037,16 +1038,11 @@ async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
     history = sensor.MaticCleaningHistorySensor(entry)
     attributes = history.extra_state_attributes
     assert attributes["matic_entry_id"] == payload["matic_entry_id"]
-    if active:
-        assert attributes["active_plan"]["run_id"] == payload["active_plan"]["run_id"]
-        assert attributes["active_plan"]["room_id"] == payload["active_plan"]["room_id"]
-    else:
+    if not active:
         assert attributes["plans"] == payload["plans"]
-    assert {key: attributes["last_run"][key] for key in payload["last_run"]} == payload[
-        "last_run"
-    ]
+    assert attributes["run"] == payload["run"]
     assert isinstance(attributes["plans"], dict)
-    assert "matic_entry_id" in history._unrecorded_attributes
+    assert {"matic_entry_id", "run"} <= history._unrecorded_attributes
 
 
 def test_sensor_and_binary_sensor_values() -> None:

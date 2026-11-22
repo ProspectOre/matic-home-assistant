@@ -874,6 +874,7 @@
         }),
         'robot_reported_completed_by_room': dict({
         }),
+        'run': None,
         'selected_area': None,
         'selected_area_name': None,
         'selected_plan': None,

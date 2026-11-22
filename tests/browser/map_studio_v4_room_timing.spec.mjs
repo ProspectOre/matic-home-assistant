@@ -19,7 +19,7 @@ for (const [viewport, fontSize] of [
     await page.setViewportSize(viewport);
     const room = { id: "room-bedroom", name: "Master Bedroom", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] };
     const activeHistory = structuredClone(history);
-    activeHistory.active_plan.room_id = room.id;
+    activeHistory.run.target.id = room.id;
     const activeTiming = structuredClone(timing);
     activeTiming.attributes.room_id = room.id;
     activeTiming.attributes.room = room.name;
@@ -91,7 +91,7 @@ test("map options remain usable when the robot starts cleaning @mobile", async (
   await page.setViewportSize({ width: 402, height: 874 });
   const room = { id: "room-bedroom", name: "Master Bedroom", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] };
   const activeHistory = structuredClone(history);
-  activeHistory.active_plan.room_id = room.id;
+  activeHistory.run.target.id = room.id;
   const fixture = await installPanelFixture(page, { sceneRooms: [room], initialRobotStates: {
     "vacuum.synthetic": { state: "docked", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
     "sensor.synthetic_current_room": currentRoom("Master Bedroom"),
@@ -185,7 +185,7 @@ for (const viewport of [{ width: 320, height: 700 }, { width: 390, height: 844 }
   test(`Smart Stop explains its state and keeps the immediate override reachable at ${viewport.width}x${viewport.height} @mobile`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const activeHistory = structuredClone(history);
-    Object.assign(activeHistory.active_plan, { room_id: "bedroom", room: "Master Bedroom", smart_stop_pending: true, smart_stop_phase: "finishing_room" });
+    Object.assign(activeHistory.run, { target: { kind: "room", id: "bedroom", name: "Master Bedroom" }, smart_stop_phase: "finishing_room" });
     const activeTiming = structuredClone(timing);
     Object.assign(activeTiming.attributes, { room_id: "bedroom", room: "Master Bedroom" });
     const fixture = await installPanelFixture(page, { moduleSource: "packaged", sceneRooms: [
@@ -241,34 +241,42 @@ test("Smart Stop projection is bound to the active run and its phase", async ({ 
   const result = await page.evaluate(async (history) => {
     const { HassAdapter } = await import("/smart-stop-projection.js");
     const adapter = new HassAdapter();
-    const active = { ...history.active_plan, smart_stop_pending: true, smart_stop_phase: "finishing_area", area_id: "area-1", area: "Master Bathroom" };
+    const run = { ...history.run, smart_stop_phase: "finishing_area", target: { kind: "area", id: "area-1", name: "Master Bathroom" } };
     const states = {
       "vacuum.robot": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry" } },
-      "sensor.history": { state: "ready", attributes: { ...history, active_plan: active } },
+      "sensor.history": { state: "ready", attributes: { ...history, run } },
     };
     const hass = { connected: true, user: { is_admin: true }, states };
-    const read = () => adapter.project(hass, undefined, "synthetic-entry").smartStop;
-    const area = read();
-    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, run_id: "old-run" } } };
-    const stale = read();
-    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "verifying_completion" } } };
-    const verifying = read();
-    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "returning_to_dock" } } };
-    const returning = read();
-    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "unrecognized" } } };
-    const unknown = read();
-    return { area, stale, verifying, returning, unknown };
+    const read = (fields) => {
+      states["sensor.history"] = { state: "ready", attributes: { ...history, run: { ...run, ...fields } } };
+      return adapter.project(hass, undefined, "synthetic-entry").smartStop;
+    };
+    return {
+      area: read({}),
+      ended: read({ outcome: "cancelled" }),
+      verifying: read({ smart_stop_phase: "verifying_completion" }),
+      verifyingRoom: read({ smart_stop_phase: "verifying_completion", target: history.run.target }),
+      returning: read({ smart_stop_phase: "returning_to_dock", target: null }),
+      unnamedArea: read({ target: null }),
+      unsafeName: read({ smart_stop_phase: "finishing_room", target: { ...history.run.target, name: "Kitchen\u0007" } }),
+      unknown: read({ smart_stop_phase: "unrecognized" }),
+    };
   }, history);
-  expect(result.area).toEqual({ runId: "partial-1", target: "Master Bathroom", kind: "area", phase: "finishing_area" });
-  expect(result.stale).toBeNull();
-  expect(result.verifying.phase).toBe("verifying_completion");
-  expect(result.returning.phase).toBe("returning_to_dock");
-  expect(result.unknown).toBeNull();
+  expect(result).toEqual({
+    area: { runId: "partial-1", target: "Master Bathroom", kind: "area", phase: "finishing_area" },
+    ended: null,
+    verifying: { runId: "partial-1", target: "Master Bathroom", kind: "area", phase: "verifying_completion" },
+    verifyingRoom: { runId: "partial-1", target: "Kitchen", kind: "room", phase: "verifying_completion" },
+    returning: { runId: "partial-1", target: null, kind: "room", phase: "returning_to_dock" },
+    unnamedArea: { runId: "partial-1", target: null, kind: "area", phase: "finishing_area" },
+    unsafeName: { runId: "partial-1", target: null, kind: "room", phase: "finishing_room" },
+    unknown: null,
+  });
 });
 
 test("Smart Stop shows paused and return phases without hiding connection problems", async ({ page }) => {
   const activeHistory = structuredClone(history);
-  Object.assign(activeHistory.active_plan, { room: "Master Bedroom", smart_stop_pending: true, smart_stop_phase: "finishing_room" });
+  Object.assign(activeHistory.run, { target: { ...activeHistory.run.target, name: "Master Bedroom" }, smart_stop_phase: "finishing_room" });
   const fixture = await installPanelFixture(page, { initialRobotStates: {
     "vacuum.synthetic": { state: "paused", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
     "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
@@ -281,7 +289,7 @@ test("Smart Stop shows paused and return phases without hiding connection proble
   await panel.evaluate((element) => {
     const states = structuredClone(element.hass.states);
     states["vacuum.synthetic"].state = "idle";
-    states["sensor.synthetic_history"].attributes.active_plan.smart_stop_phase = "verifying_completion";
+    states["sensor.synthetic_history"].attributes.run.smart_stop_phase = "verifying_completion";
     element.hass = { ...element.hass, states };
   });
   await expect(shell.getByRole("heading", { name: "Checking the result", exact: true })).toBeVisible();
@@ -290,7 +298,7 @@ test("Smart Stop shows paused and return phases without hiding connection proble
   await panel.evaluate((element) => {
     const states = structuredClone(element.hass.states);
     states["vacuum.synthetic"].state = "returning";
-    states["sensor.synthetic_history"].attributes.active_plan.smart_stop_phase = "returning_to_dock";
+    Object.assign(states["sensor.synthetic_history"].attributes.run, { smart_stop_phase: "returning_to_dock", target: null });
     element.hass = { ...element.hass, states };
   });
   await expect(shell.getByRole("heading", { name: "Returning to the dock", exact: true })).toBeVisible();
@@ -333,7 +341,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
         if (fields.percent !== undefined) states["sensor.synthetic_progress"].state = fields.percent;
         if (fields.room !== undefined) states["sensor.synthetic_current_room"].state = fields.room;
         if (fields.activity) states["vacuum.synthetic"].state = fields.activity;
-        if (fields.run) states["sensor.synthetic_history"].attributes.active_plan.run_id = fields.run;
+        if (fields.target !== undefined) states["sensor.synthetic_history"].attributes.run.target = fields.target;
         element.hass = { ...element.hass, states };
       }, fields);
       await update({ percent: "100" });
@@ -348,9 +356,9 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       await expect(estimate).toHaveCount(0);
       await update({ room: "Kitchen", percent: "unknown" });
       await expect(estimate).toHaveCount(0);
-      await update({ percent: "35", run: "replacement" });
+      await update({ percent: "35", target: null });
       await expect(estimate).toHaveCount(0);
-      await update({ run: "partial-1", activity: "paused" });
+      await update({ target: history.run.target, activity: "paused" });
       await expect(estimate).toHaveCount(0);
     });
   }

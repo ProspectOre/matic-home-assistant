@@ -110,7 +110,7 @@ serve photos and previews, and the [photo guide](photo-tours.md) has the limits.
 
 ## Map Studio
 
-The frontend's [HA adapter](../frontend/map-studio-v4/hass-adapter.ts) projects Home Assistant state, with the current room and run status from their sensors;
+The frontend's [HA adapter](../frontend/map-studio-v4/hass-adapter.ts) projects Home Assistant state, with the current room and run status from their sensors and the managed run, its target and its Smart Stop phase from the `run` summary that History publishes on the Cleaning history sensor;
 the [workspace store and coherence machine](../frontend/map-studio-v4/state.ts)
 manage state, identity and admission. The [effect controller](../frontend/map-studio-v4/effects.ts)
 routes Home Assistant admission and actions around that shared state. Separate
