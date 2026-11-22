@@ -178,6 +178,18 @@ async def test_restart_during_smart_stop_finishes_the_room_then_docks(
             await plan.poll()
     assert active["room"] == "Kitchen"
     assert active["smart_stop_phase"] == "finishing_room"
+    # Matic Map reads the same run, target and phase from the run summary.
+    history = hass.states.get("sensor.simulated_matic_cleaning_history")
+    assert history is not None
+    summary = history.attributes["run"]
+    assert summary["run_id"] == active["run_id"]
+    assert summary["outcome"] == "running"
+    assert summary["target"] == {
+        "kind": "room",
+        "id": active["room_id"],
+        "name": "Kitchen",
+    }
+    assert summary["smart_stop_phase"] == "finishing_room"
     assert robot.phase is Phase.CLEANING
     assert robot.session is not None
     assert robot.session.rooms == [floor.rooms[0].id]

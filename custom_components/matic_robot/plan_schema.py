@@ -1,4 +1,4 @@
-"""JSON the plans and daily limit views send and accept.
+"""JSON the plans and daily limit views send and accept, and the run summary.
 
 `scripts/contract_types.py` generates Matic Map's types from these, as from
 `map_schema`; for the same reason this module does not postpone annotations.
@@ -218,3 +218,31 @@ class PlansCatalog(TypedDict):
     rooms: list[PlanCatalogRoom]
     plans: list[SavedPlan]
     selected_plan: str | None
+
+
+type SmartStopPhase = Literal[
+    "finishing_room", "finishing_area", "verifying_completion", "returning_to_dock"
+]
+
+
+class RunTarget(TypedDict):
+    """The stored room or area the running run is on."""
+
+    kind: Literal["room", "area"]
+    id: str
+    name: str | None
+
+
+class RunSummary(TypedDict):
+    """The latest managed run, the Cleaning history sensor's `run` attribute.
+
+    `outcome` is the run record's, `running` while it runs. Only the running
+    run has a `target` and a `smart_stop_phase`.
+    """
+
+    run_id: str
+    outcome: str | None
+    completed_room_count: int
+    room_count: int
+    target: RunTarget | None
+    smart_stop_phase: SmartStopPhase | None

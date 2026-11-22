@@ -32,6 +32,7 @@ from .plan_model import (
 from .plan_repository import (
     PlanRepository,
 )
+from .plan_schema import SmartStopPhase
 from .run_machine import recovery_run
 
 _LOGGER = logging.getLogger(__name__)
@@ -755,7 +756,7 @@ class RunControl:
         """Return the graceful-stop signal for the current managed run."""
         return self.actor(serial_number).finish_room_event
 
-    def smart_stop_phase(self, serial_number: str) -> str | None:
+    def smart_stop_phase(self, serial_number: str) -> SmartStopPhase | None:
         """Return where the running run's accepted Smart Stop stands, else None.
 
         Smart Stop is pending while the checkpoint holds the after-room intent
