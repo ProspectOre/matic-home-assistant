@@ -20,7 +20,7 @@ const catalog = {
       cadence_reasons: unverified,
     }],
     room_order: ["room-a"], return_to_base: true, finish_current_room: false, finish_current_room_threshold: 50,
-    next_run_preview: { rooms: [], mission_boundaries: [], blocker: "cadence_progress_unverified" },
+    next_run_preview: { entries: [], mission_boundaries: [], blocker: "cadence_progress_unverified" },
   }],
 };
 

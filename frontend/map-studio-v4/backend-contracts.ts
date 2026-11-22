@@ -330,7 +330,6 @@ export interface NextRunMissingRoom {
 
 export interface NextRunPreview {
   readonly dailyLimitHeldRooms?: readonly DailyLimitHeldRoom[];
-  readonly rooms: readonly NextRunPreviewRoom[];
   readonly heldRooms?: readonly NextRunHeldRoom[];
   readonly missingRooms?: readonly NextRunMissingRoom[];
   /** Every step in run order, rooms and custom areas. */

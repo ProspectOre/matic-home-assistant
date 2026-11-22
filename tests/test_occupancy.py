@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import probatio
@@ -593,6 +594,18 @@ async def _workspace_plan(runtime) -> dict[str, object]:
     return json.loads(response.body)["plans"][0]
 
 
+def _kitchen_preview() -> dict[str, Any]:
+    """The planner's preview of a run of Kitchen alone."""
+    room = {
+        "room_id": "room-1",
+        "name": "Kitchen",
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "cadence": {},
+    }
+    return {"rooms": [room], "entries": [{"kind": "room", **room}]}
+
+
 async def test_plan_workspace_projects_occupancy_settings_and_held_rooms() -> None:
     held = {"room-2": {"reason": "occupied", "sensor": "binary_sensor.study"}}
     runtime = _workspace_runtime(
@@ -603,15 +616,7 @@ async def test_plan_workspace_projects_occupancy_settings_and_held_rooms() -> No
     )
     runtime.cleaning_plans.planning.preview.side_effect = None
     runtime.cleaning_plans.planning.preview.return_value = {
-        "rooms": [
-            {
-                "room_id": "room-1",
-                "name": "Kitchen",
-                "cleaning_mode": "vacuum",
-                "coverage_setting": "standard",
-                "cadence": {},
-            }
-        ],
+        **_kitchen_preview(),
         "held_rooms": [{"room_id": "room-2", "name": "Study", **held["room-2"]}],
     }
     with (
@@ -659,7 +664,7 @@ async def test_plan_workspace_reports_every_room_held() -> None:
         plan = await _workspace_plan(runtime)
 
     assert plan["next_run_preview"] == {
-        "rooms": [],
+        "entries": [],
         "mission_boundaries": [],
         "blocker": "plan_rooms_held",
         "held_rooms": [
@@ -676,17 +681,7 @@ async def test_plan_workspace_reports_every_room_held() -> None:
 async def test_plan_workspace_reads_no_occupancy_without_a_vacuum() -> None:
     runtime = _workspace_runtime({"occupancy_aware": True})
     runtime.cleaning_plans.planning.preview.side_effect = None
-    runtime.cleaning_plans.planning.preview.return_value = {
-        "rooms": [
-            {
-                "room_id": "room-1",
-                "name": "Kitchen",
-                "cleaning_mode": "vacuum",
-                "coverage_setting": "standard",
-                "cadence": {},
-            }
-        ]
-    }
+    runtime.cleaning_plans.planning.preview.return_value = _kitchen_preview()
     with (
         patch(
             "custom_components.matic_robot.plan_views.entry_vacuum_entity_id",
@@ -697,5 +692,6 @@ async def test_plan_workspace_reads_no_occupancy_without_a_vacuum() -> None:
         plan = await _workspace_plan(runtime)
 
     holds.assert_not_called()
+    assert plan["next_run_preview"]["blocker"] is None
     assert "held_rooms" not in plan["next_run_preview"]
     assert "held_rooms" not in runtime.cleaning_plans.planning.preview.call_args.kwargs

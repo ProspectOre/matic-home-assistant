@@ -306,16 +306,15 @@ export class MaticPlanViewsV4 extends LitElement {
     const paused = !draft.enabled;
     const ready = !paused && Boolean(preview && !blocker && /^[0-9a-f]{64}$/u.test(preview.previewToken ?? ""));
     const ordered = plan.runBehavior === "ordered";
-    const previewRooms = ready && preview ? preview.rooms : [];
     // The server preview orders every room and area; boundaries count both.
     const steps = ready && preview ? preview.steps : [];
-    const areas = ready ? steps.length - previewRooms.length : planAreas(plan).length;
+    const areas = ready ? steps.filter((step) => "areaId" in step).length : planAreas(plan).length;
     const blockedRoom = !paused && blocker ? roomBlocker(state, plan)?.jump.roomId ?? null : null;
     // While a save is pending the preview is about to be read again, so it has no problem yet.
     const problem = paused || ready || blockedRoom || state.pendingAction === "save-plan"
       ? null
       : (blocker && PLAN_BLOCKERS[blocker]) || PLAN_PREVIEW;
-    const count = ready ? previewRooms.length : plan.rooms.length;
+    const count = ready ? steps.length - areas : plan.rooms.length;
     const seconds = ready ? plan.nextRunEstimateSeconds : null;
     const duration = seconds === null ? "" : formatDuration(state.locale, seconds);
     const rooms = count === 1
@@ -351,7 +350,7 @@ export class MaticPlanViewsV4 extends LitElement {
       : draft.returnToBase ? this.#t("v4_plan_summary_return", "Returns to the dock when finished") : null;
     return html`
       <p class="summary"><bdi dir="auto">${summary}</bdi></p>
-      ${this.#lines(dueLines(this.#t, state.locale, previewRooms))}
+      ${this.#lines(dueLines(this.#t, state.locale, steps))}
       <h3 class="heading">${paused
         ? this.#t("v4_plan_rooms_heading", "In this plan")
         : state.resources.entry?.activePlan
