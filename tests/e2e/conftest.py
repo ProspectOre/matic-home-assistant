@@ -9,10 +9,16 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from homeassistant.components import frontend as ha_frontend
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    MockModule,
+    mock_integration,
+)
 
 from custom_components.matic_robot.client import tls
 from custom_components.matic_robot.client.api import MaticHermesClient
@@ -182,6 +188,18 @@ def fast_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(supervisor, "KEEPALIVE_SECONDS", 0.2)
     monkeypatch.setattr(transport, "KEEPALIVE_TIMEOUT_SECONDS", 0.2)
+
+
+@pytest.fixture
+async def frontend(hass: HomeAssistant) -> None:
+    """Matic Map's views are served only beside the frontend.
+
+    The frontend package is not a test dependency, so a stand-in is loaded
+    with the module list Matic Map registers into.
+    """
+    mock_integration(hass, MockModule("frontend"))
+    assert await async_setup_component(hass, "frontend", {})
+    hass.data[ha_frontend.DATA_EXTRA_MODULE_URL] = set()
 
 
 @pytest.fixture
