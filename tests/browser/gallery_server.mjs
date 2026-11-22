@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createReadStream, readdirSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, normalize, sep } from "node:path";
@@ -5,6 +6,12 @@ import { fileURLToPath } from "node:url";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = join(testDirectory, "..", "..");
+// Each checkout serves on its own port and answers only its own health path,
+// so Playwright never reuses a server that another checkout started.
+const checkout = createHash("sha256").update(repositoryRoot).digest("hex").slice(0, 12);
+export const GALLERY_PORT = 20_000 + (Number.parseInt(checkout, 16) % 10_000);
+export const GALLERY_ORIGIN = `http://127.0.0.1:${GALLERY_PORT}`;
+export const GALLERY_HEALTH = `/health/${checkout}`;
 const isFile = (path) => Boolean(path && statSync(path, { throwIfNoEntry: false })?.isFile());
 const scripts = new Map([
   [
@@ -32,7 +39,7 @@ function panelChunks() {
 /**
  * The synthetic test and review server: the audit/review harness and the
  * owner walkthrough stage, plus the bundles they load. It never talks to Home
- * Assistant or a robot. `server.mjs` listens on 127.0.0.1:4173 for Playwright;
+ * Assistant or a robot. `server.mjs` listens on `GALLERY_ORIGIN` for Playwright;
  * `scripts/stage_walkthrough.mjs` starts its own.
  */
 export function createGalleryServer() {
@@ -112,7 +119,7 @@ export function createGalleryServer() {
         .pipe(response);
       return;
     }
-    if (path === "/" || path === "/health") {
+    if (path === "/" || path === GALLERY_HEALTH) {
       response.writeHead(200, {
         "Content-Type": path === "/" ? "text/html; charset=utf-8" : "text/plain",
         "Cache-Control": "no-store",
