@@ -7,7 +7,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
-from homeassistant.core import CoreState, callback
+from homeassistant.core import CoreState
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.models import (
@@ -17,7 +17,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
-from tests.session_fakes import verifying_write
+from tests.session_fakes import take_robot_after_room_completed, verifying_write
 
 
 @pytest.fixture
@@ -273,25 +273,27 @@ async def test_recovery_settles_a_room_without_credit_as_the_leg_runner_does(
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
+@pytest.mark.parametrize("during_write", [False, True])
+@pytest.mark.parametrize("owner_skipped", [False, True])
 async def test_recovery_does_not_settle_a_room_after_losing_the_robot(
-    hass, recovery_state
+    hass, recovery_state, owner_skipped, during_write
 ):
-    """A takeover between rooms stops recovery before it settles the next one."""
+    """A takeover after a room's credit stops recovery settling the next one."""
     manager, entry, checkpoint, _ = recovery_state
     checkpoint["rooms"].append(
         asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
     )
-    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    last_run = manager.repository.robot("serial")["last_run"]
+    last_run["room_count"] = 2
+    if owner_skipped:
+        last_run["skipped_room_ids"] = ["hall"]
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
         _hall_unattempted_record(),
     )
     skipped = []
     hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
-    hass.bus.async_listen(
-        "matic_robot_room_completed",
-        callback(lambda _event: manager.control.begin_managed_motion("serial")),
-    )
+    take_robot_after_room_completed(hass, manager, during_write=during_write)
     await async_recover_managed_run(hass, entry, "serial")
     await hass.async_block_till_done()
     assert skipped == []

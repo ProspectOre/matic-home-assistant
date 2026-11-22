@@ -16,7 +16,8 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, cast
+from functools import partial
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from homeassistant.core import Context, callback
@@ -96,31 +97,18 @@ def _close_unfinished_area_records(
     return changed
 
 
-def _skip_room_record(
+def _settle_room_record(
     record: dict[str, Any],
     global_room: dict[str, Any],
+    result: str,
     *,
     run_id: str,
-    skipped_at: str,
+    settled_at: str,
 ) -> None:
-    """Close a skipped room without credit and give back its rotation turn."""
-    record["last_result"] = "skipped"
-    record["last_skipped"] = skipped_at
-    record["skipped_runs"] = stored_count(record, "skipped_runs") + 1
-    _restore_opportunity(record, global_room, run_id=run_id)
-
-
-def _unreachable_room_record(
-    record: dict[str, Any],
-    global_room: dict[str, Any],
-    *,
-    run_id: str,
-    ended_at: str,
-) -> None:
-    """Close a room the robot could not reach, without credit, keeping it due."""
-    record["last_result"] = "unreachable"
-    record["last_unreachable"] = ended_at
-    record["unreachable_runs"] = stored_count(record, "unreachable_runs") + 1
+    """Close a skipped or unreachable room without credit, giving back its turn."""
+    record["last_result"] = result
+    record[f"last_{result}"] = settled_at
+    record[f"{result}_runs"] = stored_count(record, f"{result}_runs") + 1
     _restore_opportunity(record, global_room, run_id=run_id)
 
 
@@ -167,11 +155,12 @@ def _close_unfinished_room_records(
                 continue
             if room_id in skipped and run_id is not None and ended_at is not None:
                 global_room = robot["rooms"].get(room_id)
-                _skip_room_record(
+                _settle_room_record(
                     record,
                     global_room if isinstance(global_room, dict) else {},
+                    "skipped",
                     run_id=run_id,
-                    skipped_at=ended_at,
+                    settled_at=ended_at,
                 )
             else:
                 record["last_result"] = "ended_unverified"
@@ -1080,32 +1069,43 @@ class PlanLedger:
         credit each verified room with the robot's own per-room timing.
         """
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.commit(serial_number):
-                if completion_is_current is not None and not completion_is_current():
-                    return False
-                return self.mark_completed_transaction(
-                    serial_number,
-                    plan_id,
-                    room,
-                    run_id=run_id,
-                    completed_at=completed_at,
-                    duration_seconds=duration_seconds,
-                    verified_coverage_receipt=verified_coverage_receipt,
-                    completion_session_hash=completion_session_hash,
-                )
-
-        def notify_if_changed(changed: bool) -> None:
-            if changed:
-                self.repository.notify_listeners(serial_number)
-
-        result = await self.repository.async_run_owned_metadata(
+        return await self._async_commit_room_result(
             serial_number,
-            commit,
+            partial(
+                self.mark_completed_transaction,
+                serial_number,
+                plan_id,
+                room,
+                run_id=run_id,
+                completed_at=completed_at,
+                duration_seconds=duration_seconds,
+                verified_coverage_receipt=verified_coverage_receipt,
+                completion_session_hash=completion_session_hash,
+            ),
+            completion_is_current,
             domain_locks=(self.repository.plan_write_lock(serial_number),),
-            after_commit=notify_if_changed,
         )
-        return bool(result)
+
+    async def _async_commit_room_result(
+        self,
+        serial_number: str,
+        transaction: Callable[[], bool],
+        completion_is_current: Callable[[], bool] | None,
+        *,
+        domain_locks: Sequence[asyncio.Lock] = (),
+    ) -> bool:
+        """Commit a room result only if the run still owns it under the lock."""
+
+        def mutate() -> bool | None:
+            if completion_is_current is not None and not completion_is_current():
+                return None
+            return transaction() or None
+
+        return bool(
+            await self.repository.async_mutate_and_save(
+                serial_number, mutate, domain_locks=domain_locks
+            )
+        )
 
     def mark_completed_transaction(
         self,
@@ -1584,46 +1584,33 @@ class PlanLedger:
             return frozenset()
         return frozenset(item for item in skipped if isinstance(item, str))
 
-    async def async_mark_skipped(
-        self, serial_number: str, plan_id: str, room: CleaningRoom, *, run_id: str
-    ) -> None:
-        """Close a skipped room without credit and give back its rotation turn."""
-
-        def mutate() -> bool:
-            robot = self.repository.robot(serial_number)
-            _skip_room_record(
-                self.room(serial_number, plan_id, room),
-                global_room(robot, room.room_id, room.name),
-                run_id=run_id,
-                skipped_at=dt_util.utcnow().isoformat(),
-            )
-            robot["active_plan"] = None
-            return True
-
-        await self.repository.async_mutate_and_save(serial_number, mutate)
-
-    async def async_mark_unreachable(
+    async def async_mark_settled(
         self,
         serial_number: str,
         plan_id: str,
         room: CleaningRoom,
+        result: Literal["skipped", "unreachable"],
         *,
         run_id: str | None,
-    ) -> None:
-        """Close a room the robot could not reach, keeping its rotation turn."""
+        completion_is_current: Callable[[], bool],
+    ) -> bool:
+        """Close a skipped or unreachable room without credit, keeping it due."""
 
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
-            _unreachable_room_record(
+            _settle_room_record(
                 self.room(serial_number, plan_id, room),
                 global_room(robot, room.room_id, room.name),
+                result,
                 run_id=run_id or "",
-                ended_at=dt_util.utcnow().isoformat(),
+                settled_at=dt_util.utcnow().isoformat(),
             )
             robot["active_plan"] = None
             return True
 
-        await self.repository.async_mutate_and_save(serial_number, mutate)
+        return await self._async_commit_room_result(
+            serial_number, mutate, completion_is_current
+        )
 
     async def async_mark_cancelled(
         self, serial_number: str, plan_id: str, room: CleaningRoom
