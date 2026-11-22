@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import timedelta
 from types import SimpleNamespace
@@ -199,6 +200,15 @@ def credit_rooms(args: tuple, kwargs: dict, rooms: list[CleaningRoom]) -> None:
     for room in rooms:
         count_room(manager.repository.robot(serial_number)["last_run"], room.room_id)
         kwargs["record_room_completed"](room)
+
+
+def recovery_record(
+    manager: CleaningPlanManager, serial_number: str = "serial"
+) -> dict[str, Any] | None:
+    """The stored run restart recovery resumes, as saved, else None."""
+    if manager.recovery.recovery_run(serial_number) is None:
+        return None
+    return deepcopy(manager.repository.robot(serial_number)["last_run"])
 
 
 async def save_run_checkpoint(

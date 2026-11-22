@@ -26,7 +26,7 @@ from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import memory_manager, recovery_record
 from tests.session_fakes import FakeRobot, robot_port, run_step
 
 
@@ -68,7 +68,7 @@ async def test_shutdown_non_cancellation_errors_preserve_real_executor(
     ):
         await async_recover_managed_run(hass, entry, "serial")
     await hass.async_block_till_done()
-    saved = manager.recovery.recovery_run("serial")
+    saved = recovery_record(manager)
     assert saved is not None
     assert saved["run_id"] == "run"
     assert (
@@ -126,7 +126,7 @@ async def test_shutdown_checkpoint_is_retained(hass) -> None:
     await recovering.async_load()
     last_run = recovering.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "running"
-    recovered = recovering.recovery.recovery_run("serial")
+    recovered = recovery_record(recovering)
     assert recovered is not None
     assert recovered["recovery_checkpoint"]["rooms"][0]["room_id"] == "room"
 

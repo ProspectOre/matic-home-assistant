@@ -17,6 +17,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.plans.fakes import recovery_record
 from tests.session_fakes import take_robot_after_room_completed, verifying_write
 
 
@@ -29,7 +30,7 @@ async def recovery_state(recovery_state):
         room,
         checkpoint=verifying_write(dt_util.utcnow() + timedelta(seconds=300)),
     )
-    checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
+    checkpoint = recovery_record(manager)["recovery_checkpoint"]
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
     entry.robot.show("docked")
     return manager, entry, checkpoint, room
@@ -147,7 +148,7 @@ async def test_repeated_shutdown_preserves_verification_budget(hass, recovery_st
     ):
         with pytest.raises(asyncio.CancelledError):
             await async_recover_managed_run(hass, entry, "serial")
-    saved = deepcopy(manager.recovery.recovery_run("serial")["recovery_checkpoint"])
+    saved = deepcopy(recovery_record(manager)["recovery_checkpoint"])
     assert saved["phase"] == "verifying"
     assert saved["verification_deadline"] == checkpoint["verification_deadline"]
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
@@ -414,7 +415,7 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
     await hass.async_create_task(async_recover_managed_run(hass, entry, "serial"))
     await hass.async_block_till_done()
     if action == "shutdown":
-        assert manager.recovery.recovery_run("serial") is not None
+        assert recovery_record(manager) is not None
         assert not events
     else:
         expected = {

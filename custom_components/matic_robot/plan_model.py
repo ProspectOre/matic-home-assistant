@@ -461,30 +461,6 @@ def leg_boundaries(legs: Sequence[PlanLeg]) -> list[int]:
     return list(accumulate(sizes))[:-1]
 
 
-def dispatching_room_leg(checkpoint: Mapping[str, Any]) -> bool:
-    """Whether the checkpoint's current leg is rooms, the only mixed dispatch."""
-    index = checkpoint.get("leg_index")
-    if checkpoint.get("entries") is None:
-        # Without areas every room shares the one mixed first leg.
-        return index == 0
-    try:
-        legs = checkpoint_legs(checkpoint)
-    except KeyError, TypeError, ValueError:
-        return False
-    return (
-        type(index) is int and 0 <= index < len(legs) and isinstance(legs[index], list)
-    )
-
-
-def checkpoint_legs(checkpoint: Mapping[str, Any]) -> list[PlanLeg]:
-    """Rebuild a durable run's legs from its checkpoint."""
-    return plan_legs(
-        [CleaningRoom(**room) for room in checkpoint["rooms"]],
-        checkpoint.get("entries"),
-        single_room_missions=checkpoint.get("single_room_missions") is True,
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class RotationCandidate:
     """One room or area's trusted rotation key and selection metadata."""

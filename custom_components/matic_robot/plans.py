@@ -29,7 +29,7 @@ from .plan_ledger import (
     close_unfinished_room_records,
 )
 from .plan_model import CleaningRoom as CleaningRoom
-from .plan_records import stored_active_plan
+from .plan_records import stored_active_plan, stored_last_run
 from .plan_recovery import PlanRecovery
 from .plan_repository import (
     MetadataAdmissionClosedError as MetadataAdmissionClosedError,
@@ -42,7 +42,6 @@ from .room_identity import room_cadence_identity as room_cadence_identity
 from .run_control import (
     RunControl,
 )
-from .run_machine import recovery_run, running_run
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,8 +78,11 @@ class CleaningPlanManager:
                 recovered = True
                 continue
             recovered = plan_state.parse_robot(robot) or recovered
-            if (running := running_run(robot)) is not None:
-                if not isinstance(running.get("recovery_checkpoint"), dict):
+            run = stored_last_run(robot)
+            if run is not None and run.running:
+                # Loading writes the loaded records directly: no commit is open.
+                running = robot["last_run"]
+                if run.checkpoint is None:
                     running.update(
                         {
                             "outcome": "unverified",
@@ -130,45 +132,32 @@ class CleaningPlanManager:
                         fence_remaining = remaining
                         recovered = True
             active = stored_active_plan(robot)
-            run = recovery_run(robot)
-            if run is not None:
-                checkpoint = run["recovery_checkpoint"]
-                if checkpoint.get("stop_intent") == "after_room":
+            run = stored_last_run(robot)
+            checkpoint = run.live_checkpoint if run is not None else None
+            if run is not None and checkpoint is not None:
+                if checkpoint.stop_intent == "after_room":
                     self.control.finish_room_event(str(serial_number)).set()
-                room_records = checkpoint.get("rooms", [])
                 self.cadence.restore_prepared_run(
                     str(serial_number),
-                    run["plan_id"],
-                    run["run_id"],
+                    run.plan_id,
+                    run.run_id,
                     [
                         str(room["room_id"])
-                        for room in room_records
+                        for room in checkpoint.rooms or ()
                         if isinstance(room, Mapping) and room.get("room_id")
                     ],
-                    checkpoint.get("cadence_by_room")
-                    if isinstance(checkpoint.get("cadence_by_room"), Mapping)
-                    else None,
-                    finish_current_room=(
-                        checkpoint.get("finish_current_room")
-                        if isinstance(checkpoint.get("finish_current_room"), bool)
-                        else None
-                    ),
+                    checkpoint.cadence_by_room,
+                    finish_current_room=checkpoint.finish_current_room,
                     finish_current_room_threshold=(
-                        checkpoint.get("finish_current_room_threshold")
-                        if isinstance(
-                            checkpoint.get("finish_current_room_threshold"), int
-                        )
-                        and not isinstance(
-                            checkpoint.get("finish_current_room_threshold"), bool
-                        )
-                        else None
+                        checkpoint.finish_current_room_threshold
                     ),
                 )
             if (
                 active is not None
                 and run is not None
-                and active.run_id == run["run_id"]
-                and active.plan_id == run["plan_id"]
+                and checkpoint is not None
+                and active.run_id == run.run_id
+                and active.plan_id == run.plan_id
             ):
                 robot["active_plan"]["status"] = "recovering"
                 recovered = True
@@ -191,11 +180,11 @@ class CleaningPlanManager:
                 robot["last_interrupted_plan"] = active.published()
                 robot["active_plan"] = None
                 recovered = True
-            if run is None and close_unfinished_room_records(
+            if checkpoint is None and close_unfinished_room_records(
                 robot, recovered_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True
-            if run is None and close_unfinished_area_records(
+            if checkpoint is None and close_unfinished_area_records(
                 robot, ended_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True

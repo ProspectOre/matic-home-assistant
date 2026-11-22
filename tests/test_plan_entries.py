@@ -23,8 +23,6 @@ from custom_components.matic_robot.plan_model import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
-    checkpoint_legs,
-    dispatching_room_leg,
     leg_boundaries,
     leg_groups,
     plan_area_fingerprint,
@@ -34,6 +32,7 @@ from custom_components.matic_robot.plan_model import (
     preview_legs,
     run_entries,
 )
+from custom_components.matic_robot.plan_records import RecoveryCheckpoint
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.service_plans import (
@@ -47,6 +46,10 @@ from tests.test_services import _registered_handler, _registered_services
 
 SERIAL = "serial"
 ROOM_MAP = {"room-kitchen": "Kitchen", "room-study": "Study", "room-hall": "Hall"}
+
+
+def _legs(checkpoint: dict) -> list:
+    return RecoveryCheckpoint.parse(checkpoint).legs()
 
 
 def _floor(*, mission_id: int = 42) -> FloorPlan:
@@ -969,8 +972,8 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
             for room in rooms
         ],
     }
-    assert checkpoint_legs(room_only_checkpoint) == [rooms]
-    assert checkpoint_legs({**room_only_checkpoint, "single_room_missions": True}) == [
+    assert _legs(room_only_checkpoint) == [rooms]
+    assert _legs({**room_only_checkpoint, "single_room_missions": True}) == [
         [room] for room in rooms
     ]
 
@@ -991,13 +994,13 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
             _room_entry("room-hall"),
         ],
     }
-    assert checkpoint_legs(checkpoint) == [
+    assert _legs(checkpoint) == [
         rooms[:1],
         AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
         rooms[1:],
     ]
     smart_stop = {**checkpoint, "single_room_missions": True}
-    assert checkpoint_legs(smart_stop) == [[room] for room in rooms[:1]] + [
+    assert _legs(smart_stop) == [[room] for room in rooms[:1]] + [
         AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
         *[[room] for room in rooms[1:]],
     ]
@@ -1037,4 +1040,4 @@ def test_only_a_room_leg_is_a_mixed_dispatch(entries, leg_index, dispatching) ->
     }
     if entries is not None:
         checkpoint["entries"] = entries
-    assert dispatching_room_leg(checkpoint) is dispatching
+    assert RecoveryCheckpoint.parse(checkpoint).dispatching_room_leg() is dispatching

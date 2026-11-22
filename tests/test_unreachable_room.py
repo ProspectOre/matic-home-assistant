@@ -280,7 +280,8 @@ async def test_unreachable_room_is_skipped_and_the_plan_moves_on(hass) -> None:
     kitchen = robot_store["rotations"]["test-plan"]["rooms"]["room-kitchen"]
     assert kitchen["last_result"] == "unreachable"
     assert "last_completed" not in kitchen  # No credit: the room stays due.
-    last_run = robot_store["last_run"]
+    last_run = manager.repository.last_run("serial")
+    assert last_run is not None
     assert {
         room["name"]: room["result"] for room in run_rooms(robot_store, last_run)
     } == {

@@ -13,6 +13,7 @@ from custom_components.matic_robot.managed_observation import NativeRoomVerdict
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.plans.fakes import recovery_record
 
 
 @pytest.mark.parametrize("stage", ["refresh", "history", "identity", "status"])
@@ -58,7 +59,7 @@ async def test_second_shutdown_during_recovery_preserves_checkpoint(
     ):
         await async_recover_managed_run(hass, entry, "serial")
     execute.assert_not_awaited()
-    assert manager.recovery.recovery_run("serial")["run_id"] == "run"
+    assert recovery_record(manager)["run_id"] == "run"
     await hass.async_block_till_done()
     assert not events
     client.async_send_user_command.assert_not_awaited()
@@ -81,7 +82,7 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
         with pytest.raises(asyncio.CancelledError):
             await async_recover_managed_run(hass, entry, "serial")
     persisted = deepcopy(manager.repository.data)
-    run = manager.recovery.recovery_run("serial")
+    run = recovery_record(manager)
     assert run["run_id"] == "run"
     assert run["recovery_checkpoint"]["native_identity_hash"] == identity_hash
     restored = CleaningPlanManager(hass)

@@ -11,7 +11,7 @@ from custom_components.matic_robot import async_unload_entry
 from custom_components.matic_robot.const import CONF_SERIAL_NUMBER
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.restart import async_recover_managed_run
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import memory_manager, recovery_record
 
 # Reuse the synthetic, real CleaningPlanManager state used by restart tests.
 
@@ -67,7 +67,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
 
     executor.assert_awaited()
     await hass.async_block_till_done()
-    saved = manager.recovery.recovery_run("serial")
+    saved = recovery_record(manager)
     if explicit_reason:
         assert saved is None
         assert manager.history.snapshot("serial")["last_run"]["outcome"] == "cancelled"
@@ -94,7 +94,7 @@ async def test_retire_recovery_is_idempotent_and_drops_checkpoint(
     manager, _, _, _ = recovery_state
 
     await manager.recovery.async_retire_recovery("serial", "config_entry_removed")
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
     last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "unverified"
     assert "recovery_checkpoint" not in last_run
@@ -108,7 +108,7 @@ async def test_retire_missing_run_is_noop(hass) -> None:
 
     manager = memory_manager(hass)
     await manager.recovery.async_retire_recovery("missing", "config_entry_removed")
-    assert manager.recovery.recovery_run("missing") is None
+    assert recovery_record(manager, "missing") is None
 
 
 async def test_queued_recovery_during_unload_keeps_checkpoint_and_does_not_replay(
@@ -125,7 +125,7 @@ async def test_queued_recovery_during_unload_keeps_checkpoint_and_does_not_repla
         await async_recover_managed_run(hass, entry, "serial")
 
     executor.assert_not_awaited()
-    saved = manager.recovery.recovery_run("serial")
+    saved = recovery_record(manager)
     assert saved is not None
     assert saved["run_id"] == "run"
     assert manager.control.pending_stop_run_id("serial") is None

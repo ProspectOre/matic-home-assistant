@@ -22,6 +22,7 @@ from homeassistant.util import dt as dt_util
 from .client import CleaningSession, CleaningSessionRecord
 from .const import DOMAIN
 from .map_schema import RunEntry, RunItem, RunOutcome, TrailPoint
+from .plan_records import LastRun, stored_last_run
 from .trail_path import (
     TRAIL_STEP_METERS,
     is_jump,
@@ -82,10 +83,18 @@ def run_history(robot: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def append_run_history(robot: dict[str, Any], run: Mapping[str, Any]) -> None:
+def append_run_history(robot: dict[str, Any], run: LastRun) -> None:
     """Freeze one terminal managed run into the bounded history."""
-    record = {
-        key: run[key]
+    history = [item for item in run_history(robot) if item["run_id"] != run.run_id]
+    history.append(history_record(robot, run))
+    robot["run_history"] = history[-RUN_HISTORY_LIMIT:]
+
+
+def history_record(robot: Mapping[str, Any], run: LastRun) -> dict[str, Any]:
+    """Return the record the history keeps of ``run`` as it stands now."""
+    stored = run.published()
+    record: dict[str, Any] = {
+        key: stored[key]
         for key in (
             "run_id",
             "plan_id",
@@ -101,18 +110,13 @@ def append_run_history(robot: dict[str, Any], run: Mapping[str, Any]) -> None:
             "completed_room_count",
             "terminal_activity",
         )
-        if key in run
+        if key in stored
     }
-    stop_intent = _mapping(run.get("recovery_checkpoint")).get("stop_intent")
-    if stop_intent is not None:
-        record["stop_intent"] = stop_intent
+    if run.checkpoint is not None and run.checkpoint.stop_intent is not None:
+        record["stop_intent"] = run.checkpoint.stop_intent
     record["rooms"] = run_rooms(robot, run)
     record["areas"] = run_areas(robot, run)
-    history = [
-        item for item in run_history(robot) if item["run_id"] != run.get("run_id")
-    ]
-    history.append(record)
-    robot["run_history"] = history[-RUN_HISTORY_LIMIT:]
+    return record
 
 
 def update_run_history(
@@ -143,15 +147,14 @@ def repair_run_history(
                 room["result"] = "completed"
 
 
-def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[RunItem]:
+def run_rooms(robot: Mapping[str, Any], run: LastRun) -> list[RunItem]:
     """Return the run's planned rooms in order with each room's own result."""
-    run_id = run.get("run_id")
-    rotation = _mapping(_mapping(robot.get("rotations")).get(str(run.get("plan_id"))))
+    run_id = run.run_id
+    rotation = _mapping(_mapping(robot.get("rotations")).get(run.plan_id))
     records = _mapping(rotation.get("rooms"))
     planned: list[tuple[str, str]] = []
-    checkpoint = _mapping(run.get("recovery_checkpoint"))
-    raw_rooms = checkpoint.get("rooms")
-    for room in raw_rooms if isinstance(raw_rooms, list) else ():
+    checkpoint = run.checkpoint
+    for room in (checkpoint.rooms if checkpoint is not None else None) or ():
         room_id = _mapping(room).get("room_id")
         if isinstance(room_id, str) and room_id not in {item[0] for item in planned}:
             planned.append((room_id, _name(_mapping(room).get("name"), room_id)))
@@ -174,14 +177,14 @@ def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[RunItem]
     return rooms
 
 
-def run_areas(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[RunItem]:
+def run_areas(robot: Mapping[str, Any], run: LastRun) -> list[RunItem]:
     """Return the custom areas this run planned or attempted, with each result."""
-    run_id = run.get("run_id")
-    rotation = _mapping(_mapping(robot.get("rotations")).get(str(run.get("plan_id"))))
+    run_id = run.run_id
+    rotation = _mapping(_mapping(robot.get("rotations")).get(run.plan_id))
     containers = list(map(_mapping, (rotation.get("areas"), robot.get("area_history"))))
     saved = _mapping(robot.get("areas"))
     planned: dict[str, object] = {}
-    entries = _mapping(run.get("recovery_checkpoint")).get("entries")
+    entries = run.checkpoint.entries if run.checkpoint is not None else None
     for entry in map(_mapping, entries if isinstance(entries, list) else ()):
         area_id = entry.get("area_id")
         if entry.get("kind") == "area" and isinstance(area_id, str):
@@ -212,7 +215,7 @@ def run_areas(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[RunItem]
 
 
 def run_ending(run: Mapping[str, Any]) -> str:
-    """Name why a managed run ended, only as far as its record shows."""
+    """Name why a managed run ended, only as far as its history record shows."""
     outcome = run.get("outcome")
     reason = run.get("reason_code")
     if outcome == "running":
@@ -222,10 +225,7 @@ def run_ending(run: Mapping[str, Any]) -> str:
     if outcome == "stopped_docked" or reason == "managed_stop":
         # The accepted stop, not the plan's policy: Stop now overrides Smart
         # Stop, and a confirmed dock keeps the reason it stopped.
-        intent = run.get("stop_intent") or _mapping(run.get("recovery_checkpoint")).get(
-            "stop_intent"
-        )
-        return "smart_stop" if intent == "after_room" else "stopped"
+        return "smart_stop" if run.get("stop_intent") == "after_room" else "stopped"
     if reason == "managed_replaced":
         return "replaced"
     if outcome == "recharge_suspended" or reason == "low_charge":
@@ -241,16 +241,10 @@ def run_ending(run: Mapping[str, Any]) -> str:
     return "unknown"
 
 
-def managed_entry(
-    robot: Mapping[str, Any],
-    run: Mapping[str, Any],
-    *,
-    manual: bool,
-    live: bool = False,
-) -> RunEntry:
-    """Project one managed run; a room clean without a saved plan has no plan name."""
-    rooms = run_rooms(robot, run) if live else _stored_items(run.get("rooms"))
-    areas = run_areas(robot, run) if live else _stored_items(run.get("areas"))
+def managed_entry(run: Mapping[str, Any], *, manual: bool) -> RunEntry:
+    """Project one history record; a room clean without a saved plan is unnamed."""
+    rooms = _stored_items(run.get("rooms"))
+    areas = _stored_items(run.get("areas"))
     ending = run_ending(run)
     return {
         "id": str(run["run_id"]),
@@ -314,18 +308,17 @@ def history_entries(
     it is left out instead of being listed twice.
     """
     entries = [
-        managed_entry(robot, run, manual=manual(run.get("plan_id")))
+        managed_entry(run, manual=manual(run.get("plan_id")))
         for run in run_history(robot)
     ]
-    last_run = _mapping(robot.get("last_run"))
+    last_run = stored_last_run(robot)
     # The run in progress, or a finished one saved before history existed.
-    if isinstance(last_run.get("run_id"), str) and (
-        last_run.get("outcome") == "running"
-        or last_run["run_id"] not in {entry["id"] for entry in entries}
+    if last_run is not None and (
+        last_run.running or last_run.run_id not in {entry["id"] for entry in entries}
     ):
         entries.append(
             managed_entry(
-                robot, last_run, manual=manual(last_run.get("plan_id")), live=True
+                history_record(robot, last_run), manual=manual(last_run.plan_id)
             )
         )
     # A run still in progress owns every mission that starts after it. A run

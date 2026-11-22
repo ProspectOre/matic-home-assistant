@@ -20,6 +20,7 @@ from tests.plans.fakes import (
     leg_record,
     memory_manager,
     plan_room,
+    recovery_record,
     run_plan_call,
 )
 from tests.session_fakes import FakeRobot, robot_port, run_step
@@ -384,7 +385,7 @@ async def test_new_smart_stop_run_shares_one_native_mission(hass) -> None:
     observed: list[list[CleaningRoom]] = []
 
     async def complete_leg(*args, **kwargs) -> bool:
-        checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
+        checkpoint = recovery_record(manager)["recovery_checkpoint"]
         assert checkpoint["single_room_missions"] is False
         observed.append(args[5])
         credit_rooms(args, kwargs, args[5])
