@@ -1,10 +1,11 @@
 {
   "matic_entry_id": "synthetic-entry",
-  "active_plan": { "run_id": "partial-1", "room_id": "room-kitchen" },
-  "last_run": {
+  "run": {
     "run_id": "partial-1",
     "outcome": "running",
+    "completed_room_count": 0,
     "room_count": 3,
-    "completed_room_count": 0
+    "target": { "kind": "room", "id": "room-kitchen", "name": "Kitchen" },
+    "smart_stop_phase": null
   }
 }

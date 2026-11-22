@@ -539,6 +539,25 @@ export interface PlansCatalog {
   readonly selected_plan: string | null;
 }
 
+/** The stored room or area the running run is on. */
+export interface RunTarget {
+  readonly kind: "room" | "area";
+  readonly id: string;
+  readonly name: string | null;
+}
+
+/** The latest managed run, the Cleaning history sensor's `run` attribute. `outcome` is the run record's, `running` while it runs. Only the running run has a `target` and a `smart_stop_phase`. */
+export interface RunSummary {
+  readonly run_id: string;
+  readonly outcome: string | null;
+  readonly completed_room_count: number;
+  readonly room_count: number;
+  readonly target: RunTarget | null;
+  readonly smart_stop_phase: SmartStopPhase | null;
+}
+
+export type SmartStopPhase = "finishing_room" | "finishing_area" | "verifying_completion" | "returning_to_dock";
+
 export interface WorkspaceSnapshotRequest {
   readonly type: "matic_robot/workspace_snapshot";
   readonly version: number;
