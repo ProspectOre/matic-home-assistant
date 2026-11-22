@@ -163,7 +163,7 @@ def _frameless(circles: list[dict[str, float]]) -> dict[str, Any]:
     """Bind as the writer does when the rooms cannot be snapshotted."""
     with patch.object(
         geometry,
-        "_translation_room_anchors",
+        "translation_room_anchors",
         side_effect=geometry.GeometryTooComplex("synthetic anchor work exhausted"),
     ):
         return binding_for_area(BASE, circles)

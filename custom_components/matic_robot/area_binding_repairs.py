@@ -16,7 +16,7 @@ from .area_binding import (
     area_binding_status,
     binding_mission,
 )
-from .area_binding_geometry import _room_geometry_index, floor_identity
+from .area_binding_geometry import floor_identity, room_geometry_index
 from .client import FloorPlan
 from .const import DOMAIN
 from .repair_placeholders import repair_placeholders
@@ -64,7 +64,7 @@ def async_sync_custom_area_issue(
             stale_count += 1
             continue
         if room_geometry is None and area_binding_needs_geometry_index(area):
-            room_geometry = _room_geometry_index(floor_plan)
+            room_geometry = room_geometry_index(floor_plan)
         status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
         can_review = area_binding_allows_review(
             area,

@@ -30,7 +30,7 @@ class PlanStoreTooOldError(HomeAssistantError):
     """The plan file predates 1.13; a release before 0.5.1 saved it."""
 
 
-class _CleaningPlanStore(Store[dict[str, Any]]):
+class CleaningPlanStore(Store[dict[str, Any]]):
     """Private plan storage that reads 1.13 and refuses every other version."""
 
     @override

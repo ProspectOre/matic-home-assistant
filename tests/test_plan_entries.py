@@ -23,8 +23,8 @@ from custom_components.matic_robot.plan_model import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
-    _dispatching_room_leg,
     checkpoint_legs,
+    dispatching_room_leg,
     leg_boundaries,
     leg_groups,
     plan_area_fingerprint,
@@ -757,7 +757,7 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as execute,
     ):
@@ -814,7 +814,7 @@ async def test_running_a_room_only_plan_keeps_its_legacy_executor_call(hass) -> 
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as execute,
     ):
@@ -1037,4 +1037,4 @@ def test_only_a_room_leg_is_a_mixed_dispatch(entries, leg_index, dispatching) ->
     }
     if entries is not None:
         checkpoint["entries"] = entries
-    assert _dispatching_room_leg(checkpoint) is dispatching
+    assert dispatching_room_leg(checkpoint) is dispatching

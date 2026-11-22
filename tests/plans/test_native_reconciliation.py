@@ -20,11 +20,11 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_observation import (
     SESSION_HISTORY_ATTEMPTS,
     NativeRoomVerdict,
-    _async_adjudicate_room_end,
+    async_adjudicate_room_end,
 )
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
@@ -32,10 +32,10 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.native_history import (
     OEM_STOP_RECONCILIATION_SECONDS,
-    _reconcile_pending_native_history,
-    _record_native_completion,
-    _remember_native_reconciliation,
-    _validated_native_reconciliation,
+    reconcile_pending_native_history,
+    record_native_completion,
+    remember_native_reconciliation,
+    validated_native_reconciliation,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager, mission_ends, plan_room, run_plan_call
@@ -349,7 +349,7 @@ async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
     manager.repository.robot("serial")["rotations"]["away"]["rooms"][room.room_id][
         "last_result"
     ] = "completed"
-    _remember_native_reconciliation(
+    remember_native_reconciliation(
         manager.repository.robot("serial"),
         manager.repository.robot("serial")["pending_native_reconciliation"],
     )
@@ -486,7 +486,7 @@ async def test_stale_native_watcher_cannot_credit_new_same_room_marker(hass) -> 
     ],
 )
 def test_native_reconciliation_marker_validation_rejects_bad_shapes(value) -> None:
-    assert _validated_native_reconciliation(value) is None
+    assert validated_native_reconciliation(value) is None
 
 
 async def test_native_reconciliation_import_rejects_ambiguous_and_invalid_records(
@@ -550,7 +550,7 @@ async def test_native_reconciliation_import_rejects_ambiguous_and_invalid_record
         (),
     )
     for session in (invalid, malformed_time, wrong_room, missing_completion):
-        assert not _reconcile_pending_native_history(
+        assert not reconcile_pending_native_history(
             robot, floor_plan, [CleaningSessionRecord(b"candidate", session)]
         )
         robot["pending_native_reconciliation"] = pending
@@ -559,9 +559,9 @@ async def test_native_reconciliation_import_rejects_ambiguous_and_invalid_record
         **pending,
         "room_id": "missing-room",
     }
-    assert not _reconcile_pending_native_history(robot, floor_plan, [])
+    assert not reconcile_pending_native_history(robot, floor_plan, [])
 
-    _record_native_completion(
+    record_native_completion(
         robot,
         "away",
         room,
@@ -645,12 +645,12 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             mission_ends(robot),
         ),
     ):
         if ownership_current:
-            await _async_run_leg(
+            await async_run_room_leg(
                 hass,
                 run_plan_call(hass),
                 manager,
@@ -669,7 +669,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
             )
         else:
             with pytest.raises(PlanCancelledError, match="ownership changed"):
-                await _async_run_leg(
+                await async_run_room_leg(
                     hass,
                     run_plan_call(hass),
                     manager,
@@ -714,7 +714,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     assert await robot.port(session_history=failing_reader).history_keys() is None
     assert (
-        await _async_adjudicate_room_end(
+        await async_adjudicate_room_end(
             failing_reader, frozenset(), room, now, robot=robot.port()
         )
         is NativeRoomVerdict.UNVERIFIED
@@ -762,7 +762,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_adjudicate_room_end(
+            await async_adjudicate_room_end(
                 reader, frozenset(), room, now, robot=robot.port()
             )
             is NativeRoomVerdict.UNVERIFIED
@@ -779,7 +779,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_adjudicate_room_end(
+            await async_adjudicate_room_end(
                 interrupted_reader, frozenset(), room, now, robot=robot.port()
             )
             is NativeRoomVerdict.UNVERIFIED
@@ -790,7 +790,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
     ):
         assert (
-            await _async_adjudicate_room_end(
+            await async_adjudicate_room_end(
                 empty, frozenset(), room, now, robot=robot.port()
             )
             is NativeRoomVerdict.UNVERIFIED
@@ -810,7 +810,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         ),
         pytest.raises(PlanCancelledError),
     ):
-        await _async_adjudicate_room_end(
+        await async_adjudicate_room_end(
             cancel_during_retry,
             frozenset(),
             room,
@@ -825,7 +825,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         0,
     ):
         assert (
-            await _async_adjudicate_room_end(
+            await async_adjudicate_room_end(
                 empty,
                 frozenset(),
                 room,
@@ -839,7 +839,7 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
     already_cancelled = asyncio.Event()
     already_cancelled.set()
     with pytest.raises(PlanCancelledError):
-        await _async_adjudicate_room_end(
+        await async_adjudicate_room_end(
             empty,
             frozenset(),
             room,
@@ -850,6 +850,6 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     robot.show("cleaning")
     with pytest.raises(RoomTakenOverError):
-        await _async_adjudicate_room_end(
+        await async_adjudicate_room_end(
             empty, frozenset(), room, now, robot=robot.port()
         )

@@ -46,7 +46,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
         raise PlanCancelledError
 
     with patch(
-        "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
+        "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
         side_effect=hold_native_wait,
     ) as executor:
         for attempt in range(2 if explicit_reason is None else 1):
@@ -119,7 +119,7 @@ async def test_queued_recovery_during_unload_keeps_checkpoint_and_does_not_repla
     entry.state = ConfigEntryState.UNLOAD_IN_PROGRESS
 
     with patch(
-        "custom_components.matic_robot.restart._async_execute_rooms",
+        "custom_components.matic_robot.restart.async_execute_rooms",
         new_callable=AsyncMock,
     ) as executor:
         await async_recover_managed_run(hass, entry, "serial")

@@ -27,8 +27,8 @@ from tests.test_area_binding import _floor_plan, _scoped_area
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
     """An area without room frames, so any map change needs review."""
     with (
-        patch.object(geometry, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1),
-        patch.object(geometry, "_translation_room_anchors", return_value=[]),
+        patch.object(geometry, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1),
+        patch.object(geometry, "translation_room_anchors", return_value=[]),
     ):
         return _scoped_area(floor_plan)
 
@@ -110,8 +110,8 @@ def test_area_issue_sync_shares_geometry_budget_across_saved_areas() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.area_binding_repairs._room_geometry_index",
-            wraps=area_binding_repairs_module._room_geometry_index,
+            "custom_components.matic_robot.area_binding_repairs.room_geometry_index",
+            wraps=area_binding_repairs_module.room_geometry_index,
         ) as build_geometry,
         patch(
             "custom_components.matic_robot.area_binding_repairs.area_binding_status",

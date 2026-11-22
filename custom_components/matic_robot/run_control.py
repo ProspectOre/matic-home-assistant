@@ -25,8 +25,8 @@ from . import native_history, plan_storage, plan_timing
 from .const import DOMAIN
 from .plan_model import (
     PlanStopDecision,
-    _has_frozen_stop_policy,
-    _managed_stop_policy,
+    has_frozen_stop_policy,
+    managed_stop_policy,
 )
 from .plan_repository import (
     PlanRepository,
@@ -863,9 +863,9 @@ class RunControl:
             if last_run is not None and last_run.run_id == active.run_id
             else None
         )
-        finish_current_room, threshold = active.stop_policy or _managed_stop_policy(
+        finish_current_room, threshold = active.stop_policy or managed_stop_policy(
             checkpoint
-            if _has_frozen_stop_policy(checkpoint)
+            if has_frozen_stop_policy(checkpoint)
             else robot["plans"].get(active.plan_id, {})
         )
         if not finish_current_room:
@@ -879,7 +879,7 @@ class RunControl:
             self.cancellation_event(serial_number).clear()
             self.finish_room_event(serial_number).set()
             return PlanStopDecision("after_room", None, threshold)
-        progress = plan_timing._room_timing(robot, active, dt_util.utcnow())[
+        progress = plan_timing.room_timing(robot, active, dt_util.utcnow())[
             "estimated_percent"
         ]
         if progress is not None and progress < threshold:

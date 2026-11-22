@@ -31,13 +31,13 @@ from .coverage_accounting import (
     coverage_evidence_from_storage,
 )
 from .plan_model import (
-    _dispatching_room_leg,
     checkpoint_legs,
+    dispatching_room_leg,
     plan_floor_token,
 )
 from .plan_repository import (
+    MetadataLockLease,
     PlanRepository,
-    _MetadataLockLease,
 )
 from .run_machine import RunPhase, recovery_run, run_checkpoint, running_run
 
@@ -94,7 +94,7 @@ class PlanRecovery:
     ) -> None:
         """Persist the resolved queue required for safe restart recovery."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
                 last_run = robot.get("last_run")
                 if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
@@ -176,7 +176,7 @@ class PlanRecovery:
     ) -> bool:
         """Persist a verified dispatch only within its exact owned queue leg."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
                 checkpoint = run_checkpoint(robot, run_id)
                 if (
@@ -254,7 +254,7 @@ class PlanRecovery:
     ) -> None:
         """Persist the generated native identity before mixed START is sent."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.repository.commit(serial_number):
                 if not is_sha256_hex(session_identity_hash):
                     raise ValueError(
@@ -266,7 +266,7 @@ class PlanRecovery:
                 if (
                     checkpoint is None
                     or checkpoint.get("phase") != RunPhase.DISPATCHING
-                    or not _dispatching_room_leg(checkpoint)
+                    or not dispatching_room_leg(checkpoint)
                 ):
                     raise HomeAssistantError(
                         "Mixed mission checkpoint is not dispatchable",
@@ -382,7 +382,7 @@ class PlanRecovery:
     ) -> None:
         """Do not lose a user's stop request if HA restarts before completion."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number, user=True) as robot:
                 run = robot.get("last_run")
                 checkpoint = (
@@ -430,7 +430,7 @@ class PlanRecovery:
     ) -> None:
         """Publish reconnection state without inventing a robot outcome."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
                 last_run = running_run(robot)
                 if last_run is None:

@@ -25,7 +25,7 @@ from .coverage_accounting import (
     async_confirm_completed_coverage,
     coverage_evidence_from_storage,
 )
-from .managed_run import _NativeReconciliation, _PreparedRoomDispatch
+from .managed_run import NativeReconciliation, PreparedRoomDispatch
 from .native_completion import match_single_room_completions
 from .native_history import OEM_STOP_RECONCILIATION_SECONDS
 from .plan_model import (
@@ -40,7 +40,7 @@ _LOGGER = logging.getLogger(__name__)
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 
 
-def _schedule_grouped_native_reconciliation(
+def schedule_grouped_native_reconciliation(
     hass: HomeAssistant,
     manager: CleaningPlanManager,
     serial_number: str,
@@ -102,14 +102,14 @@ async def _async_reconcile_grouped_history(
     )
 
 
-def _build_native_reconciliation(
+def build_native_reconciliation(
     plan_id: str,
     room: CleaningRoom,
-    dispatch: _PreparedRoomDispatch | None,
+    dispatch: PreparedRoomDispatch | None,
     room_started: bool,
     run_id: str | None,
     floor_token: str,
-) -> _NativeReconciliation | None:
+) -> NativeReconciliation | None:
     """Build a late-native marker only after the robot visibly started the room.
 
     A marker bound to the dispatch's own session also keeps its floor, which
@@ -117,7 +117,7 @@ def _build_native_reconciliation(
     """
     if not room_started or dispatch is None:
         return None
-    return _NativeReconciliation(
+    return NativeReconciliation(
         plan_id,
         room.room_id,
         room.name,
@@ -130,8 +130,8 @@ def _build_native_reconciliation(
     )
 
 
-def _native_reconciliation_data(
-    value: _NativeReconciliation | None,
+def native_reconciliation_data(
+    value: NativeReconciliation | None,
 ) -> dict[str, object] | None:
     """Return the JSON-safe durable shape accepted by the plan manager."""
     if value is None:
@@ -156,13 +156,13 @@ def _native_reconciliation_data(
     }
 
 
-def _schedule_native_reconciliation(
+def schedule_native_reconciliation(
     hass: HomeAssistant,
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
     room: CleaningRoom,
-    reconciliation: _NativeReconciliation | None,
+    reconciliation: NativeReconciliation | None,
     history_baseline: frozenset[bytes] | None,
     robot: RobotPort,
     context: Context | None,
@@ -198,7 +198,7 @@ async def _async_reconcile_native_stop(
     serial_number: str,
     entity_id: str,
     room: CleaningRoom,
-    reconciliation: _NativeReconciliation,
+    reconciliation: NativeReconciliation,
     history_baseline: frozenset[bytes] | None,
     robot: RobotPort,
     context: Context | None,
@@ -302,7 +302,7 @@ async def _async_expire_native_reconciliation(
     manager: CleaningPlanManager,
     serial_number: str,
     room: CleaningRoom,
-    reconciliation: _NativeReconciliation,
+    reconciliation: NativeReconciliation,
 ) -> None:
     """Expire a durable marker when no safe history baseline exists."""
     await asyncio.sleep(OEM_STOP_RECONCILIATION_SECONDS)

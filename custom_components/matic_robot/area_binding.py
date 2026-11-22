@@ -47,15 +47,15 @@ def binding_for_area(
     room_geometry: RoomGeometryIndex | None = None,
 ) -> MapBinding:
     """Bind an area to its floor and the geometry around it."""
-    room_geometry = room_geometry or geometry._room_geometry_index(floor_plan)
-    shape, occupancy, segments = geometry._area_geometry_components(
+    room_geometry = room_geometry or geometry.room_geometry_index(floor_plan)
+    shape, occupancy, segments = geometry.area_geometry_components(
         floor_plan, circles, room_geometry=room_geometry
     )
     binding: MapBinding = {
         "version": MAP_BINDING_VERSION,
         **geometry.floor_identity(floor_plan),
     }
-    if len(segments) <= geometry._MAX_LOCAL_SEGMENT_MATCH_SEGMENTS:
+    if len(segments) <= geometry.MAX_LOCAL_SEGMENT_MATCH_SEGMENTS:
         binding["local"] = {
             "occupancy": list(occupancy),
             "segments_mm": [list(segment) for segment in segments],
@@ -72,7 +72,7 @@ def binding_for_area(
     except GeometryTooComplex, OverflowError, TypeError, ValueError:
         # An area this large stays usable on an unchanged map without rooms.
         return binding
-    expected = {geometry._translation_circle_key(circle) for circle in circles}
+    expected = {geometry.translation_circle_key(circle) for circle in circles}
     if _valid_rooms(frame["rooms"]) and expected == {
         key for room in frame["rooms"] for key in room["circle_keys"]
     }:
@@ -83,13 +83,13 @@ def binding_for_area(
 def _frame(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
-    shape: geometry._AreaShape,
+    shape: geometry.AreaShape,
     room_geometry: RoomGeometryIndex,
 ) -> dict[str, Any]:
     return {
-        "shape_sha256": geometry._area_shape_fingerprint(shape),
+        "shape_sha256": geometry.area_shape_fingerprint(shape),
         "floor_sha256": geometry.translation_invariant_geometry_fingerprint(floor_plan),
-        "rooms": geometry._translation_room_anchors(
+        "rooms": geometry.translation_room_anchors(
             floor_plan, circles, room_geometry=room_geometry
         ),
     }
@@ -135,7 +135,7 @@ def _valid_rooms(rooms: Any) -> bool:
     """Validate bounded room snapshots and their circle associations."""
     if (
         not isinstance(rooms, list)
-        or not 0 < len(rooms) <= geometry._MAX_TRANSLATION_ROOM_ANCHORS
+        or not 0 < len(rooms) <= geometry.MAX_TRANSLATION_ROOM_ANCHORS
     ):
         return False
     associations = 0
@@ -162,8 +162,8 @@ def _valid_rooms(rooms: Any) -> bool:
         associations += len(keys)
         points += len(boundary)
         if (
-            associations > geometry._MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS
-            or points > geometry._MAX_ROOM_FRAME_POINTS
+            associations > geometry.MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS
+            or points > geometry.MAX_ROOM_FRAME_POINTS
             or not all(
                 isinstance(point, list)
                 and len(point) == 2
@@ -277,7 +277,7 @@ def _neighbourhood_status(
         local_matches = saved["local"]["sha256"] == geometry.neighbourhood_fingerprint(
             floor_plan,
             area["circles"],
-            center_tolerance=geometry._LOCAL_GEOMETRY_TOLERANCE_METERS,
+            center_tolerance=geometry.LOCAL_GEOMETRY_TOLERANCE_METERS,
             room_geometry=room_geometry,
         )
     except geometry.NeighbourhoodWorkExhausted:
@@ -295,16 +295,16 @@ def _neighbourhood_status(
             return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT if local_matches else AreaBindingStatus.INVALID
     try:
-        room_geometry = room_geometry or geometry._room_geometry_index(floor_plan)
-        shape, _, _ = geometry._area_geometry_components(
+        room_geometry = room_geometry or geometry.room_geometry_index(floor_plan)
+        shape, _, _ = geometry.area_geometry_components(
             floor_plan,
             area["circles"],
-            center_tolerance=geometry._LOCAL_GEOMETRY_TOLERANCE_METERS,
+            center_tolerance=geometry.LOCAL_GEOMETRY_TOLERANCE_METERS,
             room_geometry=room_geometry,
         )
     except KeyError, OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
-    if frame["shape_sha256"] != geometry._area_shape_fingerprint(shape):
+    if frame["shape_sha256"] != geometry.area_shape_fingerprint(shape):
         return AreaBindingStatus.INVALID
     if not geometry_changed:
         return AreaBindingStatus.CURRENT if local_matches else AreaBindingStatus.INVALID
@@ -313,7 +313,7 @@ def _neighbourhood_status(
     try:
         failed_room_keys: set[str] = set()
         associations_valid: list[bool] = []
-        frames_match = geometry._saved_room_frames_match(
+        frames_match = geometry.saved_room_frames_match(
             rooms,
             circles,
             floor_plan,
@@ -328,14 +328,14 @@ def _neighbourhood_status(
                 saved_rooms = {room["room_key"]: room for room in rooms}
                 current_rooms = {
                     room["room_key"]: room
-                    for room in geometry._translation_room_anchors(
+                    for room in geometry.translation_room_anchors(
                         floor_plan, circles, room_geometry=room_geometry
                     )
                 }
                 proven = bool(failed_room_keys) and all(
                     key in saved_rooms
                     and key in current_rooms
-                    and geometry._room_has_strong_frame_witnesses(
+                    and geometry.room_has_strong_frame_witnesses(
                         saved_rooms[key], current_rooms[key], room_geometry
                     )
                     for key in failed_room_keys
@@ -343,7 +343,7 @@ def _neighbourhood_status(
             else:
                 # Changed local walls cannot say which room moved, so every
                 # room needs strong proof.
-                proven = geometry._saved_room_frames_have_strong_witnesses(
+                proven = geometry.saved_room_frames_have_strong_witnesses(
                     rooms, circles, floor_plan, room_geometry
                 )
             if not proven:
@@ -368,16 +368,16 @@ def _walls_status(
     frame = saved["frame"]
     try:
         circles = area["circles"]
-        room_geometry = room_geometry or geometry._room_geometry_index(floor_plan)
-        shape, occupancy, segments = geometry._area_geometry_components(
+        room_geometry = room_geometry or geometry.room_geometry_index(floor_plan)
+        shape, occupancy, segments = geometry.area_geometry_components(
             floor_plan,
             circles,
-            center_tolerance=geometry._LOCAL_GEOMETRY_TOLERANCE_METERS,
+            center_tolerance=geometry.LOCAL_GEOMETRY_TOLERANCE_METERS,
             room_geometry=room_geometry,
         )
     except KeyError, OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
-    if frame["shape_sha256"] != geometry._area_shape_fingerprint(shape):
+    if frame["shape_sha256"] != geometry.area_shape_fingerprint(shape):
         return AreaBindingStatus.INVALID
     all_frames_strongly_proven = False
     if geometry_changed:
@@ -434,7 +434,7 @@ def _walls_status(
         return AreaBindingStatus.INVALID
     try:
         if (
-            geometry._saved_room_frames_have_strong_witnesses(
+            geometry.saved_room_frames_have_strong_witnesses(
                 frame["rooms"], circles, floor_plan, room_geometry
             )
             and not translated()
@@ -456,17 +456,17 @@ def _room_frames_status(
     Returns a final status, or whether every room needed and passed the
     strong witness proof.
     """
-    expected = {geometry._translation_circle_key(circle) for circle in circles}
+    expected = {geometry.translation_circle_key(circle) for circle in circles}
     if {key for room in rooms for key in room["circle_keys"]} != expected:
         return AreaBindingStatus.GEOMETRY_CHANGED
     try:
-        current_rooms = geometry._translation_room_anchors(
+        current_rooms = geometry.translation_room_anchors(
             floor_plan, circles, room_geometry=room_geometry
         )
     except GeometryTooComplex, OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
-    current = geometry._rooms_by_key(current_rooms)
-    saved = geometry._rooms_by_key(rooms)
+    current = geometry.rooms_by_key(current_rooms)
+    saved = geometry.rooms_by_key(rooms)
     if current is None or saved is None or set(saved) != set(current):
         return AreaBindingStatus.GEOMETRY_CHANGED
     needing_witnesses = []
@@ -476,10 +476,8 @@ def _room_frames_status(
             return AreaBindingStatus.GEOMETRY_CHANGED
         try:
             if not (
-                geometry._room_anchor_bounds_match(saved_room, current_room)
-                and geometry._room_frame_matches(
-                    saved_room, current_room, room_geometry
-                )
+                geometry.room_anchor_bounds_match(saved_room, current_room)
+                and geometry.room_frame_matches(saved_room, current_room, room_geometry)
             ):
                 needing_witnesses.append((saved_room, current_room))
         except GeometryTooComplex:
@@ -488,7 +486,7 @@ def _room_frames_status(
     # room's proof cannot spend a later room's budget.
     try:
         for saved_room, current_room in needing_witnesses:
-            if not geometry._room_has_strong_frame_witnesses(
+            if not geometry.room_has_strong_frame_witnesses(
                 saved_room, current_room, room_geometry
             ):
                 return AreaBindingStatus.GEOMETRY_CHANGED

@@ -120,7 +120,7 @@ async def test_verification_fails_closed(hass, recovery_state, case):
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     with (
         patch(
-            "custom_components.matic_robot.restart._async_verify_leg_completion",
+            "custom_components.matic_robot.restart.async_verify_leg_completion",
             side_effect=TimeoutError,
         )
         if case == "timeout"
@@ -142,7 +142,7 @@ async def test_repeated_shutdown_preserves_verification_budget(hass, recovery_st
         raise asyncio.CancelledError
 
     with patch(
-        "custom_components.matic_robot.restart._async_verify_leg_completion",
+        "custom_components.matic_robot.restart.async_verify_leg_completion",
         side_effect=stop,
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -163,7 +163,7 @@ async def test_verified_leg_never_dispatches_remaining_queue(hass, recovery_stat
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
         completed_record(),
     )
-    with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
+    with patch("custom_components.matic_robot.restart.async_execute_rooms") as execute:
         await async_recover_managed_run(hass, entry, "serial")
     execute.assert_not_called()
     run = manager.history.snapshot("serial")["last_run"]

@@ -39,23 +39,23 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.telemetry_fields import telemetry_bytes
 from custom_components.matic_robot.managed_area import _async_wait_for_area_record
-from custom_components.matic_robot.managed_dispatch import _async_dispatch_leg_command
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_dispatch import async_dispatch_leg_command
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_observation import (
-    _async_verify_leg_completion,
+    async_verify_leg_completion,
 )
 from custom_components.matic_robot.managed_run import (
     NativeHistoryIncompleteBaselineError,
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomTakenOverError,
-    _failure_reason_code,
-    _PreparedRoomDispatch,
+    failure_reason_code,
 )
 from custom_components.matic_robot.native_completion import (
     match_single_room_completions,
 )
 from custom_components.matic_robot.native_history import (
-    _reconcile_pending_native_history,
+    reconcile_pending_native_history,
 )
 from custom_components.matic_robot.plan_model import plan_floor_token
 from tests.client.test_coverage_receipts import history_key
@@ -108,14 +108,14 @@ def _kitchen(key: bytes) -> CleaningSessionRecord:
     return leg_record(("Kitchen",), ("Kitchen",), key=key)
 
 
-def _owned(baseline: frozenset[bytes] | None, key: bytes) -> _PreparedRoomDispatch:
-    return _PreparedRoomDispatch(
+def _owned(baseline: frozenset[bytes] | None, key: bytes) -> PreparedRoomDispatch:
+    return PreparedRoomDispatch(
         (), baseline, dt_util.utcnow(), session_hash=native_session_hash(key)
     )
 
 
-async def _dispatch(robot: FakeRobot, **kwargs: Any) -> _PreparedRoomDispatch:
-    return await _async_dispatch_leg_command(
+async def _dispatch(robot: FakeRobot, **kwargs: Any) -> PreparedRoomDispatch:
+    return await async_dispatch_leg_command(
         robot.port(session_identity=robot.owned, **kwargs.pop("readers", {})),
         [plan_room("Kitchen", "room-kitchen")],
         7,
@@ -182,7 +182,7 @@ async def test_entry_without_a_session_identity_blocks_dispatch_with_its_cause()
         )
     assert robot.started == []
     assert "doesn't identify its" in str(raised.value)
-    assert _failure_reason_code(raised.value) == "native_history_incomplete"
+    assert failure_reason_code(raised.value) == "native_history_incomplete"
 
 
 def test_single_room_match_holds_while_a_new_record_is_undecodable() -> None:
@@ -214,7 +214,7 @@ async def test_leg_credit_drops_earlier_evidence_when_a_new_record_is_undecodabl
         side_effect=[(partial_record,), (partial_record, _undecodable(b"new"))]
     )
 
-    evidence = await _async_verify_leg_completion(
+    evidence = await async_verify_leg_completion(
         reader,
         frozenset(),
         leg_rooms(),
@@ -237,7 +237,7 @@ async def _run_leg(hass, owned_records):
         # Built at read time so the records end after the leg was dispatched.
         return (_undecodable(_FOREIGN), *owned_records(robot.history_key()))
 
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -315,7 +315,7 @@ async def test_partial_history_only_credits_the_dispatched_session(case) -> None
         "duplicate": (record, _undecodable(key)),
         "baseline": (record,),
     }[case]
-    credits = await _async_verify_leg_completion(
+    credits = await async_verify_leg_completion(
         AsyncMock(return_value=observations),
         frozenset({key}) if case == "baseline" else frozenset(),
         leg_rooms(),
@@ -461,7 +461,7 @@ async def test_large_owned_result_credits_only_its_own_room_evidence() -> None:
     foreign = HermesCollectionEntry(_FOREIGN, _oversized())
     client = _client((foreign, HermesCollectionEntry(key, large)))
     verify = partial(
-        _async_verify_leg_completion,
+        async_verify_leg_completion,
         partial(client.async_get_cleaning_session_records, strict=True),
         None,
         [replace(plan_room("Kitchen", "room-kitchen"), cleaning_mode="vacuum")],
@@ -561,7 +561,7 @@ async def test_area_record_waiter_is_bounded_and_honours_cancel(monkeypatch):
     new = SimpleNamespace(key=b"synthetic-new")
 
     def wait(reader, baseline):
-        dispatch = _PreparedRoomDispatch((), baseline, dt_util.utcnow())
+        dispatch = PreparedRoomDispatch((), baseline, dt_util.utcnow())
         return _async_wait_for_area_record(
             FakeRobot().port(session_history=reader), dispatch, cancel
         )
@@ -614,10 +614,10 @@ def test_persisted_reconciliation_only_credits_its_own_history(marker) -> None:
         "rooms": {},
         "pending_native_reconciliation": pending,
     }
-    assert not _reconcile_pending_native_history(robot, floor, [_kitchen(_FOREIGN)])
+    assert not reconcile_pending_native_history(robot, floor, [_kitchen(_FOREIGN)])
     owned = [_undecodable(_FOREIGN), _kitchen(key)]
     if marker == "valid":
-        assert _reconcile_pending_native_history(robot, floor, owned)
+        assert reconcile_pending_native_history(robot, floor, owned)
         assert "pending_native_reconciliation" not in robot
     else:
-        assert not _reconcile_pending_native_history(robot, floor, owned)
+        assert not reconcile_pending_native_history(robot, floor, owned)

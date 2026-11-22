@@ -264,7 +264,7 @@ def test_loaded_managed_claims_are_validated_and_bounded(hass, monkeypatch):
         "4" * 64: [],
     }
 
-    assert plan_state._normalize_robot(robot)
+    assert plan_state.normalize_robot(robot)
 
     assert robot["managed_native_sessions"] == {
         "2" * 64: {"run_id": "second"},
@@ -342,7 +342,7 @@ async def test_dispatch_never_sends_before_claim_or_after_floor_changes():
     from homeassistant.exceptions import ServiceValidationError
 
     from custom_components.matic_robot.managed_dispatch import (
-        _async_dispatch_leg_command,
+        async_dispatch_leg_command,
     )
     from custom_components.matic_robot.plans import CleaningRoom
 
@@ -354,13 +354,13 @@ async def test_dispatch_never_sends_before_claim_or_after_floor_changes():
         7,
     )
     with pytest.raises(OSError):
-        await _async_dispatch_leg_command(*args, floor_token="floor", on_claim=claim)
+        await async_dispatch_leg_command(*args, floor_token="floor", on_claim=claim)
     claim.assert_awaited_once()
     assert not robot.started
     states = iter((True, True, False))
     claim = AsyncMock()
     with pytest.raises(ServiceValidationError):
-        await _async_dispatch_leg_command(
+        await async_dispatch_leg_command(
             *args,
             floor_token="floor",
             on_claim=claim,

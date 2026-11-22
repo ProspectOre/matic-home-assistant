@@ -17,7 +17,7 @@ from .area_binding import (
     area_binding_needs_geometry_index,
     area_binding_status,
 )
-from .area_binding_geometry import _room_geometry_index
+from .area_binding_geometry import room_geometry_index
 from .area_geometry import RoomGeometryIndex
 from .llm_common import (
     READ_ONLY,
@@ -278,7 +278,7 @@ class MaticGetPlanReadinessTool(MaticTool):
                 continue
             name = str(area.get("name", area_id))
             if room_geometry is None and area_binding_needs_geometry_index(area):
-                room_geometry = _room_geometry_index(floor_plan)
+                room_geometry = room_geometry_index(floor_plan)
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is AreaBindingStatus.CURRENT:
                 area_states.append({"name": name, "status": "ready"})

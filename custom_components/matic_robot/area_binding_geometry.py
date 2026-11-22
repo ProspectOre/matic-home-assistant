@@ -23,7 +23,7 @@ _FLOOR_DIGEST_TAG = 1
 
 _NEIGHBOURHOOD_DIGEST_TAG = 4
 
-_SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
+SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
 
 _AREA_SHAPE_FINGERPRINT_DOMAIN = b"matic-area-shape\0"
 
@@ -35,7 +35,7 @@ _LOCAL_GEOMETRY_MARGIN_METERS = 0.25
 
 _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS = 10
 
-_LOCAL_GEOMETRY_TOLERANCE_METERS = (
+LOCAL_GEOMETRY_TOLERANCE_METERS = (
     _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS / _MILLIMETERS_PER_METER
 )
 
@@ -73,7 +73,7 @@ _SEMANTIC_MARGIN_MILLIMETERS = math.ceil(
 )
 
 _GUARD_MARGIN_MILLIMETERS = math.ceil(
-    (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
+    (_LOCAL_GEOMETRY_MARGIN_METERS + LOCAL_GEOMETRY_TOLERANCE_METERS)
     * _MILLIMETERS_PER_METER
     + _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS
 )
@@ -82,7 +82,7 @@ _SPATIAL_INDEX_CELL_MILLIMETERS = 100
 
 _SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
 
-_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = 256
+MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = 256
 
 _MAX_LOCAL_SEGMENT_MATCH_PAIRS = 16_384
 
@@ -94,11 +94,11 @@ _NEIGHBORHOOD_INDEX_CELL_METERS = 0.5
 
 _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 
-_MAX_TRANSLATION_ROOM_ANCHORS = 256
+MAX_TRANSLATION_ROOM_ANCHORS = 256
 
-_MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS = 8_192
+MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS = 8_192
 
-_MAX_ROOM_FRAME_POINTS = MAX_FLOOR_PLAN_BOUNDARY_POINTS
+MAX_ROOM_FRAME_POINTS = MAX_FLOOR_PLAN_BOUNDARY_POINTS
 
 _QuantizedPoint = tuple[int, int]
 
@@ -106,9 +106,9 @@ _CanonicalPolygon = tuple[_QuantizedPoint, ...]
 
 _LocalSegment = tuple[int, int, int, int]
 
-_AreaShape = tuple[tuple[int, int, int], ...]
+AreaShape = tuple[tuple[int, int, int], ...]
 
-_LocalGeometry = tuple[_AreaShape, tuple[int, ...], tuple[_LocalSegment, ...]]
+_LocalGeometry = tuple[AreaShape, tuple[int, ...], tuple[_LocalSegment, ...]]
 
 _SegmentMatch = tuple[int, int]
 
@@ -120,7 +120,7 @@ _SegmentContext = tuple[
 ]
 
 
-def _room_geometry_index(floor_plan: FloorPlan) -> RoomGeometryIndex:
+def room_geometry_index(floor_plan: FloorPlan) -> RoomGeometryIndex:
     """Build one bounded index lazily for a callback's area scan."""
     return RoomGeometryIndex(
         [
@@ -209,7 +209,7 @@ def _translation_room_key(room: Any) -> str:
     return digest.hexdigest()
 
 
-def _translation_circle_key(circle: Mapping[str, Any]) -> str:
+def translation_circle_key(circle: Mapping[str, Any]) -> str:
     """Identify a saved circle independently of list order."""
     digest = hashlib.sha256()
     digest.update(b"matic-room-frame-circle-v1\0")
@@ -233,7 +233,7 @@ def _bounds_within_tolerance(
     )
 
 
-def _room_frame_matches(
+def room_frame_matches(
     saved: Mapping[str, Any],
     current: Mapping[str, Any],
     room_geometry: RoomGeometryIndex,
@@ -388,7 +388,7 @@ def _turn_witness_features(
     return tuple(features)
 
 
-def _room_has_strong_frame_witnesses(
+def room_has_strong_frame_witnesses(
     saved: Mapping[str, Any],
     current: Mapping[str, Any],
     room_geometry: RoomGeometryIndex,
@@ -499,7 +499,7 @@ def room_bounds(boundary: Sequence[Sequence[int]]) -> list[int]:
     ]
 
 
-def _room_anchor_bounds_match(
+def room_anchor_bounds_match(
     saved: Mapping[str, Any], current: Mapping[str, Any]
 ) -> bool:
     """Return whether two room snapshots keep their bounds within a voxel."""
@@ -510,14 +510,14 @@ def _room_anchor_bounds_match(
     )
 
 
-def _translation_room_anchors(
+def translation_room_anchors(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
     room_geometry: RoomGeometryIndex | None = None,
 ) -> list[dict[str, Any]]:
     """Snapshot each room that contains a saved circle center."""
-    if len(floor_plan.rooms) > _MAX_TRANSLATION_ROOM_ANCHORS:
+    if len(floor_plan.rooms) > MAX_TRANSLATION_ROOM_ANCHORS:
         raise ValueError("too many rooms for scoped area frame anchors")
     if room_geometry is None:
         room_geometry = RoomGeometryIndex(
@@ -533,15 +533,15 @@ def _translation_room_anchors(
     circle_keys_by_room: dict[int, set[str]] = {}
     association_count = 0
     for circle in circles:
-        circle_key = _translation_circle_key(circle)
+        circle_key = translation_circle_key(circle)
         for index in room_geometry.containing_indices(
             float(circle["x"]),
             float(circle["y"]),
-            _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            LOCAL_GEOMETRY_TOLERANCE_METERS,
         ):
             keys = circle_keys_by_room.setdefault(index, set())
             if circle_key not in keys:
-                if association_count >= _MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS:
+                if association_count >= MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS:
                     raise ValueError("too many circle-room frame anchors")
                 room_geometry.charge_query_work()
                 keys.add(circle_key)
@@ -555,7 +555,7 @@ def _translation_room_anchors(
         room_geometry.charge_query_work(len(room.boundary))
         polygon = _canonical_polygon(room.boundary)
         point_count += len(polygon)
-        if point_count > _MAX_ROOM_FRAME_POINTS:
+        if point_count > MAX_ROOM_FRAME_POINTS:
             raise ValueError("too many room frame boundary points")
         anchors.append(
             {
@@ -579,7 +579,7 @@ def neighbourhood_fingerprint(
     room_geometry: RoomGeometryIndex | None = None,
 ) -> str:
     """Digest each circle with its occupancy and the walls around it."""
-    room_geometry = room_geometry or _room_geometry_index(floor_plan)
+    room_geometry = room_geometry or room_geometry_index(floor_plan)
     normalized = _validate_area_circles(
         floor_plan,
         circles,
@@ -592,7 +592,7 @@ def neighbourhood_fingerprint(
             for circle in normalized
         )
         digest = hashlib.sha256()
-        digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+        digest.update(SCOPED_FINGERPRINT_DOMAIN)
         digest.update(struct.pack(">H", _NEIGHBOURHOOD_DIGEST_TAG))
         digest.update(struct.pack(">I", len(ordered)))
         for x, y, radius in ordered:
@@ -648,7 +648,7 @@ def neighbourhood_fingerprint(
         ) from error
 
 
-def _area_geometry_components(
+def area_geometry_components(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
@@ -656,7 +656,7 @@ def _area_geometry_components(
     room_geometry: RoomGeometryIndex | None = None,
 ) -> _LocalGeometry:
     """Return canonical private area shape, occupancy, and nearby segments."""
-    room_geometry = room_geometry or _room_geometry_index(floor_plan)
+    room_geometry = room_geometry or room_geometry_index(floor_plan)
     room_geometry.charge_query_work(
         sum(len(room.boundary) for room in floor_plan.rooms)
     )
@@ -688,19 +688,19 @@ def _area_geometry_components(
             x
             - radius
             - _LOCAL_GEOMETRY_MARGIN_METERS
-            - _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            - LOCAL_GEOMETRY_TOLERANCE_METERS,
             y
             - radius
             - _LOCAL_GEOMETRY_MARGIN_METERS
-            - _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            - LOCAL_GEOMETRY_TOLERANCE_METERS,
             x
             + radius
             + _LOCAL_GEOMETRY_MARGIN_METERS
-            + _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            + LOCAL_GEOMETRY_TOLERANCE_METERS,
             y
             + radius
             + _LOCAL_GEOMETRY_MARGIN_METERS
-            + _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            + LOCAL_GEOMETRY_TOLERANCE_METERS,
         )
         for x, y, radius in ordered_float
     )
@@ -792,7 +792,7 @@ def _occupancy_probes(
     )
 
 
-def _area_shape_fingerprint(shape: _AreaShape) -> str:
+def area_shape_fingerprint(shape: AreaShape) -> str:
     """Fingerprint the immutable saved circles independently of the map."""
     digest = hashlib.sha256()
     digest.update(_AREA_SHAPE_FINGERPRINT_DOMAIN)
@@ -802,7 +802,7 @@ def _area_shape_fingerprint(shape: _AreaShape) -> str:
     return digest.hexdigest()
 
 
-def _rooms_by_key(
+def rooms_by_key(
     rooms: Sequence[Mapping[str, Any]],
 ) -> dict[str, Mapping[str, Any]] | None:
     """Index room snapshots by room key, or None when a key repeats."""
@@ -825,14 +825,14 @@ def _matched_rooms(
     None means the saved rooms do not cover the circles exactly, a room key
     repeats, or a room now holds other circles.
     """
-    expected = {_translation_circle_key(circle) for circle in circles}
+    expected = {translation_circle_key(circle) for circle in circles}
     if {key for room in saved_rooms for key in room["circle_keys"]} != expected:
         return None
-    saved = _rooms_by_key(saved_rooms)
+    saved = rooms_by_key(saved_rooms)
     if saved is None:
         return None
-    current = _rooms_by_key(
-        _translation_room_anchors(floor_plan, circles, room_geometry=room_geometry)
+    current = rooms_by_key(
+        translation_room_anchors(floor_plan, circles, room_geometry=room_geometry)
     )
     if current is None or set(saved) != set(current):
         return None
@@ -842,7 +842,7 @@ def _matched_rooms(
     return pairs
 
 
-def _saved_room_frames_match(
+def saved_room_frames_match(
     saved_rooms: Sequence[Mapping[str, Any]],
     circles: Sequence[Mapping[str, Any]],
     floor_plan: FloorPlan,
@@ -868,7 +868,7 @@ def _saved_room_frames_match(
         associations_valid[0] = True
     all_frames_match = True
     for saved, current in pairs:
-        if not _room_anchor_bounds_match(saved, current) or not _room_frame_matches(
+        if not room_anchor_bounds_match(saved, current) or not room_frame_matches(
             saved, current, room_geometry
         ):
             all_frames_match = False
@@ -877,7 +877,7 @@ def _saved_room_frames_match(
     return all_frames_match
 
 
-def _saved_room_frames_have_strong_witnesses(
+def saved_room_frames_have_strong_witnesses(
     saved_rooms: Sequence[Mapping[str, Any]],
     circles: Sequence[Mapping[str, Any]],
     floor_plan: FloorPlan,
@@ -886,7 +886,7 @@ def _saved_room_frames_have_strong_witnesses(
     """Require exact circle-room associations and strong frame proof."""
     pairs = _matched_rooms(saved_rooms, circles, floor_plan, room_geometry)
     return pairs is not None and all(
-        _room_has_strong_frame_witnesses(saved, current, room_geometry)
+        room_has_strong_frame_witnesses(saved, current, room_geometry)
         for saved, current in pairs
     )
 
@@ -894,7 +894,7 @@ def _saved_room_frames_have_strong_witnesses(
 def walls_match(
     saved_occupancy: Sequence[int],
     saved_segments: Sequence[_LocalSegment],
-    shape: _AreaShape,
+    shape: AreaShape,
     occupancy: Sequence[int],
     segments: Sequence[_LocalSegment],
     circles: Sequence[Mapping[str, Any]],
@@ -922,7 +922,7 @@ def walls_match(
 def _local_segment_correspondence(
     saved: Sequence[_LocalSegment],
     current: Sequence[_LocalSegment],
-    shape: _AreaShape,
+    shape: AreaShape,
     *,
     room_geometry: RoomGeometryIndex | None = None,
 ) -> tuple[_SegmentMatch, ...] | None:
@@ -935,8 +935,8 @@ def _local_segment_correspondence(
     """
     charge_work = _segment_matching_work_charger(room_geometry)
     if (
-        len(saved) > _MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
-        or len(current) > _MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
+        len(saved) > MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
+        or len(current) > MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
     ):
         raise GeometryTooComplex("too many local segments to match")
     charge_work(len(saved) + len(current))
@@ -1060,7 +1060,7 @@ def _occupancy_changes_are_explained(
     current_occupancy: Sequence[int],
     saved_segments: Sequence[_LocalSegment],
     current_segments: Sequence[_LocalSegment],
-    shape: _AreaShape,
+    shape: AreaShape,
     circles: Sequence[Mapping[str, Any]],
     segment_matches: Sequence[_SegmentMatch] | None = None,
     *,
@@ -1156,7 +1156,7 @@ def _wall_pair_explains_probe(
     current: _LocalSegment,
     current_context: _SegmentContext,
     probe: tuple[float, float],
-    shape: _AreaShape,
+    shape: AreaShape,
 ) -> bool:
     """Return whether one compatible wall pair can cross an occupancy probe."""
     if not _point_near_segment(probe, saved) or not _point_near_segment(probe, current):
@@ -1201,7 +1201,7 @@ def _signed_distance_to_supporting_line(
 
 def _segment_context(
     segment: _LocalSegment,
-    shape: _AreaShape,
+    shape: AreaShape,
     *,
     charge_work: Callable[[int], None] | None = None,
 ) -> _SegmentContext:
@@ -1319,7 +1319,7 @@ def _local_segment_contexts_match(
     saved_context: _SegmentContext,
     current: _LocalSegment,
     current_context: _SegmentContext,
-    shape: _AreaShape,
+    shape: AreaShape,
 ) -> bool:
     """Compare two walls using their precomputed relevant neighborhoods."""
     saved_semantic, saved_guard, saved_local_endpoints, _saved_cells = saved_context

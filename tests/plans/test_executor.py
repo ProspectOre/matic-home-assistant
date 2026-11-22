@@ -12,12 +12,12 @@ from homeassistant.util import dt as dt_util
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import RobotActivity
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomRunOutcome,
-    _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
@@ -80,7 +80,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
         "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
     ):
-        completed = await _async_run_leg(
+        completed = await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -132,18 +132,18 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
     hass = SimpleNamespace(
         bus=SimpleNamespace(async_fire=MagicMock()),
     )
-    prepared = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
+    prepared = PreparedRoomDispatch((room,), None, dt_util.utcnow())
     with (
         patch(
             "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             mission_ends(robot),
         ),
     ):
-        assert not await _async_run_leg(
+        assert not await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -158,11 +158,11 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             advance=run_step,
         )
 
-    wrong = _PreparedRoomDispatch(
+    wrong = PreparedRoomDispatch(
         (plan_room("Study", "room-study"),), None, dt_util.utcnow()
     )
     with pytest.raises(ValueError, match="does not match"):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -225,7 +225,7 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ) as outcome,
         patch(
@@ -233,7 +233,7 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
         ),
         pytest.raises(ServiceValidationError) as failure,
     ):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -285,11 +285,11 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             wait,
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ) as outcome,
     ):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -344,7 +344,7 @@ async def test_room_pause_and_resume_outcome() -> None:
     )
     room = plan_room("Kitchen", "room-kitchen")
     wait = AsyncMock(return_value=RobotActivity.CLEANING)
-    run = _async_run_leg(
+    run = async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -371,7 +371,7 @@ async def test_room_pause_and_resume_outcome() -> None:
             wait,
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             AsyncMock(
                 side_effect=[
                     RoomRunOutcome.PAUSED,
@@ -431,7 +431,7 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         sender = AsyncMock()
         with (
             patch(
-                "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+                "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
                 outcome,
             ),
             patch(
@@ -442,7 +442,7 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
                 ServiceValidationError if interrupted else PlanCancelledError
             ),
         ):
-            await _async_run_leg(
+            await async_run_room_leg(
                 hass,
                 run_plan_call(hass),
                 manager,
@@ -505,12 +505,12 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             AsyncMock(side_effect=PlanCancelledError),
         ),
         pytest.raises(PlanCancelledError),
     ):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -542,7 +542,7 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
     await lock.acquire()
     try:
         with pytest.raises(ServiceValidationError, match="already running"):
-            await _async_execute_rooms(
+            await async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -556,10 +556,10 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
         lock.release()
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=PlanCancelledError),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -573,9 +573,9 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
     managed_command = AsyncMock()
     robot.show("idle")
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg", _owned_leg()
+        "custom_components.matic_robot.managed_leg.async_run_room_leg", _owned_leg()
     ) as run:
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -606,10 +606,10 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=finish_then_stop),
     ) as run:
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -640,9 +640,10 @@ async def test_execute_rooms_stops_after_unverified_room(hass, monkeypatch) -> N
     manager.repository.robot("serial")["plans"]["away"] = {"finish_current_room": True}
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg", _owned_leg(False)
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
+        _owned_leg(False),
     ) as run:
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass, return_to_base=True),
             manager,
@@ -672,10 +673,10 @@ async def test_execute_rooms_rechecks_ownership_after_room_history_save(hass) ->
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=replace_after_room),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass, return_to_base=True),
             manager,
@@ -700,7 +701,7 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
     manager = memory_manager(hass)
     with (
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             _owned_leg(),
         ),
         patch.object(
@@ -709,7 +710,7 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
             MagicMock(side_effect=[True, True, False]),
         ),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -728,10 +729,10 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
         manager = memory_manager(hass)
         sender = AsyncMock(side_effect=error)
         with patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             _owned_leg(),
         ):
-            run = _async_execute_rooms(
+            run = async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -821,7 +822,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
         return session
 
     with pytest.raises(failure, match="synthetic verification abort"):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,

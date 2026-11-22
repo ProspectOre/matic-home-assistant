@@ -42,7 +42,7 @@ async def test_recovered_smart_stop_closes_at_the_dock_only_when_unclaimed(
         checkpoint["entity_id"] = entity_id
     with (
         patch.object(restart, "async_finish_plan_run", AsyncMock()) as finish,
-        patch.object(restart, "_schedule_run_dock_confirmation", Mock()) as schedule,
+        patch.object(restart, "schedule_run_dock_confirmation", Mock()) as schedule,
         patch.object(restart.RobotPort, "for_entry", Mock()),
     ):
         await restart._async_finish_recovered_run(

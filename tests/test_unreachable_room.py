@@ -21,7 +21,7 @@ from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
 )
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_observation import (
     NativeTaskSignal,
     _classify_native_identity,
@@ -229,7 +229,7 @@ async def _run_plan(hass, robot: _Robot):
     error: BaseException | None = None
     try:
         await asyncio.wait_for(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -339,10 +339,10 @@ async def test_replacement_before_start_is_still_a_takeover(hass) -> None:
 def test_area_and_room_failures_name_an_ended_owned_task() -> None:
     from custom_components.matic_robot.managed_run import (
         NativeTaskEndedError,
-        _failure_reason_code,
+        failure_reason_code,
     )
 
-    assert _failure_reason_code(NativeTaskEndedError()) == "native_task_ended"
+    assert failure_reason_code(NativeTaskEndedError()) == "native_task_ended"
 
 
 def test_unreachable_match_bounds_mode_window_and_ambiguity() -> None:

@@ -11,7 +11,7 @@ from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.leg_handoff import async_dispatch_on_return
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.robot_commands import PlanStart
 from tests.client.test_coverage_receipts import history_key
@@ -138,7 +138,7 @@ async def _run(
         },
     )
     await asyncio.wait_for(
-        _async_execute_rooms(
+        async_execute_rooms(
             hass,
             call,
             manager,

@@ -17,7 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.client.models import Room
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.occupancy import (
     area_occupancy_sensors,
     entry_vacuum_entity_id,
@@ -422,7 +422,7 @@ async def test_preview_and_run_hold_occupied_rooms(hass) -> None:
             "custom_components.matic_robot.service_plans.occupancy_holds", read_holds
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(side_effect=execute),
         ) as run,
     ):
@@ -461,7 +461,7 @@ async def test_run_refuses_when_every_room_is_held(hass) -> None:
             return_value=holds,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as run,
         pytest.raises(ServiceValidationError) as raised,
@@ -520,12 +520,12 @@ async def test_executor_fires_room_held_with_the_run_id(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             AsyncMock(side_effect=RuntimeError("stop after admission")),
         ),
         pytest.raises(RuntimeError),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,

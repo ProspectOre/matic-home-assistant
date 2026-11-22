@@ -22,7 +22,7 @@ async def test_recovery_resumes_a_run_from_a_removed_action_as_run_plan(
     manager, entry, checkpoint, _ = recovery_state
     manager.repository.robot("serial")["last_run"]["service"] = stored_action
 
-    with patch("custom_components.matic_robot.restart._async_execute_rooms") as runner:
+    with patch("custom_components.matic_robot.restart.async_execute_rooms") as runner:
         await async_recover_managed_run(hass, entry, "serial")
 
     call = runner.await_args.args[1]

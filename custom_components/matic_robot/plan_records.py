@@ -16,8 +16,8 @@ from types import MappingProxyType
 from typing import Any
 
 from .plan_model import (
-    _bounded_stop_threshold,
-    _has_frozen_stop_policy,
+    bounded_stop_threshold,
+    has_frozen_stop_policy,
     stored_count,
 )
 from .plan_schema import RunTarget
@@ -30,11 +30,11 @@ def _text(record: Mapping[str, Any], key: str) -> str | None:
 
 def _stop_policy(record: Mapping[str, Any]) -> tuple[bool, int] | None:
     """Return the stop policy a run froze into this record, if it did."""
-    if not _has_frozen_stop_policy(record):
+    if not has_frozen_stop_policy(record):
         return None
     return (
         record["finish_current_room"],
-        _bounded_stop_threshold(record["finish_current_room_threshold"]),
+        bounded_stop_threshold(record["finish_current_room_threshold"]),
     )
 
 

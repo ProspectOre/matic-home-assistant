@@ -18,9 +18,9 @@ from custom_components.matic_robot.area_binding import (
 )
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.area_binding_geometry import (
-    _room_geometry_index,
-    _room_has_strong_frame_witnesses,
-    _translation_room_anchors,
+    room_geometry_index,
+    room_has_strong_frame_witnesses,
+    translation_room_anchors,
 )
 from custom_components.matic_robot.area_geometry import GeometryTooComplex
 from custom_components.matic_robot.client.models import FloorPlan, Room
@@ -130,12 +130,12 @@ def _locally_refined(plan: FloorPlan, *, shift_x: float = 0.015) -> FloorPlan:
 def _area(plan: FloorPlan, *, anchored_bounded: bool = False) -> dict:
     circles = [{"x": 1.0, "y": 3.0, "radius": 0.2}]
     if anchored_bounded:
-        original = abg._MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
-        abg._MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = 1
+        original = abg.MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
+        abg.MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = 1
         try:
             binding = binding_for_area(plan, circles)
         finally:
-            abg._MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = original
+            abg.MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = original
         assert "sha256" in binding["local"]
     else:
         binding = binding_for_area(plan, circles)
@@ -186,8 +186,8 @@ def test_turn_witnesses_ignore_dense_collinear_rectangle_vertices() -> None:
     saved = {"boundary_mm": [[round(x * 1000), round(y * 1000)] for x, y in old]}
     current = {"boundary_mm": [[round(x * 1000), round(y * 1000)] for x, y in moved]}
 
-    assert not _room_has_strong_frame_witnesses(
-        saved, current, _room_geometry_index(_witness_plan())
+    assert not room_has_strong_frame_witnesses(
+        saved, current, room_geometry_index(_witness_plan())
     )
 
 
@@ -217,10 +217,10 @@ def test_periodic_staircase_shift_does_not_prove_identity() -> None:
     new_mm = [[round(x * 1000), round(y * 1000)] for x, y in moved]
     assert len(set(map(tuple, old_mm)) & set(map(tuple, new_mm))) > 3
 
-    assert not _room_has_strong_frame_witnesses(
+    assert not room_has_strong_frame_witnesses(
         {"boundary_mm": old_mm},
         {"boundary_mm": new_mm},
-        _room_geometry_index(_witness_plan()),
+        room_geometry_index(_witness_plan()),
     )
 
 
@@ -242,8 +242,8 @@ def test_short_edge_and_small_rotation_do_not_prove_identity() -> None:
     saved = {"boundary_mm": [[round(x * 1000), round(y * 1000)] for x, y in old]}
     current = {"boundary_mm": [[round(x * 1000), round(y * 1000)] for x, y in moved]}
 
-    assert not _room_has_strong_frame_witnesses(
-        saved, current, _room_geometry_index(_witness_plan())
+    assert not room_has_strong_frame_witnesses(
+        saved, current, room_geometry_index(_witness_plan())
     )
 
 
@@ -268,18 +268,18 @@ def test_rotation_about_one_fixed_corner_does_not_prove_identity(
     saved = {"boundary_mm": [[round(x * 1000), round(y * 1000)] for x, y in old]}
     current = {"boundary_mm": [[round(x * 1000), round(y * 1000)] for x, y in moved]}
 
-    assert not _room_has_strong_frame_witnesses(
-        saved, current, _room_geometry_index(_witness_plan())
+    assert not room_has_strong_frame_witnesses(
+        saved, current, room_geometry_index(_witness_plan())
     )
 
 
 def test_strong_witness_work_budget_exhaustion_fails_closed() -> None:
     plan = _witness_plan()
-    saved = _translation_room_anchors(plan, [{"x": 1.0, "y": 3.0, "radius": 0.2}])[0]
-    geometry = _room_geometry_index(plan)
+    saved = translation_room_anchors(plan, [{"x": 1.0, "y": 3.0, "radius": 0.2}])[0]
+    geometry = room_geometry_index(plan)
     geometry.charge_query_work(95_000)
     remaining = geometry._query_work_remaining
-    assert not _room_has_strong_frame_witnesses(saved, saved, geometry)
+    assert not room_has_strong_frame_witnesses(saved, saved, geometry)
     assert geometry._query_work_remaining == remaining
 
 
@@ -298,10 +298,10 @@ def test_duplicate_circle_edit_cannot_use_refinement_fallback(
 
 @pytest.mark.parametrize("boundary", [[[0, 0]], [[0, 0], ["bad", 1], [1, 0]]])
 def test_frame_witness_rejects_incomplete_or_malformed_points(boundary) -> None:
-    assert not _room_has_strong_frame_witnesses(
+    assert not room_has_strong_frame_witnesses(
         {"boundary_mm": boundary},
         {"boundary_mm": boundary},
-        _room_geometry_index(_witness_plan()),
+        room_geometry_index(_witness_plan()),
     )
 
 
@@ -311,10 +311,10 @@ def test_frame_witness_rejects_poor_two_dimensional_conditioning() -> None:
     ]
     features = abg._turn_witness_features(points)
     assert len(features) >= 3
-    assert not _room_has_strong_frame_witnesses(
+    assert not room_has_strong_frame_witnesses(
         {"boundary_mm": points},
         {"boundary_mm": points},
-        _room_geometry_index(_witness_plan()),
+        room_geometry_index(_witness_plan()),
     )
 
 
@@ -333,14 +333,14 @@ def test_strong_saved_frame_rejects_incomplete_association_evidence(
     elif mutation == "wrong_circle":
         anchors[0]["circle_keys"] = ["0" * 64]
     else:
-        current = _translation_room_anchors(plan, area["circles"])
+        current = translation_room_anchors(plan, area["circles"])
         monkeypatch.setattr(
             abg,
-            "_translation_room_anchors",
+            "translation_room_anchors",
             lambda *a, **kw: [current[0], current[0]],
         )
-    assert not abg._saved_room_frames_have_strong_witnesses(
-        anchors, area["circles"], plan, _room_geometry_index(plan)
+    assert not abg.saved_room_frames_have_strong_witnesses(
+        anchors, area["circles"], plan, room_geometry_index(plan)
     )
 
 
@@ -351,7 +351,7 @@ def test_v6_strong_proof_budget_failure_stays_blocked(monkeypatch) -> None:
     def exhausted(*args, **kwargs):
         raise GeometryTooComplex("witness budget exhausted")
 
-    monkeypatch.setattr(abg, "_room_has_strong_frame_witnesses", exhausted)
+    monkeypatch.setattr(abg, "room_has_strong_frame_witnesses", exhausted)
     assert (
         area_binding_status(area, _locally_refined(plan))
         is AreaBindingStatus.GEOMETRY_CHANGED
@@ -373,7 +373,7 @@ def test_global_frame_guard_remains_independent_of_witness_matcher(
             ),
         ),
     )
-    monkeypatch.setattr(abg, "_room_has_strong_frame_witnesses", lambda *a, **kw: True)
+    monkeypatch.setattr(abg, "room_has_strong_frame_witnesses", lambda *a, **kw: True)
     if fingerprint_failure:
 
         def exhausted(*args, **kwargs):
@@ -403,10 +403,10 @@ def test_sparse_unique_endcap_does_not_anchor_a_repeated_sliding_contour() -> No
     ]
     assert len(shared) >= 3
     assert max(x for x, _ in shared) - min(x for x, _ in shared) < 1000
-    assert not _room_has_strong_frame_witnesses(
+    assert not room_has_strong_frame_witnesses(
         {"boundary_mm": old_mm},
         {"boundary_mm": new_mm},
-        _room_geometry_index(_witness_plan()),
+        room_geometry_index(_witness_plan()),
     )
 
 
@@ -418,7 +418,7 @@ def test_bounded_shape_multiplicity_through_local_refinement(
     circles = [{"x": 1.0, "y": 3.0, "radius": 0.2}]
     if mutation in {"remove", "unchanged"}:
         circles.append(dict(circles[0]))
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
     binding = binding_for_area(plan, circles)
     assert "sha256" in binding["local"]
     area = {
@@ -449,7 +449,7 @@ def test_v6_shape_validation_failure_cannot_use_matching_local_hash(
     def invalid_shape(*args, **kwargs):
         raise ValueError("shape validation failed")
 
-    monkeypatch.setattr(abg, "_area_geometry_components", invalid_shape)
+    monkeypatch.setattr(abg, "area_geometry_components", invalid_shape)
     assert area_binding_status(area, plan) is AreaBindingStatus.INVALID
 
 
@@ -468,7 +468,7 @@ def test_large_unchanged_room_retains_fallback_after_remote_change(
     original = FloorPlan(42, "partition", b"partition", (_room(boundary),))
     circles = [{"x": 1.0, "y": 0.3, "radius": 0.2}]
     if bounded:
-        monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
+        monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
@@ -494,7 +494,7 @@ def test_large_unchanged_room_retains_fallback_after_remote_change(
 
     monkeypatch.setattr(
         abg,
-        "_room_has_strong_frame_witnesses",
+        "room_has_strong_frame_witnesses",
         optional_proof_must_not_run,
     )
     assert area_binding_status(area, refreshed) is AreaBindingStatus.CURRENT
@@ -521,7 +521,7 @@ def test_late_witness_failure_preserves_geometry_changed(monkeypatch):
     def exhausted(*args, **kwargs):
         raise GeometryTooComplex("late optional proof unavailable")
 
-    monkeypatch.setattr(abg, "_saved_room_frames_have_strong_witnesses", exhausted)
+    monkeypatch.setattr(abg, "saved_room_frames_have_strong_witnesses", exhausted)
     assert (
         area_binding_status(area, _locally_refined(plan))
         is AreaBindingStatus.GEOMETRY_CHANGED
@@ -574,8 +574,8 @@ def test_all_room_frames_are_checked_before_optional_witnesses(
         ),
     )
     events = []
-    frame = abg._room_frame_matches
-    strong = abg._room_has_strong_frame_witnesses
+    frame = abg.room_frame_matches
+    strong = abg.room_has_strong_frame_witnesses
 
     def track_frame(saved, current, geometry):
         events.append(("frame", saved["room_key"]))
@@ -589,8 +589,8 @@ def test_all_room_frames_are_checked_before_optional_witnesses(
         events.append(("witness", saved["room_key"]))
         return strong(saved, current, geometry)
 
-    monkeypatch.setattr(abg, "_room_frame_matches", track_frame)
-    monkeypatch.setattr(abg, "_room_has_strong_frame_witnesses", track_strong)
+    monkeypatch.setattr(abg, "room_frame_matches", track_frame)
+    monkeypatch.setattr(abg, "room_has_strong_frame_witnesses", track_strong)
     unchanged = deepcopy(area)
     assert area_binding_status(area, refreshed) is AreaBindingStatus.CURRENT
     assert [kind for kind, _ in events] == ["frame", "witness"]
@@ -618,7 +618,7 @@ def test_v6_aggregate_local_mismatch_requires_strong_proof_for_every_room(
         {"x": 33.0, "y": 30.0, "radius": 0.2},
         {"x": 40.0, "y": 0.3, "radius": 0.2},
     ]
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0)
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
@@ -656,7 +656,7 @@ def test_v6_aggregate_local_mismatch_requires_strong_proof_for_every_room(
     with pytest.MonkeyPatch.context() as proof_patch:
         proof_patch.setattr(
             abg,
-            "_room_has_strong_frame_witnesses",
+            "room_has_strong_frame_witnesses",
             prove_all_rooms,
         )
         assert area_binding_status(area, changed) is AreaBindingStatus.CURRENT
@@ -664,7 +664,7 @@ def test_v6_aggregate_local_mismatch_requires_strong_proof_for_every_room(
     with pytest.MonkeyPatch.context() as guard_patch:
         guard_patch.setattr(
             abg,
-            "_room_has_strong_frame_witnesses",
+            "room_has_strong_frame_witnesses",
             lambda *args, **kwargs: True,
         )
         guard_patch.setattr(
@@ -713,7 +713,7 @@ def test_frame_valid_dense_room_mixes_with_strong_refinement_proof(
         {"x": 33.0, "y": 30.0, "radius": 0.2},
         {"x": 40.0, "y": 0.3, "radius": 0.2},
     ]
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0)
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
@@ -759,19 +759,19 @@ def test_frame_valid_dense_room_mixes_with_strong_refinement_proof(
     )
     dense_current_anchor = next(
         anchor
-        for anchor in _translation_room_anchors(refreshed, circles)
+        for anchor in translation_room_anchors(refreshed, circles)
         if len(anchor["boundary_mm"]) >= 100
     )
-    assert not _room_has_strong_frame_witnesses(
+    assert not room_has_strong_frame_witnesses(
         dense_saved_anchor,
         dense_current_anchor,
-        _room_geometry_index(refreshed),
+        room_geometry_index(refreshed),
     )
 
     events = []
-    bounds = abg._room_anchor_bounds_match
-    frame = abg._room_frame_matches
-    strong = abg._room_has_strong_frame_witnesses
+    bounds = abg.room_anchor_bounds_match
+    frame = abg.room_frame_matches
+    strong = abg.room_has_strong_frame_witnesses
 
     def track_bounds(saved, current):
         events.append(("bounds", saved["room_key"]))
@@ -786,9 +786,9 @@ def test_frame_valid_dense_room_mixes_with_strong_refinement_proof(
         events.append(("witness", saved["room_key"]))
         return strong(saved, current, geometry)
 
-    monkeypatch.setattr(abg, "_room_anchor_bounds_match", track_bounds)
-    monkeypatch.setattr(abg, "_room_frame_matches", track_frame)
-    monkeypatch.setattr(abg, "_room_has_strong_frame_witnesses", track_strong)
+    monkeypatch.setattr(abg, "room_anchor_bounds_match", track_bounds)
+    monkeypatch.setattr(abg, "room_frame_matches", track_frame)
+    monkeypatch.setattr(abg, "room_has_strong_frame_witnesses", track_strong)
     unchanged = deepcopy(area)
     assert area_binding_status(area, refreshed) is AreaBindingStatus.CURRENT
     witness_event_index = next(
@@ -834,8 +834,8 @@ def test_required_frame_witness_exhaustion_stays_blocked(monkeypatch):
     def exhausted(*args, **kwargs):
         raise GeometryTooComplex("required witness query exhausted")
 
-    monkeypatch.setattr(abg, "_room_anchor_bounds_match", lambda *a: False)
-    monkeypatch.setattr(abg, "_room_has_strong_frame_witnesses", exhausted)
+    monkeypatch.setattr(abg, "room_anchor_bounds_match", lambda *a: False)
+    monkeypatch.setattr(abg, "room_has_strong_frame_witnesses", exhausted)
     assert (
         area_binding_status(area, _locally_refined(plan))
         is AreaBindingStatus.GEOMETRY_CHANGED

@@ -48,7 +48,7 @@ class RoomRunOutcome(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class _PreparedRoomDispatch:
+class PreparedRoomDispatch:
     """A dispatched leg mission and the baselines its completion is judged by."""
 
     rooms: tuple[CleaningRoom, ...]
@@ -62,17 +62,17 @@ class _PreparedRoomDispatch:
     session_hash: str | None = None
 
 
-def _remaining_completion_time(dispatch: _PreparedRoomDispatch, timeout: int) -> float:
+def remaining_completion_time(dispatch: PreparedRoomDispatch, timeout: int) -> float:
     """Keep a recovered mission inside its original wall-clock budget."""
     if dispatch.completion_deadline is None:
         return float(timeout)
     return max(0.0, (dispatch.completion_deadline - dt_util.utcnow()).total_seconds())
 
 
-async def _async_completion_budget(
-    dispatch: _PreparedRoomDispatch,
+async def async_completion_budget(
+    dispatch: PreparedRoomDispatch,
     configured_seconds: int,
-    checkpoint: Callable[[_PreparedRoomDispatch], Awaitable[None]] | None,
+    checkpoint: Callable[[PreparedRoomDispatch], Awaitable[None]] | None,
 ) -> float:
     """Persist the deadline before entering the completion monitor."""
     if dispatch.completion_deadline is None:
@@ -83,14 +83,14 @@ async def _async_completion_budget(
         )
         if checkpoint is not None:
             await checkpoint(dispatch)
-    remaining = _remaining_completion_time(dispatch, configured_seconds)
+    remaining = remaining_completion_time(dispatch, configured_seconds)
     if remaining <= 0:
         raise TimeoutError
     return remaining
 
 
 @dataclass(frozen=True, slots=True)
-class _NativeReconciliation:
+class NativeReconciliation:
     """Minimal durable marker for a native session finishing after cleanup."""
 
     plan_id: str
@@ -182,9 +182,9 @@ class NativeTaskEndedError(RoomInterruptedError):
     """
 
 
-def _failure_reason_code(error: BaseException) -> str:
+def failure_reason_code(error: BaseException) -> str:
     """Map an internal failure to a stable, non-sensitive event code."""
-    guard_error = _coverage_guard_cause(error)
+    guard_error = coverage_guard_cause(error)
     if guard_error is not None:
         return guard_error.reason_code
     if isinstance(error, ServiceValidationError) and error.__cause__ is not None:
@@ -194,7 +194,7 @@ def _failure_reason_code(error: BaseException) -> str:
     if isinstance(error, NativeHistoryBaselineUnavailableError):
         return "native_history_baseline_unavailable"
     if isinstance(error, RoomInterruptedError):
-        return _interruption_reason_code(error)
+        return interruption_reason_code(error)
     if isinstance(error, RoomStartTimeoutError):
         return "start_timeout"
     if isinstance(error, TimeoutError):
@@ -207,7 +207,7 @@ def _failure_reason_code(error: BaseException) -> str:
     return "managed_failure"
 
 
-def _coverage_guard_cause(error: BaseException) -> CoverageGuardError | None:
+def coverage_guard_cause(error: BaseException) -> CoverageGuardError | None:
     """Find a known pre-write guard through the HA service wrapper."""
     if isinstance(error, CoverageGuardError):
         return error
@@ -218,7 +218,7 @@ def _coverage_guard_cause(error: BaseException) -> CoverageGuardError | None:
     return None
 
 
-def _interruption_reason_code(error: RoomInterruptedError) -> str:
+def interruption_reason_code(error: RoomInterruptedError) -> str:
     """Map an unverified room terminal state without guessing its cause."""
     if isinstance(error, RoomStoppedInPlaceError):
         return "stopped_in_place"

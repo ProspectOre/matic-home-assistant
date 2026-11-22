@@ -117,7 +117,7 @@ async def test_occupied_room_is_held_out_of_a_saved_plan(
 ) -> None:
     release_dispatch = asyncio.Event()
     waiting_for_start = asyncio.Event()
-    dispatch = managed_dispatch._async_dispatch_leg_command
+    dispatch = managed_dispatch.async_dispatch_leg_command
     wait_for_room_start = plan.wait_for_room_start
 
     async def delayed_dispatch(*args, **kwargs):
@@ -132,7 +132,7 @@ async def test_occupied_room_is_held_out_of_a_saved_plan(
     if delay_owned_start:
         monkeypatch.setattr(plan, "wait_for_room_start", observed_start_wait)
         monkeypatch.setattr(
-            managed_dispatch, "_async_dispatch_leg_command", delayed_dispatch
+            managed_dispatch, "async_dispatch_leg_command", delayed_dispatch
         )
     hass.states.async_set(STUDY_OCCUPANCY, "on", {"device_class": "occupancy"})
     await plan.call(

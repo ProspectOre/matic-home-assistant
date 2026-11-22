@@ -16,10 +16,10 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plan_records import ActivePlan
 from custom_components.matic_robot.plan_timing import (
-    _compatible_duration_history,
     _duration_history,
     _estimated_progress,
-    _expected_duration,
+    compatible_duration_history,
+    expected_duration,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager, plan_room
@@ -336,8 +336,8 @@ def test_persisted_duration_values_fail_closed() -> None:
 def test_duration_estimator_is_recent_bounded_and_outlier_resistant() -> None:
     record = {"duration_history_seconds": [90, 91, 92, 93, 94, 95, 1000, 96]}
     assert _duration_history(record) == [91, 92, 93, 94, 95, 1000, 96]
-    assert _expected_duration(record) == 94
-    assert _expected_duration({"duration_history_seconds": [90, 100]}) is None
+    assert expected_duration(record) == 94
+    assert expected_duration({"duration_history_seconds": [90, 100]}) is None
 
 
 def test_compatible_duration_history_is_room_and_settings_scoped() -> None:
@@ -383,7 +383,7 @@ def test_compatible_duration_history_is_room_and_settings_scoped() -> None:
         }
     }
     active = {"cleaning_mode": "vacuum", "coverage_setting": "quick"}
-    assert _compatible_duration_history(robot, "room-hall", active) == [
+    assert compatible_duration_history(robot, "room-hall", active) == [
         91,
         92,
         93,
@@ -392,9 +392,9 @@ def test_compatible_duration_history_is_room_and_settings_scoped() -> None:
         96,
         97,
     ]
-    assert _compatible_duration_history(robot, "missing", active) == []
-    assert _compatible_duration_history(robot, "room-hall", {}) == []
-    assert _compatible_duration_history({"rotations": []}, "room-hall", active) == []
+    assert compatible_duration_history(robot, "missing", active) == []
+    assert compatible_duration_history(robot, "room-hall", {}) == []
+    assert compatible_duration_history({"rotations": []}, "room-hall", active) == []
 
 
 def _estimate_manager(hass, rotations: dict[str, Any]) -> CleaningPlanManager:

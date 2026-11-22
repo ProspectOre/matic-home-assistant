@@ -65,7 +65,7 @@ LEG_HANDOFF_TIMEOUT_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 HOME = frozenset({RobotActivity.DOCKED, RobotActivity.CHARGING})
 
 
-async def _async_verify_leg_completion(
+async def async_verify_leg_completion(
     reader: SessionHistory,
     baseline: frozenset[bytes] | None,
     rooms: Sequence[CleaningRoom],
@@ -172,7 +172,7 @@ async def _async_verify_leg_completion(
     return evidence
 
 
-async def _async_wait_for_room_outcome(
+async def async_wait_for_room_outcome(
     robot: RobotPort,
     room: CleaningRoom,
     cancel_event: asyncio.Event | None = None,
@@ -197,7 +197,7 @@ async def _async_wait_for_room_outcome(
     return outcome
 
 
-class _LegOutcomeObserver:
+class LegOutcomeObserver:
     """Own ordered, bounded observations for one multi-room native leg."""
 
     def __init__(
@@ -429,7 +429,7 @@ async def _async_wait_for_leg_outcome(
     initial_observed: bool = False,
 ) -> tuple[RoomRunOutcome, CleaningRoom | None]:
     """One-shot lifecycle adapter over the shared leg outcome observer."""
-    observer = _LegOutcomeObserver(
+    observer = LegOutcomeObserver(
         robot,
         rooms,
         active_room,
@@ -441,7 +441,7 @@ async def _async_wait_for_leg_outcome(
         observer.close()
 
 
-async def _async_active_session_state(
+async def async_active_session_state(
     reader: Callable[[], Awaitable[bool | None]],
 ) -> bool | None:
     """Resolve active-task presence with a small bounded unknown retry window."""
@@ -469,7 +469,7 @@ class NativeRoomVerdict(StrEnum):
     UNVERIFIED = "unverified"
 
 
-async def _async_adjudicate_room_end(
+async def async_adjudicate_room_end(
     reader: SessionHistory,
     baseline: frozenset[bytes] | None,
     room: CleaningRoom,
@@ -585,7 +585,7 @@ def _raise_if_completion_verification_was_replaced(
         )
 
 
-async def _async_wait_for_active_session_resolution(
+async def async_wait_for_active_session_resolution(
     robot: RobotPort,
     cancel_event: asyncio.Event | None = None,
     *,
@@ -603,7 +603,7 @@ async def _async_wait_for_active_session_resolution(
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
         observed_state = robot.observed()
-        identity = await _async_read_session_identity(robot.session_identity)
+        identity = await async_read_session_identity(robot.session_identity)
         state = robot.observed()
         if identity == b"" and state is observed_state:
             return False
@@ -639,7 +639,7 @@ async def _async_wait_for_active_session_resolution(
         raise PlanCancelledError
 
 
-async def _async_wait_for_settled_leg_handoff(
+async def async_wait_for_settled_leg_handoff(
     robot: RobotPort,
     cancel_event: asyncio.Event | None,
     *,
@@ -681,7 +681,7 @@ async def _async_wait_for_settled_leg_handoff(
             raise validation_error(
                 "The selected Matic robot reported an error", "robot_error"
             )
-        identity = await _async_read_session_identity(robot.session_identity)
+        identity = await async_read_session_identity(robot.session_identity)
         session_active: bool | None = None
         try:
             session_active = await robot.active_session()
@@ -741,7 +741,7 @@ def _area_matches_room(value: object, room: CleaningRoom) -> bool:
     return normalized in {native_room_key(room.room_id), native_room_key(room.name)}
 
 
-async def _async_periodic_refresh(
+async def async_periodic_refresh(
     refresh: Callable[[], Awaitable[None]],
 ) -> None:
     """Poll operational state quickly enough to intercept a return to dock."""
@@ -776,7 +776,7 @@ def _classify_native_identity(
     return NativeTaskSignal.REPLACED
 
 
-async def _async_read_session_identity(
+async def async_read_session_identity(
     reader: Callable[[], Awaitable[bytes | None]],
 ) -> bytes | None:
     """Read an opaque identity without logging its value on transport failure."""
@@ -789,7 +789,7 @@ async def _async_read_session_identity(
         return None
 
 
-async def _async_wait_with_native_identity[T](
+async def async_wait_with_native_identity[T](
     outcome: Callable[[], Awaitable[T]],
     reader: Callable[[], Awaitable[bytes | None]],
     expected: bytes | None,
@@ -806,7 +806,7 @@ async def _async_wait_with_native_identity[T](
             transition_observed = changed.done()
             if transition_observed:
                 changed.result()
-            identity = await _async_read_session_identity(reader)
+            identity = await async_read_session_identity(reader)
             signal = _classify_native_identity(identity, expected)
             if signal is NativeTaskSignal.UNKNOWN:
                 unknown_reads += 1
@@ -834,7 +834,7 @@ async def _async_wait_with_native_identity[T](
         await asyncio.gather(changed, return_exceptions=True)
 
 
-async def _async_wait_for_owned_start(
+async def async_wait_for_owned_start(
     robot: RobotPort,
     timeout_seconds: int,
     cancel_event: asyncio.Event | None,
@@ -902,7 +902,7 @@ async def _async_confirm_started_identity(
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
         transition_observed = started.done()
-        identity = await _async_read_session_identity(reader)
+        identity = await async_read_session_identity(reader)
         if identity and identity != identity_baseline and expected is None:
             expected = identity
             bind_identity(identity)
@@ -930,7 +930,7 @@ async def _async_confirm_started_identity(
             await asyncio.wait({started}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
 
 
-async def _async_wait_for_owned_resume(
+async def async_wait_for_owned_resume(
     robot: RobotPort,
     timeout_seconds: float,
     cancel_event: asyncio.Event | None,
@@ -965,7 +965,7 @@ async def _async_wait_for_owned_resume(
                 transition_observed = resumed.done() or (
                     observed_resume is not None and observed_resume.done()
                 )
-                identity = await _async_read_session_identity(robot.session_identity)
+                identity = await async_read_session_identity(robot.session_identity)
                 signal = _classify_native_identity(identity, expected)
                 if signal is NativeTaskSignal.UNKNOWN:
                     unknown_reads += 1

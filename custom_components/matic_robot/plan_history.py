@@ -13,7 +13,7 @@ from .client import CleaningSessionRecord
 from .map_schema import RunEntry
 from .plan_catalog import PlanCatalog
 from .plan_model import (
-    _is_manual_room_sequence_plan_id,
+    is_manual_room_sequence_plan_id,
     plan_setting,
     stored_count,
 )
@@ -85,7 +85,7 @@ class PlanHistory:
             return None
         return {
             **_room_fields(active),
-            **plan_timing._room_timing(
+            **plan_timing.room_timing(
                 self.repository.robot(serial_number), active, dt_util.utcnow()
             ),
         }
@@ -99,7 +99,7 @@ class PlanHistory:
         return history_entries(
             self.repository.robot(serial_number),
             native,
-            manual=_is_manual_room_sequence_plan_id,
+            manual=is_manual_room_sequence_plan_id,
         )
 
     def run_summary(self, serial_number: str) -> RunSummary | None:
@@ -162,7 +162,7 @@ class PlanHistory:
         active_plan: dict[str, Any] | None = None
         if active is not None:
             active_plan = active.published()
-            active_plan["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
+            active_plan["active_elapsed_seconds"] = plan_timing.active_elapsed_seconds(
                 active, dt_util.utcnow()
             )
         elif smart_stop is not None and last_run is not None:
@@ -245,7 +245,7 @@ class PlanHistory:
         robot = self.repository.robot(serial_number)
         total = 0
         for room_id, cleaning_mode, coverage_setting in rooms:
-            history = plan_timing._compatible_duration_history(
+            history = plan_timing.compatible_duration_history(
                 robot,
                 room_id,
                 {
@@ -253,7 +253,7 @@ class PlanHistory:
                     "coverage_setting": coverage_setting,
                 },
             )
-            expected = plan_timing._expected_duration(
+            expected = plan_timing.expected_duration(
                 {"duration_history_seconds": history}
             )
             if expected is None:

@@ -53,11 +53,11 @@ async def test_handoff_resumes_only_while_the_idle_revision_holds(
 
     with (
         patch(
-            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.restart.async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ) as settled,
         patch(
-            "custom_components.matic_robot.restart._async_execute_rooms", AsyncMock()
+            "custom_components.matic_robot.restart.async_execute_rooms", AsyncMock()
         ) as runner,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -98,7 +98,7 @@ async def test_a_tracked_dispatch_resumes_only_by_its_own_session(
         )
 
     with patch(
-        "custom_components.matic_robot.restart._async_execute_rooms", AsyncMock()
+        "custom_components.matic_robot.restart.async_execute_rooms", AsyncMock()
     ) as runner:
         await async_recover_managed_run(hass, entry, "serial")
 

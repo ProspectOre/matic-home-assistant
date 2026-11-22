@@ -52,8 +52,8 @@ from custom_components.matic_robot.const import (
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
 from custom_components.matic_robot.managed_dispatch import (
     _async_mark_run_docked,
-    _ensure_stop_settled,
-    _run_provenance,
+    ensure_stop_settled,
+    run_provenance,
 )
 from custom_components.matic_robot.managed_observation import (
     _async_wait_for_robot_activity,
@@ -62,10 +62,10 @@ from custom_components.matic_robot.managed_reconciliation import (
     _async_expire_native_reconciliation,
     _async_reconcile_native_stop,
     _native_completion_match,
-    _schedule_native_reconciliation,
+    schedule_native_reconciliation,
 )
 from custom_components.matic_robot.managed_run import (
-    _NativeReconciliation,
+    NativeReconciliation,
 )
 from custom_components.matic_robot.plan_catalog import (
     MAX_SAVED_PLANS_PER_ROBOT,
@@ -99,7 +99,7 @@ from custom_components.matic_robot.service_context import (
     saved_plan_context,
 )
 from custom_components.matic_robot.service_execution import (
-    _async_execute_rooms,
+    async_execute_rooms,
 )
 from custom_components.matic_robot.service_plans import (
     plan_cadence_bindings,
@@ -217,9 +217,9 @@ async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
         context=Context(user_id="private-user"),
     )
     unknown = ServiceCall(hass, DOMAIN, "run_selected_plan", {}, context=Context())
-    assert _run_provenance(automation) == "automation"
-    assert _run_provenance(user) == "user"
-    assert _run_provenance(unknown) == "external_unknown"
+    assert run_provenance(automation) == "automation"
+    assert run_provenance(user) == "user"
+    assert run_provenance(unknown) == "external_unknown"
 
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
@@ -1775,7 +1775,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             ),
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             execute,
         ),
         patch(
@@ -1939,7 +1939,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             execute,
         ),
     ):
@@ -2007,7 +2007,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
                 return_value=context,
             ),
             patch(
-                "custom_components.matic_robot.service_execution._async_execute_rooms",
+                "custom_components.matic_robot.service_execution.async_execute_rooms",
                 execute,
             ),
             pytest.raises(ServiceValidationError, match="more than once"),
@@ -2029,7 +2029,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             execute_with_mutation,
         ),
         pytest.raises(ServiceValidationError, match="resolution changed") as raised,
@@ -2053,7 +2053,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             execute_with_invalid_map,
         ),
         pytest.raises(ServiceValidationError) as invalid_map,
@@ -2310,7 +2310,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             return_value=("vacuum.test", entry, "serial", {room.id: room.name}),
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             execute,
         ),
     ):
@@ -2608,10 +2608,10 @@ async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
         },
     )
     with patch(
-        "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
+        "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
         new=AsyncMock(),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -2763,7 +2763,7 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as execute,
         pytest.raises(ServiceValidationError) as raised,
@@ -2857,7 +2857,7 @@ async def test_all_daily_limited_rooms_block_saved_and_manual_dispatch(hass) -> 
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             execute,
         ),
     ):
@@ -2931,7 +2931,7 @@ async def test_legacy_oversized_plan_cannot_be_previewed_or_dispatched(hass) -> 
             return_value=("vacuum.test", entry, "serial", room_map),
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as execute,
         pytest.raises(ServiceValidationError) as raised,
@@ -3030,7 +3030,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(side_effect=invoke_validation),
         ) as execute,
         pytest.raises(ServiceValidationError) as raised,
@@ -3131,7 +3131,7 @@ async def test_run_without_preview_revalidates_after_stop_settlement(
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             execute,
         ),
     ):
@@ -3247,7 +3247,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(side_effect=exercise_managed_command),
         ) as execute,
     ):
@@ -3353,7 +3353,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(side_effect=validate_tokenized_run),
         ) as token_execute,
     ):
@@ -3367,7 +3367,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as other_order_execute,
         pytest.raises(ServiceValidationError, match="preview is stale"),
@@ -3389,7 +3389,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(side_effect=mutate_saved_plan_before_dispatch),
         ) as changed_execute,
         pytest.raises(ServiceValidationError, match="resolution changed") as raised,
@@ -3406,7 +3406,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as stale_execute,
         pytest.raises(ServiceValidationError, match="preview is stale") as raised,
@@ -5182,7 +5182,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
     reads = AsyncMock(side_effect=[(), (CleaningSessionRecord(b"new", session),)])
     robot.show("docked")
     confirmed = MagicMock()
-    reconciliation = _NativeReconciliation(
+    reconciliation = NativeReconciliation(
         "away", room.room_id, room.name, now - timedelta(seconds=5), run_id=run_id
     )
     with patch(
@@ -5258,7 +5258,7 @@ async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None
             "serial",
             "vacuum.matic",
             room,
-            _NativeReconciliation("away", room.room_id, room.name, dispatched_at),
+            NativeReconciliation("away", room.room_id, room.name, dispatched_at),
             frozenset(),
             robot.port(
                 session_history=AsyncMock(return_value=(record,)),
@@ -5295,7 +5295,7 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
     save.reset_mock()
     robot.show("cleaning")
     history = AsyncMock(side_effect=MaticError("synthetic offline"))
-    reconciliation = _NativeReconciliation(
+    reconciliation = NativeReconciliation(
         "away", room.room_id, room.name, now - timedelta(seconds=5)
     )
     with (
@@ -5352,7 +5352,7 @@ async def test_native_stop_reconciliation_expires_without_history_baseline(
     )
     save.reset_mock()
     history = AsyncMock()
-    reconciliation = _NativeReconciliation(
+    reconciliation = NativeReconciliation(
         "away", room.room_id, room.name, dispatched_at
     )
 
@@ -5427,7 +5427,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     robot = FakeRobot()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()
-    reconciliation = _NativeReconciliation(
+    reconciliation = NativeReconciliation(
         "away", room.room_id, room.name, now - timedelta(seconds=5)
     )
     manager = memory_manager(hass)
@@ -5437,7 +5437,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         created.append(name)
         return hass.async_create_task(asyncio.sleep(0, coro.close()))
 
-    _schedule_native_reconciliation(
+    schedule_native_reconciliation(
         SimpleNamespace(async_create_background_task=create_background_task),
         manager,
         "serial",
@@ -5448,7 +5448,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         robot.port(session_history=AsyncMock()),
         None,
     )
-    _schedule_native_reconciliation(
+    schedule_native_reconciliation(
         SimpleNamespace(async_create_background_task=create_background_task),
         manager,
         "serial",
@@ -5476,7 +5476,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         )
     )
     with pytest.raises(ServiceValidationError) as blocked:
-        await _ensure_stop_settled(
+        await ensure_stop_settled(
             hass,
             manager_with_fence,
             "serial",
@@ -5486,7 +5486,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         )
     assert blocked.value.translation_key == "robot_stop_pending"
     hass.states.async_set("vacuum.test", "docked")
-    await _ensure_stop_settled(
+    await ensure_stop_settled(
         hass,
         manager_with_fence,
         "serial",
@@ -5497,7 +5497,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     assert manager_with_fence.control.stop_pending("serial") is False
 
     manager_with_fence.control.mark_stop_pending("serial")
-    await _ensure_stop_settled(
+    await ensure_stop_settled(
         hass,
         manager_with_fence,
         "serial",
@@ -5511,7 +5511,7 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
 async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None:
     robot = FakeRobot()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
-    reconciliation = _NativeReconciliation(
+    reconciliation = NativeReconciliation(
         "away", room.room_id, room.name, dt_util.utcnow() - timedelta(seconds=5)
     )
     registered = MagicMock()
@@ -5527,7 +5527,7 @@ async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None
         "custom_components.matic_robot.managed_reconciliation._async_reconcile_native_stop",
         AsyncMock(),
     ):
-        _schedule_native_reconciliation(
+        schedule_native_reconciliation(
             SimpleNamespace(async_create_background_task=create_background_task),
             manager,
             "serial",

@@ -12,8 +12,8 @@ from custom_components.matic_robot.client.cleaning_session import (
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.managed_observation import (
     NativeRoomVerdict,
-    _async_adjudicate_room_end,
-    _async_verify_leg_completion,
+    async_adjudicate_room_end,
+    async_verify_leg_completion,
 )
 from custom_components.matic_robot.managed_reconciliation import (
     _native_completion_match,
@@ -73,7 +73,7 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
     }[mode]
     duration = 60 if mode == "vacuum_and_mop" else 30
     evidence = []
-    assert await _async_adjudicate_room_end(
+    assert await async_adjudicate_room_end(
         reader,
         frozenset(),
         room,
@@ -83,7 +83,7 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
         on_verified_completion=lambda ended, seconds: evidence.append((ended, seconds)),
     ) is (NativeRoomVerdict.COMPLETED if expected else NativeRoomVerdict.UNVERIFIED)
     assert evidence == ([(session.ended_at, duration)] if expected else [])
-    leg = await _async_verify_leg_completion(
+    leg = await async_verify_leg_completion(
         reader, frozenset(), [room], dispatched, robot=robot.port(), attempts=1
     )
     assert leg == (
@@ -296,19 +296,19 @@ async def test_restart_reconciliation_preserves_mode_admission(
         Room,
     )
     from custom_components.matic_robot.managed_reconciliation import (
-        _build_native_reconciliation,
-        _native_reconciliation_data,
+        build_native_reconciliation,
+        native_reconciliation_data,
     )
-    from custom_components.matic_robot.managed_run import _PreparedRoomDispatch
+    from custom_components.matic_robot.managed_run import PreparedRoomDispatch
     from custom_components.matic_robot.plans import CleaningPlanManager
 
     room = CleaningRoom("study", "Study", "vacuum", "standard")
     dispatched = dt_util.utcnow() - timedelta(seconds=90)
-    marker = _native_reconciliation_data(
-        _build_native_reconciliation(
+    marker = native_reconciliation_data(
+        build_native_reconciliation(
             "synthetic-plan",
             room,
-            _PreparedRoomDispatch((room,), None, dispatched),
+            PreparedRoomDispatch((room,), None, dispatched),
             True,
             None,
             "f" * 64,
@@ -436,7 +436,7 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
         CleaningRoom(row[0].lower(), row[0], "vacuum_and_mop", "standard")
         for row in rows
     ]
-    evidence = await _async_verify_leg_completion(
+    evidence = await async_verify_leg_completion(
         reader,
         frozenset(),
         rooms,
@@ -525,7 +525,7 @@ async def test_combined_completion_requires_usable_duration_for_both_modes(durat
     )
     room = CleaningRoom("study", "Study", "vacuum_and_mop", "standard")
     assert (
-        await _async_verify_leg_completion(
+        await async_verify_leg_completion(
             reader,
             frozenset(),
             [room],

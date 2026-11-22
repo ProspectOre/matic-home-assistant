@@ -40,8 +40,8 @@ from .const import (
     MAX_ROOM_SEQUENCE_SIZE,
 )
 from .plan_cadence import (
+    CadenceMutation,
     PlanCadence,
-    _CadenceMutation,
 )
 from .plan_model import (
     MANUAL_ROOM_SEQUENCE_PLAN_NAME,
@@ -53,17 +53,17 @@ from .plan_model import (
     PlanAreaLimitError,
     PlanAreaMissingError,
     RoomSequenceLimitError,
-    _is_manual_room_sequence_plan_id,
-    _next_manual_room_sequence_plan_id,
-    _stored_entries,
+    is_manual_room_sequence_plan_id,
+    next_manual_room_sequence_plan_id,
     plan_area_fingerprint,
     plan_entries,
     relink_plan_rooms,
     stored_count,
+    stored_entries,
 )
 from .plan_repository import (
+    MetadataLockLease,
     PlanRepository,
-    _MetadataLockLease,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -104,9 +104,9 @@ class PlanCatalog:
             active.plan_id if active is not None else None,
             pending.get("plan_id") if isinstance(pending, Mapping) else None,
         ):
-            if _is_manual_room_sequence_plan_id(owner):
+            if is_manual_room_sequence_plan_id(owner):
                 unavailable.add(str(owner))
-        plan_id = _next_manual_room_sequence_plan_id(robot["plans"], unavailable)
+        plan_id = next_manual_room_sequence_plan_id(robot["plans"], unavailable)
         reservations.add(plan_id)
         return plan_id
 
@@ -130,7 +130,7 @@ class PlanCatalog:
     ) -> AreaBindingUpgradeResult:
         """Upgrade verified area bindings without rebasing tolerated drift."""
 
-        async def commit(_lease: _MetadataLockLease) -> AreaBindingUpgradeResult:
+        async def commit(_lease: MetadataLockLease) -> AreaBindingUpgradeResult:
             async with self.repository.commit(serial_number):
                 return self.upgrade_area_bindings_transaction(serial_number, floor_plan)
 
@@ -175,7 +175,7 @@ class PlanCatalog:
                 pending = True
                 continue
             if room_geometry is None and area_binding_needs_geometry_index(area):
-                room_geometry = binding_geometry._room_geometry_index(floor_plan)
+                room_geometry = binding_geometry.room_geometry_index(floor_plan)
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is not AreaBindingStatus.CURRENT:
                 pending = (
@@ -288,7 +288,7 @@ class PlanCatalog:
         would be left with nothing to clean refuses the whole deletion.
         """
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.repository.commit(serial_number, user=True) as robot:
                 using = self.plans_using_area(serial_number, area_id)
                 emptied = [
@@ -296,7 +296,7 @@ class PlanCatalog:
                     for plan_id in using
                     if all(
                         entry.get("kind") == "area" and entry.get("area_id") == area_id
-                        for entry in _stored_entries(robot["plans"][plan_id])
+                        for entry in stored_entries(robot["plans"][plan_id])
                     )
                 ]
                 if emptied:
@@ -362,7 +362,7 @@ class PlanCatalog:
     ) -> None:
         """Create or replace a validated room-native plan definition."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.cadence.cadence_commit(serial_number) as mutations:
                 mutations.append(
                     self.save_plan_transaction(
@@ -392,7 +392,7 @@ class PlanCatalog:
         select: bool,
         floor_token: str | None,
         room_identities: Mapping[str, str] | None,
-    ) -> _CadenceMutation:
+    ) -> CadenceMutation:
         """Write a validated room-native plan into the open commit."""
         robot = self.repository.robot(serial_number)
         plans = robot["plans"]
@@ -437,7 +437,7 @@ class PlanCatalog:
         plans[plan_id] = saved_plan
         if select or robot.get("selected_plan") is None:
             robot["selected_plan"] = plan_id
-        return _CadenceMutation(
+        return CadenceMutation(
             plan_id,
             frozenset(changed_plan_rooms),
             frozenset(room_id for room_id, _policy in edits.shared_updates),
@@ -469,14 +469,14 @@ class PlanCatalog:
             for plan_id, plan in self.repository.robot(serial_number)["plans"].items()
             if any(
                 entry.get("kind") == "area" and entry.get("area_id") == area_id
-                for entry in _stored_entries(plan)
+                for entry in stored_entries(plan)
             )
         )
 
     async def async_delete_plan(self, serial_number: str, plan_id: str) -> None:
         """Delete one saved plan without deleting unrelated history."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.cadence.cadence_commit(serial_number) as mutations:
                 mutations.append(self.delete_plan_transaction(serial_number, plan_id))
 
@@ -490,11 +490,11 @@ class PlanCatalog:
 
     def delete_plan_transaction(
         self, serial_number: str, plan_id: str
-    ) -> _CadenceMutation:
+    ) -> CadenceMutation:
         """Delete one saved plan in the open commit, keeping unrelated history."""
         robot = self.repository.robot(serial_number)
         active = self.repository.active_plan(serial_number)
-        pending = native_history._validated_native_reconciliation(
+        pending = native_history.validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
         if active is not None and active.plan_id == plan_id:
@@ -524,12 +524,12 @@ class PlanCatalog:
         robot["plan_room_cadence"].pop(plan_id, None)
         if robot.get("selected_plan") == plan_id:
             robot["selected_plan"] = next(iter(robot["plans"]), None)
-        return _CadenceMutation(plan_id, plan_room_ids, frozenset(), deletes_plan=True)
+        return CadenceMutation(plan_id, plan_room_ids, frozenset(), deletes_plan=True)
 
     async def async_select_plan(self, serial_number: str, plan_id: str) -> None:
         """Persist the selected plan used by native entities."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.repository.commit(serial_number, user=True) as robot:
                 if plan_id not in robot["plans"]:
                     raise KeyError(plan_id)
@@ -552,7 +552,7 @@ class PlanCatalog:
         if plan_id is None:
             return None
         plan = self.repository.robot(serial_number)["plans"].get(plan_id)
-        if plan is None and _is_manual_room_sequence_plan_id(plan_id):
+        if plan is None and is_manual_room_sequence_plan_id(plan_id):
             return MANUAL_ROOM_SEQUENCE_PLAN_NAME
         return str(plan.get("name", plan_id)) if plan else plan_id
 
@@ -587,7 +587,7 @@ class PlanCatalog:
         ):
             raise ValueError("re-link target is not on the current map")
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.cadence.cadence_commit(serial_number) as mutations:
                 # Under the storage lock too, which the commit waits for.
                 precondition()
@@ -668,7 +668,7 @@ class _RoomCadence:
 
 def _assert_plan_can_be_added(plans: Mapping[str, Any], plan_id: str) -> None:
     """Reject a new plan with a reserved ID or beyond the per-robot limit."""
-    if _is_manual_room_sequence_plan_id(plan_id):
+    if is_manual_room_sequence_plan_id(plan_id):
         raise ValueError("This ID is reserved for manual Map Studio room runs")
     if len(plans) >= MAX_SAVED_PLANS_PER_ROBOT:
         raise SavedPlanLimitError(

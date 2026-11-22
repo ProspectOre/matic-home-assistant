@@ -10,12 +10,12 @@ from homeassistant.core import CoreState
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.commands import UserCommand
-from custom_components.matic_robot.managed_dispatch import _async_dispatch_leg_command
+from custom_components.matic_robot.managed_dispatch import async_dispatch_leg_command
 from custom_components.matic_robot.managed_run import (
+    PreparedRoomDispatch,
     RoomRunOutcome,
-    _async_completion_budget,
-    _PreparedRoomDispatch,
-    _remaining_completion_time,
+    async_completion_budget,
+    remaining_completion_time,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
@@ -25,9 +25,9 @@ from tests.wire_builders import _session_identity
 
 async def test_completion_budget_is_persisted_once_and_not_reset():
     saver = AsyncMock()
-    dispatch = _PreparedRoomDispatch((), frozenset(), dt_util.utcnow())
-    assert _remaining_completion_time(dispatch, 100) == 100
-    remaining = await _async_completion_budget(dispatch, 100, saver)
+    dispatch = PreparedRoomDispatch((), frozenset(), dt_util.utcnow())
+    assert remaining_completion_time(dispatch, 100) == 100
+    remaining = await async_completion_budget(dispatch, 100, saver)
     assert 99 < remaining <= 100
     saved = saver.await_args.args[0]
     assert saved.completion_deadline is not None
@@ -35,13 +35,13 @@ async def test_completion_budget_is_persisted_once_and_not_reset():
     near_end = replace(
         saved, completion_deadline=dt_util.utcnow() + timedelta(seconds=5)
     )
-    assert 0 < await _async_completion_budget(near_end, 100, saver) <= 5
+    assert 0 < await async_completion_budget(near_end, 100, saver) <= 5
     saver.assert_not_awaited()
 
 
 async def test_dispatch_does_not_consume_the_separate_completion_budget(hass):
     robot = FakeRobot()
-    dispatch = await _async_dispatch_leg_command(
+    dispatch = await async_dispatch_leg_command(
         robot.port(session_identity=robot.accepting),
         [CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")],
         7,
@@ -51,7 +51,7 @@ async def test_dispatch_does_not_consume_the_separate_completion_budget(hass):
     assert dispatch.completion_deadline is None
     delayed = replace(dispatch, dispatched_at=dt_util.utcnow() - timedelta(seconds=55))
     saver = AsyncMock()
-    assert 99 < await _async_completion_budget(delayed, 100, saver) <= 100
+    assert 99 < await async_completion_budget(delayed, 100, saver) <= 100
     assert saver.await_args.args[0].completion_deadline > dt_util.utcnow() + timedelta(
         seconds=99
     )
@@ -67,7 +67,7 @@ async def test_accepted_checkpoint_without_budget_is_not_recoverable(
     else:
         checkpoint["completion_deadline"] = None
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
+    with patch("custom_components.matic_robot.restart.async_execute_rooms") as execute:
         await async_recover_managed_run(hass, entry, "serial")
     execute.assert_not_called()
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "unverified"
@@ -98,7 +98,7 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
     hass.bus.async_listen("matic_robot_plan_docked", docked.append)
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
+            "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
             return_value=RoomRunOutcome.STOPPED_IN_PLACE,
         ),
         patch(
@@ -106,7 +106,7 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
         ),
         patch("custom_components.matic_robot.stop_return.DOCK_SETTLE_POLL_SECONDS", 0),
         patch(
-            "custom_components.matic_robot.managed_reconciliation._schedule_native_reconciliation"
+            "custom_components.matic_robot.managed_reconciliation.schedule_native_reconciliation"
         ),
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -201,7 +201,7 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
         raise asyncio.CancelledError
 
     with patch(
-        "custom_components.matic_robot.managed_observation._async_wait_for_owned_resume",
+        "custom_components.matic_robot.managed_observation.async_wait_for_owned_resume",
         side_effect=wait_resume,
     ) as resume:
         with pytest.raises(asyncio.CancelledError):

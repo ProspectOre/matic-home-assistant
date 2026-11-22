@@ -21,8 +21,8 @@ from .client import FloorPlan
 from .const import (
     DOMAIN,
 )
-from .managed_dispatch import _async_managed_user_command
-from .managed_executor import _async_execute_rooms
+from .managed_dispatch import async_managed_user_command
+from .managed_executor import async_execute_rooms
 from .managed_run import (
     validation_error,
 )
@@ -245,7 +245,7 @@ async def _async_execute(
 ) -> str:
     """Hand one resolved run to the executor, bound to its robot and map."""
     entity_id, entry, serial_number, room_map = target
-    return await _async_execute_rooms(
+    return await async_execute_rooms(
         hass,
         execution_call,
         manager,
@@ -254,7 +254,7 @@ async def _async_execute(
         rooms,
         robot=RobotPort.for_entry(hass, entry, entity_id),
         managed_user_command=partial(
-            _async_managed_user_command,
+            async_managed_user_command,
             hass,
             entry,
             manager,

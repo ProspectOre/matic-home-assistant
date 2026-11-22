@@ -24,9 +24,9 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.native_history import (
-    _reconcile_pending_native_history,
-    _record_native_completion,
-    _remember_native_reconciliation,
+    reconcile_pending_native_history,
+    record_native_completion,
+    remember_native_reconciliation,
 )
 from custom_components.matic_robot.plan_model import (
     CadenceBindingError,
@@ -92,7 +92,7 @@ def test_native_reconciliation_replaces_malformed_dedup_ledger() -> None:
         "dispatched_at": "2026-09-25T12:00:00+00:00",
     }
 
-    _remember_native_reconciliation(robot, pending)
+    remember_native_reconciliation(robot, pending)
 
     assert len(robot["native_completion_dedup"]) == 1
     assert len(robot["native_completion_dedup"][0]) == 64
@@ -1082,12 +1082,12 @@ def test_unverified_cadence_storage_normalizes_modes_and_removes_empty_marker() 
         },
     }
 
-    assert plan_state_module._normalize_robot(robot) is True
+    assert plan_state_module.normalize_robot(robot) is True
     record = robot["plan_room_cadence"]["quick_clean"]["room-a"]
     assert record["unverified_modes"] == ["mop", "coverage"]
     record["unverified_modes"] = None
 
-    assert plan_state_module._normalize_robot(robot) is True
+    assert plan_state_module.normalize_robot(robot) is True
     assert "unverified_modes" not in record
 
 
@@ -1473,7 +1473,7 @@ async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
     assert schedule["progress"] == expected_progress
     now = dt_util.utcnow()
     dispatched_at = now - timedelta(seconds=30)
-    _record_native_completion(
+    record_native_completion(
         robot,
         "home",
         completed_room,
@@ -1493,7 +1493,7 @@ async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
         "cadence_state": snapshot,
     }
     robot["pending_native_reconciliation"] = pending
-    _remember_native_reconciliation(robot, pending)
+    remember_native_reconciliation(robot, pending)
     record = CleaningSessionRecord(
         b"native-session",
         CleaningSession(
@@ -1516,7 +1516,7 @@ async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
 
     reconciled = []
     assert (
-        _reconcile_pending_native_history(
+        reconcile_pending_native_history(
             robot, floor, [record], on_reconciled=reconciled.append
         )
         is True
@@ -1534,7 +1534,7 @@ async def test_older_room_completion_does_not_dedupe_a_new_dispatch(hass):
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     now = dt_util.utcnow()
     robot = manager.repository.robot("serial")
-    _record_native_completion(
+    record_native_completion(
         robot,
         "home",
         room,
@@ -1564,7 +1564,7 @@ async def test_older_room_completion_does_not_dedupe_a_new_dispatch(hass):
         ),
     )
 
-    assert _reconcile_pending_native_history(robot, floor, [record]) is True
+    assert reconcile_pending_native_history(robot, floor, [record]) is True
     assert robot["rotations"]["home"]["rooms"][room.room_id]["completed_runs"] == 2
     assert "pending_native_reconciliation" not in robot
 
@@ -2742,7 +2742,7 @@ async def test_late_native_reconciliation_credits_frozen_cadence_once(
         ),
     )
 
-    assert _reconcile_pending_native_history(robot, floor, [record]) is True
+    assert reconcile_pending_native_history(robot, floor, [record]) is True
     assert (
         manager.cadence.cadence_progress("serial", "home", "room-a")
         == expected_progress
@@ -2949,7 +2949,7 @@ async def test_late_completion_is_saved_when_current_room_identity_is_unavailabl
         unavailable_identity,
     )
 
-    assert _reconcile_pending_native_history(robot, floor, [record]) is True
+    assert reconcile_pending_native_history(robot, floor, [record]) is True
 
     assert robot["rotations"]["home"]["rooms"]["room-a"]["completed_runs"] == 1
     assert len(robot["native_completion_dedup"]) == 1

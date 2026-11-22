@@ -23,8 +23,8 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
     RobotActivity,
 )
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
@@ -286,11 +286,11 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_run._async_completion_budget",
+            "custom_components.matic_robot.managed_run.async_completion_budget",
             side_effect=begin_observing_next_room,
         ),
         patch.object(
@@ -298,7 +298,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
         ),
     ):
         await asyncio.wait_for(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 run_plan_call(hass),
                 manager,
@@ -346,7 +346,7 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
             return ()
         return (leg_record(("Kitchen",), ("Kitchen",), key=robot.history_key()),)
 
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -397,11 +397,11 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             mission_ends,
         ),
     ):
-        settled = await _async_run_leg(
+        settled = await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
