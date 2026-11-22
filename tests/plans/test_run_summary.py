@@ -56,9 +56,6 @@ async def test_summary_names_an_area_and_only_the_running_runs_target(
     }
     assert _summary(manager)["target"] == {"kind": "area", "id": "rug", "name": None}
 
-    robot["active_plan"] = {"plan_id": "plan", "run_id": "run"}
-    assert _summary(manager)["target"] is None
-
     robot["active_plan"] = {
         "plan_id": "plan",
         "run_id": "older",

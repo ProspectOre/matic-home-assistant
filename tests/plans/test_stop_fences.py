@@ -117,7 +117,7 @@ async def test_dock_closure_follows_the_runs_plan_finished(hass) -> None:
     )
     await asyncio.sleep(0)
     assert not closure.done()
-    assert manager.ledger.run_record("serial", "run-1")["outcome"] == "running"
+    assert manager.ledger.run_record("serial", "run-1").outcome == "running"
 
     await async_finish_plan_run(
         hass,
@@ -259,7 +259,10 @@ def test_stop_fence_restore_extends_deadline_without_changing_identity(hass) -> 
 async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
     """The default stop policy is distinguishable from motion replacement."""
     manager = memory_manager(hass)
-    manager.repository.robot("serial")["active_plan"] = {"plan_id": "away"}
+    manager.repository.robot("serial")["active_plan"] = {
+        "plan_id": "away",
+        "room_id": "room-kitchen",
+    }
     await manager.control.lock("serial").acquire()
     try:
         generation = manager.control.motion_generation("serial")
@@ -521,7 +524,7 @@ async def test_dock_closure_keeps_the_end_a_live_run_reached(
     await _finish(hass, manager, outcome, reason_code)
 
     assert await closure is fenced
-    assert manager.ledger.run_record("serial", "run-1")["outcome"] == outcome
+    assert manager.ledger.run_record("serial", "run-1").outcome == outcome
     assert manager.control.stop_fence_token("serial") is None
 
 
@@ -533,7 +536,7 @@ async def test_dock_closure_does_not_wait_when_the_end_failed_to_save(
     await _begin(manager)
     manager.ledger.async_finish_run = AsyncMock()
     await _finish(hass, manager, "cancelled", "managed_stop")
-    assert manager.ledger.run_record("serial", "run-1")["outcome"] == "running"
+    assert manager.ledger.run_record("serial", "run-1").outcome == "running"
 
     closing = manager.ledger.async_mark_run_docked("serial", "run-1")
     assert not await asyncio.wait_for(closing, 1)

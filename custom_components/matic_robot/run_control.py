@@ -9,7 +9,6 @@ from collections.abc import (
     Callable,
     Coroutine,
     Iterator,
-    Mapping,
 )
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -238,15 +237,14 @@ class RunControl:
 
     def pending_stop_run_id(self, serial_number: str) -> str | None:
         """Restore only a live stop fence still belonging to the last managed run."""
-        robot = self.repository.robot(serial_number)
-        owner = robot.get(plan_storage.STOP_FENCE_RUN_ID)
-        run = robot.get("last_run")
+        owner = self.repository.robot(serial_number).get(plan_storage.STOP_FENCE_RUN_ID)
+        run = self.repository.last_run(serial_number)
         if (
             self.stop_pending(serial_number)
             and isinstance(owner, str)
-            and isinstance(run, dict)
-            and run.get("run_id") == owner
-            and run.get("outcome") in {"running", "cancelled", "unverified", "failed"}
+            and run is not None
+            and run.run_id == owner
+            and run.outcome in {"running", "cancelled", "unverified", "failed"}
         ):
             return owner
         return None
@@ -335,8 +333,9 @@ class RunControl:
     @callback
     def has_managed_task(self, serial_number: str) -> bool:
         """Return whether a plan run or persisted active room still exists."""
-        return self.lock(serial_number).locked() or bool(
-            self.repository.robot(serial_number).get("active_plan")
+        return (
+            self.lock(serial_number).locked()
+            or self.repository.active_plan(serial_number) is not None
         )
 
     @callback
@@ -375,8 +374,8 @@ class RunControl:
             self.repository.reconciliation_removal_pending.add(serial_number)
         actor.motion_generation += 1
         actor.managed_motion = None
-        active = self.repository.robot(serial_number).get("active_plan")
-        if replaced and isinstance(active, Mapping) and active.get("room_id"):
+        active = self.repository.active_plan(serial_number)
+        if replaced and active is not None and active.room_id:
             self.repository.notify_listeners(serial_number)
         return reconciliation_removed
 
@@ -771,19 +770,14 @@ class RunControl:
             or self.cancellation_reason(serial_number) == "motion_replaced"
         ):
             return None
-        active = robot.get("active_plan")
-        if not isinstance(active, Mapping):
+        active = self.repository.active_plan(serial_number)
+        if active is None:
             return "returning_to_dock"
-        if active.get("run_id") != run["run_id"]:
+        if active.run_id != run["run_id"]:
             return None
-        if active.get("status") == "verifying":
+        if active.status == "verifying":
             return "verifying_completion"
-        # A stored active plan names a room, else a custom area.
-        return (
-            "finishing_room"
-            if isinstance(active.get("room_id"), str)
-            else "finishing_area"
-        )
+        return "finishing_room" if active.target["kind"] == "room" else "finishing_area"
 
     @callback
     def prepare_run(self, serial_number: str) -> asyncio.Event:
@@ -839,8 +833,7 @@ class RunControl:
                 return PlanStopDecision("immediate")
             return PlanStopDecision("not_running")
 
-        robot = self.repository.robot(serial_number)
-        active = robot.get("active_plan")
+        active = self.repository.active_plan(serial_number)
         if active is None:
             fence_new_motion()
             self.cancel(serial_number)
@@ -863,25 +856,24 @@ class RunControl:
             return PlanStopDecision("immediate")
         if self.finish_room_event(serial_number).is_set():
             return PlanStopDecision("after_room")
-        frozen_policy = active if _has_frozen_stop_policy(active) else None
-        last_run = robot.get("last_run")
+        robot = self.repository.robot(serial_number)
+        last_run = self.repository.last_run(serial_number)
         checkpoint = (
-            last_run.get("recovery_checkpoint")
-            if isinstance(last_run, Mapping)
-            and last_run.get("run_id") == active.get("run_id")
+            last_run.checkpoint
+            if last_run is not None and last_run.run_id == active.run_id
             else None
         )
-        if frozen_policy is None and _has_frozen_stop_policy(checkpoint):
-            frozen_policy = checkpoint
-        if frozen_policy is None:
-            frozen_policy = robot["plans"].get(active["plan_id"], {})
-        finish_current_room, threshold = _managed_stop_policy(frozen_policy)
+        finish_current_room, threshold = active.stop_policy or _managed_stop_policy(
+            checkpoint
+            if _has_frozen_stop_policy(checkpoint)
+            else robot["plans"].get(active.plan_id, {})
+        )
         if not finish_current_room:
             fence_new_motion()
             self.cancel(serial_number)
             actor.cancellation_reason = actor.cancellation_reason or "managed_stop"
             return PlanStopDecision("immediate")
-        if "room_id" not in active:
+        if active.room_id is None:
             # A custom area has no duration history to estimate progress from,
             # so finishing the current entry means finishing the area.
             self.cancellation_event(serial_number).clear()
