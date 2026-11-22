@@ -353,7 +353,7 @@ export class MaticPlanViewsV4 extends LitElement {
       ${this.#lines(dueLines(this.#t, state.locale, steps))}
       <h3 class="heading">${paused
         ? this.#t("v4_plan_rooms_heading", "In this plan")
-        : state.resources.entry?.activePlan
+        : state.resources.entry?.planRunning
           ? this.#t("v4_next_run_after_active", "After this run")
           : this.#t("v4_next_run_preview", "Next run")}</h3>
       ${!paused && preview?.heldRooms?.length ? html`<p class="quiet" data-held-rooms>${this.#t("v4_plan_held_rooms", "Held while occupied: {rooms}. They stay first in line for the next run.", {

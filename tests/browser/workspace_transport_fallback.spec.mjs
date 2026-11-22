@@ -35,14 +35,14 @@ async function setup(page, failureMode) {
       intervals.delete(id);
     };
 
-    const entry = { ...syntheticEntry(), runnerLocked: true, activePlan: true };
+    const entry = { ...syntheticEntry(), runnerLocked: true, planRunning: true };
     const wireEntry = {
       entry_id: entry.entryId, scene_url: entry.sceneUrl,
       history_url: entry.historyUrl, areas_url: entry.areasUrl, plans_url: entry.plansUrl,
       map_revision: entry.mapRevision, map_floor_coherent: entry.mapFloorCoherent,
       map_session_verified: entry.mapSessionVerified, map_session_key: entry.mapSessionKey,
       map_block_reason: entry.mapBlockReason, runner_locked: true, stop_settle_pending: entry.stopSettlePending,
-      active_plan: true, native_reconciliation_pending: entry.nativeReconciliationPending,
+      plan_running: true, native_reconciliation_pending: entry.nativeReconciliationPending,
       native_session_active: entry.nativeSessionActive, map_complete: entry.mapComplete,
       map_truncated: entry.mapTruncated, selected_floor_ordinal: entry.selectedFloorOrdinal,
       map_floor_ordinal: entry.mapFloorOrdinal, history_count: entry.historyCount,

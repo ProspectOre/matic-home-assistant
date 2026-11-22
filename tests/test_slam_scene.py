@@ -207,9 +207,8 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 preview=MagicMock(return_value={"rooms": [], "entries": []})
             ),
             history=SimpleNamespace(
-                snapshot=MagicMock(
-                    return_value={"selected_plan": None, "active_plan": None}
-                ),
+                snapshot=MagicMock(return_value={"selected_plan": None}),
+                running_run=MagicMock(return_value=None),
                 next_run_estimate_seconds=MagicMock(return_value=None),
             ),
             ledger=SimpleNamespace(
@@ -932,7 +931,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "map_block_reason": None,
                 "runner_locked": False,
                 "stop_settle_pending": False,
-                "active_plan": False,
+                "plan_running": False,
                 "native_reconciliation_pending": False,
                 "native_session_active": False,
                 "map_health": "ready",
@@ -964,9 +963,9 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
 
     runtime.cleaning_plans.control.lock.return_value.locked.return_value = True
     runtime.cleaning_plans.control.stop_pending.return_value = True
-    runtime.cleaning_plans.history.snapshot.return_value = {
-        "active_plan": {"plan_id": "private-plan", "room_id": "private-room"}
-    }
+    runtime.cleaning_plans.history.running_run.return_value = SimpleNamespace(
+        plan_id="private-plan", plan_name="private-room"
+    )
     runtime.cleaning_plans.ledger.pending_native_reconciliation.return_value = {
         "session_id": "private-session"
     }
@@ -977,13 +976,13 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert {
         "runner_locked": blocked_entry["runner_locked"],
         "stop_settle_pending": blocked_entry["stop_settle_pending"],
-        "active_plan": blocked_entry["active_plan"],
+        "plan_running": blocked_entry["plan_running"],
         "native_reconciliation_pending": blocked_entry["native_reconciliation_pending"],
         "native_session_active": blocked_entry["native_session_active"],
     } == {
         "runner_locked": True,
         "stop_settle_pending": True,
-        "active_plan": True,
+        "plan_running": True,
         "native_reconciliation_pending": True,
         "native_session_active": True,
     }

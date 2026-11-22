@@ -281,6 +281,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         ),
         history=SimpleNamespace(
             run_summary=MagicMock(return_value=None),
+            running_run=MagicMock(return_value=None),
             snapshot=MagicMock(
                 return_value={
                     "completed_runs": 0,

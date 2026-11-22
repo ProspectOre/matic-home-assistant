@@ -75,7 +75,7 @@ def _synthetic_workspace_hass() -> tuple[SimpleNamespace, str]:
             lock=lambda _serial: SimpleNamespace(locked=lambda: False),
             stop_pending=lambda _serial: False,
         ),
-        history=SimpleNamespace(snapshot=lambda _serial: {}),
+        history=SimpleNamespace(running_run=lambda _serial: None),
     )
     slam_history = runtime_fakes.mock_history()
     session = SimpleNamespace(

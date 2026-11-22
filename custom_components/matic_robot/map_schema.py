@@ -52,7 +52,7 @@ class CatalogEntry(TypedDict):
     map_block_reason: MapBlockReason | None
     runner_locked: bool
     stop_settle_pending: bool
-    active_plan: bool
+    plan_running: bool
     native_reconciliation_pending: bool
     native_session_active: bool | None
     map_health: MapHealthState

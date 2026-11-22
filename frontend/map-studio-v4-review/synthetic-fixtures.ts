@@ -112,7 +112,7 @@ export const syntheticEntry = (): MapEntry => ({
   mapBlockReason: null,
   runnerLocked: false,
   stopSettlePending: false,
-  activePlan: false,
+  planRunning: false,
   nativeReconciliationPending: false,
   nativeSessionActive: false,
   mapComplete: true,

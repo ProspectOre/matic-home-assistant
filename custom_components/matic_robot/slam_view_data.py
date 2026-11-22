@@ -200,7 +200,6 @@ def catalog_entry_projection(
     else:
         map_block_reason = "floor_plan_mismatch"
     serial_number = runtime.session.info.serial_number
-    plan_snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
     _, saved_floors, imported = floor_choices(runtime)
     return {
         "entry_id": entry_id,
@@ -242,7 +241,8 @@ def catalog_entry_projection(
         "stop_settle_pending": runtime.cleaning_plans.control.stop_pending(
             serial_number
         ),
-        "active_plan": plan_snapshot.get("active_plan") is not None,
+        "plan_running": runtime.cleaning_plans.history.running_run(serial_number)
+        is not None,
         "native_reconciliation_pending": (
             runtime.cleaning_plans.ledger.pending_native_reconciliation(serial_number)
             is not None

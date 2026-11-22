@@ -508,7 +508,7 @@ class _MaticPlanSensor(MaticPlanDataEntity, SensorEntity):
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._serial_number = self.session.info.serial_number
-        self._history = entry.runtime_data.cleaning_plans
+        self._history = entry.runtime_data.cleaning_plans.history
 
     def _stores(self) -> Iterable[Store[Any]]:
         return ()
@@ -546,20 +546,18 @@ class MaticCleaningHistorySensor(_MaticPlanSensor):
     @property
     def native_value(self) -> int:
         """Return the total number of successfully completed managed rooms."""
-        return int(
-            self._history.history.snapshot(self._serial_number)["completed_runs"]
-        )
+        return int(self._history.snapshot(self._serial_number)["completed_runs"])
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Return per-room timestamps, rotation records, and active plan."""
-        snapshot = self._history.history.snapshot(self._serial_number)
+        snapshot = self._history.snapshot(self._serial_number)
         return {
             **snapshot,
             "matic_entry_id": self._config_entry.entry_id,
             "plan_count": len(snapshot["plans"]),
-            "plan_running": snapshot["active_plan"] is not None,
-            "run": self._history.history.run_summary(self._serial_number),
+            "plan_running": self._history.running_run(self._serial_number) is not None,
+            "run": self._history.run_summary(self._serial_number),
         }
 
 
@@ -685,7 +683,7 @@ class MaticCurrentRoomTimingSensor(MaticEntity, SensorEntity):
 
 
 class MaticActiveCleaningPlanSensor(_MaticPlanSensor):
-    """Expose the running plan and exact active room."""
+    """Expose the running plan for the whole run and its current room."""
 
     entity_description = ACTIVE_PLAN_DESCRIPTION
     _unrecorded_attributes = frozenset({"active"})
@@ -696,14 +694,14 @@ class MaticActiveCleaningPlanSensor(_MaticPlanSensor):
 
     @property
     def native_value(self) -> str | None:
-        """Return the active human-readable plan name."""
-        active = self._history.history.snapshot(self._serial_number)["active_plan"]
-        return active.get("plan_name") if active else None
+        """Return the running plan's name, between its rooms too."""
+        run = self._history.running_run(self._serial_number)
+        return run.plan_name if run is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, object] | None:
-        """Return the active room and start time."""
-        active = self._history.history.snapshot(self._serial_number)["active_plan"]
+        """Return the current room or area and its start; absent between them."""
+        active = self._history.snapshot(self._serial_number)["active_plan"]
         return {"active": dict(active)} if active else None
 
 
@@ -729,7 +727,7 @@ class MaticNextCleaningRoomSensor(_MaticPlanSensor):
         ):
             return None
         try:
-            return self._history.planning.preview(
+            return self._config_entry.runtime_data.cleaning_plans.planning.preview(
                 self._serial_number,
                 {room.id: room.name for room in floor_plan.rooms},
                 floor_token=plan_floor_token(floor_plan),
@@ -768,7 +766,7 @@ class _MaticRoomStatisticsSensor(MaticPlanDataEntity, RestoreSensor):
     def __init__(self, entry: MaticConfigEntry, room: Room) -> None:
         super().__init__(entry)
         self._room_id = room.id
-        self._history = entry.runtime_data.cleaning_plans
+        self._history = entry.runtime_data.cleaning_plans.history
         self._serial_number = self.session.info.serial_number
         self._attr_translation_placeholders = {"room": room.name}
         self._suggested_suffix = room.name
@@ -796,7 +794,7 @@ class _MaticRoomStatisticsSensor(MaticPlanDataEntity, RestoreSensor):
     def _room_session_result(self) -> tuple[bool, tuple[str, int] | None]:
         """Return whether a managed run owns the session and its room result."""
         floor_plan = self.session.floor.value
-        snapshot = self._history.history.snapshot(self._serial_number)
+        snapshot = self._history.snapshot(self._serial_number)
         managed_historical = _managed_room_history_value(snapshot, self._room_id)
         native_historical = _robot_reported_room_history_value(
             snapshot, self._room_id, floor_plan
@@ -844,7 +842,7 @@ class _MaticRoomStatisticsSensor(MaticPlanDataEntity, RestoreSensor):
     def extra_state_attributes(self) -> dict[str, str]:
         """Identify the value's source and explain withheld app-started results."""
         floor_plan = self.session.floor.value
-        snapshot = self._history.history.snapshot(self._serial_number)
+        snapshot = self._history.snapshot(self._serial_number)
         managed_value = _managed_room_history_value(snapshot, self._room_id)
         native_value = _robot_reported_room_history_value(
             snapshot, self._room_id, floor_plan

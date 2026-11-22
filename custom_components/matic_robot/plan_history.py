@@ -17,7 +17,7 @@ from .plan_model import (
     plan_setting,
     stored_count,
 )
-from .plan_records import ActivePlan
+from .plan_records import ActivePlan, LastRun
 from .plan_repository import (
     PlanRepository,
 )
@@ -101,6 +101,11 @@ class PlanHistory:
             native,
             manual=is_manual_room_sequence_plan_id,
         )
+
+    def running_run(self, serial_number: str) -> LastRun | None:
+        """Return the stored run while it runs, between its rooms too."""
+        run = self.repository.last_run(serial_number)
+        return run if run is not None and run.running else None
 
     def run_summary(self, serial_number: str) -> RunSummary | None:
         """Summarize the stored run; only the running run has a target or phase."""

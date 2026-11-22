@@ -27,7 +27,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
       map_floor_coherent: entry.mapFloorCoherent, map_session_verified: entry.mapSessionVerified,
       map_session_key: entry.mapSessionKey, map_block_reason: entry.mapBlockReason,
       runner_locked: entry.runnerLocked, stop_settle_pending: entry.stopSettlePending,
-      active_plan: entry.activePlan, native_reconciliation_pending: entry.nativeReconciliationPending,
+      plan_running: entry.planRunning, native_reconciliation_pending: entry.nativeReconciliationPending,
       native_session_active: entry.nativeSessionActive, map_complete: entry.mapComplete,
       map_truncated: entry.mapTruncated, selected_floor_ordinal: entry.selectedFloorOrdinal,
       map_floor_ordinal: entry.mapFloorOrdinal, history_count: entry.historyCount,
@@ -212,7 +212,7 @@ test("snapshot catalog projection updates managed command guards without map rel
     generation: window.adapterHarness.store.value.generation }));
   await page.evaluate(() => {
     const h = window.adapterHarness;
-    const entry = { ...h.store.value.resources.entry, runnerLocked: true, activePlan: true };
+    const entry = { ...h.store.value.resources.entry, runnerLocked: true, planRunning: true };
     h.callbacks[0]({ type: "snapshot", snapshot: h.snapshotFor("synthetic-entry", entry) });
   });
   await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.managedLock)).toBe(true);
@@ -220,7 +220,7 @@ test("snapshot catalog projection updates managed command guards without map rel
     generation: window.adapterHarness.store.value.generation,
     entry: window.adapterHarness.store.value.resources.entry }));
   expect(after.entry.runnerLocked).toBe(true);
-  expect(after.entry.activePlan).toBe(true);
+  expect(after.entry.planRunning).toBe(true);
   expect(after.catalog).toBe(before.catalog);
   expect(after.plans).toBe(before.plans);
   expect(after.areas).toBe(before.areas);

@@ -50,7 +50,7 @@ export interface MapEntry {
   readonly mapBlockReason: MapBlockReason;
   readonly runnerLocked: boolean;
   readonly stopSettlePending: boolean;
-  readonly activePlan: boolean;
+  readonly planRunning: boolean;
   readonly nativeReconciliationPending: boolean;
   readonly nativeSessionActive: boolean | null;
   readonly mapComplete: boolean;
@@ -91,7 +91,7 @@ export const entryCoherenceIdentity = (entry: MapEntry): string => [
 export const entryManagedLock = (entry: MapEntry): boolean =>
   entry.runnerLocked
   || entry.stopSettlePending
-  || entry.activePlan
+  || entry.planRunning
   || entry.nativeReconciliationPending
   || entry.nativeSessionActive === true;
 
@@ -572,7 +572,7 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
       mapBlockReason: blockReason(entry.map_block_reason),
       runnerLocked: booleanValue(entry.runner_locked, "invalid-runner-lock"),
       stopSettlePending: booleanValue(entry.stop_settle_pending, "invalid-stop-settle"),
-      activePlan: booleanValue(entry.active_plan, "invalid-active-plan"),
+      planRunning: booleanValue(entry.plan_running, "invalid-plan-running"),
       nativeReconciliationPending: booleanValue(
         entry.native_reconciliation_pending,
         "invalid-native-reconciliation",

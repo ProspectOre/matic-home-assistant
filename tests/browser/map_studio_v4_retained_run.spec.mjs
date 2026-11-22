@@ -181,7 +181,7 @@ test("a retained result preserves current map warning and active-run priority an
   await expect(shell.locator(".status-copy small")).toHaveCount(0);
   await shell.evaluate(element => {
     const state = element.state;
-    element.state = { ...state, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: true } } };
+    element.state = { ...state, resources: { ...state.resources, entry: { ...state.resources.entry, planRunning: true } } };
   });
   await expect(shell.locator(".status-copy strong")).toHaveText("Run in progress");
 });

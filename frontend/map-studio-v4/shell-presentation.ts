@@ -79,7 +79,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
   if (!state.comparisonActive && (state.coherence === "verifying" || state.coherence === "booting")) {
     return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map"), icon: iconRobot, notable: true };
   }
-  if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked || state.resources.entry?.nativeSessionActive)
+  if ((state.resources.entry?.planRunning || state.resources.entry?.runnerLocked || state.resources.entry?.nativeSessionActive)
     && (state.activity === "idle" || state.activity === "docked" || state.activity === "unknown")) {
     return {
       title: t("v4_task_in_progress", "Run in progress"),

@@ -1489,7 +1489,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await settleWorkspace(gallery);
     await gallery.evaluate((element) => {
       const state = element.getWorkspaceSnapshot();
-      element.replaceWorkspaceState({ ...state, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: true } } });
+      element.replaceWorkspaceState({ ...state, resources: { ...state.resources, entry: { ...state.resources.entry, planRunning: true } } });
     });
     await expect(gallery.getByRole("heading", { name: "After this run", level: 3 })).toBeVisible();
     await expect(gallery.getByRole("heading", { name: "Next run", level: 3 })).toHaveCount(0);
@@ -1919,7 +1919,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   for (const mobile of [false, true]) {
     test(`keeps Stop reachable before vacuum state catches up${mobile ? " @mobile" : ""}`, async ({ page }) => {
       const gallery = await loadGallery(page, { narrow: mobile });
-      for (const evidence of ["starting", "runnerLocked", "activePlan", "nativeSessionActive"]) {
+      for (const evidence of ["starting", "runnerLocked", "planRunning", "nativeSessionActive"]) {
         for (const fullMap of [false, true]) {
           await page.evaluate(({ tag, evidence, fullMap }) => {
             const element = document.querySelector(tag);
@@ -1929,7 +1929,7 @@ test.describe("Map Studio v0.4 foundation", () => {
               fullMap, coherence: "verifying",
               resources: { ...state.resources, entry: {
                 ...state.resources.entry, runnerLocked: evidence === "runnerLocked",
-                activePlan: evidence === "activePlan", nativeSessionActive: evidence === "nativeSessionActive",
+                planRunning: evidence === "planRunning", nativeSessionActive: evidence === "nativeSessionActive",
               } },
             });
           }, { tag: GALLERY_TAG, evidence, fullMap });
@@ -2011,7 +2011,7 @@ test.describe("Map Studio v0.4 foundation", () => {
             await effects.executeAction("run-area");
             const failed = store.value.command;
             effects.sync({ ...projection, activity: "cleaning" });
-            store.replace({ ...store.value, resources: { ...store.value.resources, entry: { ...store.value.resources.entry, activePlan: managed, runnerLocked: managed } } });
+            store.replace({ ...store.value, resources: { ...store.value.resources, entry: { ...store.value.resources.entry, planRunning: managed, runnerLocked: managed } } });
             await effects.executeAction("run-area");
             const host = store.value.host;
             for (const key of ["connected", "administrator", "robotConnected"]) {
@@ -2254,7 +2254,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const store = new WorkspaceStore({ ...initial, managedLock: true });
       const calls = [];
       const effects = new EffectController(store, {
-        catalog: async () => [{ ...initial.resources.entry, runnerLocked: true, activePlan: true }],
+        catalog: async () => [{ ...initial.resources.entry, runnerLocked: true, planRunning: true }],
         history: async () => initial.resources.history.value,
         scene: async () => { throw new DOMException("Aborted", "AbortError"); },
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },
@@ -3211,7 +3211,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_session_key: "a".repeat(64),
       runner_locked: false,
       stop_settle_pending: false,
-      active_plan: false,
+      plan_running: false,
       native_reconciliation_pending: false,
       native_session_active: false,
       map_complete: true,
@@ -5831,7 +5831,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         map_session_key: "a".repeat(64),
         runner_locked: false,
         stop_settle_pending: false,
-        active_plan: false,
+        plan_running: false,
         native_reconciliation_pending: false,
         native_session_active: false,
         map_complete: true,
@@ -6176,7 +6176,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_session_key: "a".repeat(64),
       runner_locked: false,
       stop_settle_pending: false,
-      active_plan: false,
+      plan_running: false,
       native_reconciliation_pending: false,
       native_session_active: false,
       map_complete: true,
@@ -6962,7 +6962,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_session_key: "a".repeat(64),
       runner_locked: false,
       stop_settle_pending: false,
-      active_plan: false,
+      plan_running: false,
       native_reconciliation_pending: false,
       native_session_active: false,
       map_complete: true,
@@ -7195,7 +7195,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_session_key: sessionVerified ? "a".repeat(64) : null,
       runner_locked: false,
       stop_settle_pending: false,
-      active_plan: false,
+      plan_running: false,
       native_reconciliation_pending: false,
       native_session_active: false,
       map_complete: mapComplete,
@@ -7371,7 +7371,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         map_session_key: "a".repeat(64),
         runner_locked: false,
         stop_settle_pending: false,
-        active_plan: false,
+        plan_running: false,
         native_reconciliation_pending: false,
         native_session_active: false,
         map_complete: true,
@@ -7493,7 +7493,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         map_session_key: "a".repeat(64),
         runner_locked: false,
         stop_settle_pending: false,
-        active_plan: false,
+        plan_running: false,
         native_reconciliation_pending: false,
         native_session_active: false,
         map_complete: true,
@@ -7598,7 +7598,7 @@ test.describe("Map Studio v0.4 foundation", () => {
               map_session_key: "a".repeat(64),
               runner_locked: true,
               stop_settle_pending: false,
-              active_plan: false,
+              plan_running: false,
               native_reconciliation_pending: false,
               native_session_active: false,
               map_complete: true,
@@ -8225,7 +8225,7 @@ for (const activity of ["docked", "idle"]) {
         const module = window.__galleryModule;
         const state = module.createGalleryState("ready");
         document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
-          managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: !betweenLegs, runnerLocked: betweenLegs } } });
+          managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, planRunning: !betweenLegs, runnerLocked: betweenLegs } } });
       }, { tag: GALLERY_TAG, activity, betweenLegs });
       await expect(gallery.locator(".status-copy strong")).toHaveText("Run in progress");
       await expect(gallery.locator(".status-copy small")).toHaveText(activity === "docked"
