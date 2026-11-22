@@ -114,3 +114,23 @@ async def test_a_tracked_dispatch_resumes_only_by_its_own_session(
         else "restart_checkpoint_unverified"
     )
     client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("missing", ["data", "floor_token"])
+async def test_a_checkpoint_without_its_call_or_floor_cannot_resume(
+    hass, recovery_state, missing
+):
+    manager, entry, checkpoint, _room = recovery_state
+    del checkpoint[missing]
+    checkpoint["completed_room_ids"] = []
+    await save_run_checkpoint(manager, checkpoint)
+
+    with patch(
+        "custom_components.matic_robot.restart._async_execute_rooms", AsyncMock()
+    ) as runner:
+        await async_recover_managed_run(hass, entry, "serial")
+
+    runner.assert_not_awaited()
+    last_run = manager.history.snapshot("serial")["last_run"]
+    assert last_run["reason_code"] == "restart_recovery_unavailable"
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
