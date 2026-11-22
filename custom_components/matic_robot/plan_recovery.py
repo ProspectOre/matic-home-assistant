@@ -325,11 +325,11 @@ class PlanRecovery:
                 *(asyncio.shield(task) for task in tuple(pending)),
                 return_exceptions=True,
             )
-            run = self.repository.robot(serial_number).get("last_run") or {}
-            checkpoint = run.get("recovery_checkpoint") or {}
+            run = self.repository.last_run(serial_number)
             if (
-                run.get("run_id") != run_id
-                or checkpoint.get("stop_intent") != "immediate"
+                run is None
+                or run.run_id != run_id
+                or (run.checkpoint or {}).get("stop_intent") != "immediate"
             ):
                 self.control.clear_stop_pending(serial_number)
             raise
@@ -437,9 +437,8 @@ class PlanRecovery:
                     return False
                 last_run["recovery_status"] = status[:32]
                 last_run["recovery_reason"] = reason[:64]
-                active = robot.get("active_plan")
-                if isinstance(active, dict):
-                    active["status"] = status
+                if robot["active_plan"] is not None:
+                    robot["active_plan"]["status"] = status
             return True
 
         def notify_if_changed(committed: bool) -> None:

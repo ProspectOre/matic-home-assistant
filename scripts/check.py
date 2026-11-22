@@ -46,6 +46,7 @@ PLAN_CORE = frozenset(
         "coverage_accounting",
         "daily_room_limit",
         "plan_model",
+        "plan_records",
         "plan_schema",
         "room_identity",
         "run_machine",

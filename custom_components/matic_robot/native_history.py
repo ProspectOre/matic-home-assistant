@@ -36,6 +36,7 @@ from .plan_model import (
     room_cadence_identity,
     stored_count,
 )
+from .plan_records import stored_active_plan
 from .plan_timing import (
     _admit_room_settings,
     _duration_profile_key,
@@ -568,11 +569,11 @@ def _record_native_completion(
     record["room_id"] = room_id
     record["name"] = room.name
     record["duration_profiles"] = _duration_profiles(record)
-    active = robot.get("active_plan")
+    active = stored_active_plan(robot)
     if not (
-        isinstance(active, Mapping)
-        and active.get("plan_id") == plan_id
-        and active.get("room_id") == room_id
+        active is not None
+        and active.plan_id == plan_id
+        and active.room_id == room_id
         and _duration_profile_key(record)
         != _duration_profile_key(asdict(room_settings) if room_settings else {})
     ):

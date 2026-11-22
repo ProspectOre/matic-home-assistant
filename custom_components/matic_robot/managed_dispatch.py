@@ -460,8 +460,8 @@ def _suspended_run_reason(
     manager: CleaningPlanManager, serial_number: str
 ) -> str | None:
     """Capture a low-charge suspension before room cleanup clears its marker."""
-    active = manager.ledger.active_target(serial_number) or {}
-    if (active.get("status"), active.get("suspend_reason")) == (
+    active = manager.ledger.active_target(serial_number)
+    if active is not None and (active.status, active.suspend_reason) == (
         "suspended",
         "low_charge",
     ):

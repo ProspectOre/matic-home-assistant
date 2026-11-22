@@ -7,7 +7,6 @@ import logging
 from collections.abc import (
     Mapping,
 )
-from copy import deepcopy
 from typing import cast
 
 from homeassistant.core import HomeAssistant
@@ -30,6 +29,7 @@ from .plan_ledger import (
     _close_unfinished_room_records,
 )
 from .plan_model import CleaningRoom as CleaningRoom
+from .plan_records import stored_active_plan
 from .plan_recovery import PlanRecovery
 from .plan_repository import (
     MetadataAdmissionClosedError as MetadataAdmissionClosedError,
@@ -79,7 +79,6 @@ class CleaningPlanManager:
                 recovered = True
                 continue
             recovered = plan_state.parse_robot(robot) or recovered
-            last_run = robot.get("last_run")
             if (running := running_run(robot)) is not None:
                 if not isinstance(running.get("recovery_checkpoint"), dict):
                     running.update(
@@ -130,17 +129,17 @@ class CleaningPlanManager:
                         ]
                         fence_remaining = remaining
                         recovered = True
-            active = robot.get("active_plan")
-            recoverable = recovery_run(robot) is not None
-            if recoverable and isinstance(last_run, dict):
-                checkpoint = last_run["recovery_checkpoint"]
+            active = stored_active_plan(robot)
+            run = recovery_run(robot)
+            if run is not None:
+                checkpoint = run["recovery_checkpoint"]
                 if checkpoint.get("stop_intent") == "after_room":
                     self.control.finish_room_event(str(serial_number)).set()
                 room_records = checkpoint.get("rooms", [])
                 self.cadence.restore_prepared_run(
                     str(serial_number),
-                    str(last_run["plan_id"]),
-                    str(last_run["run_id"]),
+                    run["plan_id"],
+                    run["run_id"],
                     [
                         str(room["room_id"])
                         for room in room_records
@@ -166,21 +165,20 @@ class CleaningPlanManager:
                     ),
                 )
             if (
-                active
-                and recoverable
-                and isinstance(last_run, dict)
-                and active.get("run_id") == last_run.get("run_id")
-                and active.get("plan_id") == last_run.get("plan_id")
+                active is not None
+                and run is not None
+                and active.run_id == run["run_id"]
+                and active.plan_id == run["plan_id"]
             ):
-                active["status"] = "recovering"
+                robot["active_plan"]["status"] = "recovering"
                 recovered = True
-            elif active:
-                if "room_id" in active:
+            elif active is not None:
+                if active.room_id is not None:
                     # A custom area keeps no per-room record to interrupt.
                     rotation = robot["rotations"].setdefault(
-                        active["plan_id"], {"rooms": {}}
+                        active.plan_id, {"rooms": {}}
                     )
-                    record = rotation["rooms"].setdefault(active["room_id"], {})
+                    record = rotation["rooms"].setdefault(active.room_id, {})
                     record.update(
                         {
                             "last_result": "interrupted",
@@ -190,14 +188,14 @@ class CleaningPlanManager:
                             ),
                         }
                     )
-                robot["last_interrupted_plan"] = deepcopy(active)
+                robot["last_interrupted_plan"] = active.published()
                 robot["active_plan"] = None
                 recovered = True
-            if not recoverable and _close_unfinished_room_records(
+            if run is None and _close_unfinished_room_records(
                 robot, recovered_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True
-            if not recoverable and _close_unfinished_area_records(
+            if run is None and _close_unfinished_area_records(
                 robot, ended_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True

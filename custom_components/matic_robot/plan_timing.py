@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 
 from .client import CleaningMode, CoverageSetting
 from .plan_model import CleaningRoom, stored_count
+from .plan_records import ActivePlan
 
 DURATION_HISTORY_MAX_SAMPLES = 7
 
@@ -78,15 +79,11 @@ def _latest_timestamp(*values: object, now: datetime | None = None) -> float | N
     return latest[0] if latest is not None else None
 
 
-def _active_elapsed_seconds(active: Mapping[str, Any], now: datetime) -> int:
+def _active_elapsed_seconds(active: ActivePlan, now: datetime) -> int:
     """Return elapsed cleaning time while excluding closed suspension segments."""
-    stored = active.get("active_elapsed_seconds", 0)
-    elapsed = float(stored) if isinstance(stored, int | float) else 0.0
-    if not math.isfinite(elapsed) or elapsed < 0:
-        elapsed = 0.0
-    segment_started = active.get("active_segment_started")
-    if isinstance(segment_started, str):
-        parsed = dt_util.parse_datetime(segment_started)
+    elapsed = float(active.elapsed_seconds)
+    if active.segment_started is not None:
+        parsed = dt_util.parse_datetime(active.segment_started)
         if parsed is not None and parsed.tzinfo is not None:
             segment_elapsed = (now - parsed).total_seconds()
             if math.isfinite(segment_elapsed):
@@ -277,19 +274,19 @@ def _expected_duration(record: Mapping[str, Any]) -> int | None:
 
 
 def _room_timing(
-    robot: Mapping[str, Any], active: Mapping[str, Any], now: datetime
+    robot: Mapping[str, Any], active: ActivePlan, now: datetime
 ) -> dict[str, Any]:
     """Sample the existing room clock and matching successful-duration baseline."""
-    room_id = active.get("room_id")
+    room_id = active.room_id
     record = (
         robot.get("rotations", {})
-        .get(active.get("plan_id"), {})
+        .get(active.plan_id, {})
         .get("rooms", {})
         .get(room_id, {})
     )
     history = (
         _compatible_duration_history(robot, room_id, record)
-        if isinstance(room_id, str)
+        if room_id is not None
         else []
     )
     expected = _expected_duration({"duration_history_seconds": history})
@@ -302,7 +299,7 @@ def _room_timing(
 
 
 def _estimated_progress(
-    active: object, expected: object, *, now: datetime | None = None
+    active: ActivePlan, expected: object, *, now: datetime | None = None
 ) -> int | None:
     """Estimate completion from active cleaning time and a confident baseline."""
     if (
@@ -311,8 +308,6 @@ def _estimated_progress(
         or not math.isfinite(expected)
         or expected <= 0
     ):
-        return None
-    if not isinstance(active, Mapping):
         return None
     elapsed = _active_elapsed_seconds(active, now or dt_util.utcnow())
     return max(0, min(100, math.floor((elapsed / expected) * 100)))
