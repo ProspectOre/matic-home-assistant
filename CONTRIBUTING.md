@@ -89,6 +89,9 @@ Git ignores the build output, so commit the source alone; every CI job builds
 its own. On Linux, `npx playwright install --with-deps` also installs system
 packages and may need administrator rights. Give each worktree its own
 `node_modules`: a shared, symlinked one can change the generated chunks.
+`npm run test:browser` serves each checkout on its own port and reuses an
+already running test server only when it serves the same checkout, so
+worktrees can run their browser tests at the same time.
 
 `backend-schema.ts` is generated from the schema modules `SCHEMAS` in
 `scripts/contract_types.py` names and the backend values `VALUES` names, such

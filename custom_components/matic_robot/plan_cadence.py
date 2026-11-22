@@ -482,11 +482,11 @@ class PlanCadence:
                         "shared room schedule changed; refresh before deleting"
                     )
 
-                active = robot.get("active_plan")
+                active = self.repository.active_plan(serial_number)
                 pending = native_history._validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")
                 )
-                if isinstance(active, Mapping) and active.get("room_id") == room_id:
+                if active is not None and active.room_id == room_id:
                     raise SharedRoomScheduleLockedError(
                         "shared room schedule is in use by an active room"
                     )
@@ -763,7 +763,7 @@ class PlanCadence:
             mode for mode in ("mop", "coverage") if mode in requested_modes
         ]
         robot = self.repository.robot(serial_number)
-        active = robot.get("active_plan")
+        active = self.repository.active_plan(serial_number)
         pending = native_history._validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
@@ -787,11 +787,9 @@ class PlanCadence:
         if selected - set(plan_rooms):
             raise ValueError("room is not part of the selected plan")
         if (
-            isinstance(active, Mapping)
-            and active.get("room_id") in target_ids
-            and (
-                active.get("plan_id") == plan_id or active.get("room_id") in shared_ids
-            )
+            active is not None
+            and active.room_id in target_ids
+            and (active.plan_id == plan_id or active.room_id in shared_ids)
         ):
             raise ValueError("room cadence cannot reset while its plan is running")
         if (
@@ -889,12 +887,12 @@ class PlanCadence:
             changed_plan_rooms,
             (room_id for room_id, _policy in shared_updates),
         )
-        active = robot.get("active_plan")
+        active = self.repository.active_plan(serial_number)
         pending = native_history._validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
-        if isinstance(active, Mapping) and active.get("plan_id") == plan_id:
-            active_room_id = active.get("room_id")
+        if active is not None and active.plan_id == plan_id:
+            active_room_id = active.room_id
             old_plan = robot["plans"].get(plan_id, {})
             old_room = next(
                 (
@@ -963,8 +961,8 @@ class PlanCadence:
                 )
         if shared_updates and (
             (
-                isinstance(active, Mapping)
-                and active.get("room_id") in {room for room, _ in shared_updates}
+                active is not None
+                and active.room_id in {room for room, _ in shared_updates}
             )
             or (
                 pending is not None

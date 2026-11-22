@@ -477,9 +477,9 @@ class _PlanRun:
             )
             return settled
         resumed = (
-            self.manager.ledger.active_target(self.serial_number) or {}
+            self.manager.ledger.active_target(self.serial_number)
             if self.recovery is not None and index == self.run.leg_index
-            else {}
+            else None
         )
         return await leg_execution._async_run_leg(
             self.hass,
@@ -505,8 +505,10 @@ class _PlanRun:
             checkpoint_dispatch=self.save_dispatch,
             advance=self.advance,
             provenance=self.provenance,
-            recovered_suspend_reason=resumed.get("suspend_reason"),
-            recovered_room_id=resumed.get("room_id"),
+            recovered_suspend_reason=resumed.suspend_reason
+            if resumed is not None
+            else None,
+            recovered_room_id=resumed.room_id if resumed is not None else None,
         )
 
     async def async_end(self) -> None:
@@ -627,14 +629,15 @@ class _PlanRun:
         before ownership is released.
         """
         manager, serial_number = self.manager, self.serial_number
-        active = manager.ledger.active_target(serial_number) or {}
+        active = manager.ledger.active_target(serial_number)
+        if active is None:
+            return
         room = next(
-            (room for room in self.rooms if room.room_id == active.get("room_id")),
-            None,
+            (room for room in self.rooms if room.room_id == active.room_id), None
         )
         if (
             room is None
-            or active.get("plan_id") != self.call.data["plan_id"]
+            or active.plan_id != self.call.data["plan_id"]
             or not manager.control.managed_motion_is_current(
                 serial_number, self.motion_token
             )
@@ -784,8 +787,9 @@ async def async_finish_plan_run(
             entity_id=entity_id,
             context=context,
         )
-        stored = manager.ledger.run_record(serial_number, started["run_id"])
-        if stored is not None:
+        run = manager.ledger.run_record(serial_number, started["run_id"])
+        if run is not None:
+            stored = run.published()
             end.update({key: stored[key] for key in _STORED_END if key in stored})
     finally:
         try:

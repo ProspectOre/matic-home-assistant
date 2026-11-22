@@ -1,7 +1,7 @@
 custom_components/matic_robot/area_binding_geometry.py 1629
 custom_components/matic_robot/config_flow.py 1632
 custom_components/matic_robot/managed_observation.py 1087
-custom_components/matic_robot/plan_ledger.py 1669
+custom_components/matic_robot/plan_ledger.py 1660
 custom_components/matic_robot/sensor.py 1183
 custom_components/matic_robot/slam_map_store.py 1296
 frontend/map-studio-v4/effects.ts 1190

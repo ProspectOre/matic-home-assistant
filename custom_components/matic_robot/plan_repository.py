@@ -23,6 +23,7 @@ from .plan_model import (
     AreaInUseError,
     AreaSavePreconditionError,
 )
+from .plan_records import ActivePlan, LastRun, stored_active_plan, stored_last_run
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -163,6 +164,14 @@ class PlanRepository:
         ):
             return self.open_draft[1]
         return self._live(serial_number)
+
+    def active_plan(self, serial_number: str) -> ActivePlan | None:
+        """Return the stored active plan as ``robot`` would give it, parsed."""
+        return stored_active_plan(self.robot(serial_number))
+
+    def last_run(self, serial_number: str) -> LastRun | None:
+        """Return the stored last run as ``robot`` would give it, parsed."""
+        return stored_last_run(self.robot(serial_number))
 
     def _live(self, serial_number: str) -> dict[str, Any]:
         """Return the committed robot, adding an empty one if it is new."""

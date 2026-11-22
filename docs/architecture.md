@@ -77,7 +77,7 @@ these owners around one repository:
 | [Execution planning](../custom_components/matic_robot/execution_planning.py) | Execution previews and rotation target selection. |
 
 [Plan model](../custom_components/matic_robot/plan_model.py), [storage](../custom_components/matic_robot/plan_storage.py),
-its [parser](../custom_components/matic_robot/plan_state.py) and [timing](../custom_components/matic_robot/plan_timing.py) support those owners.
+its [parser](../custom_components/matic_robot/plan_state.py) and [timing](../custom_components/matic_robot/plan_timing.py) support those owners. The repository hands out the active plan and last run as frozen [records](../custom_components/matic_robot/plan_records.py); the active plan's target is its room, else its custom area.
 The [managed executor](../custom_components/matic_robot/managed_executor.py)
 orchestrates runs through its dispatch, [leg](../custom_components/matic_robot/managed_leg.py), area, observation
 and reconciliation modules. One leg runner runs a mission of one or more rooms and announces each room event.
