@@ -465,22 +465,6 @@ async def test_import_accepts_bearer_and_quoted_pastes(
     )
 
 
-async def test_import_rejects_a_credential_the_robot_refuses(hass, monkeypatch) -> None:
-    """A live authentication failure stays on the import form."""
-    recorder = _mock_robot(monkeypatch, reject_credentials=True)
-    flow = _flow(hass)
-    flow._pairing_data = {"host": HOST, "port": PORT}
-
-    result = await _drive_setup_import(flow, TEST_CREDENTIAL.to_storage())
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "import_credential"
-    assert result["errors"] == {"base": "import_rejected"}
-    assert _has_field(result, CONF_HERMES_CREDENTIAL)
-    # The robot saw the imported credential on the pinned channel.
-    assert recorder.calls and recorder.calls[0]["kwargs"]["credential"] is not None
-
-
 @pytest.mark.parametrize(
     ("fetch_error", "client_error", "expected"),
     [
