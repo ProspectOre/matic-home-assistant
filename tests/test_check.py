@@ -622,6 +622,10 @@ GAP = {"missing_lines": [3], "missing_branches": []}
         ([], [], None, [], 0, None),
         ([], None, None, [], 0, check.FULL_SUITE),
         (["--all"], [], None, [], 0, check.FULL_SUITE),
+        # CI's test job reads the build job's output and builds nothing.
+        (["--all", "--built"], [], None, [], 0, check.FULL_SUITE),
+        # So it needs no Node.js.
+        (["--all", "--built"], [], "no Node.js", [], 0, check.FULL_SUITE),
         (["--all"], [], "pytest", [], 1, check.FULL_SUITE),
         (["--all"], [], "ruff", [], 1, check.FULL_SUITE),
         (["--all"], [], None, ["a.py: too long"], 1, check.FULL_SUITE),
@@ -684,8 +688,12 @@ def test_main_fails_when_any_check_fails(
     # The suites run on separate threads, so they may start in either order.
     expected = [check.CLIENT_SUITE, *([] if tests is None else [tests])]
     assert sorted(map(str, pytest_runs)) == sorted(map(str, expected))
-    # Tests read the built Matic Map, so every test run follows a build.
-    assert (BUILD in commands) == (tests is not None or failing in BUILD)
+    # Tests read the built Matic Map, so every test run follows a build
+    # unless the tree already holds one.
+    built = "--built" in arguments
+    assert (BUILD in commands) == (
+        not built and (tests is not None or failing in BUILD)
+    )
     # The scan reads the tree the build and the tests write to.
     privacy = next(i for i, c in enumerate(commands) if "check_public_tree" in c[-1])
     assert all(privacy < i for i, c in enumerate(commands) if c == BUILD)

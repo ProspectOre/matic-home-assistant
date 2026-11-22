@@ -85,8 +85,9 @@ npm run build:map-studio-v4
 npm run test:browser
 ```
 
-Git ignores the build output, so commit the source alone; every CI job builds
-its own. On Linux, `npx playwright install --with-deps` also installs system
+Git ignores the build output, so commit the source alone. In Test, one job builds
+it and the tests, the live lane and the browser shards download that build;
+Nightly and the Windows qualification build their own. On Linux, `npx playwright install --with-deps` also installs system
 packages and may need administrator rights. Give each worktree its own
 `node_modules`: a shared, symlinked one can change the generated chunks.
 `npm run test:browser` serves each checkout on its own port and reuses an
@@ -123,7 +124,7 @@ or an eligible hold, a maintainer can comment `/review`; avoid duplicate request
 ## Install a branch build
 
 Every Test run on a pull request or a push to `main` or a release branch keeps
-`matic_robot.zip`, built the way a release builds it. To try an unreleased
+`matic_robot.zip`; a release publishes the one Test kept for its commit. To try an unreleased
 head, sign in to GitHub, open its Test run under Actions and download
 `matic_robot.zip` from Artifacts. Replace `custom_components/matic_robot` in
 your Home Assistant configuration with the zip's contents and restart.
@@ -147,18 +148,22 @@ one run of the Release workflow.
    target such as `map.md`; publishing points those links at the tag's copy of
    `docs/`. Other links, images, code blocks fenced with three backticks and
    one-line code spans are left as written.
-2. Run Release from Actions with the tag. A candidate runs on `release/X.Y` or
-   `main`. A stable `vX.Y.Z` runs on `main`, after `release/X.Y` is merged
-   into it.
+2. Once Test has passed on the branch head, run Release from Actions with the
+   tag. A candidate runs on `release/X.Y` or `main`. A stable `vX.Y.Z` runs on
+   `main`, after `release/X.Y` is merged into it.
 
 The run stops if the tag disagrees with the version or the branch, already
-exists or has no notes. Otherwise it builds Matic Map and `matic_robot.zip`,
-attests where the zip was built, publishes the release with the zip attached,
-then lists and deletes the release and tag of every other candidate of that
+exists or has no notes. It also stops unless a passing Test run of a push to,
+or a manual run on, that exact commit kept its `matic_robot.zip`: it downloads
+that zip, checks its digest and that it holds the commit's integration files
+and the built Matic Map, and rebuilds nothing. If the zip has expired, run Test
+on the branch from Actions first. It then attests the zip, publishes the
+release with the zip attached, then lists and deletes the release and tag of every other candidate of that
 version. It never deletes a stable release or tag. Before publishing over a
 candidate, record its commit and keep a copy of its zip to roll back to.
 
-HACS installs the zip. To check a copy against the run that built it:
+HACS installs the zip. To check a copy against the Release run that published
+it:
 
 ```sh
 gh attestation verify matic_robot.zip --repo ProspectOre/matic-home-assistant

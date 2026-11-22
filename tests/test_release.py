@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -219,8 +221,10 @@ def test_the_zip_of_this_checkout_loads_as_an_installed_integration(
     tmp_path: Path,
 ) -> None:
     archive = tmp_path / "matic_robot.zip"
-    release.build_zip(archive)
+    digest = release.build_zip(archive)
 
+    # What Release checks before it publishes the zip Test built.
+    assert release.verify_zip(archive) == digest
     check_fresh_install(archive)
     with zipfile.ZipFile(archive) as bundle:
         names = set(bundle.namelist())
@@ -406,3 +410,160 @@ def test_remote_tags_are_read_through_the_github_cli(
 ) -> None:
     monkeypatch.setattr(release, "_lines", FakeGitHub({}, {"v0.5.3": "abc"}))
     assert release.remote_tags() == {"v0.5.3": "abc"}
+
+
+def test_release_takes_the_newest_passing_test_run_that_kept_the_zip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run whose zip expired is passed over for an older one that kept it."""
+    asked: list[tuple[str, ...]] = []
+    kept = {"150": ["9"]}
+
+    def github(*command: str) -> list[str]:
+        asked.append(command)
+        url = next(part for part in command if part.startswith("repos/"))
+        if url.endswith("/runs"):
+            return ["101", "205", "150"]
+        return kept.get(url.split("/")[-2], [])
+
+    monkeypatch.setattr(release, "_lines", github)
+
+    assert release.built_by_test("c" * 40) == "150"
+    assert asked[0] == (
+        *("gh", "api", "--paginate", "--method", "GET"),
+        *("repos/{owner}/{repo}/actions/workflows/test.yml/runs", "-f"),
+        *(f"head_sha={'c' * 40}", "-f", "status=success", "--jq"),
+        f"{release.BUILT_ITSELF} | .id",
+    )
+    assert asked[1:] == [
+        (
+            *("gh", "api", "--method", "GET"),
+            f"repos/{{owner}}/{{repo}}/actions/runs/{run}/artifacts",
+            *("-f", "name=matic_robot.zip"),
+            *("--jq", release.KEPT),
+        )
+        for run in ("205", "150")
+    ]
+
+    kept.clear()
+    with pytest.raises(release.ReleaseError, match="run Test on this branch"):
+        release.built_by_test("c" * 40)
+
+
+# CI must run this: the runner has jq, and a skip there would pass the gate.
+@pytest.mark.skipif(
+    shutil.which("jq") is None and not os.environ.get("CI"), reason="needs jq"
+)
+@pytest.mark.parametrize(
+    ("query", "listing", "found"),
+    [
+        # A pull request run checks out the merge into the base, not the commit.
+        (
+            f"{release.BUILT_ITSELF} | .id",
+            {
+                "workflow_runs": [
+                    {"id": 3, "event": "pull_request"},
+                    {"id": 2, "event": "workflow_dispatch"},
+                    {"id": 1, "event": "push"},
+                ]
+            },
+            ["2", "1"],
+        ),
+        # An expired zip cannot be downloaded, so its run is passed over.
+        (
+            release.KEPT,
+            {"artifacts": [{"id": 9, "expired": True}, {"id": 8, "expired": False}]},
+            ["8"],
+        ),
+    ],
+)
+def test_release_reads_only_runs_and_zips_it_can_publish(
+    query: str, listing: dict[str, object], found: list[str]
+) -> None:
+    result = subprocess.run(
+        ["jq", "-r", query],
+        input=json.dumps(listing),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.split() == found
+
+
+def test_the_zip_test_built_is_checked_against_the_checkout(
+    checkout: Path, tmp_path: Path
+) -> None:
+    archive = tmp_path / "matic_robot.zip"
+    digest = release.build_zip(archive, checkout)
+
+    assert release.verify_zip(archive, checkout) == digest
+
+    with zipfile.ZipFile(archive, "a") as bundle:
+        bundle.writestr("stray.py", "")
+    with pytest.raises(release.ReleaseError, match=r"checkout: stray\.py$"):
+        release.verify_zip(archive, checkout)
+
+    release.build_zip(archive, checkout)
+    with zipfile.ZipFile(archive, "a") as bundle:
+        bundle.writestr("map_studio_v4/../stray.py", "")
+    with pytest.raises(release.ReleaseError, match=r"checkout: map_studio_v4/\.\./"):
+        release.verify_zip(archive, checkout)
+
+    release.build_zip(archive, checkout)
+    (checkout / INTEGRATION / "client" / "api.py").write_text("changed")
+    with pytest.raises(release.ReleaseError, match=r"checkout: client/api\.py$"):
+        release.verify_zip(archive, checkout)
+
+
+def test_a_zip_missing_a_tracked_file_is_not_released(
+    checkout: Path, tmp_path: Path
+) -> None:
+    archive = tmp_path / "matic_robot.zip"
+    release.build_zip(archive, checkout)
+    with zipfile.ZipFile(archive) as bundle:
+        entries = {name: bundle.read(name) for name in bundle.namelist()}
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name, data in entries.items():
+            if name != "manifest.json":
+                bundle.writestr(name, data)
+
+    with pytest.raises(release.ReleaseError, match=r"checkout: manifest\.json$"):
+        release.verify_zip(archive, checkout)
+
+
+@pytest.mark.parametrize("missing", ["matic_icons.js", "map_studio_v4/index.js"])
+def test_a_zip_without_the_built_panel_is_not_released(
+    checkout: Path, tmp_path: Path, missing: str
+) -> None:
+    archive = tmp_path / "matic_robot.zip"
+    release.build_zip(archive, checkout)
+    with zipfile.ZipFile(archive) as bundle:
+        entries = {name: bundle.read(name) for name in bundle.namelist()}
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name, data in entries.items():
+            if name != missing:
+                bundle.writestr(name, data)
+
+    with pytest.raises(release.ReleaseError, match="no built Matic Map"):
+        release.verify_zip(archive, checkout)
+
+
+def test_the_found_run_and_the_checked_zip_reach_the_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_SHA", "c" * 40)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(release, "built_by_test", lambda sha: f"7-{sha[:1]}")
+    monkeypatch.setattr(release, "verify_zip", lambda: "0" * 64)
+
+    assert release.main(["built"]) == 0
+    assert release.main(["verify"]) == 0
+
+    assert output.read_text() == "run-id=7-c\n"
+    assert capsys.readouterr().out == (
+        f"Test run 7-c built {'c' * 40}\n"
+        f"dist/matic_robot.zip sha256:{'0' * 64} matches this checkout\n"
+    )

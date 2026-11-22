@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""The steps of a release. Test runs `zip`; release.yml runs all four.
+"""The steps of a release. Test runs `zip`; release.yml runs the rest.
 
 check TAG    the tag, manifest.json, pyproject.toml and branch agree
 zip          build dist/matic_robot.zip, the file HACS installs
+built        find the Test run that built and kept the zip of this commit
+verify       check the downloaded zip against this checkout
 publish TAG  create the GitHub release from the zip and its notes
 prune TAG    delete the candidates that TAG supersedes
 """
@@ -26,6 +28,12 @@ INTEGRATION = Path("custom_components/matic_robot")
 # .gitignore ignores exactly what `npm run build:map-studio-v4` writes here.
 PANEL = (INTEGRATION / "matic_icons.js", INTEGRATION / "map_studio_v4")
 ARCHIVE = Path("dist/matic_robot.zip")
+# A pull request run builds the merge into its base, not the commit itself.
+BUILT_ITSELF = (
+    '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")'
+)
+# Artifacts GitHub still keeps; it deletes them after their retention.
+KEPT = ".artifacts[] | select(.expired | not) | .id"
 TAG = re.compile(
     r"v(?P<final>\d+(?:\.\d+){2,3})(?:-(?P<stage>beta|rc)(?P<number>\d+))?"
 )
@@ -106,6 +114,61 @@ def build_zip(archive: Path = ROOT / ARCHIVE, root: Path = ROOT) -> str:
             entry.compress_type = zipfile.ZIP_DEFLATED
             entry.external_attr = 0o644 << 16
             bundle.writestr(entry, (root / name).read_bytes())
+    return hashlib.sha256(archive.read_bytes()).hexdigest()
+
+
+def built_by_test(sha: str) -> str:
+    """Return the newest passing Test run that built this commit and kept its zip."""
+    runs = _lines(
+        *("gh", "api", "--paginate", "--method", "GET"),
+        *(f"{API}/actions/workflows/test.yml/runs", "-f", f"head_sha={sha}"),
+        *("-f", "status=success", "--jq", f"{BUILT_ITSELF} | .id"),
+    )
+    for run in sorted(runs, key=int, reverse=True):
+        kept = _lines(
+            *("gh", "api", "--method", "GET", f"{API}/actions/runs/{run}/artifacts"),
+            *("-f", f"name={ARCHIVE.name}"),
+            *("--jq", KEPT),
+        )
+        if kept:
+            return run
+    raise ReleaseError(
+        f"no passing Test run of {sha} kept {ARCHIVE.name}; "
+        "run Test on this branch, then release"
+    )
+
+
+def verify_zip(archive: Path = ROOT / ARCHIVE, root: Path = ROOT) -> str:
+    """Check a zip Test built against this checkout and return its SHA-256.
+
+    It must hold every tracked integration file as committed, the built panel
+    and nothing else.
+    """
+    tracked = {
+        Path(name).relative_to(INTEGRATION).as_posix(): root / name
+        for name in _lines("git", "-C", str(root), "ls-files", "--", str(INTEGRATION))
+    }
+    panel = [path.relative_to(INTEGRATION).as_posix() for path in PANEL]
+    with zipfile.ZipFile(archive) as bundle:
+        names = set(bundle.namelist())
+        differ = sorted(
+            name
+            for name, path in tracked.items()
+            if name not in names or bundle.read(name) != path.read_bytes()
+        )
+    extra = sorted(
+        name
+        for name in names - tracked.keys()
+        if name != panel[0]
+        # A panel file sits below the panel folder, never outside it.
+        and not (name.startswith(f"{panel[1]}/") and ".." not in name.split("/"))
+    )
+    if differ or extra:
+        raise ReleaseError(
+            f"{archive.name} does not match this checkout: {', '.join(differ + extra)}"
+        )
+    if not {panel[0], f"{panel[1]}/index.js"} <= names:
+        raise ReleaseError(f"{archive.name} has no built Matic Map")
     return hashlib.sha256(archive.read_bytes()).hexdigest()
 
 
@@ -196,13 +259,22 @@ def main(arguments: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     steps = parser.add_subparsers(dest="step", required=True)
-    steps.add_parser("zip")
+    for step in ("zip", "built", "verify"):
+        steps.add_parser(step)
     for step in ("check", "publish", "prune"):
         steps.add_parser(step).add_argument("tag")
     selected = parser.parse_args(arguments)
     try:
         if selected.step == "zip":
             print(f"{ARCHIVE} sha256:{build_zip()}")
+        elif selected.step == "built":
+            sha = os.environ["GITHUB_SHA"]
+            run = built_by_test(sha)
+            print(f"Test run {run} built {sha}")
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                output.write(f"run-id={run}\n")
+        elif selected.step == "verify":
+            print(f"{ARCHIVE} sha256:{verify_zip()} matches this checkout")
         elif selected.step == "check":
             check(selected.tag, os.environ["GITHUB_REF_NAME"], remote_tags())
         elif selected.step == "publish":
