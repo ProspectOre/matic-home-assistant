@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
+import { readFileSync } from "node:fs";
 
 const bundle = await build({
   stdin: {
-    contents: 'export { parseCatalog, parsePose } from "./frontend/map-studio-v4/backend-contracts"; export { parseHistoryCatalog } from "./frontend/map-studio-v4/history-catalog"; export { parsePlansCatalog } from "./frontend/map-studio-v4/plan-catalog"; import { areaCatalogHelpers } from "./frontend/map-studio-v4/plan-catalog"; import { parseAreasCatalog as parseAreas } from "./frontend/map-studio-v4/area-catalog"; import * as geometry from "./frontend/map-studio-v4/area-outline"; export const parseAreasCatalog = value => parseAreas(value, areaCatalogHelpers, geometry);',
+    contents: 'export { parseCatalog, parsePose } from "./frontend/map-studio-v4/backend-contracts"; export { parseHistoryCatalog } from "./frontend/map-studio-v4/history-catalog"; export { parsePlansCatalog } from "./frontend/map-studio-v4/plan-catalog"; import { areaCatalogHelpers } from "./frontend/map-studio-v4/plan-catalog"; import { parseAreasCatalog as parseAreas } from "./frontend/map-studio-v4/area-catalog"; import * as geometry from "./frontend/map-studio-v4/area-outline"; export const parseAreasCatalog = value => parseAreas(value, areaCatalogHelpers, geometry); export { HassAdapter } from "./frontend/map-studio-v4/hass-adapter";',
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -177,6 +178,28 @@ test("catalog ignores the retired live workspace flag; scene revision is optiona
   });
 
   expect(result).toEqual({ sameRow: [true, true], sceneRevisions: [null, 8] });
+});
+
+// tests/test_entities.py checks each fixture's `run` against a real snapshot.
+const historyFixture = name => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), "utf8"));
+
+test("Matic Map reads the run summary the history sensor publishes", async ({ page }) => {
+  await load(page);
+  const histories = [historyFixture("matic_cleaning_history"), historyFixture("matic_active_cleaning_history")];
+  const result = await page.evaluate(async (histories) => {
+    const { HassAdapter } = await import("/backend-contracts.js");
+    return histories.map(attributes => {
+      const projection = new HassAdapter().project({ states: {
+        "vacuum.robot": { state: "cleaning", attributes: { matic_entry_id: attributes.matic_entry_id } },
+        "sensor.history": { state: "0", attributes },
+      } });
+      return { lastRun: projection.lastRun, smartStop: projection.smartStop };
+    });
+  }, histories);
+  expect(result).toEqual([
+    { lastRun: { runId: "partial-1", outcome: "partial", completedRoomCount: 1, roomCount: 3 }, smartStop: null },
+    { lastRun: { runId: "partial-1", outcome: "running", completedRoomCount: 0, roomCount: 3 }, smartStop: null },
+  ]);
 });
 
 async function load(page) {

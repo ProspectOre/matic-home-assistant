@@ -1,3 +1,5 @@
+import type { Unchecked } from "./backend-contracts";
+import type { RunSummary, RunTarget, SmartStopPhase } from "./backend-schema";
 import type {
   HassEntityLike,
   HassLike,
@@ -34,6 +36,9 @@ const activityForVacuum = (
   }
 };
 
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
 const SCHEDULE_TEXT_MAX = 1024;
 
 const scheduleText = (value: unknown): string | null =>
@@ -41,12 +46,11 @@ const scheduleText = (value: unknown): string | null =>
 
 // The robot schedules calendar names its next run that hasn't started yet.
 const scheduledRun = (value: unknown): ScheduledRun | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const run = value as Record<string, unknown>;
-  const name = scheduleText(run.name);
-  const startsAt = run.start;
+  if (!isRecord(value)) return null;
+  const name = scheduleText(value.name);
+  const startsAt = value.start;
   if (!name || typeof startsAt !== "string" || !Number.isFinite(Date.parse(startsAt))) return null;
-  return { name, startsAt, detail: scheduleText(run.description) };
+  return { name, startsAt, detail: scheduleText(value.description) };
 };
 
 const boundedPercent = (value: unknown): number | null => {
@@ -93,47 +97,42 @@ const maticEntryKey = (entity: HassEntityLike): string | null => {
   return typeof key === "string" && key.length > 0 ? key : null;
 };
 
-const managedRunSummary = (value: unknown, activePlan: unknown, timing: HassEntityLike | undefined) => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const run = value as Record<string, unknown>;
-  if (typeof run.run_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(run.run_id)) return null;
-  const roomCount = run.room_count;
-  const completedRoomCount = run.completed_room_count;
-  if (!Number.isSafeInteger(roomCount) || !Number.isSafeInteger(completedRoomCount)
-    || (roomCount as number) < 0 || (completedRoomCount as number) < 0
-    || (completedRoomCount as number) > (roomCount as number)) return null;
-  if (run.outcome === "running") {
-    if (!activePlan || typeof activePlan !== "object" || Array.isArray(activePlan)
-      || (activePlan as Record<string, unknown>).run_id !== run.run_id || roomCount === 0) return null;
-  } else if (run.outcome !== "unverified" && run.outcome !== "stopped_docked" && run.outcome !== "failed" && run.outcome !== "cancelled" && run.outcome !== "recharge_suspended") return null;
+const RUN_ID = /^[a-zA-Z0-9_-]{1,128}$/u;
+// A Record keyed by the generated union fails the build when a phase is added or removed.
+const SMART_STOP_PHASES: ReadonlySet<unknown> = new Set(Object.keys({
+  finishing_room: true, finishing_area: true, verifying_completion: true, returning_to_dock: true,
+} satisfies Record<SmartStopPhase, true>));
+const PARTIAL_OUTCOMES: ReadonlySet<unknown> = new Set(["stopped_docked", "failed", "cancelled", "recharge_suspended"]);
+
+/**
+ * The history sensor's `run` attribute (plan_history.run_summary), checked
+ * field by field. A running run shows while it is on a room or area, or while
+ * Smart Stop docks it.
+ */
+const runProjection = (value: unknown, timing: HassEntityLike | undefined) => {
+  if (!isRecord(value)) return {};
+  const { run_id: runId, outcome, room_count: rooms, completed_room_count: completed, target: rawTarget,
+    smart_stop_phase: rawPhase } = value as Unchecked<RunSummary>;
+  if (typeof runId !== "string" || !RUN_ID.test(runId) || !Number.isSafeInteger(rooms) || !Number.isSafeInteger(completed)
+    || (completed as number) < 0 || (completed as number) > (rooms as number)) return {};
+  const raw = isRecord(rawTarget) ? rawTarget as Unchecked<RunTarget> : null;
+  const target = raw && (raw.kind === "room" || raw.kind === "area") && typeof raw.id === "string" ? raw : null;
+  const phase = SMART_STOP_PHASES.has(rawPhase) ? rawPhase as SmartStopPhase : null;
+  const running = outcome === "running";
+  const shown = running ? rooms !== 0 && (target || phase) : outcome === "unverified" || PARTIAL_OUTCOMES.has(outcome);
   const metric = timing?.attributes;
   const percent = timing && /^\d{1,3}$/u.test(timing.state) ? Number(timing.state) : NaN;
-  const estimate = run.outcome === "running" && metric?.run_id === run.run_id
-    && metric?.room_id === (activePlan as Record<string, unknown>).room_id
-    && metric?.status === "running" && typeof metric.room_id === "string"
-    && typeof metric.room === "string" && metric.room
-    && percent <= 100
-    ? { roomId: metric.room_id, room: metric.room, percent } : undefined;
-  return Object.freeze({ runId: run.run_id, outcome: run.outcome === "running" ? "running" as const : run.outcome === "unverified" ? "unverified" as const : "partial" as const, ...(estimate ? { estimate } : {}),
-    completedRoomCount: completedRoomCount as number, roomCount: roomCount as number });
-};
-
-const smartStopStatus = (value: unknown, activePlan: unknown) => {
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || !activePlan || typeof activePlan !== "object" || Array.isArray(activePlan)) return null;
-  const run = value as Record<string, unknown>;
-  const active = activePlan as Record<string, unknown>;
-  if (run.outcome !== "running" || active.smart_stop_pending !== true
-    || typeof run.run_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(run.run_id)
-    || active.run_id !== run.run_id) return null;
-  const phase = active.smart_stop_phase;
-  if (phase !== "finishing_room" && phase !== "finishing_area" && phase !== "verifying_completion" && phase !== "returning_to_dock") return null;
-  const kind = phase === "finishing_area" || typeof active.area_id === "string" ? "area" as const : "room" as const;
-  const rawTarget = kind === "area" ? active.area : active.room;
-  const target = typeof rawTarget === "string" && rawTarget.trim()
-    && Array.from(rawTarget).length <= 128 && !/[\u0000-\u001f\u007f]/u.test(rawTarget)
-    ? rawTarget.trim() : null;
-  return Object.freeze({ runId: run.run_id, target, kind, phase });
+  const estimate = running && target?.kind === "room" && metric?.run_id === runId
+    && metric.room_id === target.id && metric.status === "running"
+    && typeof metric.room === "string" && metric.room && percent <= 100
+    ? { roomId: target.id as string, room: metric.room, percent } : undefined;
+  const kind = phase === "finishing_area" || target?.kind === "area" ? "area" as const : "room" as const;
+  return {
+    lastRun: shown ? Object.freeze({ runId, outcome: running ? "running" as const : outcome === "unverified" ? "unverified" as const : "partial" as const,
+      ...(estimate ? { estimate } : {}), completedRoomCount: completed as number, roomCount: rooms as number }) : null,
+    smartStop: running && phase
+      ? Object.freeze({ runId, target: target?.kind === kind ? safeLabel(target.name) : null, kind, phase }) : null,
+  };
 };
 
 const safeUserKey = (value: unknown): string => {
@@ -211,7 +210,7 @@ export class HassAdapter {
     for (const [entityId, entity] of entities) {
       const entryKey = maticEntryKey(entity);
       if (!entryKey) continue;
-      if (entityId.startsWith("sensor.") && entity.attributes?.last_run !== undefined) {
+      if (entityId.startsWith("sensor.") && entity.attributes?.run !== undefined) {
         histories.set(entryKey, entity.attributes);
       }
       if (entityId.startsWith("calendar.") && entity.attributes?.matic_next_run !== undefined) {
@@ -262,7 +261,7 @@ export class HassAdapter {
     const choices = robotChoices(hass, robots, language);
     const robotLabel = choices.find((choice) => choice.entryId === selectedEntryKey && selectedVacuum)?.label ?? "Robot";
     const history = histories.get(selectedEntryKey ?? "");
-    const lastRun = managedRunSummary(history?.last_run, history?.active_plan, metrics.get("current_room_estimated_progress"));
+    const { lastRun = null, smartStop = null } = runProjection(history?.run, metrics.get("current_room_estimated_progress"));
     const projection: HassProjection = {
       deepMop,
       host,
@@ -279,7 +278,7 @@ export class HassAdapter {
       robotLabel,
       robots: choices,
       lastRun,
-      smartStop: smartStopStatus(history?.last_run, history?.active_plan),
+      smartStop,
       nextSchedule: schedules.get(selectedEntryKey ?? "") ?? null,
     };
     const signature = JSON.stringify(projection);
