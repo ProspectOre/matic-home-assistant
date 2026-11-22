@@ -57,8 +57,8 @@ from custom_components.matic_robot.llm import (
 from custom_components.matic_robot.llm_common import (
     _ERRORS,
     NON_ADMIN_PROMPT,
-    _entry_name,
     _resolve_entry,
+    entry_name,
 )
 from custom_components.matic_robot.llm_control import (
     MaticCleanRoomsTool,
@@ -679,7 +679,7 @@ async def test_operations_and_robot_resolution() -> None:
     }
     assert robot["managed_runner"]["lock_held"] is True
     assert robot["native_reconciliation"]["room"] == "Study"
-    assert _entry_name(fallback) == "Fallback"
+    assert entry_name(fallback) == "Fallback"
 
 
 async def test_operations_includes_read_only_bag_observation_when_available() -> None:

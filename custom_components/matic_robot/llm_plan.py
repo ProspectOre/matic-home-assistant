@@ -20,12 +20,12 @@ from .area_binding import (
 from .area_binding_geometry import _room_geometry_index
 from .area_geometry import RoomGeometryIndex
 from .llm_common import (
-    _READ_ONLY,
-    _ROBOT_FIELD,
-    _entry_name,
-    _error,
-    _MaticTool,
-    _resolve_plan_id,
+    READ_ONLY,
+    ROBOT_FIELD,
+    MaticTool,
+    entry_name,
+    resolve_plan_id,
+    tool_error,
 )
 from .plan_model import (
     AreaLeg,
@@ -37,7 +37,7 @@ from .plan_model import (
 )
 
 
-class MaticGetPlanTool(_MaticTool):
+class MaticGetPlanTool(MaticTool):
     """Preview the exact next run of one saved plan."""
 
     name = "MaticGetPlan"
@@ -49,10 +49,10 @@ class MaticGetPlanTool(_MaticTool):
         "the run into separate cleaning passes. skipped_rooms lists saved "
         "rooms a map edit in the Matic app removed, which the run skips."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("plan"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
@@ -70,12 +70,12 @@ class MaticGetPlanTool(_MaticTool):
         runtime = entry.runtime_data
         floor_plan = runtime.session.floor.value
         if floor_plan is None or not floor_plan.rooms:
-            raise _error("llm_map_unavailable")
+            raise tool_error("llm_map_unavailable")
         if not runtime.slam_map.floor_plan_is_current(floor_plan):
-            raise _error("llm_map_rechecking")
+            raise tool_error("llm_map_rechecking")
         serial_number = runtime.session.info.serial_number
         room_map = {room.id: room.name for room in floor_plan.rooms}
-        plan_id = _resolve_plan_id(
+        plan_id = resolve_plan_id(
             runtime.cleaning_plans, serial_number, args.get("plan")
         )
         try:
@@ -94,7 +94,7 @@ class MaticGetPlanTool(_MaticTool):
             groups = preview_legs(preview["entries"])
         except (KeyError, ValueError) as err:
             # A missing area or one drawn on another map lands here too.
-            raise _error("llm_plan_unavailable", error=str(err)) from err
+            raise tool_error("llm_plan_unavailable", error=str(err)) from err
         plan_id = preview["plan_id"]
         cadence_by_room = {
             room["room_id"]: room["cadence"] for room in preview["rooms"]
@@ -160,7 +160,7 @@ class MaticGetPlanTool(_MaticTool):
                 JsonObjectType,
                 {
                     "read_only": True,
-                    "robot": _entry_name(entry),
+                    "robot": entry_name(entry),
                     "preview_scope": "next_run",
                     "active_run_for_plan": active_run_for_plan,
                     "plan": {
@@ -180,7 +180,7 @@ class MaticGetPlanTool(_MaticTool):
         )
 
 
-class MaticGetPlanReadinessTool(_MaticTool):
+class MaticGetPlanReadinessTool(MaticTool):
     """Report whether a saved plan's map and areas are safe to use."""
 
     name = "MaticGetPlanReadiness"
@@ -191,10 +191,10 @@ class MaticGetPlanReadinessTool(_MaticTool):
         "or internal map details. It does not change the plan or control the "
         "robot; normal robot controls still decide whether a run can start."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("plan"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
@@ -219,7 +219,7 @@ class MaticGetPlanReadinessTool(_MaticTool):
         elif not runtime.slam_map.floor_plan_is_current(floor_plan):
             map_status = "rechecking"
 
-        plan_id = _resolve_plan_id(manager, serial_number, args.get("plan"))
+        plan_id = resolve_plan_id(manager, serial_number, args.get("plan"))
         if plan_id is None:
             plan_id = manager.history.snapshot(serial_number).get("selected_plan")
         plans = manager.catalog.plans(serial_number)

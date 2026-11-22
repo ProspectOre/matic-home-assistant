@@ -17,10 +17,10 @@ from .const import (
     DOMAIN,
 )
 from .llm_common import (
-    _READ_ONLY,
-    _ROBOT_FIELD,
-    _entry_name,
-    _MaticTool,
+    READ_ONLY,
+    ROBOT_FIELD,
+    MaticTool,
+    entry_name,
 )
 from .native_schedules import schedule_occurrences
 
@@ -32,7 +32,7 @@ MAX_SCHEDULE_DAYS = 14
 MAX_ZONE_RESULTS = 64
 
 
-class MaticGetOperationsTool(_MaticTool):
+class MaticGetOperationsTool(MaticTool):
     """Return current robot, plan and run state."""
 
     name = "MaticGetOperations"
@@ -42,7 +42,7 @@ class MaticGetOperationsTool(_MaticTool):
         "a plan is running, the active room and its sampled time estimate, the "
         "selected plan, and dust-bag observations."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
 
     @override
     async def async_run(
@@ -61,7 +61,7 @@ class MaticGetOperationsTool(_MaticTool):
         )
 
 
-class MaticGetSchedulesTool(_MaticTool):
+class MaticGetSchedulesTool(MaticTool):
     """Return the robot's own weekly schedules and their next runs."""
 
     name = "MaticGetSchedules"
@@ -73,10 +73,10 @@ class MaticGetSchedulesTool(_MaticTool):
         "couldn't be read, so say they are unknown. Read-only: schedules are "
         "changed in the Matic app."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("days", default=7): probatio.All(
                 probatio.Coerce(int),
                 probatio.Range(min=1, max=MAX_SCHEDULE_DAYS),
@@ -113,7 +113,7 @@ class MaticGetSchedulesTool(_MaticTool):
         return llm.ToolResult(
             data={
                 "read_only": True,
-                "robot": _entry_name(entry),
+                "robot": entry_name(entry),
                 # The schedule count is unknown when the robot's schedule list
                 # couldn't be read, so empty lists then mean unknown, not none.
                 "schedules_readable": telemetry.scheduled_cleanings is not None,
@@ -148,7 +148,7 @@ class MaticGetSchedulesTool(_MaticTool):
         )
 
 
-class MaticGetZonesTool(_MaticTool):
+class MaticGetZonesTool(MaticTool):
     """Return the robot's zones on the current map and the rooms they cover."""
 
     name = "MaticGetZones"
@@ -160,8 +160,8 @@ class MaticGetZonesTool(_MaticTool):
         "be read, so say they are unknown. Read-only: zones are changed in the "
         "Matic app."
     )
-    annotations = _READ_ONLY
-    parameters = llm.Tool.parameters.extend(_ROBOT_FIELD)
+    annotations = READ_ONLY
+    parameters = llm.Tool.parameters.extend(ROBOT_FIELD)
 
     @override
     async def async_run(
@@ -182,7 +182,7 @@ class MaticGetZonesTool(_MaticTool):
         return llm.ToolResult(
             data={
                 "read_only": True,
-                "robot": _entry_name(entry),
+                "robot": entry_name(entry),
                 "map_available": floor_plan is not None,
                 "zones_readable": (
                     entry.runtime_data.client.endpoint_health.get("zones") == "ok"
@@ -304,7 +304,7 @@ def _robot_summary(hass: HomeAssistant, entry: MaticConfigEntry) -> JsonObjectTy
     return cast(
         JsonObjectType,
         {
-            "name": _entry_name(entry),
+            "name": entry_name(entry),
             "entry_id": entry.entry_id,
             "robot_reachable": session.error.value is None,
             "robot": robot_summary,
