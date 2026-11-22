@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -419,10 +421,27 @@ def test_release_takes_the_newest_passing_test_run_that_kept_the_zip(
         release.built_by_test("c" * 40)
 
 
+# CI must run this: the runner has jq, and a skip there would pass the gate.
+@pytest.mark.skipif(
+    shutil.which("jq") is None and not os.environ.get("CI"), reason="needs jq"
+)
 def test_a_pull_request_run_never_supplies_the_release_zip() -> None:
     """Its checkout is the merge into the base, not the commit released."""
-    assert '"pull_request"' not in release.BUILT_ITSELF
-    assert '.event == "push"' in release.BUILT_ITSELF
+    runs = {
+        "workflow_runs": [
+            {"id": 3, "event": "pull_request"},
+            {"id": 2, "event": "workflow_dispatch"},
+            {"id": 1, "event": "push"},
+        ]
+    }
+    found = subprocess.run(
+        ["jq", "-r", f"{release.BUILT_ITSELF} | .id"],
+        input=json.dumps(runs),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert found.stdout.split() == ["2", "1"]
 
 
 def test_the_zip_test_built_is_checked_against_the_checkout(

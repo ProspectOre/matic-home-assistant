@@ -89,8 +89,8 @@ there lists any other exception with its reason.
 
 ## CI
 
-- Test (its `ci` check requires the tests, the live lane and every browser
-  shard) and Validate run on GitHub-hosted runners for every pull
+- Test (its `ci` check requires the build, the tests, the live lane and every
+  browser shard) and Validate run on GitHub-hosted runners for every pull
   request and every push to `main` or a release branch. A test rejects any
   other runner.
 - Nightly runs the tests and the live lane on the oldest supported, newest
