@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +76,59 @@ def test_the_household_browser_tests_run_alone_and_in_every_sharded_run() -> Non
     ]
     assert "map_studio_v4_multi_robot_scale.spec.mjs" in tagged
     assert "map_studio_v4_entry_selection.spec.mjs" in tagged
+
+
+# Asks a copy of the server in another checkout, then this checkout's own
+# server, for the health path the Playwright config waits on.
+_REUSE_PROBE = """
+const paths = process.argv.slice(1);
+const [config, own, foreign] = await Promise.all(paths.map((path) => import(path)));
+const { url, reuseExistingServer } = config.default.webServer;
+const statuses = [];
+for (const module of [foreign, own]) {
+  const server = module.createGalleryServer().listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const probe = new URL(url);
+  probe.port = server.address().port;
+  statuses.push((await fetch(probe)).status);
+  server.close();
+}
+console.log(JSON.stringify({
+  statuses, reuseExistingServer, url, origin: own.GALLERY_ORIGIN,
+  baseURL: config.default.use.baseURL,
+}));
+"""
+
+
+def test_a_local_browser_run_reuses_only_its_own_checkouts_server(
+    tmp_path: Path,
+) -> None:
+    """Another checkout's server fails this checkout's health check."""
+    node = shutil.which("node")
+    assert node is not None, "node reads the Playwright config"
+    server = ROOT / "tests" / "browser" / "gallery_server.mjs"
+    foreign = tmp_path / "tests" / "browser" / server.name
+    foreign.parent.mkdir(parents=True)
+    shutil.copy(server, foreign)
+    modules = [ROOT / "playwright.config.mjs", server, foreign]
+    env = {key: value for key, value in os.environ.items() if key != "CI"}
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", _REUSE_PROBE, *map(str, modules)],
+        capture_output=True,
+        check=True,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        timeout=60,
+    )
+    probe = json.loads(result.stdout)
+    # Playwright reuses a server whose health URL answers 200 to 403.
+    assert probe["statuses"] == [404, 200]
+    assert probe["reuseExistingServer"] is True
+    assert probe["url"].startswith(f"{probe['origin']}/health/")
+    assert probe["baseURL"] == probe["origin"]
+    config = (ROOT / "playwright.config.mjs").read_text(encoding="utf-8")
+    assert "reuseExistingServer: !process.env.CI," in config
 
 
 def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> None:

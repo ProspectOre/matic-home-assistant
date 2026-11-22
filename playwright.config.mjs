@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { GALLERY_HEALTH, GALLERY_ORIGIN } from "./tests/browser/gallery_server.mjs";
 
 // UX audit captures (`@audit`) are evidence tooling, not gates. Default runs
 // and CI exclude them; they run only through `npm run audit:ux`
@@ -28,7 +29,7 @@ export default defineConfig({
   // Keep annotations and case names so capability-based skips are identifiable.
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: GALLERY_ORIGIN,
     // Only CI retries; it uploads the traces when a shard fails.
     trace: "on-first-retry",
   },
@@ -67,7 +68,9 @@ export default defineConfig({
   ],
   webServer: {
     command: "node tests/browser/server.mjs",
-    url: "http://127.0.0.1:4173/health",
+    // Another checkout's server answers this checkout's health path with 404,
+    // so a local run reuses only a server of its own checkout.
+    url: `${GALLERY_ORIGIN}${GALLERY_HEALTH}`,
     reuseExistingServer: !process.env.CI,
     timeout: 10_000,
   },
