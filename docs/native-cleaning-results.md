@@ -103,7 +103,10 @@ unreachable. The same record with the room attempted but not every requested
 mode **completed** means the robot cleaned what it could reach and gave up on
 the rest: the room was partly cleaned. Either way the room's last result
 becomes `unreachable` or `partly_cleaned`, it gets no completion credit so it
-stays due, and the plan moves on to the next room.
+stays due, and the plan moves on to the next room. The modes the robot started
+in a partly cleaned room count toward the room's mop schedule like any clean:
+a started mop counts as the due mop, and vacuum work alone adds one clean
+toward the next mop. An unreachable room counts for nothing.
 `matic_robot_room_ended_unverified` fires with `reason_code: room_unreachable`
 or `room_partly_cleaned` and `cause: robot`. The plan finishes as `unverified`
 with `partial_native_result`, since that room was not fully cleaned.

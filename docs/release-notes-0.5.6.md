@@ -13,9 +13,11 @@ taken out of a plan without saving the whole plan again.
 A plan no longer ends when the robot cleans only part of a room and returns to
 the dock on its own, for example because an obstacle blocks the rest of the
 floor. The room is recorded as partly cleaned, gets no completion credit so it
-stays due, and the plan moves on to the next room. The Matic app shows that
-clean as **Area inaccessible**, the same as a room the robot could not reach at
-all.
+stays due, and the plan moves on to the next room. The work the robot did still
+counts toward the room's mop schedule like any clean, and a mop it started
+counts as the room's due mop. The Matic app shows that clean as **Area
+inaccessible**, the same as a room the robot could not reach at all, which
+counts for nothing.
 
 **Save plan** and **Save room to plan** now show each room's schedule settings
 (mop every N cleans, vacuum rotation, and which plans share the count) in the

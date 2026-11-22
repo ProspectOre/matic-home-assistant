@@ -22,7 +22,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from statistics import median
 from time import monotonic
@@ -94,7 +94,7 @@ from .coverage_accounting import (
 )
 from .native_cadence import import_native_cadence
 from .native_completion import (
-    RobotEndedRoom,
+    RobotEnded,
     is_session_hash,
     match_single_room_completions,
 )
@@ -5600,16 +5600,54 @@ class CleaningPlanManager:
         serial_number: str,
         plan_id: str,
         room: CleaningRoom,
-        result: RobotEndedRoom,
+        ended: RobotEnded,
+        *,
+        run_id: str | None,
     ) -> None:
-        """Close a room the robot could not reach or finish, without credit."""
+        """Close a room the robot could not reach or finish, without credit.
+
+        Work the robot started in a partly cleaned room still counts toward
+        the room's schedule, like any clean, so a started mop counts as the
+        due mop. A room the robot never entered counts for nothing.
+        """
 
         def mutate() -> bool:
+            now = dt_util.utcnow()
+            robot = self._robot(serial_number)
             record = self._room(serial_number, plan_id, room)
+            result = ended.result
             record["last_result"] = result
-            record[f"last_{result}"] = dt_util.utcnow().isoformat()
+            record[f"last_{result}"] = now.isoformat()
             record[f"{result}_runs"] = _stored_count(record, f"{result}_runs") + 1
-            self._robot(serial_number)["active_plan"] = None
+            robot["active_plan"] = None
+            run = robot.get("last_run")
+            checkpoint = (
+                run.get("recovery_checkpoint") if isinstance(run, dict) else None
+            )
+            cadence_by_room = (
+                checkpoint.get("cadence_by_room")
+                if isinstance(checkpoint, dict)
+                else None
+            )
+            if (
+                ended.attempted_mode is not None
+                and run_id is not None
+                and isinstance(run, dict)
+                and run.get("run_id") == run_id
+                and run.get("plan_id") == plan_id
+                and run.get("outcome") == "running"
+                and isinstance(cadence_by_room, Mapping)
+            ):
+                _apply_verified_cadence(
+                    robot,
+                    plan_id,
+                    replace(room, cleaning_mode=ended.attempted_mode),
+                    cadence_by_room.get(room.room_id),
+                    completion_id=hashlib.sha256(
+                        f"{run_id}:{room.room_id}".encode()
+                    ).hexdigest(),
+                    completed_at=now.timestamp(),
+                )
             return True
 
         await self._async_mutate_and_save(serial_number, mutate)

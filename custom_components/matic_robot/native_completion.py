@@ -240,8 +240,20 @@ _REQUESTED_MODES = {
 }
 
 
-RobotEndedRoom = Literal["unreachable", "partly_cleaned"]
 _MODE_STATUSES = frozenset({"unattempted", "partial", "completed"})
+_ATTEMPTED_MODE = {
+    frozenset({"vacuum"}): "vacuum",
+    frozenset({"mop"}): "mop",
+    frozenset({"vacuum", "mop"}): "vacuum_and_mop",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RobotEnded:
+    """A room the robot ended without finishing, and the modes it started."""
+
+    result: Literal["unreachable", "partly_cleaned"]
+    attempted_mode: str | None
 
 
 def match_single_room_robot_ended(
@@ -253,7 +265,7 @@ def match_single_room_robot_ended(
     now: datetime,
     baseline: Collection[bytes] | None = None,
     session_hash: str | None = None,
-) -> tuple[tuple[CleaningSessionRecord, RobotEndedRoom], ...]:
+) -> tuple[tuple[CleaningSessionRecord, RobotEnded], ...]:
     """Return at most two records where the robot ended a room it could not finish.
 
     The OEM app titles a ``Finished`` stop reason "Area inaccessible" (Matic
@@ -261,14 +273,15 @@ def match_single_room_robot_ended(
     robot cleaned only part of it. Every requested mode unattempted means the
     room was unreachable; any other result short of every mode completed means
     it was partly cleaned. A cancelled or unknown stop reason is neither:
-    someone stopped the mission.
+    someone stopped the mission. ``attempted_mode`` names the modes the robot
+    started in the room, so partial work can count toward the schedule.
     """
     requested = _REQUESTED_MODES.get(cleaning_mode or "")
     candidates = records_for_dispatch(records, baseline, session_hash)
     if requested is None or candidates is None:
         return ()
     target = native_room_key(room_name)
-    matches: list[tuple[CleaningSessionRecord, RobotEndedRoom]] = []
+    matches: list[tuple[CleaningSessionRecord, RobotEnded]] = []
     for record in candidates:
         session = record.session
         if session.stop_reason != "finished":
@@ -288,10 +301,15 @@ def match_single_room_robot_ended(
             or statuses == {"completed"}
         ):
             continue
-        kind: RobotEndedRoom = (
-            "unreachable" if statuses == {"unattempted"} else "partly_cleaned"
+        attempted = _ATTEMPTED_MODE.get(
+            frozenset(r.cleaning_mode for r in results if r.status != "unattempted")
         )
-        matches.append((record, kind))
+        matches.append(
+            (
+                record,
+                RobotEnded("partly_cleaned" if attempted else "unreachable", attempted),
+            )
+        )
         if len(matches) == 2:
             break
     return tuple(matches)

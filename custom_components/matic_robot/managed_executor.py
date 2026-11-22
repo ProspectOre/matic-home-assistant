@@ -56,7 +56,7 @@ from .coverage_accounting import (
     coverage_evidence_from_storage,
 )
 from .native_completion import (
-    RobotEndedRoom,
+    RobotEnded,
     has_cancelled_single_room_record,
     match_single_room_completions,
     match_single_room_robot_ended,
@@ -570,7 +570,7 @@ async def _async_run_room(
     history_baseline: frozenset[bytes] | None = None
     dispatched_at: datetime | None = None
     native_identity: bytes | None = None
-    room_verdict: NativeRoomVerdict | None = None
+    room_verdict: NativeRoomVerdict | RobotEnded | None = None
     managed_user_command = _guard_native_commands(
         managed_user_command,
         manager,
@@ -1099,23 +1099,19 @@ async def _async_run_room(
             {**event_data, "reason_code": "verified_completion"},
             context=call.context,
         )
-    elif room_verdict in {
-        NativeRoomVerdict.UNREACHABLE,
-        NativeRoomVerdict.PARTLY_CLEANED,
-    }:
+    elif isinstance(room_verdict, RobotEnded):
         # The robot finished its mission without reaching or finishing the
-        # room. Settle it without credit and let the plan go on to the next room.
-        result: RobotEndedRoom = (
-            "unreachable"
-            if room_verdict is NativeRoomVerdict.UNREACHABLE
-            else "partly_cleaned"
-        )
+        # room. Settle it without completion credit and go on to the next room.
         await manager.async_mark_robot_ended(
-            serial_number, call.data["plan_id"], room, result
+            serial_number, call.data["plan_id"], room, room_verdict, run_id=run_id
         )
         hass.bus.async_fire(
             f"{DOMAIN}_room_ended_unverified",
-            {**event_data, "reason_code": f"room_{result}", "cause": "robot"},
+            {
+                **event_data,
+                "reason_code": f"room_{room_verdict.result}",
+                "cause": "robot",
+            },
             context=call.context,
         )
         return True
@@ -2569,8 +2565,6 @@ class NativeRoomVerdict(StrEnum):
     """What native history proves about one owned single-room mission."""
 
     COMPLETED = "completed"
-    UNREACHABLE = "unreachable"
-    PARTLY_CLEANED = "partly_cleaned"
     UNVERIFIED = "unverified"
 
 
@@ -2587,7 +2581,7 @@ async def _async_adjudicate_room_end(
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
     session_hash: str | None = None,
-) -> NativeRoomVerdict:
+) -> NativeRoomVerdict | RobotEnded:
     """Settle an ended single-room mission from one new native record.
 
     Completion needs one new, completed, overlapping record for the room.
@@ -2647,7 +2641,7 @@ async def _async_adjudicate_room_end(
                             on_verified_session(verified_hash)
                     return NativeRoomVerdict.COMPLETED
                 if robot_ended:
-                    return NativeRoomVerdict(robot_ended[0][1])
+                    return robot_ended[0][1]
                 if has_cancelled_single_room_record(
                     records,
                     baseline=baseline,
