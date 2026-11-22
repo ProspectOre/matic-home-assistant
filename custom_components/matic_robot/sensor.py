@@ -518,6 +518,7 @@ class MaticCleaningHistorySensor(MaticPlanDataEntity, SensorEntity):
             "active_plan",
             "last_interrupted_plan",
             "last_run",
+            "run",
         }
     )
 
@@ -551,6 +552,7 @@ class MaticCleaningHistorySensor(MaticPlanDataEntity, SensorEntity):
             "matic_entry_id": self._config_entry.entry_id,
             "plan_count": len(snapshot["plans"]),
             "plan_running": snapshot["active_plan"] is not None,
+            "run": self._history.history.run_summary(self._serial_number),
         }
 
 

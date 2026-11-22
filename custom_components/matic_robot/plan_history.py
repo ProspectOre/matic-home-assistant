@@ -23,11 +23,26 @@ from .plan_model import (
 from .plan_repository import (
     PlanRepository,
 )
+from .plan_schema import RunSummary, RunTarget
 from .run_control import (
     RunControl,
 )
 from .run_history import history_entries
 from .run_machine import running_run
+
+
+def _run_target(active: Mapping[str, Any]) -> RunTarget | None:
+    """Name the active plan's custom area, else its room."""
+    if isinstance(active.get("area_id"), str):
+        return {"kind": "area", "id": active["area_id"], "name": _name(active, "area")}
+    if isinstance(active.get("room_id"), str):
+        return {"kind": "room", "id": active["room_id"], "name": _name(active, "room")}
+    return None
+
+
+def _name(active: Mapping[str, Any], key: str) -> str | None:
+    name = active.get(key)
+    return name if isinstance(name, str) else None
 
 
 class PlanHistory:
@@ -85,6 +100,30 @@ class PlanHistory:
             native,
             manual=_is_manual_room_sequence_plan_id,
         )
+
+    def run_summary(self, serial_number: str) -> RunSummary | None:
+        """Summarize the stored run; only the running run has a target or phase."""
+        robot = self.repository.robot(serial_number)
+        run = robot.get("last_run")
+        if not isinstance(run, Mapping):
+            return None
+        active = robot.get("active_plan")
+        target = (
+            _run_target(active)
+            if running_run(robot) is not None
+            and isinstance(active, Mapping)
+            and active.get("run_id") == run["run_id"]
+            else None
+        )
+        summary: RunSummary = {
+            "run_id": run["run_id"],
+            "outcome": run.get("outcome"),
+            "completed_room_count": stored_count(run, "completed_room_count"),
+            "room_count": stored_count(run, "room_count"),
+            "target": target,
+            "smart_stop_phase": self.control.smart_stop_phase(serial_number),
+        }
+        return summary
 
     def snapshot(self, serial_number: str) -> dict[str, Any]:
         """Return compact, automation-friendly plan and room history state."""
