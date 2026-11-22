@@ -167,13 +167,26 @@ _REQUESTED_MODES = {
 }
 
 
-RobotEndedRoom = Literal["unreachable", "partly_cleaned"]
 _MODE_STATUSES = frozenset({"unattempted", "partial", "completed"})
+_ATTEMPTED_MODE = {
+    frozenset({"vacuum"}): "vacuum",
+    frozenset({"mop"}): "mop",
+    frozenset({"vacuum", "mop"}): "vacuum_and_mop",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RobotEnded:
+    """How a finished mission left a room the robot did not complete."""
+
+    result: Literal["unreachable", "partly_cleaned"]
+    # The requested modes the robot started in the room; None if it started none.
+    attempted_mode: str | None
 
 
 def room_robot_ended(
     session: CleaningSession, room_name: str, cleaning_mode: str | None
-) -> RobotEndedRoom | None:
+) -> RobotEnded | None:
     """Return how a finished mission left a room it did not complete.
 
     The OEM app titles a ``Finished`` stop reason "Area inaccessible" (Matic
@@ -200,14 +213,17 @@ def room_robot_ended(
         or statuses == {"completed"}
     ):
         return None
-    return "unreachable" if statuses == {"unattempted"} else "partly_cleaned"
+    attempted = _ATTEMPTED_MODE.get(
+        frozenset(r.cleaning_mode for r in results if r.status != "unattempted")
+    )
+    return RobotEnded("partly_cleaned" if attempted else "unreachable", attempted)
 
 
 def leg_room_results(
     session: CleaningSession,
     rooms: Sequence[CleaningRoom],
     room_ids: Collection[str],
-) -> tuple[dict[str, tuple[str, int]], dict[str, RobotEndedRoom]]:
+) -> tuple[dict[str, tuple[str, int]], dict[str, RobotEnded]]:
     """Return a leg record's credit for ``room_ids`` and the rooms it left unfinished.
 
     Credit maps ``room_id -> (ended_at, duration_seconds)`` for each room the
@@ -218,7 +234,7 @@ def leg_room_results(
     ended_at = session.ended_at
     assert isinstance(ended_at, str)
     evidence: dict[str, tuple[str, int]] = {}
-    robot_ended: dict[str, RobotEndedRoom] = {}
+    robot_ended: dict[str, RobotEnded] = {}
     for room in rooms:
         if room.room_id not in room_ids:
             continue
@@ -253,10 +269,10 @@ def match_single_room_robot_ended(
     now: datetime,
     baseline: Collection[bytes] | None = None,
     session_hash: str | None = None,
-) -> tuple[tuple[CleaningSessionRecord, RobotEndedRoom], ...]:
+) -> tuple[tuple[CleaningSessionRecord, RobotEnded], ...]:
     """Return at most two one-room records the robot finished short of the room."""
     target = native_room_key(room_name)
-    matches: list[tuple[CleaningSessionRecord, RobotEndedRoom]] = []
+    matches: list[tuple[CleaningSessionRecord, RobotEnded]] = []
     for record in records_for_dispatch(records, baseline, session_hash) or ():
         session = record.session
         if not session_overlaps_dispatch(session, dispatched_at, now):

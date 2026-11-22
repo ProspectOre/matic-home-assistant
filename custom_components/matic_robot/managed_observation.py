@@ -31,7 +31,7 @@ from .managed_run import (
     validation_error,
 )
 from .native_completion import (
-    RobotEndedRoom,
+    RobotEnded,
     has_cancelled_single_room_record,
     leg_room_results,
     match_single_room_completions,
@@ -79,7 +79,7 @@ async def async_verify_leg_completion(
     timeout_seconds: float | None = None,
     on_verified_session: Callable[[str], None] | None = None,
     skipped_room_ids: Collection[str] = (),
-    on_robot_ended: Callable[[dict[str, RobotEndedRoom]], None] | None = None,
+    on_robot_ended: Callable[[dict[str, RobotEnded]], None] | None = None,
     session_hash: str | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
@@ -95,7 +95,7 @@ async def async_verify_leg_completion(
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     required_room_ids = set(targets.values()) - set(skipped_room_ids)
     evidence: dict[str, tuple[str, int]] | None = None
-    robot_ended: dict[str, RobotEndedRoom] = {}
+    robot_ended: dict[str, RobotEnded] = {}
     matched_key: bytes | None = None
     try:
         async with asyncio.timeout(
@@ -461,11 +461,9 @@ async def async_active_session_state(
 
 
 class NativeRoomVerdict(StrEnum):
-    """What native history proves about one owned single-room mission."""
+    """What history proves of an owned one-room mission, besides ``RobotEnded``."""
 
     COMPLETED = "completed"
-    UNREACHABLE = "unreachable"
-    PARTLY_CLEANED = "partly_cleaned"
     UNVERIFIED = "unverified"
 
 
@@ -482,7 +480,7 @@ async def async_adjudicate_room_end(
     on_verified_session: Callable[[str], None] | None = None,
     on_verified_completion: Callable[[str, int], None] | None = None,
     session_hash: str | None = None,
-) -> NativeRoomVerdict:
+) -> NativeRoomVerdict | RobotEnded:
     """Settle an ended single-room mission from one new native record.
 
     Completion needs one new, completed, overlapping record for the room; an
@@ -546,7 +544,7 @@ async def async_adjudicate_room_end(
                             on_verified_session(session_hash)
                     return NativeRoomVerdict.COMPLETED
                 if robot_ended:
-                    return NativeRoomVerdict(robot_ended[0][1])
+                    return robot_ended[0][1]
                 if has_cancelled_single_room_record(
                     records,
                     baseline=baseline,

@@ -43,7 +43,7 @@ from .managed_observation import (
     async_wait_for_settled_leg_handoff,
 )
 from .managed_run import PreparedRoomDispatch
-from .native_completion import RobotEndedRoom
+from .native_completion import RobotEnded
 from .plan_model import AreaLeg, CleaningRoom, PlanLeg, plan_floor_token
 from .plan_records import LastRun, RecoveryCheckpoint
 from .robot_port import RobotPort
@@ -698,7 +698,7 @@ async def _async_verify_ended_leg(
         return records
 
     completion_sessions: list[str] = []
-    robot_ended: dict[str, RobotEndedRoom] = {}
+    robot_ended: dict[str, RobotEnded] = {}
     evidence = await async_verify_leg_completion(
         read_history,
         baseline,
@@ -745,7 +745,7 @@ async def _async_credit_verified_rooms(
     rejoined: _Rejoined,
     leg: list[CleaningRoom],
     evidence: dict[str, tuple[str, int]],
-    robot_ended: dict[str, RobotEndedRoom],
+    robot_ended: dict[str, RobotEnded],
     verified_coverage: CoverageReceipt | None,
 ) -> str:
     """Credit or settle each room the history decides and say if the run settled.
@@ -795,7 +795,7 @@ async def _async_credit_verified_rooms(
                 return "restart_recovery_superseded"
             result = "skipped"
             fields = (
-                {"reason_code": f"room_{ended}", "cause": "robot"}
+                {"reason_code": f"room_{ended.result}", "cause": "robot"}
                 if ended
                 else {"reason_code": "owner_skipped"}
             )

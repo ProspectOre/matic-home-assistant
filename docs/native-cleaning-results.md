@@ -85,8 +85,9 @@ plan took out of the queue for Smart Stop, or the owner skipped, is neither.
 
 The room closes as **Couldn't reach** or **Partly done** without credit and
 stays due, and the plan moves on to the next room. A partly cleaned room keeps
-its turn in the rotation, as partial work always does; an unreachable one gets
-it back. `matic_robot_room_skipped`
+its turn in the rotation, as partial work always does, and counts toward its
+[room schedule](room-schedules.md#understand-progress-and-results) as the modes
+the robot started; an unreachable one gets its turn back and counts nothing. `matic_robot_room_skipped`
 fires with `reason_code: room_unreachable` or `room_partly_cleaned` and
 `cause: robot`. A run whose other rooms all completed ends `completed` with
 `reason_code: all_rooms_settled`, the same as a run with an owner-skipped room.

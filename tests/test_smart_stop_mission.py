@@ -26,7 +26,10 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.leg_finish import async_end_after_current_room
 from custom_components.matic_robot.managed_executor import async_execute_rooms
-from custom_components.matic_robot.native_completion import leg_room_results
+from custom_components.matic_robot.native_completion import (
+    RobotEnded,
+    leg_room_results,
+)
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.robot_commands import PlanStart, RobotCommands
 from tests.client.test_coverage_receipts import history_key
@@ -212,8 +215,8 @@ def test_a_leg_record_credits_finished_rooms_and_names_unfinished_ones():
 
     assert set(evidence) == {STUDY.room_id}
     assert robot_ended == {
-        KITCHEN.room_id: "unreachable",
-        hall.room_id: "partly_cleaned",
+        KITCHEN.room_id: RobotEnded("unreachable", None),
+        hall.room_id: RobotEnded("partly_cleaned", "vacuum"),
     }
     assert leg_room_results(record.session, [KITCHEN, STUDY], set()) == ({}, {})
 

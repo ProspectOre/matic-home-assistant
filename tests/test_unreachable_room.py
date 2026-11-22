@@ -97,16 +97,17 @@ def test_identity_signals_are_one_rule() -> None:
 
 def _robot_ended(records, **window):
     return tuple(
-        kind for _record, kind in match_single_room_robot_ended(records, **window)
+        (ended.result, ended.attempted_mode)
+        for _record, ended in match_single_room_robot_ended(records, **window)
     )
 
 
 @pytest.mark.parametrize(
     ("status", "options", "baseline", "expected"),
     [
-        ("unattempted", {}, frozenset(), ("unreachable",)),
+        ("unattempted", {}, frozenset(), (("unreachable", None),)),
         # The robot reached the room and gave up on the rest of it.
-        ("partial", {}, frozenset(), ("partly_cleaned",)),
+        ("partial", {}, frozenset(), (("partly_cleaned", "vacuum"),)),
         # A completed room is a completion, not a robot-ended room.
         ("completed", {}, frozenset(), ()),
         # A stop by the owner or the robot is not an inaccessible area.
@@ -120,7 +121,12 @@ def _robot_ended(records, **window):
         # A record that existed before dispatch is not this mission.
         ("unattempted", {}, frozenset({b"new"}), ()),
         # A mission queued long before its dispatch still ends inside it.
-        ("unattempted", {"started_offset": -7200}, frozenset(), ("unreachable",)),
+        (
+            "unattempted",
+            {"started_offset": -7200},
+            frozenset(),
+            (("unreachable", None),),
+        ),
     ],
 )
 def test_robot_ended_match_requires_a_finished_unfinished_single_room(
@@ -143,10 +149,10 @@ def test_robot_ended_match_requires_a_finished_unfinished_single_room(
 @pytest.mark.parametrize(
     ("vacuum", "mop", "expected"),
     [
-        ("unattempted", "unattempted", ("unreachable",)),
-        ("unattempted", "partial", ("partly_cleaned",)),
-        ("completed", "unattempted", ("partly_cleaned",)),
-        ("completed", "partial", ("partly_cleaned",)),
+        ("unattempted", "unattempted", (("unreachable", None),)),
+        ("unattempted", "partial", (("partly_cleaned", "mop"),)),
+        ("completed", "unattempted", (("partly_cleaned", "vacuum"),)),
+        ("completed", "partial", (("partly_cleaned", "vacuum_and_mop"),)),
         # Every mode completed is left to the completion matcher.
         ("completed", "completed", ()),
         # A status the decoder could not read proves nothing.

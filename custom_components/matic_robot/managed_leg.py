@@ -42,7 +42,7 @@ from .managed_run import (
     RoomStoppedInPlaceError,
     RoomTakenOverError,
 )
-from .native_completion import RobotEndedRoom
+from .native_completion import RobotEnded
 from .plan_model import CleaningRoom
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
@@ -153,7 +153,7 @@ class _LegRun:
     # Room id to the robot's (ended_at, duration_seconds) for its credit.
     credited: dict[str, tuple[str | None, int | None]] = field(default_factory=dict)
     # Room id to how the robot left a room it finished its mission short of.
-    robot_ended: dict[str, RobotEndedRoom] = field(default_factory=dict)
+    robot_ended: dict[str, RobotEnded] = field(default_factory=dict)
     completion_sessions: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -510,10 +510,8 @@ class _LegRun:
         )
         if verdict is observation.NativeRoomVerdict.COMPLETED:
             self.credited[room.room_id] = evidence[-1] if evidence else (None, None)
-        if verdict is observation.NativeRoomVerdict.UNREACHABLE:
-            self.robot_ended[room.room_id] = "unreachable"
-        if verdict is observation.NativeRoomVerdict.PARTLY_CLEANED:
-            self.robot_ended[room.room_id] = "partly_cleaned"
+        if isinstance(verdict, RobotEnded):
+            self.robot_ended[room.room_id] = verdict
         return verdict is not observation.NativeRoomVerdict.UNVERIFIED
 
     def late_marker(self, credited_ids: Collection[str] = ()) -> Any:
@@ -796,7 +794,7 @@ class _LegRun:
     async def async_settle_uncredited(
         self,
         room: CleaningRoom,
-        result: Literal["skipped"] | RobotEndedRoom,
+        result: Literal["skipped"] | RobotEnded,
         **fields: str,
     ) -> None:
         """Settle a room without credit, as a credit would, while the run owns it."""
@@ -875,7 +873,7 @@ class _LegRun:
                 # the room. Settle it without credit so it stays due; the run
                 # goes on.
                 await self.async_settle_uncredited(
-                    room, ended, reason_code=f"room_{ended}", cause="robot"
+                    room, ended, reason_code=f"room_{ended.result}", cause="robot"
                 )
             else:
                 if self.single:

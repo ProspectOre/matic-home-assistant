@@ -40,7 +40,7 @@ from .coverage_accounting import (
     verified_room_coverage,
 )
 from .native_cadence import import_native_cadence
-from .native_completion import RobotEndedRoom
+from .native_completion import RobotEnded
 from .plan_cadence import (
     PlanCadence,
 )
@@ -60,6 +60,7 @@ from .plan_repository import (
     MetadataLockLease,
     PlanRepository,
 )
+from .room_settlement import count_partial_work, settle_room_record
 from .run_control import (
     RunControl,
 )
@@ -98,37 +99,6 @@ def close_unfinished_area_records(
     return changed
 
 
-def _settle_room_record(
-    record: dict[str, Any],
-    global_room: dict[str, Any],
-    result: str,
-    *,
-    run_id: str,
-    settled_at: str,
-) -> None:
-    """Close a room without credit; only work the robot did keeps its turn."""
-    record["last_result"] = result
-    record[f"last_{result}"] = settled_at
-    record[f"{result}_runs"] = stored_count(record, f"{result}_runs") + 1
-    if result != "partly_cleaned":
-        _restore_opportunity(record, global_room, run_id=run_id)
-
-
-def _restore_opportunity(
-    record: dict[str, Any], global_room: dict[str, Any], *, run_id: str
-) -> None:
-    """Give back the rotation turn this run took from a room it did not clean."""
-    for target in (record, global_room):
-        baseline = target.pop("opportunity_before_run", None)
-        if not isinstance(baseline, Mapping) or baseline.get("run_id") != run_id:
-            continue
-        previous = baseline.get("value")
-        if isinstance(previous, str):
-            target["last_opportunity"] = previous
-        else:
-            target.pop("last_opportunity", None)
-
-
 def close_unfinished_room_records(
     robot: dict[str, Any],
     *,
@@ -157,7 +127,7 @@ def close_unfinished_room_records(
                 continue
             if room_id in skipped and run_id is not None and ended_at is not None:
                 global_room = robot["rooms"].get(room_id)
-                _settle_room_record(
+                settle_room_record(
                     record,
                     global_room if isinstance(global_room, dict) else {},
                     "skipped",
@@ -1573,7 +1543,7 @@ class PlanLedger:
         serial_number: str,
         plan_id: str,
         room: CleaningRoom,
-        result: Literal["skipped"] | RobotEndedRoom,
+        settled: Literal["skipped"] | RobotEnded,
         *,
         run_id: str | None,
         completion_is_current: Callable[[], bool],
@@ -1582,12 +1552,21 @@ class PlanLedger:
 
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
-            _settle_room_record(
+            now = dt_util.utcnow()
+            settle_room_record(
                 self.room(serial_number, plan_id, room),
                 global_room(robot, room.room_id, room.name),
-                result,
+                settled if isinstance(settled, str) else settled.result,
                 run_id=run_id or "",
-                settled_at=dt_util.utcnow().isoformat(),
+                settled_at=now.isoformat(),
+            )
+            count_partial_work(
+                robot,
+                self.repository.last_run(serial_number),
+                room,
+                settled,
+                run_id=run_id,
+                settled_at=now,
             )
             robot["active_plan"] = None
             return True
