@@ -59,6 +59,7 @@ type RoomResult = Literal[
 ]
 
 _SUSPENDED = frozenset({"paused", "low_charge"})
+_OWNERSHIP_CHANGED = "Run ownership changed before the room result could be recorded"
 
 
 def fire_room_event(
@@ -778,6 +779,35 @@ class _LegRun:
             ) from err
         raise err
 
+    def evidence_is_current(self) -> bool:
+        """Whether this run still owns the motion and floor a room result needs."""
+        return evidence_is_current(
+            self.manager.control,
+            self.serial_number,
+            self.motion_token,
+            self.cancel_event,
+            self.floor_is_current,
+        )
+
+    async def async_settle_uncredited(
+        self,
+        room: CleaningRoom,
+        result: Literal["skipped", "unreachable"],
+        **fields: str,
+    ) -> None:
+        """Settle a room without credit, as a credit would, while the run owns it."""
+        if not await self.manager.ledger.async_mark_settled(
+            self.serial_number,
+            self.plan_id,
+            room,
+            result,
+            run_id=self.run_id,
+            completion_is_current=self.evidence_is_current,
+        ):
+            raise PlanCancelledError(_OWNERSHIP_CHANGED)
+        await self.advance(RoomSettled(room.room_id))
+        self.announce(room, "skipped", **fields)
+
     async def async_settle(self) -> bool:
         """Credit, skip, cancel or leave due each room; return if all settled."""
         credited = self.credited
@@ -814,29 +844,18 @@ class _LegRun:
                     duration_seconds=duration_seconds,
                     verified_coverage_receipt=verified_coverage,
                     completion_session_hash=session_hash,
-                    completion_is_current=partial(
-                        evidence_is_current,
-                        self.manager.control,
-                        self.serial_number,
-                        self.motion_token,
-                        self.cancel_event,
-                        self.floor_is_current,
-                    ),
+                    completion_is_current=self.evidence_is_current,
                 ):
-                    raise PlanCancelledError(
-                        "Run ownership changed before room completion could be credited"
-                    )
+                    raise PlanCancelledError(_OWNERSHIP_CHANGED)
                 self.robot.confirm_room_completed(room.name)
                 if self.record_room_completed is not None:
                     self.record_room_completed(room)
                 self.announce(room, "completed", reason_code="verified_completion")
             elif self.run_id is not None and room.room_id in skipped:
                 # Skipped without credit, but settled, so the run goes on.
-                await ledger.async_mark_skipped(
-                    self.serial_number, self.plan_id, room, run_id=self.run_id
+                await self.async_settle_uncredited(
+                    room, "skipped", reason_code="owner_skipped"
                 )
-                await self.advance(RoomSettled(room.room_id))
-                self.announce(room, "skipped", reason_code="owner_skipped")
             elif self.ending_early() and room.room_id not in self.observed_ids:
                 await ledger.async_mark_cancelled(
                     self.serial_number, self.plan_id, room
@@ -850,12 +869,11 @@ class _LegRun:
             elif room.room_id in self.unreachable:
                 # The robot finished its mission without reaching the room.
                 # Settle it without credit so it stays due; the run goes on.
-                await ledger.async_mark_unreachable(
-                    self.serial_number, self.plan_id, room, run_id=self.run_id
-                )
-                await self.advance(RoomSettled(room.room_id))
-                self.announce(
-                    room, "skipped", reason_code="room_unreachable", cause="robot"
+                await self.async_settle_uncredited(
+                    room,
+                    "unreachable",
+                    reason_code="room_unreachable",
+                    cause="robot",
                 )
             else:
                 if self.single:
