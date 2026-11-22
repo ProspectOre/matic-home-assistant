@@ -23,7 +23,7 @@ from custom_components.matic_robot.client.models import RobotPose
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.slam_scene import MaticSlamSceneView
-from custom_components.matic_robot.slam_view_data import _map_session_key
+from custom_components.matic_robot.slam_view_data import map_session_key
 from custom_components.matic_robot.workspace_socket import (
     WorkspaceSocket,
     _resync_event,
@@ -157,7 +157,7 @@ def test_subscription_message_bytes() -> None:
             {"id": 2, "entry_id": "entry-a", "version": 1, "poses": True},
         )
     epoch = hass.data[DATA_SLAM_SCENE_VIEW].scene_epoch("entry-a").encode()
-    key = _map_session_key(entry.runtime_data)
+    key = map_session_key(entry.runtime_data)
     assert key is not None
 
     (result,) = connection.send_result.call_args_list

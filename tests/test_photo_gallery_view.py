@@ -98,7 +98,7 @@ GALLERY = {
 
 @pytest.fixture(autouse=True)
 def _no_current_map():
-    with patch.object(photo_gallery_view, "_map_session_key", return_value=None):
+    with patch.object(photo_gallery_view, "map_session_key", return_value=None):
         yield
 
 
@@ -151,7 +151,7 @@ async def test_names_the_map_matic_map_shows() -> None:
     request = _Request(hass_user=SimpleNamespace(is_admin=True))
     with (
         patch.object(photo_gallery_view, "runtime_for_entry", return_value=runtime),
-        patch.object(photo_gallery_view, "_map_session_key", return_value="a" * 64),
+        patch.object(photo_gallery_view, "map_session_key", return_value="a" * 64),
     ):
         response = await MaticPhotoGalleryView().get(request, "e")
 

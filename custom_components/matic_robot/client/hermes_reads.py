@@ -16,9 +16,9 @@ from google.protobuf.message import DecodeError
 
 from .cleaning_schedule import decode_schedule
 from .cleaning_session import (
-    _native_history_collection_revision,
     decode_cleaning_session,
     decode_cleaning_session_records,
+    native_history_collection_revision,
 )
 from .coverage_receipts import native_session_hash
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
@@ -379,7 +379,7 @@ class HermesReads(HermesCollections):
                 if native_session_hash(entry.key) == session_hash
             )
         records = decode_cleaning_session_records(entries, strict=strict)
-        return records, _native_history_collection_revision(entries)
+        return records, native_history_collection_revision(entries)
 
     async def async_get_cleaning_session_images(
         self,
@@ -468,7 +468,7 @@ class HermesReads(HermesCollections):
                 default=None,
             ),
             native_history_revision=(
-                _native_history_collection_revision(session_entries)
+                native_history_collection_revision(session_entries)
                 if isinstance(session_entries, tuple)
                 else None
             ),

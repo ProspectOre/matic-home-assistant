@@ -45,11 +45,11 @@ from .client import (
     validate_certificate,
 )
 from .config_flow_discovery import (
-    _async_discover_robots,
-    _async_select_discovery_host,
-    _discovery_certificate_identity,
-    _robot_label,
+    async_discover_robots,
+    async_select_discovery_host,
+    discovery_certificate_identity,
     fallback_robot_name,
+    robot_label,
 )
 from .const import (
     CONF_BLUETOOTH_ADDRESS,
@@ -388,16 +388,16 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Handle Matic robot zeroconf discovery."""
         self._discovery_info = discovery_info
-        hostname, self._discovered_serial = _discovery_certificate_identity(
+        hostname, self._discovered_serial = discovery_certificate_identity(
             discovery_info
         )
-        host = await _async_select_discovery_host(discovery_info)
+        host = await async_select_discovery_host(discovery_info)
         self._discovered = {
             CONF_HOST: host,
             CONF_PORT: discovery_info.port,
             CONF_HOSTNAME: hostname,
         }
-        self.context["title_placeholders"] = {"name": _robot_label(discovery_info)}
+        self.context["title_placeholders"] = {"name": robot_label(discovery_info)}
         if self._discovered_serial:
             await self.async_set_unique_id(self._discovered_serial)
             self._abort_if_configured_with_updates(
@@ -412,7 +412,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Discover robots on the network while the dialog shows progress."""
         if self._discovery_task is None:
             self._discovery_task = self.hass.async_create_task(
-                _async_discover_robots(self.hass), "matic_robot_discovery"
+                async_discover_robots(self.hass), "matic_robot_discovery"
             )
         if not (self._discovery_ui_progress and self._discovery_task.done()):
             self._discovery_ui_progress = True
@@ -430,7 +430,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._manual_discoveries = {
             info.name: info
             for info in discoveries
-            if _discovery_certificate_identity(info)[1] not in configured
+            if discovery_certificate_identity(info)[1] not in configured
         }
         return self.async_show_progress_done(next_step_id="select_robot")
 
@@ -472,7 +472,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 selector.SelectOptionDict(
                                     value=info.name,
                                     label=(
-                                        f"{_robot_label(info)} "
+                                        f"{robot_label(info)} "
                                         f"({info.hostname.rstrip('.')})"
                                     ),
                                 )
@@ -1401,7 +1401,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if self._discovery_info is not None:
                         self._pairing_data[
                             CONF_HOST
-                        ] = await _async_select_discovery_host(self._discovery_info)
+                        ] = await async_select_discovery_host(self._discovery_info)
                     result = await self._async_create_or_error(self._pairing_data)
                     if result["type"] is not FlowResultType.FORM:
                         self._pairing_result = result

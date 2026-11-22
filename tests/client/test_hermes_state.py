@@ -179,11 +179,11 @@ def test_operational_state_enforces_payload_field_and_code_budgets(
     monkeypatch.setattr(
         operational_state_module, "_OPERATIONAL_STATE_MAX_BYTES", len(payload)
     )
-    monkeypatch.setattr(operational_state_module, "_OPERATIONAL_STATE_MAX_FIELDS", 0)
+    monkeypatch.setattr(operational_state_module, "OPERATIONAL_STATE_MAX_FIELDS", 0)
     with pytest.raises(DecodeError, match="too many fields"):
         decode_operational_state(payload)
 
-    monkeypatch.setattr(operational_state_module, "_OPERATIONAL_STATE_MAX_FIELDS", 1024)
+    monkeypatch.setattr(operational_state_module, "OPERATIONAL_STATE_MAX_FIELDS", 1024)
     monkeypatch.setattr(operational_state_module, "_OPERATIONAL_STATE_MAX_CODES", 1)
     with pytest.raises(DecodeError, match="too many status codes"):
         decode_operational_state(payload)
@@ -199,7 +199,7 @@ def test_operational_state_bounds_text_and_nested_cues(
     invalid_utf8 = KabukiOutputWire(states=[106]).SerializeToString() + b"\x22\x01\xff"
     assert decode_operational_state(invalid_utf8).software_version is None
 
-    monkeypatch.setattr(operational_state_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
+    monkeypatch.setattr(operational_state_module, "TELEMETRY_NESTED_MAX_FIELDS", 0)
     with pytest.raises(DecodeError, match="too many fields"):
         decode_operational_state(_cues_output(_message_field(20)))
 

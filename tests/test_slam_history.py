@@ -30,10 +30,10 @@ from custom_components.matic_robot.slam_history import (
     SlamHistoryStore,
 )
 from custom_components.matic_robot.slam_history_format import (
-    _build_snapshot,
-    _decode_history,
-    _decompress_scene,
-    _enforce_history_bounds,
+    build_snapshot,
+    decode_history,
+    decompress_scene,
+    enforce_history_bounds,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
@@ -63,7 +63,7 @@ def test_stored_history_admission_precedes_base64_allocation(monkeypatch, value)
         "scene": value,
     }
     with patch.object(history_format.base64, "b64decode") as decode:
-        assert _decode_history({"snapshots": [item]}) == ([], True)
+        assert decode_history({"snapshots": [item]}) == ([], True)
     decode.assert_not_called()
 
 
@@ -146,7 +146,7 @@ async def test_history_discards_encoding_finished_after_close(hass, close_method
     executor = hass.async_add_executor_job
 
     async def delayed_encoding(function, *args):
-        if function.__name__ == "_build_snapshot":
+        if function.__name__ == "build_snapshot":
             started.set()
             await release.wait()
         return await executor(function, *args)
@@ -365,7 +365,7 @@ async def test_capture_in_flight_cannot_commit_after_record_delete(hass) -> None
     executor = hass.async_add_executor_job
 
     async def delayed_encoding(function, *args):
-        if function.__name__ == "_build_snapshot":
+        if function.__name__ == "build_snapshot":
             started.set()
             await release.wait()
         return await executor(function, *args)
@@ -404,7 +404,7 @@ async def test_capture_quota_respects_active_scene_read_lease(hass) -> None:
     executor = hass.async_add_executor_job
 
     async def delayed_decompression(function, *args):
-        if function.__name__ == "_decompress_scene":
+        if function.__name__ == "decompress_scene":
             read_started.set()
             await release_read.wait()
         return await executor(function, *args)
@@ -449,7 +449,7 @@ async def test_scene_read_cannot_lease_a_reserved_capture_victim(hass) -> None:
     executor = hass.async_add_executor_job
 
     async def delayed_encoding(function, *args):
-        if function.__name__ == "_build_snapshot":
+        if function.__name__ == "build_snapshot":
             encoding_started.set()
             await release_encoding.wait()
         return await executor(function, *args)
@@ -489,7 +489,7 @@ async def test_scene_read_budget_holds_until_cancelled_decode_finishes(hass) -> 
 
     async def delayed_decompression(function, *args):
         nonlocal started_count
-        if function.__name__ == "_decompress_scene":
+        if function.__name__ == "decompress_scene":
             started_count += 1
             first_started.set()
             if started_count == MAX_ACTIVE_HISTORY_READS:
@@ -674,7 +674,7 @@ async def test_history_load_migrates_legacy_and_pauses_oversized_state(hass) -> 
 
     now = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
     oversized = [
-        _build_snapshot(
+        build_snapshot(
             _scene(mission_id=mission),
             mission,
             now + timedelta(minutes=mission),
@@ -688,7 +688,7 @@ async def test_history_load_migrates_legacy_and_pauses_oversized_state(hass) -> 
     with (
         patch.object(
             history_format,
-            "_decode_history",
+            "decode_history",
             return_value=(oversized, False),
         ),
         patch.object(history_format, "MAX_HISTORY_ITEMS", 1),
@@ -794,7 +794,7 @@ async def test_history_byte_bound_preserves_each_classified_floor(hass) -> None:
         "MAX_HISTORY_COMPRESSED_BYTES",
         retained_floor_bytes,
     ):
-        _enforce_history_bounds(store._snapshots)
+        enforce_history_bounds(store._snapshots)
 
     assert [snapshot.revision for snapshot in store.catalog()] == [2, 3]
 
@@ -831,7 +831,7 @@ def test_history_decoder_repairs_invalid_private_storage() -> None:
         "point_count": 1025,
         "scene": base64.b64encode(compressed).decode(),
     }
-    snapshots, dirty = _decode_history(
+    snapshots, dirty = decode_history(
         {
             "snapshots": [
                 None,
@@ -844,8 +844,8 @@ def test_history_decoder_repairs_invalid_private_storage() -> None:
     assert dirty is True
     assert len(snapshots) == 1
     mismatched = {**valid, "id": "0" * 24}
-    assert _decode_history({"snapshots": [mismatched]}) == ([], True)
-    assert _decode_history("invalid") == ([], True)
+    assert decode_history({"snapshots": [mismatched]}) == ([], True)
+    assert decode_history("invalid") == ([], True)
 
 
 def test_history_load_trims_between_scene_decodes(monkeypatch) -> None:
@@ -871,14 +871,14 @@ def test_history_load_trims_between_scene_decodes(monkeypatch) -> None:
 
     def enforce(snapshots):
         peaks.append(sum(len(snapshot.compressed) for snapshot in snapshots))
-        _enforce_history_bounds(snapshots)
+        enforce_history_bounds(snapshots)
 
-    with patch.object(history_format, "_enforce_history_bounds", enforce):
-        snapshots, dirty = _decode_history({"snapshots": items})
+    with patch.object(history_format, "enforce_history_bounds", enforce):
+        snapshots, dirty = decode_history({"snapshots": items})
     assert dirty is True
     assert [snapshot.revision for snapshot in snapshots] == [5]
     assert max(peaks) == 2 * len(compressed)
-    assert _decode_history({"snapshots": "invalid"}) == ([], True)
+    assert decode_history({"snapshots": "invalid"}) == ([], True)
 
 
 def test_history_decompression_is_bounded() -> None:
@@ -890,8 +890,8 @@ def test_history_decompression_is_bounded() -> None:
         len(scene) - 1,
     ):
         with pytest.raises(DecodeError, match="bounds"):
-            _decompress_scene(compressed)
+            decompress_scene(compressed)
     with pytest.raises(DecodeError, match="bounds"):
-        _decompress_scene(compressed[:-1])
+        decompress_scene(compressed[:-1])
     with pytest.raises(DecodeError, match="bounds"):
-        _decompress_scene(compressed + b"trailing")
+        decompress_scene(compressed + b"trailing")

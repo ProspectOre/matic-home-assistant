@@ -13,7 +13,7 @@ from .client import CleaningSessionRecord, MaticError
 from .http import PRIVATE_NO_STORE_HEADERS, RUNS_API_URL, runtime_for_entry
 from .map_schema import RunHistory, RunRecord, RunTrail
 from .run_history import RUN_HISTORY_LIMIT
-from .slam_view_data import _map_session_key
+from .slam_view_data import map_session_key
 
 RUNS_NATIVE_READ_SECONDS = 15
 
@@ -33,7 +33,7 @@ class MaticRunHistoryView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         trails = runtime.run_trails
-        map_key = _map_session_key(runtime)
+        map_key = map_session_key(runtime)
         trail_id = request.query.get("trail")
         if trail_id is not None:
             segments = trails.segments(trail_id, map_key)

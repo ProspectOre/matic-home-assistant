@@ -59,7 +59,7 @@ def save():
     with (
         patch.object(viewpoint_view, "runtime_for_entry", return_value=object()),
         patch.object(viewpoint_view, "current_floor_plan", return_value=FLOOR),
-        patch.object(viewpoint_view, "_map_session_key", return_value=KEY),
+        patch.object(viewpoint_view, "map_session_key", return_value=KEY),
         patch.object(
             viewpoint_view, "async_save_viewpoint", AsyncMock(return_value=STOVE)
         ) as saved,

@@ -8,8 +8,8 @@ import pytest
 from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client.cleaning_session import (
     _canonical_cleaning_session,
-    _native_history_collection_revision,
     decode_cleaning_session,
+    native_history_collection_revision,
 )
 from custom_components.matic_robot.client.history_semantics import (
     MAX_HISTORY_BYTES,
@@ -143,7 +143,7 @@ async def test_corrupt_revision_keeps_exact_key_for_credit_retraction():
     assert len(records) == 1 and records[0].key == history_key()
     assert records[0].decoded is False
     assert records[0].session.completed is None
-    assert revision != _native_history_collection_revision(())
+    assert revision != native_history_collection_revision(())
     # The key still names the session, so a strict read is complete.
     assert await client.async_get_cleaning_session_snapshot(strict=True) == (
         records,

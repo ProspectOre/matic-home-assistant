@@ -14,8 +14,8 @@ from .models import (
 )
 from .proto.hermes_pb2 import KabukiOutputWire
 from .telemetry_fields import (
-    _TELEMETRY_NESTED_MAX_FIELDS,
     TELEMETRY_NESTED_MAX_BYTES,
+    TELEMETRY_NESTED_MAX_FIELDS,
     bounded_fields,
     decode_text_from_fields,
 )
@@ -65,7 +65,7 @@ _CUES_GESTURES_BY_FIELD = {
 _BAG_MISSING_ERROR = 205
 _BAG_FULL_ERROR = 206
 _OPERATIONAL_STATE_MAX_BYTES = 256 * 1024
-_OPERATIONAL_STATE_MAX_FIELDS = 1024
+OPERATIONAL_STATE_MAX_FIELDS = 1024
 _OPERATIONAL_STATE_MAX_CODES = 256
 
 
@@ -91,7 +91,7 @@ def decode_operational_state(payload: bytes) -> RobotOperationalState:
     fields = bounded_fields(
         payload,
         max_bytes=_OPERATIONAL_STATE_MAX_BYTES,
-        max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+        max_fields=OPERATIONAL_STATE_MAX_FIELDS,
     )
     wire = KabukiOutputWire.FromString(payload)
     if (
@@ -154,7 +154,7 @@ def decode_cues_state(
         for cues_field in bounded_fields(
             output_field.value,
             max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-            max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+            max_fields=TELEMETRY_NESTED_MAX_FIELDS,
         ):
             if cues_field.number == 17 and cues_field.wire_type == 2:
                 assert isinstance(cues_field.value, bytes)
@@ -181,7 +181,7 @@ def decode_cues_voice_status(
     for field in bounded_fields(
         payload,
         max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+        max_fields=TELEMETRY_NESTED_MAX_FIELDS,
     ):
         if field.wire_type != 2 or not isinstance(field.value, bytes):
             continue
@@ -214,7 +214,7 @@ def decode_cues_intent(payload: bytes) -> CuesIntent:
     for field in bounded_fields(
         payload,
         max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+        max_fields=TELEMETRY_NESTED_MAX_FIELDS,
     ):
         if field.wire_type == 2 and isinstance(field.value, bytes):
             intent = _CUES_INTENTS_BY_FIELD.get(field.number, CuesIntent.UNKNOWN)
@@ -227,7 +227,7 @@ def decode_cues_gesture_status(payload: bytes) -> CuesGestureStatus | None:
     for field in bounded_fields(
         payload,
         max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+        max_fields=TELEMETRY_NESTED_MAX_FIELDS,
     ):
         if field.wire_type == 2 and isinstance(field.value, bytes):
             status = _CUES_GESTURES_BY_FIELD.get(field.number, status)

@@ -12,7 +12,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from .http import PHOTO_GALLERY_API_URL, PRIVATE_NO_STORE_HEADERS, runtime_for_entry
 from .photo_library import PhotoRecord
 from .photo_tours import photo_preview_url, photo_url
-from .slam_view_data import _map_session_key
+from .slam_view_data import map_session_key
 from .viewpoints import Viewpoint
 
 # The newest photos Matic Map lists; the library itself is bounded by age and
@@ -39,7 +39,7 @@ class MaticPhotoGalleryView(HomeAssistantView):
         )
         for record in newest[:GALLERY_MAX_PHOTOS]:
             albums.setdefault(record.album, []).append(_photo(entry_id, record))
-        map_key = _map_session_key(runtime)
+        map_key = map_session_key(runtime)
         identity = runtime.slam_map.mission_identity
         return self.json(
             {
