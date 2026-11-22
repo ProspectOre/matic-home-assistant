@@ -128,6 +128,7 @@ jobs:
           path: dist/matic_robot.zip
           archive: false
           if-no-files-found: error
+          overwrite: true
 
   # Matic Map in a real Home Assistant paired to the simulated robot. Home
   # Assistant installs its own dependencies' requirements at startup.

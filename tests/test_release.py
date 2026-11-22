@@ -411,7 +411,7 @@ def test_release_takes_the_newest_passing_test_run_that_kept_the_zip(
             *("gh", "api", "--method", "GET"),
             f"repos/{{owner}}/{{repo}}/actions/runs/{run}/artifacts",
             *("-f", "name=matic_robot.zip"),
-            *("--jq", ".artifacts[] | select(.expired | not) | .id"),
+            *("--jq", release.KEPT),
         )
         for run in ("205", "150")
     ]
@@ -425,23 +425,40 @@ def test_release_takes_the_newest_passing_test_run_that_kept_the_zip(
 @pytest.mark.skipif(
     shutil.which("jq") is None and not os.environ.get("CI"), reason="needs jq"
 )
-def test_a_pull_request_run_never_supplies_the_release_zip() -> None:
-    """Its checkout is the merge into the base, not the commit released."""
-    runs = {
-        "workflow_runs": [
-            {"id": 3, "event": "pull_request"},
-            {"id": 2, "event": "workflow_dispatch"},
-            {"id": 1, "event": "push"},
-        ]
-    }
-    found = subprocess.run(
-        ["jq", "-r", f"{release.BUILT_ITSELF} | .id"],
-        input=json.dumps(runs),
+@pytest.mark.parametrize(
+    ("query", "listing", "found"),
+    [
+        # A pull request run checks out the merge into the base, not the commit.
+        (
+            f"{release.BUILT_ITSELF} | .id",
+            {
+                "workflow_runs": [
+                    {"id": 3, "event": "pull_request"},
+                    {"id": 2, "event": "workflow_dispatch"},
+                    {"id": 1, "event": "push"},
+                ]
+            },
+            ["2", "1"],
+        ),
+        # An expired zip cannot be downloaded, so its run is passed over.
+        (
+            release.KEPT,
+            {"artifacts": [{"id": 9, "expired": True}, {"id": 8, "expired": False}]},
+            ["8"],
+        ),
+    ],
+)
+def test_release_reads_only_runs_and_zips_it_can_publish(
+    query: str, listing: dict[str, object], found: list[str]
+) -> None:
+    result = subprocess.run(
+        ["jq", "-r", query],
+        input=json.dumps(listing),
         text=True,
         capture_output=True,
         check=True,
     )
-    assert found.stdout.split() == ["2", "1"]
+    assert result.stdout.split() == found
 
 
 def test_the_zip_test_built_is_checked_against_the_checkout(

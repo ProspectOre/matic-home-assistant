@@ -32,6 +32,8 @@ ARCHIVE = Path("dist/matic_robot.zip")
 BUILT_ITSELF = (
     '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")'
 )
+# Artifacts GitHub still keeps; it deletes them after their retention.
+KEPT = ".artifacts[] | select(.expired | not) | .id"
 TAG = re.compile(
     r"v(?P<final>\d+(?:\.\d+){2,3})(?:-(?P<stage>beta|rc)(?P<number>\d+))?"
 )
@@ -123,7 +125,7 @@ def built_by_test(sha: str) -> str:
         kept = _lines(
             *("gh", "api", "--method", "GET", f"{API}/actions/runs/{run}/artifacts"),
             *("-f", f"name={ARCHIVE.name}"),
-            *("--jq", ".artifacts[] | select(.expired | not) | .id"),
+            *("--jq", KEPT),
         )
         if kept:
             return run

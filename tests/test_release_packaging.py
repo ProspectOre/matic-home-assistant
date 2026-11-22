@@ -177,6 +177,7 @@ def test_ci_checks_and_keeps_the_zip_a_release_ships() -> None:
         "path": ARCHIVE.as_posix(),
         "archive": False,
         "if-no-files-found": "error",
+        "overwrite": True,
     }
 
 
