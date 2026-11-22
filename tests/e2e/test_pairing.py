@@ -204,8 +204,14 @@ async def test_without_an_adapter_a_pairing_from_elsewhere_is_checked_live(
     hass: HomeAssistant,
     simulator: RunningSimulator,
     robot: SimulatedRobot,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Home Assistant's Bluetooth is not loaded: no local adapter.
+    # CI has no Bluetooth adapter, and the locked environment cannot import
+    # Home Assistant's Bluetooth integration; tests/test_bluetooth_pairing.py
+    # covers the adapter check itself.
+    monkeypatch.setattr(
+        config_flow, "async_has_local_bluetooth_adapter", lambda _: False
+    )
     flow_id = await _discover(hass, simulator)
     refused = await _answer(hass, flow_id, {})
     assert refused["errors"] == {"base": "bluetooth_unavailable"}
