@@ -28,6 +28,7 @@ from .hermes_sim import Phase, SimulatedRobot
 from .sim_mission import parse_coverage_command
 
 VACUUM = "vacuum.simulated_matic"
+HISTORY = "sensor.simulated_matic_cleaning_history"
 
 
 def recovery_record(plans: Any, serial_number: str) -> dict[str, Any] | None:
@@ -113,7 +114,7 @@ async def state_becomes(hass: HomeAssistant, entity_id: str, state: str) -> None
 
 def active_plan(hass: HomeAssistant) -> dict[str, Any]:
     """Return the cleaning history sensor's public ``active_plan``."""
-    history = hass.states.get("sensor.simulated_matic_cleaning_history")
+    history = hass.states.get(HISTORY)
     assert history is not None
     return history.attributes["active_plan"]
 

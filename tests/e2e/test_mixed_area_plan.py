@@ -15,7 +15,7 @@ from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSI
 from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import Phase, SimulatedRobot
-from .plan_run import PlanRun, expect_finished
+from .plan_run import HISTORY, PlanRun, expect_finished
 from .sim_mission import SimFloor, message, messages, read_fields
 
 PLAN = "room-area-room"
@@ -261,6 +261,13 @@ async def test_room_area_room_plan_uses_verified_native_handoffs(
                     for name, event_label in observed
                 ),
             )
+        if leg < len(expected) - 1:
+            # Docked between legs, the summary keeps the running run, no target.
+            history = hass.states.get(HISTORY)
+            assert history is not None
+            summary = history.attributes["run"]
+            assert (summary["outcome"], summary["target"]) == ("running", None)
+            assert summary["completed_room_count"] == 1
 
     finished = await plan.outcome()
     expect_finished(finished, "completed", "all_rooms_verified", 2, "docked")

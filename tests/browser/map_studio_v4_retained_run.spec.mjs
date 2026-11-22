@@ -6,7 +6,7 @@ const HISTORY_PAYLOAD = JSON.parse(readFileSync(new URL("./fixtures/matic_cleani
 const ACTIVE_HISTORY_PAYLOAD = JSON.parse(readFileSync(new URL("./fixtures/matic_active_cleaning_history.json", import.meta.url), "utf8"));
 
 const HARNESS = "/retained-run-test.js";
-test("retained outcomes are entry-scoped, invalidate on outcome-only changes, and reject malformed or active records", async ({ page }) => {
+test("retained outcomes are entry-scoped, invalidate on outcome-only changes, reject malformed records and keep a running run", async ({ page }) => {
   const bundle = await build({ stdin: { contents: `
     export { HassAdapter } from "./frontend/map-studio-v4/hass-adapter";
     export { WorkspaceStore, reduceWorkspace, initialWorkspaceState } from "./frontend/map-studio-v4/state";
@@ -67,14 +67,13 @@ test("retained outcomes are entry-scoped, invalidate on outcome-only changes, an
     changedIdentity: true,
     updated: { runId: "run-1", outcome: "partial", completedRoomCount: 3, roomCount: 4 },
     unchangedIdentity: true,
-    running: null,
+    running: { runId: "run-1", outcome: "running", completedRoomCount: 2, roomCount: 4 },
     malformed: null,
     reduced: null,
     invalidCounts: [null, null, null, null, null],
-    terminalOutcomes: { failed: "partial", stopped_docked: "partial", cancelled: "partial", unverified: "unverified", completed: null, recharge_suspended: "partial", running: null },
-    activeResults: [null, null, null, null, null, null,
-      { runId: "run-1", outcome: "running", completedRoomCount: 2, roomCount: 4 },
-      { runId: "run-1", outcome: "running", completedRoomCount: 2, roomCount: 4 }, null],
+    terminalOutcomes: { failed: "partial", stopped_docked: "partial", cancelled: "partial", unverified: "unverified", completed: null, recharge_suspended: "partial", running: "running" },
+    // A malformed target or phase is dropped; the running run still shows.
+    activeResults: Array(9).fill({ runId: "run-1", outcome: "running", completedRoomCount: 2, roomCount: 4 }),
     areaOnly: null,
   });
 });
@@ -113,9 +112,10 @@ for (const narrow of [false, true]) {
     }, fields);
     await update({ run: { completed_room_count: 1 } });
     await expectStatus("Cleaning", "1 of 3 rooms confirmed");
+    // Between rooms the run has no target and stays shown.
     await update({ run: { target: null } });
-    await expectStatus("Cleaning", "70% battery");
-    await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().lastRun)).toBeNull();
+    await expectStatus("Cleaning", "1 of 3 rooms confirmed");
+    await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().lastRun?.outcome)).toBe("running");
     await update({ run: { run_id: "replacement", completed_room_count: 2, target: ACTIVE_HISTORY_PAYLOAD.run.target } });
     await expectStatus("Cleaning", "2 of 3 rooms confirmed");
     await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
@@ -277,3 +277,20 @@ test("low-charge suspension stays visible when settled and yields to live chargi
   await updateActivity("docked");
   await expect(status.locator("strong")).toHaveText("Last run did not finish");
 });
+
+for (const narrow of [false, true]) {
+  test(`a running run between rooms keeps its confirmed count${narrow ? " in a narrow panel" : ""}`, async ({ page }) => {
+    if (narrow) await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.evaluate(async (narrow) => {
+      await import("/map_studio_v4-review/review.js");
+      const gallery = document.createElement("matic-map-studio-gallery-v0-4-0");
+      Object.assign(gallery, { controls: false, scenario: "cleaning-between-rooms", narrow });
+      document.body.append(gallery);
+    }, narrow);
+    const shell = page.locator("matic-map-studio-gallery-v0-4-0 matic-map-shell-v4");
+    // No room is current; the run's progress still shows.
+    if (narrow) await expect(shell.locator(".sheet-status")).toHaveText("Cleaning · 1 of 3 rooms confirmed");
+    else await expect(shell.locator(".status-copy small")).toHaveText("1 of 3 rooms confirmed");
+  });
+}

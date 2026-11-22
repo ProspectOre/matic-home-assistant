@@ -3,6 +3,7 @@ import type { DialogKind, WorkspaceNotice } from "../map-studio-v4/contracts";
 export type GalleryScenario =
   | "ready"
   | "cleaning"
+  | "cleaning-between-rooms"
   | "paused"
   | "returning"
   | "recharging"
@@ -81,6 +82,7 @@ export type GalleryScenario =
 export const GALLERY_SCENARIOS: readonly GalleryScenario[] = [
   "ready",
   "cleaning",
+  "cleaning-between-rooms",
   "paused",
   "returning",
   "recharging",

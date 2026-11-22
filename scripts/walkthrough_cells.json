@@ -51,7 +51,7 @@
     {
       "id": "R09",
       "journey": "Stop, pending and held states",
-      "steps": ["cleaning", "starting-command", "starting", "stopping-command", "stopping", "paused", "returning", "recharging", "task-in-progress"],
+      "steps": ["cleaning", "cleaning-between-rooms", "starting-command", "starting", "stopping-command", "stopping", "paused", "returning", "recharging", "task-in-progress"],
       "check": "Stop is always reachable when it applies; held controls say why"
     },
     {

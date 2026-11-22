@@ -253,7 +253,7 @@ test.describe("home by state", () => {
     await expect(mapsRows(gallery).nth(0)).not.toHaveAttribute("aria-disabled", "true");
   });
 
-  for (const scenario of ["cleaning", "returning", "recharging", "starting-command", "stopping-command", "task-in-progress"]) {
+  for (const scenario of ["cleaning", "cleaning-between-rooms", "returning", "recharging", "starting-command", "stopping-command", "task-in-progress"]) {
     test(`${scenario} is busy: title, one line, demoted cards, Maps enabled (H4)`, async ({ page }) => {
       const gallery = await loadGallery(page, { scenario });
       await expect(gallery.getByRole("heading", { name: "The robot is busy", level: 2 })).toBeVisible();

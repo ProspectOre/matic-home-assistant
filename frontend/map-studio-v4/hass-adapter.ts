@@ -106,8 +106,8 @@ const PARTIAL_OUTCOMES: ReadonlySet<unknown> = new Set(["stopped_docked", "faile
 
 /**
  * The history sensor's `run` attribute (plan_history.run_summary), checked
- * field by field. A running run shows while it is on a room or area, or while
- * Smart Stop docks it.
+ * field by field. A running run of rooms shows from its start to its end; its
+ * room or area is detail that is absent between them.
  */
 const runProjection = (value: unknown, timing: HassEntityLike | undefined) => {
   if (!isRecord(value)) return {};
@@ -119,7 +119,7 @@ const runProjection = (value: unknown, timing: HassEntityLike | undefined) => {
   const target = raw && (raw.kind === "room" || raw.kind === "area") && typeof raw.id === "string" ? raw : null;
   const phase = SMART_STOP_PHASES.has(rawPhase) ? rawPhase as SmartStopPhase : null;
   const running = outcome === "running";
-  const shown = running ? rooms !== 0 && (target || phase) : outcome === "unverified" || PARTIAL_OUTCOMES.has(outcome);
+  const shown = running ? rooms !== 0 : outcome === "unverified" || PARTIAL_OUTCOMES.has(outcome);
   const metric = timing?.attributes;
   const percent = timing && /^\d{1,3}$/u.test(timing.state) ? Number(timing.state) : NaN;
   const estimate = running && target?.kind === "room" && metric?.run_id === runId
