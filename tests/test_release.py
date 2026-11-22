@@ -439,6 +439,12 @@ def test_the_zip_test_built_is_checked_against_the_checkout(
         release.verify_zip(archive, checkout)
 
     release.build_zip(archive, checkout)
+    with zipfile.ZipFile(archive, "a") as bundle:
+        bundle.writestr("map_studio_v4/../stray.py", "")
+    with pytest.raises(release.ReleaseError, match=r"checkout: map_studio_v4/\.\./"):
+        release.verify_zip(archive, checkout)
+
+    release.build_zip(archive, checkout)
     (checkout / INTEGRATION / "client" / "api.py").write_text("changed")
     with pytest.raises(release.ReleaseError, match=r"checkout: client/api\.py$"):
         release.verify_zip(archive, checkout)

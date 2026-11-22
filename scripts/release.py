@@ -154,7 +154,9 @@ def verify_zip(archive: Path = ROOT / ARCHIVE, root: Path = ROOT) -> str:
     extra = sorted(
         name
         for name in names - tracked.keys()
-        if name != panel[0] and not name.startswith(f"{panel[1]}/")
+        if name != panel[0]
+        # A panel file sits below the panel folder, never outside it.
+        and not (name.startswith(f"{panel[1]}/") and ".." not in name.split("/"))
     )
     if differ or extra:
         raise ReleaseError(

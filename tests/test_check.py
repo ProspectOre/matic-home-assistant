@@ -572,6 +572,8 @@ GAP = {"missing_lines": [3], "missing_branches": []}
         (["--all"], [], None, [], 0, check.FULL_SUITE),
         # CI's test job reads the build job's output and builds nothing.
         (["--all", "--built"], [], None, [], 0, check.FULL_SUITE),
+        # So it needs no Node.js.
+        (["--all", "--built"], [], "no Node.js", [], 0, check.FULL_SUITE),
         (["--all"], [], "pytest", [], 1, check.FULL_SUITE),
         (["--all"], [], "ruff", [], 1, check.FULL_SUITE),
         (["--all"], [], None, ["a.py: too long"], 1, check.FULL_SUITE),
