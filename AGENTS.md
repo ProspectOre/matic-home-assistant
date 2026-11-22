@@ -38,8 +38,8 @@ and review.
   import.
 
 A name with a leading underscore is private to the integration module that
-defines it: no other module imports it or reads it as `module._name`. Make a
-name another module needs public where it is defined.
+defines it: no other module in the integration imports it or reads it as
+`module._name`. Make a name another module needs public where it is defined.
 
 It also holds every code file to 1,000 lines. `scripts/oversize_files.txt`
 records each older, larger file at the size it may not exceed, so put new code

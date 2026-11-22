@@ -136,7 +136,7 @@ def test_public_and_own_private_names_pass(integration: Path) -> None:
             f"{PACKAGE}/views.py": (
                 "from homeassistant.helpers import _outside\n"
                 "from . import plans\nfrom .plans import run as _run\n"
-                "plans.run()\nplans.__name__\n"
+                "plans.run()\nplans.__name__\nimport os.path\nos.path._joinrealpath\n"
             ),
             f"{PACKAGE}/client/proto/pb2.py": "from .. import api\napi._generated\n",
         },
@@ -155,6 +155,11 @@ def test_public_and_own_private_names_pass(integration: Path) -> None:
         ),
         (
             "import custom_components.matic_robot.plans as stored\nstored._LIMIT\n",
+            "views.py:2: _LIMIT is private to plans",
+        ),
+        (
+            "import custom_components.matic_robot.plans\n"
+            "custom_components.matic_robot.plans._LIMIT\n",
             "views.py:2: _LIMIT is private to plans",
         ),
         ("from .client import _hidden\n", "views.py:1: _hidden is private to client"),

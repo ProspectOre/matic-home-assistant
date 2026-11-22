@@ -194,6 +194,15 @@ def _private(name: str) -> bool:
     return name.startswith("_") and not name.startswith("__")
 
 
+def _dotted(node: ast.expr) -> str | None:
+    """Return the dotted name an expression such as ``a.b.c`` spells, if any."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (base := _dotted(node.value)):
+        return f"{base}.{node.attr}"
+    return None
+
+
 def private_name_violations(root: Path = ROOT) -> list[str]:
     """Return each import or attribute read of another module's private name.
 
@@ -213,7 +222,7 @@ def private_name_violations(root: Path = ROOT) -> list[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules |= {
-                    alias.asname: alias.name for alias in node.names if alias.asname
+                    alias.asname or alias.name: alias.name for alias in node.names
                 }
             elif isinstance(node, ast.ImportFrom):
                 base = _source(relative, node)
@@ -224,12 +233,11 @@ def private_name_violations(root: Path = ROOT) -> list[str]:
                     elif _private(alias.name):
                         reached.append((node.lineno, ".".join(base), alias.name))
         reached += [
-            (node.lineno, modules[node.value.id], node.attr)
+            (node.lineno, modules[receiver], node.attr)
             for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id in modules
             and _private(node.attr)
+            and (receiver := _dotted(node.value)) in modules
         ]
         found.extend(
             f"{relative.as_posix()}:{line}: {private} is private to "
